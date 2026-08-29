@@ -397,8 +397,108 @@ def _display_description(item: CustomCatalogItem) -> str:
     return desc or item.name
 
 
-def _serialize_item(item: CustomCatalogItem) -> dict[str, object]:
+def _engine_pricer(db, catalog=None, catalogs_by_id=None):
+    """A per-request `cost -> retail` function, settings hydrated once.
+
+    Why read time: every `price` value in this tenant's catalogs is already
+    engine output — the stored price/cost ratios are exactly the configured
+    margins (2.000 = 50%, 1.667 = 40%, 1.538 = 35%) and every sampled row equals
+    what the engine returns today, to the cent. So `price` is not an independent
+    sell price, it is a CACHE of an engine answer.
+
+    Treating that cache as authority means a margin change silently does
+    nothing: drop parts from 50% to 45% and every catalog row keeps quoting the
+    old 2.000x number, because the serializer passes `price` straight through
+    and `_believable_sell` believes it precisely because it sits above cost.
+    They agree today, which is exactly why the day they stop would go unnoticed.
+
+    Pricing from cost at read time makes a margin change take effect everywhere
+    at once, and it prices rows whose cache was never filled (two live `Springs`
+    rows sit at price 0.00 against a cost of 78.00 and would otherwise offer a
+    $0 line).
+
+    Order is the same as the write path (`_retail_for`): the catalog's own
+    pricing STRATEGY first — an explicit per-catalog rule like `keystone` is a
+    deliberate choice and read time must not discard it — then the tenant's
+    margin tiers. Never the stored price, never the raw cost.
+
+    Returns None for anything it cannot price — the UI renders "—" rather than a
+    fabricated number, which is what this module already does for the
+    manufacturer virtual catalogs.
+    """
+    try:
+        from decimal import Decimal as _D
+
+        from gdx_dispatch.services.pricing_engine import (
+            CustomerView,
+            hydrate_settings_from_db,
+            price_line,
+        )
+
+        settings = hydrate_settings_from_db(db)
+        customer = CustomerView(pricing_class="retail", margin_override_pct=None)  # type: ignore[arg-type]
+    except Exception:  # noqa: BLE001 — unconfigured/unavailable engine is not a 500
+        log.warning("catalog: pricing engine unavailable; retail renders as —", exc_info=True)
+
+        def _unpriced(cost, pricing_category=None, catalog_id=None):
+            cat = catalog
+            if cat is None and catalogs_by_id and catalog_id is not None:
+                cat = catalogs_by_id.get(str(catalog_id))
+            if cat is not None and cost not in (None, ""):
+                computed = pricing_strategies.compute_price(
+                    getattr(cat, "pricing_strategy", None),
+                    cost,
+                    config=getattr(cat, "pricing_config", None),
+                )
+                if computed is not None:
+                    return float(computed)
+            return None
+
+        return _unpriced
+
+    def _price(cost, pricing_category=None, catalog_id=None) -> float | None:
+        if cost in (None, ""):
+            return None
+        cat = catalog
+        if cat is None and catalogs_by_id and catalog_id is not None:
+            cat = catalogs_by_id.get(str(catalog_id))
+        if cat is not None:
+            computed = pricing_strategies.compute_price(
+                getattr(cat, "pricing_strategy", None),
+                cost,
+                config=getattr(cat, "pricing_config", None),
+            )
+            if computed is not None:
+                return float(computed)
+        try:
+            if _D(str(cost)) <= 0:
+                return None
+            res = price_line(
+                cost=_D(str(cost)),
+                pricing_category=(pricing_category or "parts"),
+                customer=customer,
+                settings=settings,
+            )
+            return round(float(res.sell), 2)
+        except Exception:  # noqa: BLE001 — missing tier for this category
+            return None
+
+    return _price
+
+
+def _serialize_item(item: CustomCatalogItem, pricer) -> dict[str, object]:
+    """Serialize a catalog item, pricing it from COST through the engine.
+
+    `pricer` is required rather than optional on purpose: an optional one would
+    let a caller silently fall back to the stale `price` column, which is the
+    behaviour this change exists to remove.
+    """
     product_class = (getattr(item, "product_class", None) or "parts").strip().lower()
+    _engine_price = pricer(
+        item.cost,
+        getattr(item, "pricing_category", None) or product_class,
+        getattr(item, "catalog_id", None),
+    )
     out: dict[str, object] = {
         "id": str(item.id),
         "catalog_id": str(item.catalog_id),
@@ -411,7 +511,11 @@ def _serialize_item(item: CustomCatalogItem) -> dict[str, object]:
         "description": item.description,
         "description_display": _display_description(item),
         "cost": _to_float(item.cost),
-        "price": _to_float(item.price),
+        # From cost, every time. `price_stored` is exposed only so drift between
+        # the cache and the engine is visible instead of silent.
+        "price": _engine_price,
+        "price_source": "engine" if _engine_price is not None else None,
+        "price_stored": _to_float(item.price) if item.price is not None else None,
         "category": item.category,
         "vendor": getattr(item, "vendor", None),
         "pricing_category": item.pricing_category,
@@ -820,7 +924,16 @@ def list_all_catalog_items(
         )
         .order_by(CustomCatalogItem.name.asc(), CustomCatalogItem.id.asc())
     ).scalars().all()
-    return {"items": [_serialize_item(item) for item in rows], "total": len(rows)}
+    # This aggregator spans every catalog, so each item is priced under ITS OWN
+    # catalog's strategy — one map, no per-item query.
+    _cats = {
+        str(c.id): c
+        for c in db.execute(select(CustomCatalog).where(CustomCatalog.deleted_at.is_(None)))
+        .scalars()
+        .all()
+    }
+    _pricer = _engine_pricer(db, catalogs_by_id=_cats)
+    return {"items": [_serialize_item(item, _pricer) for item in rows], "total": len(rows)}
 
 
 @router.get("/api/catalogs/pricing-categories", response_model=None)
@@ -1036,7 +1149,10 @@ def get_catalog(
 
     row = _get_catalog_or_404(catalog_id, db, include_items=True)
     payload = _serialize_catalog(row)
-    payload["items"] = [_serialize_item(item) for item in row.items if item.deleted_at is None]
+    _pricer = _engine_pricer(db, catalog=row)
+    payload["items"] = [
+        _serialize_item(item, _pricer) for item in row.items if item.deleted_at is None
+    ]
     return payload
 
 
@@ -1053,7 +1169,7 @@ def list_catalog_items(
     if str(catalog_id) in VIRTUAL_CATALOG_IDS:
         return _virtual_catalog_items(str(catalog_id), search, page, per_page, db)
 
-    _get_catalog_or_404(catalog_id, db)
+    _catalog = _get_catalog_or_404(catalog_id, db)
 
     filters = [CustomCatalogItem.catalog_id == catalog_id, CustomCatalogItem.deleted_at.is_(None)]
     if search:
@@ -1078,7 +1194,9 @@ def list_catalog_items(
     ).scalars().all()
 
     return {
-        "items": [_serialize_item(row) for row in rows],
+        "items": [
+            _serialize_item(row, _engine_pricer(db, catalog=_catalog)) for row in rows
+        ],
         "total": total,
         "page": page,
         "per_page": per_page,
@@ -1160,7 +1278,7 @@ def add_catalog_item(
         request=request,
     )
     db.commit()
-    return _serialize_item(row)
+    return _serialize_item(row, _engine_pricer(db, catalog=catalog))
 
 
 # ---------------------------------------------------------------------------
@@ -1352,7 +1470,7 @@ def save_from_estimate_line(
     )
     db.commit()
 
-    result = _serialize_item(row)
+    result = _serialize_item(row, _engine_pricer(db, catalog=catalog))
     result["margin_pct"] = float(line_price.margin_pct)
     result["pricing_source"] = line_price.source
     return result
@@ -1433,7 +1551,9 @@ def patch_catalog_item(
         request=request,
     )
     db.commit()
-    return _serialize_item(row)
+    return _serialize_item(
+        row, _engine_pricer(db, catalog=_get_catalog_or_404(catalog_id, db))
+    )
 
 
 @router.delete("/api/catalogs/{catalog_id}/items/{item_id}", response_model=None)

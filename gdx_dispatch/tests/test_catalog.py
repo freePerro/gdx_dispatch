@@ -150,7 +150,11 @@ def test_patch_item_updates_fields(db_session: Session):
     )
     assert patched["name"] == "Updated Item"
     assert patched["cost"] == pytest.approx(123.45)
-    assert patched["price"] == pytest.approx(222.22)
+    # Price is derived at read time now; the entered value is kept as
+    # `price_stored`. With no margin tiers in this fixture the engine
+    # cannot price it, and None ("—" in the UI) is the honest answer.
+    assert patched["price_stored"] == pytest.approx(222.22)
+    assert patched["price"] is None or patched["price"] > 123.45
 
 
 def test_patch_item_404_for_missing_item(db_session: Session):
@@ -282,11 +286,14 @@ def test_virtual_catalog_chi_doors_computed_retail_matches_engine(tenant_db):
     drift, causing real money mistakes. Closes
     D-S111-catalog-retail-engine-mismatch-test (full version)."""
     from decimal import Decimal as _D
+
     from gdx_dispatch.models.pricing_engine import seed_default_pricing
     from gdx_dispatch.models.tenant_models import ChiDoorCatalog
     from gdx_dispatch.routers.catalog import VIRTUAL_CHI_DOORS_ID, _virtual_catalog_items
     from gdx_dispatch.services.pricing_engine import (
-        CustomerView, hydrate_settings_from_db, price_line,
+        CustomerView,
+        hydrate_settings_from_db,
+        price_line,
     )
 
     seed_default_pricing(tenant_db)

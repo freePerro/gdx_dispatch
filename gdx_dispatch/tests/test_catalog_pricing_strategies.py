@@ -156,14 +156,31 @@ def test_manual_strategy_falls_back_to_the_margin_engine(db_session):
     assert item["price"] > 50.0, "a margin on cost, never the cost itself"
 
 
-def test_explicit_price_overrides_strategy(db_session):
+def test_read_time_price_comes_from_the_engine_not_the_stored_column(db_session):
+    """CONTRACT CHANGE, recorded deliberately.
+
+    An entered price is still STORED (`price_stored`), but the price served to
+    callers is derived at read time — catalog strategy, then margin tiers.
+
+    Why: every stored price in this tenant's catalogs is already engine output
+    (the price/cost ratios are exactly the configured margins), so the column is
+    a CACHE, not an independent sell price. Honouring it meant a margin change
+    silently did nothing. Reading through the engine makes a margin change take
+    effect everywhere at once.
+
+    The cost: a genuinely hand-entered override is no longer honoured at read
+    time. Nothing distinguishes "a human typed this" from "the engine wrote it
+    six months ago" — both are just `price`. Restoring overrides needs a
+    provenance flag on the row, which is a migration and its own change.
+    """
     cat = _make_catalog(db_session, "keystone")
     item = catalog_router.add_catalog_item(
         UUID(cat["id"]),
         CatalogItemCreateIn(sku="P3", name="Priced", cost=100.0, price=175.0),
         _mock_request(), _user(), db_session,
     )
-    assert item["price"] == pytest.approx(175.0)  # not 200
+    assert item["price"] == pytest.approx(200.0), "keystone on cost, not the entered 175"
+    assert item["price_stored"] == pytest.approx(175.0), "the entered value is still kept"
 
 
 def test_declarative_pricing_config_on_catalog(db_session):
@@ -408,3 +425,92 @@ def test_ai_import_uses_router_dict_response(db_session, monkeypatch):
         UUID(cat["id"]), search=None, page=1, per_page=25, _=_user(), db=db_session,
     )
     assert listing["items"][0]["price"] == pytest.approx(200.0)  # strategy applied
+
+
+# ── Drift guards ────────────────────────────────────────────────────────────
+# The defect this file keeps re-learning: a customer-facing price that is a
+# stale copy of our cost, or a stale copy of an old engine answer. These tests
+# exist to make that impossible to reintroduce quietly.
+
+
+def test_a_margin_change_moves_every_catalog_price(db_session):
+    """THE drift guard.
+
+    Stored prices in production are engine output — the price/cost ratios are
+    exactly the configured margins. If the read path ever goes back to serving
+    the stored column, this fails: change the margin, and the price served must
+    change with it. That is the whole point of pricing at read time.
+    """
+    from gdx_dispatch.models.pricing_engine import MarginTier, PricingTierSet, seed_default_pricing
+
+    seed_default_pricing(db_session)
+    db_session.commit()
+
+    cat = _make_catalog(db_session, "manual")
+    item = catalog_router.add_catalog_item(
+        UUID(cat["id"]),
+        CatalogItemCreateIn(sku="DRIFT-1", name="Bracket", cost=100.0),
+        _mock_request(), _user(), db_session,
+    )
+    first = item["price"]
+    assert first is not None and first > 100.0
+
+    # Move every retail parts margin.
+    tier_set = (
+        db_session.query(PricingTierSet)
+        .filter(PricingTierSet.pricing_category == "parts",
+                PricingTierSet.pricing_class == "retail")
+        .first()
+    )
+    assert tier_set is not None, "fixture must seed a parts/retail tier set"
+    for tier in db_session.query(MarginTier).filter(MarginTier.tier_set_id == tier_set.id):
+        tier.margin_pct = Decimal("0.10")
+    db_session.commit()
+
+    again = catalog_router.list_catalog_items(
+        UUID(cat["id"]), search=None, page=1, per_page=25, _=_user(), db=db_session,
+    )["items"][0]
+
+    assert again["price"] != pytest.approx(first), (
+        "the margin changed but the served price did not — the read path is "
+        "serving a stale cached price again"
+    )
+    assert again["price"] == pytest.approx(100.0 / (1 - 0.10), rel=1e-3)
+
+
+def test_the_served_price_is_never_our_cost(db_session):
+    """No catalog row may ever offer the customer our cost, or $0.
+
+    Covers both shapes seen in production: `price == cost` (QuickBooks-style
+    imports where the price column was filled with the cost) and `price = 0`
+    (a cache that was never computed — two live Springs rows sat at 0.00
+    against a cost of 78.00).
+    """
+    from gdx_dispatch.models.pricing_engine import seed_default_pricing
+
+    seed_default_pricing(db_session)
+    db_session.commit()
+    cat = _make_catalog(db_session, "manual")
+
+    for sku, cost, entered in (
+        ("POISON-EQ", 78.0, 78.0),   # price == cost
+        ("POISON-ZERO", 78.0, 0.0),  # price == 0
+        ("POISON-LOW", 78.0, 10.0),  # price < cost
+    ):
+        catalog_router.add_catalog_item(
+            UUID(cat["id"]),
+            CatalogItemCreateIn(sku=sku, name=sku, cost=cost, price=entered),
+            _mock_request(), _user(), db_session,
+        )
+
+    served = catalog_router.list_catalog_items(
+        UUID(cat["id"]), search=None, page=1, per_page=25, _=_user(), db=db_session,
+    )["items"]
+    assert served, "expected the seeded items back"
+    for row in served:
+        price, cost = row["price"], row["cost"]
+        assert price is None or price > cost, (
+            f"{row['sku']} offers {price} against a cost of {cost} — "
+            "that is our cost or worse, on a customer-facing quote"
+        )
+        assert price is None or price > 0, f"{row['sku']} offers a $0 line"
