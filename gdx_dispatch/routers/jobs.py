@@ -2352,6 +2352,15 @@ def closeout_job(
             # hours; NULL keeps the row unpayable (as today) while job
             # costing still counts it. Who owns an unattested row is a
             # product decision, not a bug fix.
+            #
+            # DECIDED (Doug, 2026-08-28, #529): this row is job-costing
+            # evidence, NOT payroll. The day clock is the paid time; the
+            # per-job clock and this attested row exist for costing. So a
+            # desk closer's row stays user_id NULL on purpose — payroll is
+            # supposed not to see it — and the assigned tech is paid by their
+            # day clock regardless of who closes the job. Known residual: the
+            # rate below resolves from the CLOSER's technician record, not
+            # the assigned tech's (moot while no per-tech rates are set).
             target = TimeEntry(
                 id=uuid.uuid4(),
                 company_id=tenant_id,
