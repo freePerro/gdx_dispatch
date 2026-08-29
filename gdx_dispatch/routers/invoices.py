@@ -3,15 +3,15 @@ import json as _json
 import logging
 import secrets
 import uuid as _uuid
-from types import SimpleNamespace
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from types import SimpleNamespace
 from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy import text as _text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -20,6 +20,11 @@ from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.invoice_delivery import require_deliverable
 from gdx_dispatch.core.modules import require_module, require_permission
+from gdx_dispatch.core.pricing_provenance import (
+    COST_FORBIDDEN,
+    build_invoice_line,
+    derive_margin_pct,
+)
 from gdx_dispatch.models.tenant_models import (
     Invoice,
     InvoiceAdjustment,
@@ -1441,6 +1446,10 @@ def create_invoice(
                     cost_snapshot=None,
                     margin_pct_snapshot=None,
                     margin_pct_override=None,
+                    # The price came from ProposalTier.total_price and nothing
+                    # else — a flat tier carries no cost breakdown, so a NULL
+                    # cost here is the honest answer, not an omission.
+                    pricing_source="tier_package",
                     sort_order=1,
                 )]
         else:
@@ -1449,6 +1458,10 @@ def create_invoice(
                 .where(EstimateLine.estimate_id == estimate.id)
                 .order_by(EstimateLine.sort_order.asc(), EstimateLine.created_at.asc(), EstimateLine.id.asc())
             ).scalars().all()
+        # Lane for a line that recorded none of its own: 38 of 336 live estimate
+        # lines predate pricing_source. Naming where the number came FROM beats
+        # a NULL that cannot be told apart from a future write path forgetting.
+        _fallback_lane = "accepted_tier" if _accepted_tier is not None else "estimate_copy"
         # M24 (money audit 2026-08-04): estimates exclude labor from tax when
         # the tenant's tax_labor flag is off, but the copy below never carried
         # `taxable`, and InvoiceLine defaults it to True — so a quote of
@@ -1482,7 +1495,7 @@ def create_invoice(
             # Auditor catch: also forward margin_pct_snapshot so the engine-
             # resolved tier margin isn't lost across the estimate→invoice copy.
             db.add(
-                InvoiceLine(
+                build_invoice_line(
                     company_id=invoice.company_id,
                     invoice_id=invoice.id,
                     description=line.description,
@@ -1491,6 +1504,15 @@ def create_invoice(
                     line_total=_money(line.line_total),
                     taxable=_line_is_taxable(line),
                     category=getattr(line, "category", None),
+                    # Forward the ESTIMATE's own lane. 298 of 336 live estimate
+                    # lines record one (tier / labor_matrix / line_override /
+                    # client_cost / wholesale_tier) and every one of them was
+                    # being dropped here, because invoice_lines had no column to
+                    # put it in until migration 083. The one lane where the
+                    # pricing decision WAS recorded lost its label at conversion.
+                    pricing_source=(
+                        getattr(line, "pricing_source", None) or _fallback_lane
+                    ),
                     cost_snapshot=getattr(line, "cost_snapshot", None),
                     margin_pct_snapshot=getattr(line, "margin_pct_snapshot", None),
                     margin_pct_override=getattr(line, "margin_pct_override", None),
@@ -1525,7 +1547,11 @@ def create_invoice(
         _discount = Decimal(str(getattr(estimate, "discount", None) or 0))
         if _discount > 0:
             db.add(
-                InvoiceLine(
+                build_invoice_line(
+                    # From Estimate.discount — the customer's signed quote
+                    # included it. A price concession has no cost; COST_FORBIDDEN
+                    # makes a fabricated one unwriteable here.
+                    pricing_source="estimate_discount",
                     company_id=invoice.company_id,
                     invoice_id=invoice.id,
                     description="Discount",
@@ -1540,7 +1566,7 @@ def create_invoice(
     elif payload.line_items:
         for idx, line in enumerate(payload.line_items, start=1):
             db.add(
-                InvoiceLine(
+                build_invoice_line(
                     company_id=invoice.company_id,
                     invoice_id=invoice.id,
                     description=line.description,
@@ -1551,13 +1577,19 @@ def create_invoice(
                     includes_labor=bool(getattr(line, "includes_labor", False)),
                     # S122-b — persist the new estimate-parity fields when set.
                     category=line.category,
-                    cost_snapshot=(
-                        Decimal(str(line.cost)) if line.cost is not None else None
+                # The lane that produced unit_price. An operator margin is the
+                # decision they made, so it names the lane; the snapshot below
+                # still records the margin actually ACHIEVED, back-derived from
+                # (cost, unit_price). On the invoice side the client is the
+                # pricing authority, so the two can legitimately differ and both
+                # statements are true.
+                    pricing_source=(
+                        "line_override" if line.margin_pct_override is not None
+                        else "client_cost" if line.cost is not None
+                        else "manual"
                     ),
-                    margin_pct_override=(
-                        Decimal(str(line.margin_pct_override))
-                        if line.margin_pct_override is not None else None
-                    ),
+                    cost_snapshot=line.cost,
+                    margin_pct_override=line.margin_pct_override,
                     # D-S122-line-removal-unbill — line-level part_id so a
                     # later delete-line releases the part atomically.
                     part_id=line.part_id,
@@ -1606,7 +1638,11 @@ def create_invoice(
                 ),
             )
         db.add(
-            InvoiceLine(
+            build_invoice_line(
+                # Typed at billing time, NOT on the signed quote. Deliberately a
+                # different lane from estimate_discount so the trail can answer
+                # "did the customer agree to this, or did the office grant it?"
+                pricing_source="operator_discount",
                 company_id=invoice.company_id,
                 invoice_id=invoice.id,
                 description="Discount",
@@ -1684,7 +1720,11 @@ def create_invoice(
         for _offset, (co_ln, co_number) in enumerate(co_rows, start=1):
             _cos_with_lines.add(co_ln.co_id)
             db.add(
-                InvoiceLine(
+                build_invoice_line(
+                    # Copied from a signed ChangeOrderLine. Cost stays NULL
+                    # because ChangeOrderLine has no cost column — a model
+                    # limit, not an omission here.
+                    pricing_source="change_order",
                     company_id=invoice.company_id,
                     invoice_id=invoice.id,
                     description=f"{co_number}: {co_ln.description}"[:500],
@@ -1718,7 +1758,10 @@ def create_invoice(
                 )
             _offset += 1
             db.add(
-                InvoiceLine(
+                build_invoice_line(
+                    # A lump sum the customer signed, billed as one line.
+                    # Materially different from copying priced CO lines.
+                    pricing_source="co_amount",
                     company_id=invoice.company_id,
                     invoice_id=invoice.id,
                     description=f"{_co.co_number}: {_co.title}"[:500],
@@ -2615,7 +2658,7 @@ def add_invoice_line(
     sort_order = int(max_sort or 0) + 1
     line_total = _money(payload.quantity * payload.unit_price)
 
-    line = InvoiceLine(
+    line = build_invoice_line(
         company_id=invoice.company_id,
         invoice_id=invoice.id,
         description=payload.description.strip(),
@@ -2625,13 +2668,14 @@ def add_invoice_line(
         taxable=bool(payload.taxable),
         # S122-b — estimate-parity fields.
         category=payload.category,
-        cost_snapshot=(
-            Decimal(str(payload.cost)) if payload.cost is not None else None
+        # Same lane rule as the create path — see the note there.
+        pricing_source=(
+            "line_override" if payload.margin_pct_override is not None
+            else "client_cost" if payload.cost is not None
+            else "manual"
         ),
-        margin_pct_override=(
-            Decimal(str(payload.margin_pct_override))
-            if payload.margin_pct_override is not None else None
-        ),
+        cost_snapshot=payload.cost,
+        margin_pct_override=payload.margin_pct_override,
         # 2026-08-19: this handler dropped BOTH of these on the floor.
         # part_id is the linkage the create path has always stored, so a line
         # added here could never release its part on delete; includes_labor
@@ -2778,9 +2822,33 @@ def patch_invoice_line(
     if "category" in updates:
         line.category = updates["category"]
     if "cost" in updates:
-        line.cost_snapshot = (
+        _new_cost = (
             Decimal(str(updates["cost"])) if updates["cost"] is not None else None
         )
+        # A cost is meaningless on these lanes, and the create path refuses one.
+        # Refusing it here too means the invariant guards BOTH doors — otherwise
+        # PATCH could write the poisoned row build_invoice_line rejects.
+        if _new_cost is not None and line.pricing_source in COST_FORBIDDEN:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"a {line.pricing_source} line has no cost — a discount, a "
+                    "deposit artefact or an imported document was never priced "
+                    "by us, and a cost here would derive a false margin."
+                ),
+            )
+        line.cost_snapshot = _new_cost
+        # Heal the margin the same way the estimate side does — CONDITIONALLY.
+        # An unconditional assignment wipes a margin that was forwarded from an
+        # estimate the moment someone clears the cost, which destroys exactly
+        # the provenance this change exists to keep.
+        _healed = derive_margin_pct(line.cost_snapshot, line.unit_price)
+        if _healed is not None:
+            line.margin_pct_snapshot = _healed
+            # A line that gains a cost is no longer "manual" — it was priced
+            # against one. Only relabel when nothing more specific is recorded.
+            if line.pricing_source in (None, "manual"):
+                line.pricing_source = "client_cost"
     if "labor_source" in updates:
         line.labor_source = updates["labor_source"]
         # Dropping to attested means this is no longer priced off a matrix row,
