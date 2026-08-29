@@ -41,6 +41,7 @@ import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
 import Select from 'primevue/select'
 import AuthedImage from './AuthedImage.vue'
+import PhotoQueueFailedStrip from './PhotoQueueFailedStrip.vue'
 import { isInstallLane as _isInstallLane } from '../constants/jobTypes'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
@@ -61,7 +62,7 @@ const emit = defineEmits(['update:visible', 'closed-out', 'photo-added'])
 
 const api = useApi()
 const toast = useToast()
-const { pendingPhotos, capturePhoto } = usePhotoQueue()
+const { pendingPhotos, capturePhoto, describePhotoRefusal } = usePhotoQueue()
 
 const open = computed({
   get: () => props.visible,
@@ -238,14 +239,24 @@ async function onPhotoPicked(e) {
   if (!jobId) return
   photoBusy.value = true
   let queued = 0
+  const refused = []
   try {
     for (const f of files) {
       const r = await capturePhoto(jobId, f)
-      if (r?.queued) queued += 1
+      if (r?.failed) refused.push(r)
+      else if (r?.queued) queued += 1
     }
     // Saved either way — say WHICH. "Uploaded" while it sits in IndexedDB is
-    // the lie that makes a tech re-shoot a door.
-    if (queued) {
+    // the lie that makes a tech re-shoot a door; so is "waiting for signal"
+    // for a photo the server already refused.
+    if (refused.length) {
+      toast.add({
+        severity: 'error',
+        summary: refused.length === files.length ? 'Photo refused' : 'Some photos refused',
+        detail: `${describePhotoRefusal(refused[0].status)} Kept on this phone.`,
+        life: 7000,
+      })
+    } else if (queued) {
       toast.add({
         severity: 'warn',
         summary: queued === files.length ? 'Saved on your phone' : 'Some saved on your phone',
@@ -255,8 +266,12 @@ async function onPhotoPicked(e) {
     } else {
       toast.add({ severity: 'success', summary: files.length > 1 ? 'Photos added' : 'Photo added', life: 2000 })
     }
-    emit('photo-added')
-    if (jobId === props.jobId) await _loadPhotos()
+    // Only when something actually landed or is queued — a refusal is not a
+    // reason to make the parent refetch a strip that hasn't changed.
+    if (refused.length < files.length) {
+      emit('photo-added')
+      if (jobId === props.jobId) await _loadPhotos()
+    }
   } catch (err) {
     toast.add({
       severity: 'error',
@@ -598,6 +613,7 @@ watch(open, async (v) => {
           Couldn't load this job's photos — you can still add one.
         </p>
         <p v-else-if="photosState === 'ok'" class="muted photo-empty" data-testid="mjco-no-photos">No photos on this job yet.</p>
+        <PhotoQueueFailedStrip :job-id="jobId" />
         <!-- A real file input, not a Button — only an input can open the
              camera. Deliberately NO `capture` attribute: Android honours it by
              forcing a single shot straight to the lens, which kills `multiple`

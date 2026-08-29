@@ -29,14 +29,21 @@ const toastAdd = vi.fn();
 // so jsdom never touches Dexie, and so the contract "capturePhoto(jobId, File)
 // per picked file" is pinned by argument.
 const pendingPhotosRef = ref(0);
+const failedPhotosRef = ref(0);
+const failedRowsRef = ref([]);
 const capturePhotoMock = vi.fn();
 
 vi.mock('../../composables/usePhotoQueue', () => ({
   usePhotoQueue: () => ({
     pendingPhotos: pendingPhotosRef,
+    failedPhotos: failedPhotosRef,
+    failedRows: failedRowsRef,
     uploadingPhotos: ref(false),
     capturePhoto: capturePhotoMock,
     drainPhotos: vi.fn(),
+    retryFailedPhotos: vi.fn(),
+    discardFailedPhotos: vi.fn(),
+    describePhotoRefusal: (s) => (s === 403 ? "You're not allowed to add photos to this job." : 'The server refused this photo.'),
   }),
 }));
 
@@ -500,6 +507,28 @@ describe('MobileJobCloseoutDialog', () => {
       const wrapper = mountDialog();
       await flushPromises();
       expect(wrapper.find('[data-testid="mjco-photo-pending"]').text()).toContain('3 waiting for signal');
+    });
+
+    // #525
+    it("a refused photo is reported as refused with the reason — never 'saved on your phone'", async () => {
+      capturePhotoMock.mockResolvedValue({ queued: false, failed: true, id: 'p-x', status: 403 });
+      const wrapper = mountDialog();
+      await flushPromises();
+      await pick(wrapper, [file()]);
+      await flushPromises();
+      expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'error', summary: 'Photo refused', detail: expect.stringMatching(/not allowed/) }));
+      expect(toastAdd).not.toHaveBeenCalledWith(expect.objectContaining({ summary: 'Saved on your phone' }));
+      // Nothing landed, so nothing to tell the parent to refetch.
+      expect(wrapper.emitted('photo-added')).toBeUndefined();
+    });
+
+    it("refused photos for THIS job get a reader inside the sheet; another job's do not", async () => {
+      failedRowsRef.value = [{ id: 'p1', job_id: 'job-test-1', http_status: 409 }, { id: 'p2', job_id: 'job-zzz', http_status: 413 }];
+      const wrapper = mountDialog();
+      await flushPromises();
+      expect(wrapper.find('[data-testid="photo-failed-strip"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="photo-failed-count"]').text()).toContain("1 photo couldn't upload");
+      failedRowsRef.value = [];
     });
 
     // Audit 2026-08-28: DispatchView nulls closeoutJob (jobId → '') when the

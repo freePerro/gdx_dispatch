@@ -59,12 +59,19 @@ vi.mock("../../composables/useApi", () => ({
 const capturePhotoMock = vi.fn();
 // A real ref, not { value } — the template relies on Vue auto-unwrapping it.
 const pendingPhotosRef = ref(0);
+const failedPhotosRef = ref(0);
+const failedRowsRef = ref([]);
 vi.mock("../../composables/usePhotoQueue", () => ({
   usePhotoQueue: () => ({
     pendingPhotos: pendingPhotosRef,
+    failedPhotos: failedPhotosRef,
+    failedRows: failedRowsRef,
     uploadingPhotos: ref(false),
     capturePhoto: capturePhotoMock,
     drainPhotos: vi.fn(),
+    retryFailedPhotos: vi.fn(),
+    discardFailedPhotos: vi.fn(),
+    describePhotoRefusal: (s) => (s === 413 ? "The photo is too large for the server." : "The server refused this photo."),
   }),
 }));
 
@@ -315,6 +322,26 @@ describe("photo capture", () => {
     pendingPhotosRef.value = 3;
     const w = await mountWith();
     expect(w.find('[data-testid="mjd-photo-pending"]').text()).toContain("3 waiting for signal");
+  });
+
+  // #525: a refused photo is neither uploaded nor waiting for signal.
+  it("a refused photo is reported as refused, with the reason — never 'saved on your phone'", async () => {
+    capturePhotoMock.mockResolvedValue({ queued: false, failed: true, id: "p1", status: 413 });
+    const w = await mountWith();
+    await pick(w, [file()]);
+    await flushPromises();
+    expect(toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ severity: "error", summary: "Photo refused", detail: expect.stringMatching(/too large/) }),
+    );
+    expect(toastAdd).not.toHaveBeenCalledWith(expect.objectContaining({ summary: "Saved on your phone" }));
+  });
+
+  it("refused photos for THIS job get a reader on the Photos card; another job's do not", async () => {
+    failedRowsRef.value = [{ id: "p1", job_id: "job-123", http_status: 413 }, { id: "p2", job_id: "job-other", http_status: 413 }];
+    const w = await mountWith();
+    expect(w.find('[data-testid="photo-failed-strip"]').exists()).toBe(true);
+    expect(w.find('[data-testid="photo-failed-count"]').text()).toContain("1 photo couldn't upload");
+    failedRowsRef.value = [];
   });
 
   it("a photo taken inside the closeout sheet refreshes this screen's strip", async () => {

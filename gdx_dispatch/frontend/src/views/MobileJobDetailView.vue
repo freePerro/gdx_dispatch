@@ -438,6 +438,7 @@
           </div>
         </div>
         <div v-else class="detail-meta detail-meta-muted">No photos yet.</div>
+        <PhotoQueueFailedStrip :job-id="String(job.id)" />
 
         <!-- A real file input, not a Button — only an input can open the
              camera. Deliberately NO `capture` attribute: Android honours it by
@@ -946,6 +947,7 @@ import { usePhotoQueue } from '../composables/usePhotoQueue'
 import AuthedImage from '../components/AuthedImage.vue'
 import DoorSpecList from '../components/DoorSpecList.vue'
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue'
+import PhotoQueueFailedStrip from '../components/PhotoQueueFailedStrip.vue'
 import MobileInvoiceDialog from '../components/MobileInvoiceDialog.vue'
 // PR A (one-job-card plan): the quote / change-order / chat / equipment
 // surfaces existed ONLY on Today's route card. A tech reaching a job any other
@@ -960,7 +962,7 @@ const api = useApi()
 const toast = useToast()
 const route = useRoute()
 const router = useRouter()
-const { pendingPhotos, capturePhoto } = usePhotoQueue()
+const { pendingPhotos, capturePhoto, describePhotoRefusal } = usePhotoQueue()
 
 // Registers the queue's `online` + `visibilitychange` drain listeners for as
 // long as this screen is mounted, and tears them down after.
@@ -1900,15 +1902,25 @@ async function onPhotoPicked(e) {
   if (!files.length) return
   photoBusy.value = true
   let queued = 0
+  const refused = []
   try {
     for (const f of files) {
       const r = await capturePhoto(job.value.id, f)
-      if (r?.queued) queued += 1
+      if (r?.failed) refused.push(r)
+      else if (r?.queued) queued += 1
     }
     // The photo is SAVED either way — that's the point of storing the blob
     // before uploading. Say which happened; "Uploaded" when it's sitting in
-    // IndexedDB is the lie that makes a tech re-shoot a door.
-    if (queued) {
+    // IndexedDB is the lie that makes a tech re-shoot a door. And a REFUSED
+    // photo is neither uploaded nor waiting for signal — say that, with why.
+    if (refused.length) {
+      toast.add({
+        severity: 'error',
+        summary: refused.length === files.length ? 'Photo refused' : 'Some photos refused',
+        detail: `${describePhotoRefusal(refused[0].status)} Kept on this phone — see the Photos card.`,
+        life: 7000,
+      })
+    } else if (queued) {
       toast.add({
         severity: 'warn',
         summary: queued === files.length ? 'Saved on your phone' : 'Some saved on your phone',
