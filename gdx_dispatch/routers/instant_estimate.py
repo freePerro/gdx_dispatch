@@ -11,10 +11,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.part_pricing import sell_price_for_row
+from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -145,11 +146,12 @@ def instant_estimate(
             custom_where = " AND ".join(custom_conditions)
             rows = db.execute(
                 text(f"""
-                    SELECT id, model_number, description, width, height, insulation_type, section_material, price
+                    SELECT id, model_number, description, width, height,
+                           insulation_type, section_material, sell_price, cost
                     FROM (
                         SELECT id, model_number, description, width, height,
                                insulation_type, section_material,
-                               COALESCE(sell_price, cost, 0) AS price
+                               sell_price, cost
                         FROM chi_door_catalog
                         WHERE {where} AND is_active = true
 
@@ -160,7 +162,7 @@ def instant_estimate(
                                ds.width AS width, ds.height AS height,
                                ds.insulation_type AS insulation_type,
                                ds.section_material AS section_material,
-                               COALESCE(cci.price, cci.cost, 0) AS price
+                               cci.price AS sell_price, cci.cost AS cost
                         FROM custom_catalog_items cci
                         LEFT JOIN door_specs ds ON ds.catalog_item_id = cci.id
                         WHERE cci.product_class = 'door' AND cci.active = true
@@ -171,9 +173,21 @@ def instant_estimate(
                 params,
             ).mappings().all()
 
-            if rows:
-                door = dict(rows[0])
-                price = float(door.get("price", 0) or 0)
+            # Price through the margin engine, never off the cost column. None
+            # means "we cannot price this" — omit the line rather than emit a
+            # number the office would have to catch.
+            door = dict(rows[0]) if rows else None
+            sell = sell_price_for_row(
+                db, price=door.get("sell_price"), cost=door.get("cost"),
+                pricing_category="doors",
+            ) if door else None
+            if door is not None and sell is None:
+                log.info(
+                    "instant_estimate: no sell price for door %r — line omitted",
+                    door.get("model_number"),
+                )
+            if door is not None and sell is not None:
+                price = float(sell)
                 suggested_door = {
                     "id": str(door["id"]),
                     "model": door.get("model_number", ""),
@@ -205,7 +219,25 @@ def instant_estimate(
             ).mappings().all()
 
             for part in parts:
-                price = float(part.get("sell_price") or part.get("cost") or 0)
+                # `sell_price or cost` quoted our DEALER COST to the customer at
+                # zero margin: sell_price is NULL on every row of the CHI parts
+                # feed, so the fallback fired every time. sell_price_for_row
+                # applies the same two rules as the capture path — believe a
+                # price only above cost, otherwise mark the cost up through the
+                # tenant's margin tiers — and returns None when it cannot price.
+                sell = sell_price_for_row(
+                    db, price=part.get("sell_price"), cost=part.get("cost"),
+                    pricing_category="parts",
+                )
+                if sell is None:
+                    # Unpriceable is not $0 and not cost. Leave it out; the
+                    # office prices it, which is what an absent line prompts.
+                    log.info(
+                        "instant_estimate: no sell price for %r — line omitted",
+                        part.get("name"),
+                    )
+                    continue
+                price = float(sell)
                 qty = 2 if kw in ("spring", "cable", "roller") else 1
                 line_items.append({
                     "name": part.get("name", kw),
@@ -239,6 +271,11 @@ def instant_estimate(
         details={"description": payload.description[:200], "items": len(line_items), "total": total},
         request=request,
     )
+    # log_audit_event_sync only add()s + flush()es, and get_db never commits —
+    # so without this the row died with the request and this endpoint had no
+    # trail at all. Zero audit rows read as "never used" when it actually meant
+    # "never recorded". Same pattern as ai_estimates.py.
+    db.commit()
 
     return {
         "line_items": line_items,
