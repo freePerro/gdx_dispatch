@@ -20,10 +20,32 @@
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
+import { ref } from 'vue';
 
 const apiGet = vi.fn();
 const apiPost = vi.fn();
 const toastAdd = vi.fn();
+// Photos ride usePhotoQueue (IndexedDB-first), not the closeout POST. Mocked
+// so jsdom never touches Dexie, and so the contract "capturePhoto(jobId, File)
+// per picked file" is pinned by argument.
+const pendingPhotosRef = ref(0);
+const failedPhotosRef = ref(0);
+const failedRowsRef = ref([]);
+const capturePhotoMock = vi.fn();
+
+vi.mock('../../composables/usePhotoQueue', () => ({
+  usePhotoQueue: () => ({
+    pendingPhotos: pendingPhotosRef,
+    failedPhotos: failedPhotosRef,
+    failedRows: failedRowsRef,
+    uploadingPhotos: ref(false),
+    capturePhoto: capturePhotoMock,
+    drainPhotos: vi.fn(),
+    retryFailedPhotos: vi.fn(),
+    discardFailedPhotos: vi.fn(),
+    describePhotoRefusal: (s) => (s === 403 ? "You're not allowed to add photos to this job." : 'The server refused this photo.'),
+  }),
+}));
 
 vi.mock('../../composables/useApi', () => ({
   // Closeout submits via the offline queue since the 2026-07-01 UX audit;
@@ -60,6 +82,8 @@ const stubs = {
     template: '<textarea :data-testid="$attrs[\'data-testid\']" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
     inheritAttrs: false,
   },
+  // The real one fetches its src with a Bearer token; here it just has to exist.
+  AuthedImage: { props: ['src', 'alt'], template: '<img :src="src" :alt="alt" data-testid="authed-img" />' },
 };
 
 function mountDialog(props = {}) {
@@ -93,6 +117,9 @@ describe('MobileJobCloseoutDialog', () => {
     apiGet.mockReset();
     apiPost.mockReset();
     toastAdd.mockReset();
+    capturePhotoMock.mockReset();
+    capturePhotoMock.mockResolvedValue({ queued: false, id: 'p-1' });
+    pendingPhotosRef.value = 0;
     vi.useFakeTimers();
   });
   afterEach(() => {
@@ -372,5 +399,204 @@ describe('MobileJobCloseoutDialog', () => {
     expect(payload.parts_to_order).toEqual([]);
     // And no return-visit toast when the backend created nothing.
     expect(toastAdd.mock.calls.find((c) => c[0]?.severity === 'info')).toBeFalsy();
+  });
+
+  // ─── Photos (2026-08-28) ───────────────────────────────────────────
+  // Before this section existed the dialog was the ONE completion surface
+  // with no camera: modal over the detail screen's Photos card, so a tech
+  // had to Cancel (losing parts, hours, signature) to photograph the door.
+  describe('photos', () => {
+    function pick(wrapper, files) {
+      const input = wrapper.find('[data-testid="mjco-photo-add"] input[type="file"]');
+      Object.defineProperty(input.element, 'files', { value: files, configurable: true });
+      return input.trigger('change');
+    }
+    const file = (name = 'door.jpg') => new File(['x'], name, { type: 'image/jpeg' });
+
+    it('offers a camera control — accept image/*, multiple, and NO capture attribute', async () => {
+      const wrapper = mountDialog();
+      await flushPromises();
+      const input = wrapper.find('[data-testid="mjco-photo-add"] input[type="file"]');
+      expect(input.exists()).toBe(true);
+      expect(input.attributes('accept')).toBe('image/*');
+      expect(input.attributes('multiple')).toBeDefined();
+      // Android honours `capture` by forcing a single shot straight to the
+      // lens — kills `multiple` and locks the tech out of the gallery.
+      expect(input.attributes('capture')).toBeUndefined();
+    });
+
+    it('loads the job\'s existing photos on open so the tech does not re-shoot', async () => {
+      apiGet.mockImplementation(async (url) =>
+        url === '/api/jobs/job-test-1/photos'
+          ? [{ id: 'ph-1', url: '/api/documents/ph-1/download', filename: 'before.jpg' }]
+          : [],
+      );
+      // Opened the way production opens it: both parents render the dialog
+      // permanently with visible=false and flip it — the load rides that flip.
+      const wrapper = mountDialog({ visible: false });
+      await wrapper.setProps({ visible: true });
+      await flushPromises();
+      expect(apiGet).toHaveBeenCalledWith('/api/jobs/job-test-1/photos', { suppressErrorToast: true });
+      expect(wrapper.findAll('[data-testid="mjco-photo-strip"] [data-testid="authed-img"]')).toHaveLength(1);
+      expect(wrapper.find('[data-testid="mjco-no-photos"]').exists()).toBe(false);
+    });
+
+    it('says so when the job has no photos yet — only once the server said so', async () => {
+      apiGet.mockResolvedValue([]);
+      const wrapper = mountDialog({ visible: false });
+      // Not loaded yet: no claim either way.
+      expect(wrapper.find('[data-testid="mjco-no-photos"]').exists()).toBe(false);
+      await wrapper.setProps({ visible: true });
+      await flushPromises();
+      expect(wrapper.find('[data-testid="mjco-no-photos"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="mjco-photos-unavailable"]').exists()).toBe(false);
+    });
+
+    it('stores each picked file through the offline queue for THIS job, then refetches and tells the parent', async () => {
+      const wrapper = mountDialog();
+      await flushPromises();
+      apiGet.mockClear();
+      await pick(wrapper, [file('a.jpg'), file('b.jpg')]);
+      await flushPromises();
+      expect(capturePhotoMock).toHaveBeenCalledTimes(2);
+      expect(capturePhotoMock).toHaveBeenNthCalledWith(1, 'job-test-1', expect.any(File));
+      expect(capturePhotoMock).toHaveBeenNthCalledWith(2, 'job-test-1', expect.any(File));
+      expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'success', summary: 'Photos added' }));
+      // The 201 carries no url — the strip renders only after a refetch.
+      expect(apiGet).toHaveBeenCalledWith('/api/jobs/job-test-1/photos', { suppressErrorToast: true });
+      expect(wrapper.emitted('photo-added')).toHaveLength(1);
+      // Never bundled into the closeout POST.
+      expect(apiPost).not.toHaveBeenCalled();
+    });
+
+    it("says 'saved on your phone' with no signal — never 'uploaded'", async () => {
+      capturePhotoMock.mockResolvedValue({ queued: true, id: 'p-q' });
+      const wrapper = mountDialog();
+      await flushPromises();
+      await pick(wrapper, [file()]);
+      await flushPromises();
+      expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'warn', summary: 'Saved on your phone' }));
+    });
+
+    it('a full offline backlog is refused with a reason, not a generic error', async () => {
+      capturePhotoMock.mockRejectedValue(Object.assign(new Error('Too many photos still waiting to upload'), { code: 'photo_backlog_full' }));
+      const wrapper = mountDialog();
+      await flushPromises();
+      await pick(wrapper, [file()]);
+      await flushPromises();
+      expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'error', summary: 'Too many photos waiting' }));
+      expect(wrapper.emitted('photo-added')).toBeUndefined();
+    });
+
+    it('a photo alone neither enables Close out nor makes the form dirty', async () => {
+      const wrapper = mountDialog();
+      await flushPromises();
+      await pick(wrapper, [file()]);
+      await flushPromises();
+      // Photos are saved already; a closeout with nothing but a photo would be
+      // a bare /complete, and cancelling must not warn about losing anything.
+      expect(wrapper.find('[data-testid="mjco-submit"]').attributes('disabled')).toBeDefined();
+      const confirmSpy = vi.spyOn(window, 'confirm');
+      await wrapper.find('[data-testid="mjco-cancel"]').trigger('click');
+      expect(confirmSpy).not.toHaveBeenCalled();
+      confirmSpy.mockRestore();
+    });
+
+    it('shows how many photos are still waiting for signal', async () => {
+      pendingPhotosRef.value = 3;
+      const wrapper = mountDialog();
+      await flushPromises();
+      expect(wrapper.find('[data-testid="mjco-photo-pending"]').text()).toContain('3 waiting for signal');
+    });
+
+    // #525
+    it("a refused photo is reported as refused with the reason — never 'saved on your phone'", async () => {
+      capturePhotoMock.mockResolvedValue({ queued: false, failed: true, id: 'p-x', status: 403 });
+      const wrapper = mountDialog();
+      await flushPromises();
+      await pick(wrapper, [file()]);
+      await flushPromises();
+      expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'error', summary: 'Photo refused', detail: expect.stringMatching(/not allowed/) }));
+      expect(toastAdd).not.toHaveBeenCalledWith(expect.objectContaining({ summary: 'Saved on your phone' }));
+      // Nothing landed, so nothing to tell the parent to refetch.
+      expect(wrapper.emitted('photo-added')).toBeUndefined();
+    });
+
+    it("refused photos for THIS job get a reader inside the sheet; another job's do not", async () => {
+      failedRowsRef.value = [{ id: 'p1', job_id: 'job-test-1', http_status: 409 }, { id: 'p2', job_id: 'job-zzz', http_status: 413 }];
+      const wrapper = mountDialog();
+      await flushPromises();
+      expect(wrapper.find('[data-testid="photo-failed-strip"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="photo-failed-count"]').text()).toContain("1 photo couldn't upload");
+      failedRowsRef.value = [];
+    });
+
+    // Audit 2026-08-28: DispatchView nulls closeoutJob (jobId → '') when the
+    // sheet closes or the closeout submits. A multi-file loop still running
+    // would have POSTed job_id='' — accepted by the server as an orphan.
+    it('keeps uploading to the job the sheet was opened for, even if the parent re-points it mid-upload', async () => {
+      let releaseFirst;
+      capturePhotoMock
+        .mockImplementationOnce(() => new Promise((res) => { releaseFirst = () => res({ queued: false, id: 'p-a' }); }))
+        .mockResolvedValueOnce({ queued: false, id: 'p-b' });
+      const wrapper = mountDialog();
+      await flushPromises();
+      await pick(wrapper, [file('a.jpg'), file('b.jpg')]);
+      await flushPromises();
+      expect(capturePhotoMock).toHaveBeenCalledTimes(1);
+      await wrapper.setProps({ jobId: '' });
+      releaseFirst();
+      await flushPromises();
+      expect(capturePhotoMock).toHaveBeenCalledTimes(2);
+      expect(capturePhotoMock).toHaveBeenNthCalledWith(2, 'job-test-1', expect.any(File));
+    });
+
+    it('Close out is disabled while photos are still saving', async () => {
+      let release;
+      capturePhotoMock.mockImplementationOnce(() => new Promise((res) => { release = () => res({ queued: false, id: 'p-a' }); }));
+      const wrapper = mountDialog();
+      await flushPromises();
+      await setInput(wrapper, 'mjco-notes', 'Done.');
+      expect(wrapper.find('[data-testid="mjco-submit"]').attributes('disabled')).toBeUndefined();
+      await pick(wrapper, [file()]);
+      await flushPromises();
+      expect(wrapper.find('[data-testid="mjco-submit"]').attributes('disabled')).toBeDefined();
+      release();
+      await flushPromises();
+      expect(wrapper.find('[data-testid="mjco-submit"]').attributes('disabled')).toBeUndefined();
+    });
+
+    it('a photo list that failed to load is NOT reported as "no photos yet"', async () => {
+      apiGet.mockImplementation(async (url) => {
+        if (url === '/api/jobs/job-test-1/photos') throw new Error('offline');
+        return [];
+      });
+      const wrapper = mountDialog({ visible: false });
+      await wrapper.setProps({ visible: true });
+      await flushPromises();
+      expect(wrapper.find('[data-testid="mjco-no-photos"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="mjco-photos-unavailable"]').exists()).toBe(true);
+      // The camera control is still there — listing is not a precondition.
+      expect(wrapper.find('[data-testid="mjco-photo-add"] input[type="file"]').exists()).toBe(true);
+    });
+
+    it('a slow photo list for the previous job never paints on the next one', async () => {
+      let releaseA;
+      apiGet.mockImplementation((url) => {
+        if (url === '/api/jobs/job-A/photos') return new Promise((res) => { releaseA = () => res([{ id: 'ph-A', url: '/x', filename: 'a.jpg' }]); });
+        if (url === '/api/jobs/job-B/photos') return Promise.resolve([]);
+        return Promise.resolve([]);
+      });
+      const wrapper = mountDialog({ visible: false, jobId: 'job-A' });
+      await wrapper.setProps({ visible: true });
+      await wrapper.setProps({ visible: false });
+      await wrapper.setProps({ jobId: 'job-B' });
+      await wrapper.setProps({ visible: true });
+      await flushPromises();
+      releaseA();
+      await flushPromises();
+      expect(wrapper.findAll('[data-testid="authed-img"]')).toHaveLength(0);
+      expect(wrapper.find('[data-testid="mjco-no-photos"]').exists()).toBe(true);
+    });
   });
 });

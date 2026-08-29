@@ -14,12 +14,22 @@
 // the tenant gates require parts/hours/signature and the form is short.
 //
 // Sections:
-//  1. Parts used (SKU autocomplete via /api/parts-needed/sku-suggest)
-//  2. Parts to order (free-text; lands in the office Parts-to-Order queue)
-//  3. Return visit (toggle + required why; backend spawns the child job)
-//  4. Hours (defaults to open work time-entry duration if visible)
-//  5. Signature canvas
-//  6. Notes
+//  1. Photos (2026-08-28) — saved through usePhotoQueue the moment they are
+//     picked, NOT as part of the closeout POST. Before this the only camera
+//     control was the detail screen's Photos card, and this dialog is modal:
+//     a tech mid-closeout had to Cancel — losing parts, hours and the
+//     signature — to photograph the finished door. Prod showed it: 23
+//     closeouts, 62 photos, 13 jobs with both, and ZERO photos within 30
+//     minutes of a closeout. FIRST in the sheet on purpose: this form keeps
+//     nothing until submit, and opening the camera from a PWA is the most
+//     reliable way to get the page purged on iOS — so the camera round-trip
+//     happens before the tech has typed anything worth losing.
+//  2. Parts used (SKU autocomplete via /api/parts-needed/sku-suggest)
+//  3. Parts to order (free-text; lands in the office Parts-to-Order queue)
+//  4. Return visit (toggle + required why; backend spawns the child job)
+//  5. Hours (defaults to open work time-entry duration if visible)
+//  6. Signature canvas
+//  7. Notes
 //
 // Caller wires v-model:visible + @closed-out to a parent (MobileTodayView
 // job cards or DispatchView Status="Complete" handler).
@@ -30,9 +40,12 @@ import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
 import Select from 'primevue/select'
+import AuthedImage from './AuthedImage.vue'
+import PhotoQueueFailedStrip from './PhotoQueueFailedStrip.vue'
 import { isInstallLane as _isInstallLane } from '../constants/jobTypes'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
+import { usePhotoQueue } from '../composables/usePhotoQueue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -41,10 +54,15 @@ const props = defineProps({
   jobType: { type: String, default: '' },
   customerName: { type: String, default: '' },
 })
-const emit = defineEmits(['update:visible', 'closed-out'])
+// `photo-added` fires after a capture so the parent can refetch its own
+// photo strip (the 201 carries no url to render). Photos are already on the
+// server — or in the phone's offline queue — by then, whatever happens to
+// the closeout itself.
+const emit = defineEmits(['update:visible', 'closed-out', 'photo-added'])
 
 const api = useApi()
 const toast = useToast()
+const { pendingPhotos, capturePhoto, describePhotoRefusal } = usePhotoQueue()
 
 const open = computed({
   get: () => props.visible,
@@ -129,12 +147,16 @@ const existingRequests = ref([])
 // sources; neither replaces the other).
 const existingUsed = ref([])
 async function _loadExistingRequests() {
-  if (!props.jobId) return
+  // Snapshot: the dialog is reused across jobs (DispatchView re-points it),
+  // so a slow answer for job A must never paint as job B's rows.
+  const jobId = props.jobId
+  if (!jobId) return
   try {
     const rows = await api.get(
-      `/api/jobs/${props.jobId}/parts-needed?unbilled=true`,
+      `/api/jobs/${jobId}/parts-needed?unbilled=true`,
       { suppressErrorToast: true },
     )
+    if (jobId !== props.jobId) return
     const all = Array.isArray(rows) ? rows : []
     existingRequests.value = all.filter(
       (r) => r.source === 'request' && r.status !== 'cancelled',
@@ -143,6 +165,7 @@ async function _loadExistingRequests() {
       (r) => r.source === 'mobile' && r.status === 'used',
     )
   } catch {
+    if (jobId !== props.jobId) return
     existingRequests.value = []
     existingUsed.value = []
   }
@@ -172,6 +195,97 @@ function addOrderRow() {
 }
 function removeOrderRow(idx) {
   orderParts.value.splice(idx, 1)
+}
+
+// ─── Photos ──────────────────────────────────────────────────────────
+// Same road as the detail screen's Photos card: capturePhoto() writes the
+// blob to IndexedDB first and POSTs /api/documents (job_id + as_photo) when
+// there is signal. Deliberately NOT bundled into the closeout payload — a
+// photo of the door is real whether or not this form is ever submitted, and
+// the closeout's own offline replay is JSON-only and could not carry it.
+const photos = ref([])
+// 'idle' | 'loading' | 'ok' | 'error' — the strip may only say "no photos"
+// when the server actually said so. In the dead zone this queue exists for,
+// the list GET fails, and "No photos yet" would be the lie that makes a tech
+// re-shoot a door they already photographed.
+const photosState = ref('idle')
+const photoInput = ref(null)
+const photoBusy = ref(false)
+async function _loadPhotos() {
+  const jobId = props.jobId
+  if (!jobId) return
+  photosState.value = 'loading'
+  try {
+    const rows = await api.get(`/api/jobs/${jobId}/photos`, { suppressErrorToast: true })
+    if (jobId !== props.jobId) return
+    photos.value = Array.isArray(rows) ? rows : []
+    photosState.value = 'ok'
+  } catch {
+    if (jobId !== props.jobId) return
+    // Read-only context. A tech who can't list photos can still take one.
+    photos.value = []
+    photosState.value = 'error'
+  }
+}
+async function onPhotoPicked(e) {
+  const files = Array.from(e?.target?.files || [])
+  if (!files.length) return
+  // Snapshot the job ONCE. DispatchView nulls its closeoutJob (jobId → '')
+  // the moment the sheet closes or the closeout submits; a multi-file loop
+  // still running past that point would POST job_id='' — the server accepts
+  // it, files an orphan Document with no job, and answers 201. Every file
+  // picked for this job goes to this job, whatever the parent does next.
+  const jobId = props.jobId
+  if (!jobId) return
+  photoBusy.value = true
+  let queued = 0
+  const refused = []
+  try {
+    for (const f of files) {
+      const r = await capturePhoto(jobId, f)
+      if (r?.failed) refused.push(r)
+      else if (r?.queued) queued += 1
+    }
+    // Saved either way — say WHICH. "Uploaded" while it sits in IndexedDB is
+    // the lie that makes a tech re-shoot a door; so is "waiting for signal"
+    // for a photo the server already refused.
+    if (refused.length) {
+      toast.add({
+        severity: 'error',
+        summary: refused.length === files.length ? 'Photo refused' : 'Some photos refused',
+        detail: `${describePhotoRefusal(refused[0].status)} Kept on this phone.`,
+        life: 7000,
+      })
+    } else if (queued) {
+      toast.add({
+        severity: 'warn',
+        summary: queued === files.length ? 'Saved on your phone' : 'Some saved on your phone',
+        detail: 'Uploads when you have signal',
+        life: 3500,
+      })
+    } else {
+      toast.add({ severity: 'success', summary: files.length > 1 ? 'Photos added' : 'Photo added', life: 2000 })
+    }
+    // Only when something actually landed or is queued — a refusal is not a
+    // reason to make the parent refetch a strip that hasn't changed.
+    if (refused.length < files.length) {
+      emit('photo-added')
+      if (jobId === props.jobId) await _loadPhotos()
+    }
+  } catch (err) {
+    toast.add({
+      severity: 'error',
+      summary: err?.code === 'photo_backlog_full' ? 'Too many photos waiting' : 'Could not save photo',
+      detail: err?.code === 'photo_backlog_full'
+        ? 'Get some signal so these upload before adding more.'
+        : (err?.message || ''),
+      life: 5000,
+    })
+  } finally {
+    photoBusy.value = false
+    // Let the same file be picked again (Chrome won't re-fire change otherwise).
+    if (photoInput.value) photoInput.value.value = ''
+  }
 }
 
 // ─── Hours / signature / notes ───────────────────────────────────────
@@ -263,6 +377,9 @@ const canSubmit = computed(() => {
   // local validation. Any non-empty intent submits; backend 422s with
   // `missing[]` if the tenant requires parts/hours/signature.
   if (!props.jobId) return false
+  // Photos still saving: submitting now would let the parent re-point or
+  // null the job under the upload loop (see onPhotoPicked). Wait.
+  if (photoBusy.value) return false
   // Ensure at least one of the four sections has content, otherwise the
   // submit is effectively a bare /complete and the user should use the
   // status dropdown instead.
@@ -449,7 +566,10 @@ watch(open, async (v) => {
     // and a stale row here reads as "this job already has that part".
     existingRequests.value = []
     existingUsed.value = []
+    photos.value = []
+    photosState.value = 'idle'
     _loadExistingRequests()
+    _loadPhotos()
     await nextTick()
     clearCanvas()
   }
@@ -470,6 +590,53 @@ watch(open, async (v) => {
     <p v-if="customerName" class="muted hint">{{ customerName }}</p>
 
     <form class="form-stack" @submit.prevent="submit">
+      <!-- Photos — saved on pick, independent of the closeout submit. -->
+      <section class="section" data-testid="mjco-photos">
+        <header class="section-head">
+          <h3>Photos <span class="muted">(optional)</span></h3>
+          <span v-if="pendingPhotos" class="photo-pending" data-testid="mjco-photo-pending">
+            <i class="pi pi-cloud-upload" />
+            {{ pendingPhotos }} waiting for signal
+          </span>
+        </header>
+        <div v-if="photos.length" class="photo-strip" data-testid="mjco-photo-strip">
+          <!-- AuthedImage, not a bare <img>: the url needs a Bearer token. -->
+          <div v-for="p in photos" :key="p.id" class="photo-thumb">
+            <AuthedImage :src="p.url" :alt="p.caption || p.filename || 'Job photo'">
+              <template #fallback>
+                <span class="photo-name">{{ p.filename || 'Photo' }}</span>
+              </template>
+            </AuthedImage>
+          </div>
+        </div>
+        <p v-else-if="photosState === 'error'" class="muted photo-empty" data-testid="mjco-photos-unavailable">
+          Couldn't load this job's photos — you can still add one.
+        </p>
+        <p v-else-if="photosState === 'ok'" class="muted photo-empty" data-testid="mjco-no-photos">No photos on this job yet.</p>
+        <PhotoQueueFailedStrip :job-id="jobId" />
+        <!-- A real file input, not a Button — only an input can open the
+             camera. Deliberately NO `capture` attribute: Android honours it by
+             forcing a single shot straight to the lens, which kills `multiple`
+             AND locks the tech out of the gallery, so a photo taken before the
+             app was open can never be attached. Bare accept="image/*" makes
+             Android offer Camera or Files, which is both. -->
+        <label class="photo-add" data-testid="mjco-photo-add">
+          <input
+            ref="photoInput"
+            type="file"
+            accept="image/*"
+            multiple
+            :disabled="photoBusy"
+            @change="onPhotoPicked"
+          />
+          <span>
+            <i class="pi pi-camera" />
+            {{ photoBusy ? 'Saving…' : 'Add photo' }}
+          </span>
+        </label>
+        <p class="muted photo-hint">Photos save to the job right away — they stay even if you cancel this closeout.</p>
+      </section>
+
       <!-- Parts -->
       <section class="section">
         <header class="section-head">
@@ -917,6 +1084,28 @@ watch(open, async (v) => {
   color: var(--p-text-muted-color);
   min-height: 32px;
 }
+
+/* Photos — same shapes as the detail screen's Photos card. */
+.photo-pending {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  font-size: 0.75rem; font-weight: 600;
+  color: var(--p-amber-600, #b45309);
+}
+.photo-add {
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+  min-height: 44px; border-radius: 0.5rem; cursor: pointer;
+  border: 1px dashed var(--p-content-border-color, #d1d5db);
+  color: var(--p-primary-color, #2563eb);
+  font-size: 0.95rem; font-weight: 600;
+}
+.photo-add input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.photo-add span { display: inline-flex; align-items: center; gap: 0.4rem; }
+.photo-strip { display: flex; gap: 0.5rem; overflow-x: auto; }
+.photo-thumb { flex: 0 0 auto; width: 96px; height: 96px; border-radius: 0.4rem; overflow: hidden; border: 1px solid var(--p-content-border-color, #e5e7eb); display: flex; align-items: center; justify-content: center; }
+.photo-thumb :deep(img) { width: 100%; height: 100%; object-fit: cover; }
+.photo-name { font-size: 0.7rem; padding: 0.25rem; word-break: break-all; }
+.photo-empty, .photo-hint { margin: 0; font-size: 0.8rem; }
 
 /* dark-safe: signature paper — white is deliberate in both themes, the ink is dark */
 .sig-canvas-wrap {

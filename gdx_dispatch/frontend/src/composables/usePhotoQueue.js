@@ -35,6 +35,16 @@ import { createApiClient } from './useApi'
 const log = { error: (...a) => { try { console.error(...a) } catch { /* noop */ } } }
 
 const pendingPhotos = ref(0)
+// Photos the server refused for good (or that a broken client could not send).
+// Before 2026-08-28 nothing read a FAILED row: the tech was told "saved on
+// your phone — uploads when you have signal", the count excluded it, and the
+// photo was invisible forever. This is the reader.
+const failedPhotos = ref(0)
+// The refused rows themselves (id, job_id, http_status, filename) — so a
+// surface can show the reason and scope itself to ITS job. The count above
+// is phone-wide; a strip inside job A's sheet must not offer to delete job
+// B's photo.
+const failedRows = ref([])
 const uploadingPhotos = ref(false)
 let wired = false
 
@@ -51,6 +61,21 @@ async function _refreshPendingPhotos() {
       .where('status').equals(QUEUE_STATUS.PENDING).count()
   } catch {
     pendingPhotos.value = 0
+  }
+  try {
+    const rows = await db.photos
+      .where('status').equals(QUEUE_STATUS.FAILED).sortBy('created_at')
+    failedPhotos.value = rows.length
+    failedRows.value = rows.map((r) => ({
+      id: r.id,
+      job_id: String(r.job_id),
+      http_status: r.http_status ?? null,
+      filename: r.filename || null,
+      error: r.error || null,
+    }))
+  } catch {
+    failedPhotos.value = 0
+    failedRows.value = []
   }
 }
 
@@ -83,7 +108,10 @@ async function _pendingCount() {
  * Store a captured photo and try to send it now.
  *
  * Returns { queued: true } when it's saved locally but not yet uploaded — the
- * caller must say so rather than claim success.
+ * caller must say so rather than claim success. Returns { failed: true,
+ * status, error } when the immediate attempt was REFUSED for good — the
+ * caller must say that too; "uploads when you have signal" for a photo the
+ * server has already rejected is the lie this queue used to tell.
  */
 export async function capturePhoto(jobId, blob, kind = null) {
   await _pruneStore()
@@ -112,13 +140,41 @@ export async function capturePhoto(jobId, blob, kind = null) {
 
   if (!navigator.onLine) return { queued: true, id }
   const sent = await _uploadOne(id)
-  return sent ? { queued: false, id } : { queued: true, id }
+  if (sent) return { queued: false, id }
+  const after = await db.photos.get(id)
+  if (after?.status === QUEUE_STATUS.FAILED) {
+    return { queued: false, failed: true, id, status: after.http_status ?? null, error: after.error || null }
+  }
+  return { queued: true, id }
+}
+
+/** Plain words for a refusal — what the tech can actually do about it. */
+export function describePhotoRefusal(status) {
+  switch (status) {
+    case 403: return "You're not allowed to add photos to this job."
+    // 404 is what a job lookup would say; 409 is what the server actually
+    // says today — documents.job_id is a foreign key, and a vanished job
+    // surfaces as an IntegrityError that the error handler maps to 409.
+    case 404:
+    case 409: return 'That job no longer exists on the server.'
+    case 413: return 'The photo is too large for the server.'
+    case 415: return 'The server only accepts image files.'
+    case 400:
+    case 422: return 'The server refused this photo.'
+    default: return 'The upload failed on this phone — not a signal problem.'
+  }
 }
 
 // The server will never accept these, however many times we ask: a bad slot,
-// a non-image, a file over the limit, a job that isn't this tech's. Anything
-// else — 401 above all — is transient and MUST be retried.
-const _PERMANENT = new Set([400, 404, 413, 415, 422])
+// a non-image, a file over the limit, a job that isn't this tech's, a job the
+// caller may not touch (403 — retrying an authorization verdict changes
+// nothing; 401 is different: that's an expired token and the client refreshes
+// it), a job that no longer exists (409 — documents.job_id is a foreign key
+// and the error handler maps the IntegrityError to 409; left out of this set
+// it stayed PENDING and, because drainPhotos stops at the first row that is
+// still pending, wedged every photo queued behind it). Anything else is
+// transient and MUST be retried.
+const _PERMANENT = new Set([400, 403, 404, 409, 413, 415, 422])
 
 /** Does this throw look like the network, rather than broken code?
  *  `fetch` signals a dropped connection with a TypeError; a missing dependency
@@ -185,6 +241,7 @@ async function _sendPhoto(photoId, row) {
       // TypeError: Failed to fetch with onLine still true.
       await db.photos.update(photoId, {
         status: QUEUE_STATUS.FAILED,
+        http_status: null,
         error: err?.message || 'upload failed',
         last_attempted_at: new Date().toISOString(),
       })
@@ -198,6 +255,7 @@ async function _sendPhoto(photoId, row) {
       // drove away from — it's a reason to tell someone.
       await db.photos.update(photoId, {
         status: QUEUE_STATUS.FAILED,
+        http_status: status,
         error: `HTTP ${status}`,
         last_attempted_at: new Date().toISOString(),
       })
@@ -247,6 +305,63 @@ export async function drainPhotos() {
   }
 }
 
+/**
+ * Put every refused photo back in line and drain. For the cases a retry can
+ * fix — the job was reassigned to this tech since, the office fixed a
+ * permission, the app was updated past a client bug. A photo refused for
+ * size or type will simply fail again, and the strip says so again.
+ */
+export async function retryFailedPhotos({ jobId = null } = {}) {
+  let rows = []
+  try {
+    rows = (await db.photos.where('status').equals(QUEUE_STATUS.FAILED).sortBy('created_at'))
+      .filter((r) => !jobId || String(r.job_id) === String(jobId))
+    for (const r of rows) {
+      await db.photos.update(r.id, {
+        status: QUEUE_STATUS.PENDING, attempts: 0, error: null, http_status: null,
+      })
+    }
+  } catch { /* store unavailable — nothing to retry */ }
+  await _refreshPendingPhotos()
+  // A drain may already be walking the store — coming back from the camera
+  // or from a confirm dialog fires visibilitychange. drainPhotos() would
+  // return at once on `uploadingPhotos` and the tech would watch Retry do
+  // nothing. Let that pass finish, then drain ours.
+  for (let i = 0; i < 100 && uploadingPhotos.value; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  await drainPhotos()
+  // Say what happened. A 413 will fail again exactly the same way; the tech
+  // must hear that, not watch the strip blink.
+  const outcome = { retried: rows.length, uploaded: 0, refused: 0, pending: 0, status: null }
+  for (const r of rows) {
+    let after = null
+    try { after = await db.photos.get(r.id) } catch { /* treat as gone */ }
+    if (!after || after.status === QUEUE_STATUS.SYNCED) outcome.uploaded += 1
+    else if (after.status === QUEUE_STATUS.FAILED) {
+      outcome.refused += 1
+      if (outcome.status === null) outcome.status = after.http_status ?? null
+    } else outcome.pending += 1
+  }
+  return outcome
+}
+
+/**
+ * Delete every refused photo from this phone. Destructive — these blobs are
+ * the ONLY copy — so callers confirm with the tech first. Never called by the
+ * queue itself.
+ */
+export async function discardFailedPhotos({ jobId = null } = {}) {
+  let rows = []
+  try {
+    rows = (await db.photos.where('status').equals(QUEUE_STATUS.FAILED).sortBy('created_at'))
+      .filter((r) => !jobId || String(r.job_id) === String(jobId))
+    for (const r of rows) await db.photos.delete(r.id)
+  } catch { /* store unavailable — nothing to discard */ }
+  await _refreshPendingPhotos()
+  return rows.length
+}
+
 export function usePhotoQueue() {
   if (!wired) {
     wired = true
@@ -260,5 +375,8 @@ export function usePhotoQueue() {
       })
     } catch { /* SSR / test env */ }
   }
-  return { pendingPhotos, uploadingPhotos, capturePhoto, drainPhotos }
+  return {
+    pendingPhotos, failedPhotos, failedRows, uploadingPhotos,
+    capturePhoto, drainPhotos, retryFailedPhotos, discardFailedPhotos, describePhotoRefusal,
+  }
 }

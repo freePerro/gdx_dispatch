@@ -324,6 +324,13 @@ async def upload_document(
     folder_id, job_id, customer_id = _s(folder_id), _s(job_id), _s(customer_id)
     tags, kind = _s(tags), _s(kind)
     as_photo = as_photo is True
+    # A "photo" that is not an image is refused outright (#525). Before: the
+    # Document was stored, the job_photos link silently skipped, and the
+    # caller got a 201 — the phone's queue marked it uploaded and toasted
+    # "Photo added" for a photo no strip would ever show. 415 is permanent to
+    # the queue: it stops retrying and tells the tech what's wrong.
+    if as_photo and not (file.content_type or "").lower().startswith("image/"):
+        raise HTTPException(status_code=415, detail="as_photo requires an image file")
 
     ext = Path(file.filename or "").suffix
     stored_filename = f"{uuid4()}{ext.lower()}"
