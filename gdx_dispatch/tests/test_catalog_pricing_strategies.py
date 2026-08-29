@@ -115,15 +115,45 @@ def test_item_autopriced_by_keystone_when_price_blank(db_session):
     assert item["price"] == pytest.approx(200.0)
 
 
-def test_manual_strategy_keeps_entered_or_cost_price(db_session):
+def test_manual_strategy_never_stores_cost_as_the_retail_price(db_session):
+    """Regression: `manual` used to store our COST as the customer price.
+
+    `manual` is the DEFAULT strategy and `compute_price` returns None for it, so
+    the old `float(price if price is not None else (cost or 0))` fallback was the
+    operative branch — a cost-only import wrote a zero-margin sell price into the
+    catalog the estimate pickers read from. The previous version of this test
+    asserted exactly that (`price == cost == 50.0`, commented "falls back to
+    cost"), which is how the defect survived.
+
+    With no margin tiers seeded here the engine cannot price it either, so the
+    honest answer is None — which also trips the tenant's zero-price policy and
+    puts it in front of a human.
+    """
     cat = _make_catalog(db_session, "manual")
-    # no price + manual → falls back to cost (pre-ADR-015 behavior)
     item = catalog_router.add_catalog_item(
         UUID(cat["id"]),
         CatalogItemCreateIn(sku="P2", name="Bracket", cost=50.0),
         _mock_request(), _user(), db_session,
     )
-    assert item["price"] == pytest.approx(50.0)
+    assert item["price"] != pytest.approx(50.0), "stored our cost as the retail price"
+    assert item["price"] in (None, 0) or item["price"] > 50.0
+
+
+def test_manual_strategy_falls_back_to_the_margin_engine(db_session):
+    """With tiers configured — production's actual state — `manual` marks the
+    cost up through them instead of leaving the item unpriced."""
+    from gdx_dispatch.models.pricing_engine import seed_default_pricing
+
+    seed_default_pricing(db_session)
+    db_session.commit()
+    cat = _make_catalog(db_session, "manual")
+    item = catalog_router.add_catalog_item(
+        UUID(cat["id"]),
+        CatalogItemCreateIn(sku="P2M", name="Bracket", cost=50.0),
+        _mock_request(), _user(), db_session,
+    )
+    assert item["price"] is not None
+    assert item["price"] > 50.0, "a margin on cost, never the cost itself"
 
 
 def test_explicit_price_overrides_strategy(db_session):

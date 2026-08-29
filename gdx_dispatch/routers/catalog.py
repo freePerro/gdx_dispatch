@@ -3,21 +3,21 @@ from __future__ import annotations
 import csv
 import logging
 import re
-import httpx
 from copy import deepcopy
 from decimal import ROUND_HALF_UP, Decimal
 from io import StringIO
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
+from gdx_dispatch.core import pricing_strategies
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.core import pricing_strategies
 from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.models.pricing_engine import PricingTierSet
 from gdx_dispatch.models.tenant_models import CustomCatalog, CustomCatalogItem, DoorSpec
@@ -223,6 +223,7 @@ def _virtual_catalog_items(virtual_id: str, search: str | None,
     pricing_category_for_class = "doors" if virtual_id == VIRTUAL_CHI_DOORS_ID else "parts"
     try:
         from decimal import Decimal as _D  # local import to avoid module-load cost on cold imports
+
         from gdx_dispatch.services.pricing_engine import (
             CustomerView,
             PricingConfigError,
@@ -513,13 +514,32 @@ def _validate_field_schema(schema: list[dict] | None) -> list[dict]:
     return cleaned
 
 
-def _retail_for(catalog: "CustomCatalog", cost, price) -> float:
-    """ADR-015 Slice 2 — resolve an item's retail price.
+def _retail_for(
+    catalog: CustomCatalog,
+    cost,
+    price,
+    *,
+    db=None,
+    pricing_category: str | None = None,
+) -> float | None:
+    """ADR-015 Slice 2 — resolve an item's retail price, or None if we cannot.
 
-    An explicit non-zero price always wins. Otherwise the catalog's pricing
-    strategy computes from cost ('manual'/no-cost → fall back to the entered
-    price, else cost). Shared by single-add and bulk-import so the same item
-    prices identically no matter how it's created.
+    Order: an explicit non-zero price wins; then the catalog's pricing strategy;
+    then the tenant's margin tiers. **Never the raw cost.**
+
+    The old final line was ``float(price if price is not None else (cost or 0))``
+    — i.e. when the strategy could not compute, it stored our COST as the
+    customer-facing retail price. `manual` is the default strategy and
+    `pricing_strategies.compute_price` returns None for it, so on this
+    deployment (every catalog `manual`) that branch was the operative one: a
+    cost-only import wrote a zero-margin sell price into the catalog the
+    estimate pickers read from.
+
+    None means "we could not price this". That is deliberate and matches what
+    this module already does for the manufacturer virtual catalogs, which leave
+    price NULL on a pricing-config error so the UI renders "—" rather than a
+    fabricated number. A NULL price also trips the tenant's zero-price policy
+    (``enforce_save_pricing``), which is the correct prompt for a human.
     """
     if price:
         return float(price)
@@ -531,7 +551,32 @@ def _retail_for(catalog: "CustomCatalog", cost, price) -> float:
         )
         if computed is not None:
             return float(computed)
-    return float(price if price is not None else (cost or 0))
+        if db is not None:
+            # Same resolver the capture and estimate paths use, so an item
+            # prices identically however it was created.
+            from gdx_dispatch.core.part_pricing import sell_price_for_row
+
+            try:
+                sell = sell_price_for_row(
+                    db, price=None, cost=cost,
+                    pricing_category=pricing_category or "parts",
+                )
+            except Exception:
+                # _engine_sell swallows PricingConfigError, but not a DB fault
+                # (a missing tier table leaves the session needing a rollback and
+                # the NEXT query fails with an unrelated error). A pricing lookup
+                # must never break a catalog write — unpriced is the safe answer.
+                log.warning("catalog: margin lookup failed; leaving item unpriced",
+                            exc_info=True)
+                sell = None
+            if sell is not None:
+                return float(sell)
+    return None
+
+
+def _money_or_none(value) -> float | None:
+    """`_money`, but propagates "unpriced" instead of inventing 0.00."""
+    return None if value is None else _money(value)
 
 
 def _coerce_attributes(schema: list[dict], raw: dict | None) -> dict:
@@ -599,7 +644,7 @@ class CatalogCreateIn(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _validate_schema_for_class(self) -> "CatalogCreateIn":
+    def _validate_schema_for_class(self) -> CatalogCreateIn:
         # Custom catalogs must declare a valid field schema; built-in classes
         # carry none (they use the frontend registry / typed spec tables).
         if self.product_class == "custom":
@@ -1061,7 +1106,12 @@ def add_catalog_item(
     # ADR-015 Slice 2 — apply the catalog's pricing strategy when no price was
     # entered. The zero-price policy gate (F-75) sees the FINAL price, so a
     # strategy-computed non-zero retail correctly stays active.
-    effective_price = _retail_for(catalog, payload.cost, payload.price)
+    effective_price = _retail_for(
+        catalog, payload.cost, payload.price, db=db,
+        pricing_category=_derive_pricing_category(
+            payload.pricing_category, payload.category, product_class,
+        ),
+    )
     active_after_policy = enforce_save_pricing(
         tenant_id_for_policy, price=effective_price
     )
@@ -1072,7 +1122,7 @@ def add_catalog_item(
         name=payload.name.strip(),
         description=payload.description.strip() if payload.description else None,
         cost=_money(payload.cost),
-        price=_money(effective_price),
+        price=_money_or_none(effective_price),
         category=payload.category.strip() if payload.category else None,
         vendor=payload.vendor.strip() if payload.vendor else None,
         pricing_category=_derive_pricing_category(
@@ -1414,7 +1464,7 @@ def delete_catalog_item(
     return {"deleted": True}
 
 
-def _import_attributes(catalog: "CustomCatalog", raw: dict[str, object], product_class: str) -> dict | None:
+def _import_attributes(catalog: CustomCatalog, raw: dict[str, object], product_class: str) -> dict | None:
     """Custom-field values for a bulk/AI-imported row (#53).
 
     Only custom catalogs have a field_schema; for everything else return None.
@@ -1477,7 +1527,12 @@ def bulk_import_catalog_items(
             cost=_money(item.cost),
             # ADR-015 Slice 2 — same pricing strategy as single-add, so a CSV/JSON
             # import of cost-only rows prices identically to the Add form.
-            price=_money(_retail_for(catalog, item.cost, item.price)),
+            price=_money_or_none(_retail_for(
+                catalog, item.cost, item.price, db=db,
+                pricing_category=_derive_pricing_category(
+                    item.pricing_category, item.category, product_class, valid_categories
+                ),
+            )),
             category=item.category,
             vendor=item.vendor,
             pricing_category=_derive_pricing_category(
@@ -1510,7 +1565,7 @@ def bulk_import_catalog_items(
     return {"imported": imported, "failed": 0}
 
 
-def _upsert_qb_item(catalog: "CustomCatalog", raw: dict[str, object], db: Session) -> str:
+def _upsert_qb_item(catalog: CustomCatalog, raw: dict[str, object], db: Session) -> str:
     catalog_id = catalog.id
     qb_item_id = str(raw.get("qb_item_id") or "").strip() or None
     sku = str(raw.get("sku") or "").strip() or None
@@ -1540,7 +1595,9 @@ def _upsert_qb_item(catalog: "CustomCatalog", raw: dict[str, object], db: Sessio
             name=str(raw.get("name") or "").strip() or "QB Item",
             description=str(raw.get("description") or "").strip() or None,
             cost=_money(float(raw.get("cost") or 0)),
-            price=_money(_retail_for(catalog, raw.get("cost"), raw.get("price"))),
+            price=_money_or_none(_retail_for(
+                catalog, raw.get("cost"), raw.get("price"), db=db,
+            )),
             category=str(raw.get("category") or "").strip() or None,
             vendor=str(raw.get("vendor") or raw.get("supplier") or "").strip() or None,
             active=bool(raw.get("active", True)),
@@ -1553,7 +1610,11 @@ def _upsert_qb_item(catalog: "CustomCatalog", raw: dict[str, object], db: Sessio
     match.name = str(raw.get("name") or match.name)
     match.description = str(raw.get("description") or "").strip() or match.description
     match.cost = _money(float(raw.get("cost") or match.cost or 0))
-    match.price = _money(_retail_for(catalog, raw.get("cost") or match.cost, raw.get("price")) or match.price or 0)
+    # None = "could not price": keep whatever the row already had rather than
+    # overwriting a good sell price with a fabricated one.
+    match.price = _money_or_none(
+        _retail_for(catalog, raw.get("cost") or match.cost, raw.get("price"), db=db)
+    ) or match.price
     match.category = str(raw.get("category") or "").strip() or match.category
     match.active = bool(raw.get("active", match.active))
     if qb_item_id:
@@ -1725,7 +1786,12 @@ async def ai_import_catalog(
                 name=item.name,
                 description=item.description,
                 cost=_money(item.cost),
-                price=_money(_retail_for(catalog, item.cost, item.price)),
+                price=_money_or_none(_retail_for(
+                    catalog, item.cost, item.price, db=db,
+                    pricing_category=_derive_pricing_category(
+                        item.pricing_category, item.category, product_class,
+                    ),
+                )),
                 category=item.category,
                 vendor=item.vendor,
                 product_class=product_class,
