@@ -467,6 +467,57 @@ async def test_upload_document_success(tenant_db_session, tmp_path, monkeypatch)
 
 
 @pytest.mark.anyio
+async def test_upload_as_photo_non_image_is_refused_with_415(tenant_db_session, tmp_path, monkeypatch):
+    """A "photo" that is not an image is refused, not stored (#525).
+
+    Before: the Document row was written, the job_photos link silently
+    skipped, and the caller got a 201 — the phone's offline queue marked the
+    photo uploaded and toasted "Photo added" for a photo no strip would ever
+    show. 415 is in the queue's permanent set: it stops retrying and tells
+    the tech what is wrong. Nothing may be written on the way to the 415.
+    """
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    before = tenant_db_session.query(Document).count()
+
+    with pytest.raises(HTTPException) as exc:
+        await documents_router.upload_document(
+            request=_mock_request(),
+            file=UploadFile(
+                io.BytesIO(b"not an image"),
+                filename="notes.txt",
+                headers=Headers({"content-type": "text/plain"}),
+            ),
+            title="notes",
+            description=None,
+            job_id=str(uuid.uuid4()),
+            customer_id=None,
+            folder_id=None,
+            tags=None,
+            as_photo=True,
+            kind=None,
+            user={"user_id": "user-1"},
+            db=tenant_db_session,
+        )
+    assert exc.value.status_code == 415
+    assert tenant_db_session.query(Document).count() == before
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.anyio
+async def test_upload_document_non_image_without_as_photo_is_still_a_document(tenant_db_session, tmp_path, monkeypatch):
+    """The 415 is gated on as_photo, not on the mime type — a PDF proposal
+    attached to a job is a document and stays accepted."""
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    out = await documents_router.upload_document(
+        request=_mock_request(),
+        file=UploadFile(io.BytesIO(b"%PDF"), filename="p.pdf", headers=Headers({"content-type": "application/pdf"})),
+        title="p", description=None, job_id=str(uuid.uuid4()), customer_id=None, folder_id=None, tags=None,
+        as_photo=False, kind=None, user={"user_id": "user-1"}, db=tenant_db_session,
+    )
+    assert out.original_name == "p.pdf"
+
+
+@pytest.mark.anyio
 async def test_job_image_is_not_a_photo_unless_the_caller_says_so(tenant_db_session, tmp_path, monkeypatch):
     """Documents and photos are different things (Doug 2026-07-17).
 
@@ -531,23 +582,32 @@ async def test_job_photo_creates_the_photo_record(tenant_db_session, tmp_path, m
 
 @pytest.mark.anyio
 async def test_non_image_marked_as_photo_is_still_not_a_photo(tenant_db_session, tmp_path, monkeypatch):
-    """as_photo on a PDF is a caller mistake, not an instruction."""
+    """as_photo on a PDF is a caller mistake, not an instruction.
+
+    2026-08-28 (#525): the mistake is now REFUSED (415) rather than quietly
+    turned into a document with a 201 — the phone's queue took that 201 as
+    "photo uploaded" and no photo ever appeared. Still no JobPhoto, and now
+    no Document either.
+    """
     from gdx_dispatch.models.tenant_models import JobPhoto
 
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
-    await documents_router.upload_document(
-        request=_mock_request(),
-        file=UploadFile(
-            io.BytesIO(b"fake-pdf"),
-            filename="spec.pdf",
-            headers=Headers({"content-type": "application/pdf"}),
-        ),
-        job_id=str(uuid.uuid4()),
-        as_photo=True,
-        user={"user_id": "user-1"},
-        db=tenant_db_session,
-    )
+    with pytest.raises(HTTPException) as exc:
+        await documents_router.upload_document(
+            request=_mock_request(),
+            file=UploadFile(
+                io.BytesIO(b"fake-pdf"),
+                filename="spec.pdf",
+                headers=Headers({"content-type": "application/pdf"}),
+            ),
+            job_id=str(uuid.uuid4()),
+            as_photo=True,
+            user={"user_id": "user-1"},
+            db=tenant_db_session,
+        )
+    assert exc.value.status_code == 415
     assert tenant_db_session.query(JobPhoto).count() == 0
+    assert tenant_db_session.query(Document).count() == 0
 
 
 @pytest.mark.anyio

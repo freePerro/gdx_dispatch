@@ -65,7 +65,7 @@ vi.mock("../useApi", () => ({
 }));
 
 const { db } = await import("../../lib/offlineDb");
-const { capturePhoto, drainPhotos, usePhotoQueue } = await import("../usePhotoQueue");
+const { capturePhoto, drainPhotos, usePhotoQueue, retryFailedPhotos, discardFailedPhotos, describePhotoRefusal } = await import("../usePhotoQueue");
 
 /** Reject the way useApi does — a thrown error carrying `status`. */
 function httpError(status) {
@@ -264,5 +264,140 @@ describe("pending count", () => {
     setOnline(true);
     await drainPhotos();
     expect(pendingPhotos.value).toBe(0);
+  });
+});
+
+// ─── FAILED rows have a reader (2026-08-28, #525) ─────────────────────
+// Before: a refused photo set FAILED, capturePhoto still returned
+// { queued: true }, the caller toasted "uploads when you have signal", the
+// pending count excluded it, and nothing ever read it again.
+describe("refused photos are visible and actionable", () => {
+  it("capturePhoto reports an immediate refusal as failed, with the status — never as queued", async () => {
+    setOnline(true);
+    postMock.mockRejectedValueOnce(httpError(413));
+    const r = await capturePhoto("job-1", fakeBlob(), null);
+    expect(r.queued).toBe(false);
+    expect(r.failed).toBe(true);
+    expect(r.status).toBe(413);
+    const { failedPhotos, pendingPhotos } = usePhotoQueue();
+    expect(failedPhotos.value).toBe(1);
+    expect(pendingPhotos.value).toBe(0);
+  });
+
+  it("treats 403 as a verdict, not a signal problem", async () => {
+    setOnline(true);
+    postMock.mockRejectedValueOnce(httpError(403));
+    const r = await capturePhoto("job-1", fakeBlob(), null);
+    expect(r.failed).toBe(true);
+    expect(r.status).toBe(403);
+    postMock.mockClear();
+    await drainPhotos();
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it("a broken client is reported as failed with no status", async () => {
+    setOnline(true);
+    postMock.mockRejectedValueOnce(new RangeError("boom"));
+    const r = await capturePhoto("job-1", fakeBlob(), null);
+    expect(r.failed).toBe(true);
+    expect(r.status).toBeNull();
+  });
+
+  it("retryFailedPhotos puts refused photos back in line and drains them", async () => {
+    setOnline(true);
+    postMock.mockRejectedValueOnce(httpError(404));
+    await capturePhoto("job-1", fakeBlob(), null);
+    const { failedPhotos } = usePhotoQueue();
+    expect(failedPhotos.value).toBe(1);
+    postMock.mockResolvedValueOnce({ id: "doc-1" });
+    const o = await retryFailedPhotos();
+    expect(o).toEqual(expect.objectContaining({ retried: 1, uploaded: 1, refused: 0, pending: 0 }));
+    expect(postMock).toHaveBeenCalledTimes(2);
+    expect(failedPhotos.value).toBe(0);
+    const rows = [...db.photos.__rows.values()];
+    expect(rows[0].status).toBe("synced");
+  });
+
+  it("discardFailedPhotos deletes ONLY the refused rows", async () => {
+    setOnline(true);
+    postMock.mockRejectedValueOnce(httpError(415));
+    await capturePhoto("job-1", fakeBlob(), null);
+    setOnline(false);
+    await capturePhoto("job-1", fakeBlob(), null); // pending, must survive
+    const { failedPhotos, pendingPhotos } = usePhotoQueue();
+    expect(failedPhotos.value).toBe(1);
+    expect(pendingPhotos.value).toBe(1);
+    const n = await discardFailedPhotos();
+    expect(n).toBe(1);
+    expect(failedPhotos.value).toBe(0);
+    expect(pendingPhotos.value).toBe(1);
+    expect([...db.photos.__rows.values()].every((r) => r.status === "pending")).toBe(true);
+  });
+
+  it("treats 409 as permanent — the server's actual answer for a job that no longer exists (FK → IntegrityError → 409)", async () => {
+    setOnline(true);
+    postMock.mockRejectedValueOnce(httpError(409));
+    const r = await capturePhoto("job-gone", fakeBlob(), null);
+    expect(r.failed).toBe(true);
+    expect(r.status).toBe(409);
+    // And it must NOT wedge the queue: a photo behind it still drains.
+    setOnline(false);
+    await capturePhoto("job-1", fakeBlob(), null);
+    setOnline(true);
+    postMock.mockClear();
+    postMock.mockResolvedValueOnce({ id: "doc-2" });
+    await drainPhotos();
+    expect(postMock).toHaveBeenCalledTimes(1);
+    const { pendingPhotos, failedPhotos } = usePhotoQueue();
+    expect(pendingPhotos.value).toBe(0);
+    expect(failedPhotos.value).toBe(1);
+  });
+
+  it("exposes the refused rows with job and status so a surface can scope itself and say why", async () => {
+    setOnline(true);
+    postMock.mockRejectedValueOnce(httpError(413));
+    await capturePhoto("job-1", fakeBlob(), null);
+    const { failedRows } = usePhotoQueue();
+    expect(failedRows.value).toHaveLength(1);
+    expect(failedRows.value[0]).toEqual(expect.objectContaining({ job_id: "job-1", http_status: 413 }));
+  });
+
+  it("retryFailedPhotos reports a refusal that repeats, with its status", async () => {
+    setOnline(true);
+    postMock.mockRejectedValueOnce(httpError(413));
+    await capturePhoto("job-1", fakeBlob(), null);
+    postMock.mockRejectedValueOnce(httpError(413));
+    const o = await retryFailedPhotos();
+    expect(o).toEqual(expect.objectContaining({ retried: 1, uploaded: 0, refused: 1, status: 413 }));
+  });
+
+  it("retryFailedPhotos and discardFailedPhotos are scoped by job when asked", async () => {
+    setOnline(true);
+    postMock.mockRejectedValueOnce(httpError(413));
+    await capturePhoto("job-A", fakeBlob(), null);
+    postMock.mockRejectedValueOnce(httpError(413));
+    await capturePhoto("job-B", fakeBlob(), null);
+    postMock.mockClear();
+    postMock.mockResolvedValueOnce({ id: "doc-A" });
+    const o = await retryFailedPhotos({ jobId: "job-A" });
+    expect(o.retried).toBe(1);
+    expect(o.uploaded).toBe(1);
+    expect(postMock).toHaveBeenCalledTimes(1);
+    const { failedRows } = usePhotoQueue();
+    expect(failedRows.value.map((r) => r.job_id)).toEqual(["job-B"]);
+    const n = await discardFailedPhotos({ jobId: "job-Z" });
+    expect(n).toBe(0);
+    expect(failedRows.value).toHaveLength(1);
+    expect(await discardFailedPhotos({ jobId: "job-B" })).toBe(1);
+    expect(failedRows.value).toHaveLength(0);
+  });
+
+  it("says what the tech can do about each refusal", () => {
+    expect(describePhotoRefusal(413)).toMatch(/too large/);
+    expect(describePhotoRefusal(415)).toMatch(/image files/);
+    expect(describePhotoRefusal(403)).toMatch(/not allowed/);
+    expect(describePhotoRefusal(404)).toMatch(/no longer exists/);
+    expect(describePhotoRefusal(409)).toMatch(/no longer exists/);
+    expect(describePhotoRefusal(null)).toMatch(/not a signal problem/);
   });
 });
