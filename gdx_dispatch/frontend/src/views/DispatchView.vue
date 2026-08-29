@@ -656,7 +656,7 @@
         </template>
       </Dialog>
 
-      <!-- Phase 2 / C4 — closeout sheet opened by Status="Complete". -->
+      <!-- Phase 2 / C4 — closeout sheet, opened by the drawer's Close out. -->
       <MobileJobCloseoutDialog
         v-model:visible="closeoutOpen"
         :job-id="closeoutJob?.id || ''"
@@ -698,6 +698,20 @@
             <strong>Technician:</strong> {{ techName(drawerJob.technician_id) }}
           </p>
           <p class="job-drawer-line"><strong>Scheduled:</strong> {{ drawerJob.scheduled_at || 'Not scheduled' }}</p>
+          <!-- The board's ONE way to complete a job (2026-08-28, #526). Prod:
+               the owner submitted 8 of the last 19 closeouts — the office
+               DOES close jobs out, and the backend already handles a non-tech
+               closer (the synthetic time entry carries no payable user_id). -->
+          <Button
+            v-if="!isTerminalJob(drawerJob)"
+            label="Close out"
+            icon="pi pi-check"
+            severity="success"
+            class="w-full"
+            size="small"
+            data-testid="dispatch-job-closeout"
+            @click="() => openCloseout(drawerJob)"
+          />
           <Button
             label="Open Job"
             icon="pi pi-external-link"
@@ -771,8 +785,6 @@ const router = useRouter();
 const { tenantTimezone, zonedDateKey } = useTenantTimezone();
 const { hasPermission } = usePermission();
 
-const jobStatuses = ['Scheduled', 'In Progress', 'Complete', 'Invoiced'];
-
 function goToJob(job) {
   if (job?.id) router.push(`/jobs/${job.id}`);
 }
@@ -813,29 +825,24 @@ function fixLaborException(row) {
   });
 }
 
-async function quickStatusChange(job) {
-  // Phase 2 / C4 (Doug 2026-05-10): "Complete" no longer fires a bare POST
-  // /complete. It opens the closeout sheet — parts + hours + signature +
-  // notes get captured in one transaction. The closeout endpoint flips
-  // lifecycle to 'completed' and writes a JobCloseout snapshot row. Phase
-  // 1's /complete path stays alive (legacy clients, mobile complete) but
-  // dispatch's primary affordance is now the sheet.
-  //
-  // Other transitions (Scheduled / In Progress / Invoiced) stay on PATCH.
-  try {
-    if (job.status === 'Complete') {
-      // Open the closeout dialog. Don't PATCH or POST anything until the
-      // dialog submits. fetchJobs() runs on dialog close (success OR cancel)
-      // to revert the optimistic dropdown change.
-      closeoutJob.value = job;
-      closeoutOpen.value = true;
-    } else {
-      await api.patch(`/api/jobs/${job.id}`, { status: job.status });
-    }
-  } catch {
-    // Revert on failure — re-fetch
-    await fetchJobs();
-  }
+// Phase 2 / C4 (Doug 2026-05-10): completing a job from dispatch is a
+// closeout transaction — parts + hours + signature + notes in one POST to
+// /api/jobs/{id}/closeout, which flips lifecycle to 'completed' and writes
+// the JobCloseout snapshot. Nothing is PATCHed or POSTed until the sheet
+// submits; the watcher on closeoutOpen refetches on close either way.
+//
+// 2026-08-28 (#526): the status select that used to reach this was replaced
+// by the read-only JobStateChip and the handler kept living with nothing
+// pointing at it — the board had NO way to complete a job since the initial
+// public release. The drawer's "Close out" button is that way.
+function isTerminalJob(job) {
+  const stage = String(job?.lifecycle_stage || '').toLowerCase();
+  return stage === 'completed' || stage === 'cancelled' || isCompletedStatus(job?.status);
+}
+function openCloseout(job) {
+  if (!job || isTerminalJob(job)) return;
+  closeoutJob.value = job;
+  closeoutOpen.value = true;
 }
 
 const closeoutOpen = ref(false);
@@ -844,8 +851,10 @@ function onCloseoutDone() {
   // Closeout submitted successfully. The endpoint flipped lifecycle to
   // 'completed' and the job now lives in /api/jobs/ready-for-billing.
   // The success toast is already fired by the dialog itself; the watcher
-  // on closeoutOpen handles the refetch.
+  // on closeoutOpen handles the refetch. The drawer was describing a job
+  // that just left the board — close it too.
   closeoutOpen.value = false;
+  closeJobDrawer();
 }
 // When the dialog closes for any reason (submit OR cancel), refetch.
 // On success that's a no-op visually (the success path already calls
@@ -1705,6 +1714,18 @@ async function fetchJobs({ keepOnError = false } = {}) {
     const data = await api.get(`/api/jobs?${jobsDateQuery()}`);
     const rows = Array.isArray(data) ? data : data?.items || data?.data || [];
     jobs.value = rows.map(normalizeJob);
+    // The drawer must describe the job as it IS, not as it was when opened.
+    // The board polls every 45 s and replaces jobs.value, but drawerJob
+    // pointed at the old object — so after the tech closed out from the
+    // truck, the drawer still said "In Progress" and still offered Close
+    // out, and a second closeout would supersede the tech's attestation
+    // (audit 2026-08-28, #526). Re-point it; if the job left the board,
+    // close the drawer rather than keep describing a ghost.
+    if (drawerJob.value) {
+      const fresh = jobs.value.find((j) => String(j.id) === String(drawerJob.value.id));
+      if (fresh) drawerJob.value = fresh;
+      else closeJobDrawer();
+    }
   } catch {
     if (!keepOnError) jobs.value = [];
   }
@@ -1958,6 +1979,10 @@ onBeforeUnmount(() => { if (liveTechsTimer) clearInterval(liveTechsTimer); });
 // seal. Pinning the test contract explicitly is the cheapest fix.
 // /audit 2026-05-21 finding 3.
 defineExpose({
+  // Job drawer + closeout (DispatchDrawerCloseout.spec.js, #526)
+  openJobDrawer,
+  closeJobDrawer,
+  fetchJobs,
   // Existing dispatch surface (test_dispatch_drag.test.js)
   onDragStart,
   handleDrop,
