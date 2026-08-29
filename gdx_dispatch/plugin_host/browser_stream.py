@@ -495,6 +495,19 @@ async def stream_browser(ws, url: str, key: str = "") -> None:
         finally:
             # Save the session on EVERY disconnect (close message, tab closed,
             # socket error) — this is what keeps the operator logged in next time.
-            if persist is not None:
-                await persist()
-            await browser.close()
+            #
+            # Ordering is load-bearing. This block is also reached by
+            # CancelledError: uvicorn cancels the task on SIGTERM, which
+            # update.sh sends on every prod deploy. Awaiting persist() first
+            # meant that if it raised — or re-raised CancelledError, which the
+            # first await inside a cancelled finally does — `browser.close()`
+            # never ran and a headless Chromium was orphaned in a container with
+            # no memory limit. Closing the browser is now in its own finally so
+            # it happens no matter how persist() ends.
+            try:
+                if persist is not None:
+                    await persist()
+            except Exception as e:
+                log.warning("session persist on disconnect failed: %s", e)
+            finally:
+                await browser.close()

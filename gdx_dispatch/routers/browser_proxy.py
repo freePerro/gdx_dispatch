@@ -19,9 +19,11 @@ rejected at ticket time.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
+import uuid
 from urllib.parse import quote
 
 import httpx
@@ -87,6 +89,10 @@ def issue_ticket(
     _gate_browser(user, db, body.key)
     if not host_allowed(body.url):
         raise HTTPException(400, "url host is not on the allowlist")
+    # One id for this whole session: it names the recording directory AND rides
+    # in the audit row below, so "who opened a browser" and "here is the
+    # recording of what they did" resolve to each other from either direction.
+    sid = uuid.uuid4().hex
     ticket = jwt.encode(
         {
             # `typ` is deliberately NOT "access"/None so this ticket is rejected
@@ -97,6 +103,7 @@ def issue_ticket(
             "k": body.key,
             "u": body.url,
             "sub": str(user.get("user_id") or user.get("sub") or ""),
+            "sid": sid,
             "exp": int(time.time()) + _TICKET_TTL,
         },
         SIGN_KEY,
@@ -113,7 +120,7 @@ def issue_ticket(
         entity_id=body.key,
         actor=user,
         request=request,
-        details={"key": body.key, "url": body.url},
+        details={"key": body.key, "url": body.url, "sid": sid},
     )
     db.commit()
     return {"ticket": ticket}
@@ -249,29 +256,114 @@ async def browser_stream_proxy(websocket: WebSocket, ticket: str = "") -> None:
         f"{_ws_host_url()}/internal/browser/ws"
         f"?url={quote(claims['u'], safe='')}&key={quote(str(claims.get('k', '')), safe='')}"
     )
+    # Record the session. This relay is the right place: it already sees every
+    # input and every server message, it is NOT the ack-gated frame loop in the
+    # plugin-host (so it cannot freeze the operator's live view), and the
+    # ticket's claims are already decoded here so identity is free.
+    rec = _start_recorder(claims)
+
     try:
         from gdx_dispatch.core.plugin_consent import internal_auth_headers
 
         async with websockets.connect(
             upstream, max_size=None, additional_headers=internal_auth_headers()
         ) as up:
+            if rec is not None:
+                await rec.start()
             await asyncio.gather(
-                _client_to_upstream(websocket, up),
-                _upstream_to_client(up, websocket),
+                _client_to_upstream(websocket, up, rec),
+                _upstream_to_client(up, websocket, rec),
+                _recorder_heartbeat(websocket, rec),
             )
     except Exception:
         log.exception("browser-stream proxy error")
     finally:
+        # Synchronous drain FIRST: this finally is reached by CancelledError on
+        # every prod deploy (uvicorn SIGTERM), and inside a cancelled finally the
+        # next await re-raises immediately — anything after it would be skipped.
+        if rec is not None:
+            stats = rec.close_sync("stream ended")
+            _audit_session_close(claims, stats)
         try:
             await websocket.close()
         except Exception:
             pass
 
 
-async def _client_to_upstream(client: WebSocket, up) -> None:
+def _start_recorder(claims: dict):
+    """Build a recorder for this session, or None. Never raises."""
+    if os.getenv("GDX_SESSION_RECORDING", "1").lower() in ("0", "false", "no"):
+        return None
+    try:
+        from gdx_dispatch.core.session_recorder import SessionRecorder
+
+        return SessionRecorder(
+            actor=str(claims.get("sub") or ""),
+            plugin_key=str(claims.get("k") or ""),
+            url=str(claims.get("u") or ""),
+            session_id=str(claims.get("sid") or "") or None,
+        )
+    except Exception as e:
+        log.warning("session recorder unavailable: %s", e)
+        return None
+
+
+async def _recorder_heartbeat(client: WebSocket, rec) -> None:
+    """Push real recorder stats to the UI every 5s.
+
+    Deliberately driven by bytes actually written, not by a client-side boolean:
+    a badge that says "recording" whether or not a byte hit disk is decoration,
+    not evidence. Counterfactual: chmod 000 the recording dir mid-session and
+    this must report degraded within 5s.
+    """
+    if rec is None:
+        return
     try:
         while True:
-            await up.send(await client.receive_text())
+            await asyncio.sleep(5)
+            await client.send_text(json.dumps({"type": "rec", **rec.stats()}))
+    except Exception as e:
+        log.debug("recorder heartbeat ended: %s", e)
+
+
+def _audit_session_close(claims: dict, stats: dict) -> None:
+    """Pair the audited ticket issuance with an audited "what was done with it".
+
+    Invariant #1 says a state-changing action answers who/what/when. Issuing the
+    browser capability was already audited; until now, what happened inside the
+    session was not.
+    """
+    try:
+        # The sync variant deliberately: this runs from a finally block that a
+        # deploy-time SIGTERM reaches by cancellation, where an await would
+        # re-raise and skip the row entirely.
+        from gdx_dispatch.core.audit import log_audit_event_sync
+        from gdx_dispatch.core.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            log_audit_event_sync(
+                db,
+                action="plugin.browser_session_closed",
+                entity_type="plugin",
+                entity_id=str(claims.get("k") or ""),
+                user_id=str(claims.get("sub") or "") or None,
+                details=stats,
+            )
+            db.commit()
+        finally:
+            db.close()
+    except Exception as e:
+        log.warning("session-close audit failed: %s", e)
+
+
+async def _client_to_upstream(client: WebSocket, up, rec=None) -> None:
+    try:
+        while True:
+            raw = await client.receive_text()
+            if rec is not None:
+                rec.note_client(raw)  # never raises, never blocks
+            await up.send(raw)
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -283,9 +375,12 @@ async def _client_to_upstream(client: WebSocket, up) -> None:
             pass
 
 
-async def _upstream_to_client(up, client: WebSocket) -> None:
+async def _upstream_to_client(up, client: WebSocket, rec=None) -> None:
     try:
         async for msg in up:
-            await client.send_text(msg if isinstance(msg, str) else msg.decode())
+            text = msg if isinstance(msg, str) else msg.decode()
+            if rec is not None:
+                rec.note_server(text)  # never raises, never blocks
+            await client.send_text(text)
     except Exception as e:
         log.debug("upstream->client ended: %s", e)

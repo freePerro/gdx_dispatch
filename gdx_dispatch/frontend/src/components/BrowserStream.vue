@@ -15,6 +15,13 @@
         class="browser-stream__folder"
         data-testid="browser-folder"
       />
+      <span
+        v-if="recLabel"
+        class="browser-stream__rec"
+        :class="recLabel.cls"
+        :title="recLabel.title"
+        data-testid="browser-rec"
+      >{{ recLabel.text }}</span>
       <Button
         v-if="captureEndpoint"
         :label="captureLabel"
@@ -125,7 +132,7 @@
 // Phase 2 (ADR-014): streamed headless browser the operator drives, e.g. to log
 // into a no-API site. Pixels in, input out — the remote site never executes
 // here. All logic is in useBrowserStream so it unit-tests; this is the template.
-import { onMounted, onBeforeUnmount, ref } from 'vue';
+import { onMounted, onBeforeUnmount, computed, ref } from 'vue';
 import Button from 'primevue/button';
 import Dialog from 'primevue/dialog';
 import InputText from 'primevue/inputtext';
@@ -157,9 +164,25 @@ const capturing = ref(false);
 const folder = ref('');
 const folderOptions = ref([]);
 const {
-  frameSrc, connected, error, connect, mouse, wheel, key, paste,
+  frameSrc, connected, error, rec, connect, mouse, wheel, key, paste,
   imeInput, seedKeyboard, compositionStart, compositionEnd, capturePage, disconnect,
 } = useBrowserStream();
+
+// Recording status, straight from the server heartbeat. Three states so the
+// operator can tell "recording" from "the recorder fell over" — a badge that
+// cannot show the failure is not evidence of the success.
+const recLabel = computed(() => {
+  const r = rec?.value;  // absent when the composable is mocked
+  if (!r) return null;
+  if (r.degraded) return { text: 'Recording failed', cls: 'is-bad', title: r.reason || 'recorder degraded' };
+  if (!r.recording) return { text: 'Not recording', cls: 'is-off', title: r.reason || 'recorder is off' };
+  const kb = Math.round((r.bytes || 0) / 1024);
+  return {
+    text: `REC ${r.captures || 0} captured`,
+    cls: 'is-on',
+    title: `${r.events} events · ${kb} KB · ${r.dropped || 0} dropped`,
+  };
+});
 
 // @mousedown.prevent suppresses the focus a press normally gives, so focus the
 // keyboard input explicitly — synchronously, inside the tap's event handler,
@@ -269,4 +292,21 @@ onBeforeUnmount(disconnect);
   border: 1px solid var(--surface-border, #ccc); background: #000;
   cursor: crosshair; user-select: none; outline: none;
 }
+
+/* Recording status. Colour is not the only signal — the text says which state
+   it is — and both themes are defined so neither inherits the other's ground. */
+.browser-stream__rec {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.browser-stream__rec.is-on { color: #0f6b45; background: #e4f2ea; border-color: #bcdfcd; }
+.browser-stream__rec.is-off { color: #5c6672; background: #eef1f5; border-color: #dde2e9; }
+.browser-stream__rec.is-bad { color: #a3202f; background: #fae6e8; border-color: #f0c2c8; }
+:global(.dark) .browser-stream__rec.is-on { color: #5fd39b; background: #0f2b20; border-color: #1d4735; }
+:global(.dark) .browser-stream__rec.is-off { color: #98a2b0; background: #1b222b; border-color: #2b3440; }
+:global(.dark) .browser-stream__rec.is-bad { color: #ff8b95; background: #33161a; border-color: #58262c; }
 </style>
