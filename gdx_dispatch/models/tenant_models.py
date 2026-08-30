@@ -58,6 +58,14 @@ class AppSettings(Base):
     # key is exposed to every browser that loads /maps anyway, so the real
     # control is HTTP-referrer restriction set in Google Cloud Console.
     google_maps_api_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Public "leave us a review" URL — usually Google's
+    # search.google.com/local/writereview?placeid=… link. Rendered as a
+    # footer line on every CUSTOMER email by core/email_layout.render_email;
+    # blank hides the line. Staff mail (payroll timesheets, password resets)
+    # passes review_ask=False and never shows it. Migration 084.
+    google_review_url: Mapped[str] = mapped_column(
+        String(500), nullable=False, default="", server_default=""
+    )
     # Email overhaul Phase 4a — workflow send_email actions are an OPTION
     # (locked 2026-08-18), default OFF: the actions were no-ops forever, so
     # pre-existing active rules must not surprise-send on deploy. The sender

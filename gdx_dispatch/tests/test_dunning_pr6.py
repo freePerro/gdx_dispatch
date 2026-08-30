@@ -502,3 +502,33 @@ def test_completed_nudge_stays_gone_for_the_week(tenant_db_session, monkeypatch)
     # Same Monday, later tick (or a retry) — no zombie.
     assert _weekly_nudge(db, TENANT, settings) is False
     assert len(db.execute(select(NextAction)).scalars().all()) == 1
+
+
+# --------------------------------------------------------------------------
+# A payment reminder is a collections notice — no "leave us a review" footer
+# (2026-08-30), even when the tenant has set the link.
+# --------------------------------------------------------------------------
+
+
+def test_reminder_email_never_carries_the_review_footer(tenant_db_session, outbox):
+    from gdx_dispatch.models.tenant_models import AppSettings
+
+    db = tenant_db_session
+    settings_row = db.query(AppSettings).first() or AppSettings(company_name="Acme Door Co")
+    settings_row.google_review_url = "https://search.google.com/local/writereview?placeid=TEST_PLACE_ID"
+    db.add(settings_row)
+    db.commit()
+
+    cust = _seed_customer(db)
+    inv = _seed_overdue(db, cust, days=8)
+    out = send_reminder(
+        invoice_id=inv.id, request=_request(),
+        payload=SendReminderIn(channel="email", stage="friendly"),
+        user=_user(), db=db,
+    )
+
+    assert out["sent"] is True and len(outbox) == 1
+    html = outbox[0]["html_body"]
+    assert '<table role="presentation"' in html, "still the branded shell"
+    assert "Leave us a Google review" not in html
+    assert "writereview" not in html

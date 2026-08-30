@@ -125,6 +125,7 @@ def email_branding(db: Session) -> dict[str, str]:
     phone = ""
     address = ""
     email = ""
+    review_url = ""
     try:
         from gdx_dispatch.models.tenant_models import AppSettings
 
@@ -136,6 +137,7 @@ def email_branding(db: Session) -> dict[str, str]:
             phone = settings.phone or ""
             address = settings.address or ""
             email = settings.email or ""
+            review_url = getattr(settings, "google_review_url", "") or ""
     except Exception:
         # Branding must never block a send — but a read failure means the
         # customer gets an unbranded "Your Service Company" email, so it is
@@ -150,6 +152,8 @@ def email_branding(db: Session) -> dict[str, str]:
         "phone": phone,
         "address": address,
         "email": email,
+        # Blank = no review line. Scheme is re-checked at render time.
+        "google_review_url": review_url.strip(),
     }
 
 
@@ -250,9 +254,16 @@ def render_email(
     body_html: str,
     title: str = "",
     preheader: str = "",
+    review_ask: bool = True,
 ) -> str:
     """Wrap body_html in the branded shell. body_html is TRUSTED markup built
     by the callers in this package from escaped parts — never raw user input.
+
+    review_ask: when True (the default — every customer-facing send) and the
+    tenant has set ``google_review_url``, the footer opens with a "Leave us a
+    Google review" link. Staff mail (payroll timesheets, platform auth email)
+    passes False; asking an employee to review the company on their own
+    timesheet is the kind of thing a shared shell does by accident.
     """
     company = esc(branding.get("company_name") or "Your Service Company")
     accent = esc(branding.get("accent") or DEFAULT_ACCENT)
@@ -274,6 +285,18 @@ def render_email(
         if val:
             footer_bits.append(esc(val))
     footer = " &nbsp;&middot;&nbsp; ".join(footer_bits)
+    review_url = (branding.get("google_review_url") or "").strip() if review_ask else ""
+    # Scheme check here as well as at PATCH time: this value lands verbatim
+    # in an href in every customer's inbox, and a row edited outside the API
+    # (SQL, a future importer) must not turn the footer into a javascript:
+    # link. Anything that is not absolute http(s) is treated as unset.
+    if review_url.lower().startswith(("http://", "https://")):
+        footer = (
+            f'<p style="margin:0 0 8px;font-family:{_FONT};font-size:13px;'
+            f'line-height:1.5;color:{_TEXT};">Happy with our work? '
+            f'<a href="{esc(review_url)}" style="color:{accent};font-weight:600;">'
+            f"Leave us a Google review</a></p>{footer}"
+        )
 
     pre = ""
     if preheader:

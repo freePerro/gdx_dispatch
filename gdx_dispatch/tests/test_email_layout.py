@@ -227,3 +227,78 @@ def test_invoice_receipt_flavor():
     assert "Payment received" in html
     # A paid invoice gets a thank-you, not a Pay button or a due date.
     assert "Pay Invoice" not in html
+
+
+# --------------------------------------------------------------------------- #
+# footer review link (2026-08-30)
+# --------------------------------------------------------------------------- #
+
+REVIEW_URL = "https://search.google.com/local/writereview?placeid=TEST_PLACE_ID"
+
+
+def test_footer_carries_review_link_when_set():
+    html = _shell(branding={"google_review_url": REVIEW_URL})
+    assert f'href="{REVIEW_URL}"' in html
+    assert "Leave us a Google review" in html
+    # It sits in the footer cell, next to the contact line — not in the body.
+    footer_start = html.rfind("(555) 100-2000")
+    assert 0 < html.rfind("Leave us a Google review") < footer_start
+
+
+def test_footer_review_line_is_absent_when_unset():
+    for value in ("", "   ", None):
+        html = _shell(branding={"google_review_url": value})
+        assert "Leave us a Google review" not in html
+    # And when the branding dict predates the key entirely.
+    html = el.render_email(branding=dict(BRANDING), body_html="<p>x</p>")
+    assert "Leave us a Google review" not in html
+
+
+def test_footer_review_line_honors_review_ask_false():
+    """Staff mail (timesheets, auth) opts out even when the tenant set a link."""
+    html = _shell(branding={"google_review_url": REVIEW_URL}, review_ask=False)
+    assert "Leave us a Google review" not in html
+    assert REVIEW_URL not in html
+
+
+def test_footer_review_link_refuses_non_http_schemes():
+    """Second wall behind the PATCH validator: a row edited outside the API
+    must not put a javascript: href in every customer's inbox."""
+    for bad in ("javascript:alert(1)", "/relative", "ftp://x", "www.google.com/x"):
+        html = _shell(branding={"google_review_url": bad})
+        assert "Leave us a Google review" not in html, bad
+        assert bad not in html, bad
+
+
+def test_footer_review_link_is_escaped_and_survives_plain_text():
+    # Angle brackets: escaped in the href, never emitted raw.
+    html = _shell(branding={"google_review_url": "https://example.com/r?q=<x>"})
+    assert 'href="https://example.com/r?q=&lt;x&gt;"' in html
+    assert "<x>" not in html
+    # Ampersand (the realistic case — placeid=…&hl=en): the &amp; entity is
+    # valid in an href, and the text part keeps the link ACTIONABLE
+    # ("label: url"), not just the label.
+    url = "https://search.google.com/local/writereview?placeid=A&hl=en"
+    html = _shell(branding={"google_review_url": url})
+    assert 'href="https://search.google.com/local/writereview?placeid=A&amp;hl=en"' in html
+    text = el.to_plain_text(html)
+    assert f"Leave us a Google review: {url}" in text
+
+
+def test_invoice_builder_passes_review_link_through_and_estimate_opts_out():
+    """The builders wrap branding in their own dict — a copy that dropped the
+    key would silently strip the link from every invoice. Estimates are the
+    deliberate exception: a prospect has had no work done to review."""
+    b = dict(BRANDING, google_review_url=REVIEW_URL)
+    inv = build_invoice_email_html(
+        company_name="Acme Door Co", invoice_number="INV-1", customer_name="Bob",
+        line_items=[], subtotal=1, tax_amount=0, total=1, balance_due=1,
+        portal_url="https://gdx.example.com/pay/tok", branding=b,
+    )
+    est = build_estimate_email_html(
+        company_name="Acme Door Co", estimate_number="EST-1", customer_name="Bob",
+        line_items=[], total=1,
+        portal_url="https://gdx.example.com/p/tok", branding=b,
+    )
+    assert REVIEW_URL in inv and "Leave us a Google review" in inv
+    assert REVIEW_URL not in est and "Leave us a Google review" not in est

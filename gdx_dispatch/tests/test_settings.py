@@ -246,3 +246,130 @@ def test_app_registers_settings_routes():
         source = f.read()
     assert "from gdx_dispatch.routers import settings as settings_router" in source
     assert "app.include_router(settings_router.router if hasattr(settings_router, \"router\") else settings_router)" in source
+
+
+# ── Google review link (2026-08-30) ──────────────────────────────────────────
+
+REVIEW_URL = "https://search.google.com/local/writereview?placeid=TEST_PLACE_ID"
+
+
+def test_branding_defaults_have_blank_review_url(db_session: Session):
+    row = settings_router._ensure_settings(db_session)
+    assert settings_router._branding_dict(row)["google_review_url"] == ""
+    assert settings_router._settings_dict(row)["google_review_url"] == ""
+
+
+def test_patch_branding_round_trips_review_url(db_session: Session):
+    data = settings_router.patch_branding(
+        payload=BrandingPatchIn(google_review_url=f"  {REVIEW_URL}  "),
+        current_user=_admin(),
+        db=db_session,
+    )
+    assert data["google_review_url"] == REVIEW_URL, "stored trimmed, returned verbatim"
+    # Partial update: a later PATCH without the key must not clear it.
+    data = settings_router.patch_branding(
+        payload=BrandingPatchIn(phone="(320) 555-0100"),
+        current_user=_admin(),
+        db=db_session,
+    )
+    assert data["google_review_url"] == REVIEW_URL
+    # And the email shell reads the same row.
+    from gdx_dispatch.core.email_layout import email_branding
+    assert email_branding(db_session)["google_review_url"] == REVIEW_URL
+
+
+def test_patch_branding_blank_clears_review_url(db_session: Session):
+    settings_router.patch_branding(
+        payload=BrandingPatchIn(google_review_url=REVIEW_URL), current_user=_admin(), db=db_session,
+    )
+    data = settings_router.patch_branding(
+        payload=BrandingPatchIn(google_review_url="   "), current_user=_admin(), db=db_session,
+    )
+    assert data["google_review_url"] == ""
+
+
+@pytest.mark.parametrize(
+    "bad", ["javascript:alert(1)", "/reviews", "www.google.com/maps", "ftp://example.com/x", "x" * 501],
+)
+def test_patch_branding_rejects_non_http_review_url(bad: str):
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        BrandingPatchIn(google_review_url=bad)
+    with pytest.raises(ValidationError):
+        SettingsPatchIn(google_review_url=bad)
+
+
+def test_patch_branding_audit_records_what_changed(db_session: Session, monkeypatch):
+    """Invariant #1: who / WHAT / when. The branding audit row used to carry
+    details={} — a change to the customer-facing review link with no record
+    of the value is a silent write."""
+    seen: list[dict] = []
+
+    def _capture(db, **kw):
+        seen.append(kw)
+
+    monkeypatch.setattr(settings_router, "log_audit_event_sync", _capture)
+    settings_router.patch_branding(
+        payload=BrandingPatchIn(google_review_url=REVIEW_URL),
+        request=_request(),
+        current_user=_admin(),
+        db=db_session,
+    )
+    rows = [kw for kw in seen if kw.get("action") == "patch_branding"]
+    assert rows, "no patch_branding audit row"
+    assert rows[-1]["details"] == {"google_review_url": REVIEW_URL}
+    assert rows[-1]["entity_id"], "entity_id must name the settings row"
+
+
+def _capture_invalidate(monkeypatch):
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(settings_router, "invalidate_sync", lambda tid, key: calls.append((tid, key)))
+    return calls
+
+
+def test_branding_patch_drops_the_branding_cache(db_session: Session, monkeypatch):
+    calls = _capture_invalidate(monkeypatch)
+    settings_router.patch_branding(
+        payload=BrandingPatchIn(google_review_url=REVIEW_URL),
+        request=_request(),
+        current_user=_admin(),
+        db=db_session,
+    )
+    assert ("tenant-test", "settings:branding") in calls
+
+
+def test_general_settings_patch_drops_the_branding_cache_for_branding_keys(
+    db_session: Session, monkeypatch,
+):
+    """GET /api/settings/branding is cached for 300s. PATCH /api/settings
+    writes the same columns (company_name, phone, the review link…) and
+    used to leave that entry stale — the Branding tab showed the old value
+    for five minutes after a save made through this endpoint."""
+    calls = _capture_invalidate(monkeypatch)
+    settings_router.patch_settings(
+        payload=SettingsPatchIn(google_review_url=REVIEW_URL),
+        request=_request(),
+        current_user=_admin(),
+        db=db_session,
+    )
+    assert calls == [("tenant-test", "settings:branding")]
+    settings_router.patch_settings(
+        payload=SettingsPatchIn(phone="(320) 555-0100"),
+        request=_request(),
+        current_user=_admin(),
+        db=db_session,
+    )
+    assert calls.count(("tenant-test", "settings:branding")) == 2
+
+
+def test_general_settings_patch_leaves_cache_alone_for_non_branding_keys(
+    db_session: Session, monkeypatch,
+):
+    calls = _capture_invalidate(monkeypatch)
+    settings_router.patch_settings(
+        payload=SettingsPatchIn(timezone="America/Chicago"),
+        request=_request(),
+        current_user=_admin(),
+        db=db_session,
+    )
+    assert calls == []

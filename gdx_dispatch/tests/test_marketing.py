@@ -429,20 +429,63 @@ async def test_campaign_stats_tracking(db_sessionmaker):
     assert stats["converted"] == 1
 
 
-async def test_review_request_sent_after_completion(db_sessionmaker):
+_REVIEW_URL = "https://search.google.com/local/writereview?placeid=TEST_PLACE_ID"
+
+
+def _stub_branding(url: str):
+    """The review link comes from Settings → Branding via email_branding();
+    this fixture's raw-SQL SQLite has no app_settings table, so stub the
+    reader (email_branding itself already degrades to defaults on a read
+    failure, which would look like "not configured")."""
+    from gdx_dispatch.routers import marketing as _marketing
+
+    return _marketing, (lambda db: {"company_name": "Acme Door Co", "google_review_url": url})
+
+
+async def test_review_request_sent_after_completion(db_sessionmaker, monkeypatch):
     Session = db_sessionmaker
     customer_id = _seed_customer(Session, name="Review Me", created_days_ago=20)
     job_id = _seed_job(Session, customer_id=customer_id, created_days_ago=1, completed=True)
+    mod, stub = _stub_branding(_REVIEW_URL)
+    monkeypatch.setattr(mod, "email_branding", stub)
 
     db = Session()
     queued = await schedule_review_request_for_completed_job(job_id=job_id, db=db)
+    stored = db.execute(
+        text("SELECT google_reviews_link, message FROM review_requests WHERE id = :id"),
+        {"id": queued["id"]},
+    ).first()
     db.close()
 
     assert queued["status"] == "queued"
-    assert "google.com/maps" in queued["message"]
+    # The configured link — not the pre-2026-08-30 hardcoded Maps *search*.
+    assert _REVIEW_URL in queued["message"]
+    assert "google.com/maps/search" not in queued["message"]
+    assert "Acme Door Co" in queued["message"]
+    assert stored == (_REVIEW_URL, queued["message"])
     scheduled_for = datetime.fromisoformat(queued["scheduled_for"])
     delta = scheduled_for - datetime.now(UTC)
     assert timedelta(hours=23, minutes=50) <= delta <= timedelta(hours=24, minutes=10)
+
+
+async def test_review_request_refuses_when_no_link_configured(db_sessionmaker, monkeypatch):
+    """No link = 409, never a placeholder. A queued request pointing at a
+    fake URL would reach a real customer."""
+    Session = db_sessionmaker
+    customer_id = _seed_customer(Session, name="No Link", created_days_ago=20)
+    job_id = _seed_job(Session, customer_id=customer_id, created_days_ago=1, completed=True)
+    mod, stub = _stub_branding("")
+    monkeypatch.setattr(mod, "email_branding", stub)
+
+    db = Session()
+    with pytest.raises(HTTPException) as exc:
+        await schedule_review_request_for_completed_job(job_id=job_id, db=db)
+    count = db.execute(text("SELECT COUNT(*) FROM review_requests")).scalar()
+    db.close()
+
+    assert exc.value.status_code == 409
+    assert "Settings" in exc.value.detail
+    assert count == 0, "a refused request must not leave a queued row behind"
 
 
 @pytest.mark.skip(reason=_REFERRAL_REVIEW_SKIP)

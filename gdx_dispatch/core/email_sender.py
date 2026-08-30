@@ -213,6 +213,9 @@ def build_estimate_email_html(
     return render_email(
         branding=b,
         body_html="\n".join(parts),
+        # No "Happy with our work?" on an estimate — the prospect has had no
+        # work done yet (audit 2026-08-30; flip if the office wants it here).
+        review_ask=False,
         title=f"Estimate #{estimate_number}",
         preheader=f"Estimate #{estimate_number} from {b.get('company_name', '')}",
     )

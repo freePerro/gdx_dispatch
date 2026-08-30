@@ -48,6 +48,24 @@
             </div>
 
             <div class="form-field">
+              <label for="company-review-url">Google review link</label>
+              <InputText id="company-review-url" v-model="branding.googleReviewUrl" type="url"
+                placeholder="https://search.google.com/local/writereview?placeid=…"
+                data-testid="company-review-url" />
+              <small class="hint">
+                Adds “Happy with our work? Leave us a Google review” to the footer of every
+                customer email — invoices, receipts, estimates, reminders. Leave blank to hide it.
+                <a
+                  v-if="/^https?:\/\//i.test(branding.googleReviewUrl.trim())"
+                  :href="branding.googleReviewUrl.trim()"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-testid="company-review-url-open"
+                >Open the link to check it</a>
+              </small>
+            </div>
+
+            <div class="form-field">
               <label for="logo-upload">Logo</label>
               <input id="logo-upload" data-testid="logo-upload" type="file" accept="image/*" @change="onLogoSelect" />
               <small class="hint">PNG or JPG, max 2MB</small>
@@ -1445,6 +1463,7 @@ const branding = reactive({
   phone: "",
   email: "",
   address: "",
+  googleReviewUrl: "",
 });
 
 async function loadBrandingForm() {
@@ -1463,6 +1482,7 @@ async function loadBrandingForm() {
       if (typeof data.phone === "string") branding.phone = data.phone;
       if (typeof data.email === "string") branding.email = data.email;
       if (typeof data.address === "string") branding.address = data.address;
+      if (typeof data.google_review_url === "string") branding.googleReviewUrl = data.google_review_url;
     }
   } catch (_err) {
     // Non-fatal: form just shows defaults until user edits.
@@ -1520,6 +1540,7 @@ async function saveBranding() {
       phone: branding.phone.trim(),
       email: branding.email.trim(),
       address: branding.address.trim(),
+      google_review_url: branding.googleReviewUrl.trim(),
     });
     await uploadLogoIfPresent();
     applyBrandingTheme();

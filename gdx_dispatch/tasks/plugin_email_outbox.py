@@ -126,6 +126,10 @@ def _deliver(db, row) -> tuple[bool, str | None]:
         )
         html = render_email(
             branding=branding, body_html=body_html,
+            # A raw to_email override with no customer is a plugin's own
+            # notification (a digest to the office, an alert to a tech) —
+            # not a customer email, so no "leave us a review" footer.
+            review_ask=bool(row.customer_id),
             title=row.subject, preheader=row.subject,
         )
 

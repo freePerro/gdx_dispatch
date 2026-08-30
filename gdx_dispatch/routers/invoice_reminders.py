@@ -483,6 +483,9 @@ def send_reminder_email_for_invoice(
     html = render_email(
         branding=branding,
         body_html=body_html,
+        # A payment reminder is a collections notice, not a thank-you: it
+        # does not carry the "leave us a review" footer (audit 2026-08-30).
+        review_ask=False,
         title=subject,
         preheader=subject,
     )

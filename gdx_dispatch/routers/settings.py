@@ -7,7 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Path, Request, UploadFile
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.tenant import company_id
@@ -42,6 +42,21 @@ _ALLOWED_INTEGRATIONS = ("quickbooks", "stripe", "twilio", "quickbooks_catalog_s
 _MODULE_KEY_RE = re.compile(r"^[a-z0-9_-]+$")
 
 
+def _clean_review_url(value: str | None) -> str | None:
+    """Blank clears the review link. Anything else must be an absolute
+    http(s) URL: it lands verbatim in an <a href> in every customer email,
+    so a javascript: scheme or a relative path is refused at the door rather
+    than mailed out. (render_email re-checks the scheme as a second wall.)"""
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return ""
+    if not value.lower().startswith(("http://", "https://")):
+        raise ValueError("Review link must be a full URL starting with http:// or https://")
+    return value
+
+
 class SettingsPatchIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -51,6 +66,7 @@ class SettingsPatchIn(BaseModel):
     email: str | None = None
     logo: str | None = None
     timezone: str | None = None
+    google_review_url: str | None = Field(default=None, max_length=500)
     integrations: dict[str, bool] | None = None
     primary_color: str | None = None
     secondary_color: str | None = None
@@ -89,6 +105,29 @@ class SettingsPatchIn(BaseModel):
     payroll_autosend_enabled: bool | None = None
     payroll_autosend_hour: int | None = Field(default=None, ge=0, le=23)
 
+    @field_validator("google_review_url")
+    @classmethod
+    def _review_url(cls, value: str | None) -> str | None:
+        return _clean_review_url(value)
+
+
+# Keys served by GET /api/settings/branding (300s cache). Either PATCH that
+# writes one of these must drop the cached entry, or the Branding tab shows
+# the old value for up to five minutes after Save.
+_BRANDING_CACHE_KEYS = frozenset({
+    "company_name", "logo", "primary_color", "secondary_color",
+    "address", "phone", "email", "google_review_url",
+})
+
+
+def _request_tenant_id(request: Request | None) -> str:
+    if request is None:
+        return ""
+    try:
+        return str((getattr(request.state, "tenant", {}) or {}).get("id") or "")
+    except Exception:
+        return ""
+
 
 class BrandingPatchIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -100,6 +139,12 @@ class BrandingPatchIn(BaseModel):
     address: str | None = None
     phone: str | None = None
     email: str | None = None
+    google_review_url: str | None = Field(default=None, max_length=500)
+
+    @field_validator("google_review_url")
+    @classmethod
+    def _review_url(cls, value: str | None) -> str | None:
+        return _clean_review_url(value)
 
 
 def _require_admin(current_user: dict[str, Any]) -> None:
@@ -155,6 +200,7 @@ def _settings_dict(row: AppSettings) -> dict[str, Any]:
         "address": row.address or "",
         "phone": row.phone or "",
         "email": row.email or "",
+        "google_review_url": getattr(row, "google_review_url", "") or "",
         "logo": row.logo or "",
         "timezone": row.timezone or "America/New_York",
         "enabled_modules": list(row.enabled_modules or []),
@@ -195,6 +241,7 @@ def _branding_dict(row: AppSettings) -> dict[str, Any]:
         "address": row.address or "",
         "phone": row.phone or "",
         "email": row.email or "",
+        "google_review_url": getattr(row, "google_review_url", "") or "",
     }
 
 
@@ -306,7 +353,7 @@ def patch_settings(
     _validate_pay_period(row, updates)
     for key in (
         "company_name", "address", "phone", "email", "logo", "timezone",
-        "primary_color", "secondary_color",
+        "primary_color", "secondary_color", "google_review_url",
         "default_shift_start", "default_shift_end", "default_workdays",
         "qb_accounting_method", "debug_logging_enabled",
         "customer_listings_enabled",
@@ -325,6 +372,12 @@ def patch_settings(
     db.add(row)
     db.commit()
     db.refresh(row)
+    # Same cache the Branding PATCH drops — this endpoint writes the same
+    # columns and used to leave the 300s settings:branding entry stale.
+    if _BRANDING_CACHE_KEYS & updates.keys():
+        _tid = _request_tenant_id(request)
+        if _tid:
+            invalidate_sync(_tid, "settings:branding")
     log_audit_event_sync(
         db=db,
         tenant_id=str(getattr(getattr(request, "state", None), "tenant", {}).get("id", "")) if request else None,
@@ -814,7 +867,10 @@ def patch_branding(
     row = _ensure_settings(db)
 
     updates = payload.model_dump(exclude_unset=True)
-    for key in ("company_name", "logo", "primary_color", "secondary_color", "address", "phone", "email"):
+    for key in (
+        "company_name", "logo", "primary_color", "secondary_color",
+        "address", "phone", "email", "google_review_url",
+    ):
         if key in updates:
             setattr(row, key, updates[key])
 
@@ -825,12 +881,7 @@ def patch_branding(
     # Drop the cached settings:branding entry so the next GET reflects
     # the new values. Without this the 300s TTL on get_branding made
     # PATCH appear to "not stick" until the cache aged out.
-    tenant_id = ""
-    if request is not None:
-        try:
-            tenant_id = str((getattr(request.state, "tenant", {}) or {}).get("id") or "")
-        except Exception:
-            tenant_id = ""
+    tenant_id = _request_tenant_id(request)
     if tenant_id:
         invalidate_sync(tenant_id, "settings:branding")
     _audit_db = locals().get('db')
@@ -848,8 +899,10 @@ def patch_branding(
                 user_id=_audit_user,
                 action="patch_branding",
                 entity_type="branding",
-                entity_id="",
-                details={},
+                entity_id=str(row.id),
+                # What changed, not {} — "who/what/when" is invariant #1 and
+                # an empty details dict answered only two of the three.
+                details=updates,
                 request=_audit_req,
             )
             _audit_db.commit()
