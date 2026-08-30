@@ -155,6 +155,8 @@ def _body_html(
     return render_email(
         branding=branding,
         body_html=body,
+        # Staff mail: no "leave us a Google review" footer on a payroll sheet.
+        review_ask=False,
         title=f"Timesheet {sheet.period.label()}",
         preheader=(
             f"{sheet.worked_hours:.2f} hours for {sheet.people} "

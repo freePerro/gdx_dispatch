@@ -189,3 +189,48 @@ def test_delivery_id_scoped_per_plugin(db):
     dup = queue_email(db, tenant_id=TENANT, plugin_key="plugin-a", delivery_id="welcome:c1",
                       subject="s", body_text="b", to_email="x@example.com")
     assert dup["reason"] == "duplicate_delivery_id"
+
+
+# ── "Leave us a Google review" footer (2026-08-30) ───────────────────────────
+
+_REVIEW_URL = "https://search.google.com/local/writereview?placeid=TEST_PLACE_ID"
+
+
+def _set_review_url(db):
+    from gdx_dispatch.models.tenant_models import AppSettings
+
+    row = db.query(AppSettings).first()
+    if row is None:
+        row = AppSettings(company_name="Acme Door Co")
+        db.add(row)
+    row.google_review_url = _REVIEW_URL
+    db.commit()
+
+
+def test_drain_to_customer_record_carries_review_footer(db, monkeypatch):
+    _set_review_url(db)
+    cust = Customer(id=uuid4(), name="Review Customer",
+                    email="rc@example.com", company_id=TENANT)
+    db.add(cust)
+    db.commit()
+    queue_email(db, tenant_id=TENANT, plugin_key="p1", delivery_id="d-30",
+                subject="s", body_text="Hi {name}!", customer_id=str(cust.id))
+    counts, captured = _drain(db, monkeypatch)
+    assert counts["sent"] == 1
+    assert "Leave us a Google review" in captured["html_body"]
+    assert _REVIEW_URL in captured["html_body"]
+
+
+def test_drain_raw_override_address_gets_no_review_footer(db, monkeypatch):
+    """A plugin's own notification (digest to the office, alert to a tech)
+    is addressed by raw to_email with no customer — it must not ask the
+    office to review the company."""
+    _set_review_url(db)
+    queue_email(db, tenant_id=TENANT, plugin_key="p1", delivery_id="d-31",
+                subject="Nightly digest", body_text="3 jobs closed today",
+                to_email="office@example.com")
+    counts, captured = _drain(db, monkeypatch)
+    assert counts["sent"] == 1
+    assert '<table role="presentation"' in captured["html_body"], "still the branded shell"
+    assert "Leave us a Google review" not in captured["html_body"]
+    assert _REVIEW_URL not in captured["html_body"]

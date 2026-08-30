@@ -190,6 +190,7 @@ describe("Settings branding save", () => {
       phone: "",
       email: "",
       address: "",
+      google_review_url: "",
     });
     expect(document.documentElement.style.getPropertyValue("--primary")).toBe("#123456");
     expect(document.documentElement.style.getPropertyValue("--accent")).toBe("#abcdef");

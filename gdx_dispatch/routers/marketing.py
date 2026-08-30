@@ -10,11 +10,10 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import SYSTEM_ACTOR, log_audit_event
+from gdx_dispatch.core.email_layout import email_branding
 from gdx_dispatch.models.tenant_models import LoyaltyPoints, LoyaltyReferral, ReviewRequest
 
 router = APIRouter(prefix="/api", tags=["marketing"])
-
-GOOGLE_REVIEWS_LINK = "https://www.google.com/maps/search/?api=1&query=GDX+Google+Reviews"
 
 
 class ReferralCreateIn(BaseModel):
@@ -50,10 +49,24 @@ async def schedule_review_request_for_completed_job(job_id: str, db: Session) ->
     if status != "completed":
         raise HTTPException(status_code=409, detail="Review requests can only be queued for completed jobs")
 
+    # The link comes from Settings → Branding (app_settings.google_review_url),
+    # the same source the email footer uses. Until 2026-08-30 this module
+    # carried a hardcoded placeholder — a Google Maps *search* for "GDX
+    # Google Reviews", not a review page — and would have queued it to real
+    # customers. No link configured = refuse, never fall back to a fake one.
+    branding = email_branding(db)
+    review_link = branding.get("google_review_url") or ""
+    if not review_link:
+        raise HTTPException(
+            status_code=409,
+            detail="No Google review link is set — add it under Settings → Branding first",
+        )
+
     now = datetime.now(UTC)
     scheduled_for = now + timedelta(hours=24)
     message = (
-        f"Thanks for choosing GDX. We'd appreciate your feedback: {GOOGLE_REVIEWS_LINK}"
+        f"Thanks for choosing {branding['company_name']}. "
+        f"We'd appreciate your feedback: {review_link}"
     )
 
     review_id = str(uuid4())
@@ -63,7 +76,7 @@ async def schedule_review_request_for_completed_job(job_id: str, db: Session) ->
         customer_id=job.get("customer_id"),
         status="queued",
         message=message,
-        google_reviews_link=GOOGLE_REVIEWS_LINK,
+        google_reviews_link=review_link,
         scheduled_for=scheduled_for.isoformat(),
         created_at=now.isoformat(),
     )

@@ -52,6 +52,7 @@ const BRANDING = {
   phone: '(320) 555-0100',
   email: 'office@example.com',
   address: '123 Main St, Anytown, MN 56000',
+  google_review_url: 'https://search.google.com/local/writereview?placeid=TEST_PLACE_ID',
 };
 
 // Pass-through stubs so the branding TabPanel actually renders its slot.
@@ -130,6 +131,42 @@ describe('Branding tab — company contact details', () => {
         email: 'help@example.com',
         address: '9 New Rd, Parkers Prairie, MN',
       }),
+    );
+  });
+
+  it('renders the Google review link, populated from the server, with a check-it link', async () => {
+    const wrapper = await mountSettings();
+    const input = wrapper.find('[data-testid="company-review-url"]');
+    expect(input.exists()).toBe(true);
+    expect(input.element.value).toBe('https://search.google.com/local/writereview?placeid=TEST_PLACE_ID');
+    const open = wrapper.find('[data-testid="company-review-url-open"]');
+    expect(open.exists()).toBe(true);
+    expect(open.attributes('href')).toBe('https://search.google.com/local/writereview?placeid=TEST_PLACE_ID');
+    expect(open.attributes('target')).toBe('_blank');
+  });
+
+  it('sends an edited Google review link in the PATCH payload, trimmed', async () => {
+    const wrapper = await mountSettings();
+    await wrapper.find('[data-testid="company-review-url"]').setValue('  https://g.page/r/EXAMPLE/review ');
+    await wrapper.find('[data-testid="save-branding"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPatch).toHaveBeenCalledWith(
+      '/api/settings/branding',
+      expect.objectContaining({ google_review_url: 'https://g.page/r/EXAMPLE/review' }),
+    );
+  });
+
+  it('a cleared review link is sent as "" and the check-it link disappears', async () => {
+    const wrapper = await mountSettings();
+    await wrapper.find('[data-testid="company-review-url"]').setValue('');
+    expect(wrapper.find('[data-testid="company-review-url-open"]').exists()).toBe(false);
+    await wrapper.find('[data-testid="save-branding"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPatch).toHaveBeenCalledWith(
+      '/api/settings/branding',
+      expect.objectContaining({ google_review_url: '' }),
     );
   });
 
