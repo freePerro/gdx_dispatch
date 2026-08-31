@@ -150,7 +150,7 @@ the phone; on save, backfill `customer_id` onto the task (and onto the matching
 - **StickyNote removal** (Doug-confirmed dead code 2026-07-07): delete model
   (`tenant_models.py:1013`), export in `models/__init__.py`, `/api/sticky-notes`
   routes in `routers/notes.py`, tests in `tests/test_notes.py`, reference in
-  `tools/qa_tier1.py`, types in `frontend/src/types/api.d.ts`. Migration to drop
+  `tools/qa_tier1.py`, types in `frontend/src/types/api.d.ts`. Migration to drop *[2026-08-31: `api.d.ts` and `openapi-typescript` are gone — nothing imported them; the route table is pinned in `gdx_dispatch/openapi_routes.txt`.]*
   `sticky_notes` (guarded `to_regclass`-style since baseline/ORM history varies).
 
 ## PR slicing

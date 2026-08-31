@@ -530,7 +530,7 @@ Deleted `upload_mobile_job_photo` and both of its routes
 plus the helpers that existed only to serve it: `_photo_exif_metadata`,
 `_VALID_PHOTO_KINDS`, and `_image_suffix` — 254 lines from `routers/mobile.py`.
 
-Also removed the two path entries from `frontend/src/types/api.d.ts`, rewrote
+Also removed the two path entries from `frontend/src/types/api.d.ts`, rewrote *[2026-08-31: `api.d.ts` and `openapi-typescript` are gone — nothing imported them; the route table is pinned in `gdx_dispatch/openapi_routes.txt`.]*
 `gdx_dispatch/docs/tech_mobile.md` to name `POST /api/documents` as the photo
 endpoint with a "do not re-add these" note, and marked the **§"Photo capture"
 section of `tech-mobile-workflow-plan.md` SUPERSEDED** — that doc is `RELEASED`

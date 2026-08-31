@@ -142,7 +142,7 @@ tests).
   feature. Flagged, not deleted.
 - **apply-credit** stays wired-but-409ing while GL posting is off
   (existing intended state pending CPA sign-off).
-- **api.d.ts** stale entries for deleted routes: generated file, left
+- **api.d.ts** stale entries for deleted routes: generated file, left *[2026-08-31: `api.d.ts` and `openapi-typescript` are gone — nothing imported them; the route table is pinned in `gdx_dispatch/openapi_routes.txt`.]*
   for the next regeneration.
 - **sequence_number semantics** (hardcoded 1) — cosmetic; the one path
   that computed it differently was deleted.

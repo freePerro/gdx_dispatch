@@ -374,7 +374,7 @@ Per PR, in order:
 
 - `Estimate.jobsite_address` (text) → `location_id` FK convergence (D6).
 - `/api/mobile/schedule` appears consumer-less — candidate for deprecation sweep
-  (verified during the PR 1 audit: only the generated `types/api.d.ts` mentions it).
+  (verified during the PR 1 audit: only the generated `types/api.d.ts` mentions it). *[2026-08-31: `api.d.ts` and `openapi-typescript` are gone — nothing imported them; the route table is pinned in `gdx_dispatch/openapi_routes.txt`.]*
 - Dispatch-side appointment geocoding uses whatever address the dispatch client
   had — geocode from the effective jobsite so bound jobs always get a fresh pin
   (PR 1 re-pins from `customer_locations.lat/lng` when stored, keeps the

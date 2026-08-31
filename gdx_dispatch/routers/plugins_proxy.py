@@ -41,7 +41,21 @@ from gdx_dispatch.core.plugin_permissions import (
 from gdx_dispatch.plugin_api.context import H_MODULES, H_ROLE, H_TENANT, H_USER
 from gdx_dispatch.routers.auth import get_current_user
 
-router = APIRouter(prefix="/api/plugins", tags=["plugins"])
+
+def _stable_operation_id(route) -> str:
+    """FastAPI's default takes list(route.methods)[0] — a SET, so the
+    operationId of a multi-method route flipped between _delete/_patch/...
+    with the hash seed, making /openapi.json differ per process
+    (2026-08-31). Sort the methods so the id is a function of the route."""
+    methods = "_".join(sorted(m.lower() for m in route.methods or ()))
+    return f"{route.name}{route.path_format}_{methods}".replace("/", "_").replace("{", "").replace("}", "")
+
+
+router = APIRouter(
+    prefix="/api/plugins",
+    tags=["plugins"],
+    generate_unique_id_function=_stable_operation_id,
+)
 
 # Headers that must not be forwarded verbatim (hop-by-hop + recomputed downstream).
 _DROP = {"host", "content-length", "connection", "transfer-encoding", "te", "upgrade"}

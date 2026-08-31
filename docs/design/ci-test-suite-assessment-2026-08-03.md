@@ -300,7 +300,7 @@ of the six identified gaps were closed**. Still absent:
   fixed by hand, so the class is still open. (The fix itself is solid: `useApi.js` now guards it
   and 6 spec cases cover it.)
 - **No coverage measurement** anywhere (no pytest-cov, no vitest coverage).
-- **No contract-parity check** frontend↔backend (`openapi-typescript` sits unused in devDeps).
+- **No contract-parity check** frontend↔backend (`openapi-typescript` sits unused in devDeps). *[2026-08-31: `api.d.ts` and `openapi-typescript` are gone — nothing imported them; the route table is pinned in `gdx_dispatch/openapi_routes.txt`.]*
 - **Two gates are written but unwired**: `lint:ux` (`scripts/ux_gate.mjs`) gates nothing in CI,
   and its own regression test `ux_gate.test.mjs` is excluded by `vitest.config.js` and invoked by
   no script — the test-for-the-gate is unreachable and the gate is unplugged. One line each.
