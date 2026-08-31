@@ -463,7 +463,7 @@ Each of these was found during the build and deliberately left out of it.
 
    **What the adversarial review found instead, and is NOT fixed:**
    `POST /api/invoices/{id}/void` **has no UI caller.** No Vue file calls it;
-   the path exists only in `api.d.ts` and the stale `openapi.json`, and
+   the path exists only in `api.d.ts` and the stale `openapi.json`, and *[2026-08-31: `api.d.ts` and `openapi-typescript` are gone — nothing imported them; the route table is pinned in `gdx_dispatch/openapi_routes.txt`.]*
    `patch_invoice` refuses status writes. Prod has never written a single
    `invoice_voided` audit row — its two voids came from a one-off repair script
    and from the deposit-supersede path in `modules/deposits/service.py`. So the

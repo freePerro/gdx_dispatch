@@ -76,7 +76,7 @@ that doesn't exist (`auth.token` vs `accessToken`), is invisible until a user
 clicks the button.
 
 - Cheapest: ESLint flat config + `eslint-plugin-vue`, baseline-ratcheted.
-- Real fix: `openapi-typescript` is **already in devDependencies, unused** —
+- Real fix: `openapi-typescript` is **already in devDependencies, unused** — *[2026-08-31: `api.d.ts` and `openapi-typescript` are gone — nothing imported them; the route table is pinned in `gdx_dispatch/openapi_routes.txt`.]*
   generate API types from the OpenAPI spec, adopt incrementally via
   JSDoc + `checkJS`.
 - Grow the source-assertion vitest idiom already present
@@ -227,7 +227,7 @@ dynamic regions; Rung 4 opportunistic.
 ## Suggested order
 
 1. **Gap 1** contract-parity static scan (≈1 day, kills the most-escaped class)
-2. **Gap 2** ESLint + ratchet (≈1 day); openapi-typescript adoption follows
+2. **Gap 2** ESLint + ratchet (≈1 day); openapi-typescript adoption follows *[2026-08-31: `api.d.ts` and `openapi-typescript` are gone — nothing imported them; the route table is pinned in `gdx_dispatch/openapi_routes.txt`.]*
 3. **Gap 3** compose-stack smoke job in CI (unlocks Rungs 1–3 above)
 4. **Visual Rungs 1–2** as gates; **Rung 3** once the smoke job is stable
 5. **Gap 4** upgrade-with-data migration harness

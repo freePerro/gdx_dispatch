@@ -21,7 +21,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import JSON, Boolean, DateTime, Index, String, Text, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 from sqlalchemy.types import Uuid
@@ -227,7 +227,11 @@ class IntegrationCreate(BaseModel):
     integration_type: str = "custom_webhook"
     webhook_url: str
     events: list[str]
-    secret: str = secrets.token_hex(32)
+    # default_factory, not a bare call: `= secrets.token_hex(32)` evaluated ONCE
+    # at import, so every integration created without a secret in a process
+    # shared it — and the value was published in the schema on /openapi.json
+    # at every boot (2026-08-31 audit of the openapi snapshot gate).
+    secret: str = Field(default_factory=lambda: secrets.token_hex(32))
 
 
 class IntegrationUpdate(BaseModel):

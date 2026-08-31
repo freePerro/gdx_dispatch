@@ -553,7 +553,7 @@ ledger-pulls-off banner, timeclock sweep exceptions, estimate_archive.
 
 Sampling tails remain (~1,006 endpoints; serializer field checks sampled; the
 write-path pass covered the main edit surfaces, not every dialog). Still
-unaudited: generated `types/api.d.ts` drift, and **live-data correctness**
+unaudited: generated `types/api.d.ts` drift, and **live-data correctness** *[2026-08-31: `api.d.ts` and `openapi-typescript` are gone — nothing imported them; the route table is pinned in `gdx_dispatch/openapi_routes.txt`.]*
 (pages rendering wrong numbers from real data — `/ux-audit` territory,
 needs the running app, not static reads).
 
