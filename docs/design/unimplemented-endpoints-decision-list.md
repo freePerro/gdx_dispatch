@@ -432,3 +432,43 @@ run "not_implemented"); the router now refuses them at create/update.
 **Kept:** the three ORM models and tables (no DDL, data untouched) — dropping
 them is a separate decision. Event Rules requires `nav.admin` where the old page
 took `nav.office`; nobody loses a working feature because the old page did nothing.
+
+## 2026-08-31 — review-request machinery that never sent; retired
+
+Same shape as the Automations shell above, found in the same pass:
+
+- `POST /api/reviews/request/{job_id}` wrote a `customer_reviews` row with
+  status "requested" plus an audit row and **sent nothing**; no UI called it.
+  Removed. `submit_review` (records a staff-entered rating), the list and the
+  stats stay — they do what they say.
+- `routers/marketing.py::schedule_review_request_for_completed_job` had **no
+  production caller** and queued rows into `review_requests`, a table with
+  **no reader** (0 rows on prod and demo). Function, `ReviewRequest` model and
+  table removed — **migration 085** drops it (both engines; downgrade
+  recreates the empty table).
+- The `CustomerReview` ORM comment "columns from production schema not yet in
+  ORM" was stale: the ORM matched `information_schema` column-for-column when
+  checked. Comment corrected; no drift.
+- `test_marketing.py` carried two permanently-skipped placeholders for the
+  moved functions and two tests of the dead scheduler — removed.
+- Found on the way: the Reviews page renders `source` / `customer` / `content`
+  and the list API returned none of them, so Customer and Comment were blank.
+  The list now carries those keys. On prod the visible change is the nine
+  customer names: every stored row has a NULL `source` (nothing writes it) and
+  no `review_text`, so Source still reads "Unknown" and Comment stays empty.
+
+**Open, filed here rather than bundled (audit 2026-08-31):**
+- The nine "requested" rows are orphans now — no rating, no text — and render
+  on the page indistinguishable from real reviews (page shows 13, stats count
+  4). Hide `status="requested"` from the list, or soft-delete them: a data call.
+- `list_reviews` ignores `deleted_at`, so soft-deleting would not hide them
+  until that filter exists.
+- The page's Flagged tab/toggle read a `flagged` key no column provides — dead
+  UI. `token`, `sent_at`, `google_reviews_link`, `message`, `scheduled_for` are
+  now write-only columns; `token` is still serialized.
+
+**Still open by design — #473:** customers have no in-app way to leave a review
+and the owner's 2026-08-25 call was that reviews live on Google. The Google
+review link now rides every receipt and invoice footer (v1.112.0), which is
+the everyday ask; a dedicated "Request a review" email action is a feature to
+decide, not a bug to fix here.

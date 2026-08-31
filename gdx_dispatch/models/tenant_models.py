@@ -2912,7 +2912,7 @@ class VanInventoryLog(Base):
 
 
 class CustomerReview(Base):
-    """Actual customer review (rating + text). Canonical from reviews.py DDL."""
+    """A customer review record (rating + text), read by the Reviews page."""
     __tablename__ = "customer_reviews"
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     tenant_id: Mapped[str] = mapped_column(Text, nullable=True)
@@ -2925,27 +2925,16 @@ class CustomerReview(Base):
     sent_at: Mapped[str] = mapped_column(Text, nullable=True)
     submitted_at: Mapped[str] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
-    # -- columns from production schema not yet in ORM --
+    # These six were added on prod before the ORM caught up; the ORM has
+    # carried them since and matched information_schema column-for-column
+    # when re-checked 2026-08-31. (review_requests, the sibling table, was
+    # dropped the same day — one writer nothing called, no reader.)
     company_id: Mapped[str] = mapped_column(String(36), nullable=False)
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     google_reviews_link: Mapped[str] = mapped_column(String(500), nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=True)
     scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     source: Mapped[str] = mapped_column(String(100), nullable=True)
-
-
-class ReviewRequest(Base):
-    """Review solicitation (message + link). Renamed from marketing.py's customer_reviews."""
-    __tablename__ = "review_requests"
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
-    job_id: Mapped[str] = mapped_column(Text, nullable=True)
-    customer_id: Mapped[str] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
-    message: Mapped[str] = mapped_column(Text, nullable=True)
-    google_reviews_link: Mapped[str] = mapped_column(Text, nullable=True)
-    scheduled_for: Mapped[str] = mapped_column(Text, nullable=True)
-    sent_at: Mapped[str] = mapped_column(Text, nullable=True)
-    created_at: Mapped[str] = mapped_column(Text, nullable=True)
 
 
 class CompanyModuleGrant(Base):

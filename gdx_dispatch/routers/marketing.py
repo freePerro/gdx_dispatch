@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import UTC, datetime
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import SYSTEM_ACTOR, log_audit_event
-from gdx_dispatch.core.email_layout import email_branding
-from gdx_dispatch.models.tenant_models import LoyaltyPoints, LoyaltyReferral, ReviewRequest
+from gdx_dispatch.models.tenant_models import LoyaltyPoints, LoyaltyReferral
 
 router = APIRouter(prefix="/api", tags=["marketing"])
 
@@ -22,74 +20,6 @@ class ReferralCreateIn(BaseModel):
     referrer_customer_id: str = Field(..., min_length=1, max_length=64)
     referee_name: str = Field(..., min_length=1, max_length=120)
     referee_phone: str = Field(..., min_length=1, max_length=30)
-
-
-def _job_or_404(job_id: str, db: Session) -> dict[str, Any]:
-    # Uses text() because Job.id is Uuid(as_uuid=True) which has SQLite/text-insert
-    # incompatibility when tests seed via raw SQL with dashed UUID strings.
-    row = db.execute(
-        text(
-            """
-            SELECT id, customer_id, title, status, lifecycle_stage, completed_at
-            FROM jobs
-            WHERE id = :job_id AND deleted_at IS NULL
-            LIMIT 1
-            """
-        ),
-        {"job_id": job_id},
-    ).mappings().first()
-    if not row:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return dict(row)
-
-
-async def schedule_review_request_for_completed_job(job_id: str, db: Session) -> dict[str, Any]:
-    job = _job_or_404(job_id, db)
-    status = str(job.get("status") or job.get("lifecycle_stage") or "").lower()
-    if status != "completed":
-        raise HTTPException(status_code=409, detail="Review requests can only be queued for completed jobs")
-
-    # The link comes from Settings → Branding (app_settings.google_review_url),
-    # the same source the email footer uses. Until 2026-08-30 this module
-    # carried a hardcoded placeholder — a Google Maps *search* for "GDX
-    # Google Reviews", not a review page — and would have queued it to real
-    # customers. No link configured = refuse, never fall back to a fake one.
-    branding = email_branding(db)
-    review_link = branding.get("google_review_url") or ""
-    if not review_link:
-        raise HTTPException(
-            status_code=409,
-            detail="No Google review link is set — add it under Settings → Branding first",
-        )
-
-    now = datetime.now(UTC)
-    scheduled_for = now + timedelta(hours=24)
-    message = (
-        f"Thanks for choosing {branding['company_name']}. "
-        f"We'd appreciate your feedback: {review_link}"
-    )
-
-    review_id = str(uuid4())
-    review = ReviewRequest(
-        id=review_id,
-        job_id=job_id,
-        customer_id=job.get("customer_id"),
-        status="queued",
-        message=message,
-        google_reviews_link=review_link,
-        scheduled_for=scheduled_for.isoformat(),
-        created_at=now.isoformat(),
-    )
-    db.add(review)
-    db.commit()
-    return {
-        "id": review_id,
-        "job_id": job_id,
-        "customer_id": job.get("customer_id"),
-        "status": "queued",
-        "message": message,
-        "scheduled_for": scheduled_for.isoformat(),
-    }
 
 
 # NOTE: /api/reviews/* and /api/referrals/* endpoints moved to dedicated
