@@ -14,6 +14,11 @@ from gdx_dispatch.modules.workflows.models import WorkflowRule, WorkflowRun
 # event here the same commit that adds its emit_domain_event call.
 SUPPORTED_TRIGGERS = ["job.created", "invoice.paid", "estimate.sent", "customer.created"]
 SUPPORTED_ACTIONS = ["send_sms", "send_email", "create_followup_task", "emit_webhook", "update_job_field"]
+# The target contract above is wider than what executes. Only these run;
+# the rest would sit on an active rule reporting "not_implemented" forever,
+# so the router refuses them at create/update (2026-08-31, same class as
+# the retired automation sequences: an advertised action with no executor).
+IMPLEMENTED_ACTIONS = ("send_email",)
 logger = logging.getLogger(__name__)
 
 

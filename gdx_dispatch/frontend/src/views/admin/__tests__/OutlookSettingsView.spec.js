@@ -140,7 +140,8 @@ describe('OutlookSettingsView', () => {
     expect(text).toContain('Tagging');
     expect(text).toContain('Visibility');
     expect(text).toContain('Vendor Bills');
-    expect(text).toContain('Auto-Email');
+    // Auto-Email tab retired 2026-08-31 (its templates were read by nothing).
+    expect(text).not.toContain('Auto-Email');
   });
 
   it('shows "set" indicator when secret_set=true', async () => {

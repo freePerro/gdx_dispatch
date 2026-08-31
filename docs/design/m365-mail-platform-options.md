@@ -28,7 +28,7 @@ that render but say "open in Outlook", and a mobile view with no folders, link, 
 
 ### Dead or half-wired (inventory 2026-08-27)
 
-- `automations.py::dispatch_trigger` — zero callers; the Auto-Email settings tab says so itself.
+- `automations.py::dispatch_trigger` — zero callers; the Auto-Email settings tab says so itself. **[DECIDED 2026-08-31: deleted — `dispatch_trigger`, its tests and the Outlook Auto-Email tab are removed; Event Rules (`modules/workflows`) is the event-email path. See docs/design/unimplemented-endpoints-decision-list.md § 2026-08-31.]**
 - `OutlookAttachment` table, `body_r2_key`, `in_reply_to`, `OutlookAccount.delta_token` — columns/tables nothing writes.
 - `graph_client.copy_message`, `move_folder`, `get_mailbox_settings` — no callers.
 - `tasks/email_poller.py` (IMAP) — registered, no beat entry, parallel `inbound_emails` schema.

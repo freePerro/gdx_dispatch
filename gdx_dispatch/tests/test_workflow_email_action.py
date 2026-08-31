@@ -198,3 +198,49 @@ def test_router_rejects_dead_rules(db):
     listed = c.get("/api/workflows")
     assert listed.status_code == 200
     assert listed.json()[0]["name"] == "r1"
+
+
+def test_router_rejects_actions_without_an_executor(db):
+    """2026-08-31: SUPPORTED_ACTIONS names five actions; only send_email
+    executes. A rule created with any of the other four would sit active and
+    report "not_implemented" on every fire — the retired automation-sequences
+    class. The router refuses them at create/update with a reason."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from gdx_dispatch.core.database import get_db
+    from gdx_dispatch.core.modules import require_module
+    from gdx_dispatch.modules.workflows import router as wf
+    from gdx_dispatch.modules.workflows.engine import IMPLEMENTED_ACTIONS, SUPPORTED_ACTIONS
+    from gdx_dispatch.routers.auth import get_current_user
+
+    assert set(IMPLEMENTED_ACTIONS) < set(SUPPORTED_ACTIONS)
+
+    app = FastAPI()
+    app.include_router(wf.router)
+
+    def _db():
+        yield db
+
+    app.dependency_overrides[get_db] = _db
+    app.dependency_overrides[get_current_user] = lambda: {"user_id": "u"}
+    app.dependency_overrides[require_module("workflows")] = lambda: None
+    c = TestClient(app)
+
+    for dead in sorted(set(SUPPORTED_ACTIONS) - set(IMPLEMENTED_ACTIONS)):
+        r = c.post("/api/workflows", json={
+            "name": f"r-{dead}", "trigger_event": "invoice.paid",
+            "actions": [{"action_type": dead, "params": {}}],
+        })
+        assert r.status_code == 422, (dead, r.text)
+        assert "no executor" in r.json()["detail"], dead
+
+    ok = c.post("/api/workflows", json={
+        "name": "r-email", "trigger_event": "invoice.paid",
+        "actions": [{"action_type": "send_email", "params": {"subject": "s", "body": "b"}}],
+    })
+    assert ok.status_code == 200, ok.text
+    # Update path is guarded the same way.
+    rid = ok.json()["id"]
+    bad = c.put(f"/api/workflows/{rid}", json={"actions": [{"action_type": "send_sms", "params": {}}]})
+    assert bad.status_code == 422 and "no executor" in bad.json()["detail"]

@@ -19,7 +19,11 @@ def _validate_rule_shape(trigger_event: str | None, actions: list[dict] | None) 
     nothing emits, or with an unknown action, sits active with run_count 0
     forever — the UI-audit's dead-rule class). 422 at create/update, not a
     silent no-op at fire time."""
-    from gdx_dispatch.modules.workflows.engine import SUPPORTED_ACTIONS, SUPPORTED_TRIGGERS
+    from gdx_dispatch.modules.workflows.engine import (
+        IMPLEMENTED_ACTIONS,
+        SUPPORTED_ACTIONS,
+        SUPPORTED_TRIGGERS,
+    )
 
     if trigger_event is not None and trigger_event not in SUPPORTED_TRIGGERS:
         raise HTTPException(
@@ -32,6 +36,16 @@ def _validate_rule_shape(trigger_event: str | None, actions: list[dict] | None) 
             raise HTTPException(
                 status_code=422,
                 detail=f"Unknown action_type '{atype}' — supported: {', '.join(SUPPORTED_ACTIONS)}",
+            )
+        if atype not in IMPLEMENTED_ACTIONS:
+            # Listed in the contract, but nothing executes it yet — a rule
+            # carrying it would run "not_implemented" on every fire.
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"action_type '{atype}' has no executor yet — "
+                    f"implemented: {', '.join(IMPLEMENTED_ACTIONS)}"
+                ),
             )
 
 

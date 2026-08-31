@@ -2,6 +2,8 @@
 
 **Status:** **ALL SEVENTEEN ADJUDICATED — 16 SHIPPED, 1 REMOVED BY DECISION**
 (owner decisions 2026-08-24/25; released v1.99.0 + the PRs that followed).
+**Addendum 2026-08-31:** the Automations sequences shell is RETIRED — see the
+dated section at the end (same shape as the original seventeen).
 
 Shipped: items 1, 2, 3, 5, 6, 7, 8, 9, 12, 13, 14, 15, 16, 17 and 4 — five dead
 pages retired, the declined stubs removed, the customer-page Portal tab pointed
@@ -389,3 +391,44 @@ The scanner still flags it (C6=1); that is a known, accepted true-negative.
 genuinely implemented in `routers/service_agreements.update_template` — the
 model and the sibling GET/POST already existed, so it only needed writing.
 It also accepts the Vue's legacy `price` field alongside `default_price`.
+
+## 2026-08-31 — the "Automations" sequences page was a shell; retired
+
+Found while chasing one dead built-in template (`send_google_review_request`):
+`routers/automations.py` (sequences / steps / enrollments, from the initial
+public release) had **no executor anywhere** — nothing in `tasks/`, `core/` or
+the beat schedule ever read `AutomationStep.action_type`; enrollments had no
+writer (0 rows ever). The Automations page let office staff create a sequence,
+toasted "Automation created", and nothing would ever run. Its `/templates`
+endpoint (no UI caller) advertised six actions, five of which exist nowhere and
+none of which the `automation_action_type` enum even allows; `/history` queried
+a table named `audit_log` (the table is `audit_logs`) and always returned `[]`
+through a bare `except`. Prod held one inactive "QA Seed" row from 2026-04-08.
+
+The engine that runs is **Event Rules** — `modules/workflows` (`/api/workflows`,
+`AutomationRulesView` at `/automation-rules`), gated by the same `automations`
+module key (`core/modules.py` aliases `workflows → automations`), enabled on prod.
+
+**Removed:** the router, its 14 CRUD tests, `AutomationsView.vue`, the nav entry.
+`/automations` now redirects to `/automation-rules`; the module-gating e2e map
+points the `automations` key at `/api/workflows`.
+**Also removed (same shape, sibling sweep):** `modules/outlook/automations.py`
+(`dispatch_trigger` — zero callers; would have sent through Outlook with no
+outbound_emails row) and its tests. The sweep pattern was "an automation
+code path nothing executes or calls"; surface searched: every reader of
+`AutomationStep.action_type`, every caller of `dispatch_trigger`, every
+action named by `BUILTIN_TEMPLATES`, across `routers/ tasks/ core/ modules/
+api/ plugin_api/`; instances: those two plus the templates themselves.
+**Two more instances the audit surfaced, fixed in the same PR:** (a) the Outlook
+Auto-Email templates tab (Settings → Outlook) saved `auto_email_triggers` that
+nothing read once `dispatch_trigger` was gone — an editor whose own notice said
+"Not active yet"; tab, API fields and its spec removed, column kept (this is the
+D6 revive-or-delete call from email-inbox-improvement-plan.md: **delete**);
+(b) `POST/PUT /api/workflows` accepted four action types with no executor
+(`send_sms`, `create_followup_task`, `emit_webhook`, `update_job_field` → every
+run "not_implemented"); the router now refuses them at create/update.
+`modules/workflows` is the one automation path left in the tree.
+
+**Kept:** the three ORM models and tables (no DDL, data untouched) — dropping
+them is a separate decision. Event Rules requires `nav.admin` where the old page
+took `nav.office`; nobody loses a working feature because the old page did nothing.

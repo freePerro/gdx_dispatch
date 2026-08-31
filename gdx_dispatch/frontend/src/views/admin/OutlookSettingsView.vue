@@ -37,7 +37,6 @@ const TAB_KEYS = {
   TAGGING: 'tagging',
   VISIBILITY: 'visibility',
   VENDOR_BILLS: 'vendor_bills',
-  AUTO_EMAIL: 'auto_email',
 }
 const activeTab = ref(TAB_KEYS.CONNECTION)
 
@@ -176,7 +175,6 @@ async function saveSettings() {
       tag_strategy_enabled: settings.value.tag_strategy_enabled,
       ai_tag_threshold: settings.value.ai_tag_threshold,
       visibility_rules: settings.value.visibility_rules,
-      auto_email_triggers: settings.value.auto_email_triggers,
       // Only when it changed. PATCH treats an omitted key as "leave alone", and
       // every tab's Save posts this same payload — so blindly resending the
       // allowlist would make ONE malformed stored entry (this column was
@@ -248,7 +246,6 @@ defineExpose({ load, saveCredentials, saveSettings, clearSecret, runSweep, sweep
         <Tab :value="TAB_KEYS.TAGGING">Tagging</Tab>
         <Tab :value="TAB_KEYS.VISIBILITY">Visibility</Tab>
         <Tab :value="TAB_KEYS.VENDOR_BILLS">Vendor Bills</Tab>
-        <Tab :value="TAB_KEYS.AUTO_EMAIL">Auto-Email</Tab>
       </TabList>
       <TabPanels>
 
@@ -485,41 +482,6 @@ defineExpose({ load, saveCredentials, saveSettings, clearSecret, runSweep, sweep
           </div>
         </TabPanel>
 
-        <!-- Auto-Email -->
-        <TabPanel :value="TAB_KEYS.AUTO_EMAIL">
-          <div class="flex flex-col gap-4 mt-4">
-            <div class="ae-inactive-notice" data-test="auto-email-inactive">
-              <strong>⚠ Not active yet.</strong> These auto-email triggers are
-              <strong>not currently wired to any event</strong> — saving a template here
-              does not send anything. Estimate/invoice emails are already sent by the
-              existing send flows; whether to enable this separate per-user automation is
-              still under review. Configure it only once it's turned on.
-            </div>
-            <p class="text-sm hint-text">
-              Configure templates that auto-email users on domain events. Each user
-              opts in per trigger from their Profile. Templates use Mustache-style
-              <code>&#123;&#123;customer.name&#125;&#125;</code> placeholders.
-            </p>
-            <div v-for="trigger in ['invoice.created', 'job.completed', 'estimate.sent']" :key="trigger"
-                 class="trigger-block">
-              <h3 class="font-medium">{{ trigger }}</h3>
-              <div class="mt-2">
-                <label class="text-sm">Subject template</label>
-                <InputText v-model="settings.auto_email_triggers[trigger].subject"
-                           class="w-full" placeholder="e.g. Invoice {{invoice.number}}" />
-              </div>
-              <div class="mt-2">
-                <label class="text-sm">Body template (HTML)</label>
-                <textarea v-model="settings.auto_email_triggers[trigger].template"
-                          class="w-full p-2 template-textarea text-sm"
-                          rows="4" />
-              </div>
-            </div>
-            <div>
-              <Button label="Save Auto-Email Templates" @click="saveSettings" />
-            </div>
-          </div>
-        </TabPanel>
       </TabPanels>
       </Tabs>
     </section>
@@ -546,22 +508,6 @@ defineExpose({ load, saveCredentials, saveSettings, clearSecret, runSweep, sweep
 .success-text {
   color: var(--p-green-500, #22c55e);
 }
-.trigger-block {
-  border: 1px solid var(--p-content-border-color);
-  border-radius: 6px;
-  padding: 0.75rem;
-  background: var(--p-content-hover-background);
-}
-.ae-inactive-notice {
-  border: 1px solid var(--p-content-border-color);
-  border-left: 4px solid #d97706;
-  border-radius: 6px;
-  padding: 0.6rem 0.8rem;
-  background: var(--p-content-hover-background);
-  color: var(--p-text-color);
-  font-size: 0.85rem;
-  line-height: 1.45;
-}
 .sweep-block {
   border: 1px solid var(--p-content-border-color);
   border-radius: 6px;
@@ -577,12 +523,5 @@ defineExpose({ load, saveCredentials, saveSettings, clearSecret, runSweep, sweep
   /* Wide enough for a 4-digit window plus the stacked spinner arrows — at 5rem
      the default 120 rendered clipped as "12". */
   width: 7rem;
-}
-.template-textarea {
-  border: 1px solid var(--p-content-border-color);
-  border-radius: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  background: var(--p-content-background);
-  color: var(--p-text-color);
 }
 </style>

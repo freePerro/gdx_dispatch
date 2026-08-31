@@ -39,7 +39,7 @@ MODULE_ENDPOINTS = {
     "stripe_connect":      ("/api/stripe/connect/status", 200),
     "loyalty":             ("/api/loyalty/programs",  200),
     "warranties":          ("/api/warranties",        200),
-    "automations":         ("/api/automations",       200),
+    "automations":         ("/api/workflows",         200),
     "segments":            ("/api/segments",          200),
     "customer_portal":     ("/api/portal/info",       200),
     "google_maps":         ("/api/maps/geocode",      200),

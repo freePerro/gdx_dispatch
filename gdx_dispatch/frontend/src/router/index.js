@@ -38,7 +38,6 @@ const PlannerView = () => import('../views/PlannerView.vue');
 const EquipmentView = () => import('../views/EquipmentView.vue');
 const CommunicationsView = () => import('../views/CommunicationsView.vue');
 const CampaignsView = () => import('../views/CampaignsView.vue');
-const AutomationsView = () => import('../views/AutomationsView.vue');
 const WinbackView = () => import('../views/WinbackView.vue');
 const ExpensesView = () => import('../views/ExpensesView.vue');
 const ForecastingView = () => import('../views/ForecastingView.vue');
@@ -251,7 +250,10 @@ export const routes = [
     children: [
       { path: '', name: 'campaigns', component: CampaignsView },
       { path: '/segments', name: 'segments', component: SegmentsView },
-      { path: '/automations', name: 'automations', component: AutomationsView },
+      // 2026-08-31: the "Automations" sequences page was a shell — its
+      // sequences were never executed by anything. Event Rules is the
+      // engine that runs (modules/workflows). Old links land there.
+      { path: '/automations', redirect: '/automation-rules' },
       { path: '/automation-rules', name: 'automation-rules', component: AutomationRulesView, meta: { requiresPermission: 'nav.admin' } },
       { path: '/winback', name: 'winback', component: WinbackView },
       { path: '/loyalty', name: 'loyalty', component: LoyaltyView },
