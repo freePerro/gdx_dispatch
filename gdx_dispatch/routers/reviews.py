@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.models.tenant_models import CustomerReview, Job
+from gdx_dispatch.models.tenant_models import Customer, CustomerReview
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -52,6 +52,28 @@ def list_reviews(
         reviews = db.execute(
             select(CustomerReview).order_by(CustomerReview.created_at.desc())
         ).scalars().all()
+        # The Reviews page renders source / customer / content columns; until
+        # 2026-08-31 the payload carried none of them (review_text only), so
+        # Customer and Comment were blank and every Source read "Unknown".
+        # customer_reviews.customer_id is text; customers.id is a real UUID
+        # column — pass UUID objects or the IN() never matches (caught by
+        # test_list_reviews_feeds_the_page_columns before it reached prod).
+        names: dict[str, str] = {}
+        ids: list[UUID] = []
+        for r in reviews:
+            try:
+                if r.customer_id:
+                    ids.append(UUID(str(r.customer_id)))
+            except ValueError:
+                continue
+        if ids:
+            try:
+                for cid, name in db.execute(
+                    select(Customer.id, Customer.name).where(Customer.id.in_(ids))
+                ).all():
+                    names[str(cid)] = name or ""
+            except Exception:
+                log.exception("list_reviews_customer_lookup_failed")
         return {
             "items": [
                 {
@@ -59,9 +81,12 @@ def list_reviews(
                     "tenant_id": r.tenant_id,
                     "job_id": r.job_id,
                     "customer_id": r.customer_id,
+                    "customer": names.get(str(r.customer_id or ""), ""),
                     "token": r.token,
                     "rating": r.rating,
                     "review_text": r.review_text,
+                    "content": r.review_text,
+                    "source": r.source,
                     "status": r.status,
                     "sent_at": r.sent_at,
                     "submitted_at": r.submitted_at,
@@ -73,65 +98,6 @@ def list_reviews(
     except Exception:
         log.exception("list_reviews_failed")
         raise HTTPException(status_code=500, detail="Failed to list reviews") from None
-
-
-@router.post("/request/{job_id}", response_model=None, status_code=201)
-def request_review(
-    job_id: str,
-    request: Request,
-    user: dict[str, Any] = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    try:
-        now = datetime.now(UTC).isoformat()
-        review_id = str(uuid4())
-        token = uuid4().hex
-
-        try:
-            job_uuid = UUID(job_id)
-        except (ValueError, AttributeError):
-            raise HTTPException(status_code=400, detail="Invalid job ID") from None
-        job = db.execute(
-            select(Job).where(Job.id == job_uuid)
-        ).scalar_one_or_none()
-        if not job:
-            raise HTTPException(status_code=404, detail="Job not found")
-
-        review = CustomerReview(
-            id=review_id,
-            tenant_id=_tenant_id(request),
-            company_id=_tenant_id(request),
-            job_id=job_id,
-            customer_id=str(job.customer_id) if job.customer_id else None,
-            token=token,
-            rating=None,
-            review_text=None,
-            status="requested",
-            sent_at=now,
-            submitted_at=None,
-            created_at=now,
-        )
-        db.add(review)
-        asyncio.run(log_audit_event(
-            db=db,
-            tenant_id=_tenant_id(request),
-            company_id=_tenant_id(request),
-            user_id=_actor_id(user),
-            action="review_requested",
-            entity_type="review",
-            entity_id=review_id,
-            details={"job_id": job_id, "customer_id": str(job.customer_id or "")},
-            request=request,
-        ))
-        db.commit()
-        return {"id": review_id, "job_id": job_id, "token": token, "status": "requested"}
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception:
-        db.rollback()
-        log.exception("request_review_failed", extra={"job_id": job_id})
-        raise HTTPException(status_code=500, detail="Failed to request review") from None
 
 
 @router.post("", response_model=None, status_code=201)

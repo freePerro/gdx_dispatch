@@ -207,7 +207,9 @@ function formatDate(value) {
 }
 
 function sourceLabel(value) {
-  const option = sourceOptions.find((item) => item.value === value);
+  // The null entry is the "All sources" FILTER option — a review with no
+  // recorded source must read "Unknown", not "All sources".
+  const option = sourceOptions.find((item) => item.value && item.value === value);
   return option?.label || value?.toUpperCase() || 'Unknown';
 }
 

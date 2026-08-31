@@ -331,14 +331,6 @@ def test_job_template_apply_creates_real_job(db_session: Session):
 
 
 # Reviews (3+)
-def test_reviews_request_for_job(db_session: Session):
-    customer_id = _seed_customer(db_session)
-    job_id = _seed_job(db_session, customer_id=customer_id)
-
-    out = reviews.request_review(job_id=job_id, request=_request(), user={"id": "u1"}, db=db_session)
-    assert out["status"] == "requested"
-
-
 def test_reviews_submit_and_stats(db_session: Session):
     reviews.submit_review(
         payload=reviews.ReviewSubmitIn(job_id=str(uuid4()), customer_id=str(uuid4()), rating=5, text="Great"),
