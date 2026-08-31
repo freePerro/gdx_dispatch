@@ -149,10 +149,10 @@ onMounted(loadData);
 .empty-state { text-align: center; padding: 3rem; color: var(--p-text-muted-color); display: flex; flex-direction: column; align-items: center; gap: 0.5rem; }
 
 /* Mobile: stack the loadsheet header so the date picker + progress tag
-   wrap below the title rather than crunching it. Pad bottom for the
-   bottom-nav. */
+   wrap below the title rather than crunching it. (Bottom-nav clearance is
+   AppLayout's job, not this root's.) */
 @media (max-width: 768px) {
-  .delivery-loadsheet { padding: 0.75rem 0.75rem calc(5rem + env(safe-area-inset-bottom)); }
+  .delivery-loadsheet { padding: 0.75rem; }
   .loadsheet-header { flex-direction: column; align-items: stretch; gap: 0.5rem; }
   .header-right { flex-wrap: wrap; }
   .date-picker { max-width: none; flex: 1; }

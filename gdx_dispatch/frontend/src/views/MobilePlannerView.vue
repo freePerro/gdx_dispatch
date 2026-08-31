@@ -746,10 +746,10 @@ onUnmounted(() => {
 
 <style scoped>
 .mobile-planner {
-  /* Bottom padding clears the fixed AppBottomNav (var(--bottom-nav-height,
-   * 64px)) plus iOS home indicator. Was a flat 5rem; now derives from the
-   * canonical nav-height variable so it tracks design tokens. */
-  padding: 0.75rem 0.75rem calc(var(--bottom-nav-height, 64px) + 1.25rem + env(safe-area-inset-bottom));
+  /* No bottom pad here: this root renders inside AppLayout's .layout-content,
+     which clears the bottom nav (and the quick-capture FAB when it renders).
+     Padding here STACKED on top of that — 244px of dead space on 2026-08-31. */
+  padding: 0.75rem;
   max-width: 800px;
   margin: 0 auto;
   position: relative;

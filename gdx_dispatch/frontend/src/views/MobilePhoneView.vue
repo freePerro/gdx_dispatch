@@ -351,7 +351,6 @@ onUnmounted(() => {
 <style scoped>
 .mobile-phone {
   padding: var(--space-3);
-  padding-bottom: calc(var(--bottom-nav-height, 60px) + var(--space-4));
 }
 
 .mobile-page-head {
