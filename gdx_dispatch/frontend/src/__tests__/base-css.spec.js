@@ -49,17 +49,20 @@ describe('base.css utility rules', () => {
     });
 
     // MH-3: tour popover must not overlap the bottom nav. Audit P1 #13.
-    it('pushes the mobile tour popover above the bottom nav', () => {
-      // Looks for a rule that bumps margin-bottom by `--bottom-nav-height`
-      // (+ safe-area + a small gap). The variable read is the load-
-      // bearing piece — if a future refactor changes the var name we
-      // want this test to fail.
+    it('pushes the mobile tour popover above the bottom nav (nav-only by default)', () => {
       const rule = /\.gdx-tour-mobile\.driver-popover\s*\{[^}]*margin-bottom:[^;]*var\(--bottom-nav-height[^)]*\)[^;]*!important/s;
       expect(BASE_CSS).toMatch(rule);
     });
 
-    it('accounts for iOS safe-area-inset-bottom in the tour offset', () => {
-      const rule = /\.gdx-tour-mobile\.driver-popover\s*\{[^}]*safe-area-inset-bottom/s;
+    it('clears the quick-capture FAB band too, but only when body.has-capture-fab says a FAB renders', () => {
+      // 2026-08-31: office roles have a FAB above the nav that the popover
+      // used to land on; techs have no FAB and keep the nav-only offset.
+      const rule = /body\.has-capture-fab\s+\.gdx-tour-mobile\.driver-popover\s*\{[^}]*margin-bottom:\s*calc\(var\(--bottom-nav-clearance[^)]*\)\s*\+\s*12px\)\s*!important/;
+      expect(BASE_CSS).toMatch(rule);
+    });
+
+    it('the clearance token accounts for iOS safe-area-inset-bottom', () => {
+      const rule = /--bottom-nav-clearance:\s*calc\([^;]*env\(safe-area-inset-bottom,\s*0px\)[^;]*\);/;
       expect(BASE_CSS).toMatch(rule);
     });
   });

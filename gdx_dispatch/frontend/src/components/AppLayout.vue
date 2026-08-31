@@ -5,6 +5,7 @@
       collapsed: sidebarCollapsed,
       mobile: isMobile,
       'mobile-sidebar-open': mobileSidebarOpen,
+      'has-capture-fab': showCaptureFab,
     }"
   >
     <!-- 2026-07-01 a11y audit: keyboard/screen-reader users had to tab
@@ -66,7 +67,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watchEffect } from 'vue';
 import { useRoute } from 'vue-router';
 import Breadcrumb from 'primevue/breadcrumb';
 import ConfirmDialog from 'primevue/confirmdialog';
@@ -78,6 +79,7 @@ import HelpDrawer from './HelpDrawer.vue';
 import BugReportButton from './BugReportButton.vue';
 import NotificationsDrawer from './NotificationsDrawer.vue';
 import { useAuthStore } from '../stores/auth';
+import { isTechnician } from '../constants/roles';
 import { useTour } from '../composables/useTour';
 
 const route = useRoute();
@@ -88,6 +90,16 @@ const isMobile = ref(false);
 const notificationsOpen = ref(false);
 
 const auth = useAuthStore();
+// Same predicate AppBottomNav uses to render the quick-capture FAB: the
+// content only needs to clear the FAB when there is one. Techs get the nav
+// alone, and pay no dead space for a button they never see.
+const showCaptureFab = computed(() => !isTechnician(auth.user?.role));
+// driver.js mounts its tour popover on <body>, outside this component, so
+// the same fact is mirrored as a body class for base.css to key off.
+watchEffect(() => {
+  document.body.classList.toggle('has-capture-fab', isMobile.value && showCaptureFab.value);
+});
+onUnmounted(() => document.body.classList.remove('has-capture-fab'));
 const tour = useTour();
 
 // MH-1: bug-report FAB visibility. Default OFF in prod build (env unset).
@@ -269,6 +281,17 @@ onUnmounted(() => {
   overflow: auto;
   padding: var(--space-4);
   padding-bottom: calc(var(--space-4) + var(--bottom-nav-height));
+}
+/* Mobile: the bottom nav floats over the content bottom — and for office
+   roles so does the quick-capture FAB above it. This is the ONE place that
+   clears them (token in base.css); view roots inside .layout-content must
+   not pad for the nav themselves or the two stack (a guard spec enforces it).
+   Techs never see the FAB, so their clearance is the nav alone. */
+.app-layout.mobile .layout-content {
+  padding-bottom: calc(var(--space-4) + var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px));
+}
+.app-layout.mobile.has-capture-fab .layout-content {
+  padding-bottom: calc(var(--space-4) + var(--bottom-nav-clearance));
 }
 
 :deep(.p-breadcrumb) {

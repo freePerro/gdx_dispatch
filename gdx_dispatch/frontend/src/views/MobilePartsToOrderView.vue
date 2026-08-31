@@ -158,7 +158,7 @@ onMounted(fetchPending)
 
 <style scoped>
 .mobile-parts-order {
-  padding: 0.75rem 0.75rem calc(5rem + env(safe-area-inset-bottom));
+  padding: 0.75rem;
   max-width: 800px;
   margin: 0 auto;
 }

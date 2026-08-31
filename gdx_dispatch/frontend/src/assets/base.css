@@ -56,6 +56,19 @@
   --topbar-height: 64px;
   --breadcrumb-height: 44px;
   --bottom-nav-height: 64px;
+  /* The quick-capture FAB docks ABOVE the bottom nav (AppBottomNav
+     .capture-fab): a 56px circle with a 0.75rem gap. Scrollable content on
+     mobile must clear nav + FAB + iOS home indicator, or the last field's
+     hint text sits under the button (Settings → Branding, 390×844, audit
+     2026-08-31). One clearance token, read by the layout (the ONLY owner of
+     content clearance — view roots must not pad for the nav; a guard spec
+     enforces it), by the FAB for its own geometry, and by the tour popover. */
+  --capture-fab-size: 56px;
+  --capture-fab-gap: 0.75rem;
+  --bottom-nav-clearance: calc(
+    var(--bottom-nav-height) + var(--capture-fab-gap) + var(--capture-fab-size)
+    + env(safe-area-inset-bottom, 0px)
+  );
 
   --transition-fast: 0.3s ease;
 }
@@ -261,6 +274,13 @@ input {
    home-indicator devices. */
 .gdx-tour-mobile.driver-popover {
   margin-bottom: calc(var(--bottom-nav-height, 64px) + env(safe-area-inset-bottom, 0px) + 12px) !important;
+}
+/* driver.js appends the popover to <body>, outside .app-layout, so the
+   FAB-aware clearance is keyed off a body class AppLayout toggles when the
+   quick-capture FAB is actually rendered (office roles on mobile). Techs
+   keep the nav-only offset above. */
+body.has-capture-fab .gdx-tour-mobile.driver-popover {
+  margin-bottom: calc(var(--bottom-nav-clearance, 132px) + 12px) !important;
 }
 
 /* Clickable-rows utility — opt-in via class="clickable-rows" on DataTable.

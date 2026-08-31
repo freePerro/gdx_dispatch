@@ -423,9 +423,9 @@ function handleTab(item) {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
-  bottom: calc(var(--bottom-nav-height) + 0.75rem);
-  width: 56px;
-  height: 56px;
+  bottom: calc(var(--bottom-nav-height) + var(--capture-fab-gap, 0.75rem));
+  width: var(--capture-fab-size, 56px);
+  height: var(--capture-fab-size, 56px);
   border-radius: 50%;
   border: none;
   background: var(--interactive-primary);
