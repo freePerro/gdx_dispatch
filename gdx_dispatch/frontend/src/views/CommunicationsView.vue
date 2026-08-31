@@ -709,14 +709,21 @@ async function pollForUpdates() {
   }
 }
 
+// Unmount during the awaited loads and the continuation would start a
+// 30 s poll nobody clears (onBeforeUnmount only clears a handle that is
+// already set). Same shape as useOfflineSync, 2026-08-31.
+let disposed = false;
+
 onMounted(async () => {
   await Promise.all([fetchThreads(), loadCustomers()]);
+  if (disposed) return;
   pollHandle = setInterval(() => {
     pollForUpdates();
   }, 30000);
 });
 
 onBeforeUnmount(() => {
+  disposed = true;
   if (pollHandle) clearInterval(pollHandle);
   if (searchDebounceHandle) clearTimeout(searchDebounceHandle);
 });

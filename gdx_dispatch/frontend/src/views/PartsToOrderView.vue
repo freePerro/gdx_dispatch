@@ -163,9 +163,16 @@ async function updateStatus(partId, status) {
   }
 }
 
+// Same shape as useOfflineSync (2026-08-31): the mount hook awaits two
+// loads before it starts the poll timer and window listeners. Unmount
+// during those awaits and the continuation would start a timer nobody
+// clears and re-add listeners after onBeforeUnmount removed them.
+let disposed = false;
+
 onMounted(async () => {
   await loadDispatchConfig();
   await loadParts();  // initial load — seeds seenIds, no ping
+  if (disposed || typeof window === "undefined") return;
   pollTimer = setInterval(() => loadParts({ alertOnNewCritical: true }), POLL_MS);
   // Latch the AudioContext to the first user gesture so playPing can
   // make sound. The listeners self-remove after firing once.
@@ -174,6 +181,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  disposed = true;
   if (pollTimer) clearInterval(pollTimer);
   window.removeEventListener("pointerdown", primeAudioOnGesture);
   window.removeEventListener("keydown", primeAudioOnGesture);

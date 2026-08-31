@@ -330,10 +330,22 @@ export async function purgeOldSynced(maxAgeDays = 7) {
 export function useOfflineSync() {
   let onlineHandler
   let visibilityHandler
+  // The mount hook awaits two IndexedDB reads before it installs listeners,
+  // and the continuation used to run whatever had happened meanwhile:
+  //  - in the app, a route change unmounted the host during the awaits and
+  //    the listeners were re-added AFTER onUnmounted had removed them — the
+  //    leak `disposed` closes;
+  //  - in vitest, nothing unmounts these hosts: the jsdom environment is
+  //    torn down after the file and its globals are DELETED, so the
+  //    continuation threw "ReferenceError: window is not defined" as an
+  //    unhandled rejection (2026-08-31) — the `typeof window` check below
+  //    is what closes that one.
+  let disposed = false
 
   onMounted(async () => {
     await _refreshPendingCount()
     await _hydrateLastSyncedAt()
+    if (disposed || typeof window === 'undefined' || typeof document === 'undefined') return
     onlineHandler = () => { syncNow() }
     visibilityHandler = () => {
       if (!document.hidden && isOnline.value) syncNow()
@@ -343,11 +355,12 @@ export function useOfflineSync() {
     // If we landed online with a pending queue (e.g. tab restore), drain.
     if (isOnline.value) {
       // Defer a tick so other onMounted hooks finish first.
-      Promise.resolve().then(() => syncNow())
+      Promise.resolve().then(() => { if (!disposed) syncNow() })
     }
   })
 
   onUnmounted(() => {
+    disposed = true
     if (onlineHandler) window.removeEventListener('online', onlineHandler)
     if (visibilityHandler) document.removeEventListener('visibilitychange', visibilityHandler)
   })
