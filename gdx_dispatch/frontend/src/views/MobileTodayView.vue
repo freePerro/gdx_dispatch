@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useGpsBreadcrumb } from '@/composables/useGpsBreadcrumb'
 import MobileJobCard from '../components/MobileJobCard.vue'
 import MobileReceiptCapture from '../components/MobileReceiptCapture.vue'
@@ -630,6 +630,12 @@ async function refreshAllUnseenCounts() {
   }
 }
 
+// Unmount during the awaited loads and the continuation would schedule the
+// tour and (re)start GPS breadcrumbs AFTER useGpsBreadcrumb's own
+// onBeforeUnmount stopped them. Same shape as useOfflineSync, 2026-08-31.
+let disposed = false
+onBeforeUnmount(() => { disposed = true })
+
 onMounted(async () => {
   await load()
   refreshAllUnseenCounts()
@@ -651,9 +657,11 @@ onMounted(async () => {
       if (key) refreshPushCta()
     }).catch(() => { /* no CTA when the key can't be fetched */ })
   }
+  if (disposed) return
   // Phase 4.5 — fire the first-login tour after the page paints. nextTick
   // alone isn't enough because PrimeVue tags + buttons render lazily.
   setTimeout(() => {
+    if (disposed) return
     try { startTour('tech') } catch (e) { /* no DOM targets — skip */ }
   }, 400)
   try { gps.start() } catch (e) { /* geolocation perms denied is fine */ }

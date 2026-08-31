@@ -1971,15 +1971,23 @@ async function refreshLiveTechs() {
   }
 }
 
+// Unmount during the awaited settings load and the continuation would start
+// a 30 s live-tech poll nobody clears. Same shape as useOfflineSync, 2026-08-31.
+let disposed = false;
+
 onMounted(async () => {
   await loadDispatchSettings();
+  if (disposed) return;
   refreshBoard();
   refreshLiveTechs();
   loadLaborExceptions();
   liveTechsTimer = setInterval(refreshLiveTechs, 30_000);
 });
 
-onBeforeUnmount(() => { if (liveTechsTimer) clearInterval(liveTechsTimer); });
+onBeforeUnmount(() => {
+  disposed = true;
+  if (liveTechsTimer) clearInterval(liveTechsTimer);
+});
 
 // Sprint dispatch-capacity (2026-05-21) — expose the surface the
 // regression specs reach via wrapper.vm. Without defineExpose, the
