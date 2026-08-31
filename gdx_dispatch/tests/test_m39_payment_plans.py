@@ -9,7 +9,7 @@ rounding, one active plan per invoice, cancellable, audited.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -238,15 +238,20 @@ def test_installment_statuses_derive_from_money_that_arrived(db):
 
     _enable(db)
     inv = _invoice(db, total="900.00")
-    _create(db, inv, n=3, start=date(2026, 7, 1))  # first two due in the past
+    # Installments fall every 30 days from start. Anchor to TODAY so the
+    # third slice stays in the future: a hard-coded start=2026-07-01 put it
+    # on 2026-08-30 and the test went red on its own on 2026-08-31 (the
+    # date-bomb shape — a test that expires without any code change).
+    start = date.today() - timedelta(days=45)  # due at T-45, T-15, T+15
+    _create(db, inv, n=3, start=start)
     db.add(Payment(id=uuid.uuid4(), invoice_id=inv.id, amount=Decimal("300.00"),
                    method="check", company_id=TENANT))
     db.commit()
     got = get_payment_plan(str(inv.id), db=db, _=OFFICE)
     statuses = [i["status"] for i in got["plan"]["installments"]]
     assert statuses[0] == "covered", "the paid $300 covers the first slice"
-    assert statuses[1] == "overdue", "due 2026-07-31, unpaid, today is past it"
-    assert statuses[2] == "pending"
+    assert statuses[1] == "overdue", "due 15 days ago, unpaid"
+    assert statuses[2] == "pending", "due 15 days out"
 
 
 def test_the_mutations_carry_the_invoices_write_gate(db):
