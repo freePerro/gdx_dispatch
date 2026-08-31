@@ -690,12 +690,7 @@ Tenant A's data is completely invisible to Tenant B. No cross-tenant data leakag
 
 | ID | Test Case | Verification |
 |----|-----------|-------------|
-| AUTO-01 | List automations | GET /api/automations returns automation sequences |
-| AUTO-02 | Create automation | POST creates sequence with steps |
-| AUTO-03 | Add steps | POST /{id}/steps adds action steps (send SMS, wait, send email) |
-| AUTO-04 | Pause/resume | POST /{id}/pause and /{id}/resume toggle execution |
-| AUTO-05 | Enrollments | POST enrolls customer, GET /{id}/enrollments lists enrolled customers |
-| AUTO-06 | Automation execution | Enrolled customer triggers automation steps in sequence with correct delays |
+| AUTO-01…06 | ~~Automation sequences~~ | **RETIRED 2026-08-31.** `/api/automations` (sequences, steps, enrollments, pause/resume, execution) never had an executor and is removed; `/automations` redirects to Event Rules. Verify event-driven automation on the Event Rules page (`/automation-rules`) and `GET /api/workflows` + `GET /api/workflows/{id}/runs` instead — note only `send_email` has an executor there. |
 
 ---
 

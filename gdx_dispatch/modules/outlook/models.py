@@ -252,6 +252,10 @@ class OutlookSettings(TenantBase):
         "above_tech_scope": "all_tagged",
         "untagged_visibility": "only_owner",
     })
+    # Retired 2026-08-31: the Auto-Email templates editor and its only reader
+    # (modules/outlook/automations.dispatch_trigger, zero callers) are gone;
+    # event-driven email lives in modules/workflows. Column kept (no DDL),
+    # unread, no longer served or accepted by the settings API.
     auto_email_triggers: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     # vendor-invoice-intake Phase 2: sender addresses/domains whose PDF
     # attachments are auto-ingested into the vendor-bills review queue during

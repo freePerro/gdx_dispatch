@@ -1,9 +1,9 @@
 # Email Inbox — Improvement & Feature Plan
 
 **Status:** **PARTIALLY BUILT** — Phases 0, 1 and 2 shipped (see the Build
-status table below). **Still open, re-verified 2026-08-21:** D6, the auto-email
-automations — `modules/outlook/automations.py:73 dispatch_trigger` still has
-zero production callers anywhere on main. It needs Doug's revive-or-delete
+status table below). **D6 DECIDED 2026-08-31 — removed** (was: still open, re-verified
+2026-08-21: the auto-email automations — `dispatch_trigger` — had zero
+production callers anywhere on main and needed a revive-or-delete
 call (open decision 6).
 
 ## Build status (2026-07-27)
@@ -13,7 +13,7 @@ call (open decision 6).
 | **Phase 0** (0.1–0.5 + D7) | **SHIPPED** v1.19.0; delta-blank sync bug fixed v1.21.0 |
 | **Phase 1** (1.1–1.5) | **BUILT** this branch — 1.2 shipped with D7 |
 | **Phase 2** (P2.1–P2.6) | **BUILT** this branch |
-| **D6 auto-email automations** | still dead — `dispatch_trigger` has no production caller. Needs Doug's revive-or-delete call (open decision 6). |
+| **D6 auto-email automations** | still dead — `dispatch_trigger` has no production caller. Needs Doug's revive-or-delete call (open decision 6). | **[DECIDED 2026-08-31: removed — `dispatch_trigger`, its tests and the Outlook Auto-Email templates tab are deleted; Event Rules (`modules/workflows`) is the one event-email path. See unimplemented-endpoints-decision-list.md § 2026-08-31.]**
 
 Deviations from the plan as written, and why:
 
@@ -168,7 +168,7 @@ The good bones are being wasted on a read-only preview pane.
 | Folder rail: tree, color, pin, rename, create, delete, empty, mark-all-read | `folders_router.py`, `InboxView.vue` | **Live** |
 | Read views + **by-customer / by-job** email endpoints | `views_router.py:146, 175, 199` | **Live, but by-customer/by-job return nothing — see D3** |
 | Tagging engine (auto_match email→customer, job_thread subject regex, AI stub) | `modules/outlook/tagger.py` `tag_message` / `manual_tag` | **Dead code — never called outside tests (D3)** |
-| Auto-email triggers (invoice.created / job.completed / estimate.sent) | `modules/outlook/automations.py` `dispatch_trigger` | **Dead code — no production caller (D6)** |
+| Auto-email triggers (invoice.created / job.completed / estimate.sent) | `modules/outlook/automations.py` `dispatch_trigger` | **Dead code — no production caller (D6)** | **[DECIDED 2026-08-31: removed — `dispatch_trigger`, its tests and the Outlook Auto-Email templates tab are deleted; Event Rules (`modules/workflows`) is the one event-email path. See unimplemented-endpoints-decision-list.md § 2026-08-31.]**
 | Initial backfill task + `backfill_days` setting | `tasks.py:417`; `OutlookSettings.backfill_days` | **Dead code — no caller (D5)** |
 | Visibility chokepoint | `modules/outlook/visibility.py` `filter_visible` / `can_view` | **Live** |
 | MCP email tools (list/read/draft/move) for the AI agent | `core/mcp_tools/email_*.py` | Live; `email.draft` makes a **local-only** draft (`graph_message_id="local-draft-…"`, not pushed to Graph) |
@@ -212,7 +212,7 @@ The good bones are being wasted on a read-only preview pane.
   do exactly this, date-bounded — has zero callers. (Poller cadence: the scheduler runs
   it every 30 min via `crontab(minute="*/30")`; the `tasks.py` docstring says 15 min and
   is stale.)
-- **D6 — Auto-email automations are dead too.** `dispatch_trigger` (`automations.py`)
+- **D6 — Auto-email automations are dead too.** `dispatch_trigger` (`automations.py`) **[DECIDED 2026-08-31: removed — `dispatch_trigger`, its tests and the Outlook Auto-Email templates tab are deleted; Event Rules (`modules/workflows`) is the one event-email path. See unimplemented-endpoints-decision-list.md § 2026-08-31.]**
   has no production caller — invoice/job/estimate emails are never sent. *(Outbound
   side; adjacent to the inbox. Flagged for awareness; not on the P0 critical path.)*
 - **D7 — Pagination + visibility ordering bug.** `list_messages` applies
@@ -379,7 +379,7 @@ signal; surface an unread count on the sidebar Inbox item and a toast on arrival
    reply-all/forward · drafts. Independent, sliceable.
 3. **PR 3 — GDX value (P2):** customer/job Email tab · email→PlannerTask · save
    attachment to job · AI draft/templates · job-thread send marker · nav badge.
-4. **PR 4 — (separate track) revive or remove D6 auto-email automations** — decide with
+4. **PR 4 — (separate track) revive or remove D6 auto-email automations** — decide with **[DECIDED 2026-08-31: removed — `dispatch_trigger`, its tests and the Outlook Auto-Email templates tab are deleted; Event Rules (`modules/workflows`) is the one event-email path. See unimplemented-endpoints-decision-list.md § 2026-08-31.]**
    Doug; not inbox-blocking.
 
 Each PR: browser-verified light + dark, mobile viewport for the mobile paths, per the
@@ -408,7 +408,7 @@ and can download an attachment.
 5. **backfill_days default depth on connect.** Default = keep **90**; large mailboxes hit
    the `BACKFILL_MAX_MESSAGES_PER_RUN=5000`/folder cap (`tasks.py:45`) — acceptable for a
    shop mailbox, flag if a power user needs deeper.
-6. **D6 auto-email automations:** revive (wire `dispatch_trigger` to invoice/job/estimate
+6. **D6 auto-email automations:** revive (wire `dispatch_trigger` to invoice/job/estimate **[DECIDED 2026-08-31: removed — `dispatch_trigger`, its tests and the Outlook Auto-Email templates tab are deleted; Event Rules (`modules/workflows`) is the one event-email path. See unimplemented-endpoints-decision-list.md § 2026-08-31.]**
    events) or delete the dead module. Needs a Doug call — it sends customer-facing mail,
    so reviving it is not a silent change.
 7. **Non-owner write actions (audit round 1).** Reads fan out to many users, but

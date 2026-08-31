@@ -193,8 +193,7 @@ export const MODULE_CATEGORIES = [
     modules: [
       { key: 'campaigns', label: 'Campaigns', icon: 'pi pi-megaphone', to: '/campaigns', type: 'Jobs', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Campaigns' },
       { key: 'segments', label: 'Segments', icon: 'pi pi-sliders-h', to: '/segments', type: 'Customers', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Segments' },
-      { key: 'automations', label: 'Automations', icon: 'pi pi-bolt', to: '/automations', type: 'Customers', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Automations' },
-      { key: 'automation_rules', label: 'Event Rules', icon: 'pi pi-sitemap', to: '/automation-rules', type: 'Customers', permission: 'nav.admin', cluster: 'marketing_hub', tabLabel: 'Event Rules' },
+      { key: 'automation_rules', requires: 'automations', label: 'Event Rules', icon: 'pi pi-sitemap', to: '/automation-rules', type: 'Customers', permission: 'nav.admin', cluster: 'marketing_hub', tabLabel: 'Event Rules' },
       { key: 'winback', label: 'Winback & Follow-ups', icon: 'pi pi-refresh', to: '/winback', type: 'Customers', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Winback' },
       { key: 'loyalty', label: 'Loyalty', icon: 'pi pi-star', to: '/loyalty', type: 'Customers', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Loyalty' },
     ],
@@ -265,7 +264,7 @@ export const NAV_CLUSTERS = [
   { key: 'phone_hub', label: 'Phone', icon: 'pi pi-phone', description: 'Phone.com calls, SMS, cold leads & faxes' },
   { key: 'reputation_hub', label: 'Reputation', icon: 'pi pi-star', description: 'Reviews, referrals & surveys' },
   { key: 'billing_hub', label: 'Billing', icon: 'pi pi-dollar', description: 'Invoices, payments, collections & reminders' },
-  { key: 'marketing_hub', label: 'Marketing', icon: 'pi pi-megaphone', description: 'Campaigns, segments, automations, winback & loyalty' },
+  { key: 'marketing_hub', label: 'Marketing', icon: 'pi pi-megaphone', description: 'Campaigns, segments, event rules, winback & loyalty' },
   { key: 'fleet_hub', label: 'Fleet', icon: 'pi pi-truck', description: 'Vehicles, live GPS & coverage map' },
   { key: 'loadsheets_hub', label: 'Load Sheets', icon: 'pi pi-check-square', description: 'Daily & delivery load sheets' },
   { key: 'payroll_hub', label: 'Payroll', icon: 'pi pi-money-bill', description: "Timesheets, the crew's clock, pay periods & commissions" },

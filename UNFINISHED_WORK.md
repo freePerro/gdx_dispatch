@@ -44,7 +44,7 @@ prod and demo and walked on prod in light and dark.
       `arrived_at`, latest 2026-08-21 — so it is load-bearing and stays. Whether
       pressing it should notify the customer via Phone.com is customer-facing product
       shape. _(verified on prod 2026-08-23)_
-- [ ] **D6 auto-email on/off** — `outlook/automations.py:73 dispatch_trigger` has zero
+- [x] **D6 auto-email on/off** — `outlook/automations.py:73 dispatch_trigger` has zero **[DECIDED 2026-08-31: deleted — `dispatch_trigger`, its tests and the Outlook Auto-Email tab are removed; Event Rules (`modules/workflows`) is the event-email path. See docs/design/unimplemented-endpoints-decision-list.md § 2026-08-31.]**
       production callers. Revive or delete. _(carried from 2026-08-20 read)_
 - [ ] **17 unimplemented endpoints** — `unimplemented-endpoints-decision-list` still
       awaits a build/remove/leave call on each. _(carried)_
