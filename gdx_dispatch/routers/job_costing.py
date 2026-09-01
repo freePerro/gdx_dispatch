@@ -220,6 +220,11 @@ def _labor_for_job(db: Session, job_id: UUID) -> dict[str, Any]:
     }
 
 
+def _row_qty(raw: Any) -> Decimal:
+    """Quantity as the tech recorded it. NULL → 1 (unstated), 0 → 0."""
+    return Decimal("1") if raw is None else Decimal(str(raw))
+
+
 def _parts_for_job(db: Session, job_id: UUID) -> dict[str, Any]:
     """Cost the parts a job consumed. Bill if we have one, catalog if we don't.
 
@@ -385,6 +390,7 @@ def _parts_for_job(db: Session, job_id: UUID) -> dict[str, Any]:
                          (SELECT c.cost FROM custom_catalog_items c
                            WHERE LOWER(TRIM(c.sku)) = LOWER(TRIM(pn.sku)) AND c.cost > 0
                              AND c.deleted_at IS NULL AND c.active
+                             AND c.product_class <> 'door'
                            ORDER BY c.updated_at DESC LIMIT 1),
                          (SELECT k.cost FROM chi_parts_catalog k
                            WHERE LOWER(TRIM(k.sku)) = LOWER(TRIM(pn.sku)) AND k.cost > 0
@@ -406,7 +412,9 @@ def _parts_for_job(db: Session, job_id: UUID) -> dict[str, Any]:
 
     for r in rows:
         pid = str(r["id"])
-        qty = Decimal(str(r["quantity"] or 1))
+        # A NULL quantity is "one, unstated"; a ZERO quantity is zero — it
+        # must not be re-rated as one (#469: "quantity = 0 priced as 1").
+        qty = _row_qty(r["quantity"])
         cat = r["catalog_cost"]
         cat_unit = Decimal(str(cat)) if cat is not None else None
 
@@ -497,7 +505,7 @@ def _parts_for_job(db: Session, job_id: UUID) -> dict[str, Any]:
         items.append(
             {
                 "name": str(r["part_name"] or "Part"),
-                "qty": float(Decimal(str(r["quantity"] or 1))),
+                "qty": float(_row_qty(r["quantity"])),
                 "unit_cost": None,
                 "subtotal": None,
                 "source": "parts_needed",
