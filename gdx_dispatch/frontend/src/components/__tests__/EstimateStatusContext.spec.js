@@ -37,6 +37,40 @@ const BOUNCE = {
   decline: null,
 }
 
+describe('EstimateStatusContext — customer reassignment in the trail', () => {
+  const row = (details) => ({
+    id: 'a-1', action: 'estimate_customer_reassigned',
+    label: 'Customer changed', user_name: 'Doug',
+    created_at: '2026-09-01T12:00:00+00:00', details,
+  })
+
+  it('names both customers and the reason — the point of the row', () => {
+    // detailLine() is a per-action whitelist: registering the label in the
+    // backend map alone leaves this row rendering as a bare "Customer changed"
+    // that says nothing about what changed.
+    const w = mountWith({
+      status: 'draft', context: { bounce: null, decline: null }, total: 1,
+      items: [row({
+        from_customer_name: 'Acme Overhead',
+        to_customer_name: 'Baker Property',
+        reason: 'quoted under the wrong account',
+      })],
+    })
+    const text = w.find('[data-testid="estimate-activity"]').text()
+    expect(text).toContain('Acme Overhead')
+    expect(text).toContain('Baker Property')
+    expect(text).toContain('quoted under the wrong account')
+  })
+
+  it('still reads when the estimate had no customer before', () => {
+    const w = mountWith({
+      status: 'draft', context: { bounce: null, decline: null }, total: 1,
+      items: [row({ from_customer_name: null, to_customer_name: 'Baker Property', reason: 'r' })],
+    })
+    expect(w.find('[data-testid="estimate-activity"]').text()).toContain('no customer')
+  })
+})
+
 describe('EstimateStatusContext — send to a different address', () => {
   it('offers a third way out of a bounce, and emits send-to-other', async () => {
     // "Fix customer email" rewrites the account address for good; "Re-send"

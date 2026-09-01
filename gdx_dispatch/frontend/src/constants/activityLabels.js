@@ -29,6 +29,7 @@ export const ACTIVITY_LABELS = {
   estimate_created: 'New estimate created',
   estimate_updated: 'Estimate updated',
   estimate_accepted: 'Estimate accepted',
+  estimate_customer_reassigned: 'Estimate moved to another customer',
   invoice_created: 'New invoice created',
   invoice_paid: 'Invoice paid',
   module_enabled: 'Module enabled',

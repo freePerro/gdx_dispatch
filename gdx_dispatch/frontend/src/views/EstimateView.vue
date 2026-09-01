@@ -26,7 +26,13 @@
             @click="showAiDialog = true" data-testid="ai-quick-estimate-btn" />
         </div>
         <div v-if="isExisting" class="header-meta">
-          <span class="customer-name" data-testid="estimate-customer">{{ estimate.customer_name }}</span>
+          <!-- GET /estimates/{id} does not serialize customer_name (the LIST
+               endpoint does), so this bound an always-empty field and the
+               header showed no customer at all. The picker's own list already
+               has the name — use it, and fall back to the API value. -->
+          <span class="customer-name" data-testid="estimate-customer">{{ headerCustomerName }}</span>
+          <Button v-if="canChangeCustomer" label="Change" icon="pi pi-user-edit" text size="small"
+            data-testid="estimate-change-customer-btn" @click="openReassign" />
           <span class="meta-sep">·</span>
           <span>Created: {{ formatDate(estimate.created_at) }}</span>
           <span class="meta-sep">·</span>
@@ -1096,6 +1102,48 @@
         </template>
       </Dialog>
 
+      <!-- Move the estimate to a different customer. Its own dialog rather
+           than re-enabling the form's Select: this needs a reason, and it has
+           consequences the operator has to see before committing. -->
+      <Dialog v-model:visible="showReassign" header="Change customer" modal
+        :style="{ width: '520px' }" data-testid="reassign-dialog">
+        <div class="form-field">
+          <label for="reassign-customer">Move this estimate to *</label>
+          <Select id="reassign-customer" v-model="reassignCustomerId" :options="reassignOptions"
+            optionLabel="label" optionValue="value" placeholder="Select customer" filter
+            class="w-full" data-testid="reassign-customer-select" />
+        </div>
+        <div class="form-field">
+          <label for="reassign-reason">Reason *</label>
+          <Textarea id="reassign-reason" v-model="reassignReason" rows="2" class="w-full"
+            placeholder="e.g. quoted under the wrong account" data-testid="reassign-reason" />
+        </div>
+        <div class="reassign-consequences" data-testid="reassign-consequences">
+          <p><i class="pi pi-info-circle" /> What this changes:</p>
+          <ul>
+            <li v-if="estimate.sent_at">
+              <strong>The link already emailed to {{ headerCustomerName || 'the previous customer' }}
+              will stop working.</strong> Re-send the estimate afterwards.
+            </li>
+            <li>Line prices do not change — they were frozen when each line was added.</li>
+            <li v-if="form.jobsite_address && form.jobsite_address.trim()">
+              The jobsite address stays exactly as typed.
+            </li>
+            <li v-else>
+              <strong>This estimate has no jobsite address of its own</strong>, which means
+              “the customer's address” — so the work moves to the new customer's address.
+              Type an explicit jobsite first if that is not what you want.
+            </li>
+          </ul>
+        </div>
+        <template #footer>
+          <Button label="Cancel" text @click="showReassign = false" />
+          <Button label="Change customer" icon="pi pi-user-edit" :loading="reassignBusy"
+            :disabled="!reassignCustomerId || !reassignReason.trim()"
+            data-testid="reassign-confirm" @click="confirmReassign" />
+        </template>
+      </Dialog>
+
       <!-- Save a one-time typed address onto the customer, on purpose and by
            name. The contact endpoint audits it (field names only). -->
       <Dialog v-model:visible="showSaveContact" header="Save to customer" modal
@@ -1253,6 +1301,7 @@ const estimate = ref({
   id: null,
   estimate_number: "",
   customer_name: "",
+  sent_at: null,
   status: "Draft",
   created_at: "",
   expires_at: "",
@@ -2209,6 +2258,10 @@ async function fetchEstimate() {
       created_at: data.created_at || data.createdAt || data.created || "",
       expires_at: _parseDateOnly(data.expires_at || data.expiresAt || data.expiry_date || data.valid_until) || "",
       job_id: data.job_id || null,
+      // Whether a public link is out there is a sent_at question, not a status
+      // one — a reopened estimate reads "draft" and still has a live link.
+      // The Change-customer dialog warns off this.
+      sent_at: data.sent_at || null,
       declined_reason: data.declined_reason || null,
       declined_at: data.declined_at || null,
     };
@@ -3123,6 +3176,61 @@ async function emailEstimate() {
     toast.add({ severity: "error", summary: "Compose failed", detail: err?.message || "", life: 4000 });
   } finally {
     composerLoading.value = false;
+  }
+}
+
+// ── Change customer ──────────────────────────────────────────────────────
+const showReassign = ref(false);
+const reassignCustomerId = ref(null);
+const reassignReason = ref("");
+const reassignBusy = ref(false);
+
+// The API never sends customer_name on the detail route; the picker list does.
+const headerCustomerName = computed(
+  () => selectedCustomer.value?.name || estimate.value.customer_name || ""
+);
+// Accepted/declined is a closed decision; a converted estimate's customer is
+// settled by its job. The server 409s on both — don't offer what it refuses.
+const canChangeCustomer = computed(() =>
+  isExisting.value
+  && !estimate.value.job_id
+  && !["Accepted", "Declined"].includes(estimate.value.status)
+);
+const reassignOptions = computed(() =>
+  customerOptions.value.filter((o) => String(o.value) !== String(form.value.customer_id))
+);
+
+function openReassign() {
+  reassignCustomerId.value = null;
+  reassignReason.value = "";
+  showReassign.value = true;
+}
+
+async function confirmReassign() {
+  if (!reassignCustomerId.value || !reassignReason.value.trim()) return;
+  reassignBusy.value = true;
+  try {
+    const res = await api.post(
+      `/api/estimates/${route.params.id}/reassign-customer`,
+      { customer_id: reassignCustomerId.value, reason: reassignReason.value.trim() },
+    );
+    const payload = res?.data || res;
+    form.value.customer_id = payload.customer_id ?? reassignCustomerId.value;
+    estimate.value.customer_name = payload.customer_name || "";
+    showReassign.value = false;
+    toast.add({
+      severity: "success",
+      summary: "Customer changed",
+      detail: payload.token_rotated
+        ? "The previously emailed link no longer works — re-send the estimate."
+        : "The estimate now belongs to the new customer.",
+      life: 7000,
+    });
+    loadActivity();
+  } catch (err) {
+    toast.add({ severity: "error", summary: "Could not change customer", detail: err?.message || "", life: 5000 });
+  } finally {
+    reassignBusy.value = false;
   }
 }
 
@@ -4107,6 +4215,10 @@ onUnmounted(() => {
   justify-content: space-between; font-size: .9rem;
 }
 .contact-ask-actions { display: flex; flex-wrap: wrap; gap: .25rem; }
+.reassign-consequences { margin-top: .25rem; font-size: .85rem; color: var(--p-text-muted-color, #6b7280); }
+.reassign-consequences p { margin: 0 0 .35rem; font-weight: 600; }
+.reassign-consequences ul { margin: 0; padding-left: 1.1rem; }
+.reassign-consequences li { margin-bottom: .25rem; }
 .composer-preview {
   width: 100%;
   height: 420px;
