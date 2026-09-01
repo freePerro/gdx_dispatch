@@ -740,10 +740,23 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
             tdb.commit()
             return {"error": str(exc)[:200]}
 
-        # Bounce detection AFTER all folders committed: the NDR and its
-        # Sent-Items sibling may arrive in the same cycle, and the matcher
-        # needs both persisted. Idempotent (gates on the document still
-        # claiming delivery), so a failure here just retries next sync.
+        # After all folders committed: the NDR and its Sent-Items sibling
+        # may arrive in the same cycle, and both matchers need both rows
+        # persisted. Both are idempotent, so a failure just retries next
+        # sync. ORDER MATTERS — re-sends first, then bounces: a re-send
+        # that bounced again in this same cycle is then flipped forward
+        # (resend) and straight back (its new NDR) within one run, ending
+        # the cycle honest. The other way round it ended the cycle "sent"
+        # with a bounce already on file (audit catch, S5). For an old NDR
+        # the bounce rung is harmless after a re-send: the estimate's new
+        # sent_at is newer than that NDR, which is outside its window.
+        resend_totals: dict = {}
+        try:
+            from gdx_dispatch.modules.outlook.resend_detect import process_resends
+            resend_totals = process_resends(tdb, account)
+        except Exception:
+            log.exception("resend_detect failed for account %s (sync unaffected)", aid)
+            tdb.rollback()
         bounce_totals: dict = {}
         try:
             from gdx_dispatch.modules.outlook.bounce_detect import process_bounces
@@ -763,6 +776,7 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
             "failed_folders": failed,
             "vendor_bills": ingest_totals,
             "bounces": bounce_totals,
+            "resends": resend_totals,
         }
 
 
