@@ -1,14 +1,20 @@
 # Estimate rejection visibility — plan
 
-**Status:** PARTIALLY BUILT — **PR 1 BUILT** (branch
+**Status:** BUILT — all three PRs open 2026-08-31, merge bottom-up: **PR 1 =
+#548** (this branch); **PR 2 = #551** (bounce parity + office bell, stacked on
+#547, the bounce-test time bomb); **PR 3 = #552** (manual re-send detector,
+stacked on #551). Nothing released yet. PR 1 (branch
 `feat/estimate-rejection-visibility`, 2026-08-31): `GET /api/estimates/{id}/activity`,
 the "Failed Email" label + warn severity on every estimate-status tag (desktop
 list/detail, job page, mobile list + customer page), the status context strip
 (bounce banner with failed recipient/date + Fix customer email + Re-send;
 decline line with reason/actor), the activity panel, and the rejected→sent
-regression tests. **PR 2 (bounce parity + office bell) and PR 3 (manual
-re-send detector) are NOT built** — see the build-plan audit note below for
-the rules they must follow. Decisions in § Decisions taken are locked.
+regression tests. PR 2 and PR 3 are built on their own branches (above) and
+follow the build-plan audit rules below plus the diff-audit catches recorded
+in their PR bodies (durable-per-NDR commits; document evidence + recipient
+guard on every re-send rung; the original send never its own recovery;
+re-sends before bounces in the sync). Decisions in § Decisions taken are
+locked.
 
 **Build-plan audit (2026-08-31, adversarial, before code):** (a) the activity
 endpoint must NOT filter on `audit_logs.tenant_id` — every estimate writer
