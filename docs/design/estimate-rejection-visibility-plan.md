@@ -15,6 +15,22 @@ guard on every re-send rung; the original send never its own recovery;
 re-sends before bounces in the sync). Decisions in § Decisions taken are
 locked.
 
+> ### ⚠ Downstream risk — `estimate-option-groups-plan.md` (PLAN, unbuilt)
+>
+> That plan adds a terminal status `not_selected` and sweeps losing siblings out
+> of `{draft, sent, rejected}`. Because this doc's definition is now **shipped**
+> — `rejected` = the email bounced, the customer never saw it, and accept/decline
+> still work from it (`modules/proposals/router.py:288-290`, `:456`, `:623`) —
+> that sweep would remove the accept/decline path from a customer who never
+> received the estimate.
+>
+> The invariant to defend when option-groups is built: **`rejected` is a delivery
+> fact, not a customer decision, and nothing may transition out of it on the
+> customer's behalf.**
+>
+> Cross-referenced in both docs 2026-09-01.
+
+
 **Build-plan audit (2026-08-31, adversarial, before code):** (a) the activity
 endpoint must NOT filter on `audit_logs.tenant_id` — every estimate writer
 passes `tenant_id=None` with no request, so 1,947 of 2,092 prod rows carry
