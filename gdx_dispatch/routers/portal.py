@@ -109,11 +109,15 @@ def _company_name(db: Session) -> str:
 
 def _portal_link_base(request: Request) -> str:
     # CUSTOMER_PORTAL_BASE_URL wins so the portal can live on its own domain;
-    # otherwise the link is absolute against whatever host served this request
-    # (an emailed relative link would be dead on arrival).
-    base = os.getenv("CUSTOMER_PORTAL_BASE_URL", "").rstrip("/")
-    if base:
-        return base
+    # then GDX_PUBLIC_BASE_URL — the host every other emailed link uses —
+    # so a scripted or server-side invite over 127.0.0.1 cannot mint a
+    # localhost link no customer can open (#466's second finding); only
+    # then whatever host served this request (an emailed relative link
+    # would be dead on arrival).
+    for var in ("CUSTOMER_PORTAL_BASE_URL", "GDX_PUBLIC_BASE_URL"):
+        base = os.getenv(var, "").rstrip("/")
+        if base:
+            return base
     return str(request.base_url).rstrip("/")
 
 
@@ -169,6 +173,7 @@ def send_portal_magic_link_email(
     branding = email_branding(db)
     company = company_name or branding["company_name"] or _company_name(db)
     sent, _provider, skip_reason = send_transactional_email(
+        designated_sender_fallback=True,  # #466: fixed-content invite/sign-in link
         tenant_db=db,
         tenant_id=tenant_id,
         user_id=sender_user_id,

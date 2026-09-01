@@ -577,8 +577,10 @@
               </div>
               <div class="muted" style="margin-top:0.35rem;">
                 Automated and plugin emails go out through this person's connected
-                Outlook account. Without a sender (and with no SMTP configured),
-                automated sends fail with "no email provider connected".
+                Outlook account — and so do customer-portal invites and sign-in
+                links sent by staff who have not connected an Outlook account of
+                their own. Without a sender (and with no SMTP configured), those
+                sends fail with "no email provider connected".
               </div>
               <div style="margin-top:0.85rem;">
                 <Button label="Save" icon="pi pi-save" :loading="automationEmailSaving" @click="saveAutomationEmail" data-testid="automation-email-save" />
