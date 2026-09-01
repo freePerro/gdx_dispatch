@@ -1,5 +1,9 @@
 # E2E Verification Master Checklist
 
+**Status: PARTIAL — not a completeness gate.** Architecture counts corrected
+2026-09-01 (they understated the surface 3-4x) and the Purpose line's
+"confirmed working" claim is retracted with them; see the caveat below it.
+
 **Purpose**: Define what "works" means for every feature in the GDX platform. Not "page loads" -- actual end-to-end functional verification. If every item on this checklist passes, the app is confirmed working.
 
 **Current gap**: The existing `test_33_chrome_devtools_vue_audit.py` only checks HTTP 200 + zero JS console errors. That misses forms that render but don't submit, buttons that exist but don't fire, tables that show but are empty, and dozens of other failure modes.

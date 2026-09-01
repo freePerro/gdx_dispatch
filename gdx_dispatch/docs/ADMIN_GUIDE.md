@@ -1,5 +1,10 @@
 # GDX Platform — Admin Guide
 
+**Status: PARTIAL** — two sections corrected 2026-09-01 (a QuickBooks sync and
+a subscription portal that do not exist; see below). Coverage is thin: this
+file documents six areas against ~110 nav entries, so absence here does not
+mean a feature is missing.
+
 ## User Management
 
 - Navigate to **Settings** > **Users** tab
