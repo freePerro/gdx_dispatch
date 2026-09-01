@@ -156,7 +156,16 @@ def delete_artifact(
     db: Session = Depends(audit_ready_db),
 ) -> dict:
     ensure_artifact_table(db)
-    db.execute(text("DELETE FROM plugin_artifact WHERE filename = :f"), {"f": filename})
+    # Same shape as remove_plugin below: report what actually happened. An
+    # unconditional DELETE that returns "removed" and writes an audit row for a
+    # file that was never there is a success response for work not done, plus a
+    # false entry in an append-only trail.
+    result = db.execute(
+        text("DELETE FROM plugin_artifact WHERE filename = :f"), {"f": filename}
+    )
+    if (result.rowcount or 0) == 0:
+        db.rollback()
+        raise HTTPException(404, f"No uploaded plugin file named '{filename}'.")
     _audit(
         db,
         request,
@@ -452,7 +461,22 @@ def remove_plugin(
     db: Session = Depends(audit_ready_db),
 ) -> dict:
     ensure_registry_table(db)
-    db.execute(text("DELETE FROM plugin_registry WHERE package = :p"), {"p": package})
+    # Report what actually happened. This used to DELETE unconditionally and
+    # return {"status": "unregistered"} whether or not a row matched — a
+    # success response for work never done, and worse, an audit row asserting
+    # an unregistration that never occurred. The audit trail is append-only, so
+    # a false entry there cannot be walked back.
+    result = db.execute(
+        text("DELETE FROM plugin_registry WHERE package = :p"), {"p": package}
+    )
+    if (result.rowcount or 0) == 0:
+        db.rollback()
+        raise HTTPException(
+            404,
+            f"No registry entry for '{package}'. A plugin installed from an "
+            "uploaded wheel is removed under 'Installed from an uploaded file' "
+            "on the Plugins page, not here.",
+        )
     _audit(
         db,
         request,
