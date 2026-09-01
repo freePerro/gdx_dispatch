@@ -86,3 +86,32 @@ describe('isValidRecipientEmail', () => {
     }
   })
 })
+
+describe('is a typed address a NEW contact?', () => {
+  // Pure form of the composer's typedAddressIsNew check, kept here so the
+  // matching rule (case-insensitive, trimmed) is pinned independently of the
+  // component: asking "is this a new contact?" about an address we already
+  // hold is noise, and failing to ask about one we don't is the whole point.
+  const isNew = (typed, recipients) => {
+    const t = String(typed || '').trim().toLowerCase()
+    return !!t && !recipients.some((r) => (r.email || '').trim().toLowerCase() === t)
+  }
+  const held = [{ email: 'ap@acme.example' }, { email: 'Bob@Acme.Example' }]
+
+  it('asks for an address the customer does not have', () => {
+    expect(isNew('pm@bldg.example', held)).toBe(true)
+  })
+
+  it('does not ask for one already on file', () => {
+    expect(isNew('ap@acme.example', held)).toBe(false)
+  })
+
+  it('does not ask just because the case differs', () => {
+    expect(isNew('bob@acme.example', held)).toBe(false)
+    expect(isNew('  BOB@ACME.EXAMPLE  ', held)).toBe(false)
+  })
+
+  it('asks when the customer has nothing on file at all', () => {
+    expect(isNew('first@contact.example', [])).toBe(true)
+  })
+})

@@ -1018,14 +1018,27 @@
             </small>
             <small v-else-if="composer.overrideMode" class="muted" data-testid="composer-override-hint">
               One-time — the customer record is not changed.
-              <a v-if="composerTypedAddressValid" href="#" data-testid="composer-save-contact"
-                @click.prevent="openSaveContact">Save to customer</a>
               <template v-if="composer.recipients.length">
-                ·
                 <a href="#" data-testid="composer-use-contacts"
                   @click.prevent="cancelRecipientOverride">use a saved contact</a>
               </template>
             </small>
+            <!-- We do not hold this address for this customer, so it belongs to
+                 someone we have no record of. Ask once, plainly; saving is
+                 never automatic (a property manager's address must not
+                 silently become the account's). -->
+            <div v-if="typedAddressIsNew && !contactAskDismissed" class="contact-ask"
+              data-testid="composer-contact-ask">
+              <span>Is this a new contact for {{ selectedCustomer?.name || 'this customer' }}?</span>
+              <div class="contact-ask-actions">
+                <Button label="Yes — save as a contact" icon="pi pi-user-plus" size="small"
+                  severity="secondary" outlined data-testid="composer-save-contact"
+                  @click="openSaveContact" />
+                <Button label="No — just this once" size="small" text
+                  data-testid="composer-contact-ask-dismiss"
+                  @click="contactAskDismissed = true" />
+              </div>
+            </div>
             <small v-else-if="composer.recipients.length" class="muted">
               <a href="#" data-testid="composer-send-other"
                 @click.prevent="startRecipientOverride">Send to a different address</a>
@@ -3117,6 +3130,7 @@ async function emailEstimate() {
 let _composerOpenInOverride = false;
 
 function startRecipientOverride() {
+  contactAskDismissed.value = false;
   // Seed from the current pick so the operator edits an address rather than
   // retyping one — a one-letter correction is the common case.
   const opt = composer.value.recipients.find(
@@ -3145,6 +3159,21 @@ async function sendToOtherAddress() {
 const showSaveContact = ref(false);
 const saveContactName = ref("");
 const saveContactSaving = ref(false);
+// The ask is dismissible per compose session — answering "one-time" once
+// should not re-ask on every keystroke.
+const contactAskDismissed = ref(false);
+
+// A typed address we do NOT already hold for this customer is, by definition,
+// a person we have no record of. Ask — don't wait for the operator to notice
+// a link. Matching is case-insensitive: Bob@x.com is not a new contact.
+const typedAddressIsNew = computed(() => {
+  if (!composer.value.overrideMode || !composerTypedAddressValid.value) return false;
+  if (!composer.value.customer_id) return false;
+  const typed = composerTypedAddress.value.toLowerCase();
+  return !(composer.value.recipients || []).some(
+    (r) => (r.email || "").trim().toLowerCase() === typed
+  );
+});
 
 function openSaveContact() {
   saveContactName.value = "";
@@ -3172,6 +3201,7 @@ async function saveTypedAddressToCustomer() {
         email, label: "Added from estimate", is_primary: false },
     ];
     showSaveContact.value = false;
+    contactAskDismissed.value = true;
   } catch (err) {
     toast.add({ severity: "error", summary: "Could not save contact", detail: err?.message || "", life: 4000 });
   } finally {
@@ -4069,6 +4099,14 @@ onUnmounted(() => {
 /* Token-based so it reads in both themes — a hardcoded hex would vanish on
    one of them (jsdom applies no media queries; only a browser proves this). */
 .composer-warn { color: var(--p-red-500, #ef4444); display: block; margin-top: .25rem; }
+.contact-ask {
+  margin-top: .5rem; padding: .6rem .75rem; border-radius: 6px;
+  background: var(--p-content-hover-background, rgba(127, 127, 127, .08));
+  border: 1px solid var(--p-content-border-color, rgba(127, 127, 127, .25));
+  display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem;
+  justify-content: space-between; font-size: .9rem;
+}
+.contact-ask-actions { display: flex; flex-wrap: wrap; gap: .25rem; }
 .composer-preview {
   width: 100%;
   height: 420px;
