@@ -113,8 +113,10 @@ in this repo has ever overclaimed; the record only ever undersells what exists.
   ADRs alike.** Vocabulary: `PLAN` · `PARTIALLY BUILT` · `MERGED #N` ·
   `RELEASED vX.Y.Z` · `HISTORICAL`. It names what is *not* built when the
   answer is "some of it". A doc with no status line is incomplete. Measured
-  2026-09-01: `docs/design/` is at 68 of 69, `gdx_dispatch/docs/` at 1 of 42.
-  That gap is not a coincidence — it is exactly where the ten defects were.
+  2026-09-01 over tracked files: `docs/design/` is at **64 of 65**;
+  `gdx_dispatch/docs/` (guides + ADRs) at **10 of 42**, and the guides alone
+  at **1 of 33**. That gap is not a coincidence — it is exactly where the ten
+  defects were.
 - **The status line ships with the code.** A PR that implements part of a plan
   updates that plan's status in the same PR. ADR-016 was edited *inside its own
   build commit* and still read "nothing built yet" while the feature sat in the
