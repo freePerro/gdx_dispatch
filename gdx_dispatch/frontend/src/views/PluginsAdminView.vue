@@ -133,9 +133,9 @@
       </form>
 
       <!-- Uploaded artifacts -->
-      <h3 class="section-title">Uploaded plugins</h3>
+      <h3 class="section-title">Installed from an uploaded file</h3>
       <DataTable :value="artifacts" :loading="loading" dataKey="filename" responsiveLayout="scroll">
-        <template #empty>No uploaded plugin files.</template>
+        <template #empty>No plugin files have been uploaded.</template>
         <Column field="filename" header="File" />
         <Column field="sha256" header="SHA-256">
           <template #body="{ data }">{{ (data.sha256 || '').slice(0, 12) }}…</template>
@@ -150,9 +150,40 @@
       </DataTable>
 
       <!-- Installed (desired-state registry) -->
-      <h3 class="section-title">Installed packages</h3>
+      <!-- Issue #100, display half. This table lists ONLY `plugin_registry`
+           rows — the install-by-package-name path. It never showed plugins
+           installed from an uploaded wheel, so on an install that uses only
+           uploads (which is every plugin on this deployment) its empty state
+           flatly announced that no packages were installed — while three
+           plugins were running. An operator read that as "it fell off" and
+           re-added a plugin by pasting a wheel filename into the Install
+           field, which wedged plugin-host. The data was right; the heading
+           and the empty state were lying. -->
+      <h3 class="section-title">Installed by package name</h3>
       <DataTable :value="registry" :loading="loading" dataKey="package" responsiveLayout="scroll">
-        <template #empty>No plugin packages installed yet.</template>
+        <!-- data-testid anchors the retirement guard to THIS table's empty
+             state. Without it the spec matched any empty block in the file and
+             passed while this one said something false. -->
+        <template #empty>
+          <span v-if="artifacts.length || running.length" data-testid="registry-empty-reassure">
+            Nothing installed from a package index — that's normal here.
+            <template v-if="running.length">
+              <strong>{{ running.length }}</strong>
+              plugin{{ running.length === 1 ? '' : 's' }}
+              {{ running.length === 1 ? 'is' : 'are' }} loaded and running
+              (see <em>Running now</em> below).
+            </template>
+            <template v-else>
+              <strong>{{ artifacts.length }}</strong>
+              plugin file{{ artifacts.length === 1 ? '' : 's' }}
+              {{ artifacts.length === 1 ? 'is' : 'are' }} uploaded and will
+              install on the next plugin-host restart
+              (see <em>Installed from an uploaded file</em> above).
+            </template>
+            Nothing is missing.
+          </span>
+          <span v-else data-testid="registry-empty-none">No plugins installed yet.</span>
+        </template>
         <Column field="package" header="Package" />
         <Column field="version" header="Version">
           <template #body="{ data }">{{ data.version || 'latest' }}</template>
@@ -167,7 +198,7 @@
       </DataTable>
 
       <!-- Running (live catalog from plugin-host) -->
-      <h3 class="section-title">Running now</h3>
+      <h3 class="section-title">Running now (what plugin-host actually loaded)</h3>
       <DataTable :value="running" :loading="loading" dataKey="key" responsiveLayout="scroll">
         <template #empty>No plugins loaded by plugin-host.</template>
         <Column field="key" header="Key" />

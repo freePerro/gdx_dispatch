@@ -45,12 +45,52 @@ class ReconcileResult(NamedTuple):
     installed: list[str]
     failed: list[str]
 
+# Raw DDL, not Alembic (tiny aux tables both core and plugin-host touch). But
+# the repo rule that schema must run on BOTH SQLite and Postgres still applies.
+#
+# Measured, not assumed — of the Postgres-isms here, sqlite3 accepts `SERIAL`,
+# `BYTEA` and `TIMESTAMPTZ` as type names (it takes arbitrary ones and assigns
+# affinity). The ONLY token that actually raised was `DEFAULT now()`:
+#     sqlite3.OperationalError: near "(": syntax error
+# `SERIAL` is still mapped, because SQLite gives it NUMERIC affinity and the
+# column would not autoincrement — parsing is not the same as working.
+#
+# It mattered because `ensure_registry_table` runs on every call into the plugin
+# admin API, so that one token made the whole surface unusable on a SQLite dev
+# instance and untestable in the default (SQLite) suite.
+_PG_TYPES = {"serial": "SERIAL PRIMARY KEY", "ts": "TIMESTAMPTZ DEFAULT now()", "blob": "BYTEA"}
+_SQLITE_TYPES = {
+    "serial": "INTEGER PRIMARY KEY AUTOINCREMENT",
+    "ts": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+    "blob": "BLOB",
+}
+
+
+def _types_for(db: Session) -> dict[str, str]:
+    """Pick the dialect's types. FAILS CLOSED to SQLite, deliberately.
+
+    An earlier version walked `getattr(db, "bind", ...)`, which returns None on
+    a Session bound via its sessionmaker rather than directly — so it silently
+    chose the POSTGRES branch on SQLite and reintroduced the exact bug. Use
+    `get_bind()`, which resolves the real engine; and if the dialect genuinely
+    cannot be determined, prefer the SQLite forms: they execute on Postgres
+    (`INTEGER PRIMARY KEY AUTOINCREMENT` is the only lossy one) whereas the
+    Postgres forms raise on SQLite. A guard must not fail open into the defect
+    it exists to prevent.
+    """
+    try:
+        name = db.get_bind().dialect.name
+    except Exception:  # no bind resolvable — take the portable branch
+        return _SQLITE_TYPES
+    return _PG_TYPES if name == "postgresql" else _SQLITE_TYPES
+
+
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS plugin_registry (
-    id        SERIAL PRIMARY KEY,
+    id        {serial},
     package   TEXT NOT NULL UNIQUE,
     version   TEXT,
-    added_at  TIMESTAMPTZ DEFAULT now(),
+    added_at  {ts},
     added_by  TEXT
 )
 """
@@ -60,11 +100,11 @@ CREATE TABLE IF NOT EXISTS plugin_registry (
 # installs it) share state without a shared volume — same pattern as the registry.
 _ARTIFACT_SQL = """
 CREATE TABLE IF NOT EXISTS plugin_artifact (
-    id          SERIAL PRIMARY KEY,
+    id          {serial},
     filename    TEXT NOT NULL UNIQUE,
     sha256      TEXT NOT NULL,
-    content     BYTEA NOT NULL,
-    uploaded_at TIMESTAMPTZ DEFAULT now(),
+    content     {blob} NOT NULL,
+    uploaded_at {ts},
     uploaded_by TEXT
 )
 """
@@ -385,7 +425,7 @@ def ensure_registry_table(db: Session) -> None:
     """Idempotently create plugin_registry. Kept as raw DDL (no Alembic) because
     it's a tiny aux table both core and plugin-host touch; a migration would just
     add coordination overhead."""
-    db.execute(text(_CREATE_SQL))
+    db.execute(text(_CREATE_SQL.format(**_types_for(db))))
     db.commit()
 
 
@@ -397,7 +437,7 @@ def desired_packages(db: Session) -> list[tuple[str, str | None]]:
 
 
 def ensure_artifact_table(db: Session) -> None:
-    db.execute(text(_ARTIFACT_SQL))
+    db.execute(text(_ARTIFACT_SQL.format(**_types_for(db))))
     db.commit()
 
 
