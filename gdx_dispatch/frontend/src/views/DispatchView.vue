@@ -770,6 +770,7 @@ import JobStateChip from '../components/JobStateChip.vue';
 import TechEfficiencyPanel from '../components/TechEfficiencyPanel.vue';
 import { usePermission } from '../composables/usePermission';
 import TechTimelineColumn from '../components/TechTimelineColumn.vue';
+import { formatDurationHours } from '../utils/hours';
 
 const api = useApiWithToast();
 const toast = useToast();
@@ -1063,11 +1064,6 @@ function techCapacityHours(tech, date) {
   const end = parseHHMM(tech.effective_shift_end);
   if (start == null || end == null || end <= start) return 0;
   return end - start;
-}
-function formatDurationHours(value) {
-  if (value == null || !Number.isFinite(Number(value))) return '?h';
-  const n = Number(value);
-  return `${(Math.round(n * 100) / 100).toString().replace(/\.?0+$/, '')}h`;
 }
 function sumDurationHours(jobList) {
   let known = 0;

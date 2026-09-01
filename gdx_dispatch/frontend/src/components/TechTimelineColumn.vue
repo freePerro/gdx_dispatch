@@ -164,6 +164,7 @@
 
 <script setup>
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
+import { formatDurationHours as formatDuration } from '../utils/hours';
 
 const props = defineProps({
   tech: { type: Object, required: true },
@@ -324,11 +325,6 @@ function formatHourLabel(h) {
 function formatTime(date) {
   if (!date) return '';
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-}
-function formatDuration(value) {
-  if (value == null || !Number.isFinite(Number(value))) return '?h';
-  const n = Number(value);
-  return `${(Math.round(n * 100) / 100).toString().replace(/\.?0+$/, '')}h`;
 }
 function displayCustomer(job) {
   if (typeof job.customer === 'object') return job.customer?.name || job.title || 'Job';
