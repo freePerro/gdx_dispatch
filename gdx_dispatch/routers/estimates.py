@@ -15,9 +15,15 @@ from sqlalchemy import func, select
 from sqlalchemy import text as _text
 from sqlalchemy.orm import Session, selectinload
 
-from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor, utcnow
+from gdx_dispatch.core.audit import (
+    audit_or_rollback,
+    ensure_audit_table,
+    log_audit_event_sync,
+    resolve_audit_actor,
+    utcnow,
+)
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.core.modules import require_module, require_role
+from gdx_dispatch.core.modules import require_module, require_permission, require_role
 from gdx_dispatch.core.pricing_provenance import derive_margin_pct
 from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.models.tenant_models import Customer, Document, Job, JobPartNeeded
@@ -498,7 +504,13 @@ class EstimatePatchIn(BaseModel):
     tax_rate: float | None = Field(default=None, ge=0, le=1)
     discount: float | None = Field(default=None, ge=0, le=999999.99)
     job_id: UUID | None = None
-    customer_id: UUID | None = None
+    # customer_id is deliberately NOT here. Reassigning an estimate to another
+    # customer goes through POST /{id}/reassign-customer, which requires a
+    # reason, rotates the public link when the estimate was already emailed,
+    # and writes an audit row naming both customers. Through this PATCH it was
+    # a silent setattr audited as `patch_estimate` with details={} — and
+    # `patch_estimate` is deliberately excluded from the estimate activity
+    # whitelist below, so the change was invisible on the page as well.
     # Tri-state via exclude_unset: field omitted = untouched; explicit null =
     # revert to inherit tenant default; true/false = force hide/show.
     hide_line_prices: bool | None = None
@@ -922,6 +934,7 @@ _ACTIVITY_LABELS: dict[str, str] = {
     "public_estimate_declined": "Declined by customer (email link)",
     "portal_estimate_declined": "Declined by customer (portal)",
     "estimate_reopened": "Reopened",
+    "estimate_customer_reassigned": "Customer changed",
     # (expire_stale_estimates is NOT here: the sweep writes one row with
     # entity_id="" — nothing per estimate to show.)
     "estimate_converted_to_job": "Converted to job",
@@ -1077,13 +1090,6 @@ def patch_estimate(
         job = db.execute(select(Job).where(Job.id == updates["job_id"], Job.deleted_at.is_(None))).scalar_one_or_none()
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
-
-    if "customer_id" in updates and updates["customer_id"]:
-        customer = db.execute(
-            select(Customer).where(Customer.id == updates["customer_id"], Customer.deleted_at.is_(None))
-        ).scalar_one_or_none()
-        if not customer:
-            raise HTTPException(status_code=404, detail="customer not found")
 
     for key, value in updates.items():
         if isinstance(value, str):
@@ -1471,6 +1477,28 @@ _DEFAULT_BODY_TEMPLATE = (
     "Reply to this email with any questions, or to move forward.\n\n"
     "Thanks,\n{{company_name}}"
 )
+
+
+def rotate_public_token(estimate: Estimate) -> bool:
+    """Re-mint the estimate's public link. Returns True if it actually rotated.
+
+    Gate on ``sent_at``, NEVER on ``status``. The public lookup
+    (modules/proposals/router.py) filters ``deleted_at IS NULL AND sent_at IS
+    NOT NULL`` and carries no status term, so "is this link live?" is a
+    question about sent_at alone. A status-keyed rule looks equivalent and is
+    not: ``reopen_estimate`` sets status='draft' and never touches sent_at, and
+    it accepts 'rejected' — so bounce → reopen → reassign would leave the
+    previous customer holding a working link to the NEW customer's name,
+    jobsite address and pricing under a rule that says "it's a draft, nothing
+    to rotate". (They could read it but not accept it: the public accept gates
+    on sent/rejected. Disclosure, not fraud — still not ours to hand out.)
+
+    A never-sent estimate is left alone: nobody holds its link.
+    """
+    if estimate.sent_at is None:
+        return False
+    estimate.public_token = secrets.token_urlsafe(48)[:64]
+    return True
 
 
 def _public_proposal_url(estimate: Estimate) -> str:
@@ -2801,6 +2829,155 @@ def _compute_price_drift(estimate: Estimate, db: Session) -> list[dict]:
                 "reason": "matrix price changed",
             })
     return drift
+
+
+class ReassignCustomerIn(BaseModel):
+    """Move an estimate to a different customer.
+
+    Reason is MANDATORY, on the same principle as a decline: a change a human
+    has to justify should justify itself in the record. Without it the audit
+    row can say what moved but never why, and "why" is the whole question
+    somebody asks six months later.
+    """
+
+    customer_id: UUID
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_not_blank(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("a reason is required to change the customer")
+        return trimmed
+
+
+@router.post(
+    "/{estimate_id}/reassign-customer",
+    response_model=None,
+    # The rest of this router is gated by module membership alone, which is its
+    # own problem (filed separately) — but a new door that moves a document
+    # between customers is not the place to inherit it.
+    dependencies=[Depends(require_permission("estimates.write"))],
+)
+def reassign_estimate_customer(
+    estimate_id: UUID,
+    payload: ReassignCustomerIn,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Correct which customer an estimate belongs to.
+
+    Mirrors mobile.py's update_mobile_job_customer: a purpose-built endpoint
+    rather than a field on the generic PATCH, so the change gets a name, a
+    reason, a real audit row, and — when the estimate was already emailed — a
+    fresh public token.
+    """
+    # ensure_audit_table COMMITS on first use per engine (core/audit.py). Left
+    # to run lazily from inside audit_or_rollback it would harden the
+    # customer_id write and the rotated token BEFORE the audit row exists —
+    # and audit_or_rollback would have nothing left to roll back, which is the
+    # entire promise this endpoint makes. Run it here, where committing has
+    # nothing to disturb. Same reasoning, and the same NOT-Depends(audit_ready_db)
+    # caveat, as routers/customers.py's create_customer_contact.
+    ensure_audit_table(db)
+    estimate = _get_estimate_or_404(estimate_id, db)
+
+    # An accepted or declined estimate is a closed decision, and a converted
+    # one has its customer settled by the job it created. Neither is a typo to
+    # correct; both would strand records that point at the other customer.
+    if estimate.status in {"accepted", "declined"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"cannot change the customer on a {estimate.status} estimate",
+        )
+    if estimate.job_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this estimate was converted to a job — change the customer on "
+                f"job {estimate.job_id} instead"
+            ),
+        )
+
+    new_customer = db.execute(
+        select(Customer).where(
+            Customer.id == payload.customer_id, Customer.deleted_at.is_(None)
+        )
+    ).scalar_one_or_none()
+    if not new_customer:
+        raise HTTPException(status_code=404, detail="customer not found")
+
+    old_customer_id = estimate.customer_id
+    if old_customer_id == payload.customer_id:
+        raise HTTPException(
+            status_code=409, detail="the estimate is already on that customer"
+        )
+    old_customer = None
+    if old_customer_id:
+        old_customer = db.execute(
+            select(Customer).where(Customer.id == old_customer_id)
+        ).scalar_one_or_none()
+
+    previous_status = estimate.status
+    token_rotated = rotate_public_token(estimate)
+    estimate.customer_id = payload.customer_id
+    estimate.updated_at = utcnow()
+
+    # Audit BEFORE the commit: an untraced reassignment is worse than a failed
+    # one. Names, not contact details — a customer's email and phone do not
+    # belong in the trail in the clear (mobile.py), but which two accounts a
+    # document moved between is the entire point of the row.
+    audit_or_rollback(
+        db,
+        action="estimate_customer_reassigned",
+        entity_type="estimate",
+        entity_id=str(estimate.id),
+        actor=current_user,
+        request=request,
+        details={
+            "from_customer_id": str(old_customer_id) if old_customer_id else None,
+            "from_customer_name": (old_customer.name if old_customer else None),
+            "to_customer_id": str(payload.customer_id),
+            "to_customer_name": new_customer.name,
+            "reason": payload.reason,
+            "previous_status": previous_status,
+            "token_rotated": token_rotated,
+        },
+    )
+    db.commit()
+    db.refresh(estimate)
+
+    # Consumers were handed customer_id on estimate.sent and on accept/decline;
+    # without this their copy silently rots. Guarded — a webhook must never
+    # fail a committed reassignment.
+    try:
+        from gdx_dispatch.core.webhooks.emit import emit_domain_event
+
+        tid = str(estimate.company_id or "")
+        emit_domain_event(
+            db,
+            "estimate.customer_reassigned",
+            str(estimate.id),
+            {
+                "estimate_id": str(estimate.id),
+                "estimate_number": estimate.estimate_number,
+                "status": estimate.status,
+                "from_customer_id": str(old_customer_id) if old_customer_id else None,
+                "customer_id": str(estimate.customer_id),
+                "company_id": tid,
+            },
+            tenant_id=tid or None,
+        )
+        db.commit()
+    except Exception:
+        log.exception("estimate_reassign_event_emit_failed")
+
+    out = _serialize_estimate(estimate, include_lines=False)
+    out["customer_name"] = new_customer.name
+    out["token_rotated"] = token_rotated
+    return out
 
 
 @router.post("/{estimate_id}/reopen", response_model=None)

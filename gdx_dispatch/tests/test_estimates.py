@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core.audit import TenantBase, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.models.tenant_models import Customer, Job
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
@@ -1617,3 +1617,316 @@ def test_rejected_estimate_mark_sent_restores_sent(client: TestClient):
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "sent"
     assert _status_of(client, estimate["id"]) == ("sent", "email")
+
+
+# ── Change the customer on an estimate ───────────────────────────────────────
+# Moving a document between customers used to be a bare `customer_id` on the
+# generic PATCH: a silent setattr, audited as `patch_estimate` with details={},
+# and invisible in the estimate activity panel (which deliberately excludes
+# patch_estimate). These pin the replacement.
+
+def _audit_rows(client: TestClient, action: str) -> list:
+    from gdx_dispatch.core.audit import AuditLog
+    db = _db(client)
+    try:
+        return [
+            {"details": r.details, "user_id": r.user_id, "entity_id": r.entity_id}
+            for r in db.execute(select(AuditLog).where(AuditLog.action == action)).scalars().all()
+        ]
+    finally:
+        db.close()
+
+
+def _set_estimate(client: TestClient, est_id: str, **fields) -> None:
+    """Force server-side state a public API cannot reach (sent_at, status)."""
+    db = _db(client)
+    try:
+        row = db.get(Estimate, UUID(est_id))
+        for k, v in fields.items():
+            setattr(row, k, v)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _token(client: TestClient, est_id: str) -> str:
+    db = _db(client)
+    try:
+        return db.get(Estimate, UUID(est_id)).public_token
+    finally:
+        db.close()
+
+
+def test_reassign_moves_the_estimate_and_names_both_customers(client: TestClient):
+    a = _create_customer(client, name="Acme Overhead")
+    b = _create_customer(client, name="Baker Property")
+    est = _create_estimate(client, customer_id=a)
+
+    r = client.post(
+        f"/api/estimates/{est['id']}/reassign-customer",
+        json={"customer_id": b, "reason": "quoted under the wrong account"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["customer_id"] == b
+    assert r.json()["customer_name"] == "Baker Property"
+
+    rows = _audit_rows(client, "estimate_customer_reassigned")
+    assert len(rows) == 1, "the move must leave exactly one named audit row"
+    d = rows[0]["details"]
+    # Names, not contact details — and both sides, or the row cannot answer
+    # "moved from whom".
+    assert d["from_customer_id"] == a and d["from_customer_name"] == "Acme Overhead"
+    assert d["to_customer_id"] == b and d["to_customer_name"] == "Baker Property"
+    assert d["reason"] == "quoted under the wrong account"
+    assert "email" not in str(d).lower()
+
+
+def test_reassign_requires_a_reason(client: TestClient):
+    a = _create_customer(client, name="A Co")
+    b = _create_customer(client, name="B Co")
+    est = _create_estimate(client, customer_id=a)
+    assert client.post(
+        f"/api/estimates/{est['id']}/reassign-customer", json={"customer_id": b},
+    ).status_code == 422
+    assert client.post(
+        f"/api/estimates/{est['id']}/reassign-customer",
+        json={"customer_id": b, "reason": "   "},
+    ).status_code == 422
+
+
+def test_reassign_rotates_the_public_link_when_already_sent(client: TestClient):
+    """The previous customer is holding a link. It must stop working, or it
+    starts rendering the NEW customer's name, address and pricing."""
+    a = _create_customer(client, name="A Co")
+    b = _create_customer(client, name="B Co")
+    est = _create_estimate(client, customer_id=a)
+    _set_estimate(client, est["id"], status="sent", sent_at=utcnow())
+    before = _token(client, est["id"])
+
+    r = client.post(
+        f"/api/estimates/{est['id']}/reassign-customer",
+        json={"customer_id": b, "reason": "wrong account"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["token_rotated"] is True
+    assert _token(client, est["id"]) != before
+    assert _audit_rows(client, "estimate_customer_reassigned")[0]["details"]["token_rotated"] is True
+
+
+def test_reassign_leaves_an_unsent_drafts_token_alone(client: TestClient):
+    """Nobody holds the link to a never-sent estimate — and the public lookup
+    filters sent_at IS NOT NULL, so it is already a 404."""
+    a = _create_customer(client, name="A Co")
+    b = _create_customer(client, name="B Co")
+    est = _create_estimate(client, customer_id=a)
+    before = _token(client, est["id"])
+    r = client.post(
+        f"/api/estimates/{est['id']}/reassign-customer",
+        json={"customer_id": b, "reason": "wrong account"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["token_rotated"] is False
+    assert _token(client, est["id"]) == before
+
+
+def test_reassign_rotates_for_a_REOPENED_estimate_that_reads_draft(client: TestClient):
+    """The case a status-keyed rule ships broken.
+
+    reopen_estimate sets status='draft' and never touches sent_at, and it
+    accepts 'rejected' — the bounced state. So bounce -> reopen -> reassign
+    leaves the old customer holding a LIVE link while the row says "draft".
+    Rotation keys on sent_at for exactly this reason.
+    """
+    a = _create_customer(client, name="A Co")
+    b = _create_customer(client, name="B Co")
+    est = _create_estimate(client, customer_id=a)
+    _set_estimate(client, est["id"], status="sent", sent_at=utcnow())
+
+    # The real path back to 'draft': the email bounced, the office reopened it.
+    _set_estimate(client, est["id"], status="rejected")
+    assert client.post(f"/api/estimates/{est['id']}/reopen").status_code == 200
+    db = _db(client)
+    try:
+        row = db.get(Estimate, UUID(est["id"]))
+        assert row.status == "draft" and row.sent_at is not None, "reopen must not clear sent_at"
+    finally:
+        db.close()
+    before = _token(client, est["id"])
+
+    r = client.post(
+        f"/api/estimates/{est['id']}/reassign-customer",
+        json={"customer_id": b, "reason": "bounced, wrong account"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["token_rotated"] is True, "a reopened estimate still has a live link"
+    assert _token(client, est["id"]) != before
+
+
+@pytest.mark.parametrize("status", ["accepted", "declined"])
+def test_reassign_refuses_a_finalized_estimate(client: TestClient, status: str):
+    a = _create_customer(client, name="A Co")
+    b = _create_customer(client, name="B Co")
+    est = _create_estimate(client, customer_id=a)
+    _set_estimate(client, est["id"], status=status)
+    r = client.post(
+        f"/api/estimates/{est['id']}/reassign-customer",
+        json={"customer_id": b, "reason": "nope"},
+    )
+    assert r.status_code == 409
+    assert not _audit_rows(client, "estimate_customer_reassigned")
+
+
+def test_reassign_refuses_a_converted_estimate_and_names_the_job(client: TestClient):
+    a = _create_customer(client, name="A Co")
+    b = _create_customer(client, name="B Co")
+    est = _create_estimate(client, customer_id=a)
+    db = _db(client)
+    try:
+        job = Job(id=uuid4(), customer_id=UUID(a), title="T", company_id="tenant-test")
+        db.add(job)
+        db.commit()
+        job_id = str(job.id)
+    finally:
+        db.close()
+    _set_estimate(client, est["id"], job_id=UUID(job_id))
+    r = client.post(
+        f"/api/estimates/{est['id']}/reassign-customer",
+        json={"customer_id": b, "reason": "wrong account"},
+    )
+    assert r.status_code == 409
+    assert job_id in r.json()["detail"]
+
+
+def test_reassign_rejects_unknown_or_deleted_customer(client: TestClient):
+    a = _create_customer(client, name="A Co")
+    gone = _create_customer(client, name="Gone Co")
+    est = _create_estimate(client, customer_id=a)
+    db = _db(client)
+    try:
+        db.get(Customer, UUID(gone)).deleted_at = utcnow()
+        db.commit()
+    finally:
+        db.close()
+    assert client.post(
+        f"/api/estimates/{est['id']}/reassign-customer",
+        json={"customer_id": gone, "reason": "r"},
+    ).status_code == 404
+    assert client.post(
+        f"/api/estimates/{est['id']}/reassign-customer",
+        json={"customer_id": str(uuid4()), "reason": "r"},
+    ).status_code == 404
+
+
+def test_reassign_refuses_a_no_op(client: TestClient):
+    a = _create_customer(client, name="A Co")
+    est = _create_estimate(client, customer_id=a)
+    r = client.post(
+        f"/api/estimates/{est['id']}/reassign-customer",
+        json={"customer_id": a, "reason": "same"},
+    )
+    assert r.status_code == 409
+
+
+def test_patch_can_no_longer_move_an_estimate_between_customers(client: TestClient):
+    """One door. Through PATCH it was a silent setattr with details={}."""
+    a = _create_customer(client, name="A Co")
+    b = _create_customer(client, name="B Co")
+    est = _create_estimate(client, customer_id=a)
+    r = client.patch(f"/api/estimates/{est['id']}", json={"customer_id": b, "label": "L"})
+    assert r.status_code == 200, r.text
+    assert r.json()["customer_id"] == a, "PATCH must ignore customer_id entirely"
+    assert r.json()["label"] == "L", "the rest of the patch still applies"
+
+
+def test_reassignment_is_visible_in_the_activity_panel(client: TestClient):
+    """A row nothing renders is not a trail. The activity endpoint filters on
+    a whitelist, so the action has to be IN it."""
+    a = _create_customer(client, name="Acme Overhead")
+    b = _create_customer(client, name="Baker Property")
+    est = _create_estimate(client, customer_id=a)
+    client.post(
+        f"/api/estimates/{est['id']}/reassign-customer",
+        json={"customer_id": b, "reason": "wrong account"},
+    )
+    r = client.get(f"/api/estimates/{est['id']}/activity")
+    assert r.status_code == 200, r.text
+    hits = [i for i in r.json()["items"] if i["action"] == "estimate_customer_reassigned"]
+    assert len(hits) == 1, "the reassignment must appear in the estimate's activity"
+    assert hits[0]["label"] == "Customer changed"
+    assert hits[0]["details"]["to_customer_name"] == "Baker Property"
+
+
+def test_reassign_is_actually_permission_gated(client: TestClient):
+    """The gate must be able to FAIL, or it is decoration.
+
+    The shared fixture authenticates as `admin`, and require_permission's
+    admin escape hatch means every other test here would pass with the
+    dependency deleted. This one swaps in a role that does NOT carry
+    estimates.write and asserts the 403 — so removing the gate goes red.
+    """
+    a = _create_customer(client, name="A Co")
+    b = _create_customer(client, name="B Co")
+    est = _create_estimate(client, customer_id=a)
+
+    app = client.app
+    original = app.dependency_overrides[get_current_user]
+    app.dependency_overrides[get_current_user] = lambda: {
+        "user_id": "tech-1", "role": "viewer", "tenant_id": "tenant-test",
+    }
+    try:
+        r = client.post(
+            f"/api/estimates/{est['id']}/reassign-customer",
+            json={"customer_id": b, "reason": "should not be allowed"},
+        )
+        assert r.status_code == 403, f"expected 403 for a role without estimates.write, got {r.status_code}"
+    finally:
+        app.dependency_overrides[get_current_user] = original
+
+    # and nothing moved
+    db = _db(client)
+    try:
+        assert str(db.get(Estimate, UUID(est["id"])).customer_id) == a
+    finally:
+        db.close()
+
+
+def test_reassign_audit_row_and_change_land_together(client: TestClient):
+    """audit_or_rollback's promise: the change and its trail commit as one.
+
+    ensure_audit_table commits on first use per engine, so if it is left to
+    run lazily from inside the audit call it hardens the customer_id write
+    and the rotated token first and there is nothing left to roll back. This
+    pins the pairing by forcing the audit write to fail.
+    """
+    import gdx_dispatch.core.audit as audit_mod
+
+    a = _create_customer(client, name="A Co")
+    b = _create_customer(client, name="B Co")
+    est = _create_estimate(client, customer_id=a)
+    _set_estimate(client, est["id"], status="sent", sent_at=utcnow())
+    before_token = _token(client, est["id"])
+
+    real = audit_mod._log_audit_event_impl
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("audit write failed")
+
+    audit_mod._log_audit_event_impl = _boom
+    try:
+        r = client.post(
+            f"/api/estimates/{est['id']}/reassign-customer",
+            json={"customer_id": b, "reason": "audit will fail"},
+        )
+        assert r.status_code >= 400, "a failed audit must fail the request"
+    except RuntimeError:
+        pass  # audit_or_rollback re-raises after rolling back
+    finally:
+        audit_mod._log_audit_event_impl = real
+
+    db = _db(client)
+    try:
+        row = db.get(Estimate, UUID(est["id"]))
+        assert str(row.customer_id) == a, "the customer must NOT have moved without a trail"
+        assert row.public_token == before_token, "the token must NOT have rotated without a trail"
+    finally:
+        db.close()
