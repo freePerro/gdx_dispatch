@@ -74,10 +74,16 @@ prod and demo and walked on prod in light and dark.
 - [ ] **`closeout-parts-autopricing-plan`** — all four named items still unbuilt: no
       price provenance column, no server-side unbilled-parts gate on `verify_invoice`,
       void doesn't release claims, autodraft release still deletes office lines. _(carried)_
-- [ ] **`design-doc-corpus-audit-2026-08-18` §4 live defects** — still live:
-      `payments.py:48/54` caller-supplied currency, the money probe behind a marker
-      `pytest.ini` excludes, the idempotency middleware inert, mobile clock endpoints
-      orphaned. _(carried)_
+- [x] **`design-doc-corpus-audit-2026-08-18` §4 live defects — ALL FOUR CLOSED.**
+      Re-verified in code 2026-09-01: `payments.py:49-52` documents `currency` as
+      advisory and `:216/:407` pass the module `CURRENCY` constant; the money probe
+      carries no `health` marker (only prose at `:11,54` explaining its removal);
+      `core/middleware/principal_stamp.py:65` sets `request.state.principal` and
+      `app.py:1396` registers it; `MobileJobDetailView.vue:1543,1574` call both clock
+      endpoints. This row read "still live" on all four until 2026-09-01 while the
+      corpus audit itself already recorded them closed — two docs in one repo
+      disagreeing, with the wrong one on the short list. _(the row was carried
+      forward instead of re-derived; that is the failure, not the defects)_
 - [ ] **PO receive route collision** — 3 systems, `po_workflow.py` shadowed/dead on the
       same prefix, `modules/purchase_orders/` unmounted. _(carried from July; not re-checked)_
 

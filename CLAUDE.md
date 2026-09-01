@@ -35,8 +35,15 @@ plainly.
   Re-run in isolation before blaming your branch.
 - Lint is a **ruff ratchet against a baseline**, not plain pass/fail — a
   branch can be "clean" and still over the ratchet.
-- CI (`ci.yml`) runs only on main. Mid-stack PRs need the local test matrix
-  run and its results posted before merge.
+- **CI (`ci.yml`) triggers on `pull_request` with base `main`, and on `push`
+  to `main`.** It does *not* run on a PR whose base is another feature branch —
+  which is why **mid-stack PRs still need the local matrix run and its results
+  posted before merge**: the rule is right, the old reason ("runs only on
+  main") was not. Note also the `push` trigger carries a paths filter
+  (`gdx_dispatch/**`, `docker/**`, `.github/workflows/**`, excluding `**/*.md`)
+  while the `pull_request` trigger has none, so a docs-only PR runs the full
+  suite and a docs-only push to main does not. Verified against
+  `.github/workflows/ci.yml` 2026-09-01.
 - Main is merge-protected; `--admin` merge is the sanctioned path, but only
   after enumerating every check's result by name.
 
@@ -94,18 +101,33 @@ Every state-changing action must answer: **who did it, what changed, when.**
 
 ## The written record
 
-A plan doc holds two things with different shelf lives: **decisions**, which
-stay true, and **state**, which rots within days. The 2026-08-18 corpus audit
-(`docs/design/design-doc-corpus-audit-2026-08-18.md`) found 14 of 52 docs whose
-header would send a reader to rebuild shipped work — every one a plan that
-shipped and never had its status updated. No doc overclaimed; the record only
-ever undersells what exists.
+Every doc is either **about the past** or **about the present**, and the two
+have opposite maintenance rules. A design doc, an ADR, an audit records what was
+decided and why; it stays true forever, because the past does not change. A
+guide, a runbook, an invariant registry, a "what's left" tracker describes the
+system as it is right now, and starts rotting the day it is written.
 
+**Date-stamp the past. Fix or retire the present.** This is not a preference —
+it predicts where the defects are. The 2026-09-01 doc audit found ten live
+defects and **all ten came from present-tense docs**: guides, runbooks, an ADR
+whose status was left behind by its own build commit, and two root trackers.
+**Zero came from a completed design doc.** The 2026-08-18 corpus audit before
+it found 14 of 52 plan headers that would have sent a reader to rebuild shipped
+work — every one a plan that shipped and never had its status updated. No doc
+in this repo has ever overclaimed; the record only ever undersells what exists.
+
+- **Every doc carries a status line on line 3 — plans, guides, runbooks and
+  ADRs alike.** Vocabulary: `PLAN` · `PARTIALLY BUILT` · `MERGED #N` ·
+  `RELEASED vX.Y.Z` · `HISTORICAL`. It names what is *not* built when the
+  answer is "some of it". A doc with no status line is incomplete. Measured
+  2026-09-01 over tracked files: `docs/design/` is at **64 of 65**;
+  `gdx_dispatch/docs/` (guides + ADRs) at **10 of 42**, and the guides alone
+  at **1 of 33**. That gap is not a coincidence — it is exactly where the ten
+  defects were.
 - **The status line ships with the code.** A PR that implements part of a plan
-  updates that plan's status in the same PR. Vocabulary: `PLAN` ·
-  `PARTIALLY BUILT` · `MERGED #N` · `RELEASED vX.Y.Z`. Every doc has one, on
-  line 3, and it names what is *not* built when the answer is "some of it".
-  A plan doc with no status line is incomplete.
+  updates that plan's status in the same PR. ADR-016 was edited *inside its own
+  build commit* and still read "nothing built yet" while the feature sat in the
+  sidebar — that is the failure this rule exists to stop.
 - **Docs state; code proves.** Never cite a plan as evidence of current state —
   not its status line, and especially not its "what already exists" table. Two
   such tables in this repo were wrong, one of them on the day it was written.
@@ -123,8 +145,16 @@ ever undersells what exists.
   for others naming the same files. If one exists, cite it or mark it
   superseded — in both docs. Two plans in this repo reached opposite decisions
   about the same money path without ever referencing each other.
-- **Never delete a stale doc.** The rejected alternatives and audit findings
-  are the part that can't be recovered from code. Correct the header instead.
+- **Keep the past; retire the present.** A shipped plan stays — its rejected
+  alternatives and audit findings are the part code cannot recover, and 56
+  source files cite design docs by filename, **8 of them immutable migrations**
+  whose only record of *why* a money column is locked is the doc they name.
+  Deleting one manufactures the dead references this repo audits for. A
+  present-tense doc whose subject no longer exists is the opposite case: it
+  carries no reasoning, only instructions for a system that isn't there. Give
+  it a `HISTORICAL` status line saying what it described and that the thing was
+  never built. Deletion is available for that class and that class only, and
+  only when the doc holds no decision anyone could still need.
 - **Open a plan with "what already exists (do not rebuild)."** The best doc in
   the corpus established that half its ask needed no code at all.
 

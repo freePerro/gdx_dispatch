@@ -1,5 +1,9 @@
 # GDX Build Rules — Every New Endpoint/Router/Feature
 
+**Status: CURRENT** — four unfollowable instructions corrected 2026-09-01
+(they named a doc and a tool that do not exist). The SQL-portability,
+silent-failure and audit rules below were verified against code and stand.
+
 These rules exist because specific patterns kept causing production bugs. Non-negotiable.
 
 ## SQL Portability — No Database-Specific Functions
@@ -26,7 +30,8 @@ These rules exist because specific patterns kept causing production bugs. Non-ne
 ## Module Gating — Every Router Gets Gated
 - ALWAYS `dependencies=[Depends(require_module("module_key"))]` on router
 - Use `require_role("admin", "owner")` for admin-only endpoints
-- ALWAYS add the module key to `AVAILABLE_MODULES` in `gdx_dispatch/core/modules.py`
+- ALWAYS add the module key to `MODULES` in `gdx_dispatch/core/modules.py:17`
+  (this line said `AVAILABLE_MODULES` until 2026-09-01; no such symbol exists)
 
 ## Import Safety — Verify Before Commit
 - ALWAYS verify imported packages exist in `gdx_dispatch/requirements.txt`
@@ -38,7 +43,7 @@ These rules exist because specific patterns kept causing production bugs. Non-ne
 
 ## Tenant Isolation — Three Planes
 
-See `ARCHITECTURAL_STATE.md` (top-level) for the canonical picture. Every table lives in exactly one plane; the isolation rule is different in each.
+**There is no `ARCHITECTURAL_STATE.md`** — this line pointed at it as "the canonical picture" until 2026-09-01 and the file has never existed in this repo (`encryption_at_rest.md` cites it too). The canonical statement is `CLAUDE.md` § *Project map*: **single-tenant, forever — one tenant per database, isolation is the connection.** The three-plane description below is retained because the tenant-plane rules in it are correct and load-bearing; the control/commerce planes describe a shared-database SaaS this deployment does not run.
 
 ### Tenant plane (per-tenant Postgres)
 Tables: customers, jobs, invoices, documents, technicians, estimates, notes, leads, catalog, parts, photos, signatures, equipment, schedules.
@@ -55,8 +60,15 @@ Tables: customers, jobs, invoices, documents, technicians, estimates, notes, lea
 
 After merging any tenant-plane model change, run the non-destructive sync tool to bring every tenant DB up to the model:
 
-    docker exec docker-app-1 python -m gdx_dispatch.tools.sync_tenant_db --all-tenants            # dry-run
-    docker exec docker-app-1 python -m gdx_dispatch.tools.sync_tenant_db --all-tenants --apply    # apply
+    # ⚠ `gdx_dispatch.tools.sync_tenant_db` DOES NOT EXIST. This block gave it as
+    # the mandatory step after any tenant-plane model change; there is no such
+    # module (checked 2026-09-01), and a source comment in
+    # modules/forecasting/tasks.py:28 cites it too. Nothing additive-syncs a
+    # live DB today. The only tenant-DB tool that exists is:
+    #     gdx_dispatch/tools/pave_tenant_db.py   # DESTRUCTIVE: DROP SCHEMA + reload
+    # so a new column on an existing tenant-plane table still needs a
+    # deliberate migration or hand-written ALTER. Treat the drift warning above
+    # as real and the remedy below as unwritten.
 
 The tool only does *additive* DDL: `add_table`, `add_column`, `add_index`, `add_constraint` (CHECK only). It refuses to drop, change types, or change nullability — those are deliberate human decisions, not auto-fixes. It prints a per-tenant report of what was applied and what was skipped (so you can hand-write the risky ALTERs if the model intends them). Idempotent: re-running on a synced DB is a no-op.
 
@@ -65,7 +77,7 @@ Use `pave_tenant_db.py` only when the diff is too tangled to apply additively (l
 ### Control plane (shared `gdx_control`)
 Tables: tenants, memberships, tenant_module_grants, billing_plan, metering_usage, notification_template (if shared), tenant_relationships, cross_tier_module_grants, audit aggregation.
 
-- ALWAYS `Depends(get_control_db)`.
+- ALWAYS `Depends(get_control_db)`. ⚠ Not in `core/database.py` — the only definition is a local one at `api/public_router.py:47` (checked 2026-09-01). Confirm the import before copying this.
 - Every tenant-scoped control-plane table MUST have:
   - `tenant_id` / `company_id` column, `NOT NULL`.
   - RLS enabled, SELECT policy `USING (tenant_id = current_setting('app.tenant_id')::text)`.

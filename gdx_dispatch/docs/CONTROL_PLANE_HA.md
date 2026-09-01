@@ -1,5 +1,11 @@
 # Control Plane High Availability
 
+**Status: HISTORICAL — do not follow these steps.** Describes a
+multi-tenant control plane behind an `app-1`/`app-2` nginx upstream. GDX Dispatch
+is single-tenant and self-hosted; there is no control plane to make highly
+available. Kept as the record of the rejected architecture.
+_Marked 2026-09-01 by the doc audit._
+
 ## Architecture
 
 ```

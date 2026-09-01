@@ -1,5 +1,26 @@
 # Door listings → garagedoorxperts.com
 
+**Status: RELEASED v1.31.0** (app half) — first shipped in `f48583a`,
+2026-07-29. Re-derived from code 2026-09-01, not carried from the corpus audit:
+migration `040_door_listings.py`; `modules/door_listings/{models,service}.py`;
+`routers/door_listings.py` (12 routes); **all three submission sources of the
+opening paragraph exist** — office (`views/DoorListingsView.vue`), tech
+(`views/MobileDoorListingsView.vue`), and account customer
+(`routers/portal.py:851 can_submit_listings`); §5's two toggles are built and
+correctly combined in one place (`service.py:60 customer_may_submit` — company-off
+wins over any per-customer grant); §6 photos and §7's public feed with the
+`listing_type` filter are live at `api/public_router.py:716`.
+
+**Not verified — outside this repo:** §7.3's website half, the Hostinger env
+vars `GDX_LISTINGS_URL` and `GDX_LISTINGS_API_KEY` that
+garagedoorxperts.com/used-doors needs to render the feed, and the post-deploy
+check that §7.3 asks to exercise the lead form alongside the listings page.
+Nothing here can show whether those are set; treat that as open until checked
+on the site.
+
+_This doc was the only file in `docs/design/` with no status line (64 of 65
+had one), so its state could not be told without reading the code._
+
 **Goal:** list doors we have in stock, used doors, and doors we can get quickly at a
 discount, entered from inside the app, shown on the public website.
 

@@ -1,8 +1,19 @@
 # Runbook: First DR Drill (SS-34)
 
-> **Operational status:** REQUIRED pre-cutover gate for SS-30.
-> This is the first end-to-end disaster-recovery drill. Green on this
-> runbook is a hard dependency of the SS-30 cutover.
+> **Status: HISTORICAL / NOT RUNNABLE** (corrected 2026-09-01). This read
+> "REQUIRED pre-cutover gate for SS-30" in the present tense — SS-30 is a
+> milestone from the multi-tenant SaaS effort that was not built here, so
+> nothing is gated on it.
+>
+> It is also not runnable as written: the CLI section gives
+> `python -m gdx_dispatch.tools.dr_drill_cron …` as a command and tells you to
+> read that file for the full exit-code table. **`gdx_dispatch/tools/dr_drill_cron.py`
+> does not exist** and there is no admin-UI equivalent either.
+>
+> Kept, not deleted, because the drill's *shape* — restore to a staging DB,
+> assert on row counts, time the whole thing against RTO — is the part worth
+> reusing when a real drill is built. See `gdx_dispatch/docs/RESTORE_RUNBOOK.md`,
+> which has the same problem from the other end.
 
 ## RTO / RPO targets
 

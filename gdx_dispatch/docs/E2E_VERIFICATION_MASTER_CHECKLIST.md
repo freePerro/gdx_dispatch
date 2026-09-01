@@ -1,10 +1,26 @@
 # E2E Verification Master Checklist
 
+**Status: PARTIAL — not a completeness gate.** Architecture counts corrected
+2026-09-01 (they understated the surface 3-4x) and the Purpose line's
+"confirmed working" claim is retracted with them; see the caveat below it.
+
 **Purpose**: Define what "works" means for every feature in the GDX platform. Not "page loads" -- actual end-to-end functional verification. If every item on this checklist passes, the app is confirmed working.
 
 **Current gap**: The existing `test_33_chrome_devtools_vue_audit.py` only checks HTTP 200 + zero JS console errors. That misses forms that render but don't submit, buttons that exist but don't fire, tables that show but are empty, and dozens of other failure modes.
 
-**Architecture**: Vue 3 + PrimeVue frontend, FastAPI backend, 44 routers (313 endpoints), 21 Vue pages, per-tenant SQLite databases, module gating, WebSocket dispatch, Stripe Connect, SMS/email, PDF generation, file uploads.
+**Architecture**: Vue 3 + PrimeVue frontend, FastAPI backend, **138 router
+modules / 1,357 routes / 128 Vue views** (measured 2026-09-01 from
+`gdx_dispatch/routers/*.py`, the pinned `gdx_dispatch/openapi_routes.txt`, and
+`frontend/src/views/*.vue`), **PostgreSQL** in production — SQLite is the test
+harness only — module gating, WebSocket dispatch, Stripe Connect, SMS/email,
+PDF generation, file uploads.
+
+> ⚠ **Coverage caveat — read before trusting the line above this one.** Those
+> counts read "44 routers (313 endpoints), 21 Vue pages, per-tenant SQLite"
+> until 2026-09-01, understating the surface by 3-4x. This checklist therefore
+> covers a fraction of the app, and the Purpose line's claim that passing every
+> item means "the app is confirmed working" **is not supportable**. Treat it as
+> a deep checklist for the areas it names, not as a completeness gate.
 
 ---
 

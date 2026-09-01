@@ -7,6 +7,36 @@ group; add-on sale blocked by the one-accept guard) are fixed in §3/§4 below.
 **Related:** tier lines (v1.58.0, same-door good/better/best inside one estimate),
 duplicate endpoint (`POST /api/estimates/{id}/duplicate`), sales-funnel close rate.
 
+> ### ⚠ Conflicts with SHIPPED behaviour — reconcile before building §"resolve_option_siblings"
+>
+> `estimate-rejection-visibility-plan.md` is **RELEASED v1.113.0** (#548/#551/#552).
+> It establishes, and the code now enforces, that **`rejected` means the estimate
+> email bounced and the customer never saw it** — not that anyone rejected
+> anything:
+>
+> * `modules/proposals/router.py:288-290` serves `rejected` to the customer as
+>   `sent` — *"the word would read as 'we rejected YOU'. Accept/decline both work
+>   from it server-side."*
+> * `:456` and `:623` deliberately keep `rejected` in the acceptable set.
+> * `routers/estimates.py:975` `GET /{estimate_id}/activity` and the
+>   "Failed Email" label (`components/EstimateStatusContext.vue`) are live.
+>
+> This plan's sibling sweep (§"resolve_option_siblings", ~line 164) moves every
+> sibling in `{draft, sent, rejected}` to `not_selected`. Built as written it
+> sweeps a **bounced** estimate — one the customer never received — out of
+> `("sent", "rejected")`, so that customer **can no longer accept or decline**,
+> and would be shown a "you chose a different option" banner for an estimate
+> that never arrived. That is a regression against released behaviour, not a
+> disagreement between two plans.
+>
+> Narrow fix: exclude `rejected` from the sweep set, or require a delivered-email
+> fact before sweeping. The §110 escape hatch mapping `not_selected` back to
+> `{expired, declined, rejected}` needs the same look.
+>
+> Flagged latent by the 2026-08-18 corpus audit when both were unbuilt; one has
+> since shipped. Cross-referenced in both docs 2026-09-01.
+
+
 ## The problem
 
 Good/better/best for door models is issued as **3 separate estimates** — usually
