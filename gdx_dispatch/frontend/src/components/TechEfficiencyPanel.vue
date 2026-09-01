@@ -65,6 +65,7 @@ import DataTable from 'primevue/datatable';
 import Column from 'primevue/column';
 import SelectButton from 'primevue/selectbutton';
 import { useApi } from '../composables/useApi';
+import { formatHoursNumber } from '../utils/hours';
 
 const api = useApi();
 
@@ -78,9 +79,7 @@ const weekly = ref({ rows: [] });
 const rows = computed(() => (window.value === 'weekly' ? weekly.value.rows : daily.value.rows));
 
 function fmt(n) {
-  if (n == null) return '0';
-  const v = Number(n);
-  return (Math.round(v * 100) / 100).toString().replace(/\.?0+$/, '') || '0';
+  return formatHoursNumber(n) ?? '0';
 }
 function ratioClass(r) {
   if (r == null) return '';
