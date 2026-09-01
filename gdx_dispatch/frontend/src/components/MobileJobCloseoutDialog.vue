@@ -146,11 +146,18 @@ const existingRequests = ref([])
 // customer gets billed for it twice (live rows and closeout rows are separate
 // sources; neither replaces the other).
 const existingUsed = ref([])
+// #530: 'idle' | 'loading' | 'ok' | 'error'. A role without inventory.read
+// (the builtin dispatcher) gets a silent 403 on the parts read, and an empty
+// list then reads as "no parts yet" — the exact double-entry `existingUsed`
+// exists to prevent. The sheet must say it couldn't look, not that there was
+// nothing to see. Same honesty the Photos section got in #527.
+const partsState = ref('idle')
 async function _loadExistingRequests() {
   // Snapshot: the dialog is reused across jobs (DispatchView re-points it),
   // so a slow answer for job A must never paint as job B's rows.
   const jobId = props.jobId
   if (!jobId) return
+  partsState.value = 'loading'
   try {
     const rows = await api.get(
       `/api/jobs/${jobId}/parts-needed?unbilled=true`,
@@ -164,10 +171,12 @@ async function _loadExistingRequests() {
     existingUsed.value = all.filter(
       (r) => r.source === 'mobile' && r.status === 'used',
     )
+    partsState.value = 'ok'
   } catch {
     if (jobId !== props.jobId) return
     existingRequests.value = []
     existingUsed.value = []
+    partsState.value = 'error'
   }
 }
 
@@ -566,6 +575,7 @@ watch(open, async (v) => {
     // and a stale row here reads as "this job already has that part".
     existingRequests.value = []
     existingUsed.value = []
+    partsState.value = 'idle'
     photos.value = []
     photosState.value = 'idle'
     _loadExistingRequests()
@@ -728,6 +738,14 @@ watch(open, async (v) => {
              Hidden once parts were logged during the job: "no parts were
              used" would contradict rows that are already billable, and the
              server's gate counts those rows, so nothing needs attesting. -->
+        <p
+          v-if="partsState === 'error'"
+          class="muted parts-unavailable"
+          data-testid="mjco-parts-unavailable"
+        >
+          Couldn't load the parts already logged on this job — check the job's
+          Parts card before attesting "no parts".
+        </p>
         <label
           v-if="!parts.length && !existingUsed.length"
           class="no-parts-attest"
@@ -1106,6 +1124,7 @@ watch(open, async (v) => {
 .photo-thumb :deep(img) { width: 100%; height: 100%; object-fit: cover; }
 .photo-name { font-size: 0.7rem; padding: 0.25rem; word-break: break-all; }
 .photo-empty, .photo-hint { margin: 0; font-size: 0.8rem; }
+.parts-unavailable { margin: 0 0 0.5rem; font-size: 0.8rem; }
 
 /* dark-safe: signature paper — white is deliberate in both themes, the ink is dark */
 .sig-canvas-wrap {

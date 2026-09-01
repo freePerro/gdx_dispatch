@@ -600,3 +600,37 @@ describe('MobileJobCloseoutDialog', () => {
     });
   });
 });
+
+
+// #530 — a role without inventory.read gets a silent 403 on the parts read.
+// An empty list then reads as "no parts yet" and the "No parts were used"
+// checkbox sits over live billable rows. The sheet must say it couldn't look.
+describe('#530 parts read failure is reported, not read as "no parts"', () => {
+  it('shows the unavailable notice when the parts read is refused, keeps the attest checkbox', async () => {
+    apiGet.mockImplementation(async (url) => {
+      if (String(url).includes('/parts-needed?unbilled=true')) {
+        throw Object.assign(new Error('Forbidden'), { status: 403 });
+      }
+      return [];
+    });
+    // Opened the way production opens it: rendered with visible=false, then
+    // flipped — the parts load rides that flip.
+    const wrapper = mountDialog({ visible: false });
+    await wrapper.setProps({ visible: true });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="mjco-parts-unavailable"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mjco-parts-unavailable"]').text()).toMatch(/Couldn't load the parts/);
+    // The tech can still attest — the server gate is the authority — but
+    // the sheet no longer claims there was nothing to see.
+    expect(wrapper.find('[data-testid="mjco-no-parts-used"]').exists()).toBe(true);
+  });
+
+  it('shows no notice when the parts read succeeds with an empty list', async () => {
+    apiGet.mockImplementation(async () => []);
+    const wrapper = mountDialog({ visible: false });
+    await wrapper.setProps({ visible: true });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="mjco-parts-unavailable"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="mjco-no-parts-used"]').exists()).toBe(true);
+  });
+});
