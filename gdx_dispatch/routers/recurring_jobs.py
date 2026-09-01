@@ -129,6 +129,15 @@ def materialize_due_recurring_jobs(
             )
         ).first()
         if not template:
+            # #468: a schedule whose template is gone (soft-deleted) stops
+            # producing jobs FOREVER. Say so — silently skipping is how a
+            # recurring customer quietly falls off the calendar.
+            log.warning(
+                "recurring_schedule_template_missing schedule_id=%s job_template_id=%s next_run=%s",
+                schedule.id,
+                schedule.job_template_id,
+                schedule.next_run,
+            )
             continue
 
         run_at = datetime.fromisoformat(str(schedule.next_run))
