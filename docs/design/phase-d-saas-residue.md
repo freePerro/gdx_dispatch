@@ -179,12 +179,32 @@ GET-only). Neither probe can tell fixed from unfixed. Use one that can:
 ```
 curl -s https://<host>/login | grep -oE '/assets/index-[A-Za-z0-9._-]+\.js' \
   | head -1 | xargs -I{} curl -s https://<host>{} \
-  | grep -c 'Wrong workspace\|Start your free trial'
-# must be 0; it was 1 before this change
+  | grep -c 'Wrong workspace\|PlatformRecovery'
+# must be 0; measured 1 and 1 on prod at 1.113.2, before this shipped
 ```
 
-That is falsifiable, and it is the same measurement that proved the defect was
-live in the first place.
+**⚠ That probe is valid for the LOGIN page only, and the first version of it was
+half-theatre.** It originally also grepped for `Start your free trial`. Measured
+on prod *before* the fix shipped: **0 occurrences** — because Vite code-splits
+lazy routes, and `SignupView` / `PluginsAdminView` live in chunks that
+`index.html` never references, so the eager bundles cannot contain their
+strings. That half of the probe would have reported success whether or not the
+change deployed.
+
+It works for `Wrong workspace` / `PlatformRecovery` precisely because
+`LoginView` is **eagerly imported** and compiles into `index-*.js`.
+
+| marker | chunk | can the curl probe fail? |
+|---|---|---|
+| `Wrong workspace` | eager `index-*.js` | ✅ yes |
+| `PlatformRecovery` | eager `index-*.js` | ✅ yes |
+| `Start your free trial` | lazy | ❌ reads 0 either way |
+| `No plugin packages installed yet` | lazy | ❌ reads 0 either way |
+
+**For a lazily-loaded view there is no HTTP substitute for opening the page** —
+the asset directory is not listable, so you cannot enumerate the chunks from
+outside. Load `/signup` and the Plugins admin page in a browser and read them.
+That is why the walk is load-bearing here, not ceremonial.
 
 ### S3 / S6 — Stripe Connect, and issue #421
 
@@ -256,16 +276,33 @@ status line in the **same** PR.
 | PR | Scope | Gate |
 |---|---|---|
 | ~~1~~ | ~~**S1**~~ — **DONE.** Was dead code, not an exploit | ✅ counterfactual guard verified; behaviour probed identical before/after |
-| ~~2~~ | ~~**S2**~~ — **DONE.** Also removed the workspace picker it was linked from | ✅ counterfactual guard; frontend 2300 passed. ⚠ owed: the **bundle probe** below after deploy |
-| ~~3~~ | ~~**S3 + S6**~~ — **DONE.** Connect deleted; #421 closed | ✅ counterfactual guard verified; route table diff is exactly the 9 routes; no data change, so no migration |
+| ~~2~~ | ~~**S2**~~ — **DONE.** Also removed the workspace picker it was linked from | ✅ counterfactual guard; frontend 2300 passed. ⚠ owed after deploy: the **bundle probe** below (login page — valid) **and a browser load of `/signup`** (lazy chunk — the curl probe cannot see it) |
+| ~~3~~ | ~~**S3 + S6**~~ — **DONE.** Connect deleted; #421 closed | ✅ counterfactual guard; route-table diff is exactly the 9 routes; no data change. **Post-deploy gate (measured against a container running this code, not guessed):** `GET /api/stripe/connect/status` **401 → 404** and `POST /api/stripe/connect/payment-intent` **401 → 405**. Both answered 401 on prod at 1.113.2 (mounted, auth-gated). The POST is **405, not 404** — the SPA catch-all matches the path for GET only, so a POST to a deleted route is a method mismatch. Falsifiable, and needs no credentials. |
 | 4 | **S4 + S5 + S7** — remove the dead vendor-admin surfaces | route-table diff; absence assertions like `test_automation_sequences_retired.py` |
 | 5 | **S8 + S9** — data cleanup, soft-delete only (invariant #2) | owner sign-off; these are prod rows |
 | 6 | **S10** — the original Phase D: migrate ~20 `get_engine` call sites, drop the shim | mechanical; last because it is the largest and least urgent |
 
 **Counterfactual gates required.** A green suite proves nothing here unless it
-can fail for the defect: PR 1's test must send `x-tenant-tier: professional` and
-assert the limit did *not* change; PR 4's must assert route **absence**, so a
-re-added router is caught whatever file it lives in.
+can fail for the defect. What each PR actually shipped, stated accurately —
+an earlier draft of this line described a PR 1 gate that was never built:
+
+- **PR 1 (S1).** The doc previously said its test "must send
+  `x-tenant-tier: professional` and assert the limit did not change." **No such
+  test exists.** `tests/test_rate_limit_default_is_static.py` asserts the
+  limiter's *configuration* — that no `default_limits` provider is a callable —
+  because slowapi cannot feed a provider the request at all. The behavioural
+  proof (429 at request #121 with and without the header, before and after) was
+  done by hand against a container and is **not** automated. A change that
+  disabled the limiter entirely would pass the shipped guard.
+- **PR 4 (S4/S5/S7).** Route **absence** on the live table, in the shape of
+  `test_stripe_connect_retired.py`. ⚠ One trap: `app.openapi()` collapses
+  duplicate `(method, path)` registrations into a single line, so removing one
+  half of a shadowed pair changes **nothing** in `openapi_routes.txt`. Absence
+  must be asserted per *handler* (file/symbol) as well as per path, or the gate
+  silently passes. This is how an unreachable duplicate of
+  `/api/jobs/{job_id}/costing` survived in `labor.py` until 2026-09-01.
+- **PR 5 (S8/S9).** Data. The gate is a row count before and after, plus
+  soft-delete only — never a response body.
 
 ## Open questions for the owner
 
