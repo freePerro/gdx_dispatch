@@ -49,6 +49,21 @@ _MACHINE_ACTORS = {"system", "anonymous", "", None}
 #: staff ones never fires.
 PUBLIC_CUSTOMER_ACTOR = "customer"
 
+#: Machine actors that write a SLUG, not a UUID, into user_id. Without this
+#: table they fell through to the API-key class below and the feed rendered
+#: an API key named "bounce-detector".
+SLUG_ACTORS: dict[str, str] = {
+    "bounce-detector": "System — email bounce detector",   # modules/outlook/bounce_detect.py
+    "resend-detector": "System — re-send detector",        # modules/outlook/resend_detect.py
+}
+#: A customer acting from the emailed estimate link (modules/proposals/router.py
+#: `_PUBLIC_ACTOR`). Not a CustomerUser — the link identifies a document.
+PUBLIC_LINK_ACTOR = "customer:public-link"
+#: A customer acting from the portal: "portal:<CustomerUser id>"
+#: (routers/portal.py). The id after the prefix resolves like a bare
+#: CustomerUser id; a deleted login degrades to a generic customer.
+PORTAL_ACTOR_PREFIX = "portal:"
+
 
 def _is_uuid(value: Any) -> bool:
     try:
@@ -101,6 +116,28 @@ def resolve_actors(db: Session, user_ids: set[str]) -> dict[str, dict[str, Any]]
             out[raw] = {"name": "System", "actor_type": ACTOR_SYSTEM}
         elif raw == PUBLIC_CUSTOMER_ACTOR:
             out[raw] = {"name": "Customer", "actor_type": ACTOR_CUSTOMER}
+        elif raw in SLUG_ACTORS:
+            out[raw] = {"name": SLUG_ACTORS[raw], "actor_type": ACTOR_SYSTEM}
+        elif raw == PUBLIC_LINK_ACTOR:
+            out[raw] = {"name": "Customer (email link)", "actor_type": ACTOR_CUSTOMER}
+
+    # "portal:<CustomerUser id>" — strip the prefix, resolve the login, and
+    # say where they acted from. Batched like everything else here.
+    portal = {
+        raw: raw[len(PORTAL_ACTOR_PREFIX):]
+        for raw in user_ids
+        if raw and raw not in out and str(raw).startswith(PORTAL_ACTOR_PREFIX)
+    }
+    if portal:
+        found: dict[str, dict[str, Any]] = {}
+        _resolve_customer_users(db, list(set(portal.values())), found)
+        for raw, cid in portal.items():
+            entry = found.get(str(UUID(str(cid)))) if _is_uuid(cid) else None
+            out[raw] = (
+                {"name": f"{entry['name']} (portal)", "actor_type": ACTOR_CUSTOMER}
+                if entry else
+                {"name": "Customer (portal)", "actor_type": ACTOR_CUSTOMER}
+            )
 
     unresolved = {u for u in user_ids if u and u not in out}
 

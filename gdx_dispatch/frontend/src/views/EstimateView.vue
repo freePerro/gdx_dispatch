@@ -16,7 +16,7 @@
             {{ isExisting ? (estimate.label || estimate.estimate_number || 'Estimate') : 'New Estimate' }}
           </h2>
           <Tag v-if="isExisting"
-            :value="estimate.status"
+            :value="estimateStatusLabel(estimate.status)"
             :severity="statusSeverity(estimate.status)"
             data-testid="estimate-status" />
           <Tag v-if="estimate.job_id" value="Converted to Job" severity="info"
@@ -39,6 +39,17 @@
             link size="small" data-testid="estimate-view-job-link"
             @click="$router.push(`/jobs/${estimate.job_id}`)" />
         </div>
+        <!-- Why the tag says what it says (Failed Email / Declined), the two
+             ways out of a bounce, and the audit trail — see the component. -->
+        <EstimateStatusContext v-if="isExisting"
+          :status="estimate.status"
+          :context="activity.context"
+          :items="activity.items"
+          :total="activity.total"
+          :loading="activityLoading"
+          :customer-id="form.customer_id ? String(form.customer_id) : null"
+          @resend="emailEstimate"
+          @fix-email="goFixCustomerEmail" />
       </header>
 
       <!-- AI Quick Estimate Dialog -->
@@ -1055,7 +1066,7 @@
 </template>
 
 <script setup>
-import { estimateStatusSeverity } from '../utils/statusSeverity';
+import { estimateStatusLabel, estimateStatusSeverity } from '../utils/statusSeverity';
 import { doorSizeLabel } from '../utils/doorSizeLabel';
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
@@ -1063,6 +1074,7 @@ import { useToast } from "primevue/usetoast";
 import EstimateProfitPanel from "../components/EstimateProfitPanel.vue";
 import CatalogPickerDialog from "../components/CatalogPickerDialog.vue";
 import ComposerPdfPreview from "../components/ComposerPdfPreview.vue";
+import EstimateStatusContext from "../components/EstimateStatusContext.vue";
 import PluginScreen from "../components/PluginScreen.vue";
 import PhoneInput from "../components/PhoneInput.vue";
 import { useApi } from "../composables/useApi";
@@ -1899,6 +1911,43 @@ function statusSeverity(status) {
   return estimateStatusSeverity(status);
 }
 
+// ── Status context + activity (rejection-visibility plan PR 1) ────────────
+// One read, GET /api/estimates/{id}/activity: the curated audit trail plus
+// the bounce/decline behind the current status. Re-read after each action
+// on this screen that changes status (send, mark-sent, decline, reopen), so
+// the banner and the panel never lag the tag — Re-send → Sent must clear
+// the Failed Email banner without a reload.
+const EMPTY_ACTIVITY = () => ({ items: [], total: 0, context: { bounce: null, decline: null } });
+const activity = ref(EMPTY_ACTIVITY());
+const activityLoading = ref(false);
+
+async function loadActivity() {
+  if (!route.params.id) return;
+  activityLoading.value = true;
+  try {
+    const d = await api.get(`/api/estimates/${route.params.id}/activity`);
+    const items = Array.isArray(d?.items) ? d.items : [];
+    activity.value = {
+      items,
+      total: Number.isFinite(d?.total) ? d.total : items.length,
+      context: d?.context || { bounce: null, decline: null },
+    };
+  } catch {
+    // The trail is context, not the record — a failed read must not
+    // disturb the estimate itself. The panel simply shows nothing.
+    activity.value = EMPTY_ACTIVITY();
+  } finally {
+    activityLoading.value = false;
+  }
+}
+
+// "Fix customer email" from the bounce banner: the address lives on the
+// customer record, and that page is where it gets corrected.
+function goFixCustomerEmail() {
+  if (!form.value.customer_id) return;
+  router.push(`/customers/${form.value.customer_id}`);
+}
+
 function _titleCase(s) {
   if (!s) return s;
   return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
@@ -2076,8 +2125,11 @@ async function fetchEstimate() {
       created_at: data.created_at || data.createdAt || data.created || "",
       expires_at: _parseDateOnly(data.expires_at || data.expiresAt || data.expiry_date || data.valid_until) || "",
       job_id: data.job_id || null,
+      declined_reason: data.declined_reason || null,
+      declined_at: data.declined_at || null,
     };
     loadLinkedJob();
+    loadActivity();
     // tax_rate on server is decimal (0.0825); null means "use tenant default".
     const serverRate = data.tax_rate ?? data.taxRate;
     let taxPct;
@@ -3068,6 +3120,7 @@ async function sendComposer() {
     const payload = result?.data || result;
     if (payload.email_sent) {
       estimate.value.status = _titleCase(payload.status || "sent");
+      loadActivity();
       let detail = `Estimate emailed to ${composer.value.to || "the customer"}.`;
       if (payload.attachments_skipped?.length) {
         detail += ` Not attached (too large): ${payload.attachments_skipped.join(", ")}.`;
@@ -3123,6 +3176,7 @@ async function _emailViaMailtoFallback(c, pdfAtt) {
   try {
     const result = await api.post(`/api/estimates/${route.params.id}/mark-sent`, { channel: "email" });
     estimate.value.status = _titleCase(result?.status || "sent");
+    loadActivity();
   } catch {
     // Same stakes as the composer path: the mailto body carries the approval
     // link, which is dead until sent_at is stamped.
@@ -3388,6 +3442,7 @@ async function doDeclineEstimate() {
     estimate.value.status = _titleCase(result?.status || "declined");
     if (result?.declined_reason) estimate.value.declined_reason = result.declined_reason;
     declineDialogOpen.value = false;
+    loadActivity();
     toast.add({ severity: "warn", summary: "Declined", detail: "Estimate declined", life: 3000 });
   } catch (err) {
     toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to decline", life: 3000 });
@@ -3410,6 +3465,7 @@ async function reopenEstimate() {
     estimate.value.status = _titleCase(result?.status || "draft");
     estimate.value.declined_reason = null;
     estimate.value.expires_at = "";
+    loadActivity();
     priceDrift.value = Array.isArray(result?.price_drift) ? result.price_drift : [];
     if (priceDrift.value.length) {
       driftDialogOpen.value = true; // make them look before re-sending

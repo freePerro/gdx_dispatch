@@ -284,7 +284,7 @@
 </template>
 
 <script setup>
-import { estimateStatusSeverity } from '../utils/statusSeverity'
+import { estimateStatusLabel, estimateStatusSeverity } from '../utils/statusSeverity'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi'
@@ -379,8 +379,9 @@ function fmtMoney(n) {
 }
 
 function prettyStatus(s) {
-  if (!s) return '—'
-  return String(s).charAt(0).toUpperCase() + String(s).slice(1)
+  // Shared label canon with the desktop views: `rejected` (email bounced)
+  // shows as "Failed Email", everything else title-cased.
+  return estimateStatusLabel(s) || '—'
 }
 
 function statusSeverity(s) {

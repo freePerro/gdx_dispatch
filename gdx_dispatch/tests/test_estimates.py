@@ -1553,3 +1553,67 @@ def test_m25_explicit_zero_margin_override_sells_at_cost(client: TestClient):
         f"0% override must sell at the new cost (120.00), got {got} — "
         "the tier margin re-applied itself"
     )
+
+
+# ── rejected → sent recovery (estimate-rejection-visibility plan PR 1) ──────
+# The bounce detector sets `rejected`; /send and /mark-sent already accept it
+# (only accepted/declined 409). The transition existed untested — these pin
+# it, because the Failed Email banner's Re-send button is the UI onto it.
+
+def _force_rejected(client: TestClient, estimate_id: str) -> None:
+    dep = client.app.dependency_overrides[get_db]
+    db = next(dep())
+    try:
+        est = db.execute(select(Estimate).where(Estimate.id == UUID(estimate_id))).scalar_one()
+        est.status = "rejected"
+        est.sent_via = "email"
+        db.commit()
+    finally:
+        db.close()
+    # The precondition IS the test: without it these are the plain send
+    # tests over again and prove nothing about the recovery transition.
+    assert _status_of(client, estimate_id)[0] == "rejected"
+
+
+def _status_of(client: TestClient, estimate_id: str) -> tuple[str, str | None]:
+    dep = client.app.dependency_overrides[get_db]
+    db = next(dep())
+    try:
+        est = db.execute(select(Estimate).where(Estimate.id == UUID(estimate_id))).scalar_one()
+        return est.status, est.sent_via
+    finally:
+        db.close()
+
+
+def test_rejected_estimate_resend_restores_sent(client: TestClient, monkeypatch):
+    """A delivered re-send heals the bounce: rejected → sent, sent_via=email."""
+    _mock_email_success(monkeypatch)
+    cid = _create_customer(client, email="fixed@example.com")
+    estimate = _create_estimate(client, customer_id=cid)
+    _force_rejected(client, estimate["id"])
+    r = client.post(f"/api/estimates/{estimate['id']}/send")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "sent"
+    assert _status_of(client, estimate["id"]) == ("sent", "email")
+
+
+def test_rejected_estimate_failed_resend_stays_rejected(client: TestClient):
+    """No provider accepted the message → the tag must NOT flip: a failed
+    re-send is not a delivery, and 'sent' would hide the bounce again."""
+    cid = _create_customer(client, email="fixed@example.com")
+    estimate = _create_estimate(client, customer_id=cid)
+    _force_rejected(client, estimate["id"])
+    r = client.post(f"/api/estimates/{estimate['id']}/send")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "rejected"
+    assert _status_of(client, estimate["id"])[0] == "rejected"
+
+
+def test_rejected_estimate_mark_sent_restores_sent(client: TestClient):
+    """The operator re-sent from their own mail client and says so."""
+    estimate = _create_estimate(client)
+    _force_rejected(client, estimate["id"])
+    r = client.post(f"/api/estimates/{estimate['id']}/mark-sent", json={"channel": "email"})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "sent"
+    assert _status_of(client, estimate["id"]) == ("sent", "email")

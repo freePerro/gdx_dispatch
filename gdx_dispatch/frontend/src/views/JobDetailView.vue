@@ -1018,7 +1018,7 @@
           <DataTable :value="relatedEstimates" striped-rows responsive-layout="scroll" class="table-small">
             <Column field="estimate_number" header="Estimate" />
             <Column field="status" header="Status">
-              <template #body="{ data }"><Tag :value="data.status" :severity="estimateStatusSeverity(data.status)" /></template>
+              <template #body="{ data }"><Tag :value="estimateStatusLabel(data.status)" :severity="estimateStatusSeverity(data.status)" /></template>
             </Column>
             <Column field="total" header="Total">
               <template #body="{ data }">{{ formatCurrency(data.total) }}</template>
@@ -1393,7 +1393,7 @@ import { formatDate, formatDateTime, formatMoney, formatMoney as formatCurrency,
 import { useToast } from "primevue/usetoast";
 import { useAuthStore } from "../stores/auth";
 import { isTechnician as isTechRole } from "../constants/roles";
-import { appointmentStatusSeverity, estimateStatusSeverity } from "../utils/statusSeverity";
+import { appointmentStatusSeverity, estimateStatusLabel, estimateStatusSeverity } from "../utils/statusSeverity";
 import { isAwaitingSchedule } from "../utils/jobDisplayState";
 import Button from "primevue/button";
 import Tabs from "primevue/tabs";

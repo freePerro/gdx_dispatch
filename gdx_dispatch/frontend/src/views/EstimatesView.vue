@@ -86,7 +86,7 @@
         </Column>
         <Column field="status" header="Status" sortable>
           <template #body="{ data }">
-            <Tag :value="data.status" :severity="statusSeverity(data.status)" data-testid="estimate-status-tag" />
+            <Tag :value="estimateStatusLabel(data.status)" :severity="statusSeverity(data.status)" data-testid="estimate-status-tag" />
           </template>
         </Column>
         <Column field="created_at" header="Created" sortable>
@@ -155,7 +155,7 @@
 </template>
 
 <script setup>
-import { estimateStatusSeverity } from '../utils/statusSeverity';
+import { estimateStatusLabel, estimateStatusSeverity } from '../utils/statusSeverity';
 import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
@@ -207,7 +207,10 @@ const statusTabs = [
   // Email bounced (the outlook sync's bounce detector). Without a tab the
   // dashboard's "estimate emails bounced" row linked to a page where the
   // rejected rows were invisible behind whatever tab was persisted.
-  { label: "Rejected", value: "Rejected" },
+  // Displayed as "Failed Email" (decided 2026-08-18): the enum word reads
+  // like a customer decline; the value stays "Rejected" — it is what rows
+  // and the ?status= deep link carry.
+  { label: "Failed Email", value: "Rejected" },
 ];
 
 // Persist status tab + search across reloads (JobsView/BillingView pattern).

@@ -288,6 +288,7 @@ GET /api/estimates-features
 GET /api/estimates/analytics/conversion-rate
 GET /api/estimates/pipeline-summary
 GET /api/estimates/{estimate_id}
+GET /api/estimates/{estimate_id}/activity
 GET /api/estimates/{estimate_id}/attachments
 GET /api/estimates/{estimate_id}/attachments/{document_id}/download
 GET /api/estimates/{estimate_id}/deposit-default

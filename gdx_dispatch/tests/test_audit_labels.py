@@ -107,6 +107,46 @@ def test_portal_customer_user_resolves_as_a_customer_not_unknown(db):
     assert "Unknown user" not in out[str(cu.id)]["name"]
 
 
+def test_slug_machine_actors_are_system_not_api_keys(db):
+    """bounce_detect.py writes user_id="bounce-detector" (a slug, not a
+    UUID). Before this it fell into the API-key class and the estimate
+    activity panel showed an API key called "bounce-detector"."""
+    out = audit_labels.resolve_actors(db, {"bounce-detector", "resend-detector"})
+    assert out["bounce-detector"] == {
+        "name": "System — email bounce detector", "actor_type": audit_labels.ACTOR_SYSTEM,
+    }
+    assert out["resend-detector"]["actor_type"] == audit_labels.ACTOR_SYSTEM
+
+
+def test_public_link_and_portal_prefixed_actors_read_as_the_customer(db):
+    """modules/proposals/router.py writes "customer:public-link"; portal.py
+    writes "portal:<CustomerUser id>". Both were API keys named by the raw
+    string; the portal one now resolves the login (email), and a deleted
+    login degrades to a generic customer instead of "Unknown user"."""
+    from gdx_dispatch.modules.customer_portal.models import CustomerUser
+
+    cust = _mk_customer(db, name="Gamma Farms")
+    cu = CustomerUser(id=uuid.uuid4(), customer_id=cust.id, email="pat@gamma.example")
+    db.add(cu)
+    db.commit()
+    gone = uuid.uuid4()
+
+    out = audit_labels.resolve_actors(
+        db, {"customer:public-link", f"portal:{cu.id}", f"portal:{gone}", "portal:not-a-uuid"}
+    )
+    assert out["customer:public-link"] == {
+        "name": "Customer (email link)", "actor_type": audit_labels.ACTOR_CUSTOMER,
+    }
+    assert out[f"portal:{cu.id}"] == {
+        "name": "pat@gamma.example (portal)", "actor_type": audit_labels.ACTOR_CUSTOMER,
+    }
+    assert out[f"portal:{gone}"] == {"name": "Customer (portal)", "actor_type": audit_labels.ACTOR_CUSTOMER}
+    assert out["portal:not-a-uuid"]["actor_type"] == audit_labels.ACTOR_CUSTOMER
+    for v in out.values():
+        assert v["actor_type"] != audit_labels.ACTOR_API_KEY
+        assert "Unknown user" not in v["name"]
+
+
 def test_mixed_actor_page_resolves_in_one_pass(db):
     u = _mk_user(db, name="Dispatch")
     ghost = str(uuid.uuid4())

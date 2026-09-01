@@ -53,6 +53,21 @@ export const ACTIVITY_LABELS = {
   invoice_marked_sent: 'Invoice marked sent',
   estimate_marked_sent: 'Estimate marked sent',
   estimate_duplicated: 'Estimate duplicated',
+  // Estimate lifecycle (rejection-visibility plan, 2026-08-31). `rejected` is
+  // written by ONE actor — the Outlook bounce detector — and means the email
+  // never arrived; the label says so instead of echoing the enum word.
+  estimate_sent: 'Estimate emailed to customer',
+  estimate_send_failed: 'Estimate email failed to send',
+  estimate_email_rejected: 'Estimate email bounced',
+  estimate_resend_detected: 'Estimate re-sent from the mailbox',
+  estimate_declined: 'Estimate declined',
+  estimate_reopened: 'Estimate reopened',
+  mobile_quote_built: 'Estimate built on mobile',
+  mobile_quote_accepted: 'Estimate accepted (mobile)',
+  mobile_quote_declined: 'Estimate declined (mobile)',
+  public_estimate_accepted: 'Estimate accepted by customer (email link)',
+  public_estimate_declined: 'Estimate declined by customer (email link)',
+  invoice_email_rejected: 'Invoice email bounced',
   estimate_converted_to_job: 'Estimate converted to job',
   job_created_from_estimate: 'Job created from estimate',
   payment_recorded: 'Payment recorded',
