@@ -2146,6 +2146,51 @@ _DEFAULT_RECEIPT_BODY_TEMPLATE = (
 )
 
 
+def _invoice_email_templates(tenant_id: str, *, receipt: bool) -> tuple[str, str]:
+    """Tenant-editable subject/body templates with platform defaults — the
+    invoice twin of estimates._estimate_email_templates (issue #351).
+
+    ``receipt=True`` selects the paid-invoice (thank-you) pair — the OFFICE
+    "Send Receipt" on a paid invoice. The truck's per-payment receipt
+    (routers/mobile_invoicing.py) carries the payment amount and method and
+    keeps its own fixed copy; the placeholders here have no payment fields.
+    The truck's INVOICE send does come through here (issue #351 audit
+    catch). Blank or
+    whitespace-only tenant text means "platform default", and a features read
+    failure degrades to the defaults too: a settings hiccup must never block
+    an invoice from going out. Shared by compose, preview and send so the
+    composer previews exactly what every path delivers.
+
+    The defaults keep ``Invoice {{invoice_number}} from`` in the subject —
+    that literal shape is what bounce rung 1 (modules/outlook/bounce_detect)
+    matches an NDR back to the invoice with. A tenant subject that drops it
+    still sends; it just falls through to rungs 2/3, which the Settings help
+    text says out loud."""
+    subject_tpl = ""
+    body_tpl = ""
+    try:
+        from gdx_dispatch.modules.estimates_features import get_features
+        if tenant_id:
+            f = get_features(tenant_id)
+            if receipt:
+                subject_tpl = (f.receipt_email_subject_template or "").strip()
+                body_tpl = (f.receipt_email_body_template or "").strip()
+            else:
+                subject_tpl = (f.invoice_email_subject_template or "").strip()
+                body_tpl = (f.invoice_email_body_template or "").strip()
+    except Exception:
+        log.exception("invoice_email_templates_read_features_failed")
+    if receipt:
+        return (
+            subject_tpl or _DEFAULT_RECEIPT_SUBJECT_TEMPLATE,
+            body_tpl or _DEFAULT_RECEIPT_BODY_TEMPLATE,
+        )
+    return (
+        subject_tpl or _DEFAULT_INVOICE_SUBJECT_TEMPLATE,
+        body_tpl or _DEFAULT_INVOICE_BODY_TEMPLATE,
+    )
+
+
 def _prepare_invoice_email(
     db: Session,
     invoice,
@@ -2214,10 +2259,11 @@ def _prepare_invoice_email(
         "paid_line": paid_line,
         "due_line": due_line,
     }
-    if _is_paid:
-        subject_tpl, body_tpl = _DEFAULT_RECEIPT_SUBJECT_TEMPLATE, _DEFAULT_RECEIPT_BODY_TEMPLATE
-    else:
-        subject_tpl, body_tpl = _DEFAULT_INVOICE_SUBJECT_TEMPLATE, _DEFAULT_INVOICE_BODY_TEMPLATE
+    # Tenant copy over the platform default (issue #351); the receipt pair
+    # rides invoice.status == 'paid' exactly as the defaults did.
+    subject_tpl, body_tpl = _invoice_email_templates(
+        str(invoice.company_id or ""), receipt=_is_paid,
+    )
     subject = (subject_override or "").strip() or _render_template(subject_tpl, ctx).strip() or invoice_label
     if body_text_override is not None and body_text_override.strip():
         body_text = body_text_override

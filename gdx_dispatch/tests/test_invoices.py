@@ -1786,3 +1786,193 @@ def test_void_invoice_releases_billed_change_orders(tenant_db_session):
         .first()
     )
     assert row.details["released_change_orders"] == 1
+
+
+# ── Tenant-editable invoice / receipt email templates (issue #351) ──────────
+#
+# _prepare_invoice_email is the one render behind compose, preview, one-click
+# and bulk send, and send-receipt. These pin the resolution order: tenant
+# template when non-blank, else the platform default — and that the paid
+# flavor reads the RECEIPT pair, never the invoice pair.
+
+_TENANT_INVOICE_SUBJECT = "Bill {{invoice_number}} from {{company_name}} — {{job_title}}"
+_TENANT_INVOICE_BODY = "Hey {{customer_name}}, {{invoice_number}} is {{total}} (bal {{balance_due}}).{{due_line}}"
+_TENANT_RECEIPT_SUBJECT = "Thanks — Invoice {{invoice_number}} from {{company_name}}"
+_TENANT_RECEIPT_BODY = "Cheers {{customer_name}}, {{invoice_number}} settled.{{paid_line}}{{balance_line}}"
+
+
+def _stub_features(monkeypatch, **templates):
+    from gdx_dispatch.modules import estimates_features as ef
+    features = ef.EstimatesFeatures(**templates)
+    monkeypatch.setattr(ef, "get_features", lambda tid: features)
+    return features
+
+
+def _seed_unpaid_invoice(db, *, due: bool = True) -> Invoice:
+    from gdx_dispatch.models.tenant_models import Customer
+
+    cust = Customer(
+        name="Template Customer", email="tpl@example.com",
+        phone="555-0199", company_id="tenant-test",
+    )
+    db.add(cust)
+    db.commit()
+    db.refresh(cust)
+    job = _seed_job(db, title="Spring swap")
+    inv = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id, customer_id=cust.id,
+            due_date=(date.today() + timedelta(days=14)) if due else None,
+            line_items=[{"description": "Torsion spring", "quantity": 1, "unit_price": 320.00}],
+        ),
+        _=_current_user(), db=db,
+    )
+    _verify(db, inv)
+    return db.get(Invoice, UUID(inv["id"]))
+
+
+def test_prepare_invoice_email_uses_tenant_invoice_template(tenant_db_session, monkeypatch):
+    from gdx_dispatch.routers.invoices import _prepare_invoice_email
+
+    _stub_features(
+        monkeypatch,
+        invoice_email_subject_template=_TENANT_INVOICE_SUBJECT,
+        invoice_email_body_template=_TENANT_INVOICE_BODY,
+        receipt_email_subject_template=_TENANT_RECEIPT_SUBJECT,
+        receipt_email_body_template=_TENANT_RECEIPT_BODY,
+    )
+    inv = _seed_unpaid_invoice(tenant_db_session)
+    prep = _prepare_invoice_email(tenant_db_session, inv, mint_token=False)
+
+    assert prep["is_paid"] is False
+    assert prep["subject"].startswith(f"Bill {inv.invoice_number} from ")
+    assert prep["subject"].endswith(" — Spring swap")
+    assert prep["body_text"].startswith(
+        f"Hey Template Customer, {inv.invoice_number} is $320.00 (bal $320.00)."
+    )
+    assert "\nDue: " in prep["body_text"], "{{due_line}} must render on an invoice with a due date"
+    # The unpaid path must not reach for the receipt pair.
+    assert "Cheers" not in prep["body_text"]
+    assert not prep["subject"].startswith("Thanks")
+    # Placeholders never ship raw.
+    assert "{{" not in prep["subject"] and "{{" not in prep["body_text"]
+
+
+def test_prepare_invoice_email_on_paid_uses_tenant_receipt_template(tenant_db_session, monkeypatch):
+    from gdx_dispatch.routers.invoices import _prepare_invoice_email
+
+    _stub_features(
+        monkeypatch,
+        invoice_email_subject_template=_TENANT_INVOICE_SUBJECT,
+        invoice_email_body_template=_TENANT_INVOICE_BODY,
+        receipt_email_subject_template=_TENANT_RECEIPT_SUBJECT,
+        receipt_email_body_template=_TENANT_RECEIPT_BODY,
+    )
+    inv = _seed_unpaid_invoice(tenant_db_session)
+    record_payment(
+        invoice_id=inv.id,
+        payload=PaymentCreateIn(amount=320.0, method="check"),
+        _=_current_user(), db=tenant_db_session,
+    )
+    tenant_db_session.refresh(inv)
+    assert inv.status == "paid"
+
+    prep = _prepare_invoice_email(tenant_db_session, inv, mint_token=False)
+    assert prep["is_paid"] is True
+    assert prep["subject"].startswith(f"Thanks — Invoice {inv.invoice_number} from ")
+    assert prep["body_text"].startswith(f"Cheers Template Customer, {inv.invoice_number} settled.")
+    assert "\nPaid: $320.00" in prep["body_text"]
+    assert "\nBalance Due: $0.00" in prep["body_text"]
+    # The paid path must not reach for the invoice pair.
+    assert "Hey Template Customer" not in prep["body_text"]
+    assert not prep["subject"].startswith("Bill ")
+
+
+def test_prepare_invoice_email_blank_tenant_templates_fall_back_to_defaults(tenant_db_session, monkeypatch):
+    """Blank AND whitespace-only both mean "platform default" — a stray space
+    in Settings must not blank the customer's email."""
+    from gdx_dispatch.routers.invoices import (
+        _DEFAULT_INVOICE_SUBJECT_TEMPLATE,
+        _DEFAULT_RECEIPT_SUBJECT_TEMPLATE,
+        _prepare_invoice_email,
+    )
+
+    _stub_features(
+        monkeypatch,
+        invoice_email_subject_template="   ",
+        invoice_email_body_template="",
+        receipt_email_subject_template="\n",
+        receipt_email_body_template=" ",
+    )
+    inv = _seed_unpaid_invoice(tenant_db_session)
+    prep = _prepare_invoice_email(tenant_db_session, inv, mint_token=False)
+    assert prep["subject"].startswith(f"Invoice {inv.invoice_number} from ")
+    assert "Please see the attached invoice" in prep["body_text"]
+    assert "Total: $320.00" in prep["body_text"]
+    # The defaults keep the bounce rung-1 shape ("Invoice <serial> from ").
+    assert "Invoice {{invoice_number}} from" in _DEFAULT_INVOICE_SUBJECT_TEMPLATE
+    assert "Invoice {{invoice_number}} from" in _DEFAULT_RECEIPT_SUBJECT_TEMPLATE
+
+    record_payment(
+        invoice_id=inv.id,
+        payload=PaymentCreateIn(amount=320.0, method="check"),
+        _=_current_user(), db=tenant_db_session,
+    )
+    tenant_db_session.refresh(inv)
+    prep = _prepare_invoice_email(tenant_db_session, inv, mint_token=False)
+    assert prep["subject"].startswith("Payment received — Invoice ")
+    assert "Thank you for your payment" in prep["body_text"]
+
+
+def test_prepare_invoice_email_survives_a_features_read_failure(tenant_db_session, monkeypatch):
+    """A settings hiccup must never block an invoice from going out."""
+    from gdx_dispatch.modules import estimates_features as ef
+    from gdx_dispatch.routers.invoices import _prepare_invoice_email
+
+    def boom(tid):
+        raise RuntimeError("control plane unavailable")
+
+    monkeypatch.setattr(ef, "get_features", boom)
+    inv = _seed_unpaid_invoice(tenant_db_session)
+    prep = _prepare_invoice_email(tenant_db_session, inv, mint_token=False)
+    assert prep["subject"].startswith(f"Invoice {inv.invoice_number} from ")
+    assert "Please see the attached invoice" in prep["body_text"]
+
+
+def test_composer_override_still_beats_the_tenant_template(tenant_db_session, monkeypatch):
+    """Per-send edits in the composer win over the tenant default — the
+    tenant template is the starting copy, not a lock."""
+    from gdx_dispatch.routers.invoices import _prepare_invoice_email
+
+    _stub_features(
+        monkeypatch,
+        invoice_email_subject_template=_TENANT_INVOICE_SUBJECT,
+        invoice_email_body_template=_TENANT_INVOICE_BODY,
+    )
+    inv = _seed_unpaid_invoice(tenant_db_session)
+    prep = _prepare_invoice_email(
+        tenant_db_session, inv, mint_token=False,
+        subject_override="Operator subject", body_text_override="Operator body.",
+    )
+    assert prep["subject"] == "Operator subject"
+    assert prep["body_text"].startswith("Operator body.")
+
+
+def test_send_invoice_on_paid_honors_tenant_receipt_template(tenant_db_session, monkeypatch):
+    """Compose == send (the locked estimate decision, applied to invoices):
+    the one-click send of a paid invoice delivers the tenant's receipt copy,
+    not the platform default. Goes through send_invoice end to end with the
+    transport captured."""
+    inv, captured = _seed_paid_invoice_with_customer(
+        tenant_db_session, "receipt-tpl@example.com", monkeypatch
+    )
+    _stub_features(
+        monkeypatch,
+        receipt_email_subject_template=_TENANT_RECEIPT_SUBJECT,
+        receipt_email_body_template=_TENANT_RECEIPT_BODY,
+    )
+    sent = send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
+    assert sent["email_sent"] is True
+    assert captured["subject"].startswith("Thanks — Invoice ")
+    assert "Cheers Receipt Customer" in captured["html_body"].replace("&nbsp;", " ")
+    assert "Thank you for your payment" not in captured["html_body"]
