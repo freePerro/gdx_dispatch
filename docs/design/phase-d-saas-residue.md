@@ -1,8 +1,10 @@
 # Phase D — the SaaS residue the single-tenant refactor left behind
 
-**Status:** `PARTIALLY BUILT` — **S3 + S6 built** (Stripe Connect retired
-entirely; owner decision 2026-09-01). **S1, S2, S4, S5, S7, S8, S9, S10 are NOT
-built** — S1 and S2 are still live and reachable on prod.
+**Status:** `PARTIALLY BUILT` — **S1, S3 and S6 built.** Connect retired
+entirely (owner decision 2026-09-01); the `x-tenant-tier` selector removed after
+measurement proved it was **dead code, not the exploit this document first
+claimed**. **S2, S4, S5, S7, S8, S9, S10 are NOT built** — S2 (public `/signup`)
+is the one still live on prod.
 
 ## What already exists (do not rebuild)
 
@@ -63,7 +65,7 @@ Declared before the fix, per the working agreement.
 
 | # | Artifact | Evidence | Reachable now? |
 |---|---|---|---|
-| **S1** | `x-tenant-tier` request header selects the caller's own rate limit | `app.py:1100` — `tier = request.headers.get("x-tenant-tier", "Starter")` → `600/minute if professional else 120/minute` | **Yes — self-service 5× raise** |
+| ~~**S1**~~ | ~~`x-tenant-tier` header selects the caller's own rate limit~~ — **CORRECTED: it never worked.** Dead code; slowapi calls a `default_limits` provider with no arguments | **BUILT** — replaced with a static `DEFAULT_RATE_LIMIT` | Was **never** reachable |
 | **S2** | Public `/signup` page whose submit target does not exist | prod: `GET /signup` → **200 unauthenticated**; `POST /signup` (the form's own target) → **405** | **Yes — publicly indexable** |
 | ~~**S3**~~ | ~~Connect payment-intent takes the destination account from the request body~~ | **BUILT — deleted with the whole Connect surface.** Closes #421 | Gone |
 | **S4** | 8 vendor-admin routes with zero UI callers | `/api/admin/health-scores/*` (3), `/api/admin/metrics/*` (2), `/api/admin/tenants/{tenant_id}/modules` (3) | Mounted, admin/owner-gated |
@@ -74,19 +76,48 @@ Declared before the fix, per the working agreement.
 | **S9** | Seed-tenant duplicates in prod data | `Example Garage Doors` / `00000000-…-0001` sits beside the real company row in **both** `tenants` and `companies` — it is the default in `single_tenant()` | Data, not code |
 | **S10** | `_SingleEngineRegistry` shim + ~20 `get_engine(tenant_id, db_url)` call sites | `core/tenant.py:12-33` — the original Phase D scope | Inert by design |
 
-### S1 — the one that is actually exploitable
+### S1 — CORRECTED: dead code, not an exploit. Now removed.
 
-Two limiters run. The Redis one (`core/rate_limiter.py`) was already cleaned and
-grants every authenticated caller 600/min. The SlowAPI layer
-(`default_limits=[_tier_limit]`, `app.py:1104`) is therefore **the binding
-constraint at 120/min** — and a client-supplied header lifts exactly that
-constraint to 600. Keyed per IP, no authentication needed to send a header.
+**This document originally called S1 "the one that is actually exploitable."
+That was wrong, and the error was mine — read from code without running it.**
 
-The de-SaaS intent is already written down one file over; this call site was
-simply missed. **Fix:** delete `_tier_limit`, use one constant limit. Five lines.
-The header has exactly one other reader anywhere: the backend test
-`tests/serial/test_module_system.py:78`, which sends it. The three frontend
-files naming `tenant_tier` mean an unrelated response *field*, not this header.
+Measured against a running container: the first 429 arrives at request **#121
+whether or not `x-tenant-tier: professional` is sent**. The header does nothing
+and never did.
+
+The mechanism, from slowapi's own source (`slowapi/wrappers.py`):
+
+```python
+if callable(self.__limit_provider):
+    if "key" in inspect.signature(self.__limit_provider).parameters.keys():
+        limit_raw = self.__limit_provider(self.key_function(self.request))
+    else:
+        limit_raw = self.__limit_provider()      # ← no arguments
+```
+
+A `default_limits` provider is called with **no arguments** unless its signature
+has a parameter named exactly `key` — and even then it receives the *key* (the
+client IP), never the request. `_tier_limit(*args, **kwargs)` had no `key`
+parameter, so `request` was always `None` and it always returned `120/minute`.
+
+**A second dead branch in the same function:** the E2E bypass
+(`GDX_E2E_BYPASS=1` + `x-e2e-test: true` → `100000/minute`) could not fire
+either. Verified — e2e traffic still 429s at 120. The *working* bypass in
+`core/rate_limiter.py` is unaffected. Repairing this one needs a different
+mechanism and is filed separately, not bundled here.
+
+**Built:** `_tier_limit` replaced by the constant `DEFAULT_RATE_LIMIT =
+"120/minute"` — which is exactly what it already returned, so behaviour is
+unchanged (probed before and after: 429 at #121 in all four
+header/no-header combinations). `tests/test_rate_limit_default_is_static.py`
+is the guard, counterfactually verified: reintroducing a callable turns it red.
+It also pins slowapi's calling convention, so if a future version *does* pass
+the request, the test fails rather than letting this reasoning rot.
+
+**The real lesson is the severity, not the code.** A dead branch that looks like
+a client-controlled rate limit is a trap: the tempting "fix" is to repair the
+signature, which would ship the very bypass this document wrongly claimed
+existed.
 
 ### S2 — a sign-up page for a product that is not sold
 
@@ -165,7 +196,7 @@ status line in the **same** PR.
 
 | PR | Scope | Gate |
 |---|---|---|
-| 1 | **S1** — delete `_tier_limit`, one constant limit | test matrix + a counterfactual test that fails if the header is honoured |
+| ~~1~~ | ~~**S1**~~ — **DONE.** Was dead code, not an exploit | ✅ counterfactual guard verified; behaviour probed identical before/after |
 | 2 | **S2** — remove `/signup` route + view; strike the two `mobile-all-platforms-plan.md` rows | prod probe after deploy: `GET /signup` → 404 |
 | ~~3~~ | ~~**S3 + S6**~~ — **DONE.** Connect deleted; #421 closed | ✅ counterfactual guard verified; route table diff is exactly the 9 routes; no data change, so no migration |
 | 4 | **S4 + S5 + S7** — remove the dead vendor-admin surfaces | route-table diff; absence assertions like `test_automation_sequences_retired.py` |

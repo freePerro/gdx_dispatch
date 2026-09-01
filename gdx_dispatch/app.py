@@ -1084,18 +1084,38 @@ def configure_json_logging(level: str | None = None, stream: Any | None = None) 
     root.handlers = [handler]
 
 
-def _tier_limit(*args: Any, **kwargs: Any) -> str:
-    request = kwargs.get("request")
-    if request is None and args and isinstance(args[0], Request):
-        request = args[0]
-    # Bypass rate limiting for E2E test traffic
-    if request and os.environ.get("GDX_E2E_BYPASS") == "1" and request.headers.get("x-e2e-test") == "true":
-        return "100000/minute"
-    tier = (request.headers.get("x-tenant-tier", "Starter") if request else "Starter").strip().lower()
-    return "600/minute" if tier == "professional" else "120/minute"
+# The app-wide slowapi default. A PLAIN STRING on purpose — never a callable.
+#
+# This replaced `_tier_limit`, a callable that tried to read `x-tenant-tier`
+# off the request and return 600/minute for "professional", else 120/minute.
+# It could never do that. slowapi calls a `default_limits` provider with NO
+# arguments unless its signature has a parameter literally named `key` — and
+# then it passes the *key* (here, the client IP), not the request
+# (`slowapi/wrappers.py`):
+#
+#     if callable(self.__limit_provider):
+#         if "key" in inspect.signature(self.__limit_provider).parameters:
+#             limit_raw = self.__limit_provider(self.key_function(self.request))
+#         else:
+#             limit_raw = self.__limit_provider()
+#
+# `_tier_limit(*args, **kwargs)` had no `key` parameter, so it was always
+# called as `_tier_limit()`, `request` was always None, and it always returned
+# "120/minute". Measured, not assumed: 120 requests then 429, identically with
+# and without `x-tenant-tier: professional`.
+#
+# So this constant is not a behaviour change — it is what the app already did.
+# It is a string so that a request-dependent limit cannot be reintroduced by
+# accident; `tests/test_rate_limit_default_is_static.py` fails if it is.
+#
+# The same dead branch also held an E2E bypass (GDX_E2E_BYPASS + x-e2e-test →
+# 100000/minute) which likewise never fired — verified: e2e traffic still 429s
+# at 120. Repairing that needs a different mechanism than a default_limits
+# callable and is tracked separately; the working bypass in
+# `core/rate_limiter.py` is unaffected.
+DEFAULT_RATE_LIMIT = "120/minute"
 
-
-limiter = Limiter(key_func=get_remote_address, default_limits=[_tier_limit])
+limiter = Limiter(key_func=get_remote_address, default_limits=[DEFAULT_RATE_LIMIT])
 
 
 def _check_customer_facing_config() -> None:
