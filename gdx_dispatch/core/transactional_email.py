@@ -286,6 +286,22 @@ def recently_sent(
         return False
 
 
+def _designated_sender_user_id(tenant_db: Session) -> str | None:
+    """app_settings.automation_sender_user_id — the mailbox the office chose
+    under Settings → Automation email → "Send as". Best-effort: a read
+    failure means "no designated sender", never a blocked send."""
+    try:
+        from gdx_dispatch.models.tenant_models import AppSettings
+
+        row = tenant_db.query(AppSettings).first()
+        if row is None:
+            return None
+        return getattr(row, "automation_sender_user_id", None) or None
+    except Exception:
+        log.exception("designated_sender_read_failed")
+        return None
+
+
 def send_transactional_email(
     *,
     tenant_db: Session,
@@ -303,8 +319,15 @@ def send_transactional_email(
     entity_id: str | None = None,
     recipient_source: str | None = None,
     recipient_contact_id: str | None = None,
+    designated_sender_fallback: bool = False,
 ) -> tuple[bool, str | None, str | None]:
     """Send a transactional email. Returns (sent, provider, skip_reason).
+
+    - designated_sender_fallback: opt-in, per call site. When the acting
+      PERSON has never connected Outlook, deliver through the tenant's
+      designated "Send as" mailbox instead of failing. Only for sends with
+      FIXED content the caller controls end to end (portal invites and
+      sign-in links) — see the 1b rung below for why it is not the default.
 
     - sent: True only when a provider acknowledged delivery.
     - provider: "outlook_graph" | "smtp" | None.
@@ -320,12 +343,20 @@ def send_transactional_email(
     Every call — success, failure, or missing recipient — writes one
     outbound_emails row; that is the delivery audit trail, not the logs.
     """
-    def _finish(sent: bool, provider: str | None, skip: str | None):
+    # Resolved ONCE so the audit row and the domain event name the same
+    # initiator — the event used to carry the raw argument (None for a plain
+    # user send) while the row carried the user id.
+    resolved_initiator = initiator_ref or (
+        str(user_id) if user_id and initiator_kind == "user" else initiator_ref
+    )
+
+    def _finish(sent: bool, provider: str | None, skip: str | None,
+                sender_user_id: str | None = None):
         _record_outbound(
             tenant_db=tenant_db,
             tenant_id=str(tenant_id or ""),
             initiator_kind=initiator_kind,
-            initiator_ref=initiator_ref or (str(user_id) if user_id and initiator_kind == "user" else initiator_ref),
+            initiator_ref=resolved_initiator,
             kind=kind,
             entity_type=entity_type,
             entity_id=entity_id,
@@ -361,7 +392,12 @@ def send_transactional_email(
                         "provider": provider,
                         "skip_reason": skip,
                         "initiator_kind": initiator_kind,
-                        "initiator_ref": initiator_ref,
+                        "initiator_ref": resolved_initiator,
+                        # Which mailbox actually carried it when that is not
+                        # the initiator's own (the designated-sender rung).
+                        # outbound_emails has no sender column; this and the
+                        # log line are where the mailbox is recorded.
+                        "sender_user_id": sender_user_id,
                         "company_id": str(tenant_id),
                     },
                     tenant_id=str(tenant_id),
@@ -391,6 +427,58 @@ def send_transactional_email(
         )
         if sent_ol:
             return _finish(True, "outlook_graph", None)
+
+    # 1b. The tenant's designated sender, for a PERSON who has never
+    # connected an Outlook account of their own (#466). Before this, a
+    # portal invite sent by anyone but the one connected user got
+    # "no_email_provider_connected" and the office had to hand-deliver
+    # the link. The mailbox the office already chose for automated mail
+    # (Settings → Automation email → "Send as") carries it; the
+    # outbound_emails row keeps the acting user as initiator (who did it),
+    # and the email.sent event names the mailbox (which account delivered
+    # it).
+    #
+    # OPT-IN per call site, not the default: /api/estimates/{id}/send and
+    # /api/invoices/{id}/send take caller-written subject, body and
+    # recipient and carry no permission gate — on prod 12 of 13 active
+    # users (three of them technicians) have no mailbox, and "no mailbox"
+    # was the only thing keeping them from emailing arbitrary text from
+    # the owner's account, into the owner's Sent Items, with replies
+    # landing where the initiator never sees them (adversarial audit,
+    # 2026-08-31). Opening that is a product decision that needs the send
+    # permissions enforced, a sender column on outbound_emails and a
+    # Reply-To first. Portal invites and sign-in links have fixed content,
+    # so they get the rung now.
+    # Also deliberately NOT for: an expired connection
+    # ("outlook_reconnect_required" — the person should reconnect, and a
+    # silent fallback would hide that their own mailbox stopped working),
+    # nor for system sends (user_id=None — reminders, mobile receipts).
+    if (
+        designated_sender_fallback
+        and tid is not None and uid is not None
+        and outlook_reason == "outlook_not_connected"
+    ):
+        designated = _to_uuid(_designated_sender_user_id(tenant_db))
+        if designated is not None and designated != uid:
+            sent_fb, fb_reason = _try_outlook_graph(
+                tenant_db=tenant_db,
+                tenant_id=tid,
+                user_id=designated,
+                to_email=to_email,
+                subject=subject,
+                html_body=html_body,
+                attachments=attachments,
+            )
+            if sent_fb:
+                log.info(
+                    "outlook_send_via_designated_sender initiator=%s sender=%s tenant=%s",
+                    uid, designated, tid,
+                )
+                return _finish(True, "outlook_graph", None, sender_user_id=str(designated))
+            if fb_reason and fb_reason != "outlook_not_connected":
+                # The designated mailbox exists but could not send: that is
+                # the more actionable diagnosis for the office.
+                outlook_reason = fb_reason
 
     # 2. SMTP via email_settings.
     sent_smtp, smtp_reason = _try_smtp(
