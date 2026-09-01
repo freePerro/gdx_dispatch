@@ -15,6 +15,12 @@
 //   PDF Templates, SaaS Billing, Tags into Admin
 // - merged Uploads into Documents (Documents page already lists uploads)
 //
+// 2026-08-31 (#350): the `communications` nav entry (/communications) was
+// removed with its screen — a process-memory messaging shell that reported
+// "sent" without sending. Email is /inbox (Outlook), SMS is
+// /phone-com/messages. The backend module key `communications` still exists:
+// it gates the notifications bell (routers/notifications.py), not a screen.
+//
 // 2026-07-07 tabbed-pages pass: modules that are facets of one job carry a
 // `cluster` key. The sidebar shows ONE row per cluster (see NAV_CLUSTERS below
 // + useTenantModules) and the cluster's routes render inside a shared
@@ -71,14 +77,13 @@ export const MODULE_CATEGORIES = [
     modules: [
       { key: 'customers', label: 'Customers', icon: 'pi pi-users', to: '/customers', type: 'Customers', permission: 'nav.office' },
       { key: 'customer_portal', label: 'Customer Portal', icon: 'pi pi-id-card', to: '/portal', type: 'Customers', permission: 'nav.office' },
-      // Field tier (ungated): communications, inbox.
+      // Field tier (ungated): inbox.
       // 2026-07-01 UX audit: four messaging destinations are genuinely different
       // channels (different backends) but the labels didn't say so — descriptions
       // disambiguate in the sidebar tooltip.
-      { key: 'communications', label: 'Communications', icon: 'pi pi-comments', to: '/communications', type: 'Customers', description: 'Built-in SMS & email threads with customers' },
       { key: 'inbox', label: 'Inbox', icon: 'pi pi-inbox', to: '/inbox', type: 'Operations', description: 'Outlook-synced email inbox' },
       { key: 'phone_com_calls', label: 'Phone.com Calls', icon: 'pi pi-phone', to: '/phone-com/calls', type: 'Customers', requires: 'phone_com', permission: 'nav.office', cluster: 'phone_hub', tabLabel: 'Calls', description: 'Call log from the Phone.com line' },
-      { key: 'phone_com_messages', label: 'Phone.com SMS', icon: 'pi pi-comment', to: '/phone-com/messages', type: 'Customers', requires: 'phone_com', permission: 'nav.office', cluster: 'phone_hub', tabLabel: 'SMS', description: 'SMS threads on the Phone.com line (separate from built-in Communications)' },
+      { key: 'phone_com_messages', label: 'Phone.com SMS', icon: 'pi pi-comment', to: '/phone-com/messages', type: 'Customers', requires: 'phone_com', permission: 'nav.office', cluster: 'phone_hub', tabLabel: 'SMS', description: 'SMS threads on the Phone.com line' },
       { key: 'phone_com_cold_leads', label: 'Phone.com Cold Leads', icon: 'pi pi-user-plus', to: '/phone-com/cold-leads', type: 'Customers', requires: 'phone_com', permission: 'nav.office', cluster: 'phone_hub', tabLabel: 'Cold Leads', description: 'Missed/unreturned callers to follow up on' },
       { key: 'phone_com_faxes', label: 'Phone.com Faxes', icon: 'pi pi-file-pdf', to: '/phone-com/faxes', type: 'Customers', requires: 'phone_com', permission: 'nav.office', cluster: 'phone_hub', tabLabel: 'Faxes', description: 'Faxes received on the Phone.com line' },
       { key: 'reviews', label: 'Reviews', icon: 'pi pi-star', to: '/reviews', type: 'Customers', permission: 'nav.office', cluster: 'reputation_hub', tabLabel: 'Reviews' },

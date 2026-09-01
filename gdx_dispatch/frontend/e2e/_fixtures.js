@@ -40,6 +40,9 @@ export const test = base.extend({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify(
+          // `communications` is the notifications-bell gate
+          // (routers/notifications.py), not a screen — its /communications
+          // page was removed (#350). Keep it granted or the bell disappears.
           [
             'jobs', 'customers', 'estimates', 'invoices', 'dispatch', 'timeclock',
             'inventory', 'quickbooks', 'customer_portal', 'equipment_tracking',

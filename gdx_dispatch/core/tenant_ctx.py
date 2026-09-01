@@ -1,7 +1,7 @@
 """
 gdx_dispatch/core/tenant_ctx.py — request-scoped tenant context for module-level state.
 
-Some older routers (pricing.py, communications.py) keep module-level dicts
+Some older routers (pricing.py; communications.py until its removal, #350) keep module-level dicts
 keyed nominally by "setting name" but actually shared across all tenants
 in the same worker process. Passing `request: Request` through every
 helper function to fix this would require ~50 signature changes per file.

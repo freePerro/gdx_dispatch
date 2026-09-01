@@ -155,7 +155,9 @@ consequence in view rather than inherited from a general principle.
   keeps `_DNC_LIST_BY_TENANT` — a module-level dict that dies on every container
   restart, entirely separate from these columns, with no UI caller. It looks
   like a do-not-contact store and is not one. See
-  `communications-parallel-fake-plan` (to be written) for its removal.
+  `communications-parallel-fake-removal-plan.md` for its removal (built
+  2026-08-31 on `chore/remove-communications-shell`, #350 — the dict and its
+  three DNC routes are gone).
 * **`email_opt_out` is nullable.** `NULL` means "never asked", not "opted out".
   Test the three-state, not the boolean.
 * **A suppressed send must not look like a failure.** The callers treat

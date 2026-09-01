@@ -22,6 +22,11 @@ sender and the in-memory `_EMAILS_BY_TENANT` dict — rows 1 and 3 of
 [email-overhaul-tech-debt.md](email-overhaul-tech-debt.md), both deferred there
 as "a UI project of its own". Phase 4b's other two bullets (supplier_invite
 docstring, `/settings/email/test` returning Not-implemented) are done.
+**Update 2026-08-31:** the block cleared the other way — the communications
+screens were not migrated, they were removed
+([communications-parallel-fake-removal-plan.md](communications-parallel-fake-removal-plan.md),
+#350), and `core/email.py` went with them as their only non-test importer.
+Phase 4b is now complete on that branch (PR pending).
 
 Locked decisions (Doug, 2026-08-18):
 
@@ -446,6 +451,9 @@ to `send_transactional_email`, on the Phase 1 shell. Design points:
 - ~~Delete dead `core/email.py`.~~ **Not actionable — it is not dead** (see
   § Findings 6). Blocked on migrating the communications screens; tracked in
   email-overhaul-tech-debt.md rows 1 and 3.
+  **Done 2026-08-31** by deleting the screens instead (#350,
+  communications-parallel-fake-removal-plan.md) — `core/email.py` fell out
+  with its only importer. PR pending.
 
 ### Phase 5 — delivery lifecycle hardening (from the section E audit)
 

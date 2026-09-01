@@ -32,7 +32,6 @@ CORE_ENDPOINTS = [
     "/api/timeclock/status",
     "/api/equipment",
     "/api/fleet/vehicles",
-    "/api/communications/threads",
     "/api/pricing/vendor-lists",
     "/api/resources",
     "/api/notifications/count",
