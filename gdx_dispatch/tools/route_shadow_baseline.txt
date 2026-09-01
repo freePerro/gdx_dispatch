@@ -33,7 +33,6 @@ POST /api/customers/{customer_id}/optout
 POST /api/fleet/vehicles
 POST /api/inventory/parts
 POST /api/jobs/{job_id}/line-items
-POST /api/jobs/{job_id}/photos
 POST /api/mobile/location
 POST /api/onboarding/clear-demo
 POST /api/onboarding/complete
