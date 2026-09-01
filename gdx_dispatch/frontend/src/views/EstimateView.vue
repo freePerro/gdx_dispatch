@@ -49,7 +49,8 @@
           :loading="activityLoading"
           :customer-id="form.customer_id ? String(form.customer_id) : null"
           @resend="emailEstimate"
-          @fix-email="goFixCustomerEmail" />
+          @fix-email="goFixCustomerEmail"
+          @send-to-other="sendToOtherAddress" />
       </header>
 
       <!-- AI Quick Estimate Dialog -->
@@ -993,7 +994,8 @@
         <div v-else class="composer-form">
           <div class="form-field">
             <label>To</label>
-            <Select v-if="composer.recipients.length" v-model="composer.contact_id"
+            <Select v-if="composer.recipients.length && !composer.overrideMode"
+              v-model="composer.contact_id"
               :options="composer.recipients" option-value="contact_id" option-label="email"
               class="w-full" data-testid="composer-recipient"
               @change="onRecipientChange">
@@ -1007,10 +1009,31 @@
               </template>
             </Select>
             <InputText v-else v-model="composer.to" placeholder="customer@example.com"
-              class="w-full" data-testid="composer-to" />
-            <small v-if="canMakeDefaultRecipient" class="muted">
-              <a href="#" data-testid="composer-make-default"
-                @click.prevent="makeDefaultRecipient">Always send to this person</a>
+              class="w-full" data-testid="composer-to"
+              :invalid="Boolean(composerTypedAddress) && !composerTypedAddressValid" />
+            <!-- An estimate with no customer cannot send to any address: /send
+                 stops at estimate_has_no_customer before reading the override. -->
+            <small v-if="composerNoCustomer" class="composer-warn" data-testid="composer-no-customer">
+              This estimate has no customer, so it cannot be emailed. Attach a customer first.
+            </small>
+            <small v-else-if="composer.overrideMode" class="muted" data-testid="composer-override-hint">
+              One-time — the customer record is not changed.
+              <a v-if="composerTypedAddressValid" href="#" data-testid="composer-save-contact"
+                @click.prevent="openSaveContact">Save to customer</a>
+              <template v-if="composer.recipients.length">
+                ·
+                <a href="#" data-testid="composer-use-contacts"
+                  @click.prevent="cancelRecipientOverride">use a saved contact</a>
+              </template>
+            </small>
+            <small v-else-if="composer.recipients.length" class="muted">
+              <a href="#" data-testid="composer-send-other"
+                @click.prevent="startRecipientOverride">Send to a different address</a>
+              <template v-if="canMakeDefaultRecipient">
+                ·
+                <a href="#" data-testid="composer-make-default"
+                  @click.prevent="makeDefaultRecipient">Always send to this person</a>
+              </template>
             </small>
           </div>
           <div class="form-field">
@@ -1060,6 +1083,29 @@
         </template>
       </Dialog>
 
+      <!-- Save a one-time typed address onto the customer, on purpose and by
+           name. The contact endpoint audits it (field names only). -->
+      <Dialog v-model:visible="showSaveContact" header="Save to customer" modal
+        :style="{ width: '420px' }" data-testid="save-contact-dialog">
+        <div class="form-field">
+          <label for="save-contact-email">Email</label>
+          <InputText id="save-contact-email" :model-value="composerTypedAddress" disabled class="w-full" />
+        </div>
+        <div class="form-field">
+          <label for="save-contact-name">Who is this? *</label>
+          <InputText id="save-contact-name" v-model="saveContactName" class="w-full"
+            placeholder="e.g. Pat Reilly (property manager)" data-testid="save-contact-name" />
+          <small class="muted">Saved as a contact on this customer. Automated emails keep
+            going to the default recipient unless you change it.</small>
+        </div>
+        <template #footer>
+          <Button label="Cancel" text @click="showSaveContact = false" />
+          <Button label="Save contact" icon="pi pi-user-plus" :loading="saveContactSaving"
+            :disabled="!saveContactName.trim()" data-testid="save-contact-confirm"
+            @click="saveTypedAddressToCustomer" />
+        </template>
+      </Dialog>
+
       <!-- ConfirmDialog removed 2026-05-12 — AppLayout.vue:49 mounts one globally. -->
       <Toast data-testid="estimate-view-toast" />
     </section>
@@ -1074,6 +1120,11 @@ import { useToast } from "primevue/usetoast";
 import EstimateProfitPanel from "../components/EstimateProfitPanel.vue";
 import CatalogPickerDialog from "../components/CatalogPickerDialog.vue";
 import ComposerPdfPreview from "../components/ComposerPdfPreview.vue";
+import {
+  composerSendPayload,
+  isValidRecipientEmail,
+  typedAddress,
+} from "../utils/composerRecipient";
 import EstimateStatusContext from "../components/EstimateStatusContext.vue";
 import PluginScreen from "../components/PluginScreen.vue";
 import PhoneInput from "../components/PhoneInput.vue";
@@ -1138,10 +1189,30 @@ const composerPreviewing = ref(false);
 const composer = ref({
   to: "", subject: "", body_text: "", pdf: null, extras: [],
   recipients: [], contact_id: "", previewHtml: "", prefillBody: "",
+  // One-time recipient override. The picker only ever offers addresses already
+  // on the account, so a customer with ONE wrong address on file had no way to
+  // reach a different one — the case that actually happens (an emailed estimate
+  // bounced off an address one letter out). true swaps the Select for a free
+  // field whose value is sent as `to_email`; the customer record is untouched.
+  overrideMode: false,
 });
-const composerHasRecipient = computed(() =>
-  composer.value.recipients.length ? true : Boolean(composer.value.to)
+// Both delegate to utils/composerRecipient — the same module that BUILDS the
+// send body, so the field the UI validates is the field the server receives.
+const composerTypedAddress = computed(() => typedAddress(composer.value));
+const composerTypedAddressValid = computed(() =>
+  isValidRecipientEmail(composerTypedAddress.value)
 );
+// An estimate with no customer cannot send to ANY address: /send short-circuits
+// on `estimate_has_no_customer` before the override is ever consulted. Reachable
+// via duplicate-of-a-deleted-customer, so say it rather than fail silently.
+const composerNoCustomer = computed(() =>
+  !composer.value.customer_id && !composerLoading.value
+);
+const composerHasRecipient = computed(() => {
+  if (composerNoCustomer.value) return false;
+  if (composerTypedAddress.value) return composerTypedAddressValid.value;
+  return composer.value.recipients.length > 0;
+});
 function recipientDisplay(contactId) {
   const opt = composer.value.recipients.find((r) => r.contact_id === (contactId || ""));
   return opt ? `${opt.name} <${opt.email}>` : composer.value.to || "Choose a recipient";
@@ -3010,6 +3081,7 @@ async function emailEstimate() {
   composer.value = {
     to: "", subject: "", body_text: "", pdf: null, extras: [],
     recipients: [], contact_id: "", previewHtml: "", prefillBody: "",
+    overrideMode: false,
   };
   try {
     const data = await api.get(`/api/estimates/${route.params.id}/email-compose`);
@@ -3026,12 +3098,84 @@ async function emailEstimate() {
       contact_id: payload.selected_contact_id || "",
       customer_id: payload.customer_id || null,
       previewHtml: "",
+      // Opened from the bounce banner's "Send to a different address": the
+      // address on file is the one that bounced, so start in override mode
+      // with it cleared rather than making the operator find the link.
+      overrideMode: _composerOpenInOverride,
     };
+    if (_composerOpenInOverride) composer.value.to = "";
+    _composerOpenInOverride = false;
   } catch (err) {
     showComposer.value = false;
     toast.add({ severity: "error", summary: "Compose failed", detail: err?.message || "", life: 4000 });
   } finally {
     composerLoading.value = false;
+  }
+}
+
+// Set by the bounce banner before it calls emailEstimate(); consumed once.
+let _composerOpenInOverride = false;
+
+function startRecipientOverride() {
+  // Seed from the current pick so the operator edits an address rather than
+  // retyping one — a one-letter correction is the common case.
+  const opt = composer.value.recipients.find(
+    (r) => r.contact_id === (composer.value.contact_id || "")
+  );
+  composer.value.to = opt ? opt.email : composer.value.to;
+  composer.value.overrideMode = true;
+  composer.value.previewHtml = "";
+}
+
+function cancelRecipientOverride() {
+  composer.value.overrideMode = false;
+  composer.value.previewHtml = "";
+  const opt = composer.value.recipients.find(
+    (r) => r.contact_id === (composer.value.contact_id || "")
+  );
+  composer.value.to = opt ? opt.email : "";
+}
+
+// "Send to a different address" from the Failed Email banner.
+async function sendToOtherAddress() {
+  _composerOpenInOverride = true;
+  await emailEstimate();
+}
+
+const showSaveContact = ref(false);
+const saveContactName = ref("");
+const saveContactSaving = ref(false);
+
+function openSaveContact() {
+  saveContactName.value = "";
+  showSaveContact.value = true;
+}
+
+// Deliberately NOT automatic (Doug, 2026-09-01): a property manager's address
+// must not silently become the account's. Routes through the existing audited
+// contact endpoint, which records field NAMES only.
+async function saveTypedAddressToCustomer() {
+  const email = composerTypedAddress.value;
+  const cid = composer.value.customer_id;
+  if (!email || !cid || !saveContactName.value.trim()) return;
+  saveContactSaving.value = true;
+  try {
+    const created = await api.post(
+      `/api/customers/${cid}/contacts`,
+      { name: saveContactName.value.trim(), email, label: "Added from estimate" },
+      { successMessage: "Saved to the customer as a contact." },
+    );
+    const row = created?.data || created;
+    composer.value.recipients = [
+      ...composer.value.recipients,
+      { contact_id: String(row?.id || ""), name: saveContactName.value.trim(),
+        email, label: "Added from estimate", is_primary: false },
+    ];
+    showSaveContact.value = false;
+  } catch (err) {
+    toast.add({ severity: "error", summary: "Could not save contact", detail: err?.message || "", life: 4000 });
+  } finally {
+    saveContactSaving.value = false;
   }
 }
 
@@ -3084,14 +3228,10 @@ async function onRecipientChange() {
 async function previewComposer() {
   composerPreviewing.value = true;
   try {
-    const data = await apiRaw.post(`/api/estimates/${route.params.id}/email-preview`, {
-      body_text: composer.value.body_text,
-      subject: composer.value.subject,
-      contact_id: composer.value.contact_id || null,
-      // Free-typed address (no stored recipients) must reach the server —
-      // audit catch: it used to be collected and silently dropped.
-      to_email: composer.value.recipients.length ? null : (composer.value.to || null),
-    });
+    const data = await apiRaw.post(
+      `/api/estimates/${route.params.id}/email-preview`,
+      composerSendPayload(composer.value),
+    );
     const payload = data?.data || data;
     composer.value.previewHtml = payload.html || "";
   } catch (err) {
@@ -3111,12 +3251,12 @@ async function sendComposer() {
     // budget, delivers via Outlook Graph or SMTP, stamps sent/sent_via, and
     // records the attempt in the outbound email log. The old path built a
     // bare <pre> body in the browser and needed a separate mark-sent call.
-    const result = await apiRaw.post(`/api/estimates/${route.params.id}/send`, {
-      body_text: composer.value.body_text,
-      subject: composer.value.subject,
-      contact_id: composer.value.contact_id || null,
-      extra_attachment_ids: composer.value.extras.filter((e) => e._include).map((e) => e.id),
-    });
+    const result = await apiRaw.post(
+      `/api/estimates/${route.params.id}/send`,
+      composerSendPayload(composer.value, {
+        extra_attachment_ids: composer.value.extras.filter((e) => e._include).map((e) => e.id),
+      }),
+    );
     const payload = result?.data || result;
     if (payload.email_sent) {
       estimate.value.status = _titleCase(payload.status || "sent");
@@ -3926,6 +4066,9 @@ onUnmounted(() => {
 }
 .attachment-icon-small { font-size: 1.5rem; color: #6b7280; }
 .composer-loading { padding: 2rem; text-align: center; color: #6b7280; }
+/* Token-based so it reads in both themes — a hardcoded hex would vanish on
+   one of them (jsdom applies no media queries; only a browser proves this). */
+.composer-warn { color: var(--p-red-500, #ef4444); display: block; margin-top: .25rem; }
 .composer-preview {
   width: 100%;
   height: 420px;

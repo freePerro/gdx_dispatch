@@ -49,6 +49,19 @@
             data-testid="estimate-fix-email"
             @click="$emit('fix-email')"
           />
+          <!-- The third door. "Fix customer email" rewrites the account
+               address for good and "Re-send" reuses the address that just
+               bounced; neither covers "send this one somewhere else". -->
+          <Button
+            label="Send to a different address"
+            icon="pi pi-envelope"
+            size="small"
+            severity="secondary"
+            outlined
+            :disabled="!customerId"
+            data-testid="estimate-send-to-other"
+            @click="$emit('send-to-other')"
+          />
           <Button
             label="Re-send"
             icon="pi pi-send"
@@ -98,7 +111,7 @@ const props = defineProps({
   /** Enables "Fix customer email"; null when the estimate has no customer. */
   customerId: { type: String, default: null },
 })
-defineEmits(['resend', 'fix-email'])
+defineEmits(['resend', 'fix-email', 'send-to-other'])
 
 const norm = computed(() => String(props.status || '').toLowerCase())
 const isRejected = computed(() => norm.value === 'rejected')

@@ -37,6 +37,28 @@ const BOUNCE = {
   decline: null,
 }
 
+describe('EstimateStatusContext — send to a different address', () => {
+  it('offers a third way out of a bounce, and emits send-to-other', async () => {
+    // "Fix customer email" rewrites the account address for good; "Re-send"
+    // reuses the address that bounced. Neither sends this one elsewhere.
+    const w = mountWith({ status: 'rejected', context: BOUNCE, customerId: 'c-1' })
+    const btn = w.find('[data-testid="estimate-send-to-other"]')
+    expect(btn.exists()).toBe(true)
+    await btn.trigger('click')
+    expect(w.emitted('send-to-other')).toHaveLength(1)
+  })
+
+  it('is disabled with no customer — /send stops before reading an override', () => {
+    const w = mountWith({ status: 'rejected', context: BOUNCE, customerId: null })
+    expect(w.find('[data-testid="estimate-send-to-other"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('does not appear on a healthy estimate', () => {
+    const w = mountWith({ status: 'sent', context: { bounce: null, decline: null }, customerId: 'c-1' })
+    expect(w.find('[data-testid="estimate-send-to-other"]').exists()).toBe(false)
+  })
+})
+
 describe('EstimateStatusContext — Failed Email banner', () => {
   it('names the failed recipient and the bounce date when status is rejected', () => {
     const w = mountWith({ status: 'Rejected', context: BOUNCE, customerId: 'c-1' })
