@@ -18,6 +18,28 @@ from __future__ import annotations
 
 from gdx_dispatch.tools.route_shadow_scan import collect_shadows, load_baseline
 
+RESOLVED_SAFE_SHADOWS = {
+    ("GET", "/api/technicians/skills"),
+    ("GET", "/api/onboarding/state"),
+    ("GET", "/api/onboarding/checklist"),
+    ("PATCH", "/api/onboarding/checklist"),
+    ("POST", "/api/onboarding/seed-catalog"),
+    ("POST", "/api/onboarding/demo-data"),
+    ("POST", "/api/onboarding/clear-demo"),
+    ("POST", "/api/onboarding/complete"),
+    ("POST", "/api/campaigns/preview-filter"),
+    ("GET", "/api/campaigns/{campaign_id}/preview"),
+    ("GET", "/api/campaigns/{campaign_id}/sends"),
+    ("PUT", "/api/campaigns/{campaign_id}/activate"),
+    ("PUT", "/api/campaigns/{campaign_id}/deactivate"),
+    ("GET", "/api/customers/{customer_id}/recurring-jobs"),
+    ("POST", "/api/customers/{customer_id}/optout"),
+    ("GET", "/api/jobs/{job_id}/line-items"),
+    ("GET", "/api/settings/branding"),
+    ("GET", "/api/settings/integrations/google-maps"),
+    ("GET", "/api/settings/modules"),
+}
+
 
 def test_no_net_new_route_shadows() -> None:
     """No net-new (method, path) shadow pairs vs baseline."""
@@ -32,6 +54,12 @@ def test_no_net_new_route_shadows() -> None:
         "`python gdx_dispatch/tools/route_shadow_scan.py --write-baseline`. "
         f"New shadows: {net_new}"
     )
+
+
+def test_resolved_safe_shadows_are_absent() -> None:
+    """These paths have exactly one canonical handler, not a baseline exemption."""
+    shadows = set(collect_shadows())
+    assert not (shadows & RESOLVED_SAFE_SHADOWS)
 
 
 def test_settings_modules_returns_rich_shape() -> None:

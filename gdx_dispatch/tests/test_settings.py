@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
 from gdx_dispatch.models.tenant_models import AppSettings
+from gdx_dispatch.routers import branding_public as branding_public_router
 from gdx_dispatch.routers import settings as settings_router
 from gdx_dispatch.routers.settings import BrandingPatchIn, SettingsPatchIn
 
@@ -112,7 +113,9 @@ def test_patch_settings_is_partial_update(db_session: Session):
 
 
 def test_get_modules_defaults_empty(db_session: Session):
-    data = settings_router.get_modules(request=_request(), current_user=_admin(), db=db_session)
+    data = branding_public_router.get_modules_public(
+        request=_request(), current_user=_admin(), db=db_session
+    )
     keys = {item["key"] for item in data["modules"]}
     assert "jobs" in keys
     assert "inventory" in keys
@@ -142,22 +145,25 @@ def test_disable_persists_across_get_for_gdx_tenant(db_session: Session):
     by the next read). Assert disable now sticks across a subsequent GET.
     """
     request = _request(tier="business", slug="gdx")
-    settings_router.enable_module(
-        request=request, key="warranties", current_user=_admin(), db=db_session
+    pre_get = branding_public_router.get_modules_public(
+        request=request, current_user=_admin(), db=db_session
     )
-    pre_get = settings_router.get_modules(request=request, current_user=_admin(), db=db_session)
     pre_warranties = next(m for m in pre_get["modules"] if m["key"] == "warranties")
     assert pre_warranties["enabled"] is True
 
     settings_router.disable_module(
         request=request, key="warranties", current_user=_admin(), db=db_session
     )
-    post_get = settings_router.get_modules(request=request, current_user=_admin(), db=db_session)
+    post_get = branding_public_router.get_modules_public(
+        request=request, current_user=_admin(), db=db_session
+    )
     post_warranties = next(m for m in post_get["modules"] if m["key"] == "warranties")
     assert post_warranties["enabled"] is False, (
         "GDX autohealer regression — get_modules must not resurrect a deleted grant"
     )
-    second_get = settings_router.get_modules(request=request, current_user=_admin(), db=db_session)
+    second_get = branding_public_router.get_modules_public(
+        request=request, current_user=_admin(), db=db_session
+    )
     second_warranties = next(m for m in second_get["modules"] if m["key"] == "warranties")
     assert second_warranties["enabled"] is False, "disable must stick across multiple GETs"
 
@@ -198,7 +204,9 @@ def test_get_integrations_returns_only_active(db_session: Session):
 @pytest.mark.anyio
 async def test_get_branding_defaults(db_session: Session):
     mock_request = SimpleNamespace(state=SimpleNamespace(tenant={"id": "tenant-test"}))
-    data = await settings_router.get_branding(request=mock_request, current_user=_admin(), db=db_session)
+    data = await branding_public_router.get_branding_public(
+        request=mock_request, current_user=_admin(), db=db_session
+    )
     assert data["company_name"] == ""
     assert data["logo_url"] == ""
     assert data["primary_color"] == "#0f172a"
@@ -230,14 +238,31 @@ def test_non_admin_is_forbidden(db_session: Session):
 
 
 def test_router_has_expected_paths():
-    paths = {route.path for route in settings_router.router.routes}
-    assert "/api/settings" in paths
-    assert "/api/settings/modules" in paths
-    assert "/api/settings/modules/{key}/enable" in paths
-    assert "/api/settings/modules/{key}/disable" in paths
-    assert "/api/settings/notifications" in paths
-    assert "/api/settings/integrations" in paths
-    assert "/api/settings/branding" in paths
+    settings_paths = {route.path for route in settings_router.router.routes}
+    settings_methods = {
+        (route.path, method)
+        for route in settings_router.router.routes
+        for method in route.methods
+    }
+    public_methods = {
+        (route.path, method)
+        for route in branding_public_router.router.routes
+        for method in route.methods
+    }
+    assert "/api/settings" in settings_paths
+    assert "/api/settings/modules" not in settings_paths
+    assert "/api/settings/modules/{key}/enable" in settings_paths
+    assert "/api/settings/modules/{key}/disable" in settings_paths
+    assert "/api/settings/notifications" in settings_paths
+    assert "/api/settings/integrations" in settings_paths
+    assert {
+        ("/api/settings/modules", "GET"),
+        ("/api/settings/integrations/google-maps", "GET"),
+        ("/api/settings/branding", "GET"),
+    } <= public_methods
+    assert ("/api/settings/integrations/google-maps", "GET") not in settings_methods
+    assert ("/api/settings/branding", "GET") not in settings_methods
+    assert ("/api/settings/branding", "PATCH") in settings_methods
 
 
 def test_app_registers_settings_routes():

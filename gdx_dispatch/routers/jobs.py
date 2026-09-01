@@ -3487,6 +3487,7 @@ def get_job_duration(
                        COUNT(*) AS entry_count
                 FROM time_entries
                 WHERE job_id = :job_id AND company_id = :tenant_id
+                  AND deleted_at IS NULL
                 """
             ),
             {"job_id": job_id, "tenant_id": tenant_id},
@@ -3504,10 +3505,13 @@ def get_job_duration(
                        AVG(te.duration_minutes) AS avg_minutes,
                        COUNT(DISTINCT te.job_id) AS sample_size
                 FROM jobs j
-                JOIN time_entries te ON te.job_id = j.id AND te.company_id = j.company_id
+                JOIN time_entries te ON te.job_id = j.id
+                    AND te.company_id = j.company_id
+                    AND te.deleted_at IS NULL
                 WHERE j.job_type = (SELECT job_type FROM jobs WHERE id = :job_id LIMIT 1)
                   AND j.company_id = :tenant_id
                   AND j.status IN ('Completed', 'completed')
+                  AND j.deleted_at IS NULL
                 GROUP BY j.job_type
                 """
             ),
@@ -3543,7 +3547,7 @@ def get_job_costing(
 ):
     """Calculate real cost (labor + parts) vs customer revenue for a job."""
     try:
-        uuid.UUID(job_id)
+        job_uuid = uuid.UUID(job_id)
     except (ValueError, AttributeError):
         log.exception("get_job_costing_failed")
         return jsonable_response({"detail": "job not found"}, 404)
@@ -3558,9 +3562,10 @@ def get_job_costing(
         from gdx_dispatch.modules.payroll import effective_labor_cost
         time_rows = db.execute(
             _text(
-                "SELECT user_id, duration_minutes, hourly_rate, started_at "
+                "SELECT user_id, duration_minutes, hourly_rate, clock_in "
                 "FROM time_entries "
-                "WHERE job_id = :job_id AND company_id = :tenant_id"
+                "WHERE job_id = :job_id AND company_id = :tenant_id "
+                "AND deleted_at IS NULL"
             ),
             {"job_id": job_id, "tenant_id": tenant_id},
         ).mappings().all()
@@ -3572,7 +3577,7 @@ def get_job_costing(
             mins = int(tr.get("duration_minutes") or 0)
             labor_minutes += mins
             hours = mins / 60.0
-            when_val = tr.get("started_at")
+            when_val = tr.get("clock_in")
             lc = effective_labor_cost(
                 db,
                 tech_user_id=tr.get("user_id"),
@@ -3608,7 +3613,7 @@ def get_job_costing(
                 # profitability understated collections by the whole drift.
                 func.coalesce(func.sum(paid_amount_sq()), 0).label("total_paid"),
             ).where(
-                Invoice.job_id == job_id,
+                Invoice.job_id == job_uuid,
                 Invoice.company_id == tenant_id,
                 Invoice.deleted_at.is_(None),
             )

@@ -110,13 +110,15 @@ def day_summary(
         hours_sql = (
             "SELECT COALESCE(SUM((julianday(clock_out) - julianday(clock_in)) * 24.0), 0) "
             "FROM time_entries WHERE CAST(user_id AS TEXT) = :uid "
-            "AND clock_in >= :start AND clock_in < :end AND clock_out IS NOT NULL"
+            "AND clock_in >= :start AND clock_in < :end AND clock_out IS NOT NULL "
+            "AND deleted_at IS NULL"
         )
     else:
         hours_sql = (
             "SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (clock_out - clock_in)) / 3600.0), 0) "
             "FROM time_entries WHERE CAST(user_id AS TEXT) = :uid "
-            "AND clock_in >= :start AND clock_in < :end AND clock_out IS NOT NULL"
+            "AND clock_in >= :start AND clock_in < :end AND clock_out IS NOT NULL "
+            "AND deleted_at IS NULL"
         )
     try:
         labor_hours = float(db.execute(
