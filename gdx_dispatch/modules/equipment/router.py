@@ -4,14 +4,15 @@ import contextlib
 from datetime import date, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import utcnow
+from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.modules.equipment.models import CustomerEquipment, EquipmentServiceHistory
 
@@ -21,6 +22,35 @@ router = APIRouter(prefix="/api", tags=["equipment"], dependencies=[Depends(requ
 # ---------------------------------------------------------------------------
 # Pydantic schemas
 # ---------------------------------------------------------------------------
+
+
+def _audit(
+    db: Session,
+    request: Request,
+    user: dict,
+    *,
+    action: str,
+    entity_type: str,
+    entity_id: object,
+    details: dict | None = None,
+) -> None:
+    """Invariant #1: every create/update/delete here answers who, what, when.
+
+    Equipment edits went unrecorded from 2026-05-03 (router unwired) until
+    #451 made `update_equipment` reachable again — the audit row is what
+    makes "who changed this door's serial number" answerable (#452).
+    """
+    log_audit_event_sync(
+        db,
+        tenant_id=company_id(),
+        user_id=user.get("sub") or user.get("user_id") or user.get("id") or "system",
+        action=action,
+        entity_type=entity_type,
+        entity_id=str(entity_id),
+        details=details or {},
+        request=request,
+    )
+
 
 class EquipmentIn(BaseModel):
     equipment_type: str
@@ -114,10 +144,18 @@ def list_equipment(customer_id: UUID, db: Session = Depends(get_db)) -> list[Cus
 def create_equipment_for_customer(
     customer_id: UUID,
     payload: EquipmentIn,
+    request: Request,
+    user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> CustomerEquipment:
     row = CustomerEquipment(customer_id=customer_id, **payload.model_dump())
     db.add(row)
+    db.flush()
+    _audit(
+        db, request, user,
+        action="equipment_created", entity_type="equipment", entity_id=row.id,
+        details={"customer_id": str(customer_id), **payload.model_dump(mode="json")},
+    )
     db.commit()
     db.refresh(row)
     return row
@@ -128,6 +166,8 @@ def update_equipment_for_customer(
     customer_id: UUID,
     equipment_id: UUID,
     payload: EquipmentPatch,
+    request: Request,
+    user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> CustomerEquipment:
     row = db.execute(
@@ -139,8 +179,19 @@ def update_equipment_for_customer(
     ).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="Equipment not found")
-    for k, v in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    before = {k: getattr(row, k) for k in changes}
+    for k, v in changes.items():
         setattr(row, k, v)
+    _audit(
+        db, request, user,
+        action="equipment_updated", entity_type="equipment", entity_id=row.id,
+        details={
+            "customer_id": str(customer_id),
+            "changes": payload.model_dump(exclude_unset=True, mode="json"),
+            "before": {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in before.items()},
+        },
+    )
     db.commit()
     db.refresh(row)
     return row
@@ -175,6 +226,8 @@ def log_service_event(
     job_id: UUID,
     equipment_id: UUID,
     payload: ServiceEventIn,
+    request: Request,
+    user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> EquipmentServiceHistory:
     exists = db.execute(
@@ -191,6 +244,13 @@ def log_service_event(
         **payload.model_dump(exclude_unset=True),
     )
     db.add(row)
+    db.flush()
+    _audit(
+        db, request, user,
+        action="equipment_service_logged", entity_type="equipment_service", entity_id=row.id,
+        details={"equipment_id": str(equipment_id), "job_id": str(job_id),
+                 **payload.model_dump(exclude_unset=True, mode="json")},
+    )
     db.commit()
     db.refresh(row)
     return row
@@ -215,6 +275,8 @@ def list_all_equipment(
 @router.post("/equipment", response_model=None)
 def create_equipment(
     payload: EquipmentCreate,
+    request: Request,
+    user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> CustomerEquipment:
     """Create equipment record for any customer."""
@@ -229,6 +291,12 @@ def create_equipment(
         notes=payload.notes,
     )
     db.add(row)
+    db.flush()
+    _audit(
+        db, request, user,
+        action="equipment_created", entity_type="equipment", entity_id=row.id,
+        details=payload.model_dump(exclude_unset=True, mode="json"),
+    )
     db.commit()
     db.refresh(row)
     return row
@@ -292,6 +360,8 @@ def get_equipment(
 def log_equipment_service(
     equipment_id: UUID,
     payload: ServiceLogIn,
+    request: Request,
+    user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> EquipmentServiceHistory:
     """Log a service record for an equipment item."""
@@ -325,6 +395,12 @@ def log_equipment_service(
         with contextlib.suppress(Exception):
             row.last_service_date = service_date.date() if hasattr(service_date, "date") else service_date
 
+    db.flush()
+    _audit(
+        db, request, user,
+        action="equipment_service_logged", entity_type="equipment_service", entity_id=svc.id,
+        details={"equipment_id": str(equipment_id), **payload.model_dump(exclude_unset=True, mode="json")},
+    )
     db.commit()
     db.refresh(svc)
     return svc
@@ -357,6 +433,8 @@ def get_equipment_service_history(
 def update_equipment(
     equipment_id: UUID,
     payload: EquipmentUpdate,
+    request: Request,
+    user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> CustomerEquipment:
     """Update an equipment record."""
@@ -381,11 +459,22 @@ def update_equipment(
         "warranty_expires_on": "warranty_expires_on",
         "notes": "notes",
     }
+    changes: dict[str, object] = {}
+    before: dict[str, object] = {}
     for src, dst in field_map.items():
         val = getattr(payload, src, None)
         if val is not None:
+            prev = getattr(row, dst)
+            if prev != val:
+                before[dst] = prev.isoformat() if hasattr(prev, "isoformat") else prev
+                changes[dst] = val.isoformat() if hasattr(val, "isoformat") else val
             setattr(row, dst, val)
 
+    _audit(
+        db, request, user,
+        action="equipment_updated", entity_type="equipment", entity_id=row.id,
+        details={"changes": changes, "before": before},
+    )
     db.commit()
     db.refresh(row)
     return row
@@ -394,6 +483,8 @@ def update_equipment(
 @router.delete("/equipment/{equipment_id}", response_model=None)
 def delete_equipment(
     equipment_id: UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """Soft-delete an equipment record."""
@@ -406,5 +497,11 @@ def delete_equipment(
     if not row:
         raise HTTPException(status_code=404, detail="Equipment not found")
     row.deleted_at = utcnow()
+    _audit(
+        db, request, user,
+        action="equipment_deleted", entity_type="equipment", entity_id=row.id,
+        details={"customer_id": str(row.customer_id), "equipment_type": row.equipment_type,
+                 "serial_number": row.serial_number},
+    )
     db.commit()
     return {"id": str(equipment_id), "deleted": True}
