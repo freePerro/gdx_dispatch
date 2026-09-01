@@ -111,7 +111,18 @@ def test_labor_sum_endpoint_uses_the_tenant_fallback(db):
     src = pathlib.Path(
         __import__("gdx_dispatch.routers.labor", fromlist=["__file__"]).__file__
     ).read_text()
-    assert "_entry_cost(entry, _fb)" in src
+    # `assert "_entry_cost(entry, _fb)" in src` lived here. It pinned the source
+    # text of `get_job_labor_costing`, which this branch deletes: labor.py
+    # registered GET /api/jobs/{job_id}/costing a SECOND time, and jobs.py
+    # (app.py:1513) is included before labor.py (app.py:1551), so FastAPI served
+    # jobs.py's handler and labor.py's copy was unreachable. The assertion was
+    # therefore guarding a function that never ran.
+    #
+    # Note for whoever touches this next: every assertion in this test is a
+    # source-TEXT check. That proves someone wrote a particular expression, not
+    # that the tenant fallback is applied — the behavioural coverage is
+    # `test_labor_summary_costs_null_rate_at_the_tenant_number` below. These
+    # break on correct refactors, which is exactly what happened here.
     # Hoisted after the review caught a per-row pricing_settings SELECT: the
     # summary resolves once, then reuses.
     assert "_summary_fb = _cost_rate_fallback(db)" in src
