@@ -208,35 +208,25 @@ def test_webhook_dlq_created_after_all_retries_exhausted():
 
 
 # ---------------------------------------------------------------------------
-# TASK 3 — Per-tenant rate limiting
-# ---------------------------------------------------------------------------
+# TASK 3 — Per-tenant rate limiting  [REMOVED 2026-09-01]
+#
+# `test_per_tenant_rate_limit_tiers` was deleted with the code it described.
+# It was fake twice over, and worth recording as a pattern rather than a fix:
+#
+#   1. It asserted SOURCE TEXT — `assert "600/minute" in src` — which proves
+#      authorship, not behaviour. Its own docstring called this "so any future
+#      refactor stays in sync"; in practice it pinned dead strings in place.
+#   2. It then reimplemented `_tier_limit`'s branch INSIDE the test body as
+#      `_tier_limit_logic` and asserted on that copy. It never imported or
+#      executed the real function, so it would have passed identically had
+#      `_tier_limit` been deleted, inverted, or never called.
+#
+# Both halves passed for years while the real `_tier_limit` could not work at
+# all: slowapi calls a `default_limits` provider with no arguments, so its
+# `request` was always None and the tier header was never read. Measured:
+# 429 at request #121 with and without `x-tenant-tier: professional`.
+#
+# The real invariant now lives in `tests/test_rate_limit_default_is_static.py`,
+# which asserts the limiter's actual configuration and fails if a
+# request-dependent callable is reintroduced.
 
-def test_per_tenant_rate_limit_tiers():
-    """_tier_limit logic must map Starter→120/minute and Professional→600/minute.
-
-    Rather than importing gdx_dispatch.app (which pulls in fastapi), we reproduce the
-    tiny pure-Python _tier_limit function and assert on its output.  A separate
-    source-inspection assertion confirms the literal strings are present in the
-    app source so any future refactor stays in sync.
-    """
-    import pathlib
-
-    src = (
-        pathlib.Path(__file__).resolve().parents[2] / "gdx_dispatch/app.py"
-    ).read_text()
-
-    # Tier limit strings must be present in app.py
-    assert "120/minute" in src, "'120/minute' not found in gdx_dispatch/app.py"
-    assert "600/minute" in src, "'600/minute' not found in gdx_dispatch/app.py"
-    assert "professional" in src.lower(), "'professional' tier check not found in gdx_dispatch/app.py"
-
-    # Reproduce the pure-Python logic extracted from _tier_limit for a live check
-    def _tier_limit_logic(tier_header: str) -> str:
-        tier = tier_header.strip().lower()
-        return "600/minute" if tier == "professional" else "120/minute"
-
-    assert _tier_limit_logic("Starter") == "120/minute"
-    assert _tier_limit_logic("professional") == "600/minute"
-    assert _tier_limit_logic("Professional") == "600/minute"
-    assert _tier_limit_logic("") == "120/minute"
-    assert _tier_limit_logic("unknown") == "120/minute"
