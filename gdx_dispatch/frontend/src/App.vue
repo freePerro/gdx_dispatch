@@ -13,7 +13,7 @@
            + :key="$route.fullPath" on <router-view>; both removed in
            the AppLayout-into-App.vue refactor).
 
-           Routes that need a bare shell (login, signup, customer portal,
+           Routes that need a bare shell (login, customer portal,
            full-screen onboarding wizard, the not-found fallback) opt out
            with `meta.noShell: true` and render directly into the bare
            <router-view>. -->

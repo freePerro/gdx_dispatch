@@ -153,14 +153,13 @@ const ModuleTabsPage = () => import('../components/ModuleTabsPage.vue');
 export const routes = [
   { path: '/', redirect: '/dashboard' },
   // `noShell: true` keeps these routes out of the AppLayout shell mounted
-  // by App.vue. Login/signup/portal pages render their own full-screen
+  // by App.vue. Login/portal pages render their own full-screen
   // shells; the not-found fallback is bare; onboarding is a full-screen
   // wizard. Every other route is wrapped by App.vue's AppLayout so the
   // sidebar/topbar/bottom-nav are stable across navigations.
   { path: '/login', name: 'login', component: LoginView, meta: { public: true, noShell: true } },
   { path: '/forgot-password', name: 'forgot-password', component: () => import('../views/ForgotPasswordView.vue'), meta: { public: true, noShell: true } },
   { path: '/reset-password', name: 'reset-password', component: () => import('../views/ResetPasswordView.vue'), meta: { public: true, noShell: true } },
-  { path: '/signup', name: 'signup', component: () => import('../views/SignupView.vue'), meta: { public: true, noShell: true } },
   { path: '/onboarding', name: 'onboarding', component: () => import('../views/OnboardingView.vue'), meta: { noShell: true } },
   { path: '/customer-portal', name: 'customer-portal', component: CustomerPortalView, meta: { public: true, noSidebar: true, noShell: true } },
   { path: '/dashboard', name: 'dashboard', component: DashboardView },
