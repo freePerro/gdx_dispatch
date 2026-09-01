@@ -356,12 +356,23 @@ def test_process_bounces_is_idempotent(db, account):
 # ── Phase 5.2 (email overhaul): a bounced REMINDER must not un-send ────
 
 
-def _mk_outbound(db, *, to_email, entity_id, kind, status="sent"):
+def _mk_outbound(db, *, to_email, entity_id, kind, status="sent",
+                 created_at=None):
+    """created_at defaults to NOW — the same clock the NDR rows use.
+
+    #503: this helper used to leave created_at to the model default (real
+    now() at INSERT), while every NDR in this file is stamped from NOW,
+    bound once at module import. pytest imports the file at collection,
+    so once a shard ran longer than bounce_detect.TIME_CORRELATION_SLACK
+    (5 min) between collecting and executing, the outbound row fell out
+    of the NDR's match window and three tests flipped — a "flake" that
+    was really two clocks drifting apart. One clock now."""
     from gdx_dispatch.models.tenant_models import OutboundEmail
     row = OutboundEmail(
         company_id="t1", initiator_kind="reminder_task", kind=kind,
         entity_type="invoice", entity_id=str(entity_id),
         to_email=to_email, subject="s", body_html="<p>b</p>", status=status,
+        created_at=created_at or NOW,
     )
     db.add(row)
     db.commit()
