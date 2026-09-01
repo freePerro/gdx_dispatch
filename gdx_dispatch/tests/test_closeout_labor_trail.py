@@ -692,3 +692,30 @@ def test_recent_zero_minute_row_without_the_marker_is_ignored(db):
         "only rows the mobile Stop path wrote are ours to restate"
     )
 
+
+
+def test_a_soft_deleted_labor_row_no_longer_pays(db):
+    """#478 — payroll's hours query must honour deleted_at.
+
+    Every other reader of time_entries (`_open_job_timers`, job costing,
+    mobile invoicing) filters `deleted_at IS NULL`; payroll — the one surface
+    that turns the row into money — did not. Soft-deleting a bad labor row
+    therefore read as "removed" everywhere except the paycheck.
+
+    Asserted through `_fetch_tech_hours` itself, not the column: the guard
+    lives in payroll's SQL, so only payroll's SQL can prove it.
+
+    Counterfactual: drop `AND deleted_at IS NULL` from _fetch_tech_hours and
+    this fails — the row is closed, in-window, and grouped by user_id, so
+    every other predicate lets it through.
+    """
+    job, tech = _seed_job(db), _seed_technician(db)
+    timer = _seed_arrival_timer(db, job, tech, arrived_ago_hours=2.0)
+    _closeout(db, job, hours=2.0)
+    db.refresh(timer)
+    assert _payroll_hours(db) == {USER: 2.0}, "closed row should pay before the delete"
+
+    timer.deleted_at = datetime.now(UTC)
+    db.commit()
+
+    assert _payroll_hours(db) == {}, "a soft-deleted labor row still paid"

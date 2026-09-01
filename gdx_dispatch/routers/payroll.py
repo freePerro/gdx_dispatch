@@ -251,6 +251,7 @@ def _fetch_tech_hours(
            AND DATE(clock_in) >= :start
            AND DATE(clock_in) <= :end
            AND clock_out IS NOT NULL
+           AND deleted_at IS NULL
     """
     params: dict[str, Any] = {
         "tenant_id": tenant_id,
