@@ -419,51 +419,29 @@ def test_ensure_settings_row_is_idempotent(real_app):
     assert db.query(OutlookSettings).count() == 1
 
 
-# ── Auto-Email tab retired 2026-08-31: one-release transition shape ───────────
+# ── Auto-Email tab retired 2026-08-31; its one-release transition shape removed
+# in 1.112.6 (the key was served inert and accepted-and-ignored so a settings
+# tab open across the 1.112.1 deploy could still save). Now it is gone both
+# ways: not served, refused on PATCH like any other unknown key.
 
 
-def test_patch_accepts_and_ignores_retired_auto_email_triggers(app):
-    """A settings tab left open across the deploy still resends this key.
-    With extra="forbid" alone, EVERY Outlook tab's Save would 422 until
-    reload (one saveSettings serves all tabs). Accepted, never written."""
-    client, _, _ = app
+def test_retired_auto_email_key_is_neither_served_nor_accepted(app):
+    client, _, tdb = app
+    tdb.query.return_value.filter.return_value.first.return_value = None
     row = MagicMock()
     row.backfill_days = 90
     row.tag_strategy_order = ["auto_match", "job_thread", "ai"]
     row.tag_strategy_enabled = {"auto_match": True, "job_thread": True, "ai": True}
     row.ai_tag_threshold = None
     row.visibility_rules = {}
-    row.auto_email_triggers = {}
+    row.auto_email_triggers = {"invoice.created": {"subject": "stored-but-unread"}}
     with patch("gdx_dispatch.modules.outlook.admin_settings_router._ensure_settings_row", return_value=row):
+        got = client.get("/api/admin/outlook/settings")
+        assert got.status_code == 200
+        assert "auto_email_triggers" not in got.json(), "the column stays; the API no longer serves it"
         r = client.patch(
             "/api/admin/outlook/settings",
-            json={
-                "backfill_days": 45,
-                "auto_email_triggers": {"invoice.created": {"subject": "x", "template": "y"}},
-            },
+            json={"backfill_days": 45, "auto_email_triggers": {"invoice.created": {"subject": "x"}}},
         )
-    assert r.status_code == 200, r.text
-    assert row.backfill_days == 45, "the real field still saves"
-    assert row.auto_email_triggers == {}, "the retired key is never written"
-
-
-def test_get_serves_inert_auto_email_placeholder_for_old_bundles(app):
-    """An old bundle re-mounting the retired panel v-models
-    settings.auto_email_triggers[trigger].subject — a missing key throws and
-    the whole view fails to render. Serve the 3-key shape, inert."""
-    client, _, tdb = app
-    tdb.query.return_value.filter.return_value.first.return_value = None
-    with patch("gdx_dispatch.modules.outlook.admin_settings_router._ensure_settings_row") as ensure:
-        row = MagicMock()
-        row.backfill_days = None
-        row.tag_strategy_order = None
-        row.tag_strategy_enabled = None
-        row.ai_tag_threshold = None
-        row.visibility_rules = None
-        row.auto_email_triggers = {"invoice.created": {"subject": "stored-but-unread"}}
-        ensure.return_value = row
-        r = client.get("/api/admin/outlook/settings")
-    assert r.status_code == 200
-    body = r.json()["auto_email_triggers"]
-    assert set(body) == {"invoice.created", "job.completed", "estimate.sent"}
-    assert body["invoice.created"]["subject"] == "", "placeholder, not the stored value — nothing reads it"
+    assert r.status_code == 422, r.text
+    assert row.backfill_days == 90, "a refused PATCH writes nothing"

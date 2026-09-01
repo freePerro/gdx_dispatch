@@ -46,11 +46,6 @@ function _settings({ allowlist = [] } = {}) {
       above_tech_scope: 'all_tagged',
       untagged_visibility: 'only_owner',
     },
-    auto_email_triggers: {
-      'invoice.created': { subject: '', template: '' },
-      'job.completed': { subject: '', template: '' },
-      'estimate.sent': { subject: '', template: '' },
-    },
   };
 }
 
