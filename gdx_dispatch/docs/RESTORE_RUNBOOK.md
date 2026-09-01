@@ -1,10 +1,42 @@
 # GDX Restore Runbook
 
-**Last verified:** 2026-04-15 by automated drill (see Banking Readiness item 11)
+**Status: UNRELIABLE — do not follow the S3 steps without checking the VPS
+first.** Corrected 2026-09-01. The procedure below restores from a location
+**nothing in this repository writes to on a schedule**, and it restores a
+per-tenant/control-plane database layout this deployment does not have. Read
+the box below before you need it, not during an outage.
 
-**RTO:** 4 hours  **RPO:** 24 hours
+> **What this repo can show (checked 2026-09-01):**
+> * The steps below fetch `s3://gdx-backups/tenants/<slug>/…` and
+>   `s3://gdx-control-backups/…`. Those paths are written by
+>   `gdx_dispatch/scripts/backup.sh`, which enumerates
+>   `SELECT slug FROM tenants … db_provisioned = true` — the multi-tenant model
+>   this project does not run — and **no scheduler, compose file, workflow or
+>   cron in this repository invokes it.**
+> * The only backup script carrying a schedule is **`scripts/backup-db.sh`**:
+>   `0 2 * * *`, `docker exec gdx-postgres-dev pg_dump`, gzipped to local
+>   **`/var/backups/gdx`**, pruned at 30 days. Different location, different
+>   shape, and *not* what the steps below restore.
+> * `scripts/restore_all.sh`, referenced under "Full Disaster Recovery", is
+>   marked "(todo: write in Sprint 2)" and was never written.
+>
+> **What this repo CANNOT show, and someone must check on the box:** whether a
+> working backup runs on the production VPS at all, and where it writes. A
+> perfectly good cron may exist there. That is exactly the danger — this
+> document asserts one, and the repository cannot corroborate it.
+>
+> `docs/design/soc2-readiness-gap-analysis.md` lists **"no restore has ever
+> been tested"** as an open finding. Until the two bullets above are
+> reconciled against the VPS, treat that finding as unresolved and this
+> runbook as unproven.
 
-Run this runbook monthly to verify it works. Record the time taken.
+**Last verified:** 2026-04-15 by automated drill (see Banking Readiness item
+11) — **4½ months before this correction**, against the architecture described
+above.
+
+**RTO:** 4 hours  **RPO:** 24 hours _(targets, not measurements)_
+
+This says to run monthly. It has not been.
 
 ---
 
