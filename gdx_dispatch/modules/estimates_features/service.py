@@ -25,6 +25,13 @@ class EstimatesFeatures:
     # Days an estimate stays valid after it's sent (plan §15). On send,
     # valid_until = sent_at + this; the nightly task expires past-due ones.
     estimate_expiry_days: int = 60
+    # Invoice + receipt email copy (issue #351, migration 086) — the same
+    # blank-means-platform-default contract as the estimate pair above. The
+    # defaults themselves live in routers/invoices.py next to the renderer.
+    invoice_email_subject_template: str = ""
+    invoice_email_body_template: str = ""
+    receipt_email_subject_template: str = ""
+    receipt_email_body_template: str = ""
 
 
 def effective_hide_line_prices(override: bool | None, default: bool) -> bool:
@@ -48,7 +55,11 @@ def get_features(tenant_id: str) -> EstimatesFeatures:
                     "       COALESCE(estimate_email_body_template, ''), "
                     "       COALESCE(estimate_deposit_pct, 50), "
                     "       COALESCE(estimates_hide_line_prices, false), "
-                    "       COALESCE(estimate_expiry_days, 60) "
+                    "       COALESCE(estimate_expiry_days, 60), "
+                    "       COALESCE(invoice_email_subject_template, ''), "
+                    "       COALESCE(invoice_email_body_template, ''), "
+                    "       COALESCE(receipt_email_subject_template, ''), "
+                    "       COALESCE(receipt_email_body_template, '') "
                     "FROM tenant_settings WHERE tenant_id = :tid"
                 ),
                 {"tid": tenant_id},
@@ -63,6 +74,10 @@ def get_features(tenant_id: str) -> EstimatesFeatures:
                 deposit_pct=int(row[4] or 0),
                 hide_line_prices=bool(row[5]),
                 estimate_expiry_days=int(row[6]) if row[6] else 60,
+                invoice_email_subject_template=str(row[7] or ""),
+                invoice_email_body_template=str(row[8] or ""),
+                receipt_email_subject_template=str(row[9] or ""),
+                receipt_email_body_template=str(row[10] or ""),
             )
     except Exception:
         log.exception("estimates_features_read_failed", extra={"tenant_id": tenant_id})

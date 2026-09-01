@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -23,11 +24,29 @@ _COLS = (
     "estimate_deposit_pct",
     "estimates_hide_line_prices",
     "estimate_expiry_days",
+    # Invoice + receipt email copy (issue #351, migration 086). Blank = the
+    # platform default in routers/invoices.py, exactly like the estimate pair.
+    "invoice_email_subject_template",
+    "invoice_email_body_template",
+    "receipt_email_subject_template",
+    "receipt_email_body_template",
 )
 
 # Per-column default for int columns. A single shared "50" fallback would have
 # defaulted estimate_expiry_days to 50, not 60 — the reason this dict exists.
 _INT_DEFAULTS = {"estimate_deposit_pct": 50, "estimate_expiry_days": 60}
+
+# Free-text columns: NULL reads back as "" so the Settings inputs stay
+# controlled and "blank" is one value, not two.
+_TEXT_COLS = frozenset({
+    "estimates_default_terms",
+    "estimate_email_subject_template",
+    "estimate_email_body_template",
+    "invoice_email_subject_template",
+    "invoice_email_body_template",
+    "receipt_email_subject_template",
+    "receipt_email_body_template",
+})
 
 
 class FeaturesPayload(BaseModel):
@@ -39,6 +58,10 @@ class FeaturesPayload(BaseModel):
     estimates_hide_line_prices: bool = False
     # 1..365 days — 0 would expire an estimate the instant it's sent.
     estimate_expiry_days: int = Field(default=60, ge=1, le=365)
+    invoice_email_subject_template: str = ""
+    invoice_email_body_template: str = ""
+    receipt_email_subject_template: str = ""
+    receipt_email_body_template: str = ""
 
 
 def _tenant_uuid(request: Request) -> UUID:
@@ -65,11 +88,10 @@ def _read(db: Session, tid: UUID) -> dict[str, Any]:
             text(f"SELECT {cols} FROM tenant_settings WHERE tenant_id = :tid"),
             {"tid": str(tid)},
         ).first()
-    text_cols = {"estimates_default_terms", "estimate_email_subject_template", "estimate_email_body_template"}
     out: dict[str, Any] = {}
     for i, col in enumerate(_COLS):
         val = row[i]
-        if col in text_cols:
+        if col in _TEXT_COLS:
             out[col] = str(val or "")
         elif col in _INT_DEFAULTS:
             out[col] = int(val if val is not None else _INT_DEFAULTS[col])
@@ -98,6 +120,7 @@ def update_features(
     if (user.get("role") or "").lower() not in {"admin", "owner"}:
         raise HTTPException(status_code=403, detail="admin or owner required")
     tid = _tenant_uuid(request)
+    before = _read(db, tid)
     set_clause = ", ".join(f"{c} = :{c}" for c in _COLS)
     db.execute(
         text(
@@ -108,4 +131,23 @@ def update_features(
         {"tid": str(tid), **{c: getattr(payload, c) for c in _COLS}},
     )
     db.commit()
-    return _read(db, tid)
+    after = _read(db, tid)
+    # Invariant #1 (ARCHITECTURAL_INVARIANTS.md): who changed which setting,
+    # to what. These columns include the customer-facing email copy, so a
+    # wrong template that went out to customers must be traceable to the
+    # save that introduced it. Only the columns that actually moved are
+    # recorded — a no-op save leaves an empty diff, not eleven values.
+    changed = {c: after[c] for c in _COLS if before.get(c) != after.get(c)}
+    log_audit_event_sync(
+        db=db,
+        tenant_id=str(tid),
+        user_id=resolve_audit_actor(user, request),
+        action="estimates_features_updated",
+        entity_type="tenant_settings",
+        entity_id=str(tid),
+        details={"changed": changed},
+        ip_address=(request.client.host if request.client else None),
+        request=request,
+    )
+    db.commit()
+    return after

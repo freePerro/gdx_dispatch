@@ -666,6 +666,86 @@
                   />
                 </div>
                 <Divider />
+                <div style="display:flex; flex-direction:column; gap:0.4rem;" v-pre>
+                  <strong>Invoice Email — Subject</strong>
+                  <div class="muted">
+                    Subject line when emailing an unpaid invoice. Placeholders:
+                    <code>&#123;&#123;customer_name&#125;&#125;</code>,
+                    <code>&#123;&#123;job_title&#125;&#125;</code>,
+                    <code>&#123;&#123;invoice_number&#125;&#125;</code>,
+                    <code>&#123;&#123;company_name&#125;&#125;</code>,
+                    <code>&#123;&#123;total&#125;&#125;</code>,
+                    <code>&#123;&#123;balance_due&#125;&#125;</code>,
+                    <code>&#123;&#123;balance_line&#125;&#125;</code>,
+                    <code>&#123;&#123;paid_line&#125;&#125;</code>,
+                    <code>&#123;&#123;due_line&#125;&#125;</code>.
+                    Keep <em>Invoice &#123;&#123;invoice_number&#125;&#125; from</em> in the
+                    subject — that is how a bounced email gets matched back to the invoice.
+                    Leave blank for the default
+                    <em>Invoice &#123;&#123;invoice_number&#125;&#125; from &#123;&#123;company_name&#125;&#125;</em>.
+                  </div>
+                </div>
+                <InputText
+                  v-model="estimatesFeatures.invoice_email_subject_template"
+                  :placeholder="invoiceEmailSubjectPlaceholder"
+                  class="w-full"
+                  data-testid="inv-email-subject-template"
+                />
+                <div style="display:flex; flex-direction:column; gap:0.4rem;">
+                  <strong>Invoice Email — Body</strong>
+                  <div class="muted" v-pre>
+                    Pre-built message body for an unpaid invoice — the composer, the
+                    preview and one-click / bulk sends all use it. Same placeholders as
+                    the subject. <code>&#123;&#123;balance_line&#125;&#125;</code>,
+                    <code>&#123;&#123;paid_line&#125;&#125;</code> and
+                    <code>&#123;&#123;due_line&#125;&#125;</code> are whole lines (each
+                    starts with its own line break) that render only when they apply,
+                    so place them right after <code>Total: &#123;&#123;total&#125;&#125;</code>.
+                    The PDF and the pay-online link are added automatically.
+                  </div>
+                  <Textarea
+                    v-model="estimatesFeatures.invoice_email_body_template"
+                    rows="6"
+                    :placeholder="invoiceEmailBodyPlaceholder"
+                    class="w-full"
+                    data-testid="inv-email-body-template"
+                  />
+                </div>
+                <Divider />
+                <div style="display:flex; flex-direction:column; gap:0.4rem;" v-pre>
+                  <strong>Receipt Email — Subject</strong>
+                  <div class="muted">
+                    Subject line when the office emails a paid invoice (the
+                    receipt). The truck's per-payment receipt keeps its own
+                    fixed copy. Same placeholders as the invoice email; keep
+                    <em>Invoice &#123;&#123;invoice_number&#125;&#125; from</em> in it for
+                    bounce matching. Leave blank for the default
+                    <em>Payment received — Invoice &#123;&#123;invoice_number&#125;&#125; from &#123;&#123;company_name&#125;&#125;</em>.
+                  </div>
+                </div>
+                <InputText
+                  v-model="estimatesFeatures.receipt_email_subject_template"
+                  :placeholder="receiptEmailSubjectPlaceholder"
+                  class="w-full"
+                  data-testid="rcpt-email-subject-template"
+                />
+                <div style="display:flex; flex-direction:column; gap:0.4rem;">
+                  <strong>Receipt Email — Body</strong>
+                  <div class="muted" v-pre>
+                    Thank-you message for a paid invoice. Same placeholders;
+                    <code>&#123;&#123;paid_line&#125;&#125;</code> carries the amount paid and
+                    <code>&#123;&#123;balance_line&#125;&#125;</code> the (zero) balance.
+                    The paid PDF is attached automatically.
+                  </div>
+                  <Textarea
+                    v-model="estimatesFeatures.receipt_email_body_template"
+                    rows="6"
+                    :placeholder="receiptEmailBodyPlaceholder"
+                    class="w-full"
+                    data-testid="rcpt-email-body-template"
+                  />
+                </div>
+                <Divider />
                 <div style="display:flex; flex-direction:column; gap:0.4rem;">
                   <strong>Deposit %</strong>
                   <div class="muted">
@@ -695,7 +775,7 @@
                   />
                 </div>
                 <div>
-                  <Button label="Save Estimate Settings" icon="pi pi-save" @click="saveEstimatesFeatures" :loading="estimatesFeaturesSaving" data-testid="estimates-features-save" />
+                  <Button label="Save Feature Settings" icon="pi pi-save" @click="saveEstimatesFeatures" :loading="estimatesFeaturesSaving" data-testid="estimates-features-save" />
                 </div>
               </div>
             </template>
@@ -1995,9 +2075,21 @@ const estimatesFeatures = reactive({
   estimate_deposit_pct: 50,
   estimates_hide_line_prices: false,
   estimate_expiry_days: 60,
+  // Invoice + receipt email copy (issue #351). Blank = platform default.
+  invoice_email_subject_template: "",
+  invoice_email_body_template: "",
+  receipt_email_subject_template: "",
+  receipt_email_body_template: "",
 });
 const emailSubjectPlaceholder = "{{job_title}}";
 const emailBodyPlaceholder = "Hi {{customer_name}},\n\nPlease see the attached estimate for {{job_title}}.\n\nReply with any questions, or to move forward.\n\nThanks,\n{{company_name}}";
+// These four are the platform defaults VERBATIM from routers/invoices.py
+// (_DEFAULT_INVOICE_* / _DEFAULT_RECEIPT_*): what the placeholder shows is
+// what a blank field sends.
+const invoiceEmailSubjectPlaceholder = "Invoice {{invoice_number}} from {{company_name}}";
+const invoiceEmailBodyPlaceholder = "Hi {{customer_name}},\n\nPlease see the attached invoice ({{invoice_number}}) for {{job_title}}.\nTotal: {{total}}{{balance_line}}{{due_line}}\n\nThanks,\n{{company_name}}";
+const receiptEmailSubjectPlaceholder = "Payment received — Invoice {{invoice_number}} from {{company_name}}";
+const receiptEmailBodyPlaceholder = "Hi {{customer_name}},\n\nThank you for your payment on {{job_title}}. Invoice {{invoice_number}} is paid — a copy is attached for your records.\nTotal: {{total}}{{paid_line}}{{balance_line}}\n\nWe appreciate your business!\n\nThanks,\n{{company_name}}";
 const estimatesFeaturesSaving = ref(false);
 
 // Inactivity auto-logout — tenant-wide, stored on TenantSettings via

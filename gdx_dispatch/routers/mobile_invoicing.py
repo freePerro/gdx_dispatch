@@ -926,17 +926,7 @@ def _send_invoice_email(
             log.info("mobile_invoice_email_skipped no_customer_email invoice=%s", invoice.id)
             return False
 
-        from gdx_dispatch.core.email_layout import email_branding as _email_branding
         from gdx_dispatch.core.transactional_email import send_transactional_email
-        try:
-            from gdx_dispatch.core.email_sender import build_invoice_email_html  # type: ignore[attr-defined]
-        except Exception:
-            build_invoice_email_html = None  # type: ignore[assignment]
-
-        # One AppSettings read serves both the subject line and the branded
-        # shell — two lookups drifted before.
-        _branding = _email_branding(db)
-        company_name = _branding["company_name"]
 
         # 2026-07-20 — attach the invoice PDF (built BEFORE the body so the
         # fallback wording can be honest about whether it's really attached).
@@ -969,82 +959,32 @@ def _send_invoice_email(
         except Exception:
             log.exception("mobile_invoice_pdf_attach_failed invoice=%s", invoice.id)
 
-        # Same "View & Pay" CTA as the desktop send path; None (→ no
-        # button) unless base URL + Stripe keys make the link chargeable.
-        from gdx_dispatch.core.payments import public_pay_url
-        if not invoice.public_token and float(invoice.balance_due or 0) > 0:
-            invoice.public_token = secrets.token_urlsafe(48)[:64]
-            db.commit()
-            db.refresh(invoice)
-        pay_url = (
-            public_pay_url(invoice.public_token)
-            if float(invoice.balance_due or 0) > 0
-            else None
-        )
+        # The "View & Pay" CTA (and the public token it needs) is minted by
+        # _prepare_invoice_email below — the same rule as the desktop send.
 
-        # Build a simple email body if no specialised builder exists.
-        from gdx_dispatch.routers.pdf import _invoice_settlement
-        _paid, _credits = _invoice_settlement(invoice, db)
-        if build_invoice_email_html is not None:
-            # deleted_at filter matches the canonical desktop send path
-            # (routers/invoices.py) — without it a re-send after an office
-            # edit emails soft-deleted ghost lines whose sum doesn't foot
-            # with the printed subtotal.
-            lines = db.execute(
-                select(InvoiceLine)
-                .where(
-                    InvoiceLine.invoice_id == invoice.id,
-                    InvoiceLine.deleted_at.is_(None),
-                )
-                .order_by(InvoiceLine.sort_order.asc())
-            ).scalars().all()
-            # subtotal/tax_amount/balance_due are REQUIRED kwargs with no
-            # defaults (core/email_sender.py). This call omitted them from
-            # the day mobile invoicing shipped: the TypeError was swallowed
-            # by the enclosing try/except (and a `# type: ignore[misc]`
-            # silenced the checker), so every truck "Generate & email" and
-            # re-send returned False having delivered nothing.
-            html = build_invoice_email_html(
-                company_name=company_name,
-                invoice_number=invoice.invoice_number,
-                customer_name=cust.name or "Valued Customer",
-                line_items=[
-                    {
-                        "description": ln.description,
-                        "quantity": ln.quantity,
-                        "unit_price": float(ln.unit_price or 0),
-                        "line_total": float(ln.line_total or 0),
-                    }
-                    for ln in lines
-                ],
-                subtotal=float(invoice.subtotal or 0),
-                tax_amount=float(invoice.tax_amount or 0),
-                total=float(invoice.total or 0),
-                balance_due=float(invoice.balance_due or 0),
-                due_date=invoice.due_date.isoformat() if invoice.due_date else "",
-                tax_rate=float(invoice.tax_rate) if getattr(invoice, "tax_rate", None) is not None else None,
-                notes=invoice.notes or "",
-                portal_url=pay_url or "",
-                paid_to_date=_paid,
-                credits_applied=_credits,
-                branding=_branding,
-            )
+        # One render for office and truck alike (issue #351 audit catch):
+        # routers/invoices._prepare_invoice_email IS the invoice email —
+        # tenant subject/body templates, branded shell, line table, pay
+        # link, person-aware recipient. The truck used to build its own
+        # subject and body here, so a template set under Settings applied
+        # from the desk and was silently ignored from the truck, with a
+        # different subject shape. The PDF attachment above is the truck's
+        # own addition and rides along unchanged.
+        from gdx_dispatch.routers.invoices import _prepare_invoice_email
+        prep = _prepare_invoice_email(db, invoice)
+        recipient = prep.get("recipient")
+        if recipient is not None and getattr(recipient, "ok", False):
+            to_email, to_name = recipient.email, recipient.to_name
         else:
-            html = (
-                f"<p>Hi {cust.name or 'there'},</p>"
-                f"<p>Please find your invoice <strong>#{invoice.invoice_number}</strong> "
-                f"from {company_name} {'attached' if attachments else 'summarized below'}.</p>"
-                f"<p><strong>Total: ${float(invoice.total or 0):,.2f}</strong></p>"
-                f"<p>Due {invoice.due_date.isoformat() if invoice.due_date else 'on receipt'}.</p>"
-                + (f'<p><a href="{pay_url}">Pay this invoice online</a></p>' if pay_url else "")
-            )
+            to_email, to_name = cust.email, (cust.name or "")
+        html = prep["html"]
         sent, _provider, _skip_reason = send_transactional_email(
             tenant_db=db,
             tenant_id=str(tenant_id),
             user_id=str(user_id) if user_id else None,
-            to_email=cust.email,
-            to_name=cust.name or "",
-            subject=f"Invoice #{invoice.invoice_number} from {company_name}",
+            to_email=to_email,
+            to_name=to_name,
+            subject=prep["subject"],
             html_body=html,
             attachments=attachments,
         )
