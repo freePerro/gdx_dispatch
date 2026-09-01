@@ -17,7 +17,13 @@
 1. Go to **Settings** > **Integrations**
 2. Click **Connect QuickBooks**
 3. Authorize the OAuth connection
-4. Sync runs automatically every 15 minutes
+4. ⚠ **There is no automatic 15-minute sync.** This line said there was.
+   `core/scheduler.py:58` records that the `sync-qb-every-15-minutes` entry
+   "was wired to a no-op stub since pre-2026-04" and it has been removed.
+   What exists is `qb_sync_schedule_dispatcher`, driven by rows in
+   `qb_sync_schedule`. **QuickBooks is being phased out** (`CLAUDE.md`):
+   do not schedule new QB syncs, and note the money pull is deliberately
+   paused so manual paid-status corrections are not reverted.
 5. Manual sync: click **Sync Now** for customers, invoices, or items
 
 ## Branding
@@ -48,6 +54,9 @@ takes effect on the restart (it stays running until then).
 
 ## Subscription Management
 
-- Billing portal accessible at **Settings** > **Billing**
-- Manage subscription tier, payment method, view invoices
-- Upgrade/downgrade takes effect at next billing cycle
+⚠ **Removed 2026-09-01 — this described a product that does not exist.** GDX
+Dispatch is single-tenant, self-hosted and AGPL; there is no subscription tier,
+no plan management and no billing portal. **Settings > Billing** is the
+**Billing Terms** tab (`SettingsView.vue:10`) — per-customer-class payment
+terms for *your* customers, which is a different thing entirely and the
+likeliest way this section would have misled someone.
