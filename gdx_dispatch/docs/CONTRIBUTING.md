@@ -1,5 +1,14 @@
 # Contributing to GDX Platform
 
+**Status: STALE — three of its four Code Conventions are Flask-era and dead.**
+Verified 2026-09-01: `_tq(Model)`, `_safe_commit("…")` and `jsonify(...)` are
+**not defined anywhere and have zero usages** in this codebase. This is
+FastAPI + SQLAlchemy: use `Depends(get_db)`, commit on the session directly,
+and raise `HTTPException(status_code=…, detail="…")`. The auth convention
+(`Depends(get_current_user)`) is correct. Treat `CLAUDE.md` and
+`BUILD_RULES.md` as authoritative until this is rewritten.
+
+
 ## Code Conventions
 
 - **Python**: PEP 8, type hints on all public functions

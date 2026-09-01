@@ -1,5 +1,10 @@
 # Secrets Rotation Runbook — GDX Platform
 
+**Status: CURRENT.** Newer of the two secrets-rotation docs (2026-08-31); see
+also `SECRETS_ROTATION.md`, which overlaps and has not been reconciled with
+this one.
+
+
 ## Overview
 
 All secrets must be rotated on a regular schedule or immediately after suspected compromise.

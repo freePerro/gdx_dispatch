@@ -1,5 +1,10 @@
 # GDX Platform — User Guide
 
+**Status: PARTIAL.** 69 lines covering six screens against ~110 nav entries —
+absence here does not mean a feature is missing. Last substantive edit
+2026-06-25; not re-verified against the current UI.
+
+
 ## Getting Started
 
 ### Login

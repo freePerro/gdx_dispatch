@@ -1,5 +1,9 @@
 # Tech Mobile — Workflow, API, Permissions, Offline Sync
 
+**Status: CURRENT** (spot-checked 2026-09-01 — all 3 file references resolve;
+last substantive edit 2026-08-25).
+
+
 Sprint `sprint_tech_mobile` documentation. The mobile surface is a PWA
 served from the same FastAPI backend at `/mobile` and `/mobile/jobs`
 (tech) and `/mobile/dispatch` (dispatcher).

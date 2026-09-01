@@ -1,5 +1,12 @@
 # Encryption at Rest — GDX / DispatchApp
 
+**Status: PARTIAL — the mechanism is live, two of its pointers are not.**
+`core/pii.py` and `MASTER_ENCRYPTION_KEY` are real and in use. But it cites
+`ARCHITECTURAL_STATE.md`, which **has never existed in this repo**, and the
+re-encryption tool `tools/rotate_pii_keys.py` is marked "to be written" and
+still is — so the key-rotation procedure here cannot be executed.
+
+
 **Audience:** auditors (SOC 2 / HIPAA questionnaires), engineering, ops.
 **Owner:** Doug (founder) — direct questions to `owner@example.com`.
 **Last reviewed:** 2026-05-12.

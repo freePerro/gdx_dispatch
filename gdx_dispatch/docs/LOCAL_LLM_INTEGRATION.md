@@ -1,3 +1,8 @@
+**Status: HISTORICAL.** Describes how the orchestrator used a local model as a
+reviewer; `tools/orchestrator/local_ai_reviewer.py` and the `ai-queue/` config
+it reads were both removed in the 2026-04 extraction. The serving notes may
+still be useful reference, but nothing in this repo calls any of it.
+
 > **⚠ MOVED 2026-04-20** — The Plan O graph runtime described here was extracted to `~/Desktop/gdx-orchestrator/`. The legacy autonomous-loop machinery (watcher, gemma_implementer, etc.) was deleted from this repo. systemd units stopped + removed. See `~/Desktop/gdx-orchestrator/LEARNINGS.md` for the full migration story. This document is preserved as a historical reference.
 
 ---
