@@ -1,5 +1,14 @@
 # D97 — Control-plane RLS fail-closed runbook
 
+**Status: HISTORICAL — work completed, subject since removed.** 33 of this
+runbook's 36 checkboxes are ticked. It targets the control-plane RLS surface
+(SCIM, PATs, service accounts, reseller/whitelabel tables); **the routers it
+names — `routers/scim.py`, `admin_pats.py`, `me.py`, `pats_support.py` — have
+since been deleted**, which is why 21 of its file references no longer resolve.
+Its references were accurate when written. Kept as the record of the RLS
+fail-closed work and why it was ordered the way it was; do not treat any
+unticked box as outstanding. _Marked 2026-09-01 by the doc audit._
+
 **Filed:** an earlier session, 2026-04-25 (F4 audit found `gdx` connection role has `rolsuper=t rolbypassrls=t`; all 26 control-plane RLS policies were no-ops on prod).
 
 **Goal:** Switch the FastAPI app's CONTROL DB connection from `gdx` (superuser) to `gdx_app` (no super, no bypassrls) so the existing migration-024/025 policies actually enforce.

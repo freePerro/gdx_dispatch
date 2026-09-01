@@ -1,5 +1,14 @@
 # Tenant Provisioning Runbook
 
+**Status: HISTORICAL — do not follow these steps.** Describes the
+multi-tenant SaaS control plane (Stripe Checkout at `/signup` → `provision_tenant()`
+→ a per-tenant database `gdx_{slug}`). **None of it exists.** `provision_tenant`
+returns zero hits repo-wide and `gdx/provisioning/state_machine.py` is not in the
+tree. GDX Dispatch is single-tenant and self-hosted — one tenant per database,
+isolation is the connection (see `CLAUDE.md`). Kept as the record of the
+architecture that was rejected, not as an operating procedure.
+_Marked 2026-09-01 by the doc audit._
+
 ## Automated Flow (Stripe Checkout)
 
 1. Customer visits `/signup` and fills in company name, email, plan

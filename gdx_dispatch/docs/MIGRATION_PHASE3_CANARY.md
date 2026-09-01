@@ -1,6 +1,15 @@
 # Flask → FastAPI Migration: Phase 3 Canary Runbook
 
-## Status: READY TO ACTIVATE (pending 7-day shadow verification window)
+**Status: HISTORICAL — the migration is long finished.** This runbook's own
+header said "READY TO ACTIVATE (pending 7-day shadow verification window)" and
+gave an activation date of 2026-04-02. The Flask → FastAPI move completed; no
+`flask` import remains anywhere in the tree. Nothing here is pending, and the
+cutover it gates cannot be re-run. Kept as the record of how the migration was
+staged. _Marked 2026-09-01 by the doc audit._
+
+## Status (as written, 2026-03/04): READY TO ACTIVATE (pending 7-day shadow verification window)
+
+_Superseded by the HISTORICAL banner above — the migration completed. Kept verbatim as the record of where it stood._
 
 ## Prerequisites
 
