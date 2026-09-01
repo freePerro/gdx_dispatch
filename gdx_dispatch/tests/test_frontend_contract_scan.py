@@ -54,6 +54,11 @@ def test_path_matches_treats_either_side_wildcard():
     assert path_matches("/api/jobs/{}/{}", "/api/jobs/{}/reactivate")
     assert path_matches("/api/jobs/{}/parts", "/api/jobs/{}/parts")
     assert not path_matches("/api/jobs/{}", "/api/jobs/{}/parts")
+    # Historical example, kept deliberately: the frontend once called
+    # "/api/stripe-connect/onboard" while the router served
+    # "/api/stripe/connect/onboard". Both routes were deleted with the Stripe
+    # Connect surface, but these strings still exercise the hyphen-vs-slash
+    # mismatch this scanner exists to catch. They are fixtures, not live routes.
     assert not path_matches("/api/stripe-connect/onboard", "/api/stripe/connect/onboard")
 
 

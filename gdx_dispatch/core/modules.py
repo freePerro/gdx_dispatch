@@ -31,7 +31,6 @@ MODULES = {
     "ai_dispatch": {"name": "AI Dispatch Optimization", "tier": "business", "default": False},
     "ai_communication": {"name": "AI Communication Drafts", "tier": "business", "default": False},
     "llm": {"name": "AI Assistant", "tier": "starter", "default": False},
-    "stripe_connect": {"name": "Online Payments", "tier": "professional", "default": False},
     "loyalty": {"name": "Loyalty Programs", "tier": "business", "default": False},
     "warranties": {"name": "Warranty Tracking", "tier": "professional", "default": False},
     "automations": {"name": "Workflow Automations", "tier": "business", "default": False},

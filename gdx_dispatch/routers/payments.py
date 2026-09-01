@@ -16,7 +16,7 @@ from typing import Any
 import stripe
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
@@ -32,7 +32,6 @@ from gdx_dispatch.core.stripe_payments import (
     list_payment_methods,
 )
 from gdx_dispatch.modules.customer_portal.models import CustomerUser
-from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.portal import PortalPrincipal
 from gdx_dispatch.routers.portal import get_current_portal_customer as _get_portal_principal
 
@@ -553,105 +552,3 @@ def remove_payment_method(
             db.rollback()
         logger.exception("remove_payment_method_audit_failed")
     return {"status": "removed", "payment_method_id": method_id}
-
-
-# ---------------------------------------------------------------------------
-# Stripe Connect — Connected Account Management
-# ---------------------------------------------------------------------------
-
-@router.post("/connect/setup-account", response_model=None)
-def setup_connect_account(
-    request: Request,
-    user: dict[str, Any] = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    """Create a Stripe Express Connected Account for this tenant."""
-    tid = str((getattr(request.state, "tenant", {}) or {}).get("id", ""))
-    try:
-        account = stripe.Account.create(
-            type="express",
-            metadata={"tenant_id": tid},
-            capabilities={"card_payments": {"requested": True}, "transfers": {"requested": True}},
-        )
-        db.execute(
-            text("UPDATE companies SET stripe_connect_account_id = :aid WHERE id = :tid"),
-            {"aid": account.id, "tid": tid},
-        )
-        db.commit()
-        log_audit_event_sync(db, tenant_id=tid, user_id=str(user.get("sub", "system")),
-                             action="create", entity_type="stripe_connect_account",
-                             entity_id=account.id, details={}, request=request)
-        return {"stripe_account_id": account.id, "status": "created"}
-    except Exception as e:
-        logger.exception("stripe_connect_setup_failed")
-        raise HTTPException(500, f"Stripe setup failed: {str(e)[:200]}") from None
-
-
-@router.get("/connect/onboarding-link", response_model=None)
-def get_connect_onboarding(
-    request: Request,
-    user: dict[str, Any] = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict[str, str]:
-    """Get Stripe hosted onboarding URL."""
-    tid = str((getattr(request.state, "tenant", {}) or {}).get("id", ""))
-    row = db.execute(text("SELECT stripe_connect_account_id FROM companies WHERE id = :tid"), {"tid": tid}).mappings().first()
-    account_id = row.get("stripe_connect_account_id") if row else None
-    if not account_id:
-        raise HTTPException(400, "No Stripe account. Call /connect/setup-account first.")
-    try:
-        base = os.getenv("GDX_BASE_URL", "https://gdx.example.com")
-        link = stripe.AccountLink.create(
-            account=account_id,
-            refresh_url=f"{base}/settings",
-            return_url=f"{base}/settings?stripe=success",
-            type="account_onboarding",
-        )
-        return {"url": link.url}
-    except Exception as e:
-        raise HTTPException(500, f"Onboarding link failed: {str(e)[:200]}") from None
-
-
-@router.get("/connect/balance", response_model=None)
-def get_connect_balance(
-    request: Request,
-    user: dict[str, Any] = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    """Get tenant's Stripe Connect balance."""
-    tid = str((getattr(request.state, "tenant", {}) or {}).get("id", ""))
-    row = db.execute(text("SELECT stripe_connect_account_id FROM companies WHERE id = :tid"), {"tid": tid}).mappings().first()
-    account_id = row.get("stripe_connect_account_id") if row else None
-    if not account_id:
-        return {"available": 0, "pending": 0, "currency": "usd", "connected": False}
-    try:
-        balance = stripe.Balance.retrieve(stripe_account=account_id)
-        available = sum(b.amount for b in balance.available) if balance.available else 0
-        pending = sum(b.amount for b in balance.pending) if balance.pending else 0
-        return {"available": available, "pending": pending, "currency": "usd", "connected": True}
-    except Exception as e:
-        logging.getLogger(__name__).exception("get_connect_balance caught exception")
-        # Generic error; full exception is logged above. (CodeQL stack-trace-exposure)
-        return {"available": 0, "pending": 0, "error": "Unable to retrieve balance", "connected": True}
-
-
-@router.post("/connect/webhook", response_model=None)
-async def stripe_connect_webhook(request: Request):
-    """Handle Stripe Connect webhook events."""
-    payload = await request.body()
-    sig = request.headers.get("stripe-signature", "")
-    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")
-    if not webhook_secret:
-        return {"status": "webhook_secret_not_configured"}
-    try:
-        event = stripe.Webhook.construct_event(payload, sig, webhook_secret)
-    except Exception:
-        raise HTTPException(400, "Invalid webhook signature") from None
-    logger.info("Stripe webhook: %s", event["type"])
-    if event["type"] == "payment_intent.succeeded":
-        pi = event["data"]["object"]
-        logger.info("Payment succeeded: %s amount=%s", pi["id"], pi["amount"])
-    elif event["type"] == "account.updated":
-        acct = event["data"]["object"]
-        logger.info("Account updated: %s charges_enabled=%s", acct["id"], acct.get("charges_enabled"))
-    return {"status": "received"}

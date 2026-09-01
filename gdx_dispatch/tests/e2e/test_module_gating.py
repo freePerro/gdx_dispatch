@@ -36,7 +36,6 @@ MODULE_ENDPOINTS = {
     "timeclock":           ("/api/timeclock/status",   200),
     "customers":           ("/api/customers",         200),
     "quickbooks":          ("/api/qb/status",         200),
-    "stripe_connect":      ("/api/stripe/connect/status", 200),
     "loyalty":             ("/api/loyalty/programs",  200),
     "warranties":          ("/api/warranties",        200),
     "automations":         ("/api/workflows",         200),
@@ -135,7 +134,6 @@ class TestModuleDisableReturns403:
         )
 
     @pytest.mark.parametrize("module_key", [
-        "stripe_connect",     # MOD-10
         "loyalty",            # MOD-12
         "google_maps",        # MOD-13
         "customer_portal",    # MOD-14

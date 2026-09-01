@@ -15,8 +15,11 @@ CHECKS
 ------
 
   **C1 dead-call** — the Vue calls a path no backend route serves. The button
-    404s. (Found ``/api/stripe-connect/onboard``; the real router is at
-    ``/api/stripe/connect``.)
+    404s. (The find that motivated this check: a Vue call to
+    ``/api/stripe-connect/onboard`` while the router served
+    ``/api/stripe/connect/onboard`` — one hyphen apart. Both paths were deleted
+    with the Stripe Connect surface on 2026-09-01; the example is kept because
+    the near-miss shape is exactly what C1 exists to catch.)
 
   **C2 method-mismatch** — the path exists but not for that verb. Silent 405,
     and invisible by eye because the URL looks right. (``window.open`` GETs a

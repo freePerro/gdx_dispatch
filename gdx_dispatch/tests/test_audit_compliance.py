@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import AuditLog, TenantBase, log_audit_event, verify_audit_chain
 from gdx_dispatch.models.tenant_models import Customer
-from gdx_dispatch.routers import admin_ops, customers, stripe_connect
+from gdx_dispatch.routers import admin_ops, customers
 
 
 @pytest.fixture
@@ -303,32 +303,6 @@ async def test_gdpr_access_logged(db_session):
     customer_id = _seed_customer(db_session)
     _ = await customers.get_customer(customer_id=customer_id, request=_request(), _={"sub": "u1"}, db=db_session)
     row = db_session.query(AuditLog).filter_by(action="data_accessed", entity_id=customer_id).first()
-    assert row is not None
-
-
-def test_payment_event_logged(db_session, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_123")
-    req = _request()
-
-    class FakeControlDB:
-        tenant = SimpleNamespace(stripe_connect_account_id="acct_123")
-
-    from unittest.mock import MagicMock, patch
-
-    pi = MagicMock()
-    pi.id = "pi_123"
-    pi.client_secret = "sec"
-    pi.application_fee_amount = 10
-    with patch("gdx_dispatch.routers.stripe_connect.create_payment_intent", return_value=pi):
-        stripe_connect.create_connect_payment_intent(
-            body=stripe_connect.PaymentIntentRequest(account_id="acct_123", amount_cents=1000, fee_percent=1.0),
-            request=req,
-            _={"sub": "u1", "role": "admin"},
-            tenant_db=db_session,
-            control_db=FakeControlDB(),
-        )
-
-    row = db_session.query(AuditLog).filter_by(action="payment_intent_created", entity_type="stripe_payment_intent").first()
     assert row is not None
 
 

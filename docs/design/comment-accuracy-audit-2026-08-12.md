@@ -132,7 +132,9 @@ never returned `stripe` or `sms` objects at all, so `loadIntegrations()`'s
 `if (result?.stripe)` guard never fired and **both cards displayed
 "Not Connected" forever** — while Stripe was demonstrably charging real cards.
 The Connect buttons then hit `/api/stripe-connect/onboard` (no such route; the
-real Connect router is at `/api/stripe/connect`) and `/api/settings/sms/configure`
+real Connect router was at `/api/stripe/connect` — **the entire Connect surface
+was deleted 2026-09-01**, see `phase-d-saas-residue.md` S3/S6, so neither path
+exists now) and `/api/settings/sms/configure`
 (no such route), with a fallback to `/api/settings/integrations/{provider}/connect`
 — which is POST-only *and* is a feature-flag flip returning JSON, not a page to
 open. `sms` isn't even a valid provider (`twilio` is), so it would have 422'd.

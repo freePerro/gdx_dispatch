@@ -42,7 +42,7 @@ ROUTERS_DIR = Path(__file__).resolve().parents[1] / "routers"
 # in the DB during the 2026-07-15 walk) — control-plane or plugin-host owned.
 # Add here with a reason if a scan flags a real table this test can't see.
 _KNOWN_EXTERNAL: set[str] = {
-    "tenants",          # control plane (ControlBase), used by stripe_connect
+    "tenants",          # control plane (ControlBase)
     "plugin_registry",  # plugin-host managed (raw DDL, not ORM)
     "plugin_artifact",  # plugin-host managed (raw DDL, not ORM)
     "tenant_settings",  # raw-DDL table (exists in DB, not ORM), session_policy
