@@ -1,10 +1,9 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useThemeStore } from '../stores/theme'
 import { getPostLoginRedirect } from '../lib/auth-urls'
-import PlatformRecovery from '../components/PlatformRecovery.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -17,21 +16,11 @@ const password = ref('')
 const error = ref('')
 const submitting = ref(false)
 
-// MH-0 (mobile hardening, audit P0 #1): show the recovery panel instead
-// of the dead-end credential form when the host doesn't resolve to a
-// tenant. Two entry conditions:
-//  (a) the login attempt returns "Unknown tenant" — set in handleLogin
-//  (b) the user clicks the "Wrong workspace?" escape link
-// Either flips `showRecovery` true.
-const showRecovery = ref(false)
-
-// Heuristic: a literal "Unknown tenant" reply from the backend or any
-// 404 originating from /auth/login indicates the host can never log in.
-function _isTenantUnknownError(message) {
-  if (!message) return false
-  const m = String(message).toLowerCase()
-  return m.includes('unknown tenant') || m.includes('no tenant context')
-}
+// The multi-tenant workspace picker that used to live here was removed
+// 2026-09-01 (Phase D S2). It answered "Unknown tenant" — a reply Phase A
+// deleted from the backend, so condition (a) could never fire — and its
+// manual escape link sent single-tenant users to a subdomain picker for
+// workspaces that do not exist. See docs/design/phase-d-saas-residue.md.
 
 async function handleLogin() {
   error.value = ''
@@ -60,15 +49,7 @@ async function handleLogin() {
       await router.push(target)
     }
   } catch (e) {
-    const msg = e instanceof Error ? e.message : 'Unable to login'
-    if (_isTenantUnknownError(msg)) {
-      // Audit P0 #1: swap to the recovery panel rather than show an
-      // unhelpful "Unknown tenant" inline error the user can't act on.
-      showRecovery.value = true
-      error.value = ''
-    } else {
-      error.value = msg
-    }
+    error.value = e instanceof Error ? e.message : 'Unable to login'
   } finally {
     submitting.value = false
   }
@@ -78,12 +59,6 @@ async function handleLogin() {
 <template>
   <div class="login-page">
     <div class="login-card">
-      <!-- MH-0: recovery panel — swapped in when the host has no tenant
-           (audit P0 #1). Hides the credential form entirely; the user
-           gets a workspace picker instead of a dead end. -->
-      <PlatformRecovery v-if="showRecovery" />
-
-      <template v-else>
       <div class="header">
         <h1>Sign In</h1>
         <p>Enter your credentials to access your workspace</p>
@@ -136,57 +111,12 @@ async function handleLogin() {
         <p class="forgot-link">
           <router-link to="/forgot-password">Forgot your password?</router-link>
         </p>
-        <!-- MH-0 escape: explicit way to reach the workspace picker
-             without having to fail a login attempt first. Quiet styling
-             so it doesn't compete with primary actions. -->
-        <p class="wrong-workspace-link">
-          <button
-            type="button"
-            class="link-button"
-            data-testid="wrong-workspace"
-            @click="showRecovery = true"
-          >Wrong workspace?</button>
-        </p>
       </form>
-      </template>
     </div>
   </div>
 </template>
 
 <style scoped>
-.tenant-picker {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding-top: 8px;
-}
-.picker-prompt {
-  margin: 0 0 8px;
-  font-size: 0.95rem;
-  text-align: center;
-  opacity: 0.85;
-}
-.tenant-choice {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  padding: 12px 16px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
-  transition: background 0.15s, border-color 0.15s;
-}
-.tenant-choice:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: var(--primary, #e94560);
-}
-.tenant-choice:disabled { opacity: 0.5; cursor: wait; }
-.tenant-name { font-weight: 600; font-size: 1rem; }
-.tenant-slug { font-size: 0.8rem; opacity: 0.7; font-family: monospace; }
 
 .login-page {
   min-height: 100vh;
@@ -342,22 +272,4 @@ input::placeholder {
   text-decoration: underline;
 }
 
-.wrong-workspace-link {
-  text-align: center;
-  margin: 0.5rem 0 0;
-  font-size: 0.8rem;
-}
-.link-button {
-  background: none;
-  border: none;
-  padding: 0;
-  color: #94a3b8;
-  font: inherit;
-  font-size: 0.8rem;
-  cursor: pointer;
-  text-decoration: underline dotted;
-}
-.link-button:hover {
-  color: #cbd5e1;
-}
 </style>

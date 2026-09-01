@@ -14,7 +14,7 @@
  *   2. App.vue does NOT carry the :key="$route.fullPath" workaround
  *      that S110 added on <router-view> — the structural fix obsoletes
  *      that escape hatch.
- *   3. Routes can opt out via meta.noShell (login, signup, customer
+ *   3. Routes can opt out via meta.noShell (login, customer
  *      portal, the 404 fallback).
  */
 import { describe, expect, it } from 'vitest';
@@ -54,7 +54,6 @@ describe('router — noShell meta on bare-shell routes', () => {
     '/login',
     '/forgot-password',
     '/reset-password',
-    '/signup',
     '/onboarding',
     '/customer-portal',
   ];

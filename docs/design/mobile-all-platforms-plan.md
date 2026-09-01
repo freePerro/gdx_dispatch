@@ -86,7 +86,7 @@ the first screen.
 "every input", which was wrong. PrimeVue's `.p-inputtext` is already
 `font-size: 1rem`, so the app's ordinary inputs were never at risk. The real
 traps are the five hand-rolled auth forms, each with its own literal:
-LoginView `0.9375rem`, SignupView `0.9rem`, Forgot/Reset `0.95rem`.
+LoginView `0.9375rem`, ~~SignupView `0.9rem`~~ (deleted 2026-09-01, Phase D S2), Forgot/Reset `0.95rem`.
 
 The originally proposed fix — a rule in `responsive.css` — **could not have
 worked**: `input[type=…]` is specificity (0,1,1) and a scoped `.field input`
@@ -104,7 +104,7 @@ and fails on any rule targeting a real control below 1rem.
 `dvh` correctly in 23 places with `100vh` as the fallback
 (`AppLayout.vue:217-218`); this rule was missed.
 
-Also `min-height: 100vh` on `LoginView`, `SignupView`, `ResetPasswordView`,
+Also `min-height: 100vh` on `LoginView`, ~~`SignupView`~~ (deleted 2026-09-01), `ResetPasswordView`,
 `ForgotPasswordView`, `OnboardingView`, `CustomerPortalView` — less severe
 (min-height, so the page scrolls) but the same class.
 

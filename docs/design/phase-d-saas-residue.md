@@ -1,10 +1,12 @@
 # Phase D — the SaaS residue the single-tenant refactor left behind
 
-**Status:** `PARTIALLY BUILT` — **S1, S3 and S6 built.** Connect retired
+**Status:** `PARTIALLY BUILT` — **S1, S2, S3 and S6 built.** Connect retired
 entirely (owner decision 2026-09-01); the `x-tenant-tier` selector removed after
 measurement proved it was **dead code, not the exploit this document first
-claimed**. **S2, S4, S5, S7, S8, S9, S10 are NOT built** — S2 (public `/signup`)
-is the one still live on prod.
+claimed**; the public signup page removed together with the multi-tenant
+workspace picker on the login page that this document's sweep had missed.
+**S4, S5, S7, S8, S9, S10 are NOT built.** ⚠ Nothing here is deployed or
+walked on prod yet.
 
 ## What already exists (do not rebuild)
 
@@ -60,13 +62,20 @@ Declared before the fix, per the working agreement.
   The route half of the sweep is **exhaustive and small**: exactly **five**
   routes in the entire table take `{tenant_id}` as a path parameter, and all
   five are in this inventory. This is a bounded cleanup, not open archaeology.
+- **⚠ The frontend half was NOT exhaustive, and this document was wrong to imply
+  it.** The declared surface searched `frontend/src` only for *callers of
+  backend routes*. That finds a route (S2) but never a Vue component or store
+  whose purpose is multi-tenant. Two items were found this way only after an
+  adversarial audit: `PlatformRecovery` (folded into S2) and **S11**. Treat the
+  frontend inventory as incomplete until a proper sweep runs; S4 and S5 in
+  particular have not had one.
 
 ## Inventory
 
 | # | Artifact | Evidence | Reachable now? |
 |---|---|---|---|
 | ~~**S1**~~ | ~~`x-tenant-tier` header selects the caller's own rate limit~~ — **CORRECTED: it never worked.** Dead code; slowapi calls a `default_limits` provider with no arguments | **BUILT** — replaced with a static `DEFAULT_RATE_LIMIT` | Was **never** reachable |
-| **S2** | Public `/signup` page whose submit target does not exist | prod: `GET /signup` → **200 unauthenticated**; `POST /signup` (the form's own target) → **405** | **Yes — publicly indexable** |
+| ~~**S2**~~ | ~~Public `/signup` page whose submit target does not exist~~ — **wider than filed: it was linked from a workspace picker on the login page** | **BUILT** — `/signup`, `SignupView`, `PlatformRecovery` and the "Wrong workspace?" link all removed | Gone |
 | ~~**S3**~~ | ~~Connect payment-intent takes the destination account from the request body~~ | **BUILT — deleted with the whole Connect surface.** Closes #421 | Gone |
 | **S4** | 8 vendor-admin routes with zero UI callers | `/api/admin/health-scores/*` (3), `/api/admin/metrics/*` (2), `/api/admin/tenants/{tenant_id}/modules` (3) | Mounted, admin/owner-gated |
 | **S5** | Churn scoring pointed at the owner | `core/health_score.py:3` — *"per-tenant engagement scores and triggers retention playbooks"* | Mounted; **not** beat-scheduled |
@@ -74,6 +83,7 @@ Declared before the fix, per the working agreement.
 | **S7** | Dead control-plane grants table | prod `tenant_module_grants` = 0 rows; `company_module_grants` = 111 rows (with duplicates) | Fallback path only |
 | **S8** | SaaS billing state on a product that is not sold | prod `tenants.subscription_status` = `'trialing'` on both rows; `core/tenant.py:52` hardcodes `"active"` in the ambient dict | Inert |
 | **S9** | Seed-tenant duplicates in prod data | `Example Garage Doors` / `00000000-…-0001` sits beside the real company row in **both** `tenants` and `companies` — it is the default in `single_tenant()` | Data, not code |
+| **S11** | `x-tenant-id` / `gdx_tenant_slug` still threaded through the frontend | `stores/auth.js::_tenantHeader()` derives the header from `window.location.hostname` — prod is a 3-part host, so **every login today sends `x-tenant-id: gdx`** to the resolver Phase A deleted. ~20 frontend files (`useApi`, `theme`, `analytics`, `useOfflineSync`, `useAuthedFile`, `useTour`, Documents/BankFeeds/VendorStatements/Exports, `errorCapture`) plus 4 backend readers that use it as a logging fallback (`performance.py`, `prometheus.py`, `ai_router.py`, `ai_usage_logger.py`) | Sent and ignored — **issue #581** |
 | **S10** | `_SingleEngineRegistry` shim + ~20 `get_engine(tenant_id, db_url)` call sites | `core/tenant.py:12-33` — the original Phase D scope | Inert by design |
 
 ### S1 — CORRECTED: dead code, not an exploit. Now removed.
@@ -119,13 +129,62 @@ a client-controlled rate limit is a trap: the tempting "fix" is to repair the
 signature, which would ship the very bypass this document wrongly claimed
 existed.
 
-### S2 — a sign-up page for a product that is not sold
+### S2 — BUILT. And it was bigger than this document said.
 
-`router/index.js:163` routes `/signup` with `meta: { public: true }`.
-`SignupView.vue:18` posts to `/signup`, which is not in the route table — prod
-returns 405. A stranger gets a working-looking form whose button fails.
-**Fix:** remove the route and the view. `OnboardingView` is **not** residue and
-stays — `/api/onboarding/*` is a real first-run surface with 9 live endpoints.
+As filed: `/signup` was a **public** route (`meta.public`) rendering a
+"Start your free trial / 14 days free" form that POSTed to `/signup` and
+expected a `checkout_url`. No such backend route exists — prod returned **405**.
+
+**What the original sweep missed:** `/signup` was not orphaned. It was linked
+from `PlatformRecovery.vue` — a **multi-tenant workspace picker** redirecting to
+`https://<slug>.example.com/login`, i.e. the subdomain resolver **Phase A
+deleted from the backend**. Its documented trigger (a login reply of "Unknown
+tenant") can no longer occur — that string appears nowhere in the backend — but
+it had a *second* entry point: a **"Wrong workspace?" button rendered
+unconditionally on the login form**. Confirmed live in the shipped production
+bundle. So the front door offered every user a picker for workspaces that do not
+exist, and a "Create one" link to a form that 405s.
+
+**Why the sweep missed it.** This document's declared surface was
+"`gdx_dispatch/**/*.py` excluding tests; the route table; `frontend/src` **for
+callers**". The frontend was searched only for *callers of backend routes* —
+which finds `/signup` (it is a route) but not a Vue component whose whole
+purpose is multi-tenant. **SaaS-era UI was never in the searched surface.** That
+is a gap in the inventory, not a judgement call: S4 and S5 should be re-checked
+against a proper frontend sweep before either is called complete.
+
+**Built:** the `/signup` route, `SignupView.vue`, `PlatformRecovery.vue`, the
+`showRecovery` machinery, the "Wrong workspace?" link, their two specs and the
+orphaned CSS. Removing `/signup` alone was **not** an option — it would have
+turned the picker's "Create one" into a dead router-link, strictly worse than
+before.
+
+**No dead end:** the router's `/:pathMatch(.*)*` catch-all means a stranger
+hitting `/signup` now gets the real Not Found page, not a blank.
+
+`OnboardingView` is **not** residue and stays — `/api/onboarding/*` is a real
+first-run surface with 9 live endpoints.
+
+Guard: `src/router/__tests__/saasSignupRetired.spec.js`, counterfactually
+verified — restoring both the route and the view fails 3 of its 5 assertions.
+
+**The prod probe must be the BUNDLE, not the URL.** An earlier draft of this
+document proposed `GET /signup → 404` as the post-deploy gate. That gate can
+never fail: `app.py` serves the SPA from a catch-all
+`@app.get("/{full_path:path}")`, so `/signup` returned **200 before this change
+and returns 200 after it** — the same 200 this document originally cited as
+*evidence of the defect*. `POST /signup` stays 405 either way (the catch-all is
+GET-only). Neither probe can tell fixed from unfixed. Use one that can:
+
+```
+curl -s https://<host>/login | grep -oE '/assets/index-[A-Za-z0-9._-]+\.js' \
+  | head -1 | xargs -I{} curl -s https://<host>{} \
+  | grep -c 'Wrong workspace\|Start your free trial'
+# must be 0; it was 1 before this change
+```
+
+That is falsifiable, and it is the same measurement that proved the defect was
+live in the first place.
 
 ### S3 / S6 — Stripe Connect, and issue #421
 
@@ -197,7 +256,7 @@ status line in the **same** PR.
 | PR | Scope | Gate |
 |---|---|---|
 | ~~1~~ | ~~**S1**~~ — **DONE.** Was dead code, not an exploit | ✅ counterfactual guard verified; behaviour probed identical before/after |
-| 2 | **S2** — remove `/signup` route + view; strike the two `mobile-all-platforms-plan.md` rows | prod probe after deploy: `GET /signup` → 404 |
+| ~~2~~ | ~~**S2**~~ — **DONE.** Also removed the workspace picker it was linked from | ✅ counterfactual guard; frontend 2300 passed. ⚠ owed: the **bundle probe** below after deploy |
 | ~~3~~ | ~~**S3 + S6**~~ — **DONE.** Connect deleted; #421 closed | ✅ counterfactual guard verified; route table diff is exactly the 9 routes; no data change, so no migration |
 | 4 | **S4 + S5 + S7** — remove the dead vendor-admin surfaces | route-table diff; absence assertions like `test_automation_sequences_retired.py` |
 | 5 | **S8 + S9** — data cleanup, soft-delete only (invariant #2) | owner sign-off; these are prod rows |

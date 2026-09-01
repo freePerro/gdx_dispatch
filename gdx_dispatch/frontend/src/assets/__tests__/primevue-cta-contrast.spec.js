@@ -207,7 +207,7 @@ describe('mobile viewport units and input zoom', () => {
   });
 
   it.each([
-    'LoginView.vue', 'SignupView.vue', 'ForgotPasswordView.vue', 'ResetPasswordView.vue',
+    'LoginView.vue', 'ForgotPasswordView.vue', 'ResetPasswordView.vue',
   ])('%s sizes its hand-rolled inputs at >=16px', (file) => {
     const src = fs.readFileSync(path.join(dir, '..', '..', 'views', file), 'utf8');
     // Only rules that actually TARGET a form control. Matching any selector

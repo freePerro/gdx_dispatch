@@ -34,11 +34,13 @@ import pytest
 from playwright.sync_api import sync_playwright
 
 # Public pages — these must NEVER produce console noise regardless of auth state.
-# Add new pages here as they're added to the app, not subtract.
+# Add new pages here as they're added to the app. Subtract only when a page is
+# DELETED — "/signup" was removed 2026-09-01 (Phase D S2); leaving it here would
+# have silently console-checked the Not Found page instead, which is a different
+# assertion wearing the old one's name.
 PUBLIC_PAGES = [
     "/",
     "/login",
-    "/signup",
     "/forgot-password",
 ]
 

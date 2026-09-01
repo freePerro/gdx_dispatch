@@ -50,8 +50,13 @@ export const useAuthStore = defineStore('auth', () => {
       // Send raw subdomain — backend resolves aliases via _SUBDOMAIN_ALIASES
       return { 'x-tenant-id': sub };
     }
-    // No tenant detected — login will fail with "Unknown tenant" which
-    // prompts the user to enter their company name
+    // No tenant detected. NOTE (2026-09-01): the rest of this function is
+    // multi-tenant residue — Phase A deleted the backend's x-tenant-id /
+    // subdomain resolver, so the header below is sent and ignored. The
+    // "Unknown tenant" reply this once relied on can no longer occur, and the
+    // company-name prompt it named (PlatformRecovery) was removed with the
+    // signup page. Left in place because `gdx_tenant_slug` is threaded through
+    // ~20 frontend files; tracked as S11 in docs/design/phase-d-saas-residue.md.
     return {};
   }
 
