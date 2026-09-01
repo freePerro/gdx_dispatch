@@ -1,8 +1,18 @@
 # ADR-016 — Forward-looking overhead projection
 
-**Status:** Proposed (design only). Converged through two adversarial `/audit` rounds with
-Doug on 2026-06-28; nothing built yet. See **Rejected alternatives** — they are the load-bearing
-part of this ADR.
+**Status:** **ACCEPTED — Slices 1 and 2 BUILT.** Slice 1 shipped as `59ad73b`
+(`OverheadObligation`, `services/overhead_projection.py`, `routers/overhead.py`
+CRUD + `/projection`, `OverheadView.vue` on `/overhead` gated `accounting.read`).
+Slice 2 shipped as `581eb3f` (`GET /overhead/suggestions` — `RecurringStream`
+hints as draft obligations; the handler names its own slice). **Not built:**
+Slice 3 (bank-feed completeness/drift badge) and Slice 4 (trailing run-rate /
+seasonal index) — `overhead_projection.py:17` records Slice 4 as a deliberate
+future swap. Re-derived from code 2026-09-01; this header read "Proposed
+(design only)… nothing built yet" from 2026-06-28 until then, because the ADR
+was edited inside its own Slice 1 build commit and the status line was left
+behind. Converged through two adversarial `/audit` rounds with Doug on
+2026-06-28. See **Rejected alternatives** — they are the load-bearing part of
+this ADR and are unchanged by the build.
 
 ## Context
 
