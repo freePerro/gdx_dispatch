@@ -1,5 +1,10 @@
 # Custom Catalogs
 
+**Status: CURRENT** (spot-checked 2026-09-01 — all 5 file references resolve
+and `custom_catalog*` tables are live in `models/tenant_models.py`). Companion
+to `decisions/ADR-015-custom-catalogs-and-catalog-packs.md`.
+
+
 Catalogs hold the products and services you sell. Every catalog has a **type**
 (`product_class`) that decides which fields its items carry. Built-in types ship
 with the app; **custom** types let you define your own fields with no code,

@@ -1,5 +1,12 @@
 # Authentik Provider Configuration — GDX
 
+**Status: CURRENT — reference config, verify before relying on it.** Authentik
+is still wired (`tools/configure_authentik.py`,
+`tools/authentik_property_mapping_gdx_tid.py`). Two references point at
+external planning files that no longer exist, and the provider settings were
+not re-verified against a live Authentik instance on 2026-09-01.
+
+
 Reference for the GDX-specific Authentik provider set. This document
 covers **SS-6 Slice A** (`gdx-spa` provider, landed), the **SS-6 Slice B**
 MCP disposition (PAT-only, no Authentik provider), and **SS-6 Slice C**

@@ -1,5 +1,10 @@
 # Installing a private plugin by file upload
 
+**Status: CURRENT.** Describes uploading a plugin artifact rather than
+pip-installing it. Note the in-app **storefront** (RELEASED v1.70.2) is now the
+usual path — see `docs/design/plugin-storefront-plan.md`.
+
+
 Extends ADR-013 step 5 (in-app install). The registry flow installs plugins by
 **name from a pip index** (PyPI). A **private/internal plugin** (not published
 anywhere) is installed by **uploading its built artifact** instead.

@@ -1,5 +1,8 @@
 # GDX Frontend View Pattern — Canonical Reference
 
+**Status: CURRENT** (spot-checked 2026-09-01 — all 7 file references resolve).
+
+
 Every view in this app shares a layout shell. Phone.com views were the
 canonical example of *not* doing this — bare `<table>`, custom CSS,
 no sidebar, no breadcrumb. an earlier session fixed them. Don't regress.

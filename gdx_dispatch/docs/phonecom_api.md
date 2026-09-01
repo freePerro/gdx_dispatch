@@ -1,5 +1,11 @@
 # Phone.com API (v4) Reference
 
+**Status: CURRENT — vendor reference, not our implementation.** Notes on the
+Phone.com API surface (companion to `phonecom_openapi_v4.6.11.json`). Our code
+lives in `modules/phone_com/`; the `routers/integrations/phonecom.py` named
+here is a **proposal**, not an existing file.
+
+
 Source: OpenAPI 3.0 spec pulled 2026-05-04 from ReadMe-hosted registry.
 Spec also saved at `gdx_dispatch/docs/phonecom_openapi_v4.6.11.json` (638078 bytes).
 
