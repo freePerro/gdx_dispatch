@@ -357,7 +357,7 @@ def test_process_bounces_is_idempotent(db, account):
 
 
 def _mk_outbound(db, *, to_email, entity_id, kind, status="sent",
-                 created_at=None):
+                 created_at=None, entity_type="invoice"):
     """created_at defaults to NOW — the same clock the NDR rows use.
 
     #503: this helper used to leave created_at to the model default (real
@@ -370,7 +370,7 @@ def _mk_outbound(db, *, to_email, entity_id, kind, status="sent",
     from gdx_dispatch.models.tenant_models import OutboundEmail
     row = OutboundEmail(
         company_id="t1", initiator_kind="reminder_task", kind=kind,
-        entity_type="invoice", entity_id=str(entity_id),
+        entity_type=entity_type, entity_id=str(entity_id),
         to_email=to_email, subject="s", body_html="<p>b</p>", status=status,
         created_at=created_at or NOW,
     )
@@ -439,3 +439,184 @@ def test_deferred_document_ndr_unsends_despite_later_reminder(db, account):
     assert totals["invoices_unsent"] == 1
     db.refresh(doc_row)
     assert doc_row.bounced_at is not None  # stamped on the RIGHT row
+
+
+# ── estimate parity: outbound row + email.bounced + office bell (PR 2) ──
+
+
+def _events(monkeypatch):
+    """Record emit_domain_event calls (imported lazily inside bounce_detect)."""
+    import gdx_dispatch.core.webhooks.emit as emit_mod
+    seen = []
+    monkeypatch.setattr(
+        emit_mod, "emit_domain_event",
+        lambda db, event_type, entity_id, data, *, tenant_id, suppress=False:
+            seen.append((event_type, entity_id, data, tenant_id)) or 0,
+    )
+    return seen
+
+
+def _bells(db):
+    from gdx_dispatch.models.tenant_models import Notification
+    return db.execute(select(Notification)).scalars().all()
+
+
+def test_estimate_bounce_stamps_row_emits_and_rings(db, account, monkeypatch):
+    """The invoice rung already stamped outbound_emails.bounced_at, emitted
+    email.bounced and left a trail; the estimate rung flipped the status
+    and did nothing else — the office found out by noticing a red tag."""
+    seen = _events(monkeypatch)
+    cust = _mk_customer(db, email="bad@dead.example")
+    est = _mk_estimate(db, cust, number="EST-000085",
+                       sent_at=NOW - timedelta(minutes=10))
+    row = _mk_outbound(db, to_email="bad@dead.example", entity_id=est.id,
+                       kind="document", entity_type="estimate")
+    _mk_msg(db, account, subject="Undeliverable: Estimate EST-000085 from GDX",
+            to=["bad@dead.example"], received=NOW)
+
+    totals = process_bounces(db, account)
+
+    db.refresh(est)
+    assert est.status == "rejected"
+    db.refresh(row)
+    assert row.bounced_at is not None
+    assert [(e[0], e[1]) for e in seen] == [("email.bounced", str(est.id))]
+    assert seen[0][2]["outbound_email_id"] == str(row.id)
+    assert seen[0][2]["entity_type"] == "estimate"
+    bells = _bells(db)
+    assert len(bells) == 1 and totals["bells_rung"] == 1
+    assert bells[0].tenant_id == "tenant-test"
+    assert bells[0].user_id is None            # broadcast: every office user
+    assert bells[0].category == "estimate"     # NotificationsDrawer → /estimates
+    assert "EST-000085" in bells[0].message and "bad@dead.example" in bells[0].message
+    assert "re-send" in bells[0].message
+
+
+def test_estimate_bounce_without_outbound_row_still_emits_and_rings(db, account, monkeypatch):
+    """A send that predates outbound_emails (EST-000085's original, 08-13)
+    has no row to stamp; the event and the bell must not depend on one."""
+    seen = _events(monkeypatch)
+    cust = _mk_customer(db, email="old@dead.example")
+    est = _mk_estimate(db, cust, number="EST-000001",
+                       sent_at=NOW - timedelta(minutes=10))
+    _mk_msg(db, account, subject="Undeliverable: Estimate EST-000001 from GDX",
+            to=["old@dead.example"], received=NOW)
+
+    process_bounces(db, account)
+
+    db.refresh(est)
+    assert est.status == "rejected"
+    assert [(e[0], e[1]) for e in seen] == [("email.bounced", str(est.id))]
+    assert seen[0][2]["outbound_email_id"] is None
+    assert seen[0][3] == "tenant-test"
+    assert len(_bells(db)) == 1
+
+
+def test_corrected_address_still_stamps_the_original_send_row(db, account, monkeypatch):
+    """The EST-000085 shape: the office fixed the typo on the customer record
+    BEFORE the sync saw the NDR, so the customer's email no longer matches
+    the failed recipient. Rung 3 (conversation/time) flips it; the
+    outbound row — addressed to the OLD, bounced address — is still the
+    one that gets stamped."""
+    _events(monkeypatch)
+    cust = _mk_customer(db, email="right@farm.example")
+    send_time = NOW - timedelta(minutes=3)
+    est = _mk_estimate(db, cust, label="9x7 estimate", sent_at=send_time)
+    row = _mk_outbound(db, to_email="rihgt@farm.example", entity_id=est.id,
+                       kind="document", entity_type="estimate",
+                       created_at=send_time)
+    _mk_msg(db, account, subject="9x7 estimate", direction="outbound",
+            from_address="doug@garagedoorxperts.com", to=["rihgt@farm.example"],
+            conversation="c-85", sent=send_time)
+    _mk_msg(db, account, subject="Undeliverable: 9x7 estimate",
+            to=["rihgt@farm.example"], conversation="c-85", received=NOW)
+
+    process_bounces(db, account)
+
+    db.refresh(est)
+    assert est.status == "rejected"
+    db.refresh(row)
+    assert row.bounced_at is not None
+    bells = _bells(db)
+    assert len(bells) == 1 and "rihgt@farm.example" in bells[0].message
+
+
+def test_estimate_bounce_rings_once(db, account, monkeypatch):
+    """Re-scanning the same NDR next cycle must not ring again: the flip
+    is idempotent (status is no longer 'sent'), and so is the bell."""
+    _events(monkeypatch)
+    cust = _mk_customer(db, email="once@dead.example")
+    _mk_estimate(db, cust, number="EST-000002", sent_at=NOW - timedelta(minutes=10))
+    _mk_msg(db, account, subject="Undeliverable: Estimate EST-000002 from GDX",
+            to=["once@dead.example"], received=NOW)
+
+    first = process_bounces(db, account)
+    second = process_bounces(db, account)
+
+    assert first["bells_rung"] == 1
+    assert second["bells_rung"] == 0
+    assert len(_bells(db)) == 1
+
+
+def test_bell_failure_cannot_lose_the_flip(db, account, monkeypatch):
+    """notify_office rolls back on failure. Ringing INSIDE the match loop
+    would have erased the pending flip and its audit row; the bell now
+    rings after the commit, so a broken bell costs the bell, not the fact."""
+    _events(monkeypatch)
+    import gdx_dispatch.core.office_notifications as on
+
+    def _boom(*a, **k):
+        db.rollback()
+        raise RuntimeError("bell down")
+    monkeypatch.setattr(on, "notify_office", _boom)
+    cust = _mk_customer(db, email="nobell@dead.example")
+    est = _mk_estimate(db, cust, number="EST-000003", sent_at=NOW - timedelta(minutes=10))
+    _mk_msg(db, account, subject="Undeliverable: Estimate EST-000003 from GDX",
+            to=["nobell@dead.example"], received=NOW)
+
+    totals = process_bounces(db, account)
+
+    assert totals["estimates_rejected"] == 1 and totals["bells_rung"] == 0
+    db.expire_all()
+    db.refresh(est)
+    assert est.status == "rejected"
+    assert "estimate_email_rejected" in _audit_actions(db)
+    assert _bells(db) == []
+
+
+def test_a_later_ndr_that_raises_cannot_erase_an_earlier_flip(db, account, monkeypatch):
+    """Audit catch (S1): one batch commit at the end meant a second NDR that
+    raised rolled back the FIRST NDR's flip and audit row while the counter
+    still said 1 and a bell rang for it. Flips are durable per NDR now."""
+    _events(monkeypatch)
+    import gdx_dispatch.modules.outlook.bounce_detect as bd
+
+    cust1 = _mk_customer(db, email="one@dead.example")
+    cust2 = _mk_customer(db, email="two@dead.example")
+    est1 = _mk_estimate(db, cust1, number="EST-000011", sent_at=NOW - timedelta(minutes=10))
+    est2 = _mk_estimate(db, cust2, number="EST-000012", sent_at=NOW - timedelta(minutes=10))
+    _mk_msg(db, account, subject="Undeliverable: Estimate EST-000011 from GDX",
+            to=["one@dead.example"], received=NOW - timedelta(minutes=1))
+    _mk_msg(db, account, subject="Undeliverable: Estimate EST-000012 from GDX",
+            to=["two@dead.example"], received=NOW)
+
+    real_match_invoices = bd._match_invoices
+    calls = {"n": 0}
+
+    def flaky(tdb, ndr, received):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("malformed NDR")
+        return real_match_invoices(tdb, ndr, received)
+    monkeypatch.setattr(bd, "_match_invoices", flaky)
+
+    totals = process_bounces(db, account)
+
+    db.expire_all()
+    flipped = sorted(e.estimate_number for e in (est1, est2) if db.get(type(est1), e.id).status == "rejected")
+    assert len(flipped) == 1 and totals["estimates_rejected"] == 1
+    assert _audit_actions(db).count("estimate_email_rejected") == 1
+    assert len(_bells(db)) == 1 and totals["bells_rung"] == 1
+    # The one that raised is retried next cycle — nothing about it was written.
+    survivor = flipped[0]
+    assert survivor in ("EST-000011", "EST-000012")

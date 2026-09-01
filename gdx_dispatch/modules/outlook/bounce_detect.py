@@ -25,11 +25,15 @@ on, using three rungs ordered by precision:
    Applied only when it isolates exactly ONE candidate.
 
 On a match:
-- **Estimate** still ``sent`` → status becomes ``rejected`` (the enum
-  value already exists and the whole UI already renders it in danger
-  red; the reopen + re-send flows already accept it). ``sent_at`` is
+- **Estimate** still ``sent`` → status becomes ``rejected`` (rendered as
+  "Failed Email"; the reopen + re-send flows accept it). ``sent_at`` is
   kept as the record of the attempt — reports.py excludes "rejected"
-  from close-rate decisions, so a bounce is not a customer "no".
+  from close-rate decisions, so a bounce is not a customer "no". The
+  ``outbound_emails`` row that sent it (post-v1.68 sends have one) is
+  stamped ``bounced_at`` and ``email.bounced`` is emitted, exactly as
+  for invoices; and the office bell rings — a bounce is always
+  actionable, and before this the office learned of one only by
+  noticing a red tag some day (estimate-rejection-visibility plan PR 2).
 - **Invoice** still ``sent``/``overdue`` → ``sent_at``/``sent_via`` are
   cleared. Those are DELIVERY facts (Billing's own Unsent tab defines
   them that way), and clearing them resurfaces the invoice in Unsent
@@ -182,9 +186,17 @@ def _audit(tdb: Session, *, action: str, entity_type: str, entity_id: str,
 
 
 def _match_estimates(
-    tdb: Session, ndr: OutlookMessage, ndr_received: datetime
+    tdb: Session, ndr: OutlookMessage, ndr_received: datetime,
+    *, bells: list[dict[str, Any]] | None = None,
 ) -> int:
-    """Flip matched still-'sent' estimates to 'rejected'. Returns count."""
+    """Flip matched still-'sent' estimates to 'rejected'. Returns count.
+
+    ``bells`` collects one office-bell payload per flip; the caller rings
+    them AFTER the batch commit. Never ring from inside the loop:
+    ``notify_office`` commits on success and ROLLS BACK on failure, and
+    here the flip and its audit row are still pending — a failed bell
+    write would erase both while ``flipped`` still counted them.
+    """
     from gdx_dispatch.models.tenant_models import Customer
     from gdx_dispatch.modules.proposals.models import Estimate
 
@@ -205,6 +217,27 @@ def _match_estimates(
             recipients=recipients,
         )
         flipped += 1
+        # Parity with the invoice rung: the row that sent it carries the
+        # bounce. Its to_email is the ORIGINAL (bounced) address — the one
+        # the NDR names — so this still matches after the office corrected
+        # the customer record (the rung-3 case). Fall back to the entity
+        # alone when the NDR named no recipient we could parse; a pre-v1.68
+        # send has no row at all, and then the event is emitted bare.
+        row = _outbound_row(tdb, recipients, "estimate", str(est.id),
+                            ndr_received, kind="document") if recipients else None
+        if row is None:
+            row = _outbound_row(tdb, None, "estimate", str(est.id),
+                                ndr_received, kind="document")
+        if row is not None:
+            _stamp_bounced(tdb, row, ndr_received)
+        else:
+            _emit_bounce_without_row(tdb, est, recipients)
+        if bells is not None:
+            bells.append({
+                "tenant_id": str(est.company_id or ""),
+                "number": est.estimate_number or "An estimate",
+                "recipient": sorted(recipients)[0] if recipients else None,
+            })
 
     # Rung 1 — serial number in the NDR subject.
     m = _EST_SUBJECT_RE.search(ndr.subject or "")
@@ -366,21 +399,23 @@ def _match_invoices(
     return cleared
 
 
-def _outbound_row(tdb: Session, recipients: set[str], entity_type: str,
+def _outbound_row(tdb: Session, recipients: set[str] | None, entity_type: str,
                   entity_id: str, ndr_received: datetime, *, kind: str | None):
     """Most recent SENT outbound_emails row to any of these addresses about
     this entity inside the NDR match window (a bounce reports a send that
-    PRECEDES it). kind narrows to one send type; None matches any. None on
-    pre-overhaul sends (no rows) or read failure (never block processing)."""
+    PRECEDES it). recipients=None matches any address (entity-only lookup);
+    kind narrows to one send type; None matches any. None on pre-overhaul
+    sends (no rows) or read failure (never block processing)."""
     try:
         from gdx_dispatch.models.tenant_models import OutboundEmail
 
         q = select(OutboundEmail).where(
-            func.lower(OutboundEmail.to_email).in_(recipients),
             OutboundEmail.entity_type == entity_type,
             OutboundEmail.entity_id == entity_id,
             OutboundEmail.status == "sent",
         )
+        if recipients is not None:
+            q = q.where(func.lower(OutboundEmail.to_email).in_(recipients))
         if kind is not None:
             q = q.where(OutboundEmail.kind == kind)
         rows = tdb.execute(q.order_by(OutboundEmail.created_at.desc()).limit(10)).scalars().all()
@@ -391,6 +426,66 @@ def _outbound_row(tdb: Session, recipients: set[str], entity_type: str,
     except Exception:
         log.exception("bounce_outbound_lookup_failed entity=%s", entity_id)
         return None
+
+
+def _emit_bounce_without_row(tdb: Session, est, recipients: set[str]) -> None:
+    """email.bounced for an estimate whose send predates outbound_emails
+    (v1.68.0): same payload shape as _stamp_bounced, no row id."""
+    try:
+        from gdx_dispatch.core.webhooks.emit import emit_domain_event
+
+        recipient = sorted(recipients)[0] if recipients else None
+        emit_domain_event(
+            tdb,
+            "email.bounced",
+            str(est.id),
+            {
+                "to_email": recipient,
+                "subject": None,
+                "kind": "document",
+                "entity_type": "estimate",
+                "entity_id": str(est.id),
+                "outbound_email_id": None,
+                "company_id": str(est.company_id or ""),
+            },
+            tenant_id=str(est.company_id or "") or None,
+        )
+    except Exception:
+        log.exception("email_bounced_event_emit_failed estimate=%s", getattr(est, "id", None))
+
+
+def _ring_estimate_bells(tdb: Session, bells: list[dict[str, Any]]) -> int:
+    """Office bell per bounced estimate — called only after the flips are
+    committed (see _match_estimates). notify_office never raises and
+    commits its own row; a failure here can no longer take a flip with it.
+    Returns the number of bells rung."""
+    from gdx_dispatch.core.office_notifications import notify_office
+
+    rung = 0
+    for b in bells:
+        tenant_id = b.get("tenant_id") or ""
+        if not tenant_id:
+            # Empty is not a tenant: the row would land where no bell
+            # query can find it — a silent no-op wearing a success's clothes.
+            log.error("estimate bounce bell skipped — %s has no company_id", b.get("number"))
+            continue
+        who = b.get("recipient")
+        message = (
+            f"{b['number']} to {who} was undeliverable — fix the address and re-send"
+            if who else
+            f"{b['number']} email bounced — fix the address and re-send"
+        )
+        try:
+            notify_office(
+                tdb, tenant_id,
+                title="Estimate email bounced",
+                message=message,
+                category="estimate",
+            )
+            rung += 1
+        except Exception:
+            log.exception("estimate bounce bell failed for %s", b.get("number"))
+    return rung
 
 
 def _stamp_bounced(tdb: Session, row, ndr_received: datetime) -> None:
@@ -454,26 +549,43 @@ def process_bounces(tdb: Session, account: OutlookAccount) -> dict[str, Any]:
     estimates_flipped = 0
     invoices_cleared = 0
     ndrs_seen = 0
+    bells_rung = 0
     for msg in candidates:
         received = _aware(msg.received_at)
         if received is None or received < cutoff or not _is_ndr(msg):
             continue
         ndrs_seen += 1
+        # Bells for THIS NDR are staged separately: a rollback below must
+        # drop them too, or the office would be told about a flip that
+        # never landed.
+        ndr_bells: list[dict[str, Any]] = []
         try:
-            estimates_flipped += _match_estimates(tdb, msg, received)
-            invoices_cleared += _match_invoices(tdb, msg, received)
+            flipped_here = _match_estimates(tdb, msg, received, bells=ndr_bells)
+            cleared_here = _match_invoices(tdb, msg, received)
+            if flipped_here or cleared_here:
+                # Durable PER NDR. One batch commit at the end looked
+                # tidy, but a later NDR that raised would `rollback()`
+                # every earlier NDR's flips and audit rows while the
+                # counters still counted them — and on Postgres nothing
+                # else had committed in between (audit catch, S1).
+                tdb.commit()
+            estimates_flipped += flipped_here
+            invoices_cleared += cleared_here
         except Exception:
             # One malformed NDR must not stall the others (or the sync).
             log.exception("bounce_detect: NDR %s failed", msg.graph_message_id)
             tdb.rollback()
+            continue
+        # Only now — this NDR's flips and audit rows are durable.
+        bells_rung += _ring_estimate_bells(tdb, ndr_bells)
     if estimates_flipped or invoices_cleared:
-        tdb.commit()
         log.info(
-            "bounce_detect account=%s ndrs=%d estimates_rejected=%d invoices_unsent=%d",
-            account.id, ndrs_seen, estimates_flipped, invoices_cleared,
+            "bounce_detect account=%s ndrs=%d estimates_rejected=%d invoices_unsent=%d bells=%d",
+            account.id, ndrs_seen, estimates_flipped, invoices_cleared, bells_rung,
         )
     return {
         "ndrs_seen": ndrs_seen,
         "estimates_rejected": estimates_flipped,
         "invoices_unsent": invoices_cleared,
+        "bells_rung": bells_rung,
     }
