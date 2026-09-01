@@ -10,11 +10,10 @@ from fastapi import APIRouter, Depends, File, HTTPException, Path, Request, Uplo
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.branding_logo import BRANDING_LOGO_RE, LOGO_URL_PREFIX
 from gdx_dispatch.core.auth import get_current_user
-from gdx_dispatch.core.cache import cached, invalidate_sync
+from gdx_dispatch.core.cache import invalidate_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import (
     MODULES,
@@ -393,65 +392,6 @@ def patch_settings(
     return _settings_dict(row)
 
 
-@router.get("/modules")
-def get_modules(
-    request: Request,
-    current_user: dict[str, Any] = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    _require_admin(current_user)
-    tenant = getattr(request.state, "tenant", {}) or {}
-    tenant_id = str(tenant.get("id", "")).strip()
-    if not tenant_id:
-        raise HTTPException(status_code=400, detail="Missing tenant context")
-
-    # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
-    existing = db.query(CompanyModuleGrant).first()
-    if not existing:
-        now = datetime.now(timezone.utc)
-        for key, cfg in MODULES.items():
-            if cfg["default"]:
-                already = db.query(CompanyModuleGrant).filter(
-                    CompanyModuleGrant.module_key == key,
-                ).first()
-                if not already:
-                    db.add(CompanyModuleGrant(
-                        id=str(uuid4()),
-                        company_id=tenant_id,
-                        module_key=key,
-                        granted_at=now,
-                        created_at=now,
-                    ))
-        db.commit()
-
-    # D101 (2026-04-25): a per-GET autohealer for GDX used to live here, re-granting
-    # every module on every read. That made admin disable a no-op — the row deleted
-    # by /modules/{key}/disable was resurrected by the next GET. Bootstrap now
-    # happens exactly once, in the `if not existing:` block above: it seeds only
-    # the default-on modules and only when the grants table is completely empty.
-    # After that, row absence here means the admin disabled it.
-
-    rows = db.query(CompanyModuleGrant.module_key).all()
-    granted = {str(r[0]) for r in rows}
-
-    payload = []
-    for key, cfg in MODULES.items():
-        payload.append(
-            {
-                "key": key,
-                "name": cfg["name"],
-                "tier": str(cfg["tier"]),
-                "default": bool(cfg["default"]),
-                "enabled": key in granted,
-                "locked": False,
-                "upgrade_required": None,
-            }
-        )
-    payload.sort(key=lambda item: item["name"])
-
-    return {"modules": payload}
-
-
 @router.post("/modules/{key}/enable")
 def enable_module(
     request: Request,
@@ -617,30 +557,6 @@ def list_integrations(
         # instead of guessing. Never returns the key itself.
         "stripe": {"configured": stripe_configured()},
     }
-
-
-@router.get("/integrations/google-maps")
-def get_google_maps_key(
-    current_user: dict[str, Any] = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    """Return the tenant's Google Maps JS API key.
-
-    Reachable by any authenticated user — the key is exposed in every
-    browser that loads /maps (it goes in the `<script src=...&key=...>`
-    URL), so there's nothing to gate. The real control is HTTP-referrer
-    restriction set in Google Cloud Console by the admin who owns the
-    key.
-
-    NOTE: this router's ADMIN-ONLY router-level dependency overrides the
-    intent above, so the authoritative any-authenticated-user read lives in
-    ``routers/branding_public.py:get_google_maps_key_public`` (wins by
-    include order — same pattern as ``/modules``). This copy is shadowed
-    and kept only so the settings router remains self-describing.
-    """
-    row = _ensure_settings(db)
-    key = (row.google_maps_api_key or "").strip()
-    return {"key": key, "configured": bool(key)}
 
 
 class GoogleMapsKeyPatchIn(BaseModel):
@@ -834,26 +750,6 @@ def sync_integration(
         "queued_at": now.isoformat(),
         "message": "Sync job queued — delivery via worker downstream",
     }
-
-
-@router.get("/branding")
-async def get_branding(
-    request: Request,
-    current_user: dict[str, Any] = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    # Branding is readable by every authenticated user in the tenant —
-    # it's the company name + logo + colors the SPA uses to render. A
-    # tech logging in needs to see "Example Garage Doors" in the topbar,
-    # not the platform default. Write side (PATCH /branding) stays
-    # admin-gated.
-    tenant_id = company_id()
-    return await cached(
-        tenant_id,
-        "settings:branding",
-        ttl_seconds=300,
-        fetcher=lambda: _branding_dict(_ensure_settings(db)),
-    )
 
 
 @router.patch("/branding")

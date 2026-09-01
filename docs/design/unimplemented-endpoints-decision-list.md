@@ -479,3 +479,26 @@ soft-deleted rows and the nine dead `requested` rows the retired request route
 minted, so page and stats agree); the page no longer promises Google/Yelp/
 Facebook ingestion, and its platform filter and `Flagged` tab (no such column)
 are gone. `POST /api/reviews` (office-entered rating) stays.
+
+## 2026-09-01 — route-shadow safe cleanup
+
+**Status:** **PARTIALLY BUILT — 19 safe duplicate pairs removed; 22 remain
+deferred for product or data decisions.**
+
+The live recursive scanner in `gdx_dispatch/tools/route_shadow_scan.py` was
+rerun in the application container. The baseline fell from **41 to 22**. The
+removed pairs were unreachable compatibility copies: technician skills;
+onboarding state/checklist/seed/demo/complete; campaign filter/preview/sends/
+activation; customer recurring-job read and opt-out; job line-item read; and
+the three duplicate settings reads for branding, Google Maps, and modules.
+The canonical handlers remain registered and tests verify the public settings
+reads retain technician access.
+
+The remaining 22 pairs are intentionally not consolidated in this change:
+purchase orders; module-versus-router campaign, GPS, fleet, inventory, and
+timeclock paths; bulk tag and job line-item creation contracts; admin
+permissions and job activity ownership; mobile-location retention; and
+recommendations and AI-usage ownership. These have competing data models,
+authorization, retention, or product semantics. They require a named
+canonical system and, where persisted records are involved, an explicit
+retention/migration decision before removal.

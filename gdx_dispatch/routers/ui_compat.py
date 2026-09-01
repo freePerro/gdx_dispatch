@@ -74,10 +74,9 @@ whole /api/ai/quality block (summary, recent, feedback GET+POST), and
 /api/communications/bulk-sms, whose SegmentsView button went with it because the
 owner declined building bulk send and a button that 501s is a defect either way.
 
-Deliberately NOT removed here: /api/customers/{id}/recurring-jobs. Its removal
-would take a whole tab off the customer page, which is product shape and the
-owner's call — it was never put to them. /api/campaigns/* and
-/api/onboarding/checklist likewise carry no recorded decision (#459).
+The compatibility copies for customer recurring jobs, onboarding and campaigns
+were removed 2026-09-01 after confirming their canonical routers serve the
+real UI callers. The route-shadow gate covers their absence.
 
 Those handlers now call `_not_implemented(...)`, which logs at WARNING and
 raises 501. A write endpoint here must either do the work or fail — never
@@ -217,7 +216,7 @@ def run_admin_op(
 # CollectionsView permanent theater.
 
 
-# ── Customer detail: recurring jobs, communications ──────────────────────
+# ── Customer detail: communications ───────────────────────────────────────
 # The portal-account pair that lived here was removed 2026-08-24. Its GET
 # returned a hardcoded {"exists": false, "account": null} for EVERY customer,
 # so the customer page reported "no portal account" even for the one customer
@@ -226,13 +225,6 @@ def run_admin_op(
 # whole time — portal.py's staff_router: GET /api/portal/{customer_id},
 # PATCH /api/portal/{customer_id}, POST /api/portal/invite — and the customer
 # page now calls it.
-
-@router.get("/api/customers/{customer_id}/recurring-jobs", response_model=None)
-def list_customer_recurring_jobs(customer_id: str, _: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-
 
 @router.get("/api/customers/{customer_id}/communications", response_model=None)
 def list_customer_communications(customer_id: str, _: dict = Depends(get_current_user)) -> dict:
@@ -288,68 +280,6 @@ def loyalty_index(_: dict = Depends(get_current_user)) -> dict:
 @router.get("/api/maps", response_model=None)
 def maps_index(_: dict = Depends(get_current_user)) -> dict:
     return {"tech_locations": [], "route_optimizations": []}
-
-
-# ── Onboarding state + checklist + seed actions ───────────────────────────
-
-@router.get("/api/onboarding/state", response_model=None)
-def onboarding_state(_: dict = Depends(get_current_user)) -> dict:
-    return {
-        "step": 0,
-        "steps": ["profile", "team", "services", "catalog", "first_job"],
-        "completed_steps": [],
-        "progress_pct": 0,
-    }
-
-
-@router.get("/api/onboarding/checklist", response_model=None)
-def onboarding_checklist(_: dict = Depends(get_current_user)) -> dict:
-    return {"items": []}
-
-
-@router.patch("/api/onboarding/checklist", response_model=None)
-def update_onboarding_checklist(
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    # Normally unreachable: routers/onboarding.py::patch_checklist wins this
-    # path at runtime (verified live 2026-08-21 — a PATCH here 422s demanding
-    # `step`/`completed`, which is that handler's ChecklistPatchIn, not this
-    # shim's permissive _GenericPayload).
-    #
-    # It stops being unreachable in one case, and it is the worst one: app.py
-    # wraps every router import in try/except and substitutes an EMPTY
-    # APIRouter on failure. If onboarding.py ever fails to import, this shim
-    # becomes the live handler. `return _ok()` would then fake a successful
-    # write on a degraded system — the exact silent-success class this file
-    # was cleaned up to remove. Refuse loudly instead.
-    _not_implemented("Updating the onboarding checklist", request, user)
-
-
-@router.post("/api/onboarding/seed-catalog", response_model=None)
-def onboarding_seed_catalog(_: dict = Depends(get_current_user)) -> dict:
-    # Was {"ok": True, "seeded": 0} — claimed success without seeding. Fail loud.
-    from fastapi import HTTPException
-    raise HTTPException(status_code=501, detail="Catalog seeding not implemented")
-
-
-@router.post("/api/onboarding/demo-data", response_model=None)
-def onboarding_demo_data(_: dict = Depends(get_current_user)) -> dict:
-    from fastapi import HTTPException
-    raise HTTPException(status_code=501, detail="Demo data seeding not implemented")
-
-
-@router.post("/api/onboarding/clear-demo", response_model=None)
-def onboarding_clear_demo(_: dict = Depends(get_current_user)) -> dict:
-    from fastapi import HTTPException
-    raise HTTPException(status_code=501, detail="Demo data clear not implemented")
-
-
-@router.post("/api/onboarding/complete", response_model=None)
-def onboarding_complete(_: dict = Depends(get_current_user)) -> dict:
-    from fastapi import HTTPException
-    raise HTTPException(status_code=501, detail="Onboarding completion not implemented")
 
 
 # ── Payments (list + create + intent) ─────────────────────────────────────
@@ -570,13 +500,6 @@ def list_voice_calls(_: dict = Depends(get_current_user)) -> dict:
     return _empty_list()
 
 
-# ── Technicians skills ────────────────────────────────────────────────────
-
-@router.get("/api/technicians/skills", response_model=None)
-def list_technician_skills(_: dict = Depends(get_current_user)) -> dict:
-    return {"skills": []}
-
-
 # ── Users / staff (for message recipient picker) ──────────────────────────
 
 @router.get("/api/users/staff", response_model=None)
@@ -595,11 +518,6 @@ def bulk_tag_customers(payload: _GenericPayload, _: dict = Depends(get_current_u
 
 
 # ── Job costing line items + parts ────────────────────────────────────────
-
-@router.get("/api/jobs/{job_id}/line-items", response_model=None)
-def list_job_line_items(job_id: str, _: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
 
 @router.post("/api/jobs/{job_id}/line-items", response_model=None, status_code=201)
 def create_job_line_item(job_id: str, payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
@@ -690,57 +608,6 @@ def list_labor_time_entries(
 # rows carry zero review text. Replying would have answered something customers
 # have no way to write. The review-request email points at Google, which is
 # where the reviews and the replies actually live. See #473.
-
-# ── Campaign management extras (Gemma 4 generated) ───────────────────────
-
-@router.post("/api/campaigns/preview-filter", response_model=None)
-def preview_campaign_filter(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return {"matching_customers": 0, "sample": []}
-
-
-@router.get("/api/campaigns/{campaign_id}/preview", response_model=None)
-def preview_campaign(campaign_id: str, _: dict = Depends(get_current_user)) -> dict:
-    return {"subject": "", "body": "", "recipient_count": 0}
-
-
-@router.get("/api/campaigns/{campaign_id}/sends", response_model=None)
-def campaign_send_history(campaign_id: str, _: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-# Both of these are shadowed at runtime by routers/campaigns.py, which serves
-# the real activate/deactivate (verified live 2026-08-21: a PUT against a
-# non-existent id returns 404 "Campaign not found", which this shim could never
-# produce — it answered {"ok": true} for any id). They survive only for the
-# import-failure case described on update_onboarding_checklist above: if
-# campaigns.py fails to import, app.py mounts an empty router in its place and
-# these become live. Faking success on a campaign state change at that moment
-# is worse than refusing it.
-
-@router.put("/api/campaigns/{campaign_id}/activate", response_model=None)
-def activate_campaign(
-    campaign_id: str,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Activating a campaign", request, user)
-
-
-@router.put("/api/campaigns/{campaign_id}/deactivate", response_model=None)
-def deactivate_campaign(
-    campaign_id: str,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Deactivating a campaign", request, user)
-
-
-# ── Customer opt-out ──────────────────────────────────────────────────────
-
-@router.post("/api/customers/{customer_id}/optout", response_model=None)
-def customer_optout(customer_id: str, payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return {"ok": True, "opted_out": True}
-
 
 # ── Admin Permissions ────────────────────────────────────────────────────
 # Vue expects /api/admin/permissions to list users + roles.

@@ -147,6 +147,18 @@ def test_mobile_jobs_list_plaintext_rows_pass_through(db, monkeypatch):
     assert body["jobs"][0]["customer"]["address"] == "12 Elm St"
 
 
+def test_technician_can_read_all_public_settings_surfaces(db):
+    """Public reads stay available without relying on router include order."""
+    client = _build_app(db, role="technician")
+    for path in (
+        "/api/settings/branding",
+        "/api/settings/integrations/google-maps",
+        "/api/settings/modules",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200, f"{path}: {response.text}"
+
+
 # ── 2. photo_type → kind ─────────────────────────────────────────────
 
 

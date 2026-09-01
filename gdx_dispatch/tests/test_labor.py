@@ -173,58 +173,6 @@ def test_delete_time_entry_soft_delete(db_session):
     assert row.deleted_at is not None
 
 
-def test_get_job_costing_breakdown(db_session):
-    job_id = _seed_job(db_session)
-    _create_entry(
-        db_session,
-        job_id,
-        clock_in=datetime(2026, 3, 20, 8, 0, tzinfo=UTC),
-        clock_out=datetime(2026, 3, 20, 9, 0, tzinfo=UTC),
-    )
-    _create_entry(
-        db_session,
-        job_id,
-        tech_id="tech-2",
-        clock_in=datetime(2026, 3, 20, 9, 30, tzinfo=UTC),
-        clock_out=datetime(2026, 3, 20, 10, 30, tzinfo=UTC),
-    )
-
-    # Use UUID hex format for IDs — the ORM JobPart model uses Uuid(as_uuid=True)
-    # which stores as CHAR(32) hex in SQLite.  str(uuid4()) has dashes (36 chars)
-    # and won't match the ORM query.
-    _job_uuid = UUID(job_id)
-    db_session.execute(
-        text(
-            """
-            INSERT INTO job_parts (id, job_id, part_id, qty_used, unit_cost_at_time, created_at)
-            VALUES (:id, :job_id, :part_id, :qty_used, :unit_cost_at_time, :created_at)
-            """
-        ),
-        {
-            "id": uuid4().hex,
-            "job_id": _job_uuid.hex,
-            "part_id": uuid4().hex,
-            "qty_used": 2,
-            "unit_cost_at_time": 30,
-            "created_at": datetime.now(UTC),
-        },
-    )
-    db_session.commit()
-
-    body = labor_router.get_job_labor_costing(UUID(job_id), {}, db_session)
-    assert body["job_id"] == job_id
-    assert body["labor_cost"] == 100.0
-    assert body["materials_cost"] == 60.0
-    assert body["overhead_cost"] == 12.8
-    assert body["total_cost"] == 172.8
-
-
-def test_get_job_costing_404_for_missing_job(db_session):
-    with pytest.raises(HTTPException) as exc:
-        labor_router.get_job_labor_costing(uuid4(), {}, db_session)
-    assert exc.value.status_code == 404
-
-
 def test_labor_summary_by_technician(db_session):
     job_id = _seed_job(db_session)
     _create_entry(
@@ -315,7 +263,6 @@ def test_labor_routes_require_auth_dependency():
     auth_paths = {
         "/api/jobs/{job_id}/time-entries",
         "/api/time-entries/{entry_id}",
-        "/api/jobs/{job_id}/costing",
         "/api/reports/labor-summary",
     }
     for route in labor_router.router.routes:

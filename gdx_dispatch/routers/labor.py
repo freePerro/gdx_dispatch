@@ -19,7 +19,6 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.models.tenant_models import Job, Technician, TimeEntry
-from gdx_dispatch.modules.inventory.models import JobPart
 
 try:
     from gdx_dispatch.routers.auth import get_current_user
@@ -65,9 +64,6 @@ def _cost_rate_fallback(db: Session) -> float:
         with contextlib.suppress(SQLAlchemyError):
             db.rollback()
     return DEFAULT_COST_RATE
-OVERHEAD_RATE = 0.08
-
-
 class TimeEntryCreate(BaseModel):
     tech_id: str = Field(min_length=1)
     clock_in: datetime
@@ -402,48 +398,6 @@ def delete_time_entry(
         except Exception:
             log.exception('delete_time_entry_audit_failed')
     return {"deleted": True}
-
-
-@router.get("/jobs/{job_id}/costing", response_model=None, operation_id="get_job_labor_costing")
-def get_job_labor_costing(
-    job_id: UUID,
-    current_user: dict[str, Any] = Depends(_require_dispatch),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    _get_job_or_404(db, job_id)
-    entries = (
-        db.query(TimeEntry)
-        .filter(TimeEntry.job_id == job_id, TimeEntry.deleted_at.is_(None))
-        .all()
-    )
-    _fb = _cost_rate_fallback(db)
-    labor_cost = round(sum(_entry_cost(entry, _fb) for entry in entries), 2)
-    try:
-        from sqlalchemy import func as _func
-        materials_row = db.execute(
-            select(
-                _func.coalesce(
-                    _func.sum(
-                        _func.coalesce(JobPart.qty_used, 0) * _func.coalesce(JobPart.unit_cost_at_time, 0)
-                    ), 0
-                ).label("materials_cost")
-            ).where(JobPart.job_id == job_id)
-        ).mappings().first()
-    except SQLAlchemyError:
-        log.exception("materials_cost_query_failed", extra={"job_id": str(job_id)})
-        materials_row = None
-    materials_cost = round(float((materials_row or {}).get("materials_cost", 0) or 0), 2)
-    overhead_cost = round((labor_cost + materials_cost) * OVERHEAD_RATE, 2)
-    total_cost = round(labor_cost + materials_cost + overhead_cost, 2)
-
-    return {
-        "job_id": str(job_id),
-        "labor_cost": labor_cost,
-        "materials_cost": materials_cost,
-        "overhead_cost": overhead_cost,
-        "total_cost": total_cost,
-        "labor_minutes": int(sum(entry.duration_minutes or 0 for entry in entries)),
-    }
 
 
 @router.get("/reports/labor-summary", response_model=None)
