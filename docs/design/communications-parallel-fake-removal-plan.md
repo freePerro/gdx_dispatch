@@ -1,6 +1,6 @@
 # Remove the Communications screen — a third messaging system that never worked
 
-Status: **BUILT — branch `chore/remove-communications-shell`, PR #549**
+Status: **RELEASED v1.113.0** — MERGED #549 (2026-09-01), prod + demo rolled
 (2026-08-31; plan written 2026-08-26 against `origin/main @ f1cbd97`). Decisions
 taken: §7.1 **delete**; §7.2 the DNC routes **go** (they never stored anything
 durably); §7.3 `/messages` and `/inbound-comms` — and `/communications` itself —

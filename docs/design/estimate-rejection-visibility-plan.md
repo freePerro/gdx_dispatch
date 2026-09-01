@@ -1,10 +1,9 @@
 # Estimate rejection visibility — plan
 
-**Status:** BUILT — all three PRs open 2026-08-31, merge bottom-up: **PR 1 =
-#548** (this branch); **PR 2 = #551** (bounce parity + office bell, stacked on
-#547, the bounce-test time bomb); **PR 3 = #552** (manual re-send detector,
-stacked on #551). Nothing released yet. PR 1 (branch
-`feat/estimate-rejection-visibility`, 2026-08-31): `GET /api/estimates/{id}/activity`,
+**Status:** RELEASED v1.113.0 (2026-09-01) — **PR 1 = #548**, **PR 2 = #551**
+(bounce parity + office bell; #547 defused the bounce-test time bomb), **PR 3 =
+#552** (manual re-send detector), all MERGED 2026-09-01 and rolled to prod +
+demo. PR 1 (branch `feat/estimate-rejection-visibility`, 2026-08-31): `GET /api/estimates/{id}/activity`,
 the "Failed Email" label + warn severity on every estimate-status tag (desktop
 list/detail, job page, mobile list + customer page), the status context strip
 (bounce banner with failed recipient/date + Fix customer email + Re-send;
