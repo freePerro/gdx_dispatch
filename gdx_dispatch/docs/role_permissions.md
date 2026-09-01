@@ -1,5 +1,14 @@
 # Role Permissions
 
+**Status: CURRENT** for the mechanism (spot-checked 2026-09-01 — 10 of 11 file
+references resolve; the exception is an external planning file). **Caveat this
+doc does not state:** the enforcement contract is not applied everywhere —
+`.authz_ungated_baseline` freezes 127 routes reachable without an auth
+dependency, and `routers/payments.py` has 7 mutation routes and 0
+`require_permission` gates. Some are token-scoped by design; the baseline
+cannot tell you which.
+
+
 This document describes the RBAC system that backs `/role-permissions`. It covers the permission catalog, the seven builtin roles, the enforcement contract, and the recipe for adding a new permission.
 
 > **See also:** [Role & Nav Naming Conventions](ROLE_AND_NAV_NAMING_CONVENTIONS.md) — canonical role spellings + `normalize_role`, and the permission-driven nav-visibility tiers (`nav.office` / `nav.admin`). Read it before adding a role comparison or a nav module.

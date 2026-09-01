@@ -1,5 +1,9 @@
 # Role & Nav Naming Conventions
 
+**Status: CURRENT** (spot-checked 2026-09-01 — all 11 file references resolve).
+Read with `role_permissions.md`.
+
+
 How we name roles and how nav-module visibility is decided. Read this before
 touching role strings or adding a nav module. Companion to
 [`role_permissions.md`](role_permissions.md).

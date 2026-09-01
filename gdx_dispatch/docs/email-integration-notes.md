@@ -1,5 +1,12 @@
 # Email Integration Notes
 
+**Status: HISTORICAL.** Its own text says it was scoped against the Flask
+dispatch app (`dispatch/gdx_app.py` + Flask-Mail) and re-framed for FastAPI.
+That app is gone. For current email behaviour read
+`docs/design/email-readability-and-delivery-plan.md` (RELEASED v1.68.0) and
+`core/email_layout.py` / `core/email_sender.py`, not this.
+
+
 > Salvaged 2026-04-10 from the pre-lift-and-shift `road map` file (old lot). Original was scoped against the Flask dispatch app (`dispatch/gdx_app.py` + Flask-Mail). These notes are re-framed for the FastAPI GDX app but the underlying SMTP / Microsoft Graph options apply regardless of framework.
 
 ## Current state

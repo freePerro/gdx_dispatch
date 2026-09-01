@@ -1,5 +1,9 @@
 # Plugin browser stream (Phase 2)
 
+**Status: CURRENT.** Companion to `decisions/ADR-014-plugin-browser-stream.md`;
+`plugin_host/browser_stream.py` is present.
+
+
 How a plugin uses the consent-gated browser stream (see
 [ADR-014](decisions/ADR-014-plugin-browser-stream.md)). Use it when an
 integration has no API and needs a human in a real browser (e.g. an Azure B2C

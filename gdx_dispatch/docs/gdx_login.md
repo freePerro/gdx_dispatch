@@ -4,6 +4,10 @@ description: Creds to log into gdx.example.com via the real login form (not JWT 
 type: reference
 originSessionId: 2dc50e8a-c153-48b5-9139-381da2f0f0e3
 ---
+
+**Status: CURRENT.** Short helper for driving a real browser login. Its one
+dead reference (`reference_vps_ops.md`) is a personal skills file outside this
+repo, not a missing repo doc.
 ## How to log into GDX as Claude
 
 **Account:** `auditor28@example.com` (admin role, GDX tenant `a1b2c3d4-e5f6-7890-abcd-ef1234567890`).

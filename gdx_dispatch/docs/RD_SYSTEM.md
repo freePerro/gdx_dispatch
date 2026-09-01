@@ -1,5 +1,11 @@
 # R&D System — Three Departments
 
+**Status: HISTORICAL — not runnable.** Every one of its 8 file references is
+dead: the `ai-queue/rd/` tree, `tools/test_red_light.py` and
+`tools/session_checkpoint.py` are all absent, so the commands in Quality Gates
+cannot execute. Same 2026-04 extraction as `ORCHESTRATOR_ARCHITECTURE.md`.
+
+
 ## R&D AI (Models, Performance, Costs, Opportunities)
 ```bash
 python gdx_dispatch/tools/rd_ai_research.py              # Full report

@@ -1,3 +1,9 @@
+**Status: HISTORICAL.** The Plan O runtime this describes was extracted out of
+this repo in 2026-04 and the legacy loop machinery deleted; `ai-queue/` and
+`gdx_dispatch/tools/orchestrator/` no longer exist here, so 4 of its 5 file
+references are dead. The forwarding address in the banner below is gone too —
+the live orchestrator is a separate project. Kept as the record of the design.
+
 > **⚠ MOVED 2026-04-20** — The Plan O graph runtime described here was extracted to `~/Desktop/gdx-orchestrator/`. The legacy autonomous-loop machinery (watcher, gemma_implementer, etc.) was deleted from this repo. systemd units stopped + removed. See `~/Desktop/gdx-orchestrator/LEARNINGS.md` for the full migration story. This document is preserved as a historical reference.
 
 ---

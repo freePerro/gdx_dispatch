@@ -1,5 +1,9 @@
 # MCP Browser-Walk Helpers
 
+**Status: CURRENT** — `core/mcp_tools/` is present. Short helper notes, not a
+specification.
+
+
 Workarounds for chrome-devtools / playwright MCP tools when they don't quite drive PrimeVue or other components correctly.
 
 ## PrimeVue InputNumber — `fill` doesn't update the model

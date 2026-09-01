@@ -1,5 +1,11 @@
 # Secrets Rotation Procedures
 
+**Status: CURRENT — but overlaps `SECRETS_ROTATION_RUNBOOK.md`.** Two docs
+cover this ground; this is the older, procedure-shaped half (2026-06-18), the
+runbook is newer (2026-08-31). Neither supersedes the other and they have not
+been reconciled — read both before rotating anything.
+
+
 ## DB Credential Rotation
 
 ```bash

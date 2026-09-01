@@ -1,5 +1,13 @@
 # PG Integration Gate — Commit-Time Trigger
 
+**Status: HISTORICAL — the gate it documents cannot fire.** Both scripts are
+absent: `tools/run_pg_integration_tests.sh` (the runner) and
+`tools/pre_commit_test_gate.sh` (the hook it says to install). There is no
+pre-commit hook installed in this repo at all. Postgres tests are run manually
+— see `CLAUDE.md`, and note `--network host` is required for them and breaks
+~15 other tests.
+
+
 The PG integration gate runs PostgreSQL integration tests during commit if changes affect database schema or test infrastructure.
 
 ## What It Does

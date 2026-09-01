@@ -1,5 +1,10 @@
 # Authentik Disaster Plan (48h Exit)
 
+**Status: CURRENT — untested.** Recovery plan for loss of the Authentik
+instance. Never exercised; treat as a plan, not a proven procedure. Same
+caveat as `RESTORE_RUNBOOK.md`: nothing here has been drilled.
+
+
 If Authentik has an unpatched critical vulnerability or becomes commercially unusable, we switch IdP within 48 hours while preserving tenant/app behavior.
 
 ## Triggers

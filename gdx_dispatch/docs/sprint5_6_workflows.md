@@ -1,5 +1,11 @@
 # Sprint 5 + 6 — Workflow Map
 
+**Status: RECORD — a dated snapshot, not a current map.** Describes the tech /
+dispatcher / admin surfaces as of Sprint 5+6, last updated 2026-05-03 (S92).
+Endpoints named here may have moved; `modules/workflows` is the live automation
+path. Useful as the record of what those sprints delivered.
+
+
 What a tech, dispatcher, and admin actually do across the new surfaces, and which endpoint backs each step. Updated 2026-05-03 (S92).
 
 ---
