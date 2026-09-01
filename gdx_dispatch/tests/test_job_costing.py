@@ -366,20 +366,20 @@ def _bill(db, job_id, desc, qty=1, unit=10.0, links=None, kind="item",
     db.commit()
 
 
-def _cat(db, name, cost, sku, active=True):
+def _cat(db, name, cost, sku, active=True, product_class="part"):
     cid = str(uuid4())
     db.execute(
         text("INSERT INTO custom_catalogs (id,name,source_system,product_class,field_schema,"
              "pricing_strategy,pricing_config,active,created_at,updated_at) "
-             "VALUES (:id,'Cat','manual','part','{}','fixed','{}',1,datetime('now'),datetime('now'))"),
-        {"id": cid},
+             "VALUES (:id,'Cat','manual',:pc,'{}','fixed','{}',1,datetime('now'),datetime('now'))"),
+        {"id": cid, "pc": product_class},
     )
     db.execute(
         text("INSERT INTO custom_catalog_items (id,catalog_id,sku,name,cost,price,product_class,"
              "attributes,active,created_at,updated_at) "
-             "VALUES (:id,:c,:sku,:n,:cost,:p,'part','{}',:a,datetime('now'),datetime('now'))"),
+             "VALUES (:id,:c,:sku,:n,:cost,:p,:pc,'{}',:a,datetime('now'),datetime('now'))"),
         {"id": str(uuid4()), "c": cid, "sku": sku, "n": name, "cost": cost,
-         "p": round(cost * 1.5, 2), "a": 1 if active else 0},
+         "p": round(cost * 1.5, 2), "a": 1 if active else 0, "pc": product_class},
     )
     db.commit()
 
@@ -640,4 +640,33 @@ def test_a_sku_with_stray_whitespace_still_matches(client):
     _used_part(db, job, "Torsion spring", 2, sku="  ts-207 ")
 
     assert _parts_for_job(db, job)["estimated_cost_total"] == 83.00
+    db.close()
+
+
+def test_a_door_row_never_prices_a_part(client):
+    """#471 residual: a DOOR in the custom catalog that happens to share a SKU
+    with a part must not become the part's estimate. Counterfactual: drop
+    `AND c.product_class <> 'door'` from the estimate SQL and this fails."""
+    db = _s(client)
+    job = uuid4()
+    _cat(db, "16x7 steel door", 899.00, "DOOR-16X7", product_class="door")
+    _used_part(db, job, "Door-ish part", 1, sku="DOOR-16X7", status="used")
+    out = _parts_for_job(db, job)
+    assert out["total"] == 0.0
+    assert out["items"][0]["cost_known"] is False, "a door priced a part"
+    db.close()
+
+
+def test_a_zero_quantity_is_zero_not_one(client):
+    """#469 residual: `quantity or 1` re-rated a recorded 0 as 1. Zero is a
+    tech saying "none used" — it contributes nothing and stays visible."""
+    db = _s(client)
+    job = uuid4()
+    _cat(db, "Torsion spring", 41.50, "TS-207")
+    _used_part(db, job, "Torsion spring", 0, sku="TS-207", status="used")
+    out = _parts_for_job(db, job)
+    assert out["total"] == 0.0
+    assert out["items"][0]["qty"] == 0.0
+    assert out["items"][0]["subtotal"] == 0.0
+    assert out["items"][0]["cost_known"] is True
     db.close()
