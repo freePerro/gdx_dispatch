@@ -35,8 +35,15 @@ plainly.
   Re-run in isolation before blaming your branch.
 - Lint is a **ruff ratchet against a baseline**, not plain pass/fail — a
   branch can be "clean" and still over the ratchet.
-- CI (`ci.yml`) runs only on main. Mid-stack PRs need the local test matrix
-  run and its results posted before merge.
+- **CI (`ci.yml`) triggers on `pull_request` with base `main`, and on `push`
+  to `main`.** It does *not* run on a PR whose base is another feature branch —
+  which is why **mid-stack PRs still need the local matrix run and its results
+  posted before merge**: the rule is right, the old reason ("runs only on
+  main") was not. Note also the `push` trigger carries a paths filter
+  (`gdx_dispatch/**`, `docker/**`, `.github/workflows/**`, excluding `**/*.md`)
+  while the `pull_request` trigger has none, so a docs-only PR runs the full
+  suite and a docs-only push to main does not. Verified against
+  `.github/workflows/ci.yml` 2026-09-01.
 - Main is merge-protected; `--admin` merge is the sanctioned path, but only
   after enumerating every check's result by name.
 
