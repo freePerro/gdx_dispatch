@@ -422,8 +422,12 @@ api/ plugin_api/`; instances: those two plus the templates themselves.
 **Two more instances the audit surfaced, fixed in the same PR:** (a) the Outlook
 Auto-Email templates tab (Settings → Outlook) saved `auto_email_triggers` that
 nothing read once `dispatch_trigger` was gone — an editor whose own notice said
-"Not active yet"; tab, API fields and its spec removed, column kept (this is the
-D6 revive-or-delete call from email-inbox-improvement-plan.md: **delete**);
+"Not active yet"; tab and spec removed, column kept (this is the D6
+revive-or-delete call from email-inbox-improvement-plan.md: **delete**). The API
+fields stayed for ONE release as an accepted-and-ignored / inert-default
+transition so a tab open across the deploy could still save; **removed in
+v1.112.6 (#546)** — a stale tab now gets a bounded "Save failed" toast on 422,
+and a stale chunk force-reloads on navigation;
 (b) `POST/PUT /api/workflows` accepted four action types with no executor
 (`send_sms`, `create_followup_task`, `emit_webhook`, `update_job_field` → every
 run "not_implemented"); the router now refuses them at create/update.

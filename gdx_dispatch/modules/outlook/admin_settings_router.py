@@ -102,11 +102,6 @@ class OutlookSettingsOut(BaseModel):
     tag_strategy_enabled: dict[str, bool]
     ai_tag_threshold: float
     visibility_rules: dict[str, Any]
-    # TRANSITION (remove in the release after 2026-08-31): the Auto-Email tab
-    # is retired, but a settings tab left open across the deploy still
-    # v-models this key. Serve an inert default so that bundle renders, and
-    # accept-and-ignore it on PATCH so its other tabs can still save.
-    auto_email_triggers: dict[str, Any] = Field(default_factory=dict)
     # Senders whose PDF attachments are auto-filed as vendor bills/statements.
     # Empty = the whole vendor-bill intake feature is off.
     vendor_bill_sender_allowlist: list[str] = []
@@ -119,8 +114,6 @@ class OutlookSettingsPatchIn(BaseModel):
     tag_strategy_enabled: dict[str, bool] | None = None
     ai_tag_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     visibility_rules: dict[str, Any] | None = None
-    # TRANSITION: accepted and IGNORED (never written) — see OutlookSettingsOut.
-    auto_email_triggers: dict[str, Any] | None = None
     vendor_bill_sender_allowlist: list[str] | None = None
 
 
@@ -213,14 +206,6 @@ _DEFAULT_VISIBILITY_RULES = {
     "untagged_visibility": "only_owner",
 }
 
-# The shape the retired Auto-Email tab v-models. Inert: nothing reads it and
-# PATCH ignores it. Delete with the transition fields above.
-_LEGACY_AUTO_EMAIL_PLACEHOLDER: dict[str, Any] = {
-    key: {"subject": "", "template": "", "enabled_default": False}
-    for key in ("invoice.created", "job.completed", "estimate.sent")
-}
-
-
 @router.get("/settings", response_model=OutlookSettingsOut)
 def get_settings(
     user: dict[str, Any] = Depends(get_admin_principal),
@@ -238,7 +223,6 @@ def get_settings(
         },
         ai_tag_threshold=float(row.ai_tag_threshold or Decimal("0.85")),
         visibility_rules=visibility,
-        auto_email_triggers=_LEGACY_AUTO_EMAIL_PLACEHOLDER,
         vendor_bill_sender_allowlist=normalize_allowlist(
             row.vendor_bill_sender_allowlist
         ),
