@@ -2,7 +2,7 @@
     <section class="view-card reviews-view">
       <Toolbar>
         <template #start>
-          <h2 class="page-title">Reviews Inbox</h2>
+          <h2 class="page-title">Reviews</h2>
         </template>
         <template #end>
           <Button
@@ -15,16 +15,16 @@
         </template>
       </Toolbar>
 
+      <!-- #473, option B (2026-09-01): reviews live on Google. This page lists
+           the ratings the office has recorded; nothing ingests Google, Yelp or
+           Facebook, so the platform filter and the "Flagged" tab (no such
+           column) were promises the page could not keep. Gone, not hidden. -->
+      <p class="muted reviews-note" data-testid="reviews-note">
+        Customer reviews live on Google. This list is the ratings your office has recorded.
+        <router-link to="/settings" data-testid="reviews-settings-link">Set your Google review link</router-link>
+        and every receipt and invoice will ask for one.
+      </p>
       <div class="filter-row">
-        <Select
-          v-model="sourceFilter"
-          :options="sourceOptions"
-          option-label="label"
-          option-value="value"
-          placeholder="Source"
-          class="w-full"
-          data-testid="reviews-source-filter"
-        />
         <DatePicker
           v-model="reviewRange"
           selection-mode="range"
@@ -34,17 +34,6 @@
           class="w-full"
           data-testid="reviews-date-filter"
         />
-        <div class="toggle-field">
-          <label class="toggle-label" for="flagged-only">Flagged only</label>
-          <ToggleSwitch
-            id="flagged-only"
-            v-model="flaggedOnly"
-            on-label="Yes"
-            off-label="No"
-            class="toggle-control"
-            data-testid="reviews-flagged-toggle"
-          />
-        </div>
       </div>
 
       <Tabs v-model:value="activeTab" class="view-tabs" data-testid="reviews-tabs">
@@ -76,8 +65,8 @@
         <template #empty>
           <EmptyState
             icon="pi pi-star"
-            title="No reviews yet"
-            message="Customer reviews from Google, Yelp, and Facebook will land in this inbox."
+            title="No ratings recorded yet"
+            message="Customer reviews live on Google — set your Google review link in Settings and every receipt and invoice will ask for one."
           />
         </template>
         <Column field="source" header="Source">
@@ -85,7 +74,7 @@
         </Column>
         <Column field="rating" header="Rating">
           <template #body="{ data }">
-            <Rating :value="Number(data.rating)" :cancel="false" :readonly="true" :stars="5" />
+            <Rating :model-value="Number(data.rating)" :cancel="false" :readonly="true" :stars="5" />
           </template>
         </Column>
         <Column field="customer" header="Customer" />
@@ -110,13 +99,11 @@ import DataTable from 'primevue/datatable';
 import DatePicker from 'primevue/datepicker';
 import ProgressSpinner from 'primevue/progressspinner';
 import Rating from 'primevue/rating';
-import Select from 'primevue/select';
 import Tab from 'primevue/tab';
 import TabList from 'primevue/tablist';
 import TabPanel from 'primevue/tabpanel';
 import TabPanels from 'primevue/tabpanels';
 import Tabs from 'primevue/tabs';
-import ToggleSwitch from 'primevue/toggleswitch';
 
 const api = useApiWithToast();
 
@@ -124,26 +111,19 @@ const reviews = ref([]);
 const loading = ref(true);
 const loadError = ref(null);
 const activeTab = ref('all');
-const sourceFilter = ref(null);
 const reviewRange = ref(null);
-const flaggedOnly = ref(false);
 
 
-const sourceOptions = [
-  { label: 'All sources', value: null },
-  { label: 'Google', value: 'google' },
-  { label: 'Yelp', value: 'yelp' },
-  { label: 'Facebook', value: 'facebook' },
-];
+// Display labels for a stored `source`. There is no platform FILTER any more:
+// nothing ingests these platforms, and every row on this tenant has no source.
+const sourceLabels = { google: 'Google', yelp: 'Yelp', facebook: 'Facebook', office: 'Office' };
 
 const tabDefinitions = [
-  { key: 'all', label: 'All reviews', note: 'Every review in the inbox.' },
-  { key: 'flagged', label: 'Flagged', note: 'Marked as needing attention.' },
+  { key: 'all', label: 'All ratings', note: 'Every rating the office has recorded.' },
 ];
 
 const tabMatchers = {
   all: () => true,
-  flagged: (review) => Boolean(review.flagged),
 };
 
 const currentTabKey = computed(() => activeTab.value || 'all');
@@ -160,14 +140,6 @@ const filteredReviews = computed(() => {
   let list = reviews.value
     .slice()
     .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
-
-  if (sourceFilter.value) {
-    list = list.filter((review) => review.source === sourceFilter.value);
-  }
-
-  if (flaggedOnly.value) {
-    list = list.filter((review) => review.flagged);
-  }
 
   if (reviewRange.value?.length) {
     const [start, end] = reviewRange.value;
@@ -207,10 +179,9 @@ function formatDate(value) {
 }
 
 function sourceLabel(value) {
-  // The null entry is the "All sources" FILTER option — a review with no
-  // recorded source must read "Unknown", not "All sources".
-  const option = sourceOptions.find((item) => item.value && item.value === value);
-  return option?.label || value?.toUpperCase() || 'Unknown';
+  // A row with no recorded source reads "Unknown" — never a platform name
+  // the row does not carry.
+  return sourceLabels[value] || value?.toUpperCase() || 'Unknown';
 }
 
 async function loadReviews() {
@@ -235,6 +206,8 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.reviews-note { margin: 0 0 0.5rem; font-size: 0.9rem; }
+.reviews-note a { text-decoration: underline; }
 .reviews-view {
   display: flex;
   flex-direction: column;

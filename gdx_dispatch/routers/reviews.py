@@ -49,8 +49,20 @@ def list_reviews(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     try:
+        # #473, option B (owner, 2026-09-01): reviews live on Google. This page
+        # shows the ratings the office has recorded — nothing else can reach
+        # this table any more. Two kinds of row are therefore not reviews:
+        #   * a soft-deleted row (invariant #2: never read one back as live);
+        #   * a `requested` row with no rating — the request route that minted
+        #     those is gone (#542), so they can never be submitted. Nine sat
+        #     on prod rendering as 0-star reviews, page 13 vs stats 4.
         reviews = db.execute(
-            select(CustomerReview).order_by(CustomerReview.created_at.desc())
+            select(CustomerReview)
+            .where(
+                CustomerReview.deleted_at.is_(None),
+                CustomerReview.rating.is_not(None),
+            )
+            .order_by(CustomerReview.created_at.desc())
         ).scalars().all()
         # The Reviews page renders source / customer / content columns; until
         # 2026-08-31 the payload carried none of them (review_text only), so
@@ -163,7 +175,10 @@ def review_stats(
     try:
         rows = db.execute(
             select(CustomerReview.rating, CustomerReview.submitted_at)
-            .where(CustomerReview.rating.is_not(None))
+            .where(
+                CustomerReview.rating.is_not(None),
+                CustomerReview.deleted_at.is_(None),
+            )
             .order_by(CustomerReview.submitted_at.asc())
         ).all()
 

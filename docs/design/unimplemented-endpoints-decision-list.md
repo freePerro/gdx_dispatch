@@ -471,8 +471,11 @@ Same shape as the Automations shell above, found in the same pass:
   UI. `token`, `sent_at`, `google_reviews_link`, `message`, `scheduled_for` are
   now write-only columns; `token` is still serialized.
 
-**Still open by design — #473:** customers have no in-app way to leave a review
-and the owner's 2026-08-25 call was that reviews live on Google. The Google
-review link now rides every receipt and invoice footer (v1.112.0), which is
-the everyday ask; a dedicated "Request a review" email action is a feature to
-decide, not a bug to fix here.
+**#473 — DECIDED, option B (owner, 2026-09-01): reviews live on Google.** No
+in-app customer submission will be built. What that means in code: the Google
+review link rides every receipt and invoice footer (v1.112.0); the Reviews
+page lists only the ratings the office has recorded (`list_reviews` now skips
+soft-deleted rows and the nine dead `requested` rows the retired request route
+minted, so page and stats agree); the page no longer promises Google/Yelp/
+Facebook ingestion, and its platform filter and `Flagged` tab (no such column)
+are gone. `POST /api/reviews` (office-entered rating) stays.

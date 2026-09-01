@@ -20,7 +20,16 @@ const PLACEHOLDER = '—';
 function _parse(value) {
   if (!value) return null;
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
-  const normalized = typeof value === 'string' ? value.replace(' ', 'T') : value;
+  let normalized = value;
+  if (typeof value === 'string') {
+    normalized = value
+      .replace(' ', 'T')
+      // PG emits microseconds; the ISO grammar Date() accepts is milliseconds.
+      .replace(/(\.\d{3})\d+(?=(?:[Zz]|[+-]\d{2}(?::?\d{2})?)?$)/, '$1')
+      // PG emits a bare hour offset ("+00"); Date() needs "+00:00" — without
+      // this every timestamptz parsed as NaN and rendered raw (F-066 again).
+      .replace(/([+-]\d{2})$/, '$1:00');
+  }
   const d = new Date(normalized);
   return Number.isNaN(d.getTime()) ? null : d;
 }

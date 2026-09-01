@@ -74,3 +74,32 @@ def test_list_reviews_feeds_the_page_columns(tenant_db):
     assert row["content"] == "Great door"
     assert row["source"] == "google"
     assert row["review_text"] == "Great door", "old key kept for any other reader"
+
+
+def test_list_shows_only_live_rated_reviews_and_agrees_with_stats(tenant_db):
+    """#473 option B: the page lists ratings the office recorded — not dead
+    `requested` rows (the request route is gone, they can never be submitted)
+    and not soft-deleted rows (invariant #2). Page count == stats count.
+
+    Counterfactual: drop either predicate from list_reviews and the requested
+    or deleted row comes back as a 0-star / ghost review."""
+    from datetime import UTC, datetime
+
+    from gdx_dispatch.models.tenant_models import CustomerReview
+    from gdx_dispatch.routers.reviews import list_reviews, review_stats
+
+    common = {"tenant_id": "t-1", "company_id": "t-1", "created_at": "2026-08-31T00:00:00+00:00"}
+    tenant_db.add(CustomerReview(id="rv-live", rating=4, status="submitted",
+                                 submitted_at="2026-08-31T00:00:00+00:00", **common))
+    tenant_db.add(CustomerReview(id="rv-requested", rating=None, status="requested", **common))
+    tenant_db.add(CustomerReview(id="rv-deleted", rating=1, status="submitted",
+                                 submitted_at="2026-08-30T00:00:00+00:00",
+                                 deleted_at=datetime.now(UTC), **common))
+    tenant_db.commit()
+
+    ids = {i["id"] for i in list_reviews(_={"user_id": "u"}, db=tenant_db)["items"]}
+    assert ids == {"rv-live"}, ids
+
+    stats = review_stats(trend_days=30, _={"user_id": "u"}, db=tenant_db)
+    assert stats["count"] == 1, "stats must not count a soft-deleted rating"
+    assert stats["average_rating"] == 4.0
