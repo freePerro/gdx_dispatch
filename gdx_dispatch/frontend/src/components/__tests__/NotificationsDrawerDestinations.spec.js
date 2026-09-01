@@ -2,10 +2,12 @@
  * A notification must land you on the screen that can actually hold the thing.
  *
  * `inbox` / `message` used to send desktop users to `/communications`, whose
- * store is a module-level dict in the API process
- * (`routers/communications.py:83 _EMAILS_BY_TENANT`) that empties on every
- * container restart. The real Outlook-synced mailbox is `/inbox`
- * (`InboxView` -> `/api/outlook/*`). Mobile was already correct.
+ * store was a module-level dict in the API process
+ * (`routers/communications.py` `_EMAILS_BY_TENANT`) that emptied on every
+ * container restart (#492). The real Outlook-synced mailbox is `/inbox`
+ * (`InboxView` -> `/api/outlook/*`). Mobile was already correct. The screen
+ * and its router were removed outright in #350; this guard stays so nothing
+ * quietly points a notification back at a path that is now a redirect.
  *
  * Source-level assertion, same pattern as OutlookSettingsAutoEmailNotice.spec.js:
  * the destination map is a plain switch inside a component that needs a store,

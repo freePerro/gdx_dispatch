@@ -94,6 +94,6 @@ After any rotation:
 - [ ] `curl -sk https://gdx.example.com/health` returns 200
 - [ ] Login works for at least one admin account
 - [ ] Stripe webhook test event succeeds
-- [ ] SMS sending works (test via /api/sms/send)
+- [ ] SMS sending works — send a text from Phone → SMS (`POST /api/phone-com/messages`, modules/phone_com/router.py; Phone.com is the live SMS line). Not the job "on-my-way" text: that path is Twilio-only and reports `not configured` on prod. (`/api/sms/send` was a fake-success stub, removed in #350.)
 - [ ] Backup script runs without error
 - [ ] Celery Beat is scheduling tasks (check logs)

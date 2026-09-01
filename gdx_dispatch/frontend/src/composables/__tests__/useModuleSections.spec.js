@@ -193,9 +193,10 @@ describe('moduleVisible — single permission-driven gate', () => {
 });
 
 describe('catalog tagging — tier invariants', () => {
-  const FIELD = new Set(['jobs', 'timeclock', 'communications', 'inbox', 'inventory']);
+  // Was 5 with `communications`; that nav entry went with its screen (#350).
+  const FIELD = new Set(['jobs', 'timeclock', 'inbox', 'inventory']);
 
-  it('the only ungated modules are the 5 field-tier ones', () => {
+  it('the only ungated modules are the 4 field-tier ones', () => {
     const ungated = MODULES.filter((m) => !m.permission).map((m) => m.key);
     expect(new Set(ungated)).toEqual(FIELD);
   });

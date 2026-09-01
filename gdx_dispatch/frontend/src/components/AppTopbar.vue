@@ -133,11 +133,11 @@
           <i class="pi pi-search" aria-hidden="true" />
         </Button>
 
-        <!-- Tier-7: every /api/notifications* endpoint requires the
-             communications module; with it disabled the store collapses the
+        <!-- Tier-7: every /api/notifications* endpoint requires the module
+             keyed `communications`; with it disabled the store collapses the
              403 to zero and the bell was a permanently-empty lie. -->
         <Button
-          v-if="communicationsEnabled"
+          v-if="notificationsEnabled"
           type="button"
           class="p-button-text notification-btn"
           :class="{ 'has-flash': notificationFlash }"
@@ -228,10 +228,13 @@ function newEstimate() {
 const canCreate = computed(() => !isTechnician(auth.user?.role));
 
 const tenantModules = useTenantModules();
-// Tier-7: every /api/notifications* endpoint requires the communications
-// module; with it disabled the store collapsed the 403 to zero and the
-// bell was a permanently-empty lie.
-const communicationsEnabled = computed(() => tenantModules.isEnabled('communications'));
+// Tier-7: every /api/notifications* endpoint requires the module keyed
+// `communications`; with it disabled the store collapsed the 403 to zero and
+// the bell was a permanently-empty lie. The key name is historical: it was
+// minted for the /communications screen, which was removed (#350), and it
+// was kept because routers/notifications.py gates on it and prod holds the
+// grant. What it gates today is this bell — hence the name here.
+const notificationsEnabled = computed(() => tenantModules.isEnabled('communications'));
 // AI Assistant is OPT-IN per-tenant (paid/optional feature) AND
 // role-gated — field techs don't need an Assistant in their topbar.
 // useTenantModules.isEnabled() defaults to true for unknown modules
@@ -245,12 +248,12 @@ const aiAssistantEnabled = computed(() => {
 });
 
 // Start polling for real notification count from the API
-// Tier-7 audit catch: polling unconditionally meant a communications-off
+// Tier-7 audit catch: polling unconditionally meant a notifications-off
 // tenant still fired /api/notifications/count every 60s forever, 403ing
 // silently — the lie just moved from the bell to the server logs. Poll
 // only while the module is on (immediate covers the default-enabled
 // pre-fetch state; the watcher stops it if the payload lands disabled).
-watch(communicationsEnabled, (on) => {
+watch(notificationsEnabled, (on) => {
   if (on) notifications.startPolling();
   else notifications.stopPolling();
 }, { immediate: true });

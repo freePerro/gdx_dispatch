@@ -99,12 +99,6 @@ except Exception:
     audit_router = APIRouter(prefix="/api/audit", tags=["audit"])
 
 try:
-    from gdx_dispatch.routers import communications as communications_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: communications_router")
-    communications_router = APIRouter(tags=["communications"])
-
-try:
     from gdx_dispatch.routers import payments as payments_gdx_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: payments_gdx_router")
@@ -1529,12 +1523,6 @@ def create_app() -> FastAPI:
         stripe_connect_router.router if hasattr(stripe_connect_router, "router") else stripe_connect_router
     )
     app.include_router(audit_router.router if hasattr(audit_router, "router") else audit_router)
-    app.include_router(
-        communications_router.router if hasattr(communications_router, "router") else communications_router
-    )
-    _comms_public = getattr(communications_router, "public_router", None)
-    if _comms_public is not None:
-        app.include_router(_comms_public)
     app.include_router(payments_gdx_router.router if hasattr(payments_gdx_router, "router") else payments_gdx_router)
     app.include_router(expenses_router.router if hasattr(expenses_router, "router") else expenses_router)
     app.include_router(customers_router.router if hasattr(customers_router, "router") else customers_router)

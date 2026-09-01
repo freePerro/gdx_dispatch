@@ -417,19 +417,26 @@ Equipment is tracked per customer with service history, warranty info, and predi
 
 SMS and email can be sent to customers, conversations are threaded and viewable, webhook from Twilio records incoming messages.
 
+**2026-08-31 (#350):** the `/communications` screen and `routers/communications.py`
+were removed — a process-memory messaging shell that reported "sent" without
+sending. COMM-01..07 and COMM-09 tested that shell and are retired; the real
+channels are `/inbox` (Outlook, `/api/outlook/*`) and `/phone-com/messages`
+(Phone.com). `/communications`, `/messages` and `/inbound-comms` redirect to
+`/inbox`. COMM-08 stands.
+
 ### Functional Tests
 
 | ID | Test Case | Verification |
 |----|-----------|-------------|
-| COMM-01 | Communications page renders | Shows conversation list, message composer |
-| COMM-02 | Send SMS | POST /api/sms/send with phone and message, returns 200, message appears in conversation |
-| COMM-03 | SMS conversations list | GET /api/sms/conversations returns conversations grouped by phone |
-| COMM-04 | Conversation detail | GET /api/sms/conversations/{phone} returns message thread in order |
-| COMM-05 | Incoming SMS webhook | POST /api/sms/webhook (from Twilio), message recorded in conversation |
-| COMM-06 | Communication timeline | GET /api/communications/timeline/{customer_id} shows all communications |
-| COMM-07 | Do Not Contact | POST /api/communications/dnc/{customer_id}, subsequent sends blocked |
+| ~~COMM-01~~ | ~~Communications page renders~~ | Retired (#350) — `/communications` redirects to `/inbox` |
+| ~~COMM-02~~ | ~~Send SMS~~ | Retired (#350) — `POST /api/sms/send` removed; SMS is Phone.com |
+| ~~COMM-03~~ | ~~SMS conversations list~~ | Retired (#350) — `GET /api/sms/conversations` removed |
+| ~~COMM-04~~ | ~~Conversation detail~~ | Retired (#350) — `GET /api/sms/conversations/{phone}` removed |
+| ~~COMM-05~~ | ~~Incoming SMS webhook~~ | Retired (#350) — `POST /api/sms/webhook` removed; inbound SMS is `POST /api/inbound-sms/webhook` (routers/inbound_comms.py) |
+| ~~COMM-06~~ | ~~Communication timeline~~ | Retired (#350) — the customer tab reads `GET /api/customers/{id}/communications` |
+| ~~COMM-07~~ | ~~Do Not Contact~~ | Retired (#350) — the DNC routes never stored anything durably; see contact-opt-out-suppression-plan.md |
 | COMM-08 | Email send | System sends email (estimate, invoice, receipt), delivered to inbox |
-| COMM-09 | Inbox view | GET /api/inbox/folders, /api/inbox/unread-count shows correct counts |
+| ~~COMM-09~~ | ~~Inbox view~~ | Retired (#350) — `/api/inbox/*` removed; the mailbox is `/api/outlook/*` |
 
 ### Edge Cases
 
@@ -639,7 +646,7 @@ When a module is disabled for a tenant, all API endpoints for that module return
 | MOD-04 | Disable invoices module | GET /api/invoices returns 403 |
 | MOD-05 | Disable timeclock module | GET /api/timeclock/*and /api/labor/* return 403 |
 | MOD-06 | Disable equipment_tracking | GET /api/equipment returns 403 |
-| MOD-07 | Disable communications | GET /api/sms/*, GET /api/notifications/* return 403 |
+| MOD-07 | Disable communications (shown as "Notifications") | GET /api/notifications/* return 403 (`/api/sms/*` removed in #350) |
 | MOD-08 | Disable fleet | GET /api/fleet/* returns 403 |
 | MOD-09 | Disable documents | GET /api/documents/*, file upload endpoints return 403, PDF endpoints return 403 |
 | MOD-10 | Disable stripe_connect | GET /api/stripe/connect/* returns 403 |

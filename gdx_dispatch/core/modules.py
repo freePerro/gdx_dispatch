@@ -36,7 +36,16 @@ MODULES = {
     "warranties": {"name": "Warranty Tracking", "tier": "professional", "default": False},
     "automations": {"name": "Workflow Automations", "tier": "business", "default": False},
     "documents": {"name": "Document Management", "tier": "starter", "default": True},
-    "communications": {"name": "Communications", "tier": "starter", "default": True},
+    # Key kept for compatibility; the NAME says everything it gates, because
+    # Settings → Modules renders this name on a toggle. The `/communications`
+    # screen this key was minted for was removed (issue #350 — a
+    # process-memory messaging shell that reported success without sending),
+    # but the key stays: `routers/notifications.py` (the in-app bell),
+    # `routers/inbound_comms.py` (inbound SMS/email admin routes) and
+    # `routers/ai_communication.py` (AI drafts) all gate on it, and prod holds
+    # the grant. Do NOT retire or rename the KEY: a rename would 403 the bell
+    # everywhere. Splitting the three gates apart is a separate decision.
+    "communications": {"name": "Notifications, inbound messages & AI drafts", "tier": "starter", "default": True},
     "reports_advanced": {"name": "Advanced Reports", "tier": "professional", "default": False},
     "mobile": {"name": "Mobile App", "tier": "starter", "default": True},
     "segments": {"name": "Customer Segments", "tier": "business", "default": False},

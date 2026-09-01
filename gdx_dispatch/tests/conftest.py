@@ -188,13 +188,6 @@ def _reset_all_in_memory_state() -> None:
     except Exception:
         pass
 
-    # Communications module
-    try:
-        from gdx_dispatch.routers import communications
-        communications.reset_state()
-    except Exception:
-        pass
-
     # Onboarding module
     try:
         from gdx_dispatch.core.onboarding import _mem_store

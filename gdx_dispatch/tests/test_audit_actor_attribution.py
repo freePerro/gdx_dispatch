@@ -263,12 +263,6 @@ def test_service_account_principal_is_found_under_its_own_state_key():
 #: Note what is in here: every /api/payments endpoint. Money movement is
 #: currently unaudited.
 KNOWN_DEAD_AUDIT_BLOCKS = {
-    "communications.py:send_sms",
-    "communications.py:sms_webhook",
-    "communications.py:send_email",
-    "communications.py:send_communication",
-    "communications.py:add_to_dnc",
-    "communications.py:remove_from_dnc",
     "maps.py:geocode_address",
     "maps.py:reverse_geocode",
     "maps.py:optimize_route",

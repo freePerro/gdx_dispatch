@@ -1,8 +1,14 @@
 # Remove the Communications screen — a third messaging system that never worked
 
-Status: **PLAN** (written 2026-08-26, verified against `origin/main @ f1cbd97`).
-Nothing removed. Step 1 of this work shipped separately as **#492** (repointing
-notification destinations off `/communications`).
+Status: **BUILT — branch `chore/remove-communications-shell`, PR #549**
+(2026-08-31; plan written 2026-08-26 against `origin/main @ f1cbd97`). Decisions
+taken: §7.1 **delete**; §7.2 the DNC routes **go** (they never stored anything
+durably); §7.3 `/messages` and `/inbound-comms` — and `/communications` itself —
+**redirect to `/inbox`**. The `communications` module key is **kept, not
+retired** (see §5 correction below): `routers/notifications.py` gates the bell
+on it and prod holds the grant; its display name is now "Notifications". Step 1
+shipped separately as **#492** (repointing notification destinations off
+`/communications`). Regression guard: `tests/test_communications_shell_removed.py`.
 
 `/communications` is a parallel implementation of two features that already
 exist, work, and are in daily use. Its storage is a dict in process memory. Its
@@ -103,6 +109,18 @@ anyone deciding to remove it.** So it is stated here on its own line:
 * **The `communications` module flag** is checked by `AppTopbar.vue:234`. A
   tenant with it enabled must not be left pointing at a route that no longer
   exists — retire the flag in the same change.
+  **Correction (2026-08-31, at build time):** the flag cannot be retired. It
+  is the gate on `routers/notifications.py` (the in-app bell, and the reason
+  `AppTopbar` reads it at all), and on `routers/inbound_comms.py` (admin) and
+  `routers/ai_communication.py`. Retiring it would 403 the bell on every
+  install that holds the grant — prod does. The key stays; what changed is its
+  display name (`core/modules.py` → "Notifications"), the topbar computed
+  (`notificationsEnabled`, with the key's history in a comment), and the nav
+  entry, which is gone.
+* **`routers/voice.py` owns `POST /api/communications/missed-call`** — a
+  Twilio voice webhook (#187) on the same URL prefix that was never part of
+  this router and consumes `core/sms.py` correctly. It stays; the route-table
+  guard allowlists it by name.
 * **`/messages` and `/inbound-comms` are bookmark redirects** added 2026-04-29.
   Removing the target turns two live URLs into dead ones. Decide: drop them, or
   repoint at `/inbox`.
@@ -127,7 +145,12 @@ anyone deciding to remove it.** So it is stated here on its own line:
   somewhere sensible rather than on a blank router error.
 * Prod after deploy: `outlook_messages` and `phone_com_messages` unchanged.
 
-## 7. Open decisions
+## 7. Open decisions — DECIDED 2026-08-31 (this build)
+
+1. **Delete** (not hide-and-hold). 2. **The DNC routes go** — they never stored a
+do-not-contact instruction durably; the real opt-out is `customers.email_opt_out`
+/ `sms_opt_out` (#491), unchanged. 3. `/messages`, `/inbound-comms` and
+`/communications` **redirect to `/inbox`**. Original questions kept below.
 
 1. **Delete, or hide-and-hold?** Deleting is reversible in git but not in
    muscle memory. `4 · Long-term hold` exists in the ledger now and would fit —

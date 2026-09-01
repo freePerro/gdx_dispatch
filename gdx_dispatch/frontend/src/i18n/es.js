@@ -11,7 +11,6 @@ export default {
     inventory: 'Inventario',
     timeclock: 'Control de Tiempo',
     equipment: 'Equipo',
-    communications: 'Comunicaciones',
     campaigns: 'Campañas',
     reports: 'Reportes',
     documents: 'Documentos',

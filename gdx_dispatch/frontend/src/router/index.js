@@ -36,7 +36,6 @@ const DailyLoadsheetView = () => import('../views/DailyLoadsheetView.vue');
 const DeliveryLoadsheetView = () => import('../views/DeliveryLoadsheetView.vue');
 const PlannerView = () => import('../views/PlannerView.vue');
 const EquipmentView = () => import('../views/EquipmentView.vue');
-const CommunicationsView = () => import('../views/CommunicationsView.vue');
 const CampaignsView = () => import('../views/CampaignsView.vue');
 const WinbackView = () => import('../views/WinbackView.vue');
 const ExpensesView = () => import('../views/ExpensesView.vue');
@@ -173,9 +172,11 @@ export const routes = [
   { path: '/customers/:id', name: 'customer-detail', component: CustomerDetailView },
   { path: '/dispatch', name: 'dispatch', component: DispatchView },
   { path: '/tasks', name: 'tasks', component: TasksView },
-  // /messages → /communications (deduped 2026-04-29 per modules.js cleanup;
-  // route kept as redirect so existing bookmarks resolve).
-  { path: '/messages', redirect: '/communications' },
+  // /messages → /inbox. Was a redirect to /communications (deduped 2026-04-29);
+  // that screen was removed 2026-08-31 (#350 — a process-memory messaging
+  // shell that reported "sent" without sending). /inbox is the real,
+  // Outlook-synced mailbox. Redirect kept so existing bookmarks resolve.
+  { path: '/messages', redirect: '/inbox' },
   // Reputation cluster — Reviews / Referrals / Surveys under one tab bar.
   {
     path: '/reviews',
@@ -234,13 +235,19 @@ export const routes = [
   // (owner / admin / dispatcher) match DISPATCH_MANAGER_ROLES exactly, and
   // "create / edit schedule entries" is the right verb for correcting a clock.
   { path: '/equipment', name: 'equipment', component: EquipmentView },
-  { path: '/communications', name: 'communications', component: CommunicationsView },
+  // /communications → /inbox. The CommunicationsView screen was removed
+  // (#350): threads lived in a dict in the API process, its senders were
+  // unconfigured, and Send answered with a green toast when nothing left.
+  // Email lives at /inbox (Outlook), SMS at /phone-com/messages. Bookmarks
+  // land on the mailbox rather than a router 404.
+  { path: '/communications', redirect: '/inbox' },
   // /voice → Phone.com (deduped 2026-04-29). Bookmark redirect.
   // 2026-07-01 UX audit: pointed at `/phone-com`, which is not a route — old
   // bookmarks landed on the 404 catch-all. Redirect to the calls view.
   { path: '/voice', redirect: '/phone-com/calls' },
-  // /inbound-comms → /communications (deduped 2026-04-29). Bookmark redirect.
-  { path: '/inbound-comms', redirect: '/communications' },
+  // /inbound-comms → /inbox (deduped 2026-04-29 to /communications; repointed
+  // 2026-08-31 when that screen was removed, #350). Bookmark redirect.
+  { path: '/inbound-comms', redirect: '/inbox' },
   // Marketing cluster — Campaigns / Segments / Automations / Winback / Loyalty
   // under one tab bar.
   {

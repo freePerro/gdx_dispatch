@@ -365,7 +365,8 @@ def _send_invite_email(email: str, name: str, role: str, request: Request) -> No
         role,
         tenant_name,
     )
-    # from gdx_dispatch.core.email import send_email
+    # (A commented-out `core.email.send_email` call lived here; that module
+    # was deleted with the communications shell, #350.)
     # send_email(
     #     to=email,
     #     subject=f"You've been invited to {tenant_name} on DispatchApp",

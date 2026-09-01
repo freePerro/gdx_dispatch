@@ -36,7 +36,6 @@ VUE_ROUTES = [
     "/inventory",
     "/timeclock",
     "/equipment",
-    "/communications",
     "/campaigns",
     "/reports",
     "/documents",
@@ -94,7 +93,6 @@ class TestVuePageAudit:
             "/estimates": "/api/estimates",
             "/billing": "/api/invoices",
             "/equipment": "/api/equipment",
-            "/communications": "/api/inbox/unread-count",
         }
         api_path = route_to_api.get(route)
         if not api_path:

@@ -13,7 +13,7 @@ after ``modules/notifications/router.py`` was deleted (CLEANUP_BACKLOG A3):
    templates / send / history plus the in-app badge endpoints (count / list /
    mark-read). It is gated by ``require_module("communications")`` and
    ``get_current_user``. Covered here with functional ``TestClient`` tests,
-   mirroring ``test_appointments.py`` / ``test_communications.py``.
+   mirroring ``test_appointments.py``.
 
 These are two different storage backings: the router persists to the
 ``tenant_models`` tables (``notifications``, ``notification_templates``, …),

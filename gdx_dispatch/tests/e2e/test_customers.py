@@ -169,8 +169,14 @@ class TestCustomerDetail:
             assert isinstance(data, (list, dict))
 
     def test_cust_09_communications_tab(self, api, console_tracker):
-        """Customer detail — communications tab shows SMS/email history."""
-        resp = api.get(f"/api/communications/timeline/{self.customer_id}")
+        """Customer detail — communications tab shows the logged comms.
+
+        The tab (CustomerDetailView `fetchCommunications`) reads
+        ``/api/customers/{id}/communications`` (routers/ui_compat.py). It used
+        to probe ``/api/communications/timeline/{id}``, a route of the removed
+        in-memory Communications shell (#350) that the tab never called.
+        """
+        resp = api.get(f"/api/customers/{self.customer_id}/communications")
         # May return 200 or 404 if no communications
         assert resp.status_code in (200, 404)
 

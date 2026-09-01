@@ -46,7 +46,7 @@ const SECTION_BY_KEY = {
   photos: 'Field',
   // Customers & Comms
   customers: 'Customers & Comms', customer_portal: 'Customers & Comms',
-  communications: 'Customers & Comms', inbox: 'Customers & Comms',
+  inbox: 'Customers & Comms',
   phone_com_calls: 'Customers & Comms',
   phone_com_messages: 'Customers & Comms',
   phone_com_faxes: 'Customers & Comms',

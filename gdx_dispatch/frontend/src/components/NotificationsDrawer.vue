@@ -142,11 +142,12 @@ function _destinationFor(category) {
     case 'inbox':
     case 'message':
       // Desktop goes to /inbox (InboxView -> /api/outlook/*), the real
-      // Outlook-synced mailbox, NOT /communications. That screen is backed by
-      // an in-memory dict (routers/communications.py:83 _EMAILS_BY_TENANT)
-      // which empties on every container restart, so a message notification
-      // pointed at a mailbox that could never be holding the message. Mobile
-      // already went to the right place.
+      // Outlook-synced mailbox. It used to go to /communications, a screen
+      // backed by an in-memory dict (`_EMAILS_BY_TENANT`) that emptied on
+      // every container restart, so a message notification pointed at a
+      // mailbox that could never be holding the message (#492). That screen
+      // has since been removed outright (#350) and /communications now
+      // redirects here. Mobile already went to the right place.
       return mobile ? '/mobile/inbox' : '/inbox';
     default:
       return null;

@@ -11,7 +11,6 @@ export default {
     inventory: 'Inventory',
     timeclock: 'Timeclock',
     equipment: 'Equipment',
-    communications: 'Communications',
     campaigns: 'Campaigns',
     reports: 'Reports',
     documents: 'Documents',
