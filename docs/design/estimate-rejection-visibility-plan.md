@@ -1,9 +1,39 @@
 # Estimate rejection visibility — plan
 
-**Status:** PLAN — not built. Re-verified against main 2026-08-21: there is no
-`GET /api/estimates/{id}/activity`, no "Failed Email" label anywhere in the
-frontend, and `bounce_detect._match_estimates` still has none of PR 2's
-parity work. Decisions in § Decisions taken are locked and still stand.
+**Status:** BUILT — all three PRs open 2026-08-31, merge bottom-up: **PR 1 =
+#548** (this branch); **PR 2 = #551** (bounce parity + office bell, stacked on
+#547, the bounce-test time bomb); **PR 3 = #552** (manual re-send detector,
+stacked on #551). Nothing released yet. PR 1 (branch
+`feat/estimate-rejection-visibility`, 2026-08-31): `GET /api/estimates/{id}/activity`,
+the "Failed Email" label + warn severity on every estimate-status tag (desktop
+list/detail, job page, mobile list + customer page), the status context strip
+(bounce banner with failed recipient/date + Fix customer email + Re-send;
+decline line with reason/actor), the activity panel, and the rejected→sent
+regression tests. PR 2 and PR 3 are built on their own branches (above) and
+follow the build-plan audit rules below plus the diff-audit catches recorded
+in their PR bodies (durable-per-NDR commits; document evidence + recipient
+guard on every re-send rung; the original send never its own recovery;
+re-sends before bounces in the sync). Decisions in § Decisions taken are
+locked.
+
+**Build-plan audit (2026-08-31, adversarial, before code):** (a) the activity
+endpoint must NOT filter on `audit_logs.tenant_id` — every estimate writer
+passes `tenant_id=None` with no request, so 1,947 of 2,092 prod rows carry
+NULL (the estimate lookup is the scope; one tenant per DB); (b) PR 3's rungs
+must ALL require the message to be addressed to the customer's current email
+— subject-serial alone flips on a PDF forwarded to an installer, a
+label-in-subject rung flips on mobile's `label = service or "Quote"`, and a
+conversation-sibling rung flips on the NDR forwarded to a coworker — and the
+anchor is the NDR's `received_at`, not the audit row's sync-time `created_at`
+(a re-send inside the 30-min poll window would otherwise never be detected);
+(c) PR 2 must ring the bell AFTER the batch commit — `notify_office` rolls
+back on failure and would take the flip and its audit row with it.
+
+**PR 1 debt (diff audit 2026-08-31):** the mobile estimate list and the mobile
+customer page now read "Failed Email" but carry no banner, no reason and no
+Re-send — a tech sees the words and has no way onto the fix. The office desktop
+page is where re-sends happen today; a mobile story is unbuilt and recorded
+here rather than bundled.
 
 **Date:** 2026-08-18 (rev 2, same day — Doug's decisions folded in)
 **Trigger:** EST-000085 showed a bare red "Rejected" tag and the office had no

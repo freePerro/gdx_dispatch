@@ -182,7 +182,7 @@
                   <span class="row-money">${{ fmtMoney(e.total) }}</span>
                 </div>
                 <div class="row-meta">
-                  <Tag :value="e.status || '—'" :severity="estimateStatusSeverity(e.status)" />
+                  <Tag :value="estimateStatusLabel(e.status) || '—'" :severity="estimateStatusSeverity(e.status)" />
                   <span v-if="e.created_at" class="muted">{{ fmtDate(e.created_at) }}</span>
                 </div>
               </li>
@@ -382,7 +382,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi'
 import { usePermission } from '../composables/usePermission'
 import { formatPhone } from '../composables/useFormatters'
-import { estimateStatusSeverity, invoiceStatusSeverity } from '../utils/statusSeverity'
+import { estimateStatusLabel, estimateStatusSeverity, invoiceStatusSeverity } from '../utils/statusSeverity'
 import { useToast } from 'primevue/usetoast'
 import MobileJobNewDialog from '../components/MobileJobNewDialog.vue'
 

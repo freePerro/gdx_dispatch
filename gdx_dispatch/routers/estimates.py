@@ -896,6 +896,162 @@ def create_estimate(
     return _serialize_estimate(estimate, include_lines=True)
 
 
+# ── Activity — "who did what, when" on one estimate ─────────────────────
+# estimate-rejection-visibility plan, PR 1 (decisions locked 2026-08-18).
+# Every status path already wrote a complete audit row; nothing on the
+# estimate showed it, so a bounce-"rejected" tag read like a customer
+# decline. This is the read path — no new columns.
+#
+# Whitelist, not "everything": patch_estimate / line edits are 83% of an
+# estimate's rows on prod and say nothing a person needs here.
+_ACTIVITY_LABELS: dict[str, str] = {
+    "estimate_created": "Created",
+    "mobile_quote_built": "Built on mobile",
+    "estimate_marked_sent": "Marked sent",
+    "estimate_sent": "Emailed to customer",
+    "estimate_send_failed": "Email failed to send",
+    "estimate_email_rejected": "Email bounced — the customer did not receive it",
+    "estimate_resend_detected": "Re-sent from the mailbox",
+    "estimate_viewed_by_customer": "Viewed by customer",
+    "estimate_accepted": "Accepted",
+    "mobile_quote_accepted": "Accepted (mobile)",
+    "public_estimate_accepted": "Accepted by customer (email link)",
+    "portal_estimate_accepted": "Accepted by customer (portal)",
+    "estimate_declined": "Declined",
+    "mobile_quote_declined": "Declined (mobile)",
+    "public_estimate_declined": "Declined by customer (email link)",
+    "portal_estimate_declined": "Declined by customer (portal)",
+    "estimate_reopened": "Reopened",
+    # (expire_stale_estimates is NOT here: the sweep writes one row with
+    # entity_id="" — nothing per estimate to show.)
+    "estimate_converted_to_job": "Converted to job",
+    "job_created_from_estimate": "Job created from estimate",
+    "estimate_auto_convert_failed": "Automatic job creation failed",
+    "estimate_jobsite_bound": "Jobsite address bound",
+    "estimate_jobsite_bind_failed": "Jobsite address could not be bound",
+    "estimate_duplicated": "Duplicated",
+    "estimate_attachment_uploaded": "Attachment added",
+    "estimate_attachment_labeled": "Attachment relabeled",
+    "estimate_attachment_deleted": "Attachment removed",
+}
+# Actors: core.audit_labels.resolve_actors names staff, portal logins
+# ("portal:<id>"), the emailed-link customer ("customer:public-link") and
+# the two detectors ("bounce-detector" / "resend-detector") — for every
+# feed, not just this one.
+_DECLINE_ACTIONS = tuple(a for a in _ACTIVITY_LABELS if a.endswith("_declined"))
+
+
+def _iso_utc(dt: datetime | None) -> str | None:
+    """ISO-8601 with an explicit offset. SQLite hands tz-aware columns back
+    naive; a bare "2026-08-14T06:00:00" would be read as LOCAL time by the
+    browser and shift every timestamp on a dev box. Postgres is already
+    aware; this is a no-op there."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+def _activity_item(row) -> dict[str, object]:
+    return {
+        "id": str(row.id),
+        "action": row.action,
+        "label": _ACTIVITY_LABELS.get(row.action, row.action),
+        "user_id": row.user_id,
+        "entity_type": row.entity_type,
+        "entity_id": row.entity_id,
+        "details": row.details or {},
+        "created_at": _iso_utc(row.created_at),
+    }
+
+
+def _decorate_activity(db: Session, items: list[dict[str, object]]) -> list[dict[str, object]]:
+    from gdx_dispatch.core.audit_labels import decorate_rows
+
+    return decorate_rows(db, items)
+
+
+@router.get("/{estimate_id}/activity", response_model=None)
+def get_estimate_activity(
+    estimate_id: UUID,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, object]:
+    """Curated audit trail for one estimate, newest first, plus the context
+    the status tag needs: the bounce that made it "rejected" (Failed Email)
+    or the decline that closed it.
+
+    Scoping is by the estimate lookup, NOT by audit_logs.tenant_id. Every
+    estimate audit writer passes tenant_id=None with no request, and
+    core.audit only fills tenant_id from request.state — measured on prod
+    2026-08-31: 1,947 of 2,092 estimate rows carry tenant_id NULL,
+    including every estimate_email_rejected row. A tenant predicate would
+    hide exactly the rows this exists to show. One tenant per database
+    (ARCHITECTURAL_INVARIANTS: isolation is the connection), and the id is
+    resolved through a row this connection can see, so the entity predicate
+    is the boundary.
+    """
+    from gdx_dispatch.core.audit import AuditLog, ensure_audit_table
+
+    estimate = _get_estimate_or_404(estimate_id, db)
+    ensure_audit_table(db)
+    scope = (
+        AuditLog.entity_type == "estimate",
+        AuditLog.entity_id == str(estimate.id),
+    )
+    rows = db.execute(
+        select(AuditLog)
+        .where(*scope, AuditLog.action.in_(tuple(_ACTIVITY_LABELS)))
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(limit)
+    ).scalars().all()
+    total = int(
+        db.execute(
+            select(func.count()).select_from(AuditLog)
+            .where(*scope, AuditLog.action.in_(tuple(_ACTIVITY_LABELS)))
+        ).scalar() or 0
+    )
+    items = _decorate_activity(db, [_activity_item(r) for r in rows])
+
+    def _latest(actions: tuple[str, ...]):
+        row = db.execute(
+            select(AuditLog)
+            .where(*scope, AuditLog.action.in_(actions))
+            .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        return _decorate_activity(db, [_activity_item(row)])[0] if row is not None else None
+
+    context: dict[str, object | None] = {"bounce": None, "decline": None}
+    if estimate.status == "rejected":
+        # Looked up on its own, not from the page: the row that matters must
+        # not depend on how many attachment uploads came after it.
+        hit = _latest(("estimate_email_rejected",))
+        if hit is not None:
+            d = hit["details"] if isinstance(hit["details"], dict) else {}
+            context["bounce"] = {
+                "failed_recipient": d.get("failed_recipient"),
+                "ndr_subject": d.get("ndr_subject"),
+                "matched_by": d.get("matched_by"),
+                "at": hit["created_at"],
+            }
+    elif estimate.status == "declined":
+        hit = _latest(_DECLINE_ACTIONS)
+        reason = estimate.declined_reason
+        if not reason and hit is not None and isinstance(hit["details"], dict):
+            reason = hit["details"].get("reason")
+        context["decline"] = {
+            "reason": reason,
+            "at": _iso_utc(estimate.declined_at)
+            or (hit["created_at"] if hit is not None else None),
+            "user_name": hit["user_name"] if hit is not None else None,
+            "actor_type": hit["actor_type"] if hit is not None else None,
+        }
+    return {"items": items, "total": total, "context": context}
+
+
 @router.get("/{estimate_id}", response_model=None)
 def get_estimate(
     estimate_id: UUID,

@@ -16,10 +16,31 @@ export function estimateStatusSeverity(status) {
     sent: 'info', // awaiting customer response
     accepted: 'success',
     declined: 'danger',
-    rejected: 'danger',
+    // A bounce, not a customer "no": the email never arrived. Warn (fix
+    // the address and re-send), not danger — danger reads as a decision.
+    rejected: 'warn',
     expired: 'warn', // lapsed — needs attention
   }
   return map[String(status || '').toLowerCase()] || 'secondary'
+}
+
+/**
+ * Estimate status → the words a person sees on the tag.
+ *
+ * The enum value `rejected` is set by ONE writer — the Outlook sync's bounce
+ * detector — and means "the estimate email bounced; the customer never
+ * received it". On screen that word read like a customer decline (both were
+ * red), so the office could not tell a bounce from a "no". Decided
+ * 2026-08-18: display it as "Failed Email". The stored value is unchanged
+ * (no migration); every tab filter, deep link and reopen check still keys on
+ * `rejected` / `Rejected` — only the rendered label changes. Everything
+ * else is the enum value title-cased, exactly as the views did by hand.
+ */
+export function estimateStatusLabel(status) {
+  const s = String(status || '').toLowerCase()
+  if (!s) return ''
+  if (s === 'rejected') return 'Failed Email'
+  return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
 /**

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { estimateStatusSeverity } from './statusSeverity'
+import { estimateStatusLabel, estimateStatusSeverity } from './statusSeverity'
 
 describe('estimateStatusSeverity', () => {
   it('maps every authoritative estimate_status value to a valid PrimeVue token', () => {
@@ -9,8 +9,23 @@ describe('estimateStatusSeverity', () => {
     expect(estimateStatusSeverity('sent')).toBe('info')
     expect(estimateStatusSeverity('accepted')).toBe('success')
     expect(estimateStatusSeverity('declined')).toBe('danger')
-    expect(estimateStatusSeverity('rejected')).toBe('danger')
+    // rejected = the email bounced. Warn (fix + re-send), never the same red
+    // as a customer's decline.
+    expect(estimateStatusSeverity('rejected')).toBe('warn')
+    expect(estimateStatusSeverity('rejected')).not.toBe(estimateStatusSeverity('declined'))
     expect(estimateStatusSeverity('expired')).toBe('warn')
+  })
+
+  it('labels rejected as "Failed Email" and title-cases everything else', () => {
+    expect(estimateStatusLabel('rejected')).toBe('Failed Email')
+    expect(estimateStatusLabel('Rejected')).toBe('Failed Email')
+    expect(estimateStatusLabel('sent')).toBe('Sent')
+    expect(estimateStatusLabel('ACCEPTED')).toBe('Accepted')
+    expect(estimateStatusLabel('declined')).toBe('Declined')
+    expect(estimateStatusLabel('')).toBe('')
+    expect(estimateStatusLabel(null)).toBe('')
+    // The stored enum word must never leak onto a tag.
+    expect(estimateStatusLabel('rejected')).not.toMatch(/rejected/i)
   })
 
   it('is case-insensitive and falls back to secondary', () => {
