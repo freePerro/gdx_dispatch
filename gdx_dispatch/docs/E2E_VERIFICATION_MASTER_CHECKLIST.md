@@ -337,15 +337,7 @@ Stripe Connect is configured per tenant, payment intents are created with correc
 
 | ID | Test Case | Verification |
 |----|-----------|-------------|
-| PAY-01 | Stripe onboarding | POST /api/stripe/connect/onboard returns account_id and onboarding_url |
-| PAY-02 | Stripe status check | GET /api/stripe/connect/status returns charges_enabled, payouts_enabled |
-| PAY-03 | Create payment intent | POST /api/stripe/connect/payment-intent with amount_cents, returns client_secret |
-| PAY-04 | Platform fee calculation | Fee = amount * fee_percent (default 2%), fee_amount in response metadata |
-| PAY-05 | Custom fee percent | Pass fee_percent=3.5, verify application_fee_amount = amount * 0.035 |
-| PAY-06 | Webhook: payment_intent.succeeded | POST /webhook with valid Stripe signature, payment recorded in DB |
-| PAY-07 | Webhook: account.updated | Updates tenant's stripe_connect_account_id |
-| PAY-08 | Webhook: invalid signature | Returns 400, not processed |
-| PAY-09 | Balance retrieval | GET /api/stripe/connect/balance returns Stripe balance for connected account |
+| ~~PAY-01…PAY-09~~ | **RETIRED 2026-09-01** | The entire Stripe Connect surface was deleted (9 routes, issue #421 / `docs/design/phase-d-saas-residue.md` S3+S6). Do not verify these — they no longer exist. The live card path is `POST /api/payments/intent` and the token-scoped `/pay/{invoice_token}` page, covered by PAY-10 onward. |
 | PAY-10 | Customer portal payment | Invoice with "Pay Now" button -> Stripe Checkout -> payment processes -> invoice status updates |
 | PAY-11 | Payment methods | CRUD on saved payment methods |
 | PAY-12 | Stripe not configured | When STRIPE_SECRET_KEY is empty, returns 500 with clear error, not crash |
@@ -649,7 +641,7 @@ When a module is disabled for a tenant, all API endpoints for that module return
 | MOD-07 | Disable communications (shown as "Notifications") | GET /api/notifications/* return 403 (`/api/sms/*` removed in #350) |
 | MOD-08 | Disable fleet | GET /api/fleet/* returns 403 |
 | MOD-09 | Disable documents | GET /api/documents/*, file upload endpoints return 403, PDF endpoints return 403 |
-| MOD-10 | Disable stripe_connect | GET /api/stripe/connect/* returns 403 |
+| ~~MOD-10~~ | **RETIRED 2026-09-01** | The `stripe_connect` module key was removed with its router. |
 | MOD-11 | Disable dispatch | GET /api/technicians returns 403, WebSocket connection rejected |
 | MOD-12 | Disable loyalty | Loyalty, referrals, reviews endpoints return 403 |
 | MOD-13 | Disable google_maps | Maps/geocoding endpoints return 403 |
@@ -1243,7 +1235,7 @@ These are actual failure modes documented in industry post-mortems that only tes
 2. **Dropdown renders but API returns empty array** -- JOB-06 catches this
 3. **Invoice total shows $0 because tax calculation divides by zero** -- INV-04 catches this
 4. **PDF generates but is blank because branding query fails silently** -- PDF-01, PDF-03 catch this
-5. **Stripe checkout opens but uses wrong API key for tenant** -- PAY-03 catches this
+5. ~~**Stripe checkout opens but uses wrong API key for tenant** -- PAY-03 catches this~~ (PAY-03 retired 2026-09-01 with the Connect surface)
 6. **WebSocket connects but tenant_id not set, receives all tenants' data** -- DISP-11 catches this
 7. **File upload succeeds (200) but file not written to disk** -- DOC-10 catches this
 8. **Search works but returns other tenants' results** -- SRCH-03 catches this

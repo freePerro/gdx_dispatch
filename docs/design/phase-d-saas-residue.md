@@ -1,7 +1,8 @@
 # Phase D — the SaaS residue the single-tenant refactor left behind
 
-**Status:** `PLAN` — nothing in this document is built. Nine artifacts
-inventoried, two of them live and reachable on prod today (S1, S2). No PR yet.
+**Status:** `PARTIALLY BUILT` — **S3 + S6 built** (Stripe Connect retired
+entirely; owner decision 2026-09-01). **S1, S2, S4, S5, S7, S8, S9, S10 are NOT
+built** — S1 and S2 are still live and reachable on prod.
 
 ## What already exists (do not rebuild)
 
@@ -64,10 +65,10 @@ Declared before the fix, per the working agreement.
 |---|---|---|---|
 | **S1** | `x-tenant-tier` request header selects the caller's own rate limit | `app.py:1100` — `tier = request.headers.get("x-tenant-tier", "Starter")` → `600/minute if professional else 120/minute` | **Yes — self-service 5× raise** |
 | **S2** | Public `/signup` page whose submit target does not exist | prod: `GET /signup` → **200 unauthenticated**; `POST /signup` (the form's own target) → **405** | **Yes — publicly indexable** |
-| **S3** | Connect payment-intent takes the destination account from the request body | `routers/stripe_connect.py:62` — `if fallback_account_id: return fallback_account_id`, before any DB lookup | Yes — issue #421 |
+| ~~**S3**~~ | ~~Connect payment-intent takes the destination account from the request body~~ | **BUILT — deleted with the whole Connect surface.** Closes #421 | Gone |
 | **S4** | 8 vendor-admin routes with zero UI callers | `/api/admin/health-scores/*` (3), `/api/admin/metrics/*` (2), `/api/admin/tenants/{tenant_id}/modules` (3) | Mounted, admin/owner-gated |
 | **S5** | Churn scoring pointed at the owner | `core/health_score.py:3` — *"per-tenant engagement scores and triggers retention playbooks"* | Mounted; **not** beat-scheduled |
-| **S6** | Two parallel Stripe Connect implementations | `routers/stripe_connect.py` reads `tenants`; `routers/payments.py` reads `companies`. 5 + 4 routes; **neither has a UI caller** | Both mounted |
+| ~~**S6**~~ | ~~Two parallel Stripe Connect implementations~~ | **BUILT — all 9 routes deleted**, both files removed, module key dropped | Gone |
 | **S7** | Dead control-plane grants table | prod `tenant_module_grants` = 0 rows; `company_module_grants` = 111 rows (with duplicates) | Fallback path only |
 | **S8** | SaaS billing state on a product that is not sold | prod `tenants.subscription_status` = `'trialing'` on both rows; `core/tenant.py:52` hardcodes `"active"` in the ambient dict | Inert |
 | **S9** | Seed-tenant duplicates in prod data | `Example Garage Doors` / `00000000-…-0001` sits beside the real company row in **both** `tenants` and `companies` — it is the default in `single_tenant()` | Data, not code |
@@ -108,10 +109,30 @@ Issue #421 asks whether the endpoint is wanted at all. Two facts the issue did n
 2. **There are two Connect surfaces**, on two different tables, neither with a
    UI caller. Fixing one endpoint leaves the shape in the other eight routes.
 
-**Decision still owed by the owner:** delete Connect entirely, or keep it for a
-hosted-instances revenue-share model. Everything else in this document is a
-cleanup with an obvious answer; this one is a product call. It is the reason
-this plan is `PLAN` and not already in flight.
+**DECIDED 2026-09-01 — delete.** The owner's call. Connect is a platform
+construct and this deployment is single-tenant, so there was never a second
+party for it to serve; and taking a cut of another company's card payments makes
+you a payment facilitator, with KYC and liability attached. If hosted instances
+ever happen, that billing model should be designed deliberately then — most
+likely a hosting subscription, not a per-transaction cut — rather than inherited
+from 2026-era scaffolding that already carried this defect.
+
+**Built:** all 9 routes removed (5 on `routers/stripe_connect.py`, 4 on
+`routers/payments.py`), both `stripe_connect` modules deleted, the
+`stripe_connect` module key dropped, tests retired, and the pinned route table
+regenerated — a 9-line deletion and nothing else.
+`tests/test_stripe_connect_retired.py` is the guard, and it was
+counterfactually verified: restoring the router turns all five absence
+assertions red while the three live-payment-path assertions stay green.
+
+**Deliberately NOT removed** (named so the next reader doesn't think it was
+missed): the `connected_account` parameter threaded through `core/payments.py`,
+the two `stripe_connect_account_id` columns, and
+`tasks/stale_intent_sweep.py::_connected_account_for`. The threading is
+*provably* dead — `_stripe_extra()` reads a key that `single_tenant()` never
+puts in the dict — but it lives in the live money path that six real card
+payments went through, so unthreading it is its own change with its own risk.
+No migration and no data change ship with this deletion.
 
 ## Rival documents — cited, and one corrected
 
@@ -146,7 +167,7 @@ status line in the **same** PR.
 |---|---|---|
 | 1 | **S1** — delete `_tier_limit`, one constant limit | test matrix + a counterfactual test that fails if the header is honoured |
 | 2 | **S2** — remove `/signup` route + view; strike the two `mobile-all-platforms-plan.md` rows | prod probe after deploy: `GET /signup` → 404 |
-| 3 | **S3 + S6** — resolves #421, per the owner's Connect decision | money-path rules: state what happens to existing rows; rollback path |
+| ~~3~~ | ~~**S3 + S6**~~ — **DONE.** Connect deleted; #421 closed | ✅ counterfactual guard verified; route table diff is exactly the 9 routes; no data change, so no migration |
 | 4 | **S4 + S5 + S7** — remove the dead vendor-admin surfaces | route-table diff; absence assertions like `test_automation_sequences_retired.py` |
 | 5 | **S8 + S9** — data cleanup, soft-delete only (invariant #2) | owner sign-off; these are prod rows |
 | 6 | **S10** — the original Phase D: migrate ~20 `get_engine` call sites, drop the shim | mechanical; last because it is the largest and least urgent |
@@ -158,8 +179,8 @@ re-added router is caught whatever file it lives in.
 
 ## Open questions for the owner
 
-1. **Connect: delete or keep?** (blocks PR 3 / issue #421) — keep only if
-   hosted-instance revenue share is a direction you want.
+1. ~~**Connect: delete or keep?**~~ — **ANSWERED 2026-09-01: delete.** Done;
+   see S3/S6 above. Issue #421 closed by that PR.
 2. **S9 seed rows:** soft-delete the `Example Garage Doors` tenant/company rows,
    or leave them? They are referenced by nothing found so far, but they are
    prod rows in two tables and deserve an explicit decision.

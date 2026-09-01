@@ -601,8 +601,6 @@ GET /api/settings/notifications
 GET /api/signatures/pending
 GET /api/signatures/token/{token}
 GET /api/signatures/{document_type}/{document_id}
-GET /api/stripe/connect/balance
-GET /api/stripe/connect/status
 GET /api/supplier/catalog
 GET /api/supplier/invitations
 GET /api/supplier/orders
@@ -695,8 +693,6 @@ GET /legacy/settings
 GET /legacy/team
 GET /manifest.json
 GET /pay/{invoice_token}
-GET /payments/connect/balance
-GET /payments/connect/onboarding-link
 GET /payments/methods
 GET /portal/context
 GET /portal/dashboard
@@ -1244,9 +1240,6 @@ POST /api/signatures
 POST /api/signatures/request-remote
 POST /api/signatures/token/{token}
 POST /api/signatures/{signature_id}/cancel
-POST /api/stripe/connect/onboard
-POST /api/stripe/connect/payment-intent
-POST /api/stripe/connect/webhook
 POST /api/supplier/catalog
 POST /api/supplier/invite
 POST /api/supplier/login
@@ -1319,8 +1312,6 @@ POST /auth/reset-password
 POST /legacy/settings
 POST /legacy/team/invite
 POST /payments/ach/setup
-POST /payments/connect/setup-account
-POST /payments/connect/webhook
 POST /payments/intent
 POST /payments/methods/{method_id}/charge
 POST /payments/setup

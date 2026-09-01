@@ -87,12 +87,6 @@ except Exception:
     stripe_webhook = APIRouter(tags=["stripe"])
 
 try:
-    from gdx_dispatch.routers import stripe_connect as stripe_connect_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: stripe_connect_router")
-    stripe_connect_router = APIRouter(tags=["stripe-connect"])
-
-try:
     from gdx_dispatch.routers import audit as audit_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: audit_router")
@@ -1519,9 +1513,6 @@ def create_app() -> FastAPI:
     app.include_router(install_sheet_router)
     app.include_router(technicians.router if hasattr(technicians, "router") else technicians)
     app.include_router(stripe_webhook.router if hasattr(stripe_webhook, "router") else stripe_webhook)
-    app.include_router(
-        stripe_connect_router.router if hasattr(stripe_connect_router, "router") else stripe_connect_router
-    )
     app.include_router(audit_router.router if hasattr(audit_router, "router") else audit_router)
     app.include_router(payments_gdx_router.router if hasattr(payments_gdx_router, "router") else payments_gdx_router)
     app.include_router(expenses_router.router if hasattr(expenses_router, "router") else expenses_router)
