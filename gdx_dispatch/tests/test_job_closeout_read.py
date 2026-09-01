@@ -61,6 +61,50 @@ TENANT = "tenant-closeout-read"
 USER_ID = uuid4()
 
 
+_COST_KEYS = frozenset({"unit_cost", "line_total", "cost", "cost_total"})
+_FIXTURE_UNIT_COST = 48.5
+
+
+def _cost_leaks(node, path="$") -> list[str]:
+    """Every place a cost figure shows up in a parsed response — by KEY
+    (`unit_cost`, `line_total`, …) or by VALUE (the fixture's 48.5, whether
+    it arrives as a number or a numeric string). Walks dicts and lists;
+    never looks at serialised text, so a timestamp can't trip it."""
+    leaks: list[str] = []
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k in _COST_KEYS:
+                leaks.append(f"{path}.{k}")
+            leaks.extend(_cost_leaks(v, f"{path}.{k}"))
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            leaks.extend(_cost_leaks(v, f"{path}[{i}]"))
+    elif isinstance(node, bool):
+        return leaks
+    elif isinstance(node, (int, float)):
+        if float(node) == _FIXTURE_UNIT_COST:
+            leaks.append(f"{path}={node}")
+    elif isinstance(node, str):
+        try:
+            if float(node) == _FIXTURE_UNIT_COST:
+                leaks.append(f"{path}={node!r}")
+        except ValueError:
+            pass
+    return leaks
+
+
+def test_cost_leak_detector_catches_keys_and_values_but_not_timestamps() -> None:
+    """The guard above is only worth having if it can fail for a leak — and
+    only worth keeping if a timestamp can't trip it."""
+    assert _cost_leaks({"closed_at": "2026-08-19T13:58:48.533698"}) == []
+    assert _cost_leaks({"parts": [{"unit_cost": 48.5}]}) == [
+        "$.parts[0].unit_cost",
+        "$.parts[0].unit_cost=48.5",
+    ]
+    assert _cost_leaks({"parts": [{"price": "48.50"}]}) == ["$.parts[0].price='48.50'"]
+    assert _cost_leaks({"n": 2, "ok": True}) == []
+
+
 @pytest.fixture
 def db():
     engine = create_engine(
@@ -227,10 +271,11 @@ def test_parts_come_back_without_cost_figures(db) -> None:
     parts = body["closeout"]["parts_used"]
     assert parts and parts[0]["name"] == "Torsion spring 200x2.0"
     assert parts[0]["qty"] == 2
-    raw = json.dumps(body)
-    assert "unit_cost" not in raw
-    assert "line_total" not in raw
-    assert "48.5" not in raw
+    # #368: assert on the parsed structure, not the serialised blob. "48.5"
+    # is the fixture's unit cost — and also a substring of any timestamp
+    # whose seconds render as `:48.5…`, which made this flake roughly once
+    # per sub-second window. Keys and VALUES are checked; text is not.
+    assert _cost_leaks(body) == [], f"cost figures leaked: {_cost_leaks(body)}"
 
 
 def test_technician_without_a_claim_gets_404(db) -> None:
