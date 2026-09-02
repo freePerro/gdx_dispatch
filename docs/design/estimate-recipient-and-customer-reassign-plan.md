@@ -1,8 +1,9 @@
 # Estimate: type a different email address, and change the customer
 
-**Status:** PARTIALLY BUILT (2026-09-01) — A, B and C are implemented on
-`feat/estimate-recipient-override` (A) and `feat/estimate-reassign-customer`
-(B + C), stacked, merge bottom-up. NOT yet merged, released, or walked on prod.
+**Status:** A = **MERGED #590** (2026-09-01). B + C = PR #592 (open; #591 was
+auto-closed when #590's base branch was deleted — same commit, rebased).
+Not yet released or walked on prod. Doug's "ask if this is a new contact"
+landed in #590.
 F1-F10 below remain unbuilt and are filed separately. Scoped to Doug's two asks
 plus the one safety consequence of the second. Every line reference verified against `origin/main`
 @ `1b028d7` (2026-09-01) — printed from git, not read from the worktree, which
