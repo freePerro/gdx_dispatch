@@ -1,13 +1,15 @@
 # Estimate: type a different email address, and change the customer
 
-**Status:** A = **MERGED #590** (2026-09-01). B + C = PR #592 (open; #591 was
-auto-closed when #590's base branch was deleted — same commit, rebased).
-Not yet released or walked on prod. Doug's "ask if this is a new contact"
-landed in #590.
-F1-F10 below remain unbuilt and are filed separately. Scoped to Doug's two asks
-plus the one safety consequence of the second. Every line reference verified against `origin/main`
-@ `1b028d7` (2026-09-01) — printed from git, not read from the worktree, which
-is 29 commits behind.
+**Status:** **RELEASED v1.115.0** (2026-09-02) — A = #590, B + C = #592 (#591
+was auto-closed when #590's base branch was deleted on merge; same commit,
+rebased). Prod and demo both rolled to 1.115.0 and verified. Doug's "ask if
+this is a new contact" shipped in #590. **F1-F10 below remain unbuilt** and are
+filed separately. Owed: an interactive reassignment walk on prod — deliberately
+not done, because it mutates a real customer's estimate.
+
+Scoped to Doug's two asks plus the one safety consequence of the second. Every
+line reference was verified against `origin/main` @ `1b028d7` (2026-09-01) —
+printed from git, not read from the worktree, which was 29 commits behind.
 
 **Date:** 2026-09-01 (rev 5 — trimmed. Revs 1-4 accreted seven more defects
 found while verifying; they are real, and are now filed separately below rather
