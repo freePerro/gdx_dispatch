@@ -975,6 +975,7 @@ POST /api/estimates/{estimate_id}/mark-sent
 POST /api/estimates/{estimate_id}/proposal-tiers
 POST /api/estimates/{estimate_id}/proposal-tiers/{tier_id}/lines
 POST /api/estimates/{estimate_id}/proposal/accept
+POST /api/estimates/{estimate_id}/reassign-customer
 POST /api/estimates/{estimate_id}/reopen
 POST /api/estimates/{estimate_id}/send
 POST /api/expenses

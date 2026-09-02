@@ -142,6 +142,13 @@ function detailLine(it) {
   const d = it?.details || {}
   if (it.action === 'estimate_email_rejected' && d.failed_recipient) return `to ${d.failed_recipient}`
   if (it.action === 'estimate_resend_detected' && d.recipient) return `to ${d.recipient}`
+  if (it.action === 'estimate_customer_reassigned') {
+    // The whole point of the row: which two accounts it moved between, and
+    // why. Without a case here the label renders alone and says nothing.
+    const from = d.from_customer_name || 'no customer'
+    const to = d.to_customer_name || 'unknown'
+    return d.reason ? `${from} → ${to} — “${d.reason}”` : `${from} → ${to}`
+  }
   if (String(it.action || '').endsWith('_declined') && d.reason) return `“${d.reason}”`
   if (it.action === 'estimate_marked_sent' && d.channel && d.channel !== 'manual') return `via ${d.channel}`
   return ''
