@@ -11,8 +11,6 @@ This is intentionally minimal — downstream slices extend usage:
   input of ``evaluate(principal, action, resource, context)``.
 * SS-9 wires ``request.state.principal`` from this type via the
   dual-protocol ``get_current_user``.
-* SS-8 adds ``installation_id`` + ``act_chain`` fields for the asApp /
-  signed-installation-token flow.
 
 D-5 contract (SS-6 landed)
 --------------------------
@@ -35,16 +33,12 @@ import enum
 from dataclasses import dataclass, field
 from typing import Any
 
-from gdx_dispatch.core.contexts import current_act_chain, current_installation_id
-
 
 class ActorKind(str, enum.Enum):
     """Coarse actor classification derived from the issuing provider.
 
-    SS-7 Slice A only needs to distinguish the two SS-6 OAuth providers;
-    ``SERVICE_ACCOUNT`` is reserved for SS-14 PAT bearers (MCP / signed
-    installation tokens) and is defined here so later slices do not
-    re-home the enum.
+    Only the two OAuth providers are distinguished today.
+    ``SERVICE_ACCOUNT`` is reserved for PAT bearers.
     """
 
     HUMAN = "human"
@@ -71,47 +65,3 @@ class Principal:
     audience: str
     jti: str | None = None
     raw_claims: dict[str, Any] = field(default_factory=dict)
-    installation_id: str | None = None
-    act_chain: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class ExecutionContext:
-    """Typed snapshot of the SS-8 execution-context contextvars.
-
-    Mirrors the subset of ``Principal`` fields that are populated from
-    ContextVar state (``installation_id`` + ``act_chain``) rather than
-    JWT claims. Frozen so the snapshot matches the immutability contract
-    of ``Principal.act_chain`` and stays safe to share across audit
-    middleware / policy-input builders.
-    """
-
-    installation_id: str | None
-    act_chain: tuple[str, ...]
-
-
-def current_execution_context() -> ExecutionContext:
-    """Return a typed snapshot of the active SS-8 execution context.
-
-    Reads :data:`gdx_dispatch.core.contexts.current_installation_id` and
-    :data:`gdx_dispatch.core.contexts.current_act_chain` exactly once, in that
-    order, and returns the result as a frozen
-    :class:`ExecutionContext`. There are no side effects: the helper
-    does not call ``.set(...)``, does not log, and does not raise — both
-    contextvars carry stdlib-defined defaults so ``.get()`` is always
-    well-defined.
-
-    Default-context policy: a call made with no active
-    ``execution_context(...)`` / ``async_execution_context(...)`` scope
-    returns ``ExecutionContext(installation_id=None, act_chain=())``.
-    That is a VALID result, not an error — it matches the
-    ``Principal.installation_id`` / ``Principal.act_chain`` defaults
-    seeded in SS-8 Slice A so plain-user requests produce the same
-    Principal bytes whether or not they ever entered an asApp scope.
-    Strict ("require delegation") variants belong at the policy /
-    dependency layer, not here.
-    """
-    return ExecutionContext(
-        installation_id=current_installation_id.get(),
-        act_chain=current_act_chain.get(),
-    )

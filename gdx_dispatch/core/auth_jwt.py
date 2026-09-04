@@ -60,7 +60,7 @@ from jwt.exceptions import (
 )
 
 from gdx_dispatch.core.denylist import Denylist
-from gdx_dispatch.core.principal import ActorKind, Principal, current_execution_context
+from gdx_dispatch.core.principal import ActorKind, Principal
 
 logger = logging.getLogger(__name__)
 
@@ -348,14 +348,6 @@ def validate_access_token(
             f"token jti {jti!r} is on the caller-supplied revocation denylist"
         )
 
-    # SS-9 Slice C: route the SS-8 execution-context read through the
-    # canonical helper so audit middleware and policy-input builders
-    # share one snapshot site instead of re-importing the raw
-    # contextvars. The helper delegates to the same two ``.get()`` calls
-    # in the same order, so Slice A/B/F behavior is byte-identical when
-    # the context is unset (defaults: ``None`` / ``()``) or set (matches
-    # the values fed in by ``execution_context(...)``).
-    exec_ctx = current_execution_context()
     return Principal(
         tenant_id=tenant_id,
         subject=str(claims["sub"]),
@@ -368,8 +360,6 @@ def validate_access_token(
         audience=EXPECTED_AUDIENCE,
         jti=jti,
         raw_claims=dict(claims),
-        installation_id=exec_ctx.installation_id,
-        act_chain=exec_ctx.act_chain,
     )
 
 

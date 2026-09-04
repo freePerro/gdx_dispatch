@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.auth_revoke import revoke_user_sessions
-from gdx_dispatch.core.contexts import execution_context
 from gdx_dispatch.core.database import get_db, get_db
 from gdx_dispatch.core.denylist import Denylist
 from gdx_dispatch.core.modules import require_role
@@ -1014,24 +1013,13 @@ async def get_current_user(
 
     denylist = _get_app_denylist(request)
 
-    # SS-8 Slice E — first production consumer of the execution-context helper.
-    # Wrap the primary-path ``validate_principal`` call in a scoped override
-    # that pins ``installation_id=None`` / ``act_chain=()`` for this request.
-    # Rationale: the auth dependency is the single boundary where an HTTP
-    # request becomes an authenticated principal; binding the Slice B
-    # contextvars here guarantees the validator (and anything it calls) sees
-    # the asUser-without-installation defaults, and the ``finally`` inside
-    # the helper restores the outer context even if validation raises. This
-    # slice is intentionally behavior-preserving for existing traffic — a
-    # later slice plumbs real signed-installation values through here.
     primary_error: JWTValidationError | None = None
     try:
-        with execution_context(installation_id=None, act_chain=()):
-            principal = validate_principal(
-                token,
-                public_keys_by_provider=public_keys_by_provider,
-                denylist=denylist,
-            )
+        principal = validate_principal(
+            token,
+            public_keys_by_provider=public_keys_by_provider,
+            denylist=denylist,
+        )
     except JWTValidationError as exc:
         # Includes TokenRevoked — do not leak internals, do not raise 500.
         # Fall through to the legacy decode: HS256 tokens and locally-signed
