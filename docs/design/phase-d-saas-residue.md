@@ -304,13 +304,52 @@ an earlier draft of this line described a PR 1 gate that was never built:
 - **PR 5 (S8/S9).** Data. The gate is a row count before and after, plus
   soft-delete only — never a response body.
 
+## Decisions taken 2026-09-04
+
+Recorded here so the numbers behind them are not re-measured. All figures are
+from production, read-only, on 2026-09-04.
+
+| Item | Decision | Evidence |
+|---|---|---|
+| **S7 / S8 empty tables** | **Drop `tenant_module_grants`, `service_accounts`, `platform_feature_flags`** in a migration. | All three hold **0 rows** on production. |
+| **Dead columns** | **Leave them.** `tenants.subscription_status`, and `stripe_connect_account_id` / `stripe_customer_id` on both `tenants` and `companies`. | All NULL on every row, and never read (`core/tenant.py` hardcodes `"active"`). They sit next to the live Connect threading in `core/payments.py`, so dropping them buys nothing and costs a money-path review. |
+| **S9 seed rows** | **Leave them.** See question 2 below. | Seed company owns 0 data rows; no FK targets `companies`; `companies` has no `deleted_at`. |
+
+⚠ **The table-drop migration is blocked on the single-tenant purge merging
+first.** On `main` today `core/admin_modules.py` still queries
+`TenantModuleGrant` (`.filter_by`, `.query`, and writes), and
+`core/health_score.py`, `core/reconciliation.py` and `core/ai_recommendations.py`
+import it. Dropping the table underneath that code breaks it. On the purge
+branch those call sites are already gone and the only surviving reference is a
+"retired" test — which is where the migration belongs. `service_accounts` and
+`platform_feature_flags` are referenced only in comments (`core/audit.py:200`,
+`app.py:1350`) and in `routers/admin_db.py`'s table list.
+
 ## Open questions for the owner
 
 1. ~~**Connect: delete or keep?**~~ — **ANSWERED 2026-09-01: delete.** Done;
    see S3/S6 above. Issue #421 closed by that PR.
-2. **S9 seed rows:** soft-delete the `Example Garage Doors` tenant/company rows,
-   or leave them? They are referenced by nothing found so far, but they are
-   prod rows in two tables and deserve an explicit decision.
+2. ~~**S9 seed rows:** soft-delete the `Example Garage Doors` tenant/company
+   rows, or leave them?~~ — **ANSWERED 2026-09-04: leave them.** Measured on
+   production first: the seed company owns **zero** rows in customers, jobs,
+   invoices, estimates and users (all 411/285/366/125/14 belong to the real
+   company); **nothing has a foreign key to `companies` at all**; the seed
+   tenant has one empty `tenant_settings` row. 6,564 `audit_logs` rows carry
+   the seed tenant id from June 2026, but that table is append-only with no FK,
+   so it is untouched either way.
+
+   Left in place because `companies` has **no `deleted_at` column**, so
+   invariant #2's soft-delete is not available there — removal would be a hard
+   delete, irreversible except from backup, for zero benefit. And
+   `single_tenant()` still falls back to `00000000-…-0001` when
+   `GDX_TENANT_ID` is unset, which is legitimately the case in dev and test, so
+   the rows are not merely inert residue: they are what those environments
+   resolve to.
+
+   Do not re-investigate. If this is revisited, the question to answer first is
+   whether `single_tenant()` should fail loudly on an unset `GDX_TENANT_ID`
+   instead of falling back — deleting the rows without that change just lets
+   them be recreated.
 3. **S5 health scores:** delete outright, or keep the endpoint unmounted for a
    future hosted offering? Deleting is recommended — it is recoverable from git,
    and a dead mounted route is worse than no route.
