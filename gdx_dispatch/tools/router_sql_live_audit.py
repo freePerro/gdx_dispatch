@@ -13,8 +13,8 @@ Catches two classes of drift before a deploy ships:
      and the real tech was stored in technician_id. Every tech would have
      seen zero jobs.
 
-Complements tenant_isolation_audit.py (ORM-vs-live schema drift) — this one
-sits one layer up at the router raw-SQL level.
+Complements tenant_plane_schema_drift.py (ORM-vs-live schema drift) — this
+one sits one layer up at the router raw-SQL level.
 
 USAGE
 -----
@@ -25,7 +25,7 @@ USAGE
     python3 gdx_dispatch/tools/router_sql_live_audit.py --all
 
     # Different base ref or tenant
-    python3 gdx_dispatch/tools/router_sql_live_audit.py --base HEAD~5 --tenant gdx
+    python3 gdx_dispatch/tools/router_sql_live_audit.py --base HEAD~5
 
     # JSON report to a file
     python3 gdx_dispatch/tools/router_sql_live_audit.py --all --json /tmp/d35.json
@@ -253,58 +253,33 @@ def all_routers(repo_root: Path) -> list[Path]:
 # ── Live DB check ───────────────────────────────────────────────────────────
 
 def _lazy_db():
-    """Import SQLAlchemy + Fernet lazily so --help works without env."""
+    """Import SQLAlchemy lazily so --help works without env."""
     from sqlalchemy import create_engine, text
-    try:
-        from gdx_dispatch.core.database import _decrypt_db_url
-    except Exception:
-        _decrypt_db_url = None
-    return create_engine, text, _decrypt_db_url
+    return create_engine, text
 
 
-def _fallback_decrypt(db_url_enc: str) -> str:
-    """Mirror ``gdx_dispatch.core.database._decrypt_db_url`` semantics so the D35
-    gate doesn't InvalidToken-out on legacy plaintext rows. The session-59
-    bug-bash patched the production decrypt path to pass through plaintext;
-    this fallback (used when the primary import fails) was missed."""
-    key = os.getenv("GDX_FERNET_KEY", "")
-    if not key:
-        return db_url_enc
-    from cryptography.fernet import Fernet, InvalidToken
-    try:
-        return Fernet(key.encode()).decrypt(db_url_enc.encode()).decode()
-    except InvalidToken:
-        return db_url_enc
+def resolve_tenant_engine(slug: str | None = None):
+    """Return (engine, text_fn, control_columns) for the one application DB.
 
-
-def resolve_tenant_engine(slug: str):
-    """Return (tenant_engine, text_fn, control_columns).
-
-    control_columns is the set of column names present in the control DB's
-    public schema — used by audit() to suppress column_missing findings that
-    are actually control-DB queries (platform, tenants, identities, etc).
+    Single-tenant: there is no control plane to look a slug up in. The
+    engine is DATABASE_URL; ``control_columns`` is every column in its
+    public schema. Since the live schema and the "control" schema are now the
+    same database, audit()'s control-column suppression can no longer fire —
+    a column is either present (no finding) or absent (a real finding). The
+    parameter is kept only so audit()'s signature is unchanged.
     """
-    create_engine, text, _decrypt_db_url = _lazy_db()
-    control_url = os.environ.get("CONTROL_DATABASE_URL")
-    if not control_url:
-        raise RuntimeError("CONTROL_DATABASE_URL not set")
-    control_eng = create_engine(control_url)
-    with control_eng.connect() as conn:
-        row = conn.execute(
-            text("SELECT db_url_enc FROM tenants WHERE slug = :s "
-                 "AND db_url_enc IS NOT NULL AND deleted_at IS NULL"),
-            {"s": slug},
-        ).fetchone()
-        ctrl_rows = conn.execute(
+    create_engine, text = _lazy_db()
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        raise RuntimeError("DATABASE_URL not set")
+    eng = create_engine(db_url)
+    with eng.connect() as conn:
+        rows = conn.execute(
             text("SELECT column_name FROM information_schema.columns "
                  "WHERE table_schema = 'public'")
         ).fetchall()
-    control_eng.dispose()
-    if not row:
-        raise RuntimeError(f"tenant slug={slug!r} not found or has no db_url_enc")
-    control_columns = {r.column_name.lower() for r in ctrl_rows}
-    decrypt = _decrypt_db_url or _fallback_decrypt
-    db_url = decrypt(row.db_url_enc)
+    eng.dispose()
+    control_columns = {r.column_name.lower() for r in rows}
     return create_engine(db_url, isolation_level="AUTOCOMMIT"), text, control_columns
 
 
@@ -430,8 +405,6 @@ def main() -> int:
                     help="Git base ref for diff mode (default: origin/main)")
     ap.add_argument("--all", action="store_true",
                     help="Scan every router, not just diff vs --base")
-    ap.add_argument("--tenant", default="gdx",
-                    help="Reference tenant slug (default: gdx)")
     ap.add_argument("--json", dest="json_path", default=None,
                     help="Write full JSON report to this path")
     ap.add_argument("--repo-root", default=None,

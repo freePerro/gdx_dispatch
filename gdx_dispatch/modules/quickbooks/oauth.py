@@ -78,8 +78,8 @@ def _encrypt(value: str) -> str:
 
 
 def _decrypt(value: str) -> str:
-    # Plaintext passthrough on InvalidToken — mirrors the precedent at
-    # ``gdx_dispatch.core.database._decrypt_db_url:102``. Pre-S122-9 rows on prod
+    # Plaintext passthrough on InvalidToken — mirrors the precedent of the
+    # DB-URL decrypt shim (retired 2026-09-03). Pre-S122-9 rows on prod
     # are plaintext (Intuit tokens start ``RT1-``/``eyJ``, which Fernet
     # treats as invalid). The passthrough keeps QB sync working during
     # the transition window while the re-encrypt tool runs. WARN events

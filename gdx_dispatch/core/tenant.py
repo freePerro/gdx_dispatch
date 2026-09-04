@@ -3,37 +3,9 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from sqlalchemy.engine import Engine
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
-
-
-class _SingleEngineRegistry:
-    """Stub that replaces the multi-tenant EngineRegistry.
-
-    In single-tenant GDXDispatch every "per-tenant engine" is the same
-    application engine. Kept as a compatibility shim for the ~20 import sites
-    that still call ``engine_registry.get_engine(tenant_id, db_url)``. Phase D
-    will remove those call sites and this shim.
-    """
-
-    def get_engine(self, tenant_id: str, db_url: str) -> Engine:
-        from gdx_dispatch.core.database import app_engine
-        return app_engine
-
-    def dispose_all(self) -> None:
-        pass
-
-    @property
-    def _engines(self) -> dict:
-        return {}
-
-
-engine_registry = _SingleEngineRegistry()
-
-# Keep the class name for the one test that imported it directly.
-EngineRegistry = _SingleEngineRegistry
 
 
 def single_tenant() -> dict[str, Any]:

@@ -5,8 +5,8 @@ Drops all tables, recreates from ORM create_all(), reloads data.
 The schema will match the ORM exactly — no more drift.
 
 Usage (inside docker-app-1):
-    python gdx_dispatch/tools/pave_tenant_db.py --all-tenants   # pave all CC-registered tenants
-    python gdx_dispatch/tools/pave_tenant_db.py --tenant GDX     # pave one tenant by company_code
+    python gdx_dispatch/tools/pave_tenant_db.py --all-tenants   # pave the application DB (DATABASE_URL)
+    python gdx_dispatch/tools/pave_tenant_db.py --tenant <slug>  # same, guarded by the ambient tenant slug
     python gdx_dispatch/tools/pave_tenant_db.py <database_url>   # pave one DB by direct URL
 
 Flags:
@@ -246,40 +246,18 @@ def verify_counts(pre_counts: dict[str, int], post_counts: dict[str, int]) -> bo
 
 
 def resolve_tenant_urls() -> list[tuple[str, str]]:
-    """Read all tenant DB URLs from the control plane. Returns [(slug, db_url)].
+    """The one (slug, db_url) pair this single-tenant install has.
 
-    The control DB (docker-control-db-1:gdx_control) has a `tenants` table with
-    slug and db_url_enc. db_url_enc may be Fernet-encrypted or plaintext
-    depending on GDX_FERNET_KEY.
+    The multi-tenant version read every tenant's ``db_url_enc`` from a
+    control plane; that column was dropped in the squash. DATABASE_URL is
+    the only database.
     """
-    control_url = os.getenv("CONTROL_DATABASE_URL")
-    if not control_url:
-        log.error("CONTROL_DATABASE_URL not set")
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        log.error("DATABASE_URL not set")
         sys.exit(1)
-
-    # Import the decrypt helper from the app
-    from gdx_dispatch.core.database import _decrypt_db_url
-
-    control_engine = create_engine(control_url)
-    results = []
-    with control_engine.connect() as conn:
-        rows = conn.execute(text("""
-            SELECT slug, db_url_enc
-            FROM tenants
-            WHERE deleted_at IS NULL
-              AND db_url_enc IS NOT NULL
-            ORDER BY slug
-        """)).fetchall()
-
-        for slug, db_url_enc in rows:
-            try:
-                url = _decrypt_db_url(db_url_enc)
-                results.append((slug, url))
-            except Exception as e:
-                log.warning("Could not decrypt URL for tenant %s: %s", slug, e)
-
-    control_engine.dispose()
-    return results
+    from gdx_dispatch.core.tenant import single_tenant
+    return [(str(single_tenant()["slug"]), db_url)]
 
 
 def _bypass_proxy_host(db_url: str) -> str:
@@ -370,6 +348,7 @@ def pave_one(db_url: str, label: str, strict: bool = True) -> bool:
     # without a working pricing engine is a worse outcome than a failed pave.
     try:
         from sqlalchemy.orm import sessionmaker as _sm
+
         from gdx_dispatch.models.pricing_engine import seed_default_pricing as _seed
         _S = _sm(bind=engine, future=True)
         with _S() as _s:
@@ -420,15 +399,25 @@ def main():
     if "--strict" in args:
         args.remove("--strict")  # default; flag is accepted for explicitness
 
+    confirmed = "--yes" in args
+    if confirmed:
+        args.remove("--yes")
     if not args:
         print("Usage:")
-        print("  python pave_tenant_db.py [--strict|--no-strict] --all-tenants")
-        print("  python pave_tenant_db.py [--strict|--no-strict] --tenant <CODE>")
-        print("  python pave_tenant_db.py [--strict|--no-strict] <database_url>")
+        print("  python pave_tenant_db.py [--strict|--no-strict] --yes --all-tenants")
+        print("  python pave_tenant_db.py [--strict|--no-strict] --yes --tenant <slug>")
+        print("  python pave_tenant_db.py [--strict|--no-strict] --yes <database_url>")
         print("")
+        print("  --yes        REQUIRED. This tool DROPS EVERY TABLE in the target database")
+        print("               and rebuilds it from the ORM (data reloaded from the dump it")
+        print("               takes first). On a single-tenant install the target IS the")
+        print("               application database.")
         print("  --strict     (default) abort on any reload error; preserves full backup.")
         print("  --no-strict  legacy behavior; logs errors but continues. Risk: silent data loss.")
         sys.exit(1)
+    if not confirmed:
+        log.error("Refusing to pave without --yes: this drops every table in the target database.")
+        sys.exit(2)
 
     if args[0] == "--all-tenants":
         tenants = resolve_tenant_urls()

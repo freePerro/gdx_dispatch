@@ -33,10 +33,19 @@ def _req(path: str, headers: dict | None = None, host: str = "1.2.3.4") -> Simpl
 
 def test_auth_paths_keyed_per_ip_with_strict_limit() -> None:
     mw = _mw()
-    for path in ("/auth/login", "/signup", "/signup?ref=x"):
+    for path in ("/auth/login", "/auth/login?ref=x", "/portal/login"):
         key, limit = mw._key_and_limit(_req(path))
         assert key == "ip:1.2.3.4", path
         assert limit == DEFAULT_LIMITS["auth"], path  # stricter than general
+
+
+def test_retired_signup_path_is_not_an_auth_surface() -> None:
+    """``/signup`` was deleted with the SaaS residue (2026-09-01/03). It is now
+    just a path the SPA catch-all answers, so it gets the general limit, not
+    the brute-force one — the prefix list must not resurrect it."""
+    mw = _mw()
+    _, limit = mw._key_and_limit(_req("/signup"))
+    assert limit != DEFAULT_LIMITS["auth"]
 
 
 def test_api_key_keyed_per_key_not_per_company() -> None:

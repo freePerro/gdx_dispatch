@@ -120,34 +120,16 @@ def test_client_error_writes_to_tenant_db_when_tenant_resolved(monkeypatch):
 
     captured = {"added": None, "committed": False, "closed": False, "rolled_back": False}
 
-    fake_engine = MagicMock()
     fake_session = MagicMock()
     fake_session.add.side_effect = lambda row: captured.__setitem__("added", row)
     fake_session.commit.side_effect = lambda: captured.__setitem__("committed", True)
     fake_session.close.side_effect = lambda: captured.__setitem__("closed", True)
     fake_session.rollback.side_effect = lambda: captured.__setitem__("rolled_back", True)
 
-    # engine_registry.get_engine returns our fake engine
-    from gdx_dispatch.core import tenant as tenant_mod
-    monkeypatch.setattr(tenant_mod.engine_registry, "get_engine", lambda *a, **kw: fake_engine)
-
-    # The handler builds a sessionmaker and calls it — patch sessionmaker
-    # to return our fake_session factory.
-    # The route imports sessionmaker locally inside the function, so we
-    # patch sqlalchemy.orm directly.
-    import sqlalchemy.orm
-
+    # The handler opens SessionLocal() directly; hand it our fake session.
     import gdx_dispatch.routers.bug_reports as bug_reports_mod
-    monkeypatch.setattr(
-        sqlalchemy.orm,
-        "sessionmaker",
-        lambda **kw: (lambda: fake_session),
-    )
-
-    # _decrypt_db_url is a plaintext passthrough — but patch it to skip
-    # InvalidToken handling on a stub value.
     from gdx_dispatch.core import database as db_mod
-    monkeypatch.setattr(db_mod, "_decrypt_db_url", lambda s: s)
+    monkeypatch.setattr(db_mod, "SessionLocal", lambda: fake_session)
 
     request = MagicMock(spec=Request)
     request.state = SimpleNamespace(tenant={
@@ -185,16 +167,8 @@ def test_client_error_tenant_resolved_path_rolls_back_on_db_error(monkeypatch):
     fake_session.rollback.side_effect = lambda: state.__setitem__("rolled_back", True)
     fake_session.close.side_effect = lambda: state.__setitem__("closed", True)
 
-    from gdx_dispatch.core import tenant as tenant_mod
-    monkeypatch.setattr(tenant_mod.engine_registry, "get_engine", lambda *a, **kw: MagicMock())
-    import sqlalchemy.orm
-    monkeypatch.setattr(
-        sqlalchemy.orm,
-        "sessionmaker",
-        lambda **kw: (lambda: fake_session),
-    )
     from gdx_dispatch.core import database as db_mod
-    monkeypatch.setattr(db_mod, "_decrypt_db_url", lambda s: s)
+    monkeypatch.setattr(db_mod, "SessionLocal", lambda: fake_session)
 
     request = MagicMock(spec=Request)
     request.state = SimpleNamespace(tenant={

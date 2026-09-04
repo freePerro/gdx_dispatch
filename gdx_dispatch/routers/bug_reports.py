@@ -140,21 +140,14 @@ def report_client_error(
         )
         return {"status": "logged_tenantless"}
 
-    # Tenant resolved — open a tenant session manually (we can't Depends()
-    # on get_db because the bypass means it would fail to even resolve
-    # the request.state tenant in a few edge paths). Mirror the dep's logic:
-    # decrypt db_url, get engine from registry, open one session.
-    from sqlalchemy.orm import sessionmaker  # noqa: PLC0415
-
-    from gdx_dispatch.core.database import _decrypt_db_url  # noqa: PLC0415
-    from gdx_dispatch.core.tenant import engine_registry  # noqa: PLC0415
+    # Tenant pinned — open one session on the application database directly
+    # (not via Depends(get_db): this handler is reached on paths where the
+    # dependency would not resolve). Single-tenant: SessionLocal IS that DB.
+    from gdx_dispatch.core.database import SessionLocal  # noqa: PLC0415
 
     db = None
     try:
-        db_url = _decrypt_db_url(str(tenant_state["db_url"]))
-        engine = engine_registry.get_engine(tid, db_url)
-        session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-        db = session_factory()
+        db = SessionLocal()
         now = datetime.now(timezone.utc).isoformat()
         client_err = ClientError(
             id=str(uuid4()),

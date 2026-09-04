@@ -1,7 +1,7 @@
 """Sprint phone-com fix-it Wave H / S15 — tenant-plane schema-drift scanner.
 
 Compares TenantBase ORM declarations against the live information_schema
-of every tenant's database. Catches three classes of drift:
+of the application database. Catches three classes of drift:
 
 1. **Missing table** — ORM declares it; tenant DB lacks it.
 2. **Missing column** — ORM declares the column; tenant DB lacks it. This
@@ -12,14 +12,13 @@ of every tenant's database. Catches three classes of drift:
    eventually drop.
 
 CLI:
-    python -m gdx_dispatch.tools.tenant_plane_schema_drift --tenant gdx
-    python -m gdx_dispatch.tools.tenant_plane_schema_drift --all-tenants
-    python -m gdx_dispatch.tools.tenant_plane_schema_drift --all-tenants --report-dir ai-queue/operations/inbox
+    python -m gdx_dispatch.tools.tenant_plane_schema_drift
+    python -m gdx_dispatch.tools.tenant_plane_schema_drift --report-dir ai-queue/operations/inbox
 
 Exit code:
     0 — no drift detected
     1 — drift detected (CI / cron should fail)
-    2 — operator error (bad args, can't reach control DB)
+    2 — operator error (bad args, can't reach the database)
 
 The scanner does not write to tenant DBs. Resolution remains
 ``gdx_dispatch/tools/pave_tenant_db.py`` for missing/changed columns, or a manual
@@ -37,13 +36,12 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import inspect, select, text
+from sqlalchemy import inspect
 from sqlalchemy.engine import Engine
 
-from gdx_dispatch.control.models import Tenant
 from gdx_dispatch.core.audit import TenantBase
-from gdx_dispatch.core.database import SessionLocal, _decrypt_db_url
-from gdx_dispatch.core.tenant import engine_registry
+from gdx_dispatch.core.database import app_engine
+from gdx_dispatch.core.tenant import single_tenant
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -140,7 +138,7 @@ def diff_schemas(
 
 
 def scan_tenant(tenant_id: UUID, slug: str, db_url: str) -> TenantDriftReport:
-    eng = engine_registry.get_engine(str(tenant_id), db_url)
+    eng = app_engine  # single-tenant: the one application engine
     orm = _orm_schema()
     live = _live_schema(eng)
     missing_t, missing_c, orphan_c = diff_schemas(orm, live)
@@ -211,8 +209,6 @@ def write_report(report_dir: Path, content: str) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tenant", help="Single tenant slug")
-    parser.add_argument("--all-tenants", action="store_true")
     parser.add_argument(
         "--report-dir",
         type=Path,
@@ -225,29 +221,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if not args.tenant and not args.all_tenants:
-        parser.print_help()
-        return 2
-
     reports: list[TenantDriftReport] = []
-    with SessionLocal() as cs:
-        stmt = select(Tenant).where(Tenant.deleted_at.is_(None))
-        if args.tenant:
-            stmt = stmt.where(Tenant.slug == args.tenant)
-        tenants = cs.execute(stmt).scalars().all()
-        if args.tenant and not tenants:
-            log.error("Tenant slug %r not found.", args.tenant)
-            return 2
-        for t in tenants:
-            try:
-                db_url = _decrypt_db_url(t.db_url_enc)
-            except Exception:  # noqa: BLE001
-                log.exception("decrypt failed for tenant=%s", t.slug)
-                continue
-            try:
-                reports.append(scan_tenant(t.id, t.slug, db_url))
-            except Exception as exc:  # noqa: BLE001
-                log.exception("scan failed for tenant=%s: %s", t.slug, exc)
+    t = single_tenant()
+    try:
+        reports.append(scan_tenant(UUID(str(t["id"])), str(t["slug"]), str(t["db_url"])))
+    except Exception as exc:  # noqa: BLE001
+        log.exception("scan failed: %s", exc)
+        return 2
 
     if args.json:
         payload = {"reports": [r.to_dict() for r in reports]}

@@ -19,23 +19,11 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 # still import these; without the shims they raise ImportError at call time:
 #   - app_engine:        auth.core._db_verify_user — runs on EVERY authenticated
 #                        request, so its absence 401s the entire API.
-#   - control_engine:    tools/ scripts (legacy alias; sla_monitor, its last
-#                        in-app consumer, was removed with the control plane).
-#   - _decrypt_db_url:   routers.bug_reports + backfill tools. DB-URL encryption
-#                        was removed — db_url_enc is absent from
-#                        migrations/baseline_squashed.sql — so decryption is now
-#                        identity. (This line used to cite "migrations 081-083";
-#                        no such migrations exist, this tree stops at 062.)
-#   - CONTROL_DATABASE_URL: a migration tool; falls back to the app DB URL.
+#   (control_engine, CONTROL_DATABASE_URL and the _decrypt_db_url identity
+#   shim were removed 2026-09-03 with the SaaS-residue purge: their last
+#   consumers were ops tools that walked a control-plane tenants table whose
+#   db_url_enc column no longer exists.)
 app_engine = engine
-control_engine = engine
-CONTROL_DATABASE_URL = os.getenv("CONTROL_DATABASE_URL") or DATABASE_URL
-
-
-def _decrypt_db_url(value):
-    """No-op shim: DB-URL-at-rest encryption was removed in the single-tenant
-    collapse (db_url_enc column dropped). The stored value is already plaintext."""
-    return value
 
 
 def get_db(request=None) -> Generator[Session, None, None]:

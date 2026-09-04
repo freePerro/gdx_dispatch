@@ -29,7 +29,7 @@ Use a real customer — maybe a friend, family, or your most loyal repeat. **+ N
 
 ### 5. Billing (5 minutes)
 
-**Billing** is where your customers' invoices live. Open the invoice your first job generated, check the line items and the total, and try **Send** — that is the email your customer will get. There is no subscription to set up: this is your own self-hosted install.
+**Billing** is where your customers' invoices live. Open the invoice your first job generated, check the line items and the total, and try **Send** — that is the email your customer will get. There is no plan or payment method to set up: this is your own self-hosted install.
 
 ## After the first hour
 

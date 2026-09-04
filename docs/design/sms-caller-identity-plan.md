@@ -121,7 +121,7 @@ Without this, you name the number and the thread you're staring at is *still* un
 
 Directory (individual) names need no stamping — they resolve by hash at read time.
 
-**Also needed once:** a `tools/backfill_customer_contact_phone_hash.py`, mirroring the existing [backfill_customer_phone_hash.py](../../gdx_dispatch/tools/backfill_customer_phone_hash.py), to hash contacts that already exist (mobile has been writing them since migration 030).
+**Also needed once:** a `tools/backfill_customer_contact_phone_hash.py`, mirroring the (since deleted, 2026-09-03 — it walked a control-plane tenants table) [backfill_customer_phone_hash.py](../../gdx_dispatch/tools/backfill_customer_phone_hash.py), to hash contacts that already exist (mobile has been writing them since migration 030).
 
 ---
 

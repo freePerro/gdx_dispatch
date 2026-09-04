@@ -1,8 +1,8 @@
 """Per-tenant LLM provider API key storage.
 
 Sprint 1.x-S4 (set/get/clear) + S6 (test_the_key). Fernet-encrypts the key
-against ``GDX_FERNET_KEY`` (same env var ``gdx_dispatch/core/database.py:_decrypt_db_url``
-uses for tenant DB URLs); reads and writes go through ``tenant_settings``
+against ``GDX_FERNET_KEY`` (the env var the retired DB-URL decrypt shim
+once shared); reads and writes go through ``tenant_settings``
 (control plane, landed in S3).
 
 Unlike the tenant-DB-URL path, this module does NOT silently fall back to

@@ -20,10 +20,11 @@ platform ORM (`models/platform_extensions.py`, 16 tables that never existed <!--
 on prod, and `core/events.py`, its only importer, which nothing called), <!-- link-ok -->
 `ServiceAccount` (0 references; the empty table stays), the `_lookup_tenant`
 test stub the middleware never called, and the four backend readers that let a
-client stamp any `x-tenant-id` into logs and metrics. **Commit 3: S11's frontend half and S15 built.** **S9 (prod data) and S10
-(the engine-registry shim and the ops tools) are NOT built** yet; the purge
-continues in the same branch. ⚠ Nothing
-here is deployed or walked on prod yet.
+client stamp any `x-tenant-id` into logs and metrics. **Commit 3: S11's frontend half and S15 built. Commit 4: S10, S16, S17 and
+S19 built, plus the seven comment-drift lines the residue audit tied to the
+collapse.** **Only S9 (the two seed rows in prod data) is NOT built** — it is
+prod data, the owner's call, and needs no code. ⚠ Nothing here is deployed or
+walked on prod yet.
 
 ## What already exists (do not rebuild)
 
@@ -101,8 +102,11 @@ Declared before the fix, per the working agreement.
 | ~~**S8**~~ | ~~SaaS billing state on a product that is not sold~~ | **BUILT 2026-09-03 (code half)** — `subscription_status` and `stripe_connect_account_id` unmapped from the `Tenant` model and dropped from the ambient dict (the one remaining reader, `core/payments.py::_stripe_extra`, reads the key off that dict, which never carried it — unchanged behaviour). The physical columns stay (NOT NULL DEFAULT 'trialing' satisfies inserts); the prod rows and a drop-column migration are the owner's call | Columns only |
 | **S9** | Seed-tenant duplicates in prod data | `Example Garage Doors` / `00000000-…-0001` sits beside the real company row in **both** `tenants` and `companies` — it is the default in `single_tenant()` | Data, not code |
 | ~~**S11**~~ | ~~`x-tenant-id` / `gdx_tenant_slug` still threaded through the frontend~~ | **BUILT 2026-09-03** — backend half in commit 2 (the four readers now use server-verified state only), frontend half in commit 3: `_tenantHeader()`, `tenantSlug`, the `gdx_tenant_slug` session key and every header derivation removed from 12 files (`useApi`, `theme`, `analytics`, `useOfflineSync`, `useAuthedFile`, `useTour`, Documents/BankFeeds/VendorStatements/Exports, `errorCapture`, `auth`), and from all 36 Playwright e2e specs plus `playwright.config.js` (they stamped the header on every request and seeded the slug). Guard: `src/__tests__/saasTenantHeaderRetired.spec.js`. Closes **issue #581** on merge | Gone |
+| ~~**S16**~~ | ~~Three scanner baselines 100% dead~~ | **BUILT 2026-09-03 (commit 4)** — `.tenant_id_shape_baseline` (owner scanner long deleted) and `.cross_plane_import_baseline` (no owner) removed; `.tenant_plane_redundant_filter_baseline` re-frozen from real paths: 276 findings, 0 net-new, and a probe file flips `--strict` to exit 1 again. ⚠ Neither this scanner nor drift_scanner / comment_drift_scan runs in CI or any hook — "can fail" is not "is run" | Scanner can fail again; still unwired |
+| ~~**S17**~~ | ~~`drift_scanner.py` enforced multi-tenant rules~~ | **BUILT 2026-09-03 (commit 4)** — the TestClient-needs-`tenant_module_grants` rule (71 of its 86 warnings) and the platform `resource_type` rule (waited on a file that left with the collapse) deleted | Gone |
+| ~~**S19**~~ | ~~Ten ops tools iterated "all tenants via the control plane"~~ | **BUILT 2026-09-03 (commit 4)** — every one SELECTed `tenants.db_url_enc`, a column the squash dropped, so none could run. Six one-shot migrations that had already run were deleted (`migrate_monthly_budgets`, `encrypt_qb_token_store_rows`, `migrate_tenant_typed_catalogs`, `backfill_role_permissions`, `backfill_customer_phone_hash`, `add_leads_perms_to_role_snapshots`; link-ok); seven still-useful tools now take DATABASE_URL (`tenant_schema_drift_check`, `tenant_plane_schema_drift`, `router_sql_live_audit`, `test_residue_sweep`, `pave_tenant_db`, `qa_tier1`, `create_api_key`) | Rewritten |
 | ~~**S15**~~ | ~~In-app help sold a subscription~~ | **BUILT 2026-09-03 (commit 3)** — `help/articles/billing-subscription.md` deleted; the four articles that cited it (`users`, `owner-getting-started`, `invoices`, `modules-permissions`) rewritten to describe the self-hosted install. Prod gate: `GET /help-index.json` (public, unauthenticated) read 1 for "what you pay us" and 5 for "Billing & subscription" on 2026-09-03; both must read 0 after deploy | Gone | <!-- link-ok -->
-| **S10** | `_SingleEngineRegistry` shim + ~20 `get_engine(tenant_id, db_url)` call sites | `core/tenant.py:12-33` — the original Phase D scope | Inert by design |
+| ~~**S10**~~ | ~~`_SingleEngineRegistry` shim + ~20 `get_engine(tenant_id, db_url)` call sites~~ | **BUILT 2026-09-03 (commit 4)** — the shim, `_lookup_tenant`, the `_decrypt_db_url` identity shim and the `control_engine` / `CONTROL_DATABASE_URL` aliases are gone from `core/tenant.py` and `core/database.py`. The "~20 call sites" were 3: `routers/bug_reports.py` (now `SessionLocal`) and two tools. Kept on purpose: the ambient `db_url` key, because `routers/auth/core.py::_db_verify_user` skips per-request user verification when it is absent | Gone |
 
 ### S1 — CORRECTED: dead code, not an exploit. Now removed.
 

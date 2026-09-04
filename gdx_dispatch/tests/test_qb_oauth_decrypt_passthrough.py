@@ -8,7 +8,7 @@ cause ``Fernet.decrypt`` to raise on the first read after deploy and
 break QB sync for the entire window between deploy and the re-encrypt
 tool finishing. The passthrough closes that window.
 
-Pattern lifted from ``gdx_dispatch.core.database._decrypt_db_url:102``.
+Pattern lifted from the DB-URL decrypt shim (retired 2026-09-03).
 """
 
 from __future__ import annotations

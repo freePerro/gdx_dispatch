@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import io
 from contextlib import redirect_stdout
-from unittest.mock import patch
 
 import pytest
 
@@ -23,6 +22,17 @@ def test_dry_run_prints_without_writing():
     out = buf.getvalue()
     assert "DRY RUN" in out
     assert "landing_leads:write" in out
+
+
+def test_dry_run_without_tenant_defaults_to_this_install(monkeypatch):
+    """--tenant is optional since the single-tenant purge: the CLI resolves the
+    install's own tenant id (GDX_TENANT_ID) instead of demanding a slug."""
+    monkeypatch.setenv("GDX_TENANT_ID", "11111111-2222-3333-4444-555555555555")
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = cli.main(["--name", "smoke", "--scopes", "landing_leads:write", "--dry-run"])
+    assert rc == 0
+    assert "11111111-2222-3333-4444-555555555555 (this install)" in buf.getvalue()
 
 
 def test_invalid_scope_raises_systemexit():

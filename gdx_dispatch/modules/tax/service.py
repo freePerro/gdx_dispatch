@@ -17,7 +17,6 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.modules.tax.models import TaxConfig, TaxExemption
 
-
 _ZERO = Decimal("0")
 
 
@@ -64,7 +63,6 @@ def resolve_rate(db: Session, customer_id: UUID | str | None = None) -> Decimal:
     Future hooks (currently no-ops):
     - jurisdiction lookup by service-address zip
     - per-line-item category overrides
-    - per-tenant TaxProvider plugin (Avalara, TaxJar)
     """
     if is_customer_exempt(db, customer_id):
         return _ZERO

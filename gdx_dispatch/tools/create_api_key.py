@@ -41,7 +41,11 @@ def _resolve_tenant_id(db, tenant_arg: str) -> UUID:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Mint a tenant API key for the public REST API.")
-    ap.add_argument("--tenant", required=True, help="Tenant slug or UUID (e.g. 'gdx').")
+    ap.add_argument(
+        "--tenant",
+        default=None,
+        help="Tenant slug or UUID. Optional: defaults to this install's one tenant.",
+    )
     ap.add_argument("--name", required=True, help="Human-readable label.")
     ap.add_argument(
         "--scopes",
@@ -75,8 +79,9 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("ERROR: at least one scope is required.")
 
     if args.dry_run:
+        from gdx_dispatch.core.tenant import company_id
         print("DRY RUN")
-        print(f"  tenant:  {args.tenant}")
+        print(f"  tenant:  {args.tenant or company_id() + ' (this install)'}")
         print(f"  name:    {args.name}")
         print(f"  scopes:  {sorted(requested)}")
         print(f"  expires: {args.expires_days or 'never'}")
@@ -92,7 +97,11 @@ def main(argv: list[str] | None = None) -> int:
 
     db = SessionLocal()
     try:
-        tenant_uuid = _resolve_tenant_id(db, args.tenant)
+        if args.tenant:
+            tenant_uuid = _resolve_tenant_id(db, args.tenant)
+        else:
+            from gdx_dispatch.core.tenant import company_id
+            tenant_uuid = UUID(company_id())
         raw_key, key_hash, key_prefix = generate_api_key()
 
         expires_at = None

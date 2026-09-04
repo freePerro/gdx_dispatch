@@ -210,3 +210,83 @@ def test_backend_ignores_client_tenant_header() -> None:
         _tenant_id(req2)
     with pytest.raises(HTTPException):
         _tenant_id_from_request(req2)
+
+
+# ── Commit 4: the engine-registry shim, the scanners, the ops tools ──────────
+
+
+def test_engine_registry_shim_is_gone() -> None:
+    """S10. ``engine_registry.get_engine(tenant_id, db_url)`` always returned the
+    one app engine; its three call sites now use ``app_engine`` / ``SessionLocal``."""
+    from gdx_dispatch.core import database, tenant
+
+    for name in ("engine_registry", "EngineRegistry", "_SingleEngineRegistry", "_lookup_tenant"):
+        assert not hasattr(tenant, name), name
+    for name in ("_decrypt_db_url", "control_engine", "CONTROL_DATABASE_URL"):
+        assert not hasattr(database, name), name
+
+
+@pytest.mark.parametrize(
+    "modname",
+    [
+        "gdx_dispatch.tools.migrate_monthly_budgets",
+        "gdx_dispatch.tools.encrypt_qb_token_store_rows",
+        "gdx_dispatch.tools.migrate_tenant_typed_catalogs",
+        "gdx_dispatch.tools.backfill_role_permissions",
+        "gdx_dispatch.tools.backfill_customer_phone_hash",
+        "gdx_dispatch.tools.add_leads_perms_to_role_snapshots",
+    ],
+)
+def test_control_plane_walking_tool_is_gone(modname: str) -> None:
+    """S19. One-shot migrations that already ran and then SELECTed
+    ``tenants.db_url_enc``, a column the squash dropped — unrunnable forever."""
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module(modname)
+
+
+def test_surviving_tools_resolve_the_one_database() -> None:
+    """S19. The rewritten tools take DATABASE_URL, not a control-plane walk."""
+    import inspect
+
+    from gdx_dispatch.tools import (
+        pave_tenant_db,
+        router_sql_live_audit,
+        tenant_plane_schema_drift,
+        tenant_schema_drift_check,
+        test_residue_sweep,
+    )
+
+    for mod in (pave_tenant_db, router_sql_live_audit, tenant_plane_schema_drift, tenant_schema_drift_check, test_residue_sweep):
+        src = inspect.getsource(mod)
+        assert "FROM tenants" not in src, mod.__name__
+        assert "CONTROL_DATABASE_URL" not in src, mod.__name__
+
+
+def test_drift_scanner_has_no_multi_tenant_rules() -> None:
+    """S17. The fixture rule warned on every TestClient test lacking the legacy
+    grants table (71 of 86 warnings); the platform rule waited forever for a
+    file that left with the collapse."""
+    from gdx_dispatch.tools import drift_scanner
+
+    assert not hasattr(drift_scanner, "check_test_fixture_patterns")
+    assert not hasattr(drift_scanner, "check_platform_schema_tests_exist")
+
+
+def test_dead_scanner_baselines_are_gone() -> None:
+    """S16. Every path in these baselines carried the pre-rename ``gdx/``
+    prefix, so they matched nothing and suppressed nothing."""
+    root = _HERE.parent
+    assert not (root / ".tenant_id_shape_baseline").exists()
+    assert not (root / ".cross_plane_import_baseline").exists()
+
+
+def test_tenant_plane_baseline_is_current() -> None:
+    """S16. The surviving baseline was re-frozen from real paths, so the scanner
+    reports 0 net-new on a clean tree and CAN report 1 on a new redundant
+    filter (proved by hand with a probe file on 2026-09-03)."""
+    import json
+
+    root = _HERE.parent
+    entries = json.loads((root / ".tenant_plane_redundant_filter_baseline").read_text())
+    assert entries, "baseline is empty"
+    assert all(e.startswith("gdx_dispatch/") for e in entries), [e for e in entries if not e.startswith("gdx_dispatch/")][:3]

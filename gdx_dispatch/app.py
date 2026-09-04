@@ -1086,9 +1086,9 @@ limiter = Limiter(key_func=get_remote_address, default_limits=[DEFAULT_RATE_LIMI
 
 def _check_customer_facing_config() -> None:
     """Fail loud at startup when env vars that drive customer-facing signals
-    are missing in prod. The cost of a missing welcome email or missing DNS
-    is a customer who can't reach their account (Becky 2026-04-30: lost a
-    full day to PLATFORM_SMTP_PASS being unset). Logs a structured warning
+    are missing in prod. The cost of a missing welcome email is a user who
+    can't reach their account (Becky 2026-04-30: lost a full day to
+    PLATFORM_SMTP_PASS being unset). Logs a structured warning
     rather than refusing to start, so a single missing var doesn't take down
     the whole platform — but the warning is loud, audit-able, and visible
     in `docker logs` immediately.
@@ -1100,12 +1100,13 @@ def _check_customer_facing_config() -> None:
     if env in ("dev", "development", "test", "testing", "local"):
         return
     log = logging.getLogger("gdx_dispatch.app.startup_config")
-    required_for_signup = [
-        ("PLATFORM_SMTP_PASS", "welcome emails will fail (Becky 2026-04-30 incident)"),
-        ("CLOUDFLARE_API_TOKEN", "tenant subdomains will not be DNS-resolvable"),
-        ("CLOUDFLARE_ZONE_ID", "tenant subdomains will not be DNS-resolvable"),
+    # (CLOUDFLARE_API_TOKEN / CLOUDFLARE_ZONE_ID were listed here for "tenant
+    # subdomains" — a multi-tenant DNS feature this app never ships. Removed
+    # 2026-09-03; they fired an ERROR on every boot for nothing.)
+    required_at_startup = [
+        ("PLATFORM_SMTP_PASS", "auth emails (welcome / reset) will fail (Becky 2026-04-30 incident)"),
     ]
-    missing = [(name, why) for name, why in required_for_signup if not os.environ.get(name)]
+    missing = [(name, why) for name, why in required_at_startup if not os.environ.get(name)]
     if missing:
         for name, why in missing:
             log.error("STARTUP_CONFIG_MISSING var=%s impact=%s env=%s", name, why, env)
@@ -1130,11 +1131,9 @@ def _check_encryption_at_rest() -> None:
         (manual ``_encrypt`` helpers, ``gdx_dispatch.modules.quickbooks.oauth``)
 
     ``tenants.db_url_enc`` used to be the second consumer. The column is not
-    in ``migrations/baseline_squashed.sql`` and
-    ``gdx_dispatch.core.database._decrypt_db_url`` is now an identity no-op, so
-    this gate has no DB-URL ciphertext left to protect. Several ``tools/``
-    scripts still SELECT the column against pre-baseline databases; they go
-    through the same no-op decrypt, so they read whatever is stored verbatim.
+    in ``migrations/baseline_squashed.sql``; the identity decrypt shim and the
+    ``tools/`` scripts that still SELECTed the column were removed 2026-09-03,
+    so this gate has no DB-URL ciphertext left to protect.
     (An earlier version of this note cited "migrations 081-083" — copied from
     ``core/database.py`` and wrong: this tree's migrations stop at 062.)
 
@@ -1433,7 +1432,10 @@ def create_app() -> FastAPI:
                 logging.getLogger("gdx_dispatch.app").exception("import/init failed")
                 return False
 
-        # ── Probe control-db via CONTROL_DATABASE_URL (same as app startup) ─
+        # ── Probe the DB. CONTROL_DATABASE_URL is a legacy variable from the
+        # control-plane era that .env.template still carries and
+        # migrations/env.py still reads; on a single-tenant install it must
+        # point at the same database as DATABASE_URL. ─
         control_url = os.environ.get(
             "CONTROL_DATABASE_URL",
             os.environ.get("DATABASE_URL", ""),

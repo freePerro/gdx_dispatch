@@ -73,6 +73,8 @@ describe('S15 — the help panel sells no subscription', () => {
       for (const needle of ['what you pay us', 'Starter, Pro, or Enterprise', 'billing-subscription', 'Billing & subscription', 'until trial ends', 'Settings → Subscription']) {
         if (text.includes(needle)) offenders.push(`${f}: ${needle}`);
       }
+      // The help drawer's search for "subscription" must find nothing at all.
+      if (/subscri/i.test(text)) offenders.push(`${f}: matches /subscri/i`);
     }
     expect(offenders).toEqual([]);
   });

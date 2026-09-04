@@ -24,9 +24,8 @@ def _tenant_session(tenant_id: str):
 def detect_observed_recurring_task(self, tenant_id: str) -> dict:
     """Run the observed-recurring detector against one tenant's DB.
 
-    Skips silently if the tables don't exist yet (a tenant that hasn't
-    received the slice-1 DDL via sync_tenant_db.py is just not eligible
-    yet — no error needed).
+    Skips silently if the tables don't exist yet (an install that hasn't
+    received the slice-1 DDL is just not eligible yet — no error needed).
     """
     from gdx_dispatch.modules.forecasting.observed_recurring import run_detector
 

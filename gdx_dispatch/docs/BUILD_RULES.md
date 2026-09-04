@@ -53,7 +53,7 @@ Tables: customers, jobs, invoices, documents, technicians, estimates, notes, lea
 - DO NOT add `tenant_id` / `company_id` columns to new tenant-plane models. Redundant and misleading.
 - DO NOT add RLS policies on tenant-plane tables — no-op in db-per-tenant.
 - Read `request.state.tenant["id"]` only as a *value* (audit logs, R2 key prefixes, log lines, control-plane FKs).
-- Every unit of work (request OR Celery task) must open its own `get_tenant_db` session. Per-tenant engines are cached in `engine_registry`.
+- Every unit of work (request OR Celery task) must open its own session (`get_db` / `SessionLocal`). There is one engine, `app_engine`; the per-tenant `engine_registry` shim was removed 2026-09-03.
 
 #### Adding columns / tables to tenant-plane models
 `TenantBase.metadata.create_all()` runs at signup and creates *new tables* on demand. It does NOT add new columns to existing tables. So every column you add to an existing tenant-plane model silently drifts on every long-running tenant DB until someone repaves it. Symptom: `psycopg2.errors.UndefinedColumn` 500s on whichever endpoint touches the new column, only on tenants that existed before the column was added.
@@ -119,7 +119,7 @@ Tool blast-radius classes: Green (apply directly), Yellow (AI proposes → UI co
 - ALWAYS lazy-load non-critical routes in `router/index.js`
 
 ## Testing — Must Pass Both SQLite and PostgreSQL
-- Fixtures MUST create `tenant_module_grants` + `company_module_grants`
+- Fixtures MAY create `company_module_grants` (the only grants table; `tenant_module_grants` was removed 2026-09-03). With no rows, the gate seeds every module on first check.
 - Fixtures MUST inject `request.state.tenant = {"id": "tenant-test"}` via middleware
 - Fixtures MUST seed module grants for the module under test
 - Fixtures MUST use `company_id` matching the tenant middleware

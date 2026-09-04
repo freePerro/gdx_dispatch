@@ -7,8 +7,8 @@ Run after every feature, before every deploy:
 Exit code 0 = no drift, 1 = violations found.
 """
 from __future__ import annotations
-import logging
 
+import logging
 import re
 import sys
 from pathlib import Path
@@ -292,7 +292,7 @@ def check_env_template_drift() -> None:
 
     # Ignore common/standard vars
     ignore = {"PATH", "HOME", "USER", "PYTHONPATH", "GDX_ENV", "SENTRY_DSN", "REDIS_URL",
-              "CONTROL_DATABASE_URL", "DATABASE_URL", "SECRET_KEY", "JWT_SECRET_KEY"}
+              "DATABASE_URL", "SECRET_KEY", "JWT_SECRET_KEY"}
 
     missing = used_vars - ignore
     for var in sorted(missing):
@@ -317,27 +317,6 @@ def check_audit_logging_coverage() -> None:
                 warnings.append(f"gdx_dispatch/routers/{f.name}: has INSERT/UPDATE/DELETE but no log_audit_event() calls")
         except Exception:
             logging.getLogger(__name__).debug("check_audit_logging_coverage: swallowed S110 — suppressed exception", exc_info=True)
-            pass
-
-
-def check_test_fixture_patterns() -> None:
-    """Check that test files with TestClient have proper tenant middleware."""
-    print("Checking test fixture patterns...")
-    tests_dir = GDX_DIR / "tests"
-    if not tests_dir.exists():
-        return
-
-    for f in sorted(tests_dir.glob("*.py")):
-        if f.name.startswith("_") or f.name == "conftest.py":
-            continue
-        try:
-            content = f.read_text(errors="replace")
-            has_testclient = "TestClient" in content or "AsyncClient" in content
-            has_tenant_middleware = "request.state.tenant" in content or "tenant_module_grants" in content
-            if has_testclient and not has_tenant_middleware:
-                warnings.append(f"gdx_dispatch/tests/{f.name}: uses TestClient but missing tenant middleware/module grants")
-        except Exception:
-            logging.getLogger(__name__).debug("check_test_fixture_patterns: swallowed S110 — suppressed exception", exc_info=True)
             pass
 
 
@@ -438,43 +417,6 @@ def check_pii_in_logs() -> None:
         )
 
 
-def check_platform_schema_tests_exist() -> None:
-    """Platform SS-3 P13: every declared resource_type has an integrity test.
-
-    When `gdx_dispatch/models/platform.py` (created in SS-2/3 execution) declares a
-    resource_descriptors.type_id, `gdx_dispatch/tests/test_shared_resource_integrity.py`
-    must contain a matching test case. Until platform.py exists this check
-    is a no-op; once it exists it enforces the P13 acceptance criterion.
-    """
-    print("Checking platform resource_type test coverage (SS-3 P13)...")
-    platform_models = CORE_DIR.parent / "models" / "platform.py"
-    integrity_test = CORE_DIR.parent / "tests" / "test_shared_resource_integrity.py"
-    if not platform_models.exists():
-        return  # SS-2/3 not executed yet; check is a no-op
-    try:
-        src = platform_models.read_text(errors="replace")
-    except OSError:
-        return
-    # Extract declared resource types — conservative regex matches string
-    # literals passed to `resource_type=` or in a ResourceDescriptor call.
-    declared = set(re.findall(r"resource_type\s*=\s*[\"']([a-z][\w\-]*)[\"']", src))
-    if not declared:
-        return
-    if not integrity_test.exists():
-        violations.append(
-            f"gdx_dispatch/tests/test_shared_resource_integrity.py: MISSING "
-            f"(required by SS-3 P13; {len(declared)} resource_types declared)"
-        )
-        return
-    test_src = integrity_test.read_text(errors="replace")
-    missing = [t for t in declared if t not in test_src]
-    for t in sorted(missing):
-        violations.append(
-            f"gdx_dispatch/tests/test_shared_resource_integrity.py: no test case references "
-            f"resource_type='{t}' (SS-3 P13 requires one per declared type)"
-        )
-
-
 def main() -> int:
     print(f"\n{'=' * 60}")
     print("GDX Build Rules Drift Scanner")
@@ -488,10 +430,8 @@ def main() -> int:
     check_nullable_company_id()
     check_env_template_drift()
     check_audit_logging_coverage()
-    check_test_fixture_patterns()
     check_container_dep_sync()
     check_pii_in_logs()
-    check_platform_schema_tests_exist()
 
     print()
     if warnings:
