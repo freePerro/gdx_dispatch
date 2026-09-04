@@ -49,7 +49,6 @@ def single_tenant() -> dict[str, Any]:
         "slug": os.getenv("GDX_TENANT_SLUG") or "00000000-0000-0000-0000-000000000001",
         "name": os.getenv("GDX_TENANT_NAME") or "Example Garage Doors",
         "db_url": os.getenv("DATABASE_URL", "sqlite:///./gdx.db"),
-        "subscription_status": "active",
     }
 
 
@@ -75,25 +74,14 @@ def get_company_id() -> str:
     return company_id()
 
 
-def _lookup_tenant(request: Any = None, **_kwargs: Any) -> dict[str, Any]:
-    """Backward-compat stub for tests that patch this function.
-
-    Phase C removed the multi-tenant resolver; all lookups resolve to the one
-    GDX tenant. Tests that patch this function to return different tenant dicts
-    (e.g. multi-tenant MCP cross-tenant denial tests) continue to work because
-    TenantMiddleware delegates to this function instead of calling
-    single_tenant() directly.
-    """
-    return single_tenant()
-
-
 class TenantMiddleware(BaseHTTPMiddleware):
     """Pin every request to the single GDX tenant.
 
-    Phase A removed the multi-tenant resolver (subdomain / x-tenant-id lookup,
+    Phase A removed the multi-tenant resolver (subdomain / header lookup,
     trial-expiry, unknown-tenant 404). Phase C removed the per-request
     ``_current_tenant_id`` ContextVar wiring that fed the PostgreSQL GUC
-    machinery.
+    machinery. The 2026-09-03 purge removed the ``_lookup_tenant`` test stub
+    (this middleware never called it) and the ``subscription_status`` key.
 
     ``control_session_factory`` is accepted and silently ignored — many
     call-sites and tests still pass it.
@@ -101,11 +89,9 @@ class TenantMiddleware(BaseHTTPMiddleware):
 
     _BYPASS_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/sw.js", "/manifest.json"}
 
-    _TENANTLESS_ALLOWED_PATHS = {"/api/feedback/client-error"}
-
     _BYPASS_PREFIXES = (
         "/admin/", "/pwa/", "/api/push/", "/assets",
-        "/onboarding", "/signup", "/stripe/webhook", "/supplier/join/",
+        "/onboarding", "/stripe/webhook", "/supplier/join/",
         "/api/supplier/register", "/api/supplier/login",
     )
 

@@ -134,3 +134,79 @@ def test_celery_no_longer_includes_reconciliation() -> None:
     assert not any("reconciliation" in name for name in celery_app.tasks), sorted(
         t for t in celery_app.tasks if "reconciliation" in t
     )
+
+
+# ── Commit 2: control-plane residue in code ────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "modname",
+    ["gdx_dispatch.models.platform_extensions", "gdx_dispatch.core.events"],
+)
+def test_platform_orm_is_gone(modname: str) -> None:
+    """16 marketplace-era tables (OAuthClient, BillingAccount, MeterEvent, …) and
+    the EventOutbox helper that was their only importer. None of the tables
+    existed on prod."""
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module(modname)
+
+
+def test_control_models_carry_no_saas_state() -> None:
+    from gdx_dispatch.control import models as cm
+
+    assert not hasattr(cm, "TenantModuleGrant")
+    assert not hasattr(cm, "ServiceAccount")
+    cols = {c.name for c in cm.Tenant.__table__.columns}
+    assert "subscription_status" not in cols, cols
+    assert "stripe_connect_account_id" not in cols, cols
+
+
+def test_ambient_tenant_has_no_subscription_status() -> None:
+    from gdx_dispatch.core.tenant import single_tenant
+
+    assert "subscription_status" not in single_tenant()
+
+
+def test_module_gate_has_no_control_plane_fallback() -> None:
+    """``is_module_enabled`` used to fall through to the control-plane
+    ``tenant_module_grants`` table (0 rows on prod). Absence assertion over the
+    WHOLE module source, so reintroducing the query in any helper (not just
+    the gate function) turns this red. The module's comments name the table
+    only as "the control-plane fallback", never by its literal name."""
+    import inspect
+
+    from gdx_dispatch.core import modules
+
+    assert "tenant_module_grants" not in inspect.getsource(modules)
+
+
+def test_backend_ignores_client_tenant_header() -> None:
+    """The ``x-tenant-id`` request header was multi-tenant residue that every
+    client sent and four backend readers used as a fallback label. A client
+    must no longer be able to stamp a tenant id into logs or metrics."""
+    from fastapi import Request
+
+    from gdx_dispatch.core.ai_router import _tenant_id
+    from gdx_dispatch.core.ai_usage_logger import _tenant_id_from_request
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/x",
+        "headers": [(b"x-tenant-id", b"forged-tenant")],
+        "query_string": b"",
+    }
+    req = Request(scope)
+    req.state.tenant = {"id": "real-tenant"}
+    assert _tenant_id(req) == "real-tenant"
+    assert _tenant_id_from_request(req) == "real-tenant"
+
+    # With no server-verified tenant the header must NOT fill the gap.
+    req2 = Request(dict(scope))
+    req2.state.tenant = {}
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException):
+        _tenant_id(req2)
+    with pytest.raises(HTTPException):
+        _tenant_id_from_request(req2)

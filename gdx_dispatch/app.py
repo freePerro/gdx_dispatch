@@ -18,7 +18,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from gdx_dispatch.core import observability
-from gdx_dispatch.core.database import SessionLocal
 from gdx_dispatch.core.error_handler import global_exception_handler
 from gdx_dispatch.core.prometheus import prometheus_middleware
 from gdx_dispatch.core.prometheus import router as prometheus_router
@@ -669,8 +668,8 @@ except Exception:
     onboarding_ui_router = APIRouter(tags=["onboarding-ui"])
 
 try:
-    from gdx_dispatch.routers.admin_ops import router as admin_ops_router
     from gdx_dispatch.routers.admin_ops import read_router as admin_ops_read_router
+    from gdx_dispatch.routers.admin_ops import router as admin_ops_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: admin_ops_router")
     admin_ops_router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -1314,8 +1313,8 @@ def create_app() -> FastAPI:
     # the DB. Nothing in the app sent the header. It was also the only producer
     # of service-account identity, which is why the `actor_kind ==
     # "service_account"` branch in routers/auth/core.py now fails closed.
-    # The `service_accounts` table stays in the baseline schema; D17
-    # (service_accounts -> access_tokens) is the intended replacement.
+    # The `service_accounts` table still exists physically (0 rows); its ORM
+    # model was deleted 2026-09-03 with the SaaS-residue purge.
     if _TenantRateLimitMiddleware is not None:
         app.add_middleware(_TenantRateLimitMiddleware)
     try:

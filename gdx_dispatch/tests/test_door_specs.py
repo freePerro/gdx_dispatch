@@ -9,18 +9,17 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+# Import the full model graph so every FK the estimates tables reference
+# (customers, jobs, labor_price_items, …) is registered on TenantBase.metadata
+# before create_all — mirrors test_estimates.py.
+import gdx_dispatch.models.tenant_models  # noqa: E402,F401
+import gdx_dispatch.routers.estimates  # noqa: E402,F401
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.door_specs import (
     door_specs_for_job,
     flatten_door_spec,
 )
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
-
-# Import the full model graph so every FK the estimates tables reference
-# (customers, jobs, labor_price_items, …) is registered on TenantBase.metadata
-# before create_all — mirrors test_estimates.py.
-import gdx_dispatch.models.tenant_models  # noqa: E402,F401
-import gdx_dispatch.routers.estimates  # noqa: E402,F401
 
 # A realistic captured CHI door spec, shaped like what the plugin's
 # _estimate_line_draft() writes into EstimateLine.line_metadata.
@@ -267,11 +266,9 @@ def install_client():
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     setup = Session()
     for ddl in (
-        "CREATE TABLE IF NOT EXISTS tenant_module_grants (id TEXT PRIMARY KEY, tenant_id TEXT, module_key TEXT, granted_at TEXT, created_at TEXT, expires_at TEXT)",
         "CREATE TABLE IF NOT EXISTS company_module_grants (id TEXT PRIMARY KEY, company_id TEXT, module_key TEXT, granted_at TEXT, created_at TEXT, expires_at TEXT, UNIQUE(company_id, module_key))",
     ):
         setup.execute(text(ddl))
-    setup.execute(text("INSERT OR IGNORE INTO tenant_module_grants (id, tenant_id, module_key, granted_at, created_at) VALUES ('g1','tenant-test','jobs',datetime('now'),datetime('now'))"))
     setup.execute(text("INSERT OR IGNORE INTO company_module_grants (id, company_id, module_key, granted_at, created_at) VALUES ('g2','tenant-test','jobs',datetime('now'),datetime('now'))"))
     setup.commit(); setup.close()
 
@@ -339,11 +336,9 @@ def po_client():
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     setup = Session()
     for ddl in (
-        "CREATE TABLE IF NOT EXISTS tenant_module_grants (id TEXT PRIMARY KEY, tenant_id TEXT, module_key TEXT, granted_at TEXT, created_at TEXT, expires_at TEXT)",
         "CREATE TABLE IF NOT EXISTS company_module_grants (id TEXT PRIMARY KEY, company_id TEXT, module_key TEXT, granted_at TEXT, created_at TEXT, expires_at TEXT, UNIQUE(company_id, module_key))",
     ):
         setup.execute(text(ddl))
-    setup.execute(text("INSERT OR IGNORE INTO tenant_module_grants (id, tenant_id, module_key, granted_at, created_at) VALUES ('g1','tenant-test','inventory',datetime('now'),datetime('now'))"))
     setup.execute(text("INSERT OR IGNORE INTO company_module_grants (id, company_id, module_key, granted_at, created_at) VALUES ('g2','tenant-test','inventory',datetime('now'),datetime('now'))"))
     setup.commit(); setup.close()
 

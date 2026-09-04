@@ -200,7 +200,7 @@ class SlowQueryMiddleware(BaseHTTPMiddleware):
         _install_sql_listeners_once(self.threshold_ms)
 
     async def dispatch(self, request: Request, call_next: Any) -> Response:
-        tenant_id = str(getattr(request.state, "tenant", {}).get("id", request.headers.get("x-tenant-id", "-")))
+        tenant_id = str((getattr(request.state, "tenant", None) or {}).get("id", "-"))
         request_id = str(getattr(request.state, "request_id", request.headers.get("x-request-id", "-")))
         token = _request_ctx.set({"tenant_id": tenant_id, "request_id": request_id, "path": request.url.path})
         try:
@@ -219,7 +219,7 @@ class SlowEndpointMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         duration_ms = int((time.perf_counter() - started) * 1000)
         if duration_ms > self.threshold_ms:
-            tenant_id = str(getattr(request.state, "tenant", {}).get("id", request.headers.get("x-tenant-id", "-")))
+            tenant_id = str((getattr(request.state, "tenant", None) or {}).get("id", "-"))
             request_id = str(getattr(request.state, "request_id", request.headers.get("x-request-id", "-")))
             get_performance_logger().log_slow_endpoint(
                 tenant_id=tenant_id,

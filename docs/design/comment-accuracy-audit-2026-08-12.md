@@ -81,7 +81,7 @@ Grouped by what the comment claimed:
   `core/tenant_ctx.py` (`_per_tenant_settings` → `_tenant_settings`),
   `core/spiffe/spire_trust_bundle.py` (`MAX_STALE_SECONDS` →
   `max_stale_seconds`), `routers/catalog.py` (`CatalogGroup` → `CustomCatalog`),
-  `models/platform_extensions.py`, `models/tenant_models.py`, `routers/tours.py`,
+  `models/platform_extensions.py`, `models/tenant_models.py`, `routers/tours.py`, <!-- file deleted 2026-09-03 with the SaaS-residue purge; link-ok -->
   `routers/custom_fields.py`.
 
 **Claims that were simply untrue**

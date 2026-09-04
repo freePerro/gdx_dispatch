@@ -46,7 +46,7 @@ def ensure_ai_usage_table(db: Session) -> None:
 
 def _tenant_id_from_request(request: Request) -> str:
     tenant = getattr(request.state, "tenant", None) or {}
-    tenant_id = str(tenant.get("id") or request.headers.get("x-tenant-id", "")).strip()
+    tenant_id = str(tenant.get("id") or "").strip()
     if not tenant_id:
         raise HTTPException(status_code=400, detail="Missing tenant context")
     return tenant_id

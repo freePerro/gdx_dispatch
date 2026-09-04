@@ -69,9 +69,9 @@ def control_engine():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    # Direct Table.create per table — ControlBase.metadata.create_all has
-    # FK validation that trips on tables registered by other modules
-    # (installations, etc.) whose definitions aren't loaded here.
+    # Direct Table.create per table — only the two tables this router
+    # touches; ControlBase.metadata.create_all would also build the games
+    # tables, which this fixture has no use for.
     for name in ("tenants", "tenant_settings"):
         if name in ControlBase.metadata.tables:
             ControlBase.metadata.tables[name].create(engine, checkfirst=True)

@@ -38,8 +38,8 @@ that's its isolation model), and `__pycache__`.
 False positives & how to triage
 -------------------------------
 A scan finding here is not always a real bug — sometimes the `Foo` in
-`Foo.tenant_id == x` is a control-plane model (Membership, Tenant,
-TenantModuleGrant) that legitimately needs the filter. The signature
+`Foo.tenant_id == x` is a control-plane model (Tenant, TenantSettings)
+that legitimately needs the filter. The signature
 records the model name, so review can spot those quickly. If the model
 is control-plane, either:
   - Annotate the line with `# noqa: T1` (or T2/T3/T4/T5/T6 as appropriate), or

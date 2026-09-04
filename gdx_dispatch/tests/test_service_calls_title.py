@@ -29,21 +29,11 @@ def client():
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     setup = Session()
     setup.execute(text("""
-        CREATE TABLE IF NOT EXISTS tenant_module_grants (
-            id TEXT PRIMARY KEY, tenant_id TEXT, module_key TEXT,
-            granted_at TEXT, created_at TEXT, expires_at TEXT
-        )
-    """))
-    setup.execute(text("""
         CREATE TABLE IF NOT EXISTS company_module_grants (
             id TEXT PRIMARY KEY, company_id TEXT, module_key TEXT,
             granted_at TEXT, created_at TEXT, expires_at TEXT,
             UNIQUE(company_id, module_key)
         )
-    """))
-    setup.execute(text("""
-        INSERT OR IGNORE INTO tenant_module_grants (id, tenant_id, module_key, granted_at, created_at)
-        VALUES ('g1', 'tenant-test', 'jobs', datetime('now'), datetime('now'))
     """))
     setup.execute(text("""
         INSERT OR IGNORE INTO company_module_grants (id, company_id, module_key, granted_at, created_at)

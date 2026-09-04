@@ -204,13 +204,12 @@ def test_database_schema_conformance():
         "DATABASE_URL). Set one — skipping this test hides real drift."
     )
 
-    # Import Base first so all registered tables are loaded before introspection.
-    # We import the extension modules for their side-effect (registering tables
-    # onto Base.metadata) but use Base as the single source of truth.
+    # Base is the single source of truth for the control-plane tables. (The
+    # platform_extensions side-effect import that used to register 16 more
+    # tables here was deleted 2026-09-03; none of them existed on prod.)
     import sqlalchemy.exc
     from sqlalchemy import create_engine, inspect
 
-    from gdx_dispatch.models import platform_extensions  # noqa: F401
     from gdx_dispatch.control.models import Base
 
     # Context-awareness: if we can't reach the DB from this host, the detector

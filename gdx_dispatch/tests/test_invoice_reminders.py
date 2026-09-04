@@ -29,16 +29,6 @@ def _make_client(tenant_id: str = "tenant-test") -> TestClient:
     setup.execute(
         text(
             """
-            CREATE TABLE IF NOT EXISTS tenant_module_grants (
-                id TEXT PRIMARY KEY, tenant_id TEXT, module_key TEXT,
-                granted_at TEXT, created_at TEXT, expires_at TEXT
-            )
-            """
-        )
-    )
-    setup.execute(
-        text(
-            """
             CREATE TABLE IF NOT EXISTS company_module_grants (
                 id TEXT PRIMARY KEY, company_id TEXT, module_key TEXT,
                 granted_at TEXT, created_at TEXT, expires_at TEXT,
@@ -46,15 +36,6 @@ def _make_client(tenant_id: str = "tenant-test") -> TestClient:
             )
             """
         )
-    )
-    setup.execute(
-        text(
-            """
-            INSERT OR IGNORE INTO tenant_module_grants (id, tenant_id, module_key, granted_at, created_at)
-            VALUES (:id, :tid, 'invoices', datetime('now'), datetime('now'))
-            """
-        ),
-        {"id": f"g1-{tenant_id}", "tid": tenant_id},
     )
     setup.execute(
         text(

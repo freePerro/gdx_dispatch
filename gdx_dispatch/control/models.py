@@ -8,7 +8,6 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
-    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -38,11 +37,13 @@ class Tenant(Base):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    stripe_connect_account_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    # Kept (SCOPE.md): not SaaS-billing here — task SQL still filters on the physical
-    # column and rate_limiter reads it off request.state.tenant. Maps the existing
-    # NOT NULL DEFAULT 'trialing' column; its CheckConstraint stays dropped.
-    subscription_status: Mapped[str] = mapped_column(String(20), nullable=False, default="trialing")
+    # ``stripe_connect_account_id`` and ``subscription_status`` (NOT NULL DEFAULT
+    # 'trialing') still exist as physical columns in ``tenants`` — the baseline
+    # SQL creates them and prod carries them — but no code reads the columns
+    # (core/payments.py reads a same-named key off the ambient tenant dict,
+    # which never carries it), so the ORM no longer maps them. The column
+    # default satisfies inserts. Dropping the columns is a separate migration
+    # decision.
     timezone: Mapped[str] = mapped_column(String(60), nullable=False, default="America/New_York")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -55,17 +56,6 @@ class Tenant(Base):
     phone: Mapped[str | None] = mapped_column(String(32))
     employee_count: Mapped[int | None] = mapped_column(Integer)
     industry: Mapped[str | None] = mapped_column(String(64))
-
-
-class TenantModuleGrant(Base):
-    __tablename__ = "tenant_module_grants"
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    tenant_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
-    module_key: Mapped[str] = mapped_column(String(50), nullable=False)
-    granted_by_tenant_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("tenants.id"))
-    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class GameDefinition(Base):
@@ -136,27 +126,6 @@ class GameEvent(Base):
     reason: Mapped[str | None] = mapped_column(Text)
     created_by_user_id: Mapped[str] = mapped_column(String(100), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-
-
-class ServiceAccount(Base):
-    __tablename__ = "service_accounts"
-    __table_args__ = (
-        UniqueConstraint("key_hash", name="uq_service_accounts_key_hash"),
-        UniqueConstraint("name", name="uq_service_accounts_name"),
-        Index("ix_service_accounts_key_prefix", "key_prefix"),
-    )
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    name: Mapped[str] = mapped_column(String(100), nullable=False)
-    description: Mapped[str | None] = mapped_column(Text)
-    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    key_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
-    allowed_tenant_uuids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
-    allowed_scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class TenantSettings(Base):

@@ -22,14 +22,13 @@ from fastapi.testclient import TestClient
 
 from gdx_dispatch.core.mcp_bearer import mint_mcp_access_token
 
-
 # Sprint plan: every tool in the legacy registry must reach claude.ai
 # through the FastMCP transport. The __init__.py side-effect import
 # registers 35 modules at app startup; this is the floor.
 EXPECTED_MIN_TOOLS = 35
 
 # Tenant host used for all S2 requests. TenantMiddleware must resolve
-# this to a known tenant; we patch _lookup_tenant for the test fixture.
+# this to a known tenant; we patch single_tenant() for the test fixture.
 TENANT_HOST = "gdx.example.com"
 TENANT_UUID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 TENANT_ISSUER = f"http://{TENANT_HOST}"
@@ -117,10 +116,8 @@ def app_client():
     # Real tenant binding (token aud + gdx_tid) is S4's responsibility.
     _single = {"id": str(TENANT_UUID), "slug": "gdx", "db_url": "sqlite:///:memory:",
                "subscription_status": "active"}
-    with patch("gdx_dispatch.core.tenant._lookup_tenant", return_value=_FAKE_TENANT), \
-         patch("gdx_dispatch.core.tenant.single_tenant", return_value=_single):
-        with TestClient(app) as client:
-            yield client
+    with patch("gdx_dispatch.core.tenant.single_tenant", return_value=_single), TestClient(app) as client:
+        yield client
 
 
 def _initialize(client: TestClient) -> str:

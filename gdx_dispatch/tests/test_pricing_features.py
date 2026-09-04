@@ -14,7 +14,7 @@ def client() -> TestClient:
     app = FastAPI()
 
     # Pricing router gates on require_module("estimates") in production.
-    # These unit tests don't set up the tenant_module_grants table, so we
+    # These unit tests don't set up the company_module_grants table, so we
     # stub the tenant context via middleware and swallow the router's
     # module-check dependency via an override. We access the dependency
     # from the router's own declared list instead of calling require_module

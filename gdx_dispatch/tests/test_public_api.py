@@ -221,17 +221,6 @@ def client():
     ControlSession = sessionmaker(bind=control_engine, autoflush=False, autocommit=False)
     TenantSession = sessionmaker(bind=tenant_engine, autoflush=False, autocommit=False)
 
-    # --- Patch TenantMiddleware _lookup_tenant before app creation ---
-    import gdx_dispatch.core.tenant as _tenant_mod
-    _orig_lookup = _tenant_mod._lookup_tenant
-
-    def _patched_lookup(db, slug, tenant_id):
-        if tenant_id == TENANT_ID or slug == "testco":
-            return _FAKE_TENANT
-        # No real DB call — return None for unknown tenants
-        return None
-
-    _tenant_mod._lookup_tenant = _patched_lookup
 
     # --- Single-tenant collapse (Phase A): TenantMiddleware now pins
     #     single_tenant() rather than resolving the x-tenant-id header.
@@ -322,7 +311,6 @@ def client():
         yield c
 
     # Restore patched state
-    _tenant_mod._lookup_tenant = _orig_lookup
     _db_mod.SessionLocal = _orig_csf  # type: ignore[assignment]
     if _ak_mod is not None and _orig_ak_csf is not None:
         _ak_mod.SessionLocal = _orig_ak_csf  # type: ignore[assignment]

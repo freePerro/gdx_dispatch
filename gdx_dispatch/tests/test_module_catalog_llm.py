@@ -23,7 +23,7 @@ def test_llm_tier_is_starter():
     Originally specced as tier=business but lowered to starter 2026-04-27 after
     deploy-time discovery: GDX (the design partner) ships as subscription_status=
     trialing → fallback tier=starter, so business-gated modules were unreachable
-    on the proving-ground tenant. The real gate is the tenant_module_grants row
+    on the proving-ground tenant. The real gate is the company_module_grants row
     presence + the per-tenant Anthropic key (TenantSettings.llm_provider_key_enc).
     """
     from gdx_dispatch.core.modules import MODULES

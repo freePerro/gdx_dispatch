@@ -12,8 +12,8 @@ from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.models.tenant_models import JobPhoto
+from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.photos import router
 
 
@@ -36,16 +36,6 @@ def _make_client(
     setup.execute(
         text(
             """
-            CREATE TABLE IF NOT EXISTS tenant_module_grants (
-                id TEXT PRIMARY KEY, tenant_id TEXT, module_key TEXT,
-                granted_at TEXT, created_at TEXT, expires_at TEXT
-            )
-            """
-        )
-    )
-    setup.execute(
-        text(
-            """
             CREATE TABLE IF NOT EXISTS company_module_grants (
                 id TEXT PRIMARY KEY, company_id TEXT, module_key TEXT,
                 granted_at TEXT, created_at TEXT, expires_at TEXT,
@@ -53,15 +43,6 @@ def _make_client(
             )
             """
         )
-    )
-    setup.execute(
-        text(
-            """
-            INSERT OR IGNORE INTO tenant_module_grants (id, tenant_id, module_key, granted_at, created_at)
-            VALUES (:id, :tid, 'jobs', datetime('now'), datetime('now'))
-            """
-        ),
-        {"id": f"g1-{tenant_id}", "tid": tenant_id},
     )
     setup.execute(
         text(

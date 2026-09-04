@@ -26,6 +26,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import gdx_dispatch.core.mcp_tools  # noqa: F401  — side-effect: registers tools
 from gdx_dispatch.core.mcp_bearer import mint_mcp_access_token
 from gdx_dispatch.core.mcp_mount import mcp_subapp_lifespan, mount_mcp
 from gdx_dispatch.core.mcp_registry import (
@@ -35,9 +36,6 @@ from gdx_dispatch.core.mcp_registry import (
 )
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
 from gdx_dispatch.core.tenant import TenantMiddleware
-
-import gdx_dispatch.core.mcp_tools  # noqa: F401  — side-effect: registers tools
-
 
 GDX_HOST = "gdx.example.com"
 GDX_UUID = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -107,10 +105,8 @@ def app_client():
     _single = {"id": str(GDX_UUID), "slug": "gdx", "db_url": "sqlite:///:memory:",
                "subscription_status": "active"}
 
-    with patch("gdx_dispatch.core.tenant._lookup_tenant", side_effect=_resolver), \
-         patch("gdx_dispatch.core.tenant.single_tenant", return_value=_single):
-        with TestClient(app) as client:
-            yield client
+    with patch("gdx_dispatch.core.tenant.single_tenant", return_value=_single), TestClient(app) as client:
+        yield client
 
     _DESCRIPTORS.pop(PROBE_NAME, None)
     _HANDLERS.pop(PROBE_NAME, None)

@@ -97,7 +97,9 @@ async def prometheus_middleware(request: Request, call_next: Any) -> Any:
     finally:
         active_requests.dec()
         duration = time.monotonic() - start
-        tenant_id = request.headers.get("x-tenant-id", "unknown")
+        # Server-verified tenant only. The x-tenant-id header this once read
+        # was multi-tenant residue: any client could stamp any label value.
+        tenant_id = str((getattr(request.state, "tenant", None) or {}).get("id", "-"))
         # Normalize path to avoid high-cardinality (strip UUIDs)
         path = request.url.path
         parts = path.strip("/").split("/")

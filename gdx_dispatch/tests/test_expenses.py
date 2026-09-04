@@ -28,21 +28,11 @@ def client():
     # Create module grant tables and seed the required module
     _setup_db = SessionLocal()
     _setup_db.execute(text("""
-        CREATE TABLE IF NOT EXISTS tenant_module_grants (
-            id TEXT PRIMARY KEY, tenant_id TEXT, module_key TEXT,
-            granted_at TEXT, created_at TEXT, expires_at TEXT
-        )
-    """))
-    _setup_db.execute(text("""
         CREATE TABLE IF NOT EXISTS company_module_grants (
             id TEXT PRIMARY KEY, company_id TEXT, module_key TEXT,
             granted_at TEXT, created_at TEXT, expires_at TEXT,
             UNIQUE(company_id, module_key)
         )
-    """))
-    _setup_db.execute(text("""
-        INSERT OR IGNORE INTO tenant_module_grants (id, tenant_id, module_key, granted_at, created_at)
-        VALUES ('g1', 'tenant-test', 'jobs', datetime('now'), datetime('now'))
     """))
     _setup_db.execute(text("""
         INSERT OR IGNORE INTO company_module_grants (id, company_id, module_key, granted_at, created_at)
@@ -286,9 +276,10 @@ def test_expense_routes_registered_in_main_app():
 def test_list_expenses_status_filter(tenant_db):
     """Sweep H2: the dashboard's draft-expense attention row counts via
     ?status=draft — the filter must actually filter."""
+    import datetime as _dt
+
     from gdx_dispatch.models.tenant_models import Expense
     from gdx_dispatch.routers.expenses import list_expenses
-    import datetime as _dt
 
     tenant_db.add_all([
         Expense(vendor="A", amount=10, date=_dt.date(2026, 8, 1), category="Fuel",

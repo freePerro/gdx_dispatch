@@ -15,8 +15,13 @@ billing reconciliation route and Celery task, the vendor-upsell
 `core/recommendation_routes.py` — was serving `GET /api/recommendations`;
 zero callers anywhere, and the survivor now answers that path with a
 different shape behind `require_role`; link-ok), and an unreferenced
-"retention playbook" health-score module. **S7, S8, S9, S10, S11 are NOT
-built** in this commit; the purge continues in the same branch. ⚠ Nothing
+"retention playbook" health-score module. **Commit 2 (same branch): S7 and S8's code halves built**, plus the dead
+platform ORM (`models/platform_extensions.py`, 16 tables that never existed <!-- link-ok -->
+on prod, and `core/events.py`, its only importer, which nothing called), <!-- link-ok -->
+`ServiceAccount` (0 references; the empty table stays), the `_lookup_tenant`
+test stub the middleware never called, and the four backend readers that let a
+client stamp any `x-tenant-id` into logs and metrics. **S9, S10, S11 are NOT
+built** yet; the purge continues in the same branch. ⚠ Nothing
 here is deployed or walked on prod yet.
 
 ## What already exists (do not rebuild)
@@ -91,8 +96,8 @@ Declared before the fix, per the working agreement.
 | ~~**S4**~~ | ~~8 vendor-admin routes with zero UI callers~~ | **BUILT 2026-09-03** — `core/health_score.py`, `core/tenant_metrics.py`, `core/admin_modules.py` and `core/admin_ops.py` deleted; the route table lost exactly those 8 paths (link-ok) | Gone |
 | ~~**S5**~~ | ~~Churn scoring pointed at the owner~~ | **BUILT 2026-09-03** — deleted with S4, together with the unreferenced `modules/ai_health_score/` twin (link-ok) | Gone |
 | ~~**S6**~~ | ~~Two parallel Stripe Connect implementations~~ | **BUILT — all 9 routes deleted**, both files removed, module key dropped | Gone |
-| **S7** | Dead control-plane grants table | prod `tenant_module_grants` = 0 rows; `company_module_grants` = 111 rows (with duplicates) | Fallback path only |
-| **S8** | SaaS billing state on a product that is not sold | prod `tenants.subscription_status` = `'trialing'` on both rows; `core/tenant.py:52` hardcodes `"active"` in the ambient dict | Inert |
+| ~~**S7**~~ | ~~Dead control-plane grants table~~ | **BUILT 2026-09-03** — the `is_module_enabled` fallback query and the `TenantModuleGrant` model deleted; 35 test fixtures stopped seeding the table. The physical table stays (0 rows on prod); dropping it is a migration decision | Gone from code |
+| ~~**S8**~~ | ~~SaaS billing state on a product that is not sold~~ | **BUILT 2026-09-03 (code half)** — `subscription_status` and `stripe_connect_account_id` unmapped from the `Tenant` model and dropped from the ambient dict (the one remaining reader, `core/payments.py::_stripe_extra`, reads the key off that dict, which never carried it — unchanged behaviour). The physical columns stay (NOT NULL DEFAULT 'trialing' satisfies inserts); the prod rows and a drop-column migration are the owner's call | Columns only |
 | **S9** | Seed-tenant duplicates in prod data | `Example Garage Doors` / `00000000-…-0001` sits beside the real company row in **both** `tenants` and `companies` — it is the default in `single_tenant()` | Data, not code |
 | **S11** | `x-tenant-id` / `gdx_tenant_slug` still threaded through the frontend | `stores/auth.js::_tenantHeader()` derives the header from `window.location.hostname` — prod is a 3-part host, so **every login today sends `x-tenant-id: gdx`** to the resolver Phase A deleted. ~20 frontend files (`useApi`, `theme`, `analytics`, `useOfflineSync`, `useAuthedFile`, `useTour`, Documents/BankFeeds/VendorStatements/Exports, `errorCapture`) plus 4 backend readers that use it as a logging fallback (`performance.py`, `prometheus.py`, `ai_router.py`, `ai_usage_logger.py`) | Sent and ignored — **issue #581** |
 | **S10** | `_SingleEngineRegistry` shim + ~20 `get_engine(tenant_id, db_url)` call sites | `core/tenant.py:12-33` — the original Phase D scope | Inert by design |

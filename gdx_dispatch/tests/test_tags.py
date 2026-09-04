@@ -30,15 +30,6 @@ def _make_client(tenant_id: str = "tenant-test") -> TestClient:
     # Module-grant tables are created on-demand by gdx_dispatch.core.modules at runtime.
     # Tests must create them explicitly so the grant inserts below succeed.
     setup.execute(text(
-        """CREATE TABLE IF NOT EXISTS tenant_module_grants (
-            id TEXT PRIMARY KEY,
-            tenant_id TEXT NOT NULL,
-            module_key TEXT NOT NULL,
-            granted_at TIMESTAMP,
-            created_at TIMESTAMP
-        )"""
-    ))
-    setup.execute(text(
         """CREATE TABLE IF NOT EXISTS company_module_grants (
             id TEXT PRIMARY KEY,
             company_id TEXT NOT NULL,
@@ -48,16 +39,6 @@ def _make_client(tenant_id: str = "tenant-test") -> TestClient:
         )"""
     ))
     for mod_key in ("jobs", "customers", "core"):
-        setup.execute(
-            text(
-                """
-                INSERT OR IGNORE INTO tenant_module_grants
-                    (id, tenant_id, module_key, granted_at, created_at)
-                VALUES (:id, :tid, :mk, datetime('now'), datetime('now'))
-                """
-            ),
-            {"id": f"g1-{tenant_id}-{mod_key}", "tid": tenant_id, "mk": mod_key},
-        )
         setup.execute(
             text(
                 """

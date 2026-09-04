@@ -55,22 +55,9 @@ def _make_app(role: str = "admin", uid: str = _ADMIN_UID, tmp_path=None) -> Test
     # ruff's S608 flags the latter, and CI ratchets on total violation count.
     setup.execute(
         text(
-            "CREATE TABLE IF NOT EXISTS tenant_module_grants (id TEXT PRIMARY KEY, "
-            "tenant_id TEXT, module_key TEXT, granted_at TEXT, created_at TEXT, expires_at TEXT)"
-        )
-    )
-    setup.execute(
-        text(
             "CREATE TABLE IF NOT EXISTS company_module_grants (id TEXT PRIMARY KEY, "
             "company_id TEXT, module_key TEXT, granted_at TEXT, created_at TEXT, expires_at TEXT)"
         )
-    )
-    setup.execute(
-        text(
-            "INSERT INTO tenant_module_grants (id, tenant_id, module_key, granted_at, created_at) "
-            "VALUES (:id, :tid, 'inventory', datetime('now'), datetime('now'))"
-        ),
-        {"id": "tmg-g", "tid": TENANT},
     )
     setup.execute(
         text(
