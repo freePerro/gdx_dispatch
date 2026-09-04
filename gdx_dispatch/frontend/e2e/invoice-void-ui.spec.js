@@ -28,14 +28,13 @@ const DARK_INVOICE_ID = process.env.E2E_VOID_INVOICE_ID_DARK;
 async function login(page, baseURL) {
   const api = await pwRequest.newContext({ baseURL });
   const r = await api.post('/auth/login', {
-    headers: { 'content-type': 'application/json', 'x-tenant-id': TENANT, 'x-e2e-test': 'true' },
+    headers: { 'content-type': 'application/json', 'x-e2e-test': 'true' },
     data: { email: EMAIL, password: PASSWORD },
   });
   expect(r.ok()).toBeTruthy();
   const { access_token } = await r.json();
   await page.addInitScript((a) => {
     sessionStorage.setItem('gdx_access_token', a.t);
-    sessionStorage.setItem('gdx_tenant_slug', a.tid);
   }, { t: access_token, tid: TENANT });
   return { api, token: access_token };
 }
@@ -43,7 +42,7 @@ async function login(page, baseURL) {
 test('the office can void an invoice, and the typed confirmation gates it', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 1440, height: 1100 });
   const { api, token } = await login(page, baseURL);
-  const authed = { authorization: `Bearer ${token}`, 'x-tenant-id': TENANT };
+  const authed = { authorization: `Bearer ${token}`};
 
   // --- the part starts CLAIMED -------------------------------------------
   // Assert the CLAIM directly, on the unfiltered list. An earlier version of

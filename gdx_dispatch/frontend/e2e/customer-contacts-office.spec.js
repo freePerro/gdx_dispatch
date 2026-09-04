@@ -20,7 +20,7 @@ import { request as pwRequest } from '@playwright/test';
 import { test as base, expect } from './_fixtures.js';
 
 // The shared `page` fixture is auth-primed; the base `request` fixture is NOT
-// (playwright.config only sets x-tenant-id). An API call through it 401s, which
+// (playwright.config sets no auth header). An API call through it 401s, which
 // would have made every seed in this file fail loudly — but only because the
 // seeds assert on `r.ok()`. Build an authed context from the same fixtures file
 // global-setup wrote, so no test logs in again and hits the rate limiter.
@@ -31,7 +31,6 @@ const test = base.extend({
       baseURL,
       extraHTTPHeaders: {
         authorization: `Bearer ${fx.token}`,
-        'x-tenant-id': fx.tenant,
         'content-type': 'application/json',
       },
     });

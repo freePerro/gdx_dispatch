@@ -16,7 +16,7 @@ test.beforeAll(async () => {
   test.skip(!EMAIL || !PASSWORD, 'E2E creds not set');
   ctx = await pwRequest.newContext({
     baseURL: BASE,
-    extraHTTPHeaders: { 'x-tenant-id': TENANT, 'content-type': 'application/json' },
+    extraHTTPHeaders: { 'content-type': 'application/json' },
   });
   const login = await ctx.post('/auth/login', { data: { email: EMAIL, password: PASSWORD } });
   expect(login.ok(), `login ${login.status()}`).toBeTruthy();

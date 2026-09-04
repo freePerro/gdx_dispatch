@@ -2,7 +2,7 @@
 title: Modules & permissions
 role: owner
 tags: modules, permissions, roles, access
-related: users, owner-getting-started, billing-subscription
+related: users, owner-getting-started
 ---
 
 # Modules & permissions
@@ -16,7 +16,7 @@ Both are set under Settings.
 
 ## Modules (per shop)
 
-Your plan unlocks a set of modules. You can turn on or off any module your plan includes — useful when you're not ready for a feature yet.
+Every module ships with the install. You can turn any module on or off under Settings → Modules — useful when you're not ready for a feature yet.
 
 Examples:
 
@@ -66,4 +66,3 @@ You can fine-tune what each role sees under **Settings → Role permissions**. U
 ## Related
 - [Users & teams](#)
 - [Owner getting started](#)
-- [Billing & subscription](#)

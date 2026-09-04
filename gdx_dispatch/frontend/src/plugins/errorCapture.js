@@ -14,14 +14,6 @@
 const RECENT_WINDOW_MS = 5000;
 const recentSent = new Map(); // key -> timestamp
 
-function _tenantId() {
-  try {
-    const auth = JSON.parse(localStorage.getItem("auth") || "{}");
-    return auth?.tenant?.id || auth?.tenantId || "";
-  } catch {
-    return "";
-  }
-}
 
 function _shouldSend(key) {
   const now = Date.now();
@@ -58,7 +50,7 @@ function _send(kind, detail, extra = {}) {
   try {
     fetch("/api/feedback/client-error", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-tenant-id": _tenantId() },
+      headers: { "Content-Type": "application/json" },
       // keepalive lets this survive a navigation
       keepalive: true,
       body: JSON.stringify({

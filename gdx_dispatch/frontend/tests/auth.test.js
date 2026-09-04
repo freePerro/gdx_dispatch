@@ -55,7 +55,6 @@ describe('auth store', () => {
     // /auth/logout.
     sessionStorage.setItem('gdx_access_token', 'prior-admin-token');
     sessionStorage.setItem('gdx_user', JSON.stringify({ id: 'prior-admin' }));
-    sessionStorage.setItem('gdx_tenant_slug', 'gdx');
 
     setActivePinia(createPinia());
     const auth = useAuthStore();
@@ -83,7 +82,6 @@ describe('auth store', () => {
     expect(auth.isAuthenticated).toBe(false);
     expect(sessionStorage.getItem('gdx_access_token')).toBeNull();
     expect(sessionStorage.getItem('gdx_user')).toBeNull();
-    expect(sessionStorage.getItem('gdx_tenant_slug')).toBeNull();
 
     // Server-side logout was called too — invalidates the HttpOnly cookie
     // so a re-auth can't skate by on the prior session's cookie.

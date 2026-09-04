@@ -1165,11 +1165,6 @@ function uploadOneFile(file, folderId) {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/documents');
 
-    const storedSlug = sessionStorage.getItem('gdx_tenant_slug');
-    const hostParts = window.location.hostname.split('.');
-    const subdomain = hostParts.length >= 3 ? hostParts[0] : null;
-    const tenantId = storedSlug || (subdomain && subdomain !== 'www' ? subdomain : null);
-    if (tenantId) xhr.setRequestHeader('x-tenant-id', tenantId);
     if (auth.accessToken) xhr.setRequestHeader('Authorization', `Bearer ${auth.accessToken}`);
     xhr.withCredentials = true;
 
@@ -1306,12 +1301,6 @@ async function submitUpload() {
     await new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/api/documents');
-
-      const storedSlug = sessionStorage.getItem('gdx_tenant_slug');
-      const hostParts = window.location.hostname.split('.');
-      const subdomain = hostParts.length >= 3 ? hostParts[0] : null;
-      const tenantId = storedSlug || (subdomain && subdomain !== 'www' ? subdomain : null);
-      if (tenantId) xhr.setRequestHeader('x-tenant-id', tenantId);
 
       if (auth.accessToken) {
         xhr.setRequestHeader('Authorization', `Bearer ${auth.accessToken}`);

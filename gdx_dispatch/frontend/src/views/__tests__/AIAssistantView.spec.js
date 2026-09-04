@@ -19,7 +19,6 @@ describe('AIAssistantView.vue (S31)', () => {
     setActivePinia(createPinia())
     fetchMock = vi.fn()
     global.fetch = fetchMock
-    sessionStorage.setItem('gdx_tenant_slug', 'gdx')
   })
 
   afterEach(() => {

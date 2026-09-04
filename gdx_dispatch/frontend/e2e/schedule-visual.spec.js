@@ -10,7 +10,7 @@ const PASSWORD = process.env.E2E_PASSWORD;
 test('screenshots: schedule dialog + dispatch queue, light and dark', async ({ page, baseURL }) => {
   const bootstrap = await pwRequest.newContext({ baseURL });
   const r = await bootstrap.post('/auth/login', {
-    headers: { 'content-type': 'application/json', 'x-tenant-id': TENANT, 'x-e2e-test': 'true' },
+    headers: { 'content-type': 'application/json', 'x-e2e-test': 'true' },
     data: { email: EMAIL, password: PASSWORD },
   });
   expect(r.ok()).toBeTruthy();
@@ -19,7 +19,6 @@ test('screenshots: schedule dialog + dispatch queue, light and dark', async ({ p
     baseURL,
     extraHTTPHeaders: {
       authorization: `Bearer ${access_token}`,
-      'x-tenant-id': TENANT,
       'x-e2e-test': 'true',
     },
   });
@@ -45,7 +44,6 @@ test('screenshots: schedule dialog + dispatch queue, light and dark', async ({ p
     await page.addInitScript((t) => { localStorage.setItem('gdx_theme', t); }, theme);
     await page.addInitScript((a) => {
       sessionStorage.setItem('gdx_access_token', a.t);
-      sessionStorage.setItem('gdx_tenant_slug', a.tid);
     }, { t: access_token, tid: TENANT });
 
     await page.goto(`/jobs/${job.id}?schedule=1`);

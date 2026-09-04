@@ -34,7 +34,6 @@ describe('AIAssistantView.vue — Red confirm modal (S34)', () => {
     setActivePinia(createPinia())
     fetchMock = vi.fn()
     global.fetch = fetchMock
-    sessionStorage.setItem('gdx_tenant_slug', 'gdx')
   })
 
   afterEach(() => {

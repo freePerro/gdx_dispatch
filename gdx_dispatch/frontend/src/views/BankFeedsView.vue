@@ -1376,17 +1376,8 @@ const onDocPage = (event) => {
   loadDocuments();
 };
 
-function deriveTenantId() {
-  if (auth.tenantSlug) return auth.tenantSlug;
-  const parts = window.location.hostname.split('.');
-  const slug = parts.length >= 3 ? parts[0] : null;
-  return slug && slug !== 'gdx' ? slug : '';
-}
-
 const downloadDocument = async (doc) => {
   const headers = new Headers();
-  const tenantId = deriveTenantId();
-  if (tenantId) headers.set('x-tenant-id', tenantId);
   if (auth.accessToken) headers.set('Authorization', `Bearer ${auth.accessToken}`);
   const response = await fetch(`/api/bank-feeds/documents/${doc.id}/download`, {
     headers,
@@ -1473,8 +1464,6 @@ const importImages = ref([]);
 
 const authedFetchBlobUrl = async (path) => {
   const headers = new Headers();
-  const tenantId = deriveTenantId();
-  if (tenantId) headers.set('x-tenant-id', tenantId);
   if (auth.accessToken) headers.set('Authorization', `Bearer ${auth.accessToken}`);
   const response = await fetch(path, { headers, credentials: 'include' });
   if (!response.ok) return null;

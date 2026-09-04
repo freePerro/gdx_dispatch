@@ -17,7 +17,6 @@ const SHOTS = process.env.E2E_SHOT_DIR || 'prod-shots';
 async function authed(page) {
   await page.addInitScript((t) => {
     sessionStorage.setItem('gdx_access_token', t);
-    sessionStorage.setItem('gdx_tenant_slug', 'gdx');
   }, SESSION);
 }
 

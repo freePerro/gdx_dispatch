@@ -20,8 +20,9 @@ platform ORM (`models/platform_extensions.py`, 16 tables that never existed <!--
 on prod, and `core/events.py`, its only importer, which nothing called), <!-- link-ok -->
 `ServiceAccount` (0 references; the empty table stays), the `_lookup_tenant`
 test stub the middleware never called, and the four backend readers that let a
-client stamp any `x-tenant-id` into logs and metrics. **S9, S10, S11 are NOT
-built** yet; the purge continues in the same branch. ⚠ Nothing
+client stamp any `x-tenant-id` into logs and metrics. **Commit 3: S11's frontend half and S15 built.** **S9 (prod data) and S10
+(the engine-registry shim and the ops tools) are NOT built** yet; the purge
+continues in the same branch. ⚠ Nothing
 here is deployed or walked on prod yet.
 
 ## What already exists (do not rebuild)
@@ -99,7 +100,8 @@ Declared before the fix, per the working agreement.
 | ~~**S7**~~ | ~~Dead control-plane grants table~~ | **BUILT 2026-09-03** — the `is_module_enabled` fallback query and the `TenantModuleGrant` model deleted; 35 test fixtures stopped seeding the table. The physical table stays (0 rows on prod); dropping it is a migration decision | Gone from code |
 | ~~**S8**~~ | ~~SaaS billing state on a product that is not sold~~ | **BUILT 2026-09-03 (code half)** — `subscription_status` and `stripe_connect_account_id` unmapped from the `Tenant` model and dropped from the ambient dict (the one remaining reader, `core/payments.py::_stripe_extra`, reads the key off that dict, which never carried it — unchanged behaviour). The physical columns stay (NOT NULL DEFAULT 'trialing' satisfies inserts); the prod rows and a drop-column migration are the owner's call | Columns only |
 | **S9** | Seed-tenant duplicates in prod data | `Example Garage Doors` / `00000000-…-0001` sits beside the real company row in **both** `tenants` and `companies` — it is the default in `single_tenant()` | Data, not code |
-| **S11** | `x-tenant-id` / `gdx_tenant_slug` still threaded through the frontend | `stores/auth.js::_tenantHeader()` derives the header from `window.location.hostname` — prod is a 3-part host, so **every login today sends `x-tenant-id: gdx`** to the resolver Phase A deleted. ~20 frontend files (`useApi`, `theme`, `analytics`, `useOfflineSync`, `useAuthedFile`, `useTour`, Documents/BankFeeds/VendorStatements/Exports, `errorCapture`) plus 4 backend readers that use it as a logging fallback (`performance.py`, `prometheus.py`, `ai_router.py`, `ai_usage_logger.py`) | Sent and ignored — **issue #581** |
+| ~~**S11**~~ | ~~`x-tenant-id` / `gdx_tenant_slug` still threaded through the frontend~~ | **BUILT 2026-09-03** — backend half in commit 2 (the four readers now use server-verified state only), frontend half in commit 3: `_tenantHeader()`, `tenantSlug`, the `gdx_tenant_slug` session key and every header derivation removed from 12 files (`useApi`, `theme`, `analytics`, `useOfflineSync`, `useAuthedFile`, `useTour`, Documents/BankFeeds/VendorStatements/Exports, `errorCapture`, `auth`), and from all 36 Playwright e2e specs plus `playwright.config.js` (they stamped the header on every request and seeded the slug). Guard: `src/__tests__/saasTenantHeaderRetired.spec.js`. Closes **issue #581** on merge | Gone |
+| ~~**S15**~~ | ~~In-app help sold a subscription~~ | **BUILT 2026-09-03 (commit 3)** — `help/articles/billing-subscription.md` deleted; the four articles that cited it (`users`, `owner-getting-started`, `invoices`, `modules-permissions`) rewritten to describe the self-hosted install. Prod gate: `GET /help-index.json` (public, unauthenticated) read 1 for "what you pay us" and 5 for "Billing & subscription" on 2026-09-03; both must read 0 after deploy | Gone | <!-- link-ok -->
 | **S10** | `_SingleEngineRegistry` shim + ~20 `get_engine(tenant_id, db_url)` call sites | `core/tenant.py:12-33` — the original Phase D scope | Inert by design |
 
 ### S1 — CORRECTED: dead code, not an exploit. Now removed.

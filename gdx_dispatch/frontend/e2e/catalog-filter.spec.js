@@ -19,15 +19,14 @@ test('catalog active/inactive filter shows and hides tabs in the browser', async
   const api = await pwRequest.newContext({ baseURL });
   const login = await api.post('/auth/login', {
     // x-e2e-test bypasses the rate limiter when GDX_E2E_BYPASS=1 on the server.
-    headers: { 'content-type': 'application/json', 'x-tenant-id': TENANT, 'x-e2e-test': 'true' },
+    headers: { 'content-type': 'application/json', 'x-e2e-test': 'true' },
     data: { email: EMAIL, password: PASSWORD },
   });
   expect(login.ok(), `login ${login.status()}`).toBeTruthy();
   const { access_token } = await login.json();
-  // The SPA's auth store reads sessionStorage 'gdx_access_token' / 'gdx_tenant_slug'.
+  // The SPA's auth store reads sessionStorage 'gdx_access_token'.
   await page.addInitScript(([t, tid]) => {
     sessionStorage.setItem('gdx_access_token', t);
-    sessionStorage.setItem('gdx_tenant_slug', tid);
   }, [access_token, TENANT]);
 
   await page.goto('/catalog');

@@ -13,8 +13,8 @@ Every person who logs into your shop has their own user account. Their role dete
 
 | Role | Sees | Typical user |
 |---|---|---|
-| **Owner** | Everything, including billing | You |
-| **Admin** | Everything except your subscription | Office manager |
+| **Owner** | Everything, including role and permission changes | You |
+| **Admin** | Everything except granting, changing or removing admin and owner roles | Office manager |
 | **Dispatcher** | Jobs, customers, dispatch, comms | Front desk |
 | **Sales** | Estimates, customers, follow-ups | Salesperson |
 | **Technician** | Their own jobs and routes | Tech in the field |

@@ -18,7 +18,7 @@ export const test = base.extend({
     await use(loadFixtures().ids);
   },
   // Override `page` to prime sessionStorage with the SPA's auth keys
-  // (gdx_access_token / gdx_tenant_slug) before any script runs, and to stub
+  // (gdx_access_token) before any script runs, and to stub
   // /api/settings/modules so the SPA's module-gate composable doesn't hammer
   // the rate limiter across every navigation (useTenantModules calls it
   // onMounted for every view).
@@ -27,7 +27,6 @@ export const test = base.extend({
     await page.addInitScript(
       ({ token, tenant }) => {
         sessionStorage.setItem('gdx_access_token', token);
-        sessionStorage.setItem('gdx_tenant_slug', tenant);
       },
       { token: fx.token, tenant: fx.tenant },
     );

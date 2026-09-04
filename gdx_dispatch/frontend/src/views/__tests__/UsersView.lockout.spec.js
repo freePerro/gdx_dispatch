@@ -104,7 +104,6 @@ describe('UsersView lockout', () => {
     currentUser.user_id = 'admin-1';
     currentUser.sub = 'admin-1';
     currentUser.role = 'admin';
-    sessionStorage.setItem('gdx_tenant_slug', 'gdx');
   });
 
   afterEach(() => {

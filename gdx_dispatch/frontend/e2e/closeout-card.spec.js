@@ -23,7 +23,6 @@ async function login(baseURL) {
   const api = await pwRequest.newContext({
     baseURL,
     extraHTTPHeaders: {
-      'x-tenant-id': TENANT,
       'content-type': 'application/json',
       'x-e2e-test': 'true',
     },
@@ -40,7 +39,6 @@ async function primeSession(page, token) {
   await page.addInitScript(
     (a) => {
       sessionStorage.setItem('gdx_access_token', a.t);
-      sessionStorage.setItem('gdx_tenant_slug', a.tid);
     },
     { t: token, tid: TENANT },
   );

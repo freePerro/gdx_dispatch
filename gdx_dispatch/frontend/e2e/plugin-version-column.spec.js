@@ -15,14 +15,13 @@ const PASSWORD = process.env.E2E_PASSWORD;
 async function signIn(page, baseURL) {
   const api = await pwRequest.newContext({ baseURL });
   const r = await api.post('/auth/login', {
-    headers: { 'content-type': 'application/json', 'x-tenant-id': TENANT, 'x-e2e-test': 'true' },
+    headers: { 'content-type': 'application/json', 'x-e2e-test': 'true' },
     data: { email: EMAIL, password: PASSWORD },
   });
   expect(r.ok()).toBeTruthy();
   const { access_token } = await r.json();
   await page.addInitScript((a) => {
     sessionStorage.setItem('gdx_access_token', a.t);
-    sessionStorage.setItem('gdx_tenant_slug', a.tid);
   }, { t: access_token, tid: TENANT });
   await api.dispose();
 }
@@ -49,7 +48,6 @@ test('the Running now table shows a Version column with the live version', async
     const res = await fetch('/api/plugins', {
       headers: {
         authorization: 'Bearer ' + sessionStorage.getItem('gdx_access_token'),
-        'x-tenant-id': sessionStorage.getItem('gdx_tenant_slug'),
       },
     });
     const rows = await res.json();

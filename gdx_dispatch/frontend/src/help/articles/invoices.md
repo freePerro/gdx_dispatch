@@ -2,7 +2,7 @@
 title: Invoices
 role: all
 tags: invoices, billing, payments
-related: jobs, customers, billing-subscription
+related: jobs, customers
 module: invoices
 ---
 
@@ -53,4 +53,3 @@ Issue a refund from the invoice page — partial or full. Card payments refund t
 
 ## Related
 - [Jobs](#) — how a job becomes an invoice
-- [Billing & subscription](#) — your own bill from us (different page)
