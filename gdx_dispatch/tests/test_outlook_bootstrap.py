@@ -173,3 +173,33 @@ def test_run_safely_returns_seed_status_when_no_exception(monkeypatch):
     monkeypatch.delenv("POWER_APPS_TENANT_ID", raising=False)
     out = run_outlook_bootstrap_safely()
     assert out["seeded"] is False
+
+
+def test_seed_targets_the_single_tenant_without_a_slug_env(monkeypatch):
+    """No GDX_TENANT_SLUG must not mean "seed nothing".
+
+    The slug used to be hard-coded to one deployment's value. Resolving it
+    through single_tenant()["slug"] instead would regress every environment
+    that leaves GDX_TENANT_SLUG empty — compose defaults it to empty and the
+    selfhost, staging, lab and dev overlays set it nowhere — because that
+    falls back to the 0000…0001 placeholder and finds no tenant. The lookup
+    is by tenant id, so it still resolves.
+    """
+    monkeypatch.setenv("POWER_APPS_TENANT_ID", "ms-tid")
+    monkeypatch.setenv("POWER_APPS_CLIENT_ID", "abc-client")
+    monkeypatch.setenv("GDX_MICROSOFT_SECRET_KEY", "real-secret")
+    monkeypatch.delenv("GDX_TENANT_SLUG", raising=False)
+    monkeypatch.delenv("OUTLOOK_BOOTSTRAP_TENANT_SLUG", raising=False)
+
+    tenant = _tenant()
+    settings = _settings()
+    cdb = MagicMock()
+    cdb.query.return_value.filter.return_value.one_or_none.return_value = tenant
+    cdb.get.return_value = settings
+
+    with patch("gdx_dispatch.modules.outlook.bootstrap.key_storage.set_client_secret"):
+        out = seed_outlook_credentials_from_env(cdb)
+    assert out["seeded"] is True, out
+    # It resolved a tenant at all — the point is that an empty GDX_TENANT_SLUG
+    # no longer sends the lookup after the 0000…0001 placeholder.
+    assert cdb.query.called

@@ -119,17 +119,23 @@ class PhoneComSettingsPatchIn(BaseModel):
 
 
 def _build_webhook_url(tenant_slug: str, webhook_secret: str) -> str:
-    base = os.environ.get("TENANT_BASE_DOMAIN", "").strip().strip("/")
+    """The callback URL registered with Phone.com.
+
+    Single-tenant: one public origin, GDX_PUBLIC_BASE_URL. The path keeps the
+    slug segment — it is part of the URL already registered upstream, so
+    changing it would break delivery.
+    """
+    base = os.environ.get("GDX_PUBLIC_BASE_URL", "").strip().rstrip("/")
     if not base:
         # Registering https://{slug}.example.com/... at Phone.com silently
         # kills webhook delivery (live on prod until 2026-07-23). Fail the
         # registration loudly instead of poisoning the callback.
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="TENANT_BASE_DOMAIN is not configured on the server; "
+            detail="GDX_PUBLIC_BASE_URL is not configured on the server; "
             "cannot build a public webhook URL",
         )
-    return f"https://{tenant_slug}.{base}/api/webhooks/phone-com/{tenant_slug}/{webhook_secret}"
+    return f"{base}/api/webhooks/phone-com/{tenant_slug}/{webhook_secret}"
 
 
 # ── state aggregation ────────────────────────────────────────────────────
@@ -285,7 +291,7 @@ def _ensure_webhook_registered(
     try:
         url = _build_webhook_url(tenant.slug, secret)
     except HTTPException as exc:
-        # Misconfigured server (TENANT_BASE_DOMAIN unset). The token itself
+        # Misconfigured server (GDX_PUBLIC_BASE_URL unset). The token itself
         # is already saved/validated — report the webhook as unregistered
         # with the reason instead of failing the whole settings save.
         log.error("ensure_webhook skipped tenant=%s: %s", tenant_id, exc.detail)

@@ -292,7 +292,7 @@ def rotate_webhook_secret(self, tenant_id: str) -> dict[str, Any]:
     from gdx_dispatch.modules.phone_com.client import PhoneComClient
 
     tid = UUID(tenant_id) if not isinstance(tenant_id, UUID) else tenant_id
-    base = os.environ.get("TENANT_BASE_DOMAIN", "").strip().strip("/")
+    base = os.environ.get("GDX_PUBLIC_BASE_URL", "").strip().rstrip("/")
     with contextlib.closing(SessionLocal()) as cdb:
         settings = cdb.get(TenantSettings, tid)
         tenant = cdb.get(Tenant, tid)
@@ -306,16 +306,15 @@ def rotate_webhook_secret(self, tenant_id: str) -> dict[str, Any]:
         ):
             return {"ok": False, "skipped": "not configured", "tenant_id": str(tid)}
         if not base:
-            # Rotating without the real domain would PATCH the Phone.com
-            # callback to https://{slug}.example.com/... — a dead URL that
-            # silently kills webhook delivery (this exact failure was live on
-            # prod until 2026-07-23). Refuse loudly instead.
+            # Rotating without the real origin would PATCH the Phone.com
+            # callback to a dead URL and silently kill webhook delivery (this
+            # exact failure was live on prod until 2026-07-23). Refuse loudly.
             log.error(
-                "phone_com.rotate_webhook_secret: TENANT_BASE_DOMAIN unset — "
-                "refusing to rotate tenant=%s (would register an example.com URL)",
+                "phone_com.rotate_webhook_secret: GDX_PUBLIC_BASE_URL unset — "
+                "refusing to rotate tenant=%s (would register a placeholder URL)",
                 tid,
             )
-            return {"ok": False, "error": "TENANT_BASE_DOMAIN unset", "tenant_id": str(tid)}
+            return {"ok": False, "error": "GDX_PUBLIC_BASE_URL unset", "tenant_id": str(tid)}
         callback_id = settings.phone_com_webhook_callback_id
         token = key_storage.get_token(cdb, tid)
         if token is None:
@@ -339,10 +338,13 @@ def rotate_webhook_secret(self, tenant_id: str) -> dict[str, Any]:
 
         # Stage the rotation
         _old, new_secret = key_storage.rotate_webhook_secret(cdb, tid)
-        new_url = (
-            f"https://{tenant.slug}.{base}/api/webhooks/phone-com/"
-            f"{tenant.slug}/{new_secret}"
-        )
+        # `base` is a full origin (https://host), not a bare domain. It used
+        # to be TENANT_BASE_DOMAIN and this f-string used to prepend
+        # "https://{slug}." to it. Keep the two in step: getting this wrong
+        # PATCHes a nonsense callback onto Phone.com from an unattended weekly
+        # beat task, which is exactly the silent delivery failure that was
+        # live on prod until 2026-07-23.
+        new_url = f"{base}/api/webhooks/phone-com/{tenant.slug}/{new_secret}"
         # Push the new URL to Phone.com
         try:
             with PhoneComClient(token=token, voip_id=voip_id) as c:
