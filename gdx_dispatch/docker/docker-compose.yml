@@ -92,6 +92,11 @@ services:
       <<: *app-env
       # ── app-only ──
       SENTRY_DSN: ${SENTRY_DSN:-}
+      # Scrape secret for GET /metrics. app-only: the celery services do not
+      # serve HTTP. This block is an ALLOWLIST and there is no env_file, so a
+      # var missing here never reaches the container whatever .env says — and
+      # the endpoint would then read it as "not configured" and refuse.
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
       APP_VERSION: ${APP_VERSION:-dev}
       BUILD_TIME: ${BUILD_TIME:-unknown}
       ENVIRONMENT: ${ENVIRONMENT:-development}

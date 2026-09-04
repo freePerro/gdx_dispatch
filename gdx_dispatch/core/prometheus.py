@@ -1,10 +1,13 @@
 """Prometheus metrics middleware and /metrics endpoint for GDX.
 
 Tracks HTTP request counts, latencies, active connections, and DB query timing.
-The /metrics endpoint requires METRICS_TOKEN header for security.
+The /metrics endpoint requires the METRICS_TOKEN header for security. With
+METRICS_TOKEN unset the endpoint refuses to serve rather than serving the
+whole registry to anyone (it failed open until 2026-09-04).
 """
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 import time
@@ -132,10 +135,22 @@ async def metrics_endpoint(request: Request) -> PlainTextResponse:
         raise HTTPException(status_code=503, detail="prometheus_client not installed")
 
     metrics_token = _get_metrics_token()
-    if metrics_token:
-        token = request.headers.get("x-metrics-token", "")
-        if token != metrics_token:
-            raise HTTPException(status_code=401, detail="Invalid metrics token")
+    if not metrics_token:
+        # Fail CLOSED. The previous `if metrics_token:` made an unset token
+        # mean "no auth required", so prod served the entire registry —
+        # 4.1 MB of route, tenant and timing data — to anyone who asked.
+        # An unconfigured scrape secret is a misconfiguration, not consent.
+        raise HTTPException(
+            status_code=503,
+            detail="metrics endpoint is not configured (set METRICS_TOKEN)",
+        )
+    # Compare as BYTES. compare_digest raises TypeError on str operands
+    # containing non-ASCII, and Starlette latin-1-decodes header values, so a
+    # header of b"caf\xe9" would otherwise crash the endpoint with an
+    # unauthenticated 500 instead of returning 401.
+    token = request.headers.get("x-metrics-token", "")
+    if not hmac.compare_digest(token.encode("utf-8"), metrics_token.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Invalid metrics token")
 
     return PlainTextResponse(
         content=generate_latest(registry).decode("utf-8"),
