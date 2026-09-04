@@ -28,7 +28,6 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
-from gdx_dispatch.core import auth_dispatcher
 from gdx_dispatch.core.auth_dispatcher import (
     _colon_cap_to_tuple,
     get_current_principal,
@@ -192,8 +191,6 @@ async def test_bearer_login_jwt_falls_through_and_runs_gates() -> None:
     store = MagicMock()
     store.get_by_access = MagicMock(return_value=None)
 
-    from gdx_dispatch.core.auth_jwt import JWTValidationError as _JWTErr
-
     req = _FakeRequest(
         headers={"authorization": f"Bearer {token}"},
         state={"tenant": {"id": tenant_uuid}},
@@ -217,7 +214,6 @@ async def test_bearer_login_jwt_falls_through_and_runs_gates() -> None:
     })
 
     with (
-        patch("gdx_dispatch.core.auth.validate_principal", side_effect=_JWTErr("primary failed")),
         patch("jwt.decode", return_value=fake_payload),
         patch("gdx_dispatch.routers.auth.core.finalize_login_jwt", finalize_mock),
     ):
@@ -266,8 +262,6 @@ async def test_dispatch_uses_db_role_not_jwt_role_after_demote() -> None:
     store = MagicMock()
     store.get_by_access = MagicMock(return_value=None)
 
-    from gdx_dispatch.core.auth_jwt import JWTValidationError as _JWTErr
-
     req = _FakeRequest(
         headers={"authorization": f"Bearer {token}"},
         state={"tenant": {"id": tenant_uuid}},
@@ -281,7 +275,6 @@ async def test_dispatch_uses_db_role_not_jwt_role_after_demote() -> None:
     })
 
     with (
-        patch("gdx_dispatch.core.auth.validate_principal", side_effect=_JWTErr("primary failed")),
         patch("jwt.decode", return_value={
             "sub": sub_uuid,
             "gdx_tid": tenant_uuid,
@@ -318,20 +311,17 @@ async def test_dispatch_typ_guard_rejects_refresh_token() -> None:
     store = MagicMock()
     store.get_by_access = MagicMock(return_value=None)
 
-    # Mock validate_principal SUCCESS but with typ=refresh. This is the
-    # exact case the auditor flagged on the primary branch.
-    fake_validated = MagicMock()
-    fake_validated.subject = sub_uuid
-    fake_validated.tenant_id = tenant_uuid
-    fake_validated.raw_claims = {"role": "admin", "typ": "refresh"}
-    fake_validated.actor_kind = "human"
-    fake_validated.jti = "j1"
+    # A refresh token presented as a bearer must not authenticate a user.
+    # This used to be mocked through the primary validator; with one decode
+    # path it is driven by the decoded payload directly.
+    fake_payload = {
+        "sub": sub_uuid, "tenant_id": tenant_uuid, "role": "admin",
+        "typ": "refresh", "jti": "j1",
+    }
 
     req = _FakeRequest(headers={"authorization": f"Bearer {token}"})
 
-    with (
-        patch("gdx_dispatch.core.auth.validate_principal", return_value=fake_validated),
-    ):
+    with patch("jwt.decode", return_value=fake_payload):
         with pytest.raises(HTTPException) as ei:
             await get_current_principal(req)  # type: ignore[arg-type]
 
@@ -349,12 +339,9 @@ async def test_bearer_jwt_invalid_signature_returns_401() -> None:
     store = MagicMock()
     store.get_by_access = MagicMock(return_value=None)
 
-    from gdx_dispatch.core.auth_jwt import JWTValidationError as _JWTErr
-
     req = _FakeRequest(headers={"authorization": f"Bearer {token}"})
 
     with (
-        patch("gdx_dispatch.core.auth.validate_principal", side_effect=_JWTErr("primary failed")),
         patch("jwt.decode", side_effect=Exception("InvalidSignatureError")),
     ):
         with pytest.raises(HTTPException) as ei:
@@ -616,7 +603,7 @@ async def test_session_dispatch_uses_default_role_caps() -> None:
 #   - Slice 6 tenant-match runs against a real decoded payload,
 #   - Slice H denylist gate fires (auditor's specific D-item, 2026-05-10).
 #
-# These tests mint REAL RS256-signed JWTs (matching the Authentik-shape
+# These tests mint REAL RS256-signed JWTs (the shape `_issue()` produces)
 # the SS-7 primary validator expects) so the decode path is exercised
 # cryptographically end-to-end.
 
@@ -629,8 +616,6 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from gdx_dispatch.core.denylist import Denylist
 
 
-_AUTHENTIK_ISSUER_SPA = "https://auth.example.com/application/o/gdx-spa/"
-_AUTHENTIK_AUDIENCE = "gdx-api"
 
 
 @pytest.fixture(scope="module")
@@ -653,11 +638,10 @@ def _rs256_keys() -> dict[str, str]:
 def _rs256_mode(_rs256_keys, monkeypatch):
     """Switch gdx_dispatch.routers.auth.core into RS256 mode for one test.
 
-    Monkeypatches module-level ALG/SIGN_KEY/VERIFY_KEY so the dispatcher's
-    primary path (validate_principal with the real RS256 key) takes over
-    instead of falling through to the legacy HS256 jwt.decode branch. This
-    is the only path that consults the SS-7 Slice H denylist — without it,
-    the auditor's revoke-jti recipe cannot be exercised.
+    Monkeypatches module-level ALG/SIGN_KEY/VERIFY_KEY so the dispatcher
+    decodes a real RS256-signed token rather than an HS256 one. The gates
+    under test (denylist revoke, tenant cross-check) run in
+    finalize_login_jwt on whatever the decode produces.
     """
     from gdx_dispatch.routers.auth import core as _auth_core
     monkeypatch.setattr(_auth_core, "ALG", "RS256")
@@ -675,20 +659,18 @@ def _mint_real_login_jwt(
     jti: str | None = None,
     typ: str = "access",
     ttl_seconds: int = 900,
-    iss: str = _AUTHENTIK_ISSUER_SPA,
-    aud: str = _AUTHENTIK_AUDIENCE,
 ) -> tuple[str, str]:
-    """Mint an Authentik-shape RS256 JWT against the test keypair.
+    """Mint a real RS256-signed login JWT against the test keypair.
 
-    Returns (token, jti). The shape matches what gdx_dispatch.core.auth_jwt.validate_access_token
-    expects: full Authentik iss/aud, required claims, plus gdx_tid for the
-    tenant binding.
+    Returns (token, jti). This is the shape `_issue()` produces — no `iss`
+    or `aud`. It used to carry Authentik's iss/aud so the deleted primary
+    validator would accept it; plain `jwt.decode` rejects an `aud` claim
+    unless the caller passes `audience=`, so those claims would now make
+    every one of these tests fail for a reason unrelated to what they pin.
     """
     now = datetime.now(timezone.utc)
     _jti = jti or str(uuid4())
     payload = {
-        "iss": iss,
-        "aud": aud,
         "sub": sub,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(seconds=ttl_seconds)).timestamp()),

@@ -136,7 +136,7 @@ Plus `platform_feature_flags.company_id` (varchar(64), 0 rows) — same treatmen
 
 `grep -rn 'Membership.tenant_id\b'` finds 14 non-test sites in `gdx_dispatch/routers/scim.py`, `gdx_dispatch/routers/admin_pats.py`, `gdx_dispatch/routers/me.py`, `gdx_dispatch/routers/pats_support.py`, `gdx_dispatch/core/auth_dispatcher.py`, `gdx_dispatch/tools/backfill_users_to_identities.py`. Every one compares against `principal.tenant_id` (currently a slug from JWT `gdx_tid`) or a `Tenant.slug` join.
 
-`Principal.tenant_id` itself is fed by the Authentik `gdx_tid` claim, sourced from `user.attributes["memberships"]` written by an out-of-tree gdx-sync job. **Authentik membership values must flip from slug to UUID at the same time as the memberships column flip**, or the `active_tenant in memberships` check in `authentik_property_mapping_gdx_tid.SANDBOX_EXPRESSION` breaks token mint.
+`Principal.tenant_id` itself is fed by the Authentik `gdx_tid` claim, sourced from `user.attributes["memberships"]` written by an out-of-tree gdx-sync job. **Authentik membership values must flip from slug to UUID at the same time as the memberships column flip**, or the `active_tenant in memberships` check in the property mapping's sandbox expression breaks token mint. *(Void as of 2026-09-04: the Authentik surface — validator, tools and property mapping — was deleted. There is no token mint to break. The rest of this paragraph's analysis of `Membership.tenant_id` call sites still stands.)*
 
 Single string-literal slug comparison search (`'tenant_id == "literal-slug"'`) returned **0 hits** in non-test code. The 71 dynamic call sites all flow through `principal.tenant_id`, so the migration is one type-flip away from clean.
 
@@ -302,7 +302,7 @@ Recommendation: **revoke all PATs + SCIM tokens at cutover**, force one round of
 
 ### Authentik writer migration: NOOP
 
-Originally I sketched migration C2 as "flip the Authentik sync job to write UUIDs." Since the Authentik flow is dormant, **C2 doesn't exist as work**. If/when Authentik is ever wired up, the property mapping (`gdx_dispatch/tools/authentik_property_mapping_gdx_tid.py`) needs a one-line change to emit UUIDs from `user.attributes["memberships"]`, and whoever ships the (still-out-of-tree) `gdx-sync` job has to write UUIDs into that attribute. Both are future-tense; D97 doesn't gate on either.
+Originally I sketched migration C2 as "flip the Authentik sync job to write UUIDs." Since the Authentik flow is dormant, **C2 doesn't exist as work**. If/when Authentik is ever wired up, the property mapping (a tools/ script named authentik_property_mapping_gdx_tid.py, deleted 2026-09-04 with the rest of the Authentik surface) would need a one-line change to emit UUIDs from `user.attributes["memberships"]`, and whoever ships the (still-out-of-tree) `gdx-sync` job has to write UUIDs into that attribute. Both are future-tense; D97 doesn't gate on either.
 
 ---
 
