@@ -315,15 +315,18 @@ from production, read-only, on 2026-09-04.
 | **Dead columns** | **Leave them.** `tenants.subscription_status`, and `stripe_connect_account_id` / `stripe_customer_id` on both `tenants` and `companies`. | All NULL on every row, and never read (`core/tenant.py` hardcodes `"active"`). They sit next to the live Connect threading in `core/payments.py`, so dropping them buys nothing and costs a money-path review. |
 | **S9 seed rows** | **Leave them.** See question 2 below. | Seed company owns 0 data rows; no FK targets `companies`; `companies` has no `deleted_at`. |
 
-⚠ **The table-drop migration is blocked on the single-tenant purge merging
-first.** On `main` today `core/admin_modules.py` still queries
-`TenantModuleGrant` (`.filter_by`, `.query`, and writes), and
-`core/health_score.py`, `core/reconciliation.py` and `core/ai_recommendations.py`
-import it. Dropping the table underneath that code breaks it. On the purge
-branch those call sites are already gone and the only surviving reference is a
-"retired" test — which is where the migration belongs. `service_accounts` and
-`platform_feature_flags` are referenced only in comments (`core/audit.py:200`,
-`app.py:1350`) and in `routers/admin_db.py`'s table list.
+⚠ **The table-drop migration is blocked until the single-tenant purge merges.**
+On `main` today, four core modules still import or query `TenantModuleGrant`
+(admin-modules, health-score, reconciliation and AI-recommendations), so
+dropping the table underneath them breaks the app. The purge deletes all four
+outright, which is why the migration belongs on that branch and not on `main`.
+Verified 2026-09-04 by merging the two lines together: with the purge applied
+there are **zero** live consumers of `TenantModuleGrant` left, and the only
+remaining mentions of `service_accounts` / `platform_feature_flags` outside
+tests and migrations are comments plus the table allowlist in
+`gdx_dispatch/routers/admin_db.py` — **remove the three names from that list in
+the same PR as the migration**, or it will advertise tables that no longer
+exist.
 
 ## Open questions for the owner
 
