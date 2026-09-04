@@ -69,8 +69,11 @@ test.describe('purge walk on a fresh install', () => {
     const toggles = page.locator('[data-testid^="module-toggle-"]');
     const count = await toggles.count();
     expect(count).toBeGreaterThan(10);
-    // No SaaS "Upgrade" lock tag on any module
+    // No SaaS "Upgrade" lock tag on any module, and no plan-tier headings
     await expect(page.getByTestId('module-locked-tag')).toHaveCount(0);
+    for (const tier of ['Starter', 'Professional', 'Business']) {
+      await expect(page.getByTestId('modules-list').getByRole('heading', { name: new RegExp(`^${tier}`) })).toHaveCount(0);
+    }
     await page.screenshot({ path: `${SHOTS}/settings-modules-light-desktop.png` });
 
     // Toggle one non-core module off, save, verify via API, then restore.

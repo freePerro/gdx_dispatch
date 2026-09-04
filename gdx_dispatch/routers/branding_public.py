@@ -17,9 +17,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.core.cache import cached
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/settings", tags=["settings-public"])
@@ -80,12 +80,14 @@ def get_modules_public(
 ) -> dict[str, Any]:
     """Tenant module-grant list — readable by every authenticated user.
 
-    Returns the full shape used by both the admin Settings → Modules tab
-    (needs `tier`/`name`/`locked`) and `useTenantModules` (needs `key`/`enabled`).
-    The same path is also registered by `gdx_dispatch/routers/settings.py:get_modules`
-    behind a router-level admin gate; this public copy wins by include order
-    in `gdx_dispatch/app.py` and is the authoritative read path. Write-side
-    (enable/disable POSTs) stays admin-gated in `routers/settings.py`.
+    Returns the shape used by both the admin Settings → Modules tab and
+    `useTenantModules`: `key` / `name` / `enabled`. (`tier`, `locked` and
+    `upgrade_required` are still emitted for compatibility; since 2026-09-03
+    nothing in the SPA reads them — the plan-tier grouping is gone and
+    `locked` was only ever hard-coded False here.)
+    This is the authoritative read path (the admin-gated twin that once
+    shadowed it in `routers/settings.py` is gone). Write-side (enable/disable
+    POSTs) stays admin-gated in `routers/settings.py`.
     """
     from fastapi import HTTPException
 

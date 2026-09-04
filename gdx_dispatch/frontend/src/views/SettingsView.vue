@@ -136,22 +136,19 @@
         <TabPanel value="modules">
           <div v-if="modulesLoading" class="spinner-wrap"><ProgressSpinner /></div>
           <div v-else data-testid="modules-list" class="modules-groups">
-            <section v-for="group in modulesByTier" :key="group.tier" class="module-tier-group">
-              <h4 class="tier-title">
-                {{ group.label }}
-                <Badge :value="group.items.length" severity="info" />
-              </h4>
+            <!-- One flat, alphabetical list. Until 2026-09-03 this was grouped
+                 under "Starter / Professional / Business" — plan tiers of a
+                 subscription this self-hosted app never sold. -->
+            <section class="module-list-section">
               <div class="module-list">
-                <div v-for="mod in group.items" :key="mod.key" class="module-row" :class="{ 'module-row--dirty': isModuleDirty(mod.key) }">
+                <div v-for="mod in modulesSorted" :key="mod.key" class="module-row" :class="{ 'module-row--dirty': isModuleDirty(mod.key) }">
                   <div class="module-info">
                     <span class="module-name">{{ mod.name }}</span>
                     <small v-if="mod.description" class="module-desc">{{ mod.description }}</small>
                     <small v-if="isModuleDirty(mod.key)" class="module-pending" data-testid="module-pending-flag">Pending — click Save to apply</small>
                   </div>
                   <div class="module-actions">
-                    <Tag v-if="mod.locked" value="Upgrade" severity="warn" data-testid="module-locked-tag" />
                     <ToggleSwitch
-                      v-else
                       :input-id="'module-toggle-input-' + mod.key"
                       :name="'module-toggle-' + mod.key"
                       :aria-label="'Toggle ' + (mod.label || mod.key)"
@@ -1469,7 +1466,6 @@ import { getIdleTimeoutMin, setIdleTimeoutMin } from "../composables/useIdleLogo
 import { useQBSync } from "../composables/useQBSync";
 import { useTenantModules } from "../composables/useTenantModules";
 import { formatDateTime } from "../composables/useFormatters";
-import Badge from "primevue/badge";
 import Button from "primevue/button";
 import Card from "primevue/card";
 import Column from "primevue/column";
@@ -1644,16 +1640,9 @@ const { loadTenantModules } = useTenantModules();
 // pendingModuleState[key] = boolean override of mod.enabled until Save/Revert.
 // Keys absent here mean "no pending change for that module".
 const pendingModuleState = ref({});
-const tierLabels = { starter: "Starter", professional: "Professional", business: "Business" };
-
-const modulesByTier = computed(() => {
-  const groups = ["starter", "professional", "business"].map((tier) => ({
-    tier,
-    label: tierLabels[tier] || tier,
-    items: modules.value.filter((item) => item.tier === tier),
-  }));
-  return groups.filter((group) => group.items.length > 0);
-});
+const modulesSorted = computed(() =>
+  [...modules.value].sort((a, b) => String(a.name || a.key).localeCompare(String(b.name || b.key))),
+);
 
 const dirtyModuleKeys = computed(() => Object.keys(pendingModuleState.value));
 
@@ -1670,7 +1659,6 @@ function isModuleDirty(key) {
 }
 
 function setPendingModule(mod, enabled) {
-  if (mod.locked) return;
   // If the new value equals the server-persisted value, drop the pending entry
   // so the row stops showing "pending" and the Save button accurately reflects
   // outstanding work.
@@ -2750,13 +2738,6 @@ onBeforeUnmount(() => {
 .modules-groups {
   display: grid;
   gap: 1rem;
-}
-
-.tier-title {
-  margin: 0 0 0.5rem;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
 }
 
 .module-list {
