@@ -933,8 +933,6 @@ def finalize_login_jwt(
     role: str,
     actor_kind: str,
     jti: str | None = None,
-    imp_actor_id: str | None = None,
-    imp_purpose: str | None = None,
 ) -> dict[str, str]:
     """Run the post-decode auth-identity-hardening gates (Slices 2 + 6 + H).
 
@@ -970,8 +968,6 @@ def finalize_login_jwt(
         "user_id": str(sub),
         "tenant_id": str(tenant_claim or ""),
         "role": str(role or "user"),
-        "imp_actor_id": imp_actor_id,
-        "imp_purpose": imp_purpose,
     }
     # Slice 2 — DB verify + role overlay.
     verified = _db_verify_user(request, user_dict["user_id"], actor_kind)
@@ -1043,10 +1039,6 @@ async def get_current_user(
         # expected to fail the core validator and land on the legacy path.
         primary_error = exc
     else:
-        # Phase D cc2-s46: surface impersonation markers (set by the CC
-        # impersonate endpoint) so downstream audit hooks can tag operator
-        # actions distinctly from real-user actions. Both claims are
-        # absent on normal tenant tokens — None means "not impersonation."
         return finalize_login_jwt(
             request,
             sub=principal.subject,
@@ -1055,8 +1047,6 @@ async def get_current_user(
             actor_kind=getattr(principal.actor_kind, "value", None)
             or str(principal.actor_kind or ""),
             jti=principal.jti,
-            imp_actor_id=principal.raw_claims.get("imp_actor_id"),
-            imp_purpose=principal.raw_claims.get("imp_purpose"),
         )
 
     try:
@@ -1071,8 +1061,6 @@ async def get_current_user(
             role=str(c.get("role", "user")),
             actor_kind="human",
             jti=c.get("jti"),
-            imp_actor_id=c.get("imp_actor_id"),
-            imp_purpose=c.get("imp_purpose"),
         )
     except ExpiredSignatureError as exc:
         # Expired tokens are a normal refresh cycle, not an error. The Vue
