@@ -13,12 +13,12 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from starlette.responses import HTMLResponse, JSONResponse, StreamingResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 from gdx_dispatch.core.audit import AuditLog, TenantBase, _payload_json
 from gdx_dispatch.core.database import get_db
@@ -441,27 +441,12 @@ def compliance_summary(db: Session = Depends(get_db)) -> JSONResponse:
         logging.getLogger(__name__).exception("compliance_summary caught exception")
         pass
 
-    # Tenants with KB updates in last 30d
-    tenants_with_kb_updates: int = 0
-    try:
-        since_30d = now - timedelta(days=30)
-        tenants_with_kb_updates = db.execute(
-            select(func.count(AuditLog.entity_id.distinct())).where(
-                AuditLog.event_type == "kb_updated",
-                AuditLog.created_at >= since_30d,
-            )
-        ).scalar_one_or_none() or 0
-    except Exception:
-        logging.getLogger(__name__).exception("compliance_summary caught exception")
-        pass
-
     return JSONResponse({
         "mfa_adoption_pct": mfa_adoption_pct,
         "audit_log_integrity": audit_log_integrity,
         "last_backup_age_hours": last_backup_age_hours,
         "active_session_count": active_session_count,
         "failed_login_24h": failed_login_24h,
-        "tenants_with_kb_updates": tenants_with_kb_updates,
     })
 
 

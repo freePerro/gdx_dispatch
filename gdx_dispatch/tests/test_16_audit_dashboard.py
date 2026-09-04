@@ -135,7 +135,6 @@ def test_compliance_summary_structure(client_with_db):
         "last_backup_age_hours",
         "active_session_count",
         "failed_login_24h",
-        "tenants_with_kb_updates",
     ]
     for key in required_keys:
         assert key in data, f"Missing key: {key}"
@@ -143,7 +142,6 @@ def test_compliance_summary_structure(client_with_db):
     assert isinstance(data["audit_log_integrity"], bool)
     assert isinstance(data["active_session_count"], int)
     assert isinstance(data["failed_login_24h"], int)
-    assert isinstance(data["tenants_with_kb_updates"], int)
 
 
 # ---------------------------------------------------------------------------

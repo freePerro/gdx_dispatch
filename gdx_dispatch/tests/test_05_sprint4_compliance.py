@@ -4,13 +4,11 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
-from gdx_dispatch.control.models import Tenant
 from gdx_dispatch.core.custom_fields import validate_custom_fields
 from gdx_dispatch.core.gdpr import delete_customer_data, export_customer_data
 from gdx_dispatch.models.tenant_models import Customer
 from gdx_dispatch.modules.fleet.models import Vehicle
 from gdx_dispatch.modules.fleet.service import get_due_maintenance, log_service
-from gdx_dispatch.modules.inventory.aliases import create_alias, resolve_local_sku, resolve_upstream_sku
 
 
 def test_gdpr_export_customer(tenant_db):
@@ -30,14 +28,6 @@ def test_gdpr_hard_delete(tenant_db):
     delete_customer_data(str(c.id), tenant_db, hard=False); delete_customer_data(str(c.id), tenant_db, hard=True)  # noqa: E701,E702
     c2 = tenant_db.execute(select(Customer).where(Customer.id == c.id)).scalar_one()
     assert c2.name == "[DELETED]" and c2.email is None
-
-
-def test_part_alias_roundtrip(control_db):
-    a = Tenant(slug="tenant-a", name="Tenant A"); b = Tenant(slug="tenant-b", name="Tenant B")  # noqa: E701,E702
-    control_db.add_all([a, b]); control_db.commit(); control_db.refresh(a); control_db.refresh(b)  # noqa: E701,E702
-    create_alias(a.id, b.id, "LOCAL-SKU-1", "SUPPLIER-SKU-100", control_db); control_db.commit()  # noqa: E701,E702
-    assert resolve_upstream_sku(a.id, b.id, "LOCAL-SKU-1", control_db) == "SUPPLIER-SKU-100"
-    assert resolve_local_sku(a.id, b.id, "SUPPLIER-SKU-100", control_db) == "LOCAL-SKU-1"
 
 
 def test_fleet_service_log(tenant_db):

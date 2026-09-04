@@ -81,10 +81,9 @@ def get_modules_public(
     """Tenant module-grant list — readable by every authenticated user.
 
     Returns the shape used by both the admin Settings → Modules tab and
-    `useTenantModules`: `key` / `name` / `enabled`. (`tier`, `locked` and
-    `upgrade_required` are still emitted for compatibility; since 2026-09-03
-    nothing in the SPA reads them — the plan-tier grouping is gone and
-    `locked` was only ever hard-coded False here.)
+    `useTenantModules`: `key` / `name` / `enabled`. (`tier` is still emitted;
+    `locked` / `upgrade_required` — always False / None — were dropped
+    2026-09-04 once nothing in the SPA read them.)
     This is the authoritative read path (the admin-gated twin that once
     shadowed it in `routers/settings.py` is gone). Write-side (enable/disable
     POSTs) stays admin-gated in `routers/settings.py`.
@@ -123,8 +122,6 @@ def get_modules_public(
             "tier": str(cfg["tier"]),
             "default": bool(cfg["default"]),
             "enabled": key in granted,
-            "locked": False,
-            "upgrade_required": None,
         })
     payload.sort(key=lambda item: item["name"])
 

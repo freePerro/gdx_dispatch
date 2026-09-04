@@ -290,3 +290,71 @@ def test_tenant_plane_baseline_is_current() -> None:
     entries = json.loads((root / ".tenant_plane_redundant_filter_baseline").read_text())
     assert entries, "baseline is empty"
     assert all(e.startswith("gdx_dispatch/") for e in entries), [e for e in entries if not e.startswith("gdx_dispatch/")][:3]
+
+
+# ── Commit 6: dead code the model-driven sweep found (S24, S28–S32) ──────────
+
+
+@pytest.mark.parametrize(
+    "modname",
+    ["gdx_dispatch.modules.inventory.aliases", "gdx_dispatch.tools.rls_render"],
+)
+def test_sweep_dead_modules_are_gone(modname: str) -> None:
+    """S29: a tenant-to-tenant part-SKU crosswalk (table never in the baseline,
+    one test caller). S30: an RLS policy renderer deprecated under a plan that
+    never shipped, whose SQL template does not exist."""
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module(modname)
+
+
+def test_error_sink_has_no_platform_admin_bypass() -> None:
+    """S24: four /api/admin/errors routes skipped tenant scoping for a
+    ``platform_admin`` role no role table defines. Behavioural check: that
+    role must no longer clear the admin gate at all, and the scoping helper
+    must not branch on it (the first draft of this test counted the string
+    in the source, which a re-added bypass spelled ``role == ...`` slipped
+    past)."""
+    import inspect
+
+    from fastapi import HTTPException
+
+    from gdx_dispatch.modules.error_sink import router as error_sink
+
+    with pytest.raises(HTTPException) as exc:
+        error_sink._require_admin({"role": "platform_admin"})
+    assert exc.value.status_code == 403
+    for name in ("list_errors", "stats", "get_error", "resolve_error"):
+        fn = getattr(error_sink, name, None)
+        if fn is None:
+            continue
+        src = inspect.getsource(fn)
+        assert 'role != "platform_admin"' not in src and 'role == "platform_admin"' not in src, name
+
+
+def test_principal_has_no_oauth_factory() -> None:
+    """S28: ``Principal.from_oauth`` built a principal from an ``SS21_OAuthToken``
+    row — a class that does not exist; its only caller was a test."""
+    from gdx_dispatch.core.unified_principal import Principal
+
+    assert not hasattr(Principal, "from_oauth")
+
+
+def test_compliance_summary_has_no_tenant_counter() -> None:
+    """S31: ``tenants_with_kb_updates`` counted distinct entity ids, not tenants,
+    and nothing read it."""
+    import inspect
+
+    from gdx_dispatch.core import audit_dashboard
+
+    assert "tenants_with_kb_updates" not in inspect.getsource(audit_dashboard)
+
+
+def test_public_modules_payload_has_no_lock_keys() -> None:
+    """S32: ``locked`` / ``upgrade_required`` were always False / None and,
+    since S20, nothing in the SPA reads them."""
+    import inspect
+
+    from gdx_dispatch.routers import branding_public
+
+    src = inspect.getsource(branding_public)
+    assert '"locked"' not in src and '"upgrade_required"' not in src

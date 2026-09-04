@@ -15,7 +15,7 @@ sweeps routers. This slice is type-only — no FastAPI / DB imports here.
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
-from uuid import UUID, uuid4, uuid5
+from uuid import uuid4, uuid5
 
 import pytest
 
@@ -132,23 +132,6 @@ def test_from_spiffe_rejects_non_spiffe_id():
             tenant_id="acme-corp",
             capabilities=[("read", "*")],
         )
-
-
-def test_from_oauth_carries_oauth_token_id():
-    class FakeOauthToken:
-        id = uuid4()
-
-    tok = FakeOauthToken()
-    p = Principal.from_oauth(
-        oauth_token=tok,
-        identity_id=uuid4(),
-        tenant_id="acme-corp",
-        role="oauth_client",
-        capabilities=[("read", "customer")],
-    )
-    assert p.auth_kind == "oauth"
-    assert p.oauth_token_id == tok.id
-    assert p.principal_role == "oauth_client"
 
 
 # ── 8–12. has_capability semantics ───────────────────────────────────

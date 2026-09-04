@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/admin/errors", tags=["error-sink"])
 
 def _require_admin(user: dict[str, Any]) -> None:
     role = (user.get("role") or "").lower()
-    if role not in {"admin", "owner", "platform_admin"}:
+    if role not in {"admin", "owner"}:
         raise HTTPException(status_code=403, detail="admin or owner required")
 
 
@@ -82,13 +82,12 @@ def list_errors(
 
     where = ["1=1"]
     params: dict[str, Any] = {}
-    # Scope: platform_admin sees everything, others scoped to their tenant.
-    role = (user.get("role") or "").lower()
-    if role != "platform_admin":
-        tid = _tenant_id(request)
-        if tid:
-            where.append("tenant_id = :tid")
-            params["tid"] = tid
+    # Scope: always the one tenant. A "platform_admin" role used to bypass
+    # this scoping; no role by that name is defined anywhere (removed 2026-09-04).
+    tid = _tenant_id(request)
+    if tid:
+        where.append("tenant_id = :tid")
+        params["tid"] = tid
     if status == "open":
         where.append("resolved_at IS NULL")
     elif status == "resolved":
@@ -135,12 +134,10 @@ def stats(
     _require_admin(user)
     where = ["resolved_at IS NULL"]
     params: dict[str, Any] = {}
-    role = (user.get("role") or "").lower()
-    if role != "platform_admin":
-        tid = _tenant_id(request)
-        if tid:
-            where.append("tenant_id = :tid")
-            params["tid"] = tid
+    tid = _tenant_id(request)
+    if tid:
+        where.append("tenant_id = :tid")
+        params["tid"] = tid
     where_sql = " AND ".join(where)
 
     by_class = db.execute(
@@ -189,14 +186,12 @@ def get_error(
     db: Session = Depends(get_db),
 ):
     _require_admin(user)
-    role = (user.get("role") or "").lower()
     where = "id = :id"
     params: dict[str, Any] = {"id": error_id}
-    if role != "platform_admin":
-        tid = _tenant_id(request)
-        if tid:
-            where += " AND tenant_id = :tid"
-            params["tid"] = tid
+    tid = _tenant_id(request)
+    if tid:
+        where += " AND tenant_id = :tid"
+        params["tid"] = tid
     row = db.execute(
         text(f"SELECT * FROM server_errors WHERE {where}"),
         params,
@@ -215,17 +210,15 @@ def resolve_error(
     db: Session = Depends(get_db),
 ):
     _require_admin(user)
-    role = (user.get("role") or "").lower()
     now = datetime.now(timezone.utc)
     user_label = user.get("email") or user.get("sub") or "system"
 
     base_where = "id = :id"
     params: dict[str, Any] = {"id": error_id}
-    if role != "platform_admin":
-        tid = _tenant_id(request)
-        if tid:
-            base_where += " AND tenant_id = :tid"
-            params["tid"] = tid
+    tid = _tenant_id(request)
+    if tid:
+        base_where += " AND tenant_id = :tid"
+        params["tid"] = tid
     row = db.execute(
         text(f"SELECT id, group_fingerprint FROM server_errors WHERE {base_where}"),
         params,
