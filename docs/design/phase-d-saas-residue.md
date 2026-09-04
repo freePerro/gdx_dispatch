@@ -1,12 +1,23 @@
 # Phase D — the SaaS residue the single-tenant refactor left behind
 
-**Status:** `PARTIALLY BUILT` — **S1, S2, S3 and S6 built.** Connect retired
-entirely (owner decision 2026-09-01); the `x-tenant-tier` selector removed after
-measurement proved it was **dead code, not the exploit this document first
-claimed**; the public signup page removed together with the multi-tenant
-workspace picker on the login page that this document's sweep had missed.
-**S4, S5, S7, S8, S9, S10 are NOT built.** ⚠ Nothing here is deployed or
-walked on prod yet.
+**Status:** `PARTIALLY BUILT` — **S1, S2, S3, S4, S5 and S6 built.** Connect
+retired entirely (owner decision 2026-09-01); the `x-tenant-tier` selector
+removed after measurement proved it was **dead code, not the exploit this
+document first claimed**; the public signup page removed together with the
+multi-tenant workspace picker on the login page that this document's sweep had
+missed. **2026-09-03, the legacy purge (branch `chore/legacy-purge`):** S4 and
+S5 deleted, plus the round-two items the 2026-09-03 residue audit found —
+the unauthenticated `/superadmin` vendor console (S12), the `/legacy/*` Jinja
+tenant UI and the `/integrations` page that answered 302-without-Location for
+everyone (S13), fifteen orphan Jinja templates (S14), the Stripe-subscription
+billing reconciliation route and Celery task, the vendor-upsell
+`core/ai_recommendations.py` router (it was registered first, so it — not <!-- link-ok -->
+`core/recommendation_routes.py` — was serving `GET /api/recommendations`;
+zero callers anywhere, and the survivor now answers that path with a
+different shape behind `require_role`; link-ok), and an unreferenced
+"retention playbook" health-score module. **S7, S8, S9, S10, S11 are NOT
+built** in this commit; the purge continues in the same branch. ⚠ Nothing
+here is deployed or walked on prod yet.
 
 ## What already exists (do not rebuild)
 
@@ -77,8 +88,8 @@ Declared before the fix, per the working agreement.
 | ~~**S1**~~ | ~~`x-tenant-tier` header selects the caller's own rate limit~~ — **CORRECTED: it never worked.** Dead code; slowapi calls a `default_limits` provider with no arguments | **BUILT** — replaced with a static `DEFAULT_RATE_LIMIT` | Was **never** reachable |
 | ~~**S2**~~ | ~~Public `/signup` page whose submit target does not exist~~ — **wider than filed: it was linked from a workspace picker on the login page** | **BUILT** — `/signup`, `SignupView`, `PlatformRecovery` and the "Wrong workspace?" link all removed | Gone |
 | ~~**S3**~~ | ~~Connect payment-intent takes the destination account from the request body~~ | **BUILT — deleted with the whole Connect surface.** Closes #421 | Gone |
-| **S4** | 8 vendor-admin routes with zero UI callers | `/api/admin/health-scores/*` (3), `/api/admin/metrics/*` (2), `/api/admin/tenants/{tenant_id}/modules` (3) | Mounted, admin/owner-gated |
-| **S5** | Churn scoring pointed at the owner | `core/health_score.py:3` — *"per-tenant engagement scores and triggers retention playbooks"* | Mounted; **not** beat-scheduled |
+| ~~**S4**~~ | ~~8 vendor-admin routes with zero UI callers~~ | **BUILT 2026-09-03** — `core/health_score.py`, `core/tenant_metrics.py`, `core/admin_modules.py` and `core/admin_ops.py` deleted; the route table lost exactly those 8 paths (link-ok) | Gone |
+| ~~**S5**~~ | ~~Churn scoring pointed at the owner~~ | **BUILT 2026-09-03** — deleted with S4, together with the unreferenced `modules/ai_health_score/` twin (link-ok) | Gone |
 | ~~**S6**~~ | ~~Two parallel Stripe Connect implementations~~ | **BUILT — all 9 routes deleted**, both files removed, module key dropped | Gone |
 | **S7** | Dead control-plane grants table | prod `tenant_module_grants` = 0 rows; `company_module_grants` = 111 rows (with duplicates) | Fallback path only |
 | **S8** | SaaS billing state on a product that is not sold | prod `tenants.subscription_status` = `'trialing'` on both rows; `core/tenant.py:52` hardcodes `"active"` in the ambient dict | Inert |
@@ -261,7 +272,7 @@ Per the working agreement, plans naming these files were checked before writing.
   `core/rate_limiter.py` tenant middleware"*. Accurate, but it does not note that
   the slowapi half takes its limit from a client header. S1 closes that gap; if
   that draft is ever committed it should reference this document.
-- `comment-accuracy-audit-2026-08-12.md:119` audited `health_score.py`'s signal
+- `comment-accuracy-audit-2026-08-12.md:119` audited `health_score.py`'s signal (link-ok)
   windows for comment accuracy. It judged the comments, not whether the feature
   belongs. No conflict — S5 is a scope question that audit never asked.
 - `mobile-all-platforms-plan.md:89,107` only names `SignupView` in font-size and
@@ -278,7 +289,7 @@ status line in the **same** PR.
 | ~~1~~ | ~~**S1**~~ — **DONE.** Was dead code, not an exploit | ✅ counterfactual guard verified; behaviour probed identical before/after |
 | ~~2~~ | ~~**S2**~~ — **DONE.** Also removed the workspace picker it was linked from | ✅ counterfactual guard; frontend 2300 passed. ⚠ owed after deploy: the **bundle probe** below (login page — valid) **and a browser load of `/signup`** (lazy chunk — the curl probe cannot see it) |
 | ~~3~~ | ~~**S3 + S6**~~ — **DONE.** Connect deleted; #421 closed | ✅ counterfactual guard; route-table diff is exactly the 9 routes; no data change. **Post-deploy gate (measured against a container running this code, not guessed):** `GET /api/stripe/connect/status` **401 → 404** and `POST /api/stripe/connect/payment-intent` **401 → 405**. Both answered 401 on prod at 1.113.2 (mounted, auth-gated). The POST is **405, not 404** — the SPA catch-all matches the path for GET only, so a POST to a deleted route is a method mismatch. Falsifiable, and needs no credentials. |
-| 4 | **S4 + S5 + S7** — remove the dead vendor-admin surfaces | route-table diff; absence assertions like `test_automation_sequences_retired.py` |
+| ~~4~~ | ~~**S4 + S5** + S7~~ — **S4 + S5 DONE 2026-09-03**; S7 follows in the same branch | ✅ route-table diff is exactly the 8 vendor-admin paths (+9 more from S12/S13 and the reconciliation route); `tests/test_saas_surfaces_retired.py` asserts absence per handler **and** per route, counterfactually verified (restoring `core/tenant_ui.py` turns it red) | (link-ok)
 | 5 | **S8 + S9** — data cleanup, soft-delete only (invariant #2) | owner sign-off; these are prod rows |
 | 6 | **S10** — the original Phase D: migrate ~20 `get_engine` call sites, drop the shim | mechanical; last because it is the largest and least urgent |
 
@@ -311,6 +322,6 @@ an earlier draft of this line described a PR 1 gate that was never built:
 2. **S9 seed rows:** soft-delete the `Example Garage Doors` tenant/company rows,
    or leave them? They are referenced by nothing found so far, but they are
    prod rows in two tables and deserve an explicit decision.
-3. **S5 health scores:** delete outright, or keep the endpoint unmounted for a
-   future hosted offering? Deleting is recommended — it is recoverable from git,
-   and a dead mounted route is worse than no route.
+3. ~~**S5 health scores:** delete outright, or keep the endpoint unmounted for a
+   future hosted offering?~~ — **ANSWERED 2026-09-03: deleted** (owner: "rip the
+   legacy out"). Recoverable from git.

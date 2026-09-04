@@ -34,7 +34,6 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
             "gdx_dispatch.tasks.plugin_email_outbox",
             "gdx_dispatch.modules.workflows.tasks",
             "gdx_dispatch.modules.campaigns.tasks",
-            "gdx_dispatch.core.reconciliation_tasks",
             "gdx_dispatch.modules.outlook.tasks",
             "gdx_dispatch.modules.phone_com.tasks",
             "gdx_dispatch.modules.forecasting.tasks",
@@ -82,7 +81,6 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
             "gdx_dispatch.core.webhooks.tasks.*": {"queue": "priority:high"},
             "gdx_dispatch.core.plugin_events.*": {"queue": "priority:high"},
             "gdx_dispatch.modules.campaigns.tasks.*": {"queue": "priority:high"},
-            "gdx_dispatch.core.reconciliation_tasks.*": {"queue": "priority:low"},
             "outlook.*": {"queue": "priority:low"},
             "phone_com.*": {"queue": "priority:low"},
             "gdx_dispatch.core.celery_app.run_daily_snapshot_task": {"queue": "priority:low"},
@@ -113,7 +111,6 @@ install_webhook_dispatch_hook()
 
 # Ensure external task modules are imported so Celery registers decorated tasks.
 from gdx_dispatch.core import plugin_events as _plugin_events_tasks  # noqa: E402,F401
-from gdx_dispatch.core import reconciliation_tasks as _reconciliation_tasks  # noqa: E402,F401
 from gdx_dispatch.core.webhooks import tasks as _webhook_tasks  # noqa: E402,F401
 from gdx_dispatch.modules.bank_feeds import tasks as _bank_feeds_tasks  # noqa: E402,F401
 from gdx_dispatch.modules.campaigns import tasks as _campaign_tasks  # noqa: E402,F401

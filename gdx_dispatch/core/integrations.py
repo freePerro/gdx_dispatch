@@ -20,7 +20,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import JSON, Boolean, DateTime, Index, String, Text, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
@@ -847,75 +846,6 @@ async def disconnect_integration_route(
     return result
 
 
-# ---------------------------------------------------------------------------
-# UI router — serves the integrations marketplace HTML page
-# ---------------------------------------------------------------------------
-
-try:
-    import os as _os
-
-    from fastapi.templating import Jinja2Templates as _Jinja2Templates
-
-    _TMPL_DIR = _os.path.join(_os.path.dirname(__file__), "..", "templates")
-    _templates = _Jinja2Templates(directory=_TMPL_DIR)
-    _HAS_TEMPLATES = True
-except Exception:
-    logging.getLogger(__name__).exception("<module> caught exception")
-    _HAS_TEMPLATES = False
-
-ui_router = APIRouter(tags=["integrations-ui"])
-
-
-def _require_auth_ui(request: Request) -> dict:
-    user = getattr(request.state, "current_user", None)
-    if not user:
-        raise HTTPException(status_code=302, headers={"Location": "/auth/login"})
-    return user
-
-
-@ui_router.get("/integrations", response_class=HTMLResponse)
-def integrations_page(
-    request: Request,
-    db: Session = Depends(get_db),
-):
-    _require_auth_ui(request)
-    tenant_id_raw = getattr(request.state, "tenant", None)
-    tenant_id = str(tenant_id_raw["id"]) if tenant_id_raw else "unknown"
-
-    available = list_available_integrations()
-
-    # Build connected status map for each integration type
-    connected_statuses: dict[str, dict] = {}
-    for integration in available:
-        itype = integration["type"]
-        try:
-            connected_statuses[itype] = get_integration_status(tenant_id, itype, db)
-        except Exception:
-            logging.getLogger(__name__).exception("integrations_page caught exception")
-            connected_statuses[itype] = {"status": "disconnected", "integration_type": itype}
-
-    # Zapier subscriptions — active IntegrationConfig rows of type "zapier"
-    zapier_stmt = select(IntegrationConfig).where(
-        IntegrationConfig.tenant_id == tenant_id,
-        IntegrationConfig.integration_type == "zapier",
-        IntegrationConfig.is_active.is_(True),
-    )
-    zapier_subscriptions = db.execute(zapier_stmt).scalars().all()
-
-    ctx = {
-        "request": request,
-        "available_integrations": available,
-        "connected_statuses": connected_statuses,
-        "zapier_subscriptions": zapier_subscriptions,
-        "webhook_endpoints": [],
-    }
-
-    if _HAS_TEMPLATES:
-        return _templates.TemplateResponse(request, "integrations.html", ctx)
-    from fastapi.responses import JSONResponse
-    return JSONResponse({"error": "templates not found"}, status_code=500)
-
-
 __all__ = [
     "IntegrationConfig",
     "TriggerEvent",
@@ -934,5 +864,4 @@ __all__ = [
     "test_connection",
     "ConnectRequest",
     "router",
-    "ui_router",
 ]

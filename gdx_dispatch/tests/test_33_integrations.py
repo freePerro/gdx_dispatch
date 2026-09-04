@@ -345,15 +345,12 @@ def test_integration_tenant_isolated(fresh_db):
 # ---------------------------------------------------------------------------
 
 def test_integrations_page_renders():
-    """GET /integrations returns a valid response for a Vue SPA route.
+    """GET /integrations is a Vue SPA route, not a server-rendered page.
 
-    /integrations is now handled by the Vue Router client-side. The server
-    responds with the Vue SPA shell (index.html) for any unknown URL so Vue
-    Router can take over. The old version of this test expected the word
-    "integration" to appear in the server response — that was true when the
-    app was Jinja2-rendered, but is no longer correct for the SPA. The fix
-    is to accept EITHER the SPA shell (identified by <div id="app">) OR a
-    legacy server-rendered page that contains the word "integration".
+    The Jinja ``integrations.html`` page and its ``ui_router`` were removed
+    with the single-tenant residue purge (they answered 302 with no Location
+    header for every caller). The server now answers with the SPA shell for
+    this path like any other client-side route.
     """
     try:
         from fastapi.testclient import TestClient
@@ -371,13 +368,7 @@ def test_integrations_page_renders():
     )
     if response.status_code == 200:
         body = response.text.lower()
-        # Either the Vue SPA shell (empty div for client-side rendering)
-        # or a legacy server-rendered page with the feature name in the HTML.
-        assert (
-            '<div id="app">' in body
-            or 'id="app"' in body
-            or "integration" in body
-        ), f"Unexpected response body: {response.text[:200]}"
+        assert 'id="app"' in body, f"Expected the SPA shell, got: {response.text[:200]}"
 
 
 # ---------------------------------------------------------------------------

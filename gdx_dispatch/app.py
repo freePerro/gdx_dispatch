@@ -647,12 +647,6 @@ except Exception:
     pwa_router = APIRouter(tags=["pwa"])
 
 try:
-    from gdx_dispatch.core.health_score import router as health_score_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: health_score_router")
-    health_score_router = APIRouter(tags=["health-scores"])
-
-try:
     from gdx_dispatch.modules.distributor.order_portal import dealer_router as dealer_order_router
     from gdx_dispatch.modules.distributor.order_portal import distributor_router as distributor_order_router
 except Exception:
@@ -689,19 +683,10 @@ except Exception:
     admin_db_router = APIRouter(prefix="/api/admin/db", tags=["admin-db"])
 
 try:
-    from gdx_dispatch.core.admin_modules import router as admin_modules_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: admin_modules_router")
-    admin_modules_router = APIRouter(tags=["tenant-modules"])
-
-
-try:
     from gdx_dispatch.core.integrations import router as integrations_router
-    from gdx_dispatch.core.integrations import ui_router as integrations_ui_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: integrations_router")
     integrations_router = APIRouter(prefix="/api/integrations", tags=["integrations"])
-    integrations_ui_router = APIRouter(tags=["integrations-ui"])
 
 try:
     from gdx_dispatch.core.push_notifications import router as push_router
@@ -742,12 +727,6 @@ try:
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: public_v1_router")
     public_v1_router = APIRouter(prefix="/api/v1", tags=["public-api"])
-
-try:
-    from gdx_dispatch.core.tenant_ui import router as tenant_ui_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: tenant_ui_router")
-    tenant_ui_router = APIRouter(tags=["tenant-ui"])
 
 try:
     from gdx_dispatch.routers.ai_communication import router as ai_comms_router
@@ -796,12 +775,6 @@ try:
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: audit_dashboard_router")
     audit_dashboard_router = APIRouter(tags=["audit-dashboard"])
-
-try:
-    from gdx_dispatch.core.ai_recommendations import router as ai_recommendations_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: ai_recommendations_router")
-    ai_recommendations_router = APIRouter(prefix="/api", tags=["recommendations"])
 
 
 try:
@@ -861,12 +834,6 @@ except Exception:
     logging.getLogger("gdx_dispatch.app").exception("import/init failed")
     GDPRDataAccessMiddleware = None  # type: ignore[assignment,misc]
     gdpr_access_router = APIRouter(prefix="/api/admin/gdpr", tags=["gdpr-access-log"])
-
-try:
-    from gdx_dispatch.core.tenant_metrics import router as tenant_metrics_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: tenant_metrics_router")
-    tenant_metrics_router = APIRouter(prefix="/api/admin/metrics", tags=["metrics"])
 
 try:
     from gdx_dispatch.core.rate_limiter import TenantRateLimitMiddleware as _TenantRateLimitMiddleware
@@ -1712,7 +1679,6 @@ def create_app() -> FastAPI:
     app.include_router(custom_fields_router.router if hasattr(custom_fields_router, "router") else custom_fields_router)
     app.include_router(webhook_monitor.router if hasattr(webhook_monitor, "router") else webhook_monitor)
     app.include_router(pwa_router if hasattr(pwa_router, "routes") else APIRouter())
-    app.include_router(health_score_router.router if hasattr(health_score_router, "router") else health_score_router)
     app.include_router(jwks_router)
     app.include_router(core_onboarding_router, prefix="/api", tags=["onboarding"])
     # onboarding_ui_router (Flask-era HTML wizard at /onboarding + /onboarding/{step})
@@ -1721,7 +1687,6 @@ def create_app() -> FastAPI:
     app.include_router(admin_ops_router)
     app.include_router(admin_ops_read_router)
     app.include_router(admin_db_router)
-    app.include_router(admin_modules_router, prefix="/api/admin", tags=["tenant-modules"])
     # Third-party plugin proxy: forwards /api/plugins/* to the plugin-host
     # container with the authenticated principal (ADR-013). Guarded so a missing
     # plugin stack never blocks core boot.
@@ -1738,7 +1703,6 @@ def create_app() -> FastAPI:
         logging.getLogger("gdx_dispatch.app").exception("plugins proxy router failed to load")
     app.include_router(push_router)
     app.include_router(locations_router)
-    app.include_router(tenant_ui_router, prefix="/legacy", tags=["tenant-ui"])
     app.include_router(ai_comms_router)
     app.include_router(ai_estimates_router)
     app.include_router(supplier_router)
@@ -1746,7 +1710,6 @@ def create_app() -> FastAPI:
     app.include_router(door_catalog_router)
     app.include_router(planner_router_mod)
     app.include_router(audit_dashboard_router)
-    app.include_router(ai_recommendations_router)
     app.include_router(recommendation_routes_router)
     app.include_router(ai_quote_router)
     app.include_router(ai_router_router)
@@ -1755,7 +1718,6 @@ def create_app() -> FastAPI:
     app.include_router(security_log_router)
     app.include_router(webhook_delivery_log_router)
     app.include_router(gdpr_access_router)
-    app.include_router(tenant_metrics_router)
     app.include_router(api_keys_router)
     app.include_router(payments_router)
     app.include_router(payments_public_router)
@@ -1781,22 +1743,7 @@ def create_app() -> FastAPI:
     except Exception:
         logging.getLogger("gdx_dispatch.app").exception("Failed to import router: voice")
 
-    from pathlib import Path as _Path
-
-    from fastapi.responses import HTMLResponse as _HTMLResponse
-
-    # Superadmin control panel — serves superadmin.html at /superadmin
-    _sa_tmpl = _Path(__file__).parent / "templates" / "superadmin.html"
-
-    @app.get("/superadmin", response_class=_HTMLResponse, include_in_schema=False)
-    async def superadmin_dashboard_page() -> _HTMLResponse:
-        """Superadmin control panel — requires ADMIN_API_TOKEN via JS."""
-        if _sa_tmpl.exists():
-            return _HTMLResponse(content=_sa_tmpl.read_text())
-        return _HTMLResponse(content="<h1>Superadmin template not found</h1>", status_code=200)
-
     app.include_router(integrations_router)
-    app.include_router(integrations_ui_router)
     app.include_router(van_inventory_router.router if hasattr(van_inventory_router, "router") else van_inventory_router)
     app.include_router(po_workflow_router.router if hasattr(po_workflow_router, "router") else po_workflow_router)
     app.include_router(commission_router.router if hasattr(commission_router, "router") else commission_router)

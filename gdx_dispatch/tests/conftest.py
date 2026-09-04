@@ -294,16 +294,6 @@ def make_fresh_db():
     except ImportError:
         pass
     try:
-        from gdx_dispatch.modules.ai_health_score.models import TenantHealthScore
-        _sprint5_tables.append(TenantHealthScore.__table__)
-    except ImportError:
-        pass
-    try:
-        from gdx_dispatch.core.health_score import TenantHealthLog
-        _sprint5_tables.append(TenantHealthLog.__table__)
-    except ImportError:
-        pass
-    try:
         from gdx_dispatch.modules.reporting.models import SavedReport
         _sprint5_tables.append(SavedReport.__table__)
     except ImportError:

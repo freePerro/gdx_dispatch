@@ -10,7 +10,6 @@ GET /api/inventory/low-stock
 GET /api/inventory/parts
 GET /api/jobs/{job_id}/activity
 GET /api/purchase-orders
-GET /api/recommendations
 GET /api/timeclock/status
 PATCH /api/purchase-orders/{po_id}
 POST /api/campaigns

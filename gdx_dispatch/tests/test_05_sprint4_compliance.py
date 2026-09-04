@@ -13,11 +13,6 @@ from gdx_dispatch.modules.fleet.service import get_due_maintenance, log_service
 from gdx_dispatch.modules.inventory.aliases import create_alias, resolve_local_sku, resolve_upstream_sku
 
 
-@pytest.fixture(autouse=True)
-def _mock_stripe(monkeypatch):
-    monkeypatch.setattr("gdx_dispatch.core.reconciliation.stripe.Subscription.retrieve", lambda *_a, **_k: {"items": {"data": []}})
-
-
 def test_gdpr_export_customer(tenant_db):
     c = Customer(name="Jane Doe", email="jane@example.com", company_id="tenant-test"); tenant_db.add(c); tenant_db.commit(); tenant_db.refresh(c)  # noqa: E701,E702
     out = export_customer_data(str(c.id), tenant_db)
