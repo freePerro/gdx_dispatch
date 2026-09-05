@@ -179,16 +179,12 @@ def test_valid_principal_is_mapped_to_dict(monkeypatch):
         auth_router.get_current_user(request=request, token="opaque-token-string"),
     )
 
-    # Return-shape contract: user_id/tenant_id/role plus impersonation
-    # markers (imp_actor_id/imp_purpose) added in cc2-s46 for the CC
-    # impersonate flow. None on normal tokens; populated when the issuer
-    # mints an impersonation token. Asserting the strict 3-key dict is
-    # stale — assert each load-bearing field independently.
+    # Return-shape contract: user_id/tenant_id/role. Assert each
+    # load-bearing field independently rather than a strict key set, so
+    # adding an unrelated field does not break this test.
     assert result["user_id"] == "user-42"
     assert result["tenant_id"] == "tenant-gdx"
     assert result["role"] == "owner"
-    assert result["imp_actor_id"] is None
-    assert result["imp_purpose"] is None
     # The core validator received the token verbatim (no re-encoding or
     # mangling by the router).
     assert captured["token"] == "opaque-token-string"
@@ -346,13 +342,10 @@ def test_legacy_token_passes_through_to_validator_then_legacy_fallback(monkeypat
     # Core validator saw the exact token string (pass-through contract).
     assert captured["token"] == token
     # Legacy fallback accepted the HS256 token and returned the dict the
-    # rest of the app expects — HS256 compatibility preserved. Plus the
-    # impersonation markers (None on legacy non-impersonation tokens).
+    # rest of the app expects — HS256 compatibility preserved.
     assert result["user_id"] == "legacy-user"
     assert result["tenant_id"] == "legacy-tenant"
     assert result["role"] == "admin"
-    assert result["imp_actor_id"] is None
-    assert result["imp_purpose"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -1216,9 +1209,6 @@ def test_slice_f_fallback_behavior_survives_slice_h_wiring(
     assert result["user_id"] == "legacy-user"
     assert result["tenant_id"] == host_tid
     assert result["role"] == "admin"
-    # Impersonation markers added cc2-s46; None on non-impersonation tokens.
-    assert result["imp_actor_id"] is None
-    assert result["imp_purpose"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -1670,14 +1660,11 @@ def test_slice_e_execution_context_overrides_and_restores_at_auth_boundary(
 
     # Regression anchor — the dict-shape return contract is untouched by
     # Slice E. If this drifts, the auth-dependency return type changed
-    # and every downstream consumer breaks; catch it here. The
-    # impersonation markers (cc2-s46) are part of the contract too.
+    # and every downstream consumer breaks; catch it here.
     res = seen_after_return["result"]
     assert res["user_id"] == "user-slice-e"
     assert res["tenant_id"] == "tenant-gdx"
     assert res["role"] == "user"
-    assert res["imp_actor_id"] is None
-    assert res["imp_purpose"] is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════

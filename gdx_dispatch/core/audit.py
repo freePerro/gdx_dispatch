@@ -228,23 +228,6 @@ def _extract_request_actor(request: Any) -> str | None:
     return _actor_id_of(_request_user_dict(request))
 
 
-def _extract_impersonation(request: Any) -> tuple[str | None, str | None]:
-    """Return (imp_actor_id, imp_purpose) from request.state.user if present.
-
-    Tenant auth (``gdx_dispatch.routers.auth.get_current_user``) surfaces these
-    claims from impersonation tokens minted by CC. They live on
-    ``request.state.user`` after the auth dependency runs. Returns
-    (None, None) for normal user tokens.
-    """
-    if request is None:
-        return None, None
-    state = getattr(request, "state", None)
-    user = getattr(state, "user", None) if state is not None else None
-    if not isinstance(user, dict):
-        return None, None
-    return user.get("imp_actor_id"), user.get("imp_purpose")
-
-
 _AUDIT_GUARD_INITIALIZED: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
@@ -435,20 +418,6 @@ def _log_audit_event_impl(db: Any, *args: Any, **kwargs: Any) -> AuditLog:
     details = _sanitize_details(details or {})
     ip_address = ip_address or _extract_ip(request)
     request_id = request_id or _extract_request_id(request)
-
-    # Phase D cc2-s46: stamp impersonation context onto every audit row
-    # written during a request whose JWT carried imp_actor_id. The CC
-    # impersonate endpoint mints these tokens; tenant-side auth surfaces
-    # the claim into request.state.user. Without this hook every action
-    # taken under impersonation looks like the impersonated user — the
-    # imp_actor_id stamp is the only forensic trail back to the operator.
-    imp_actor_id, imp_purpose = _extract_impersonation(request)
-    if imp_actor_id:
-        details = dict(details)
-        details.setdefault("_impersonation", {
-            "actor_id": imp_actor_id,
-            "purpose": imp_purpose,
-        })
 
     # JSON-sanitize ONCE, up front: dates/Decimals/UUIDs in details become
     # strings here, exactly as _payload_json hashes them — so the stored

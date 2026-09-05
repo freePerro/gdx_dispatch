@@ -214,8 +214,6 @@ async def test_bearer_login_jwt_falls_through_and_runs_gates() -> None:
         "user_id": sub_uuid,
         "tenant_id": tenant_uuid,
         "role": "admin",
-        "imp_actor_id": None,
-        "imp_purpose": None,
     })
 
     with (
@@ -280,8 +278,6 @@ async def test_dispatch_uses_db_role_not_jwt_role_after_demote() -> None:
         "user_id": sub_uuid,
         "tenant_id": tenant_uuid,
         "role": "tech",  # DB demoted
-        "imp_actor_id": None,
-        "imp_purpose": None,
     })
 
     with (

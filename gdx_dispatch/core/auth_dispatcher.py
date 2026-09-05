@@ -363,8 +363,6 @@ async def _dispatch_login_jwt(request: Request, token: str) -> Principal:
     role: str = "user"
     jti: str | None = None
     actor_kind: str = "human"
-    imp_actor_id: str | None = None
-    imp_purpose: str | None = None
 
     # Primary path — SS-7 RS256 validator. Pass the app-state denylist
     # (Slice H) so revoke-writes via /auth/admin/revoke take effect for
@@ -393,8 +391,6 @@ async def _dispatch_login_jwt(request: Request, token: str) -> Principal:
         actor_kind = (
             getattr(validated.actor_kind, "value", None) or str(validated.actor_kind or "human")
         )
-        imp_actor_id = validated.raw_claims.get("imp_actor_id")
-        imp_purpose = validated.raw_claims.get("imp_purpose")
     except JWTValidationError:
         primary_failed = True
 
@@ -424,8 +420,6 @@ async def _dispatch_login_jwt(request: Request, token: str) -> Principal:
         role = str(payload.get("role") or "user")
         jti = payload.get("jti")
         actor_kind = "human"
-        imp_actor_id = payload.get("imp_actor_id")
-        imp_purpose = payload.get("imp_purpose")
 
     if not sub:
         raise HTTPException(
@@ -454,8 +448,6 @@ async def _dispatch_login_jwt(request: Request, token: str) -> Principal:
         role=role,
         actor_kind=actor_kind,
         jti=jti,
-        imp_actor_id=imp_actor_id,
-        imp_purpose=imp_purpose,
     )
 
     # Build the Principal from the *verified* user_dict (verified role,
