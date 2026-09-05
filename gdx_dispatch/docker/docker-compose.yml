@@ -48,6 +48,13 @@ x-app-env: &app-env
   # gdx.example.com defaults and Outlook subscription creation fails
   # loudly (2026-07-07 audit).
   GDX_PUBLIC_BASE_URL: ${GDX_PUBLIC_BASE_URL:-}
+  # Inbound-webhook caller secrets. These are an ALLOWLIST, not an env_file:
+  # a var absent from this block never reaches the container no matter what
+  # .env says, and the gate that reads it then behaves as "not configured".
+  # TWILIO_AUTH_TOKEN was missing here since the signature check shipped, so
+  # verify_twilio_signature has been 403-ing every inbound SMS in production.
+  INBOUND_EMAIL_WEBHOOK_SECRET: ${INBOUND_EMAIL_WEBHOOK_SECRET:-}
+  TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
 
 services:
   # ── Database ─────────────────────────────────────────────────────────────────
