@@ -184,38 +184,15 @@ def is_module_enabled(module_key: str, request: Request, db: Session) -> bool:
     try:
         _ensure_company_module_grants_table(db)
         _seed_default_modules(db, tenant_id)
-        # D101 follow-up (an earlier session, 2026-04-25 evening): the GDX-specific
-        # `_grant_all_modules` autohealer used to live here. is_module_enabled
-        # runs on every request that hits a require_module(...) decorator, so
-        # GDX disables of any module were resurrected within milliseconds —
-        # the twin of the settings.py autohealer fixed earlier in this session.
-        # Bootstrap now happens once, on first read of the modules list in
-        # gdx_dispatch.routers.settings (it seeds the default-on modules only when
-        # the grants table is empty); row absence here means the admin
-        # disabled it.
-        if _is_granted_in_company_table(db, tenant_id, canonical_key):
-            return True
+        # _seed_default_modules above grants EVERY module exactly once, when the
+        # company has no grant rows at all; after that a missing row means the
+        # admin disabled the module and it stays disabled (the old per-request
+        # autohealer that resurrected disables within milliseconds is gone).
+        # company_module_grants is the only grants table: the control-plane
+        # fallback that used to follow this check was deleted 2026-09-03 (its
+        # table held 0 rows on prod and only ever served tests).
+        return _is_granted_in_company_table(db, tenant_id, canonical_key)
     except SQLAlchemyError:
-        import logging
-        logging.getLogger("gdx_dispatch.modules").exception("module_check_failed key=%s tenant=%s", canonical_key, tenant_id)
-        db.rollback()
-
-    # Backward compatibility: check legacy control-plane grants when table is absent.
-    try:
-        granted = db.execute(
-            text(
-                """
-                SELECT 1
-                FROM tenant_module_grants
-                WHERE CAST(tenant_id AS TEXT) = :tenant_id
-                  AND module_key = :module_key
-                LIMIT 1
-                """
-            ),
-            {"tenant_id": tenant_id, "module_key": canonical_key},
-        ).scalar()
-        return bool(granted)
-    except SQLAlchemyError:  # Return False if module check fails due to database errors.
         import logging
         logging.getLogger("gdx_dispatch.modules").exception("module_check_failed key=%s tenant=%s", canonical_key, tenant_id)
         db.rollback()
@@ -418,8 +395,9 @@ def _load_user_permissions(db: Session, request: Request, user: dict) -> set[str
     db_role: str = ""
     if user_id:
         try:
-            from gdx_dispatch.models.tenant_models import User as _User
             from sqlalchemy import select as _select
+
+            from gdx_dispatch.models.tenant_models import User as _User
             db_role = (
                 db.execute(_select(_User.role).where(_User.id == user_id, _User.deleted_at.is_(None))).scalar_one_or_none()
                 or ""

@@ -18,7 +18,6 @@ Covers:
 """
 from __future__ import annotations
 
-import re
 from decimal import Decimal
 from pathlib import Path
 
@@ -58,89 +57,6 @@ def test_qb_pnl_monthly_model_columns():
 
 
 # ─── Migration script ─────────────────────────────────────────────────
-
-
-def test_migration_script_declares_all_ddl():
-    src = _read("gdx_dispatch/tools/migrate_monthly_budgets.py")
-    # Idempotent CREATEs
-    assert "CREATE TABLE IF NOT EXISTS qb_pnl_monthly" in src
-    assert "CREATE TABLE IF NOT EXISTS monthly_budgets" in src
-    # Drop-add UNIQUEs (idempotent pattern)
-    for cname in (
-        "uq_qb_pnl_monthly_year_month_account",
-        "uq_monthly_budget_year_month_account",
-    ):
-        assert f"DROP CONSTRAINT IF EXISTS {cname}" in src
-        assert f"ADD CONSTRAINT {cname}" in src
-    # CHECK constraints
-    for ck in (
-        "ck_monthly_budget_line_type",
-        "ck_monthly_budget_source",
-        "ck_monthly_budget_month_range",
-    ):
-        assert ck in src
-    # Indexes
-    assert "ix_monthly_budgets_year_month" in src
-    assert "ix_qb_pnl_monthly_year_month" in src
-
-
-def test_migration_script_walks_every_tenant_db():
-    src = _read("gdx_dispatch/tools/migrate_monthly_budgets.py")
-    assert "SELECT id, slug, db_url_enc FROM tenants WHERE db_url_enc IS NOT NULL" in src
-    assert "_decrypt_db_url(enc)" in src
-
-
-def test_migration_ddl_executes_against_sqlite_after_pg_to_sqlite_substitution():
-    """Auditor 2026-05-24: source-scan grep won't catch a SQL syntax typo.
-    Run the DDL against an ephemeral sqlite DB after substituting the
-    Postgres-only tokens. Catches: misplaced commas, unknown identifiers,
-    duplicate column names, constraint refs to non-existent columns.
-    The semantic difference (TZ vs no-TZ on TIMESTAMP) is irrelevant for
-    syntax validation."""
-    import re as _re
-    import sqlalchemy as _sa
-
-    from gdx_dispatch.tools.migrate_monthly_budgets import DDL
-
-    eng = _sa.create_engine("sqlite:///:memory:")
-    with eng.begin() as conn:
-        # Pre-create app_settings so the ADD COLUMN IF NOT EXISTS statement
-        # has a target. In prod this table is always present (ORM-managed
-        # via create_all on tenant signup); the migration only adds new
-        # columns to it.
-        conn.execute(_sa.text(
-            "CREATE TABLE app_settings (id VARCHAR(36) PRIMARY KEY, name VARCHAR(200))"
-        ))
-        for stmt in DDL:
-            sqlite_stmt = stmt
-            # Postgres TIMESTAMPTZ → sqlite TIMESTAMP
-            sqlite_stmt = _re.sub(r"\bTIMESTAMPTZ\b", "TIMESTAMP", sqlite_stmt)
-            # Postgres NOW() → sqlite CURRENT_TIMESTAMP
-            sqlite_stmt = _re.sub(r"\bNOW\(\)", "CURRENT_TIMESTAMP", sqlite_stmt)
-            # sqlite doesn't support `ADD COLUMN IF NOT EXISTS` — strip the
-            # IF NOT EXISTS clause (the test only runs once so duplicate
-            # adds don't apply).
-            sqlite_stmt = _re.sub(
-                r"ADD COLUMN IF NOT EXISTS", "ADD COLUMN", sqlite_stmt,
-            )
-            # sqlite doesn't enforce DROP CONSTRAINT; skip those statements
-            # since they're no-ops on a fresh CREATE anyway.
-            if "DROP CONSTRAINT" in sqlite_stmt or "ADD CONSTRAINT" in sqlite_stmt:
-                # ADD CONSTRAINT ALTER TABLE is also unsupported by sqlite;
-                # but the CHECK + UNIQUE constraints we care about are
-                # captured in the inline CREATE TABLE clauses below in prod.
-                # For this syntax-check pass, we just want to verify no
-                # statement uses an unknown column or has a paren mismatch.
-                continue
-            conn.execute(_sa.text(sqlite_stmt))
-
-    # Confirm both tables actually got created with the columns we expect.
-    insp = _sa.inspect(eng)
-    assert "monthly_budgets" in insp.get_table_names()
-    assert "qb_pnl_monthly" in insp.get_table_names()
-    cols = {c["name"] for c in insp.get_columns("monthly_budgets")}
-    assert {"id", "year", "month", "qb_account_id", "amount",
-            "line_type", "pct_of_revenue", "source", "is_locked"}.issubset(cols)
 
 
 # ─── Router mount + endpoints ─────────────────────────────────────────
@@ -235,6 +151,7 @@ def test_revenue_basis_helper_signature_takes_year_month():
     MUST accept year+month so it can route past months to actuals and
     current+future months to projection."""
     import inspect
+
     from gdx_dispatch.routers.budgets import _revenue_basis_for_month
     sig = inspect.signature(_revenue_basis_for_month)
     assert "year" in sig.parameters
@@ -281,6 +198,7 @@ def test_pnl_upsert_commits_and_persists():
     the request session closed). This test calls upsert + queries the
     table on a SEPARATE connection to prove the rows survived commit."""
     import sqlalchemy as _sa
+
     from gdx_dispatch.modules.quickbooks.pnl import upsert_pnl_rows
 
     eng = _sa.create_engine("sqlite:///:memory:")
@@ -320,8 +238,9 @@ def test_pnl_upsert_commits_and_persists():
 def test_pnl_upsert_rollback_on_mid_loop_failure():
     """If an INSERT fails mid-loop, the function must rollback so the
     DELETE doesn't leak — prior year's data survives the failed refresh."""
-    import sqlalchemy as _sa
     import pytest as _pytest
+    import sqlalchemy as _sa
+
     from gdx_dispatch.modules.quickbooks.pnl import upsert_pnl_rows
 
     eng = _sa.create_engine("sqlite:///:memory:")
@@ -481,8 +400,9 @@ def test_parse_pnl_propagates_section_group_to_account_type():
 
 
 def test_parse_pnl_raises_without_month_columns():
-    from gdx_dispatch.modules.quickbooks.pnl import parse_profit_and_loss
     import pytest as _pytest
+
+    from gdx_dispatch.modules.quickbooks.pnl import parse_profit_and_loss
     sample = {
         "Columns": {"Column": [{"ColTitle": ""}, {"ColTitle": "Total"}]},  # no StartDate
         "Rows": {"Row": []},
@@ -502,6 +422,7 @@ def test_history_averages_use_months_with_data_not_fixed_denominator():
     sum / months_with_data."""
     import sqlalchemy as _sa
     from sqlalchemy.orm import sessionmaker
+
     from gdx_dispatch.routers.budgets import _history_for_accounts
 
     eng = _sa.create_engine("sqlite:///:memory:")
@@ -546,6 +467,7 @@ def test_history_averages_zero_when_no_data():
     """Account with zero history must return 0 averages, never NaN or KeyError."""
     import sqlalchemy as _sa
     from sqlalchemy.orm import sessionmaker
+
     from gdx_dispatch.routers.budgets import _history_for_accounts
 
     eng = _sa.create_engine("sqlite:///:memory:")
@@ -662,11 +584,6 @@ def test_pnl_pull_passes_accounting_method_through():
     assert "accounting_method=accounting_method" in router_src
     assert "accounting_method: str = \"Accrual\"" in pnl_src
     assert "accounting_method=accounting_method" in pnl_src
-
-
-def test_migration_adds_qb_accounting_method_column():
-    src = _read("gdx_dispatch/tools/migrate_monthly_budgets.py")
-    assert "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS qb_accounting_method" in src
 
 
 def test_trends_endpoint_query_shape():
@@ -901,10 +818,14 @@ def test_recategorize_rejects_unsupported_txn_type():
     SalesReceipt / Transfer must be rejected."""
     import asyncio
     from unittest.mock import MagicMock
-    from gdx_dispatch.modules.quickbooks.recategorize import (
-        recategorize_transaction, RecategorizeError, SUPPORTED_TYPES,
-    )
+
     import pytest as _pytest
+
+    from gdx_dispatch.modules.quickbooks.recategorize import (
+        SUPPORTED_TYPES,
+        RecategorizeError,
+        recategorize_transaction,
+    )
     # Pin the supported set
     assert SUPPORTED_TYPES == frozenset({"Purchase", "Expense"})
 

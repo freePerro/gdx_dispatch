@@ -85,7 +85,7 @@ async function login(baseURL) {
   if (cachedToken) return cachedToken;
   const api = await pwRequest.newContext({ baseURL });
   const r = await api.post('/auth/login', {
-    headers: { 'content-type': 'application/json', 'x-tenant-id': TENANT, 'x-e2e-test': 'true' },
+    headers: { 'content-type': 'application/json', 'x-e2e-test': 'true' },
     data: { email: EMAIL, password: PASSWORD },
   });
   expect(r.ok(), 'login should succeed').toBeTruthy();
@@ -99,7 +99,6 @@ async function prime(page, token, theme) {
   await page.addInitScript(
     (a) => {
       sessionStorage.setItem('gdx_access_token', a.t);
-      sessionStorage.setItem('gdx_tenant_slug', a.tid);
       localStorage.setItem('gdx_theme', a.theme);
     },
     { t: token, tid: TENANT, theme },

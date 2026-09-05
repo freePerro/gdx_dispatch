@@ -30,13 +30,15 @@ def client(monkeypatch) -> TestClient:
 
 
 def test_metrics_endpoint_returns_prometheus_format(client: TestClient) -> None:
-    # Make a request first to populate metrics
+    # Make a request first to populate metrics. The x-tenant-id header is
+    # multi-tenant residue and must NOT drive the label any more.
     client.get("/api/test", headers={"x-tenant-id": "tenant-1"})
 
     resp = client.get("/metrics", headers={"x-metrics-token": "test-secret"})
     assert resp.status_code == 200
     assert "http_requests_total" in resp.text
-    assert "tenant-1" in resp.text
+    assert "tenant-1" not in resp.text
+    assert 'tenant_id="-"' in resp.text
 
 
 def test_metrics_endpoint_rejects_bad_token(client: TestClient) -> None:

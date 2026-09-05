@@ -24,7 +24,7 @@ async function auth(page) {
   if (!TOKEN) {
     const api = await pwRequest.newContext({ baseURL: BASE });
     const r = await api.post('/auth/login', {
-      headers: { 'content-type': 'application/json', ...(TENANT ? { 'x-tenant-id': TENANT } : {}) },
+      headers: { 'content-type': 'application/json', },
       data: { email: EMAIL, password: SECRET },
     });
     expect(r.ok(), `login failed: ${r.status()} (429 = rate limited, not a defect)`).toBeTruthy();

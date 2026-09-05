@@ -1,11 +1,34 @@
 # Phase D — the SaaS residue the single-tenant refactor left behind
 
-**Status:** `PARTIALLY BUILT` — **S1, S2, S3 and S6 built.** Connect retired
-entirely (owner decision 2026-09-01); the `x-tenant-tier` selector removed after
-measurement proved it was **dead code, not the exploit this document first
-claimed**; the public signup page removed together with the multi-tenant
-workspace picker on the login page that this document's sweep had missed.
-**S4, S5, S7, S8, S9, S10 are NOT built.** ⚠ Nothing here is deployed or
+**Status:** `PARTIALLY BUILT` — **S1, S2, S3, S4, S5 and S6 built.** Connect
+retired entirely (owner decision 2026-09-01); the `x-tenant-tier` selector
+removed after measurement proved it was **dead code, not the exploit this
+document first claimed**; the public signup page removed together with the
+multi-tenant workspace picker on the login page that this document's sweep had
+missed. **2026-09-03, the legacy purge (branch `chore/legacy-purge`):** S4 and
+S5 deleted, plus the round-two items the 2026-09-03 residue audit found —
+the unauthenticated `/superadmin` vendor console (S12), the `/legacy/*` Jinja
+tenant UI and the `/integrations` page that answered 302-without-Location for
+everyone (S13), fifteen orphan Jinja templates (S14), the Stripe-subscription
+billing reconciliation route and Celery task, the vendor-upsell
+`core/ai_recommendations.py` router (it was registered first, so it — not <!-- link-ok -->
+`core/recommendation_routes.py` — was serving `GET /api/recommendations`;
+zero callers anywhere, and the survivor now answers that path with a
+different shape behind `require_role`; link-ok), and an unreferenced
+"retention playbook" health-score module. **Commit 2 (same branch): S7 and S8's code halves built**, plus the dead
+platform ORM (`models/platform_extensions.py`, 16 tables that never existed <!-- link-ok -->
+on prod, and `core/events.py`, its only importer, which nothing called), <!-- link-ok -->
+`ServiceAccount` (0 references; the empty table stays), the `_lookup_tenant`
+test stub the middleware never called, and the four backend readers that let a
+client stamp any `x-tenant-id` into logs and metrics. **Commit 3: S11's frontend half and S15 built. Commit 4: S10, S16, S17 and
+S19 built, plus the seven comment-drift lines the residue audit tied to the
+collapse.** **Commit 5: S20, the plan-tier headings the browser walk found on the Modules tab.
+Commit 6 (2026-09-04): S24, S28–S32 — the pure dead code a model-driven
+sweep (248 candidates, 12 findings) turned up.** **NOT built: S9 (prod seed
+rows — data, no code); S21, S22+S23, S25 (they change live webhook / discovery
+behaviour — owner's call); S26, S27 (dead code on the auth spine — their own
+PRs); E1–E3 decisions.** — it is
+prod data, the owner's call, and needs no code. ⚠ Nothing here is deployed or
 walked on prod yet.
 
 ## What already exists (do not rebuild)
@@ -77,14 +100,31 @@ Declared before the fix, per the working agreement.
 | ~~**S1**~~ | ~~`x-tenant-tier` header selects the caller's own rate limit~~ — **CORRECTED: it never worked.** Dead code; slowapi calls a `default_limits` provider with no arguments | **BUILT** — replaced with a static `DEFAULT_RATE_LIMIT` | Was **never** reachable |
 | ~~**S2**~~ | ~~Public `/signup` page whose submit target does not exist~~ — **wider than filed: it was linked from a workspace picker on the login page** | **BUILT** — `/signup`, `SignupView`, `PlatformRecovery` and the "Wrong workspace?" link all removed | Gone |
 | ~~**S3**~~ | ~~Connect payment-intent takes the destination account from the request body~~ | **BUILT — deleted with the whole Connect surface.** Closes #421 | Gone |
-| **S4** | 8 vendor-admin routes with zero UI callers | `/api/admin/health-scores/*` (3), `/api/admin/metrics/*` (2), `/api/admin/tenants/{tenant_id}/modules` (3) | Mounted, admin/owner-gated |
-| **S5** | Churn scoring pointed at the owner | `core/health_score.py:3` — *"per-tenant engagement scores and triggers retention playbooks"* | Mounted; **not** beat-scheduled |
+| ~~**S4**~~ | ~~8 vendor-admin routes with zero UI callers~~ | **BUILT 2026-09-03** — `core/health_score.py`, `core/tenant_metrics.py`, `core/admin_modules.py` and `core/admin_ops.py` deleted; the route table lost exactly those 8 paths (link-ok) | Gone |
+| ~~**S5**~~ | ~~Churn scoring pointed at the owner~~ | **BUILT 2026-09-03** — deleted with S4, together with the unreferenced `modules/ai_health_score/` twin (link-ok) | Gone |
 | ~~**S6**~~ | ~~Two parallel Stripe Connect implementations~~ | **BUILT — all 9 routes deleted**, both files removed, module key dropped | Gone |
-| **S7** | Dead control-plane grants table | prod `tenant_module_grants` = 0 rows; `company_module_grants` = 111 rows (with duplicates) | Fallback path only |
-| **S8** | SaaS billing state on a product that is not sold | prod `tenants.subscription_status` = `'trialing'` on both rows; `core/tenant.py:52` hardcodes `"active"` in the ambient dict | Inert |
+| ~~**S7**~~ | ~~Dead control-plane grants table~~ | **BUILT 2026-09-03** — the `is_module_enabled` fallback query and the `TenantModuleGrant` model deleted; 35 test fixtures stopped seeding the table. The physical table stays (0 rows on prod); dropping it is a migration decision | Gone from code |
+| ~~**S8**~~ | ~~SaaS billing state on a product that is not sold~~ | **BUILT 2026-09-03 (code half)** — `subscription_status` and `stripe_connect_account_id` unmapped from the `Tenant` model and dropped from the ambient dict (the one remaining reader, `core/payments.py::_stripe_extra`, reads the key off that dict, which never carried it — unchanged behaviour). The physical columns stay (NOT NULL DEFAULT 'trialing' satisfies inserts); the prod rows and a drop-column migration are the owner's call | Columns only |
 | **S9** | Seed-tenant duplicates in prod data | `Example Garage Doors` / `00000000-…-0001` sits beside the real company row in **both** `tenants` and `companies` — it is the default in `single_tenant()` | Data, not code |
-| **S11** | `x-tenant-id` / `gdx_tenant_slug` still threaded through the frontend | `stores/auth.js::_tenantHeader()` derives the header from `window.location.hostname` — prod is a 3-part host, so **every login today sends `x-tenant-id: gdx`** to the resolver Phase A deleted. ~20 frontend files (`useApi`, `theme`, `analytics`, `useOfflineSync`, `useAuthedFile`, `useTour`, Documents/BankFeeds/VendorStatements/Exports, `errorCapture`) plus 4 backend readers that use it as a logging fallback (`performance.py`, `prometheus.py`, `ai_router.py`, `ai_usage_logger.py`) | Sent and ignored — **issue #581** |
-| **S10** | `_SingleEngineRegistry` shim + ~20 `get_engine(tenant_id, db_url)` call sites | `core/tenant.py:12-33` — the original Phase D scope | Inert by design |
+| ~~**S11**~~ | ~~`x-tenant-id` / `gdx_tenant_slug` still threaded through the frontend~~ | **BUILT 2026-09-03** — backend half in commit 2 (the four readers now use server-verified state only), frontend half in commit 3: `_tenantHeader()`, `tenantSlug`, the `gdx_tenant_slug` session key and every header derivation removed from 12 files (`useApi`, `theme`, `analytics`, `useOfflineSync`, `useAuthedFile`, `useTour`, Documents/BankFeeds/VendorStatements/Exports, `errorCapture`, `auth`), and from all 36 Playwright e2e specs plus `playwright.config.js` (they stamped the header on every request and seeded the slug). Guard: `src/__tests__/saasTenantHeaderRetired.spec.js`. Closes **issue #581** on merge | Gone |
+| ~~**S16**~~ | ~~Three scanner baselines 100% dead~~ | **BUILT 2026-09-03 (commit 4)** — `.tenant_id_shape_baseline` (owner scanner long deleted) and `.cross_plane_import_baseline` (no owner) removed; `.tenant_plane_redundant_filter_baseline` re-frozen from real paths: 276 findings, 0 net-new, and a probe file flips `--strict` to exit 1 again. ⚠ Neither this scanner nor drift_scanner / comment_drift_scan runs in CI or any hook — "can fail" is not "is run" | Scanner can fail again; still unwired |
+| ~~**S17**~~ | ~~`drift_scanner.py` enforced multi-tenant rules~~ | **BUILT 2026-09-03 (commit 4)** — the TestClient-needs-`tenant_module_grants` rule (71 of its 86 warnings) and the platform `resource_type` rule (waited on a file that left with the collapse) deleted | Gone |
+| ~~**S19**~~ | ~~Ten ops tools iterated "all tenants via the control plane"~~ | **BUILT 2026-09-03 (commit 4)** — every one SELECTed `tenants.db_url_enc`, a column the squash dropped, so none could run. Six one-shot migrations that had already run were deleted (`migrate_monthly_budgets`, `encrypt_qb_token_store_rows`, `migrate_tenant_typed_catalogs`, `backfill_role_permissions`, `backfill_customer_phone_hash`, `add_leads_perms_to_role_snapshots`; link-ok); seven still-useful tools now take DATABASE_URL (`tenant_schema_drift_check`, `tenant_plane_schema_drift`, `router_sql_live_audit`, `test_residue_sweep`, `pave_tenant_db`, `qa_tier1`, `create_api_key`) | Rewritten |
+| ~~**S20**~~ | ~~Settings → Modules grouped modules under "Starter / Professional / Business" plan headings and carried an "Upgrade" lock tag~~ | **BUILT 2026-09-03 (commit 5) — found by the browser walk, not by any scan.** The headings were the `tier` field of `core/modules.py::MODULES` rendered as plan tiers; `mod.locked` was only ever hard-coded `False` by the one handler that emits it (`routers/branding_public.py`). Now one alphabetical list. The `tier` field itself stays on the backend for now: the public plugin manifest contract (`plugin_api/manifest.py`) mirrors it, so dropping it is a plugin-contract change — owner's call | Gone from the UI |
+| **S21** | Inbound Twilio SMS + M365 email webhooks take the tenant from `?tenant=` and stamp it as `company_id`; reads filter on the pinned tenant, so a URL without the exact id writes rows nobody sees; the email route has no auth at all (`routers/inbound_comms.py:387-460`) | Found by the 2026-09-04 model-driven sweep, verified by read. **BUILT 2026-09-04 — #603** (company from `get_company_id()`; the query param removed, and the email webhook gains a shared-secret gate — it had **no auth at all** on prod). Original note: the fix (use `company_id()`, drop the param) changes what the live Twilio/M365 webhook URLs must carry | Live, unauthenticated |
+| **S22** | Three webhook-URL builders still use `TENANT_BASE_DOMAIN` (`phone_com_settings._build_webhook_url` 500s when unset; `outlook_oauth._build_redirect_uri` defaults to example.com; `phone_com/tasks.rotate_webhook_secret` is beat-scheduled); the var is not in `.env.template` | Sweep 2026-09-04, verified. **BUILT 2026-09-04 — #604** (all four builders read `GDX_PUBLIC_BASE_URL`, byte-identical to the URLs already registered upstream (proven against the live `outlook_subscriptions` row)). Original note: switching to `GDX_PUBLIC_BASE_URL` changes URLs registered with Phone.com and Microsoft; confirm prod's value first | Live |
+| **S23** | `modules/outlook/bootstrap.py` seeds against a hard-coded `DEFAULT_TENANT_SLUG = "gdx"` | Sweep 2026-09-04, verified. **BUILT 2026-09-04 — #604** (the seeder resolves the single tenant by **id**, not a slug) — ships with S22 (same deploy precondition) | Silent no-op if the slug differs |
+| ~~**S24**~~ | ~~A `platform_admin` role bypassed tenant scoping on four `/api/admin/errors` routes; the role is not in `core/roles.py`~~ | **BUILT 2026-09-04 (commit 6)** — guards removed, routes always scoped | Gone |
+| **S25** | Public `/.well-known/gdx-platform` advertises OAuth (`/oauth/authorize` …), metering, outbox replay, `/developers/*` and `/api/mcp`; none exist in the route table | Sweep 2026-09-04, verified. **BUILT 2026-09-04 — #605** (owner chose *make the docs honest*: the RFC 8414, OIDC and RFC 9728 documents are deleted — MCP Authorization 2025-06-18 requires a PRM to name an authorization server, and this deployment has none). Original note: it is the MCP OAuth discovery document claude.ai's connector reads (three test files pin it); whether MCP OAuth is wanted decides what the manifest should say | Public, wrong |
+| **S26** | Impersonation claim chain (`core/audit.py::_extract_impersonation`, `auth/core.py` `imp_*` kwargs, `auth_dispatcher` fields) — nothing mints `imp_actor_id` since the console left | Sweep 2026-09-04, verified. **BUILT 2026-09-04 — #606** (chain removed; verified **0** prod `audit_logs` rows carry `_impersonation`) — auth path; its own PR | Dead |
+| **S27** | SS-8 installation / act-chain shells (a core contexts module, `Principal` fields, `auth_jwt` exec_ctx, tracing `acting_on_tenant_id`) — the sole setter pins None / () | Sweep 2026-09-04, verified. **BUILT 2026-09-04 — #608** (the contexts module, Principal fields, exec_ctx and the `installation_id` span attribute are gone. `acting_on_tenant_id` is the same shape and was left, filed as #601) — auth spine, 4 core files + 7 test files; its own PR | Dead |
+| ~~**S28**~~ | ~~`Principal.from_oauth` for an `SS21_OAuthToken` class that does not exist~~ | **BUILT 2026-09-04 (commit 6)** — factory and its one test caller removed. Note: `core/mcp_fastmcp_bridge.py` still mints `Principal(auth_kind="oauth", oauth_token_id=None)`, so the `oauth_token_id` field stays declared and is now never set | Factory gone; field inert |
+| ~~**S29**~~ | ~~`modules/inventory/aliases.py` tenant-to-tenant part-SKU crosswalk; only a test imported it; table never in the baseline~~ | **BUILT 2026-09-04 (commit 6)** — module and test removed (link-ok) | Gone |
+| ~~**S30**~~ | ~~`tools/rls_render.py` — "DEPRECATED UNDER THREE-PLANE"; its SQL template does not exist; no importer~~ | **BUILT 2026-09-04 (commit 6)** — deleted (link-ok) | Gone |
+| ~~**S31**~~ | ~~`compliance-summary` returned `tenants_with_kb_updates`, a count of entity ids with no reader~~ | **BUILT 2026-09-04 (commit 6)** — field removed | Gone |
+| ~~**S32**~~ | ~~`locked` / `upgrade_required` keys on the public modules payload, always False / None, unread since S20~~ | **BUILT 2026-09-04 (commit 6)** | Gone |
+| ~~**S15**~~ | ~~In-app help sold a subscription~~ | **BUILT 2026-09-03 (commit 3)** — `help/articles/billing-subscription.md` deleted; the four articles that cited it (`users`, `owner-getting-started`, `invoices`, `modules-permissions`) rewritten to describe the self-hosted install. Prod gate: `GET /help-index.json` (public, unauthenticated) read 1 for "what you pay us" and 5 for "Billing & subscription" on 2026-09-03; both must read 0 after deploy | Gone | <!-- link-ok -->
+| ~~**S10**~~ | ~~`_SingleEngineRegistry` shim + ~20 `get_engine(tenant_id, db_url)` call sites~~ | **BUILT 2026-09-03 (commit 4)** — the shim, `_lookup_tenant`, the `_decrypt_db_url` identity shim and the `control_engine` / `CONTROL_DATABASE_URL` aliases are gone from `core/tenant.py` and `core/database.py`. The "~20 call sites" were 3: `routers/bug_reports.py` (now `SessionLocal`) and two tools. Kept on purpose: the ambient `db_url` key, because `routers/auth/core.py::_db_verify_user` skips per-request user verification when it is absent | Gone |
 
 ### S1 — CORRECTED: dead code, not an exploit. Now removed.
 
@@ -261,7 +301,7 @@ Per the working agreement, plans naming these files were checked before writing.
   `core/rate_limiter.py` tenant middleware"*. Accurate, but it does not note that
   the slowapi half takes its limit from a client header. S1 closes that gap; if
   that draft is ever committed it should reference this document.
-- `comment-accuracy-audit-2026-08-12.md:119` audited `health_score.py`'s signal
+- `comment-accuracy-audit-2026-08-12.md:119` audited `health_score.py`'s signal (link-ok)
   windows for comment accuracy. It judged the comments, not whether the feature
   belongs. No conflict — S5 is a scope question that audit never asked.
 - `mobile-all-platforms-plan.md:89,107` only names `SignupView` in font-size and
@@ -278,7 +318,7 @@ status line in the **same** PR.
 | ~~1~~ | ~~**S1**~~ — **DONE.** Was dead code, not an exploit | ✅ counterfactual guard verified; behaviour probed identical before/after |
 | ~~2~~ | ~~**S2**~~ — **DONE.** Also removed the workspace picker it was linked from | ✅ counterfactual guard; frontend 2300 passed. ⚠ owed after deploy: the **bundle probe** below (login page — valid) **and a browser load of `/signup`** (lazy chunk — the curl probe cannot see it) |
 | ~~3~~ | ~~**S3 + S6**~~ — **DONE.** Connect deleted; #421 closed | ✅ counterfactual guard; route-table diff is exactly the 9 routes; no data change. **Post-deploy gate (measured against a container running this code, not guessed):** `GET /api/stripe/connect/status` **401 → 404** and `POST /api/stripe/connect/payment-intent` **401 → 405**. Both answered 401 on prod at 1.113.2 (mounted, auth-gated). The POST is **405, not 404** — the SPA catch-all matches the path for GET only, so a POST to a deleted route is a method mismatch. Falsifiable, and needs no credentials. |
-| 4 | **S4 + S5 + S7** — remove the dead vendor-admin surfaces | route-table diff; absence assertions like `test_automation_sequences_retired.py` |
+| ~~4~~ | ~~**S4 + S5** + S7~~ — **S4 + S5 DONE 2026-09-03**; S7 follows in the same branch | ✅ route-table diff is exactly the 8 vendor-admin paths (+9 more from S12/S13 and the reconciliation route); `tests/test_saas_surfaces_retired.py` asserts absence per handler **and** per route, counterfactually verified (restoring `core/tenant_ui.py` turns it red) | (link-ok)
 | 5 | **S8 + S9** — data cleanup, soft-delete only (invariant #2) | owner sign-off; these are prod rows |
 | 6 | **S10** — the original Phase D: migrate ~20 `get_engine` call sites, drop the shim | mechanical; last because it is the largest and least urgent |
 
@@ -353,6 +393,6 @@ exist.
    whether `single_tenant()` should fail loudly on an unset `GDX_TENANT_ID`
    instead of falling back — deleting the rows without that change just lets
    them be recreated.
-3. **S5 health scores:** delete outright, or keep the endpoint unmounted for a
-   future hosted offering? Deleting is recommended — it is recoverable from git,
-   and a dead mounted route is worse than no route.
+3. ~~**S5 health scores:** delete outright, or keep the endpoint unmounted for a
+   future hosted offering?~~ — **ANSWERED 2026-09-03: deleted** (owner: "rip the
+   legacy out"). Recoverable from git.

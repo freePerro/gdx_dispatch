@@ -4,21 +4,21 @@ Defends the an earlier session invariant: every tenant DB must equal what
 `TenantBase.metadata.create_all()` would produce. Without this, the pave
 is a one-time miracle, not an enforced state.
 
-For each active tenant in `tenants` (control DB), decrypts `db_url_enc`
-via `gdx_dispatch.core.database._decrypt_db_url` (handles the two-postgres-host
-trap from an earlier session — never hardcodes a host), pulls column types from
-information_schema.columns, compares to the ORM via the same import
-(`import gdx_dispatch.models`) that `pave_tenant_db.py` uses.
+Connects to the one application database (DATABASE_URL), pulls column
+types from information_schema.columns, and compares them to the ORM via the
+same import (`import gdx_dispatch.models`) that `pave_tenant_db.py` uses.
+(The multi-tenant version walked `tenants.db_url_enc` on a control plane; that
+column was dropped in the squash.)
 
-Usage (in the app container, where CONTROL_DATABASE_URL + GDX_FERNET_KEY
-+ JWT_SECRET are already set):
+Usage (in the app container, where DATABASE_URL + JWT_SECRET are already
+set):
 
     docker exec docker-app-1 python -m gdx_dispatch.tools.tenant_schema_drift_check
 
 Exit codes:
     0 → every tenant DB matches ORM (no drift)
     1 → drift detected; per-tenant findings printed to stdout
-    2 → infra error (control DB unreachable, missing env, model imports failed)
+    2 → infra error (database unreachable, missing env, model imports failed)
 
 Optional Uptime Kuma push:
     Set SCHEMA_DRIFT_KUMA_URL=https://kuma.domain/api/push/TOKEN
@@ -36,7 +36,6 @@ import urllib.parse
 import urllib.request
 
 from sqlalchemy import create_engine, text
-
 
 # Type-class → canonical PG token. Mirrors the an earlier session scanner;
 # extended with timestamp tz handling because an earlier session reported 378 tz
@@ -186,28 +185,15 @@ def _diff(orm: dict[str, dict[str, str]],
     return findings
 
 
-def _iter_tenants(control_url: str):
-    """Yield (slug, decrypted_url) for every active tenant. Decrypts via
-    `_decrypt_db_url` so we never assume host from the column name."""
-    from gdx_dispatch.core.database import _decrypt_db_url
-    eng = create_engine(control_url)
-    try:
-        with eng.connect() as c:
-            rows = c.execute(text(
-                "SELECT COALESCE(slug, id::text) AS slug, db_url_enc "
-                "FROM tenants "
-                "WHERE deleted_at IS NULL "
-                "  AND db_url_enc IS NOT NULL AND db_url_enc <> ''"
-            )).fetchall()
-    finally:
-        eng.dispose()
-    for slug, enc in rows:
-        try:
-            url = _decrypt_db_url(str(enc))
-        except Exception as e:  # noqa: BLE001
-            print(f"[decrypt-failed] {slug}: {e}", file=sys.stderr)
-            continue
-        yield str(slug), url
+def _iter_tenants(db_url: str):
+    """Yield the one (slug, url) pair this single-tenant install has.
+
+    The multi-tenant version walked ``tenants.db_url_enc`` on a control
+    plane; that column was dropped in the squash, so the walk could never
+    run. The slug is the ambient tenant's, the URL is DATABASE_URL.
+    """
+    from gdx_dispatch.core.tenant import single_tenant
+    yield str(single_tenant()["slug"]), db_url
 
 
 def _push_kuma(status: str, msg: str) -> None:
@@ -223,10 +209,10 @@ def _push_kuma(status: str, msg: str) -> None:
 
 
 def main() -> int:
-    control_url = os.environ.get("CONTROL_DATABASE_URL", "")
-    if not control_url:
-        print("CONTROL_DATABASE_URL not set", file=sys.stderr)
-        _push_kuma("down", "CONTROL_DATABASE_URL missing")
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        print("DATABASE_URL not set", file=sys.stderr)
+        _push_kuma("down", "DATABASE_URL missing")
         return 2
 
     try:
@@ -240,10 +226,10 @@ def main() -> int:
 
     tenant_results: list[tuple[str, list[dict], str | None]] = []
     try:
-        tenants = list(_iter_tenants(control_url))
+        tenants = list(_iter_tenants(db_url))
     except Exception as e:  # noqa: BLE001
-        print(f"[control-db-error] {e}", file=sys.stderr)
-        _push_kuma("down", f"control db error: {e}")
+        print(f"[db-error] {e}", file=sys.stderr)
+        _push_kuma("down", f"db error: {e}")
         return 2
 
     skip = {s.strip() for s in os.environ.get("SCHEMA_DRIFT_SKIP_TENANTS", "").split(",") if s.strip()}

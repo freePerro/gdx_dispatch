@@ -147,8 +147,8 @@ class EncryptedString(TypeDecorator[str]):
         return _FERNET.encrypt(value.encode("utf-8")).decode("utf-8")
 
     def process_result_value(self, value: str | None, dialect):
-        # Plaintext-passthrough on InvalidToken — mirrors the precedent
-        # at ``gdx_dispatch.core.database._decrypt_db_url:102``. During the
+        # Plaintext-passthrough on InvalidToken — mirrors the precedent of
+        # the DB-URL decrypt shim (retired 2026-09-03). During the
         # plaintext→ciphertext re-activation transition (S122-9 follow-on),
         # rows are mixed-state: most plaintext, newly-written ones
         # ciphertext. The passthrough lets reads work for both states.

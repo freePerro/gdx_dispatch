@@ -348,7 +348,7 @@ class DispatchSuggestionRequest(BaseModel):
 
 def _tenant_id(request: Request) -> str:
     tenant = getattr(request.state, "tenant", None) or {}
-    tenant_id = str(tenant.get("id") or request.headers.get("x-tenant-id", "")).strip()
+    tenant_id = str(tenant.get("id") or "").strip()
     if not tenant_id:
         raise HTTPException(status_code=400, detail="Missing tenant context")
     return tenant_id

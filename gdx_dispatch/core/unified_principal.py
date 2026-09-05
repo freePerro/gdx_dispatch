@@ -64,10 +64,10 @@ time).
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
-from collections.abc import Iterable
-from uuid import UUID, uuid5, NAMESPACE_URL
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 __all__ = ["AuthKind", "Principal", "SPIFFE_ID_NAMESPACE", "ActorType"]
 
@@ -322,36 +322,3 @@ class Principal:
             is_super_admin=("*", "*") in caps_t,
         )
 
-    @classmethod
-    def from_oauth(
-        cls,
-        *,
-        oauth_token: Any,
-        identity_id: UUID,
-        tenant_id: str,
-        role: str,
-        capabilities: Iterable[tuple[str, str]],
-        is_restricted: bool = False,
-    ) -> Principal:
-        """Construct an OAuth-bearer-flow principal (SS-21).
-
-        ``oauth_token`` is the ``SS21_OAuthToken`` row — its ``.id`` is
-        surfaced as ``oauth_token_id`` for revocation / audit lookups.
-        """
-        raw_id = getattr(oauth_token, "id", None)
-        if raw_id is None and isinstance(oauth_token, dict):
-            raw_id = oauth_token.get("id")
-        if raw_id is None:
-            raise ValueError("oauth_token.id is required")
-        oauth_token_id = raw_id if isinstance(raw_id, UUID) else UUID(str(raw_id))
-        caps_t = _coerce_caps(capabilities)
-        return cls(
-            identity_id=identity_id,
-            tenant_id=tenant_id,
-            principal_role=role,
-            capabilities=caps_t,
-            auth_kind="oauth",
-            oauth_token_id=oauth_token_id,
-            is_restricted=is_restricted,
-            is_super_admin=("*", "*") in caps_t,
-        )

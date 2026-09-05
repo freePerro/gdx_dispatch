@@ -159,7 +159,11 @@ def test_pricing_health_analysis(tenant_db):
 # ---------------------------------------------------------------------------
 
 def test_quote_page_renders():
-    """ai_quote.html template exists and all exported symbols are importable."""
+    """All exported symbols are importable and the three routes are registered.
+
+    (The orphan ``templates/ai_quote.html`` this test once asserted was deleted
+    2026-09-03 with the SaaS-residue purge; nothing rendered it.)
+    """
     import importlib
 
     # Module must import without error
@@ -180,12 +184,6 @@ def test_quote_page_renders():
     assert expected_keys <= set(mod.PARTS_CATALOG.keys()), (
         f"Missing catalog keys: {expected_keys - set(mod.PARTS_CATALOG.keys())}"
     )
-
-    # Template file must exist
-    template_path = os.path.join(
-        os.path.dirname(__file__), "..", "templates", "ai_quote.html"
-    )
-    assert os.path.isfile(template_path), f"Template not found: {template_path}"
 
     # Router must have the three new routes
     route_paths = {r.path for r in mod.router.routes}

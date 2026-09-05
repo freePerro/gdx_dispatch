@@ -610,42 +610,6 @@ def update_role_permissions(
     return {"role": body.role, "permissions": body.permissions, "updated_at": now}
 
 
-# ---------------------------------------------------------------------------
-# Bank reconciliation dashboard API
-# ---------------------------------------------------------------------------
-
-@router.get("/reconciliation")
-def billing_reconciliation(
-    request: Request,
-    _: dict = Depends(_require_admin),
-    db: Session = Depends(get_db),
-) -> dict:
-    """Run billing reconciliation — compare expected vs actual Stripe amounts."""
-    from gdx_dispatch.core.database import SessionLocal
-    control_db = SessionLocal()
-    try:
-        from gdx_dispatch.core.reconciliation import run_billing_reconciliation
-        result = run_billing_reconciliation(control_db)
-        log_audit_event_sync(
-            db=db,
-            tenant_id=str(getattr(getattr(request, "state", None), "tenant", {}).get("id", "")) if request else None,
-            user_id=str(_.get("sub") or _.get("user_id") or "system"),
-            action="billing_reconciliation_run",
-            entity_type="reconciliation",
-            entity_id="manual",
-            details={"checked": result.get("checked", 0), "discrepancies": len(result.get("discrepancies", []))},
-            ip_address=(request.client.host if request and request.client else None),
-            request=request,
-        )
-        db.commit()
-        return result
-    except ImportError:
-        log.exception("reconciliation_module_import_failed")
-        raise HTTPException(status_code=503, detail="Reconciliation module not available") from None
-    finally:
-        control_db.close()
-
-
 _RELEASES_URL = "https://api.github.com/repos/freePerro/gdx_dispatch/releases/latest"
 
 

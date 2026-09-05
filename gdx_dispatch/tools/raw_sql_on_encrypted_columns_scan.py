@@ -86,11 +86,6 @@ SKIP_DIR_PARTS = {
 }
 # Tool files that legitimately touch the raw bytes during transition windows.
 SKIP_FILE_NAMES = {
-    "encrypt_qb_token_store_rows.py",
-    "encrypt_vendor_pii_rows.py",
-    "encrypt_tenants_db_url_rows.py",
-    "encrypt_customer_pii_rows.py",
-    "rollback_encryption_to_plaintext.py",
     "tenant_schema_drift_check.py",
     "raw_sql_on_encrypted_columns_scan.py",  # the scan itself
 }
@@ -126,8 +121,8 @@ def _load_encrypted_columns() -> list[tuple[str, str]]:
         # Importing gdx_dispatch.models registers tenant-plane models on TenantBase.
         # gdx_dispatch.control.models registers the control plane. Both are needed
         # so encryption_status() sees every base.
-        import gdx_dispatch.models  # noqa: F401, PLC0415
         import gdx_dispatch.control.models  # noqa: F401, PLC0415
+        import gdx_dispatch.models  # noqa: F401, PLC0415
         from gdx_dispatch.core import pii  # noqa: PLC0415
     except Exception as exc:  # noqa: BLE001
         print(

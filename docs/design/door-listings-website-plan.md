@@ -84,7 +84,7 @@ Part of Phase 5 lives in the separate website repo, not here.
 **(a) A new permission key does not reach existing roles.** The resolver honors each
 tenant's `TenantRole` **snapshot verbatim** — so a snapshotted non-admin builtin role only
 gains a new key when its snapshot gains it. This is documented in
-`tools/add_leads_perms_to_role_snapshots.py`, written for exactly this reason during the
+`tools/add_leads_perms_to_role_snapshots.py`, written for exactly this reason during the <!-- tool deleted 2026-09-03 with the SaaS-residue purge (one-shot migration, already run); link-ok -->
 leads authz sweep. Critically, **that sweep excluded `technician`**. So gating field
 submission on a fresh `listings.submit` key without a paired additive snapshot migration
 means every tech gets a 403 and it looks like the feature is broken. Ours must include the

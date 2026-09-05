@@ -1,17 +1,7 @@
 import { useAuthStore } from '../stores/auth';
 
-function resolveTenantId() {
-  const stored = sessionStorage.getItem('gdx_tenant_slug');
-  if (stored) return stored;
-  const parts = window.location.hostname.split('.');
-  const sub = parts.length >= 3 ? parts[0] : null;
-  return sub && sub !== 'www' ? sub : null;
-}
-
 function buildHeaders(auth) {
   const headers = {};
-  const tenantId = resolveTenantId();
-  if (tenantId) headers['x-tenant-id'] = tenantId;
   if (auth.accessToken) headers.Authorization = `Bearer ${auth.accessToken}`;
   return headers;
 }

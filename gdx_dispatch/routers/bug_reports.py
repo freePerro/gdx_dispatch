@@ -99,17 +99,11 @@ def report_client_error(
 ) -> dict[str, str]:
     """Receive frontend API errors for R&D tracking.
 
-    MH-0 (2026-05-19): tenantless-safe. The route is in
-    `TenantMiddleware._TENANTLESS_ALLOWED_PATHS` (NOT `_BYPASS_PATHS` —
-    that was caught and rejected in the MH-0 audit because the bypass
-    short-circuits before `_lookup_tenant` and would silently kill
-    ClientError writes on real tenants). The middleware runs lookup
-    normally and, only when the tenant cannot be resolved, sets
-    `request.state.tenant = None` and lets the request through. Real
-    tenant hosts still write to the tenant-plane `ClientError` table;
-    platform/unresolved hosts hit the tenantless branch which logs to
-    the server log and returns a distinct status string so a failed
-    tenant write never looks like a successful one.
+    Single-tenant: TenantMiddleware pins ``request.state.tenant`` on every
+    non-bypassed path, so the write below normally runs. The tenantless
+    branch (no tenant on request.state — a direct call, a test harness, or a
+    bypassed path) logs to the server log and returns a distinct status
+    string so a skipped write never looks like a successful one.
     """
     body = payload
 
@@ -146,20 +140,14 @@ def report_client_error(
         )
         return {"status": "logged_tenantless"}
 
-    # Tenant resolved — open a tenant session manually (we can't Depends()
-    # on get_db because the bypass means it would fail to even resolve
-    # the request.state tenant in a few edge paths). Mirror the dep's logic:
-    # decrypt db_url, get engine from registry, open one session.
-    from sqlalchemy.orm import sessionmaker  # noqa: PLC0415
-    from gdx_dispatch.core.database import _decrypt_db_url  # noqa: PLC0415
-    from gdx_dispatch.core.tenant import engine_registry  # noqa: PLC0415
+    # Tenant pinned — open one session on the application database directly
+    # (not via Depends(get_db): this handler is reached on paths where the
+    # dependency would not resolve). Single-tenant: SessionLocal IS that DB.
+    from gdx_dispatch.core.database import SessionLocal  # noqa: PLC0415
 
     db = None
     try:
-        db_url = _decrypt_db_url(str(tenant_state["db_url"]))
-        engine = engine_registry.get_engine(tid, db_url)
-        session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-        db = session_factory()
+        db = SessionLocal()
         now = datetime.now(timezone.utc).isoformat()
         client_err = ClientError(
             id=str(uuid4()),

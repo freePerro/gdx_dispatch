@@ -11,7 +11,6 @@ mode the bearer middleware enforces.
 from __future__ import annotations
 
 import contextlib
-import json
 import uuid
 from unittest.mock import patch
 
@@ -19,12 +18,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import gdx_dispatch.core.mcp_tools  # noqa: F401  — side-effect: registers tools
 from gdx_dispatch.core.mcp_bearer import mint_mcp_access_token
 from gdx_dispatch.core.mcp_mount import mcp_subapp_lifespan, mount_mcp
 from gdx_dispatch.core.tenant import TenantMiddleware
-
-import gdx_dispatch.core.mcp_tools  # noqa: F401  — side-effect: registers tools
-
 
 GDX_HOST = "gdx.example.com"
 ACME_HOST = "acme.example.com"
@@ -33,7 +30,7 @@ ACME_UUID = uuid.UUID("22222222-2222-2222-2222-222222222222")
 
 
 def _fake_tenant(host: str) -> dict:
-    """Map host → tenant dict in the same shape `_lookup_tenant` returns."""
+    """Map host → tenant dict in the same shape the old multi-tenant resolver returns."""
     if host.startswith("gdx."):
         return {"id": GDX_UUID, "slug": "gdx", "db_url": "sqlite:///:memory:",
                 "subscription_status": "active", "db_provisioned": True,
@@ -106,10 +103,8 @@ def app_client():
     _single = {"id": str(GDX_UUID), "slug": "gdx", "db_url": "sqlite:///:memory:",
                "subscription_status": "active"}
 
-    with patch("gdx_dispatch.core.tenant._lookup_tenant", side_effect=_resolver), \
-         patch("gdx_dispatch.core.tenant.single_tenant", return_value=_single):
-        with TestClient(app) as client:
-            yield client
+    with patch("gdx_dispatch.core.tenant.single_tenant", return_value=_single), TestClient(app) as client:
+        yield client
 
 
 def _post_init(client: TestClient, host: str, token: str | None) -> int:

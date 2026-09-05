@@ -17,14 +17,13 @@ const PW = process.env.E2E_PASSWORD;
 async function signIn(page, baseURL, { dark = false } = {}) {
   const api = await pwRequest.newContext({ baseURL });
   const r = await api.post('/auth/login', {
-    headers: { 'content-type': 'application/json', 'x-tenant-id': TENANT, 'x-e2e-test': 'true' },
+    headers: { 'content-type': 'application/json', 'x-e2e-test': 'true' },
     data: { email: EMAIL, password: PW },
   });
   expect(r.ok()).toBeTruthy();
   const { access_token } = await r.json();
   await page.addInitScript((a) => {
     sessionStorage.setItem('gdx_access_token', a.t);
-    sessionStorage.setItem('gdx_tenant_slug', a.tid);
     if (a.dark) localStorage.setItem('gdx_theme', 'dark');
   }, { t: access_token, tid: TENANT, dark });
   await api.dispose();

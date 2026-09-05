@@ -64,7 +64,9 @@ def _alembic_cfg() -> Config:
 # and are owned by Alembic migrations, NOT create_all. compare_metadata runs
 # against TenantBase.metadata, which doesn't know them, so it reports each as
 # "in DB, not in ORM" — a false positive. Suppress those rows. (Mirrors
-# migration 001's _BASELINE_TABLES.)
+# migration 001's _BASELINE_TABLES.) tenant_module_grants, service_accounts
+# and platform_feature_flags are still physical tables (0 rows on prod) but
+# no longer have an ORM model since the 2026-09-03 SaaS-residue purge.
 _CONTROL_PLANE_TABLES = frozenset({
     "tenants", "tenant_settings", "tenant_module_grants", "platform_feature_flags",
     "service_accounts", "server_errors", "game_definitions", "game_events", "game_state",

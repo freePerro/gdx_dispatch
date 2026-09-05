@@ -203,7 +203,7 @@ Also safe to delete (verified unreferenced):
   exists), `tests/load/` + the `load` marker + the `locust` dependency.
 - `tests/test_zz_probe_integration.py` — untracked, **0 bytes**, created Jul 31; leftover probe.
 - `test_13_onboarding.py` (4 tests, fully subsumed by `test_24_onboarding.py`'s 33),
-  `test_15_admin_api.py` (2 pure existence checks), the two markdown-length tests in
+  `test_15_admin_api.py` (2 pure existence checks), the two markdown-length tests in <!-- file deleted 2026-09-03 with the SaaS-residue purge; link-ok -->
   `test_12_secrets_and_ha.py`, the two skipped `pass`-body stubs in `test_marketing.py:448,453`.
 - `tests/conftest.py:26-53,108-132` — the SS-12A debug heartbeat: four pytest hooks string-compare
   **every test in every shard** against `test_01_gdx_scaffold_hang_capture.py`, a file that does

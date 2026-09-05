@@ -127,13 +127,12 @@ Sidebar (`constants/modules.js`):
    - Route guard: add `meta: { requiresPermission: 'inventory.export' }` in `router/index.js`.
    - In-component: `v-if="hasPermission('inventory.export')"` on the action button.
 
-5. **Reseed existing tenants** — run the backfill so live tenants pick up the new key on the builtin roles you updated:
-
-   ```bash
-   docker exec -w /app docker-app-1 python -m gdx_dispatch.tools.backfill_role_permissions --all
-   ```
-
-   Custom roles are untouched; admins re-customize them via the UI.
+5. **Reseed the builtin roles** — an existing install does not pick the new
+   key up by itself. Reset each builtin role you changed from the UI or with
+   `curl -XPOST /api/role-permissions/roles/{id}/reset` (the one-shot
+   `backfill_role_permissions` tool that used to walk a control-plane tenants
+   table was deleted 2026-09-03; it could no longer run). Custom roles are
+   untouched; admins re-customize them via the UI.
 
 6. **Test** — add a row to `gdx_dispatch/tests/test_role_permissions_enforcement.py` proving the gate works for the role(s) that should pass and 403s for the role(s) that shouldn't.
 
@@ -146,8 +145,6 @@ Sidebar (`constants/modules.js`):
 | Resolve current user's perms | `curl /api/users/me/permissions` |
 | Recent permission changes (audit) | `curl /api/admin/permission-audit?limit=100` |
 | Reset a builtin role | `curl -XPOST /api/role-permissions/roles/{id}/reset` |
-| Backfill all tenants | `python -m gdx_dispatch.tools.backfill_role_permissions --all` |
-| Backfill one tenant | `python -m gdx_dispatch.tools.backfill_role_permissions --tenant <slug>` |
 
 ## Rate limit
 

@@ -30,7 +30,6 @@ describe('theme store loadBranding() Authorization header', () => {
   });
 
   it('OMITS Authorization header when no token in sessionStorage', async () => {
-    sessionStorage.setItem('gdx_tenant_slug', 'gdx');
     const store = useThemeStore();
     await store.loadBranding();
 
@@ -38,19 +37,18 @@ describe('theme store loadBranding() Authorization header', () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/settings/branding');
     expect(opts.headers).not.toHaveProperty('Authorization');
-    // Tenant header still required on every request.
-    expect(opts.headers['x-tenant-id']).toBe('gdx');
+    // The multi-tenant x-tenant-id header must NOT be sent any more.
+    expect(opts.headers['x-tenant-id']).toBeUndefined();
   });
 
   it('INCLUDES Bearer Authorization when token present', async () => {
     sessionStorage.setItem('gdx_access_token', 'fake-jwt');
-    sessionStorage.setItem('gdx_tenant_slug', 'gdx');
     const store = useThemeStore();
     await store.loadBranding();
 
     const [, opts] = fetchMock.mock.calls[0];
     expect(opts.headers.Authorization).toBe('Bearer fake-jwt');
-    expect(opts.headers['x-tenant-id']).toBe('gdx');
+    expect(opts.headers['x-tenant-id']).toBeUndefined();
   });
 
   it('NEVER sends an empty-string Authorization header', async () => {

@@ -22,16 +22,6 @@ def client() -> TestClient:
     db = Session()
 
     # Module grants table (needed by require_module)
-    db.execute(text("""
-        CREATE TABLE IF NOT EXISTS tenant_module_grants (
-            id TEXT PRIMARY KEY, tenant_id TEXT, module_key TEXT,
-            granted_at TEXT, created_at TEXT, expires_at TEXT
-        )
-    """))
-    db.execute(text("""
-        INSERT INTO tenant_module_grants (id, tenant_id, module_key, granted_at, created_at)
-        VALUES ('g1', 't1', 'equipment_tracking', :now, :now)
-    """), {"now": datetime.now(timezone.utc).isoformat()})
 
     # Create tables
     db.execute(text("""

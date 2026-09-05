@@ -5,7 +5,7 @@ Hits all endpoints, groups failures by status code, decides whether to
 continue to Tier 2 or stop for /debug.
 
 Usage:
-    python gdx_dispatch/tools/qa_tier1.py --token TOKEN --tenant SLUG [--base-url URL]
+    python gdx_dispatch/tools/qa_tier1.py --token TOKEN [--base-url URL]
 
 Exit codes:
     0 = all passed (Tier 2: critical path only)
@@ -36,11 +36,10 @@ ENDPOINTS = [
 ]
 
 
-def sweep(base_url: str, token: str, tenant: str) -> list[dict]:
+def sweep(base_url: str, token: str) -> list[dict]:
     results = []
     headers = {
         "Authorization": f"Bearer {token}",
-        "x-tenant-id": tenant,
         "User-Agent": "GDX-QA/1.0",
     }
     for ep in ENDPOINTS:
@@ -109,11 +108,10 @@ def update_baseline(results: list[dict]):
 def main():
     p = argparse.ArgumentParser(description="QA Tier 1 API sweep")
     p.add_argument("--token", required=True, help="Bearer token")
-    p.add_argument("--tenant", default="gdx", help="Tenant slug")
     p.add_argument("--base-url", default="https://gdx.example.com")
     args = p.parse_args()
 
-    results = sweep(args.base_url, args.token, args.tenant)
+    results = sweep(args.base_url, args.token)
     exit_code = analyze(results)
     update_baseline(results)
     sys.exit(exit_code)

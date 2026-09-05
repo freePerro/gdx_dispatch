@@ -1,0 +1,22 @@
+{
+  "timestamp": "2026-09-04T03:29:59.262277+00:00",
+  "mode": "report",
+  "tenants_scanned": 1,
+  "total_deletable_residue": 0,
+  "total_unattributed": 0,
+  "total_acknowledged_legacy": 0,
+  "total_deleted": 0,
+  "tenants": [
+    {
+      "slug": "auditslug",
+      "tenant_id": "00000000-0000-0000-0000-000000000001",
+      "findings": [],
+      "total_deletable": 0,
+      "total_unattributed": 0,
+      "total_acknowledged_legacy": 0,
+      "deleted": 0,
+      "snapshot_path": null,
+      "error": null
+    }
+  ]
+}

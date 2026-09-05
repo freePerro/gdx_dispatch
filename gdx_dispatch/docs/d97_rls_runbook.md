@@ -364,7 +364,7 @@ Then Phase 1 (env switch to `gdx_app`) opens — at that point all the column sh
 | Architectural rule | `CLAUDE.md` § Tenant Identity | The contract — UUID is identity, slug is routing label, with citations |
 | Working plan | `gdx_dispatch/docs/d97_rls_runbook.md` (this file) | Survey, auth-path inventory, migration sketch, cutover plan |
 | Lint gate | `gdx_dispatch/tools/tenant_id_shape_scan.py` | AST scan; line-insensitive baseline; pre-commit blocking |
-| Baseline | `.tenant_id_shape_baseline` | 181 known violations; new code can't add to this list |
+| Baseline | a tenant_id_shape baseline file (deleted with the dead scanner baselines) | 181 known violations; new code can't add to this list |
 | Pre-commit hook | `.git/hooks/pre-commit` (local-only per project convention) | Wires the gate to commits |
 
 ## Open questions for next session

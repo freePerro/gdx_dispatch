@@ -23,7 +23,6 @@ have to refactor when they land.
 - `tax_rate_history`: effective_from/effective_to so historical invoices
   stay frozen at the rate that was active when they were issued
 - `tax_category`: per-line-item category → rate override
-- Avalara / TaxJar integration as a TaxProvider plugin
 
 Per Doug 2026-04-29: "sales tax is a huge nightmare so make it a
 seperate module that we can build on."

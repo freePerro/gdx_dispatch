@@ -68,24 +68,6 @@ def test_gps_location_tracking(sprint5_db):
 
 
 # ---------------------------------------------------------------------------
-# AI Health Score module
-# ---------------------------------------------------------------------------
-
-def test_health_score_importable():
-    from gdx_dispatch.modules.ai_health_score.service import compute_health_score, trigger_retention_playbook
-    assert all([compute_health_score, trigger_retention_playbook])
-
-
-def test_health_score_low_tenant(sprint5_db):
-    from gdx_dispatch.modules.ai_health_score.service import compute_health_score
-    score = compute_health_score("tenant-cold", sprint5_db)
-    assert score.score >= 0
-    assert score.tenant_id == "tenant-cold"
-    # New tenant with no data → low score → re_engagement playbook
-    assert score.playbook_triggered in ("re_engagement", "activation", None)
-
-
-# ---------------------------------------------------------------------------
 # Distributor module
 # ---------------------------------------------------------------------------
 

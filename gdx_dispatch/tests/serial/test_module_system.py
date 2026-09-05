@@ -3,13 +3,12 @@ from __future__ import annotations
 from collections.abc import Generator
 
 import pytest
-from conftest import make_fresh_db
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
+from conftest import make_fresh_db
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.core.tenant import engine_registry
 from gdx_dispatch.modules.inventory.router import router as inventory_router
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.settings import router as settings_router
@@ -53,7 +52,6 @@ def client() -> Generator[TestClient, None, None]:
     finally:
         app.dependency_overrides.clear()
         engine.dispose()
-        engine_registry.dispose_all()
 
 
 def test_module_gating(client: TestClient):

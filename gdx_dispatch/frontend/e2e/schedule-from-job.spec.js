@@ -23,7 +23,7 @@ async function login(baseURL) {
 async function doLogin(baseURL) {
   const bootstrap = await pwRequest.newContext({ baseURL });
   const r = await bootstrap.post('/auth/login', {
-    headers: { 'content-type': 'application/json', 'x-tenant-id': TENANT, 'x-e2e-test': 'true' },
+    headers: { 'content-type': 'application/json', 'x-e2e-test': 'true' },
     data: { email: EMAIL, password: PASSWORD },
   });
   expect(r.ok()).toBeTruthy();
@@ -36,7 +36,6 @@ async function doLogin(baseURL) {
     baseURL,
     extraHTTPHeaders: {
       authorization: `Bearer ${access_token}`,
-      'x-tenant-id': TENANT,
       'x-e2e-test': 'true',
     },
   });
@@ -44,7 +43,7 @@ async function doLogin(baseURL) {
 }
 
 async function seedJob(api, { scheduled_at = null } = {}) {
-  const auth = { 'content-type': 'application/json', 'x-tenant-id': TENANT };
+  const auth = { 'content-type': 'application/json'};
   const custRes = await api.get('/api/customers?per_page=1', { headers: auth });
   const custBody = await custRes.json();
   const customers = Array.isArray(custBody) ? custBody : custBody.items || [];
@@ -72,7 +71,6 @@ test.describe('scheduling a job', () => {
 
     await page.addInitScript((a) => {
       sessionStorage.setItem('gdx_access_token', a.t);
-      sessionStorage.setItem('gdx_tenant_slug', a.tid);
     }, { t: access_token, tid: TENANT });
 
     await page.goto(`/jobs/${job.id}`);
@@ -103,12 +101,12 @@ test.describe('scheduling a job', () => {
     // appointment), which is what the appointment mirror and the lifecycle
     // stage both key off.
     await expect.poll(async () => {
-      const res = await api.get(`/api/jobs/${job.id}`, { headers: { 'x-tenant-id': TENANT } });
+      const res = await api.get(`/api/jobs/${job.id}`, { headers: {} });
       const body = await res.json();
       return body.scheduled_at;
     }, { timeout: 15000 }).toBeTruthy();
 
-    const after = await (await api.get(`/api/jobs/${job.id}`, { headers: { 'x-tenant-id': TENANT } })).json();
+    const after = await (await api.get(`/api/jobs/${job.id}`, { headers: {} })).json();
     expect(String(after.status).toLowerCase()).toContain('scheduled');
 
     // The date that came back is the one that was typed (09:00 local), not a
@@ -143,7 +141,6 @@ test.describe('scheduling a job', () => {
 
     await page.addInitScript((a) => {
       sessionStorage.setItem('gdx_access_token', a.t);
-      sessionStorage.setItem('gdx_tenant_slug', a.tid);
     }, { t: access_token, tid: TENANT });
 
     await page.goto(`/jobs/${job.id}`);
@@ -163,7 +160,6 @@ test.describe('scheduling a job', () => {
 
     await page.addInitScript((a) => {
       sessionStorage.setItem('gdx_access_token', a.t);
-      sessionStorage.setItem('gdx_tenant_slug', a.tid);
     }, { t: access_token, tid: TENANT });
 
     await page.goto(`/appointments?job_id=${job.id}`);
@@ -182,7 +178,6 @@ test.describe('scheduling a job', () => {
 
     await page.addInitScript((a) => {
       sessionStorage.setItem('gdx_access_token', a.t);
-      sessionStorage.setItem('gdx_tenant_slug', a.tid);
     }, { t: access_token, tid: TENANT });
 
     await page.goto('/dispatch');

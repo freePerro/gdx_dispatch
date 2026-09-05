@@ -35,8 +35,8 @@ What it doesn't flag
 - `__pycache__`.
 
 The baseline mode is the same expand-contract pattern used by
-`tenant_id_shape_scan.py` — capture the current state, gate fails only
-on NET-NEW duplicate hashes.
+`tenant_plane_redundant_filter_scan.py` — capture the current state, gate
+fails only on NET-NEW duplicate hashes.
 
 Usage
 -----

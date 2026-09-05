@@ -94,22 +94,17 @@ def test_client_error_handler_never_raises_on_bad_payload_shape():
     assert result == {"status": "logged_tenantless"}
 
 
-def test_path_is_tenantless_allowed_not_bypassed():
-    """The route MUST be in `_TENANTLESS_ALLOWED_PATHS` (lookup-still-runs,
-    proceed-if-unresolved) and MUST NOT be in `_BYPASS_PATHS`
-    (short-circuit-before-lookup). The second case would kill the
-    ClientError sink on real tenants too — caught in the MH-0 audit
-    before ship. This assertion is the load-bearing regression guard."""
+def test_path_is_not_bypassed():
+    """The route MUST NOT be in `_BYPASS_PATHS`: a bypassed path never gets
+    the tenant pin, so the ClientError write would silently stop. (The
+    `_TENANTLESS_ALLOWED_PATHS` set this test once also asserted on was
+    never read by the middleware; it was deleted 2026-09-03.)"""
     from gdx_dispatch.core.tenant import TenantMiddleware
 
-    assert "/api/feedback/client-error" in TenantMiddleware._TENANTLESS_ALLOWED_PATHS, (
-        "tenantless-allowed entry missing"
-    )
     assert "/api/feedback/client-error" not in TenantMiddleware._BYPASS_PATHS, (
-        "DO NOT add to _BYPASS_PATHS — bypass runs before _lookup_tenant, "
+        "DO NOT add to _BYPASS_PATHS — bypass runs before the tenant pin, "
         "so real tenant hosts would also lose their tenant context and "
-        "client errors would stop reaching the ClientError table. "
-        "Use _TENANTLESS_ALLOWED_PATHS instead."
+        "client errors would stop reaching the ClientError table."
     )
 
 
@@ -125,33 +120,16 @@ def test_client_error_writes_to_tenant_db_when_tenant_resolved(monkeypatch):
 
     captured = {"added": None, "committed": False, "closed": False, "rolled_back": False}
 
-    fake_engine = MagicMock()
     fake_session = MagicMock()
     fake_session.add.side_effect = lambda row: captured.__setitem__("added", row)
     fake_session.commit.side_effect = lambda: captured.__setitem__("committed", True)
     fake_session.close.side_effect = lambda: captured.__setitem__("closed", True)
     fake_session.rollback.side_effect = lambda: captured.__setitem__("rolled_back", True)
 
-    # engine_registry.get_engine returns our fake engine
-    from gdx_dispatch.core import tenant as tenant_mod
-    monkeypatch.setattr(tenant_mod.engine_registry, "get_engine", lambda *a, **kw: fake_engine)
-
-    # The handler builds a sessionmaker and calls it — patch sessionmaker
-    # to return our fake_session factory.
+    # The handler opens SessionLocal() directly; hand it our fake session.
     import gdx_dispatch.routers.bug_reports as bug_reports_mod
-    # The route imports sessionmaker locally inside the function, so we
-    # patch sqlalchemy.orm directly.
-    import sqlalchemy.orm
-    monkeypatch.setattr(
-        sqlalchemy.orm,
-        "sessionmaker",
-        lambda **kw: (lambda: fake_session),
-    )
-
-    # _decrypt_db_url is a plaintext passthrough — but patch it to skip
-    # InvalidToken handling on a stub value.
     from gdx_dispatch.core import database as db_mod
-    monkeypatch.setattr(db_mod, "_decrypt_db_url", lambda s: s)
+    monkeypatch.setattr(db_mod, "SessionLocal", lambda: fake_session)
 
     request = MagicMock(spec=Request)
     request.state = SimpleNamespace(tenant={
@@ -189,16 +167,8 @@ def test_client_error_tenant_resolved_path_rolls_back_on_db_error(monkeypatch):
     fake_session.rollback.side_effect = lambda: state.__setitem__("rolled_back", True)
     fake_session.close.side_effect = lambda: state.__setitem__("closed", True)
 
-    from gdx_dispatch.core import tenant as tenant_mod
-    monkeypatch.setattr(tenant_mod.engine_registry, "get_engine", lambda *a, **kw: MagicMock())
-    import sqlalchemy.orm
-    monkeypatch.setattr(
-        sqlalchemy.orm,
-        "sessionmaker",
-        lambda **kw: (lambda: fake_session),
-    )
     from gdx_dispatch.core import database as db_mod
-    monkeypatch.setattr(db_mod, "_decrypt_db_url", lambda s: s)
+    monkeypatch.setattr(db_mod, "SessionLocal", lambda: fake_session)
 
     request = MagicMock(spec=Request)
     request.state = SimpleNamespace(tenant={
@@ -224,18 +194,11 @@ def test_middleware_pins_single_tenant_on_state(monkeypatch):
     one GDX tenant on ``request.state.tenant`` for every request. The dict
     is always non-empty (and never ``None``), which keeps downstream
     middlewares that do ``getattr(request.state, "tenant", {}).get(...)``
-    working. ``_lookup_tenant`` must never run."""
+    working. No tenant lookup exists to run."""
     import asyncio
     from unittest.mock import MagicMock
 
     from gdx_dispatch.core.tenant import TenantMiddleware, single_tenant
-
-    monkeypatch.setattr(
-        "gdx_dispatch.core.tenant._lookup_tenant",
-        lambda *a, **kw: (_ for _ in ()).throw(
-            AssertionError("single-tenant middleware must not query tenants")
-        ),
-    )
 
     mw = TenantMiddleware(app=MagicMock())
     req = MagicMock()

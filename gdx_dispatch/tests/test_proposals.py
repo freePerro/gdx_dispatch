@@ -43,12 +43,6 @@ def client():
 
     setup = Session()
     setup.execute(text("""
-        CREATE TABLE IF NOT EXISTS tenant_module_grants (
-            id TEXT PRIMARY KEY, tenant_id TEXT, module_key TEXT,
-            granted_at TEXT, created_at TEXT, expires_at TEXT
-        )
-    """))
-    setup.execute(text("""
         CREATE TABLE IF NOT EXISTS company_module_grants (
             id TEXT PRIMARY KEY, company_id TEXT, module_key TEXT,
             granted_at TEXT, created_at TEXT, expires_at TEXT,
@@ -58,19 +52,11 @@ def client():
     # require_module("proposals") normalizes to the "estimates" grant via
     # LEGACY_MODULE_ALIASES — granting "estimates" is what unlocks the tiers.
     setup.execute(text("""
-        INSERT OR IGNORE INTO tenant_module_grants (id, tenant_id, module_key, granted_at, created_at)
-        VALUES ('g1', 'tenant-test', 'estimates', datetime('now'), datetime('now'))
-    """))
-    setup.execute(text("""
         INSERT OR IGNORE INTO company_module_grants (id, company_id, module_key, granted_at, created_at)
         VALUES ('g2', 'tenant-test', 'estimates', datetime('now'), datetime('now'))
     """))
     # The notifications router (mounted below so the bell-badge tests can hit
     # the REAL count endpoint) gates on "communications".
-    setup.execute(text("""
-        INSERT OR IGNORE INTO tenant_module_grants (id, tenant_id, module_key, granted_at, created_at)
-        VALUES ('g3', 'tenant-test', 'communications', datetime('now'), datetime('now'))
-    """))
     setup.execute(text("""
         INSERT OR IGNORE INTO company_module_grants (id, company_id, module_key, granted_at, created_at)
         VALUES ('g4', 'tenant-test', 'communications', datetime('now'), datetime('now'))

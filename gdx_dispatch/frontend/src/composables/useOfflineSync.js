@@ -162,22 +162,12 @@ async function _drainOne(entry) {
     // the action was queued.
     token = sessionStorage.getItem('gdx_access_token') || null
   } catch {}
-  const tenantSlug = (() => {
-    try {
-      const stored = sessionStorage.getItem('gdx_tenant_slug')
-      if (stored) return stored
-      const parts = window.location.hostname.split('.')
-      const sub = parts.length >= 3 ? parts[0] : null
-      return sub && sub !== 'www' ? sub : null
-    } catch { return null }
-  })()
   const headers = {
     'Content-Type': 'application/json',
     // Server middleware is Stripe-shaped; bare `Idempotency-Key` is the
     // canonical header (see gdx/core/middleware/idempotency.py).
     'Idempotency-Key': entry.idempotency_key,
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...(tenantSlug ? { 'x-tenant-id': tenantSlug } : {}),
     ...(entry.headers || {}),
   }
   let resp

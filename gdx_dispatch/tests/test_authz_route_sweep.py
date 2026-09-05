@@ -68,7 +68,11 @@ def test_baseline_does_not_silently_grow(current: set[str]) -> None:
     # online payment counts). Same Group-2 token model as accept/decline;
     # accepted-only (409), row-locked, idempotent, amount server-derived
     # from the tenant deposit percent — never caller input.
-    assert len(_baseline()) <= 94, (
+    # 94 → 85 (2026-09-03): the SaaS-residue purge deleted nine of these
+    # routes outright (/superadmin, the six /legacy/* tenant-UI handlers,
+    # the /integrations Jinja page, and the dismissed-recommendation POST
+    # whose router was the dead half of a shadowed pair). Pruned, not fixed.
+    assert len(_baseline()) <= 85, (
         "The ungated-route baseline grew. It is a debt list to work down, not "
         "a place to record new exceptions."
     )

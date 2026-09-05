@@ -41,14 +41,14 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from uuid import UUID, uuid5, NAMESPACE_URL
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.unified_principal import Principal
 from gdx_dispatch.core.auth_capabilities import caps_for_role
 from gdx_dispatch.core.tenant import single_tenant
+from gdx_dispatch.core.unified_principal import Principal
 
 log = logging.getLogger(__name__)
 
@@ -65,8 +65,9 @@ __all__ = [
 # ── Role → default capabilities (0.9-e scaffolding) ─────────────────────
 #
 # Minimal mapping so session-auth principals carry non-empty capability
-# tuples out of the box. Phase 3 / SS-15 replaces this with a tenant-
-# configurable map driven by ``platform_extensions.access_tokens``.
+# tuples out of the box. (A "tenant-configurable map driven by
+# platform_extensions.access_tokens" was once planned here; that platform
+# ORM was deleted 2026-09-03 with the SaaS-residue purge.)
 
 
 # DEPRECATED: Use gdx_dispatch.core.auth_capabilities.caps_for_role instead.

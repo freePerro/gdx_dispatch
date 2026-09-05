@@ -139,19 +139,7 @@ SNAPSHOT_DIR = Path(os.getenv("GDX_SNAPSHOT_DIR", "/var/backups/gdx"))
 
 def _lazy_db():
     from sqlalchemy import create_engine, text
-    try:
-        from gdx_dispatch.core.database import _decrypt_db_url
-    except Exception:
-        _decrypt_db_url = None
-    return create_engine, text, _decrypt_db_url
-
-
-def _fallback_decrypt(db_url_enc: str) -> str:
-    key = os.getenv("GDX_FERNET_KEY", "")
-    if not key:
-        return db_url_enc
-    from cryptography.fernet import Fernet
-    return Fernet(key.encode()).decrypt(db_url_enc.encode()).decode()
+    return create_engine, text
 
 
 @dataclass
@@ -213,24 +201,19 @@ class TenantSweep:
 # ── Tenant discovery ────────────────────────────────────────────────────────
 
 def discover_tenants(slug_filter: str | None) -> list[tuple[str, str, str]]:
-    create_engine, text, _ = _lazy_db()
-    control_url = os.environ.get("CONTROL_DATABASE_URL")
-    if not control_url:
-        raise RuntimeError("CONTROL_DATABASE_URL not set")
-    eng = create_engine(control_url)
-    rows: list[tuple[str, str, str]] = []
-    with eng.connect() as conn:
-        result = conn.execute(text(
-            "SELECT id, slug, db_url_enc FROM tenants "
-            "WHERE db_url_enc IS NOT NULL AND db_url_enc != '' "
-            "AND deleted_at IS NULL"
-        ))
-        for r in result:
-            if slug_filter and r.slug != slug_filter:
-                continue
-            rows.append((str(r.id), r.slug, r.db_url_enc))
-    eng.dispose()
-    return rows
+    """The one tenant this install serves, as ``[(id, slug, db_url)]``.
+
+    Single-tenant: no control plane to walk. The third element is the
+    plain DATABASE_URL.
+    """
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        raise RuntimeError("DATABASE_URL not set")
+    from gdx_dispatch.core.tenant import single_tenant
+    t = single_tenant()
+    if slug_filter and str(t["slug"]) != slug_filter:
+        return []
+    return [(str(t["id"]), str(t["slug"]), db_url)]
 
 
 # ── Core scan ──────────────────────────────────────────────────────────────
@@ -367,12 +350,10 @@ def classify_table(
     )
 
 
-def scan_tenant(tenant_id: str, slug: str, db_url_enc: str) -> TenantSweep:
-    create_engine, text, _decrypt_db_url = _lazy_db()
+def scan_tenant(tenant_id: str, slug: str, db_url: str) -> TenantSweep:
+    create_engine, text = _lazy_db()
     result = TenantSweep(slug=slug, tenant_id=tenant_id)
     try:
-        decrypt = _decrypt_db_url or _fallback_decrypt
-        db_url = decrypt(db_url_enc)
         eng = create_engine(db_url, isolation_level="AUTOCOMMIT")
     except Exception as e:
         result.error = f"connect failed: {type(e).__name__}: {e}"
@@ -516,14 +497,12 @@ def delete_residue_in_transaction(engine, text_fn, findings: list[Finding]) -> i
     return deleted
 
 
-def delete_tenant_residue(sweep: TenantSweep, db_url_enc: str) -> TenantSweep:
-    create_engine, text, _decrypt_db_url = _lazy_db()
+def delete_tenant_residue(sweep: TenantSweep, db_url: str) -> TenantSweep:
+    create_engine, text = _lazy_db()
     deletable = [f for f in sweep.findings if f.deletable_residue_count > 0]
     if not deletable:
         return sweep
     try:
-        decrypt = _decrypt_db_url or _fallback_decrypt
-        db_url = decrypt(db_url_enc)
         eng = create_engine(db_url)
     except Exception as e:
         sweep.error = f"connect failed: {type(e).__name__}: {e}"
@@ -592,11 +571,11 @@ def main() -> int:
         return 0
 
     sweeps: list[TenantSweep] = []
-    for tid, slug, db_url_enc in tenants:
-        sweep = scan_tenant(tid, slug, db_url_enc)
+    for tid, slug, db_url in tenants:
+        sweep = scan_tenant(tid, slug, db_url)
         has_deletable = sweep.total_deletable > 0
         if mode == "delete" and has_deletable and not sweep.error:
-            sweep = delete_tenant_residue(sweep, db_url_enc)
+            sweep = delete_tenant_residue(sweep, db_url)
         sweeps.append(sweep)
 
     report = write_report(sweeps, mode)

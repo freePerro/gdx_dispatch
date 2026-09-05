@@ -31,7 +31,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
         # noise. 401 is token-refresh/expiry noise (hundreds/hour) and
         # 400/404/422 are client validation noise. 503 is excluded because in
         # this codebase it's the convention for "feature not configured"
-        # (Google/Microsoft SSO, legacy /api/superadmin, /legacy/billing — all
+        # (Google/Microsoft SSO — all
         # 503 by design when the relevant env var is absent). Real DB-down
         # 503s come through the non-HTTPException branch below
         # (OperationalError → 503) and remain logged.

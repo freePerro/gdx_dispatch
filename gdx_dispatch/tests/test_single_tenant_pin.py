@@ -41,13 +41,9 @@ def test_get_db_ignores_request_state_tenant():
         gen.close()
 
 
-def test_middleware_pins_single_tenant_without_lookup(monkeypatch):
-    monkeypatch.setattr(
-        "gdx_dispatch.core.tenant._lookup_tenant",
-        lambda *a, **kw: (_ for _ in ()).throw(
-            AssertionError("single-tenant middleware must not query tenants")
-        ),
-    )
+def test_middleware_pins_single_tenant_without_lookup():
+    # The multi-tenant resolver this test once guarded against is gone; the
+    # middleware pins single_tenant() and has no lookup to call.
     mw = TenantMiddleware(app=MagicMock())
     req = MagicMock()
     req.url.path = "/api/jobs"

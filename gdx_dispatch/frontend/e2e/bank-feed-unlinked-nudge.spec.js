@@ -27,14 +27,13 @@ test('unlinked accounts are surfaced without proposing which one to pick', async
   await page.setViewportSize({ width: 1440, height: 1200 });
   const api = await pwRequest.newContext({ baseURL });
   const r = await api.post('/auth/login', {
-    headers: { 'content-type': 'application/json', 'x-tenant-id': TENANT, 'x-e2e-test': 'true' },
+    headers: { 'content-type': 'application/json', 'x-e2e-test': 'true' },
     data: { email: EMAIL, password: PASSWORD },
   });
   expect(r.ok()).toBeTruthy();
   const { access_token } = await r.json();
   await page.addInitScript((a) => {
     sessionStorage.setItem('gdx_access_token', a.t);
-    sessionStorage.setItem('gdx_tenant_slug', a.tid);
   }, { t: access_token, tid: TENANT });
 
   await page.goto('/bank-feeds');
@@ -68,14 +67,12 @@ test('unlinked accounts are surfaced without proposing which one to pick', async
   const res = await api.patch(`/api/bank-feeds/accounts/${feedId}/statement-link`, {
     headers: {
       'content-type': 'application/json',
-      'x-tenant-id': TENANT,
       authorization: `Bearer ${access_token}`,
     },
     data: { bank_account_id: await page.evaluate(async () => {
       const r = await fetch('/api/bank-feeds/statements/accounts', {
         headers: {
           authorization: 'Bearer ' + sessionStorage.getItem('gdx_access_token'),
-          'x-tenant-id': sessionStorage.getItem('gdx_tenant_slug'),
         },
       });
       const d = await r.json();

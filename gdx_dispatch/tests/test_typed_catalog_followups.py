@@ -3,7 +3,7 @@
 What this covers:
   - parts_needed.py custom-door ORM branch (sqlite-compatible)
   - gdx_dispatch/tools/scaffold_product_class.py output stability
-  - gdx_dispatch/tools/migrate_tenant_typed_catalogs.py dry-run output
+  - (the one-shot migrate_tenant_typed_catalogs tool was deleted 2026-09-03)
 
 What this does NOT cover (requires Postgres):
   - door_catalog.py /api/catalog/doors UNION SQL (uses ILIKE, NULLS LAST)
@@ -14,10 +14,8 @@ What this does NOT cover (requires Postgres):
 from __future__ import annotations
 
 import io
-import subprocess
 import sys
 from contextlib import redirect_stdout
-from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine
@@ -31,7 +29,6 @@ from gdx_dispatch.models.tenant_models import (
     DoorSpec,
 )
 from gdx_dispatch.tools import scaffold_product_class as scaffolder
-from gdx_dispatch.tools import migrate_tenant_typed_catalogs as migrator
 
 
 @pytest.fixture()
@@ -126,6 +123,7 @@ def test_parts_needed_excludes_inactive_custom_doors(db_session):
 
 def test_parts_needed_excludes_soft_deleted_custom_doors(db_session):
     from datetime import datetime, timezone
+
     from gdx_dispatch.routers.parts_needed import sku_suggest
 
     catalog = CustomCatalog(name="Custom Doors", source_system="manual", product_class="door")
@@ -225,62 +223,3 @@ def test_scaffolder_field_types_string_with_length():
     assert "String(60)" in fs.sa_type
     fs2 = scaffolder.FieldSpec.parse("name:str")
     assert "String(255)" in fs2.sa_type
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# migration helper
-# ─────────────────────────────────────────────────────────────────────────
-
-
-def test_migrator_dry_run_prints_idempotent_sql():
-    out = io.StringIO()
-    with redirect_stdout(out):
-        rc = migrator.main([
-            "migrate_tenant_typed_catalogs",
-            "--db-url", "sqlite:///does-not-exist.db",
-            "--dry-run",
-        ])
-    assert rc == 0
-    text = out.getvalue()
-    assert "ADD COLUMN IF NOT EXISTS product_class" in text
-    # Both target tables represented
-    assert "ALTER TABLE custom_catalogs" in text
-    assert "ALTER TABLE custom_catalog_items" in text
-    # Indexes
-    assert "ix_custom_catalogs_product_class" in text
-    assert "ix_custom_catalog_items_product_class" in text
-
-
-def test_migrator_dry_run_does_not_touch_db(tmp_path):
-    """--dry-run must not even open a connection to the target."""
-    fake_url = f"sqlite:///{tmp_path}/never-created.db"
-    out = io.StringIO()
-    with redirect_stdout(out):
-        rc = migrator.main([
-            "migrate_tenant_typed_catalogs",
-            "--db-url", fake_url,
-            "--dry-run",
-        ])
-    assert rc == 0
-    # The file must not exist after a dry-run
-    assert not (tmp_path / "never-created.db").exists()
-
-
-def test_migrator_apply_is_idempotent(tmp_path):
-    """Running the migrator twice on the same DB must succeed both times.
-
-    Note: sqlite does not support ADD COLUMN IF NOT EXISTS the same way as
-    Postgres. We test only that the migrator surfaces the right SQL through
-    the dry-run path; live application is covered by browser walk on prod.
-    """
-    # Sanity: apply mode against a fresh db_url runs without raising in
-    # dry-run, twice.
-    out = io.StringIO()
-    with redirect_stdout(out):
-        for _ in range(2):
-            rc = migrator.main([
-                "migrate_tenant_typed_catalogs",
-                "--db-url", f"sqlite:///{tmp_path}/x.db",
-                "--dry-run",
-            ])
-            assert rc == 0

@@ -280,19 +280,6 @@ def client():
     TenantSession = sessionmaker(bind=tenant_engine, autoflush=False, autocommit=False)
 
     # Patch tenant lookup
-    import gdx_dispatch.core.tenant as _tenant_mod
-    _orig_lookup = _tenant_mod._lookup_tenant
-
-    def _patched_lookup(db, slug, tenant_id):
-        # Inert under the single-tenant collapse — TenantMiddleware pins
-        # single_tenant() and no longer calls _lookup_tenant. Kept (and patched)
-        # so this fixture's setup/teardown matches the multi-tenant-era shape;
-        # the tenant a request actually gets is always the pinned one.
-        if tenant_id == TENANT_FOREIGN_ID or slug == "foreign":
-            return _FAKE_TENANT_FOREIGN
-        return _FAKE_TENANT_A
-
-    _tenant_mod._lookup_tenant = _patched_lookup
 
     # Patch SessionLocal in both modules
     import gdx_dispatch.core.database as _db_mod
@@ -367,7 +354,6 @@ def client():
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
 
-    _tenant_mod._lookup_tenant = _orig_lookup
     _db_mod.SessionLocal = _orig_csf  # type: ignore[assignment]
     _ak_mod.SessionLocal = _orig_ak_csf  # type: ignore[assignment]
     _mock.patch.stopall()

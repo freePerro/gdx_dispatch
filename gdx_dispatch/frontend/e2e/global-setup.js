@@ -23,7 +23,7 @@ async function login(ctx) {
     // servers started with GDX_E2E_BYPASS=1 (never prod). Without it, running
     // the suite twice in quick succession fails global setup with a 429 before
     // a single test executes.
-    headers: { 'content-type': 'application/json', 'x-tenant-id': TENANT, 'x-e2e-test': 'true' },
+    headers: { 'content-type': 'application/json', 'x-e2e-test': 'true' },
     data: { email: EMAIL, password: PASSWORD },
   });
   if (!res.ok()) throw new Error(`login failed (${res.status()}): ${await res.text()}`);
@@ -33,7 +33,7 @@ async function login(ctx) {
 
 async function listFirstId(ctx, token, url) {
   const res = await ctx.get(url, {
-    headers: { authorization: `Bearer ${token}`, 'x-tenant-id': TENANT },
+    headers: { authorization: `Bearer ${token}`},
   });
   if (!res.ok()) return null;
   const json = await res.json();
@@ -51,7 +51,6 @@ async function ensure(ctx, token, listUrl, postUrl, body) {
   const res = await ctx.post(postUrl, {
     headers: {
       authorization: `Bearer ${token}`,
-      'x-tenant-id': TENANT,
       'content-type': 'application/json',
     },
     data: body,
@@ -108,7 +107,7 @@ export default async function globalSetup() {
   );
 
   // Auth is primed per-test in e2e/_fixtures.js, which writes the SPA's actual
-  // sessionStorage keys (gdx_access_token / gdx_tenant_slug) via addInitScript.
+  // sessionStorage key (gdx_access_token) via addInitScript.
   // We only persist the token + param IDs here for that fixture to read.
   const fixtures = {
     token,

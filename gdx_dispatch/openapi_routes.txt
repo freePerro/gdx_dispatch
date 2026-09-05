@@ -8,7 +8,6 @@ DELETE /api/admin/outlook/credentials
 DELETE /api/admin/plugins/artifacts/{filename}
 DELETE /api/admin/plugins/{package}
 DELETE /api/admin/tax-jurisdictions/{jid}
-DELETE /api/admin/tenants/{tenant_id}/modules/{module_key}
 DELETE /api/admin/users/{id}
 DELETE /api/appointments/{appt_id}
 DELETE /api/bank-feeds/institutions/{institution_id}
@@ -133,10 +132,6 @@ GET /api/admin/export
 GET /api/admin/feature-settings/tech-mobile
 GET /api/admin/gdpr/access-log
 GET /api/admin/gdpr/access-log/export
-GET /api/admin/health-scores/
-GET /api/admin/health-scores/{tenant_id}
-GET /api/admin/metrics/summary
-GET /api/admin/metrics/{tenant_id}
 GET /api/admin/outlook/credentials
 GET /api/admin/outlook/settings
 GET /api/admin/performance
@@ -146,11 +141,9 @@ GET /api/admin/plugins
 GET /api/admin/plugins/artifacts
 GET /api/admin/plugins/storefront
 GET /api/admin/plugins/{key}/permissions
-GET /api/admin/reconciliation
 GET /api/admin/security-log
 GET /api/admin/settings/email
 GET /api/admin/tax-jurisdictions
-GET /api/admin/tenants/{tenant_id}/modules
 GET /api/admin/update-check
 GET /api/admin/users
 GET /api/admin/webhooks/deliveries
@@ -682,11 +675,6 @@ GET /auth/sso/google/callback
 GET /auth/sso/microsoft
 GET /auth/sso/microsoft/callback
 GET /health
-GET /integrations
-GET /legacy/billing
-GET /legacy/dashboard
-GET /legacy/settings
-GET /legacy/team
 GET /manifest.json
 GET /pay/{invoice_token}
 GET /payments/methods
@@ -830,7 +818,6 @@ POST /api/admin-ops/actions
 POST /api/admin/customer-tags
 POST /api/admin/db/backup
 POST /api/admin/db/migrate
-POST /api/admin/health-scores/run-job
 POST /api/admin/import/customers
 POST /api/admin/outlook/vendor-bills/sweep
 POST /api/admin/permissions
@@ -841,7 +828,6 @@ POST /api/admin/plugins/upload
 POST /api/admin/plugins/{key}/consent
 POST /api/admin/settings/email/test
 POST /api/admin/tax-jurisdictions
-POST /api/admin/tenants/{tenant_id}/modules
 POST /api/admin/users
 POST /api/admin/users/invite
 POST /api/admin/users/{user_id}/google-unlink
@@ -1205,7 +1191,6 @@ POST /api/qb/sync/items
 POST /api/qb/sync/transfers
 POST /api/qb/webhooks
 POST /api/quickbooks/sync/recurring-transactions
-POST /api/recommendations/{rec_type}/dismiss
 POST /api/recurring
 POST /api/recurring-schedules/{schedule_id}/generate
 POST /api/referrals
@@ -1306,8 +1291,6 @@ POST /auth/login
 POST /auth/logout
 POST /auth/refresh
 POST /auth/reset-password
-POST /legacy/settings
-POST /legacy/team/invite
 POST /payments/ach/setup
 POST /payments/intent
 POST /payments/methods/{method_id}/charge

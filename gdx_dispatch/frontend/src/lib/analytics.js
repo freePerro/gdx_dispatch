@@ -58,8 +58,6 @@ function _authHeaders() {
   try {
     const token = sessionStorage.getItem('gdx_access_token');
     if (token) headers.Authorization = `Bearer ${token}`;
-    const slug = sessionStorage.getItem('gdx_tenant_slug');
-    if (slug) headers['X-Tenant'] = slug;
   } catch { /* swallow */ }
   return headers;
 }

@@ -63,17 +63,7 @@ export const useThemeStore = defineStore('theme', () => {
   async function loadBranding() {
     try {
       const token = sessionStorage.getItem('gdx_access_token');
-      const stored = sessionStorage.getItem('gdx_tenant_slug');
-      let tenantId;
-      if (stored) {
-        tenantId = stored;
-      } else {
-        const parts = window.location.hostname.split('.');
-        const slug = parts.length >= 3 ? parts[0] : null;
-        tenantId = slug || 'default';
-      }
-
-      const _hdrs = { 'x-tenant-id': tenantId };
+      const _hdrs = {};
       if (token) _hdrs.Authorization = `Bearer ${token}`;
       const response = await fetch('/api/settings/branding', {
         method: 'GET',

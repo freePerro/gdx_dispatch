@@ -15,8 +15,5 @@ export default defineConfig({
     headless: true,
     actionTimeout: 10_000,
     navigationTimeout: 30_000,
-    extraHTTPHeaders: {
-      'x-tenant-id': process.env.E2E_TENANT_SLUG || 'lab-tenant',
-    },
   },
 });

@@ -172,8 +172,8 @@ def test_raw_sql_insert_bypasses_bind_param(encrypted_session):
 def test_process_result_value_passthrough_explicit(monkeypatch):
     """Pin the InvalidToken passthrough at the TypeDecorator method
     level (not just observed through SQLAlchemy). Method takes raw bytes,
-    returns them on InvalidToken. Pattern lifted from
-    ``gdx_dispatch.core.database._decrypt_db_url:102``.
+    returns them on InvalidToken. Pattern lifted from the DB-URL decrypt
+    shim (retired 2026-09-03).
 
     Removed in the strict-mode step at the end of any future Option C
     rollout (after the detection query confirms zero plaintext rows for

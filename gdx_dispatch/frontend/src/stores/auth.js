@@ -14,7 +14,6 @@ export const useAuthStore = defineStore('auth', () => {
     } catch { return null; }
   })();
   const user = ref(_persistedUser);
-  const tenantSlug = ref(sessionStorage.getItem('gdx_tenant_slug') || null);
   const permissions = ref(new Set());
   const permissionsLoaded = ref(false);
 
@@ -38,42 +37,13 @@ export const useAuthStore = defineStore('auth', () => {
   const role = computed(() => (claims.value?.role || '').toLowerCase());
   const isAdmin = computed(() => role.value === 'admin' || role.value === 'owner');
 
-  function _tenantHeader() {
-    // Priority: 1) sessionStorage slug, 2) subdomain, 3) hardcoded fallback
-    const stored = tenantSlug.value || sessionStorage.getItem('gdx_tenant_slug');
-    if (stored) {
-      return { 'x-tenant-id': stored };
-    }
-    const parts = window.location.hostname.split('.');
-    const sub = parts.length >= 3 ? parts[0] : null;
-    if (sub && sub !== 'www') {
-      // Send raw subdomain — backend resolves aliases via _SUBDOMAIN_ALIASES
-      return { 'x-tenant-id': sub };
-    }
-    // No tenant detected. NOTE (2026-09-01): the rest of this function is
-    // multi-tenant residue — Phase A deleted the backend's x-tenant-id /
-    // subdomain resolver, so the header below is sent and ignored. The
-    // "Unknown tenant" reply this once relied on can no longer occur, and the
-    // company-name prompt it named (PlatformRecovery) was removed with the
-    // signup page. Left in place because `gdx_tenant_slug` is threaded through
-    // ~20 frontend files; tracked as S11 in docs/design/phase-d-saas-residue.md.
-    return {};
-  }
-
   async function login(credentials) {
-    // Store company slug for tenant resolution
-    if (credentials.company) {
-      sessionStorage.setItem('gdx_tenant_slug', credentials.company);
-      tenantSlug.value = credentials.company;
-    }
-
     let response;
     try {
       response = await fetch('/auth/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ..._tenantHeader(),
         },
         credentials: 'include',
         body: JSON.stringify({ email: credentials.email, password: credentials.password }),
@@ -127,11 +97,9 @@ export const useAuthStore = defineStore('auth', () => {
   function _clearSession() {
     accessToken.value = null;
     user.value = null;
-    tenantSlug.value = null;
     permissions.value = new Set();
     permissionsLoaded.value = false;
     sessionStorage.removeItem('gdx_access_token');
-    sessionStorage.removeItem('gdx_tenant_slug');
     sessionStorage.removeItem('gdx_user');
     // localStorage too, for anything holding CUSTOMER data rather than session
     // data. The offline route cache keeps a full day of stops — customer name,
@@ -214,7 +182,6 @@ export const useAuthStore = defineStore('auth', () => {
           credentials: 'include',
           headers: {
             Authorization: `Bearer ${accessToken.value}`,
-            ..._tenantHeader(),
           },
         });
         if (!res.ok) {
@@ -251,7 +218,6 @@ export const useAuthStore = defineStore('auth', () => {
           credentials: 'include',
           headers: {
             Authorization: `Bearer ${accessToken.value}`,
-            ..._tenantHeader(),
           },
         });
         if (!res.ok) return null;
@@ -332,7 +298,6 @@ export const useAuthStore = defineStore('auth', () => {
         credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
-          ..._tenantHeader(),
         },
       });
 
@@ -358,7 +323,6 @@ export const useAuthStore = defineStore('auth', () => {
   return {
     accessToken,
     user,
-    tenantSlug,
     permissions,
     permissionsLoaded,
     isAuthenticated,

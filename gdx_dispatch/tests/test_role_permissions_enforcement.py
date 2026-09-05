@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -31,12 +31,6 @@ def _build_app():
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
     setup = Session()
-    setup.execute(text("""
-        CREATE TABLE IF NOT EXISTS tenant_module_grants (
-            id TEXT PRIMARY KEY, tenant_id TEXT, module_key TEXT,
-            granted_at TEXT, created_at TEXT, expires_at TEXT
-        )
-    """))
     setup.commit()
     setup.close()
 
@@ -139,8 +133,8 @@ def test_change_role_endpoint_syncs_assignment_immediately(tc):
     picks up the change immediately. Without this sync, demoting an admin
     to tech leaves their old permissions intact (Doug-reported 2026-05-02).
     """
-    from gdx_dispatch.routers.users import _sync_user_role_assignment
     from gdx_dispatch.models.tenant_models import TenantRole, UserRoleAssignment
+    from gdx_dispatch.routers.users import _sync_user_role_assignment
     Session = tc._Session  # type: ignore[attr-defined]
     with Session() as db:
         # Seed both roles
@@ -307,6 +301,7 @@ def _add_user(db, *, role, active=True, deleted=False, email=None):
 def test_last_owner_guard_blocks_when_sole_owner(owner_db):
     """Removing the only owner (rest are technicians) is blocked."""
     from fastapi import HTTPException
+
     from gdx_dispatch.routers.users import _assert_not_last_owner
 
     sole = _add_user(owner_db, role="owner")
@@ -336,6 +331,7 @@ def test_last_owner_guard_counts_superadmin_as_owner_tier(owner_db):
 def test_last_owner_guard_ignores_locked_out_owner(owner_db):
     """A locked-out (active=False) owner does not count as a remaining owner."""
     from fastapi import HTTPException
+
     from gdx_dispatch.routers.users import _assert_not_last_owner
 
     active_owner = _add_user(owner_db, role="owner", active=True)
@@ -347,6 +343,7 @@ def test_last_owner_guard_ignores_locked_out_owner(owner_db):
 
 def test_last_owner_guard_ignores_soft_deleted_owner(owner_db):
     from fastapi import HTTPException
+
     from gdx_dispatch.routers.users import _assert_not_last_owner
 
     live_owner = _add_user(owner_db, role="owner")

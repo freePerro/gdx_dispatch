@@ -18,7 +18,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from gdx_dispatch.core import observability
-from gdx_dispatch.core.database import SessionLocal
 from gdx_dispatch.core.error_handler import global_exception_handler
 from gdx_dispatch.core.prometheus import prometheus_middleware
 from gdx_dispatch.core.prometheus import router as prometheus_router
@@ -647,12 +646,6 @@ except Exception:
     pwa_router = APIRouter(tags=["pwa"])
 
 try:
-    from gdx_dispatch.core.health_score import router as health_score_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: health_score_router")
-    health_score_router = APIRouter(tags=["health-scores"])
-
-try:
     from gdx_dispatch.modules.distributor.order_portal import dealer_router as dealer_order_router
     from gdx_dispatch.modules.distributor.order_portal import distributor_router as distributor_order_router
 except Exception:
@@ -675,8 +668,8 @@ except Exception:
     onboarding_ui_router = APIRouter(tags=["onboarding-ui"])
 
 try:
-    from gdx_dispatch.routers.admin_ops import router as admin_ops_router
     from gdx_dispatch.routers.admin_ops import read_router as admin_ops_read_router
+    from gdx_dispatch.routers.admin_ops import router as admin_ops_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: admin_ops_router")
     admin_ops_router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -689,19 +682,10 @@ except Exception:
     admin_db_router = APIRouter(prefix="/api/admin/db", tags=["admin-db"])
 
 try:
-    from gdx_dispatch.core.admin_modules import router as admin_modules_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: admin_modules_router")
-    admin_modules_router = APIRouter(tags=["tenant-modules"])
-
-
-try:
     from gdx_dispatch.core.integrations import router as integrations_router
-    from gdx_dispatch.core.integrations import ui_router as integrations_ui_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: integrations_router")
     integrations_router = APIRouter(prefix="/api/integrations", tags=["integrations"])
-    integrations_ui_router = APIRouter(tags=["integrations-ui"])
 
 try:
     from gdx_dispatch.core.push_notifications import router as push_router
@@ -742,12 +726,6 @@ try:
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: public_v1_router")
     public_v1_router = APIRouter(prefix="/api/v1", tags=["public-api"])
-
-try:
-    from gdx_dispatch.core.tenant_ui import router as tenant_ui_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: tenant_ui_router")
-    tenant_ui_router = APIRouter(tags=["tenant-ui"])
 
 try:
     from gdx_dispatch.routers.ai_communication import router as ai_comms_router
@@ -796,12 +774,6 @@ try:
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: audit_dashboard_router")
     audit_dashboard_router = APIRouter(tags=["audit-dashboard"])
-
-try:
-    from gdx_dispatch.core.ai_recommendations import router as ai_recommendations_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: ai_recommendations_router")
-    ai_recommendations_router = APIRouter(prefix="/api", tags=["recommendations"])
 
 
 try:
@@ -861,12 +833,6 @@ except Exception:
     logging.getLogger("gdx_dispatch.app").exception("import/init failed")
     GDPRDataAccessMiddleware = None  # type: ignore[assignment,misc]
     gdpr_access_router = APIRouter(prefix="/api/admin/gdpr", tags=["gdpr-access-log"])
-
-try:
-    from gdx_dispatch.core.tenant_metrics import router as tenant_metrics_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: tenant_metrics_router")
-    tenant_metrics_router = APIRouter(prefix="/api/admin/metrics", tags=["metrics"])
 
 try:
     from gdx_dispatch.core.rate_limiter import TenantRateLimitMiddleware as _TenantRateLimitMiddleware
@@ -1120,9 +1086,9 @@ limiter = Limiter(key_func=get_remote_address, default_limits=[DEFAULT_RATE_LIMI
 
 def _check_customer_facing_config() -> None:
     """Fail loud at startup when env vars that drive customer-facing signals
-    are missing in prod. The cost of a missing welcome email or missing DNS
-    is a customer who can't reach their account (Becky 2026-04-30: lost a
-    full day to PLATFORM_SMTP_PASS being unset). Logs a structured warning
+    are missing in prod. The cost of a missing welcome email is a user who
+    can't reach their account (Becky 2026-04-30: lost a full day to
+    PLATFORM_SMTP_PASS being unset). Logs a structured warning
     rather than refusing to start, so a single missing var doesn't take down
     the whole platform — but the warning is loud, audit-able, and visible
     in `docker logs` immediately.
@@ -1134,12 +1100,13 @@ def _check_customer_facing_config() -> None:
     if env in ("dev", "development", "test", "testing", "local"):
         return
     log = logging.getLogger("gdx_dispatch.app.startup_config")
-    required_for_signup = [
-        ("PLATFORM_SMTP_PASS", "welcome emails will fail (Becky 2026-04-30 incident)"),
-        ("CLOUDFLARE_API_TOKEN", "tenant subdomains will not be DNS-resolvable"),
-        ("CLOUDFLARE_ZONE_ID", "tenant subdomains will not be DNS-resolvable"),
+    # (CLOUDFLARE_API_TOKEN / CLOUDFLARE_ZONE_ID were listed here for "tenant
+    # subdomains" — a multi-tenant DNS feature this app never ships. Removed
+    # 2026-09-03; they fired an ERROR on every boot for nothing.)
+    required_at_startup = [
+        ("PLATFORM_SMTP_PASS", "auth emails (welcome / reset) will fail (Becky 2026-04-30 incident)"),
     ]
-    missing = [(name, why) for name, why in required_for_signup if not os.environ.get(name)]
+    missing = [(name, why) for name, why in required_at_startup if not os.environ.get(name)]
     if missing:
         for name, why in missing:
             log.error("STARTUP_CONFIG_MISSING var=%s impact=%s env=%s", name, why, env)
@@ -1164,11 +1131,9 @@ def _check_encryption_at_rest() -> None:
         (manual ``_encrypt`` helpers, ``gdx_dispatch.modules.quickbooks.oauth``)
 
     ``tenants.db_url_enc`` used to be the second consumer. The column is not
-    in ``migrations/baseline_squashed.sql`` and
-    ``gdx_dispatch.core.database._decrypt_db_url`` is now an identity no-op, so
-    this gate has no DB-URL ciphertext left to protect. Several ``tools/``
-    scripts still SELECT the column against pre-baseline databases; they go
-    through the same no-op decrypt, so they read whatever is stored verbatim.
+    in ``migrations/baseline_squashed.sql``; the identity decrypt shim and the
+    ``tools/`` scripts that still SELECTed the column were removed 2026-09-03,
+    so this gate has no DB-URL ciphertext left to protect.
     (An earlier version of this note cited "migrations 081-083" — copied from
     ``core/database.py`` and wrong: this tree's migrations stop at 062.)
 
@@ -1347,8 +1312,8 @@ def create_app() -> FastAPI:
     # the DB. Nothing in the app sent the header. It was also the only producer
     # of service-account identity, which is why the `actor_kind ==
     # "service_account"` branch in routers/auth/core.py now fails closed.
-    # The `service_accounts` table stays in the baseline schema; D17
-    # (service_accounts -> access_tokens) is the intended replacement.
+    # The `service_accounts` table still exists physically (0 rows); its ORM
+    # model was deleted 2026-09-03 with the SaaS-residue purge.
     if _TenantRateLimitMiddleware is not None:
         app.add_middleware(_TenantRateLimitMiddleware)
     try:
@@ -1467,7 +1432,10 @@ def create_app() -> FastAPI:
                 logging.getLogger("gdx_dispatch.app").exception("import/init failed")
                 return False
 
-        # ── Probe control-db via CONTROL_DATABASE_URL (same as app startup) ─
+        # ── Probe the DB. CONTROL_DATABASE_URL is a legacy variable from the
+        # control-plane era that .env.template still carries and
+        # migrations/env.py still reads; on a single-tenant install it must
+        # point at the same database as DATABASE_URL. ─
         control_url = os.environ.get(
             "CONTROL_DATABASE_URL",
             os.environ.get("DATABASE_URL", ""),
@@ -1712,7 +1680,6 @@ def create_app() -> FastAPI:
     app.include_router(custom_fields_router.router if hasattr(custom_fields_router, "router") else custom_fields_router)
     app.include_router(webhook_monitor.router if hasattr(webhook_monitor, "router") else webhook_monitor)
     app.include_router(pwa_router if hasattr(pwa_router, "routes") else APIRouter())
-    app.include_router(health_score_router.router if hasattr(health_score_router, "router") else health_score_router)
     app.include_router(jwks_router)
     app.include_router(core_onboarding_router, prefix="/api", tags=["onboarding"])
     # onboarding_ui_router (Flask-era HTML wizard at /onboarding + /onboarding/{step})
@@ -1721,7 +1688,6 @@ def create_app() -> FastAPI:
     app.include_router(admin_ops_router)
     app.include_router(admin_ops_read_router)
     app.include_router(admin_db_router)
-    app.include_router(admin_modules_router, prefix="/api/admin", tags=["tenant-modules"])
     # Third-party plugin proxy: forwards /api/plugins/* to the plugin-host
     # container with the authenticated principal (ADR-013). Guarded so a missing
     # plugin stack never blocks core boot.
@@ -1738,7 +1704,6 @@ def create_app() -> FastAPI:
         logging.getLogger("gdx_dispatch.app").exception("plugins proxy router failed to load")
     app.include_router(push_router)
     app.include_router(locations_router)
-    app.include_router(tenant_ui_router, prefix="/legacy", tags=["tenant-ui"])
     app.include_router(ai_comms_router)
     app.include_router(ai_estimates_router)
     app.include_router(supplier_router)
@@ -1746,7 +1711,6 @@ def create_app() -> FastAPI:
     app.include_router(door_catalog_router)
     app.include_router(planner_router_mod)
     app.include_router(audit_dashboard_router)
-    app.include_router(ai_recommendations_router)
     app.include_router(recommendation_routes_router)
     app.include_router(ai_quote_router)
     app.include_router(ai_router_router)
@@ -1755,7 +1719,6 @@ def create_app() -> FastAPI:
     app.include_router(security_log_router)
     app.include_router(webhook_delivery_log_router)
     app.include_router(gdpr_access_router)
-    app.include_router(tenant_metrics_router)
     app.include_router(api_keys_router)
     app.include_router(payments_router)
     app.include_router(payments_public_router)
@@ -1781,22 +1744,7 @@ def create_app() -> FastAPI:
     except Exception:
         logging.getLogger("gdx_dispatch.app").exception("Failed to import router: voice")
 
-    from pathlib import Path as _Path
-
-    from fastapi.responses import HTMLResponse as _HTMLResponse
-
-    # Superadmin control panel — serves superadmin.html at /superadmin
-    _sa_tmpl = _Path(__file__).parent / "templates" / "superadmin.html"
-
-    @app.get("/superadmin", response_class=_HTMLResponse, include_in_schema=False)
-    async def superadmin_dashboard_page() -> _HTMLResponse:
-        """Superadmin control panel — requires ADMIN_API_TOKEN via JS."""
-        if _sa_tmpl.exists():
-            return _HTMLResponse(content=_sa_tmpl.read_text())
-        return _HTMLResponse(content="<h1>Superadmin template not found</h1>", status_code=200)
-
     app.include_router(integrations_router)
-    app.include_router(integrations_ui_router)
     app.include_router(van_inventory_router.router if hasattr(van_inventory_router, "router") else van_inventory_router)
     app.include_router(po_workflow_router.router if hasattr(po_workflow_router, "router") else po_workflow_router)
     app.include_router(commission_router.router if hasattr(commission_router, "router") else commission_router)

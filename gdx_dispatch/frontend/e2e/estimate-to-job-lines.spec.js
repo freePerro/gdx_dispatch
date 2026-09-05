@@ -21,7 +21,7 @@ test('estimate→job conversion copies line items onto the job (#56)', async () 
 
   const ctx = await pwRequest.newContext({
     baseURL: BASE,
-    extraHTTPHeaders: { 'x-tenant-id': TENANT, 'content-type': 'application/json' },
+    extraHTTPHeaders: { 'content-type': 'application/json' },
   });
 
   // Auth

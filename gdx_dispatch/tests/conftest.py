@@ -294,16 +294,6 @@ def make_fresh_db():
     except ImportError:
         pass
     try:
-        from gdx_dispatch.modules.ai_health_score.models import TenantHealthScore
-        _sprint5_tables.append(TenantHealthScore.__table__)
-    except ImportError:
-        pass
-    try:
-        from gdx_dispatch.core.health_score import TenantHealthLog
-        _sprint5_tables.append(TenantHealthLog.__table__)
-    except ImportError:
-        pass
-    try:
         from gdx_dispatch.modules.reporting.models import SavedReport
         _sprint5_tables.append(SavedReport.__table__)
     except ImportError:
@@ -343,11 +333,7 @@ def tenant_db():
 
 @pytest.fixture
 def control_db():
-    """Isolated control plane DB for test_02 e2e tests + SS-5 platform harness.
-
-    Importing ``gdx_dispatch.models.platform_extensions`` here (not just at
-    module top) ensures its mapper classes are registered against
-    ``ControlBase.metadata`` before ``create_all`` runs.
+    """Isolated control plane DB (tenants / tenant_settings / games).
 
     Supports two modes:
 
@@ -363,7 +349,6 @@ def control_db():
       mid-request. The engine is reused across tests to avoid connection
       churn.
     """
-    import gdx_dispatch.models.platform_extensions  # noqa: F401 — register mappers
     from gdx_dispatch.control.models import Base as ControlBase
 
     pg_url = os.environ.get("GDX_TEST_CONTROL_DB_URL", "").strip()

@@ -29,14 +29,13 @@ test('a completed job stays visible on the dispatch board', async ({ page, baseU
 
   const api = await pwRequest.newContext({ baseURL });
   const login = await api.post('/auth/login', {
-    headers: { 'content-type': 'application/json', 'x-tenant-id': TENANT, 'x-e2e-test': 'true' },
+    headers: { 'content-type': 'application/json', 'x-e2e-test': 'true' },
     data: { email: EMAIL, password: PASSWORD },
   });
   expect(login.ok()).toBeTruthy();
   const { access_token } = await login.json();
   const auth = {
     authorization: `Bearer ${access_token}`,
-    'x-tenant-id': TENANT,
     'content-type': 'application/json',
     'x-e2e-test': 'true',
   };
@@ -73,7 +72,6 @@ test('a completed job stays visible on the dispatch board', async ({ page, baseU
   // --- Prime auth the way the SPA expects (never touch the login form) ------
   await page.addInitScript((a) => {
     sessionStorage.setItem('gdx_access_token', a.t);
-    sessionStorage.setItem('gdx_tenant_slug', a.tid);
   }, { t: access_token, tid: TENANT });
 
   const card = page.locator(`[data-testid="timeline-job-${job.id}"]`);

@@ -81,7 +81,7 @@ Grouped by what the comment claimed:
   `core/tenant_ctx.py` (`_per_tenant_settings` → `_tenant_settings`),
   `core/spiffe/spire_trust_bundle.py` (`MAX_STALE_SECONDS` →
   `max_stale_seconds`), `routers/catalog.py` (`CatalogGroup` → `CustomCatalog`),
-  `models/platform_extensions.py`, `models/tenant_models.py`, `routers/tours.py`,
+  `models/platform_extensions.py`, `models/tenant_models.py`, `routers/tours.py`, <!-- file deleted 2026-09-03 with the SaaS-residue purge; link-ok -->
   `routers/custom_fields.py`.
 
 **Claims that were simply untrue**
@@ -116,7 +116,7 @@ Worth recording, because these are load-bearing and now confirmed:
   (resolve → validate → capability → approval → execute → audit) matches the
   implementation, and the documented 400/404/403/202/500 mapping matches
   `mcp_error_schema.py`.
-- `core/health_score.py` — all five signal windows and point caps
+- `core/health_score.py` — all five signal windows and point caps <!-- file deleted 2026-09-03 with the SaaS-residue purge; link-ok -->
   (30+20+20+15+15 = 100) match the code.
 - `core/stripe_payments.py` `Raises:` blocks — these document *propagated* SDK
   exceptions, which is correct even though nothing `raise`s locally.

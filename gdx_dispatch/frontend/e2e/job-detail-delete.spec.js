@@ -30,7 +30,7 @@ async function apiContext(baseURL) {
   const api = await pwRequest.newContext({ baseURL });
   if (!cachedToken) {
     const r = await api.post("/auth/login", {
-      headers: { "content-type": "application/json", "x-tenant-id": TENANT, "x-e2e-test": "true" },
+      headers: { "content-type": "application/json", "x-e2e-test": "true" },
       data: { email: EMAIL, password: PASSWORD },
     });
     expect(r.ok(), `login failed: ${r.status()}`).toBeTruthy();
@@ -41,7 +41,6 @@ async function apiContext(baseURL) {
 
 const authHeaders = (token) => ({
   authorization: `Bearer ${token}`,
-  "x-tenant-id": TENANT,
   "content-type": "application/json",
 });
 
@@ -58,7 +57,6 @@ test("Delete on the job page removes the job and returns to the list", async ({ 
   await page.addInitScript(
     (a) => {
       sessionStorage.setItem("gdx_access_token", a.t);
-      sessionStorage.setItem("gdx_tenant_slug", a.tid);
       localStorage.setItem("gdx_theme", a.theme);
     },
     { t: token, tid: TENANT, theme: "light" },
@@ -110,7 +108,6 @@ test("the Delete verb and its dialog are legible in dark mode", async ({ page, b
   await page.addInitScript(
     (a) => {
       sessionStorage.setItem("gdx_access_token", a.t);
-      sessionStorage.setItem("gdx_tenant_slug", a.tid);
       localStorage.setItem("gdx_theme", "dark");
     },
     { t: token, tid: TENANT },

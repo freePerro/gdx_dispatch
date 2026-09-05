@@ -16,9 +16,9 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
@@ -33,7 +33,6 @@ from gdx_dispatch.routers.users import (
     lockout_user,
     unlock_user,
 )
-
 
 TENANT_ID = "tenant-lock"
 ADMIN_ID = "admin-1"
@@ -311,18 +310,9 @@ def _build_http_app():
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
     setup = SessionLocal()
-    setup.execute(text("""
-        CREATE TABLE IF NOT EXISTS tenant_module_grants (
-            id TEXT PRIMARY KEY, tenant_id TEXT, module_key TEXT,
-            granted_at TEXT, created_at TEXT, expires_at TEXT
-        )
-    """))
-    # Grant the `jobs` module so require_module passes (the users router
-    # depends on it at the router level).
-    setup.execute(text("""
-        INSERT INTO tenant_module_grants (id, tenant_id, module_key, granted_at, created_at)
-        VALUES (:id, :tid, 'jobs', '2026-01-01T00:00:00', '2026-01-01T00:00:00')
-    """), {"id": str(uuid4()), "tid": TENANT_ID})
+    # No module grant needed: is_module_enabled seeds every module on the
+    # first check when company_module_grants is empty, so `jobs` (which the
+    # users router requires) is granted on first request.
     setup.commit()
     setup.close()
 

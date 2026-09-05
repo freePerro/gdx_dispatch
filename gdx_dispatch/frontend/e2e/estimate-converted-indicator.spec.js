@@ -17,7 +17,6 @@ test('converted estimate shows indicator + job link, hides Convert button', asyn
   const api = await pwRequest.newContext({
     baseURL,
     extraHTTPHeaders: {
-      'x-tenant-id': TENANT,
       'content-type': 'application/json',
       'x-e2e-test': 'true',
     },
@@ -54,7 +53,6 @@ test('converted estimate shows indicator + job link, hides Convert button', asyn
 
   await page.addInitScript((a) => {
     sessionStorage.setItem('gdx_access_token', a.t);
-    sessionStorage.setItem('gdx_tenant_slug', a.tid);
   }, { t: access_token, tid: TENANT });
 
   await page.goto(`/estimates/${estimateId}`);

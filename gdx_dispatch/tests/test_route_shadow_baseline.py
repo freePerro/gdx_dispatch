@@ -70,7 +70,6 @@ def test_settings_modules_returns_rich_shape() -> None:
     empty. Asserts the canonical winning handler still returns the rich
     shape regardless of include-order changes elsewhere.
     """
-    from gdx_dispatch.tools.route_shadow_scan import collect_shadows
 
     # The route may be shadowed (acceptable while baseline > 0), but whichever
     # handler wins must produce the rich shape. We reach the winning handler
@@ -93,13 +92,16 @@ def test_settings_modules_returns_rich_shape() -> None:
     assert target is not None, "/api/settings/modules GET not registered"
 
     # Inspect the winning handler's source — it must read MODULES from
-    # gdx_dispatch.core.modules (the rich source) and emit `tier` / `name` / `locked`.
+    # gdx_dispatch.core.modules (the rich source) and emit `key` / `name` /
+    # `enabled`, which Settings → Modules and useTenantModules both read.
+    # (It used to be pinned on `tier` / `locked` too; the Settings tab stopped
+    # reading those 2026-09-03 when the plan-tier grouping was removed.)
     # Static analysis is enough; we don't need to invoke with a fake DB.
     import inspect
     src = inspect.getsource(target.endpoint)
-    for required_field in ('"tier"', '"name"', '"locked"', '"upgrade_required"'):
+    for required_field in ('"key"', '"name"', '"enabled"'):
         assert required_field in src, (
             f"Winning handler for GET /api/settings/modules ({target.endpoint.__module__}:"
             f"{target.endpoint.__qualname__}) does not emit {required_field}. "
-            "SettingsView.modulesByTier needs the rich shape — see S100."
+            "Settings → Modules and useTenantModules need key/name/enabled — see S100."
         )

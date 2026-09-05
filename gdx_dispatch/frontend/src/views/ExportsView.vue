@@ -88,17 +88,8 @@ const selectedEntities = ref(EXPORT_ENTITIES.map((entity) => entity.key));
 const downloading = reactive({});
 const exportingAll = ref(false);
 
-function deriveTenantId() {
-  const parts = window.location.hostname.split(".");
-  const slug = parts.length >= 3 ? parts[0] : null;
-  if (slug && slug !== "gdx") return slug;
-  return "886a5b78-6bff-4b19-823c-a2c16684447e";
-}
-
 function buildHeaders() {
-  const tenantId = deriveTenantId();
   const headers = new Headers();
-  headers.set("x-tenant-id", tenantId);
   if (auth.accessToken) {
     headers.set("Authorization", `Bearer ${auth.accessToken}`);
   }

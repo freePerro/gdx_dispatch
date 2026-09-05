@@ -693,9 +693,9 @@ Tenant A's data is completely invisible to Tenant B. No cross-tenant data leakag
 | TENANT-10 | Export isolation | Data exports contain only current tenant's data |
 | TENANT-11 | Audit log isolation | Tenant A's audit log not visible to Tenant B |
 | TENANT-12 | Settings isolation | Tenant A's settings change does not affect Tenant B |
-| TENANT-13 | Missing tenant header | Request without x-tenant-id header returns 400/403, not data from random tenant |
+| ~~TENANT-13~~ | ~~Missing tenant header~~ | RETIRED 2026-09-03: there is no tenant header; the middleware pins the one tenant |
 | TENANT-14 | Invalid tenant ID | Request with non-existent tenant ID returns 404 or 403 |
-| TENANT-15 | Tenant header spoofing | Tenant B sends request with Tenant A's x-tenant-id but Tenant B's JWT: denied |
+| ~~TENANT-15~~ | ~~Tenant header spoofing~~ | RETIRED 2026-09-03: the header is no longer read anywhere on the backend |
 
 ---
 

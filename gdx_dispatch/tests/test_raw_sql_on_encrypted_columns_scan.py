@@ -123,8 +123,10 @@ def test_skips_known_tool_files(tmp_path: Path):
         from sqlalchemy import text
         db.execute(text("UPDATE customers SET name = :n"))
     """)
-    # Use one of the documented SKIP_FILE_NAMES.
-    f = tmp_path / "encrypt_customer_pii_rows.py"
+    # Use one of the documented SKIP_FILE_NAMES. (The re-encrypt tools this
+    # list once named were deleted 2026-09-03; the schema-drift check is the
+    # remaining tool that legitimately reads raw bytes.)
+    f = tmp_path / "tenant_schema_drift_check.py"
     f.write_text(src)
     scan_mod.SCAN_ROOTS = [tmp_path]
     findings = scan_mod.scan(encrypted=[("customers", "name")])

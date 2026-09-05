@@ -22,8 +22,8 @@ The same role has been spelled multiple ways:
 | Shop-floor coordinator | `dispatch` | `dispatcher` |
 | Platform superadmin | — | `super_admin` (also seen: `superadmin`, `super-admin`) |
 
-**As of #45, `users.role` stores the LONG (canonical) form.** Both user-write
-paths (`routers/users.py`, `core/tenant_ui.py`) normalize input through
+**As of #45, `users.role` stores the LONG (canonical) form.** The user-write
+path (`routers/users.py`) normalizes input through
 `normalize_role` before persisting, and migration `009_canon_user_roles`
 backfilled the remaining short rows. `BUILTIN_ROLES` keys and `tenant_roles.name`
 already use the LONG form. JWTs carry whatever `users.role` holds (now long).
@@ -81,7 +81,7 @@ from the DB against a canonical constant, normalize it in Python after the fetch
 ### Resolved — one user-write vocabulary (#45)
 
 `users.role` used to be written in two vocabularies (`routers/users.py` wrote
-SHORT, `core/tenant_ui.py` wrote LONG), so a row could be `'tech'` **or**
+SHORT, `core/tenant_ui.py` wrote LONG — that Jinja tenant UI was deleted 2026-09-03; link-ok), so a row could be `'tech'` **or**
 `'technician'`. As of #45 both write paths run the role through
 `normalize_role` before persisting (canonical = LONG), and migration
 `009_canon_user_roles` backfilled existing short rows. Reads should still

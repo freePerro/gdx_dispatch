@@ -25,22 +25,11 @@ import { useToast } from 'primevue/usetoast';
 import { useRouter } from 'vue-router';
 import { queueAction } from './useOfflineSync';
 
-function _resolveTenantId() {
-  const stored = sessionStorage.getItem('gdx_tenant_slug');
-  if (stored) return stored;
-  // Send raw subdomain — backend resolves aliases via _SUBDOMAIN_ALIASES
-  const parts = window.location.hostname.split('.');
-  const sub = parts.length >= 3 ? parts[0] : null;
-  return sub && sub !== 'www' ? sub : null;
-}
-
 export function createApiClient() {
   const auth = useAuthStore();
 
   async function request(url, options = {}, retry = true) {
-    const tenantId = _resolveTenantId();
     const headers = {
-      ...(tenantId ? { 'x-tenant-id': tenantId } : {}),
       ...(options.headers || {}),
     };
 
@@ -95,7 +84,7 @@ export function createApiClient() {
       try {
         fetch('/api/feedback/client-error', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-tenant-id': _resolveTenantId() },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             url: url,
             method: options.method || 'GET',

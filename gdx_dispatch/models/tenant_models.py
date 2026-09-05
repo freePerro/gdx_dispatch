@@ -608,8 +608,8 @@ class Invoice(Base):
     )
     # 2026-05-11 — tightened from nullable=True (which was set in the 2026-05-04
     # QB-import slice). Invoices without a customer are reporting/AR bombs;
-    # all six Invoice() constructor callsites now guard upstream and the
-    # corresponding tenant-DB migration is `migrate_invoices_customer_id_not_null.sql`.
+    # all six Invoice() constructor callsites now guard upstream. (The
+    # pre-squash migration that tightened the column is gone with the squash.)
     customer_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("customers.id"), nullable=False)
     company_id: Mapped[str] = mapped_column(String(36), nullable=False)
     invoice_date: Mapped[date] = mapped_column(Date, nullable=True)
@@ -2938,7 +2938,7 @@ class CustomerReview(Base):
 
 
 class CompanyModuleGrant(Base):
-    """Module access grants per company. Canonical from signup.py (most complete)."""
+    """Module access grants per company — the only grants table since 2026-09-03."""
     __tablename__ = "company_module_grants"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     company_id: Mapped[str] = mapped_column(String(36), nullable=False)

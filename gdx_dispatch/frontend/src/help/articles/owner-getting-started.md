@@ -2,7 +2,7 @@
 title: Owner — getting started
 role: owner
 tags: getting-started, setup, onboarding
-related: users, modules-permissions, billing-subscription, customers
+related: users, modules-permissions, customers
 ---
 
 # Owner — getting started
@@ -29,7 +29,7 @@ Use a real customer — maybe a friend, family, or your most loyal repeat. **+ N
 
 ### 5. Billing (5 minutes)
 
-**Billing → Subscription.** Confirm your plan and add a payment method. You won't be billed until trial ends. Your customers' invoices live on the same Billing page, but under a different tab — they're separate concerns sharing one screen.
+**Billing** is where your customers' invoices live. Open the invoice your first job generated, check the line items and the total, and try **Send** — that is the email your customer will get. There is no plan or payment method to set up: this is your own self-hosted install.
 
 ## After the first hour
 
@@ -55,4 +55,3 @@ In your second hour:
 ## Related
 - [Users & teams](#)
 - [Modules & permissions](#)
-- [Billing & subscription](#)

@@ -266,13 +266,6 @@ def test_celery_app_importable():
 
 
 
-def test_fernet_decrypt_passthrough_dev_mode():
-    """Phase C: _decrypt_db_url is always a passthrough (no Fernet in single-tenant)."""
-    import gdx_dispatch.core.database as db_mod
-    result = db_mod._decrypt_db_url("postgresql://localhost/test")
-    assert result == "postgresql://localhost/test"
-
-
 def test_observability_importable():
     """Observability module can be imported and init_sentry no-ops with empty DSN."""
     from gdx_dispatch.core.observability import init_otel, init_sentry
