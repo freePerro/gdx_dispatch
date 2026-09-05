@@ -4,21 +4,26 @@ Surfaces well-known endpoints so agents + third-party integrations can
 feature-detect the GDX platform from a single root URL.
 
 Endpoints:
-    GET /.well-known/oauth-authorization-server  (RFC 8414)    -> JSON
-    GET /.well-known/oauth-protected-resource    (RFC 9728)    -> JSON
-    GET /.well-known/openid-configuration        (OIDC Disc.)  -> JSON
     GET /.well-known/gdx-platform                (GDX custom)  -> JSON
     GET /.well-known/security.txt                (RFC 9116)    -> text/plain
     GET /.well-known/mcp-tools                   (SS-18/19)    -> JSON
 
-Sprint mcp-streamable-http S3 — per-tenant issuer
--------------------------------------------------
-Each endpoint derives its issuer/base URL from the inbound request host
-via ``request_base_url(request)``. Hitting
-``gdx.example.com/.well-known/oauth-authorization-server`` yields
-``issuer = https://gdx.example.com``; hitting the same path on
-another tenant host yields that tenant's issuer. RFC 8414 issuer-equality
-checks in claude.ai's connector now succeed.
+Issuer derivation
+-----------------
+Each endpoint derives its base URL from the inbound request host via
+``request_base_url(request)``, so the answers name the host the caller
+actually reached rather than a hard-coded one.
+
+The OAuth authorization-server (RFC 8414), OpenID Discovery and RFC 9728
+Protected Resource Metadata documents were removed on 2026-09-04. This
+deployment has no authorization server — ``/oauth/authorize``,
+``/oauth/token`` and ``/oauth/register`` left with the multi-tenant platform
+routers and answer with the SPA's HTML on production — so those documents
+could only route a conforming client into a flow with no exit. MCP
+Authorization (2025-06-18) makes authorization OPTIONAL but requires a PRM
+document to name at least one authorization server, so there is no
+conformant PRM this server could serve. ``/mcp`` takes a bearer token minted
+by ``core.mcp_bearer``; nothing here issues one.
 """
 from __future__ import annotations
 
@@ -28,51 +33,6 @@ from gdx_dispatch.core import well_known_manifest as wkm
 
 # Note: no prefix — .well-known is a root-absolute standard path.
 router = APIRouter(tags=["well-known"])
-
-
-@router.get("/.well-known/oauth-authorization-server")
-def oauth_authorization_server(request: Request) -> dict:
-    """RFC 8414 OAuth 2.0 Authorization Server Metadata."""
-    return wkm.build_oauth_authorization_server(wkm.request_base_url(request))
-
-
-@router.get("/.well-known/oauth-protected-resource")
-def oauth_protected_resource(request: Request) -> dict:
-    """RFC 9728 OAuth 2.0 Protected Resource Metadata.
-
-    claude.ai's MCP connector fetches this first, reads the ``resource``
-    URI (``<host>/mcp``), then hits the ``authorization_servers[0]``'s
-    ``/.well-known/oauth-authorization-server`` for endpoints. The
-    ``resource`` value MUST equal the canonical ``aud`` claim S4
-    bakes into issued tokens.
-    """
-    return wkm.build_oauth_protected_resource(wkm.request_base_url(request))
-
-
-@router.get("/.well-known/oauth-protected-resource/{resource_path:path}")
-def oauth_protected_resource_path(request: Request, resource_path: str) -> dict:
-    """RFC 9728 §3.1 path-suffixed variant.
-
-    Per the spec: when a protected resource lives at a sub-path (e.g.
-    ``<host>/mcp``), the metadata document lookup may include the
-    resource path: ``/.well-known/oauth-protected-resource/mcp``.
-    claude.ai's MCP connector hits this form first; the bare-path
-    variant above is a fallback. We return the same metadata for both
-    since this server hosts only the /mcp resource.
-
-    The ``resource_path`` parameter is accepted but not validated —
-    misrouted requests still land on the canonical metadata, which is
-    the correct shape for the only resource we host. Clients that need
-    to validate they hit the right resource compare the returned
-    ``resource`` field against their target URL.
-    """
-    return wkm.build_oauth_protected_resource(wkm.request_base_url(request))
-
-
-@router.get("/.well-known/openid-configuration")
-def openid_configuration(request: Request) -> dict:
-    """OpenID Connect Discovery 1.0 metadata."""
-    return wkm.build_openid_configuration(wkm.request_base_url(request))
 
 
 @router.get("/.well-known/gdx-platform")
