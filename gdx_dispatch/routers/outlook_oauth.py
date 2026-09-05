@@ -109,8 +109,24 @@ def get_db_for_oauth_callback(
 
 
 def _build_redirect_uri(tenant_slug: str) -> str:
-    base = os.environ.get("TENANT_BASE_DOMAIN", "example.com").strip("/")
-    return f"https://{tenant_slug}.{base}/api/oauth/outlook/callback"
+    """The redirect URI registered in the Entra app registration.
+
+    Single-tenant: one public origin, GDX_PUBLIC_BASE_URL. The old builder
+    was `https://{slug}.{TENANT_BASE_DOMAIN}` with TENANT_BASE_DOMAIN
+    defaulting to "example.com", so an unset var silently produced
+    https://<slug>.example.com/... — Microsoft then rejects the callback as
+    an unregistered redirect URI. That is the same silent-misbuild that left
+    prod without any Outlook subscription until the 2026-07-07 audit, which
+    is why this refuses rather than guessing.
+    """
+    base = os.environ.get("GDX_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if not base:
+        raise HTTPException(
+            status_code=500,
+            detail="GDX_PUBLIC_BASE_URL is not configured on the server; "
+            "cannot build the Outlook redirect URI",
+        )
+    return f"{base}/api/oauth/outlook/callback"
 
 
 def _build_authorize_url(
@@ -315,7 +331,14 @@ def oauth_callback(
     tenant = control_db.get(Tenant, tenant_id)
     if tenant is None or not tenant.slug:
         return _safe_redirect(status_q="error", detail="tenant_not_found")
-    redirect_uri = _build_redirect_uri(tenant.slug)
+    try:
+        redirect_uri = _build_redirect_uri(tenant.slug)
+    except HTTPException:
+        # This is a browser landing on the OAuth callback. Every other failure
+        # here redirects back to settings with a reason; a raw 500 would be a
+        # dead end with no way forward.
+        log.error("outlook callback: GDX_PUBLIC_BASE_URL unset, cannot build redirect_uri")
+        return _safe_redirect(status_q="error", detail="public_base_url_missing")
 
     try:
         tok = _exchange_code_for_tokens(

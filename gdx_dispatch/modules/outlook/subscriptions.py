@@ -38,24 +38,22 @@ class SubscriptionError(RuntimeError):
 def _build_notification_url(tenant_slug: str, client_state: str) -> str:
     """Public URL Graph will POST notifications to.
 
-    Single-tenant installs serve one host, so GDX_PUBLIC_BASE_URL wins.
-    The legacy {slug}.{TENANT_BASE_DOMAIN} shape survives for the
-    multi-tenant layout. With neither configured, fail loudly: the old
-    fallback built https://{slug}.example.com/..., Graph's endpoint
-    validation failed at connect time, and prod silently ran without any
-    subscription (2026-07-07 audit — outlook_subscriptions was empty).
+    One host, one origin: GDX_PUBLIC_BASE_URL. The {slug}.{TENANT_BASE_DOMAIN}
+    fallback that used to sit behind this was the multi-tenant layout and
+    could only ever produce the same string here. With no origin configured,
+    fail loudly: the older fallback built https://{slug}.example.com/...,
+    Graph's endpoint validation failed at connect time, and prod silently ran
+    without any subscription (2026-07-07 audit — outlook_subscriptions was
+    empty). The slug stays in the path; it is part of the URL already
+    registered with Microsoft.
     """
     path = f"/api/webhooks/outlook/{tenant_slug}/{client_state}"
     base = os.environ.get("GDX_PUBLIC_BASE_URL", "").strip().rstrip("/")
-    if base:
-        return f"{base}{path}"
-    domain = os.environ.get("TENANT_BASE_DOMAIN", "").strip().strip("/")
-    if domain:
-        return f"https://{tenant_slug}.{domain}{path}"
-    raise SubscriptionError(
-        "cannot build a Graph notification URL: set GDX_PUBLIC_BASE_URL "
-        "(single-tenant) or TENANT_BASE_DOMAIN (multi-tenant)"
-    )
+    if not base:
+        raise SubscriptionError(
+            "cannot build a Graph notification URL: set GDX_PUBLIC_BASE_URL"
+        )
+    return f"{base}{path}"
 
 
 def create_subscription(

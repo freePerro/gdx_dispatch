@@ -46,7 +46,7 @@ def _control_db():
 @pytest.fixture
 def app(monkeypatch):
     monkeypatch.setenv("JWT_SECRET", "x" * 64)
-    monkeypatch.setenv("TENANT_BASE_DOMAIN", "example.com")
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.example.com")
 
     app = FastAPI()
     app.include_router(oauth_router)
