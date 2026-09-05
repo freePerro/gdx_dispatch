@@ -7,8 +7,8 @@ employees can connect their mailboxes without Doug manually pasting
 credentials into the admin UI.
 
 Idempotent: only writes when the destination column is NULL. Safe to
-call on every startup. Other tenants are unaffected — they configure
-their own creds via ``/api/admin/outlook/credentials`` (slice S39).
+call on every startup. Credentials can also be set through
+``/api/admin/outlook/credentials`` (slice S39).
 
 ENV VARS (all 3 must be present to seed):
 - ``POWER_APPS_TENANT_ID`` → ``TenantSettings.outlook_microsoft_tenant_id``
@@ -16,8 +16,8 @@ ENV VARS (all 3 must be present to seed):
 - ``GDX_MICROSOFT_SECRET_KEY`` → Fernet-encrypted into
   ``TenantSettings.outlook_client_secret_enc`` (via key_storage)
 
-Set ``OUTLOOK_BOOTSTRAP_TENANT_SLUG`` in env to override the default
-``"gdx"`` if Doug needs to seed a different tenant.
+The target is this install's own tenant (``GDX_TENANT_SLUG``, via
+``single_tenant()``). ``OUTLOOK_BOOTSTRAP_TENANT_SLUG`` still overrides it.
 """
 from __future__ import annotations
 
@@ -29,13 +29,38 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.control.models import Tenant, TenantSettings
 from gdx_dispatch.core.database import tenant_context
+from gdx_dispatch.core.tenant import single_tenant
 from gdx_dispatch.modules.outlook import key_storage
 
 
 log = logging.getLogger("gdx_dispatch.modules.outlook.bootstrap")
 
 
-DEFAULT_TENANT_SLUG = "gdx"
+def _resolve_tenant(control_db: Session, tenant_slug: str | None) -> Tenant | None:
+    """The tenant to seed.
+
+    An explicit slug (argument or OUTLOOK_BOOTSTRAP_TENANT_SLUG) is looked up
+    by slug. Otherwise this is a single-tenant install and the target is its
+    one tenant, looked up by id.
+
+    The slug used to be hard-coded to "gdx" — one deployment's slug baked into
+    the tree. Resolving by id rather than by GDX_TENANT_SLUG matters because
+    single_tenant()["slug"] falls back to the 0000…0001 placeholder when
+    GDX_TENANT_SLUG is unset (compose defaults it to empty, and the selfhost,
+    staging, lab and dev overlays set it nowhere), which would make the seeder
+    silently find no tenant in exactly those environments.
+    """
+    slug = tenant_slug or os.environ.get("OUTLOOK_BOOTSTRAP_TENANT_SLUG")
+    if slug:
+        return control_db.query(Tenant).filter(Tenant.slug == slug).one_or_none()
+    # query(...).filter(...) rather than Session.get: the id column is a UUID
+    # and the ambient value is a string, and this keeps one lookup shape for
+    # both branches.
+    return (
+        control_db.query(Tenant)
+        .filter(Tenant.id == single_tenant()["id"])
+        .one_or_none()
+    )
 
 
 def seed_outlook_credentials_from_env(
@@ -50,17 +75,16 @@ def seed_outlook_credentials_from_env(
     Raises nothing — bootstrap failures must never block app startup. The
     caller wraps the call in try/except for total safety.
     """
-    slug = tenant_slug or os.environ.get("OUTLOOK_BOOTSTRAP_TENANT_SLUG") or DEFAULT_TENANT_SLUG
-
     ms_tenant = os.environ.get("POWER_APPS_TENANT_ID")
     ms_client_id = os.environ.get("POWER_APPS_CLIENT_ID")
     ms_secret = os.environ.get("GDX_MICROSOFT_SECRET_KEY")
     if not (ms_tenant and ms_client_id and ms_secret):
         return {"seeded": False, "reason": "env vars missing"}
 
-    tenant = control_db.query(Tenant).filter(Tenant.slug == slug).one_or_none()
+    tenant = _resolve_tenant(control_db, tenant_slug)
     if tenant is None:
-        return {"seeded": False, "reason": f"no tenant with slug={slug}"}
+        return {"seeded": False, "reason": "no tenant to seed"}
+    slug = tenant.slug
 
     # Close the read txn so the next one is opened with the tenant GUC set.
     # Without this, any INSERT/UPDATE on tenant_settings is rejected by

@@ -33,7 +33,7 @@ def _mock_account_and_tenant(tdb, cdb):
 
 def test_create_subscription_posts_to_graph_and_persists(monkeypatch):
     monkeypatch.delenv("GDX_PUBLIC_BASE_URL", raising=False)  # exercise the legacy fallback
-    monkeypatch.setenv("TENANT_BASE_DOMAIN", "example.com")
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.example.com")
     cdb, tdb = MagicMock(), MagicMock()
     account, _ = _mock_account_and_tenant(tdb, cdb)
     # 2nd call to filter().one_or_none() is for OutlookSubscription row → None means new
@@ -158,31 +158,38 @@ def test_delete_subscription_swallows_graph_failure():
 # ── _build_notification_url (2026-07-07 audit) ─────────────────────────
 # The old builder unconditionally used {slug}.{TENANT_BASE_DOMAIN} with an
 # example.com default — on single-tenant prod (env var unset) Graph's
-# endpoint validation failed and outlook_subscriptions stayed empty.
+# endpoint validation failed and outlook_subscriptions stayed empty. The
+# {slug}.{TENANT_BASE_DOMAIN} fallback is gone: one install, one origin.
 
 
 def test_notification_url_prefers_public_base_url(monkeypatch):
     from gdx_dispatch.modules.outlook.subscriptions import _build_notification_url
 
     monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://dispatch.example.com/")
-    monkeypatch.setenv("TENANT_BASE_DOMAIN", "example.com")  # must lose
     url = _build_notification_url("gdx", "c" * 64)
     assert url == f"https://dispatch.example.com/api/webhooks/outlook/gdx/{'c' * 64}"
 
 
-def test_notification_url_falls_back_to_tenant_domain(monkeypatch):
+def test_notification_url_ignores_the_retired_tenant_domain(monkeypatch):
+    """Regression pin: TENANT_BASE_DOMAIN must not come back as a fallback.
+
+    The builder no longer reads it, so this passes trivially today. That is
+    the point — it fails if the multi-tenant {slug}.{domain} fallback is ever
+    reintroduced, which would let a stale env value redirect Graph
+    notifications to a host we do not control.
+    """
     from gdx_dispatch.modules.outlook.subscriptions import _build_notification_url
 
-    monkeypatch.delenv("GDX_PUBLIC_BASE_URL", raising=False)
-    monkeypatch.setenv("TENANT_BASE_DOMAIN", "gdx-hosting.com")
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://dispatch.example.com")
+    monkeypatch.setenv("TENANT_BASE_DOMAIN", "attacker-controlled.test")
     url = _build_notification_url("acme", "s" * 64)
-    assert url == f"https://acme.gdx-hosting.com/api/webhooks/outlook/acme/{'s' * 64}"
+    assert url == f"https://dispatch.example.com/api/webhooks/outlook/acme/{'s' * 64}"
+    assert "attacker-controlled" not in url
 
 
 def test_notification_url_raises_when_unconfigured(monkeypatch):
     from gdx_dispatch.modules.outlook.subscriptions import SubscriptionError, _build_notification_url
 
     monkeypatch.delenv("GDX_PUBLIC_BASE_URL", raising=False)
-    monkeypatch.delenv("TENANT_BASE_DOMAIN", raising=False)
     with pytest.raises(SubscriptionError):
         _build_notification_url("gdx", "x" * 64)

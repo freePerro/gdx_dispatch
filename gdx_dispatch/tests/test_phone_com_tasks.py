@@ -301,13 +301,13 @@ def test_beat_schedule_includes_calls_refresh():
     assert entry["task"] == "phone_com.sync_all_recent_calls"
 
 
-def test_rotate_refuses_without_tenant_base_domain(control_db, monkeypatch):
-    """Rotating with TENANT_BASE_DOMAIN unset would PATCH the Phone.com
-    callback to https://{slug}.example.com/... and silently kill webhook
-    delivery (live on prod until 2026-07-23). The task must refuse."""
+def test_rotate_refuses_without_public_base_url(control_db, monkeypatch):
+    """Rotating with GDX_PUBLIC_BASE_URL unset would PATCH the Phone.com
+    callback to a placeholder URL and silently kill webhook delivery (live
+    on prod until 2026-07-23). The task must refuse."""
     from gdx_dispatch.control.models import TenantSettings
 
-    monkeypatch.delenv("TENANT_BASE_DOMAIN", raising=False)
+    monkeypatch.delenv("GDX_PUBLIC_BASE_URL", raising=False)
     sm = control_db
     s = sm()
     tid = uuid4()
@@ -323,10 +323,79 @@ def test_rotate_refuses_without_tenant_base_domain(control_db, monkeypatch):
 
     result = pc_tasks.rotate_webhook_secret.run(str(tid))
     assert result["ok"] is False
-    assert "TENANT_BASE_DOMAIN" in result["error"]
+    assert "GDX_PUBLIC_BASE_URL" in result["error"]
 
     s = sm()
     try:
         assert s.get(TenantSettings, tid).phone_com_webhook_secret == secret_before
     finally:
         s.close()
+
+
+def test_rotate_patches_the_exact_callback_url(control_db, monkeypatch):
+    """Pin the exact string handed to Phone.com by the weekly beat task.
+
+    This is the positive path. Only the refusal path was covered before, where
+    `base` is empty and the URL is never built — so a suite that was fully
+    green still could not fail when the builder started emitting
+    `https://{slug}.https://{host}/...`. That URL is PATCHed onto the live
+    callback by `phone-com-rotate-webhook-secret-weekly` (Sun 08:00 UTC) with
+    no operator in the loop, after the secret has already been rotated, so a
+    malformed value kills inbound delivery silently once the grace window ends.
+    """
+    from gdx_dispatch.control.models import TenantSettings
+
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.example.test")
+    sm = control_db
+    s = sm()
+    tid = uuid4()
+    s.add(Tenant(id=tid, slug="gdx", name="GDX"))
+    s.commit()
+    key_storage.set_token(s, tid, "phc-good-a-12345")
+    ts_row = s.get(TenantSettings, tid)
+    ts_row.phone_com_webhook_callback_id = 292916
+    key_storage.get_or_create_webhook_secret(s, tid)
+    s.commit()
+    s.close()
+
+    sent: dict = {}
+
+    class _Client:
+        def __init__(self, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def patch_callback(self, *, callback_id, url):
+            sent["callback_id"] = callback_id
+            sent["url"] = url
+            return {"ok": True}
+
+    class _AppSettings:
+        phone_com_voip_id = 12345
+
+    class _Query:
+        def first(self):
+            return _AppSettings()
+
+    class _TenantDB:
+        def query(self, *a, **kw):
+            return _Query()
+
+        def close(self):
+            pass
+
+    with patch.object(pc_tasks, "_open_tenant_session", return_value=_TenantDB()), \
+         patch("gdx_dispatch.modules.phone_com.client.PhoneComClient", _Client):
+        pc_tasks.rotate_webhook_secret.run(str(tid))
+
+    assert sent, "patch_callback was never called — the test did not exercise the URL"
+    url = sent["url"]
+    assert url.startswith("https://gdx.example.test/api/webhooks/phone-com/gdx/"), url
+    # The bug this pins: a full origin pasted into a `https://{slug}.{base}` template.
+    assert "https://gdx.https://" not in url
+    assert url.count("https://") == 1, url
