@@ -1,7 +1,12 @@
 # Authentik Disaster Plan (48h Exit)
 
-**Status: CURRENT — untested.** Recovery plan for loss of the Authentik
-instance. Never exercised; treat as a plan, not a proven procedure. Same
+**Status: HISTORICAL (2026-09-04).** Recovery plan for loss of the Authentik
+instance. There is no Authentik instance: no container on the host, every
+`AUTHENTIK_*` variable unset, and none of them in the compose environment
+allowlist. The code that validated Authentik-issued tokens has been removed —
+it could never have accepted a token this app mints, because `_issue()` emits
+no `iss` claim. Kept for the reasoning it records, not as a runnable
+procedure. Never exercised while it was live either. Same
 caveat as `RESTORE_RUNBOOK.md`: nothing here has been drilled.
 
 

@@ -5,8 +5,6 @@ span with platform context fields harvested from ``request.state``:
 
 * ``gdx.tenant_id`` — from ``request.state.tenant["id"]`` (or an object
   with an ``id`` attribute).
-* ``gdx.installation_id`` — from
-  ``request.state.principal.installation_id``.
 * ``gdx.acting_on_tenant_id`` — from
   ``request.state.acting_on_tenant_id``.
 
@@ -32,7 +30,6 @@ from starlette.responses import Response
 logger = logging.getLogger(__name__)
 
 _ATTR_TENANT_ID = "gdx_dispatch.tenant_id"
-_ATTR_INSTALLATION_ID = "gdx_dispatch.installation_id"
 _ATTR_ACTING_ON_TENANT_ID = "gdx_dispatch.acting_on_tenant_id"
 
 
@@ -62,10 +59,6 @@ class PlatformTracingMiddleware(BaseHTTPMiddleware):
         if tenant_id is not None:
             span.set_attribute(_ATTR_TENANT_ID, tenant_id)
 
-        installation_id = _extract_installation_id(request)
-        if installation_id is not None:
-            span.set_attribute(_ATTR_INSTALLATION_ID, installation_id)
-
         acting_on = _extract_acting_on_tenant_id(request)
         if acting_on is not None:
             span.set_attribute(_ATTR_ACTING_ON_TENANT_ID, acting_on)
@@ -77,13 +70,6 @@ def _extract_tenant_id(request: Request) -> str | None:
         return None
     raw: Any = tenant.get("id") if isinstance(tenant, dict) else getattr(tenant, "id", None)
     return _stringify(raw)
-
-
-def _extract_installation_id(request: Request) -> str | None:
-    principal = getattr(request.state, "principal", None)
-    if principal is None:
-        return None
-    return _stringify(getattr(principal, "installation_id", None))
 
 
 def _extract_acting_on_tenant_id(request: Request) -> str | None:

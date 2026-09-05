@@ -1,36 +1,23 @@
-"""SS-7 Slice H — unit tests for ``gdx_dispatch.routers.auth.get_current_user``.
+"""Unit tests for ``gdx_dispatch.routers.auth.get_current_user``.
 
-Slice H moves the denylist from a module-level singleton (Slice G) onto an
-app-scoped seam at ``request.app.state.denylist``. The revoke endpoint
-(writer) and :func:`get_current_user` (reader) now resolve the denylist
-through the same :func:`_get_app_denylist` helper, so they share an
-*instance* per FastAPI app while remaining naturally isolated between
-independent apps (one per test, one per worker at runtime).
+The denylist lives on an app-scoped seam at ``request.app.state.denylist``.
+The revoke endpoint (writer) and :func:`get_current_user` (reader) resolve it
+through the same :func:`_get_app_denylist` helper, so they share an *instance*
+per FastAPI app while staying isolated between independent apps.
 
-The contract bullets these tests pin:
+The contract these tests pin:
 
-1. A successful core-validator call returns the expected
-   ``dict[str, str]`` shape derived from the returned :class:`Principal`.
-2. A :class:`JWTValidationError` from the core validator maps to 401 via
-   :func:`gdx_dispatch.routers.auth._unauth` (no 500, no internal leak).
-3. :class:`TokenRevoked` is treated as 401 specifically — not a 500 — and
-   its diagnostic message is NOT leaked through the response body.
-4. The raw token string passes through verbatim into the core validator
-   AND the legacy ``jwt.decode`` fallback so HS256 tokens minted by
-   :func:`_issue` continue to authenticate during the migration window.
-5. (Slice H) The denylist resolved for ``get_current_user`` is the *same
-   instance* (``is``) as the one the admin revoke endpoint writes to,
-   proving app-scoped lifecycle: revoke-write → auth-read sees the
-   revocation without any cross-worker synchronization.
-6. (Slice H) If ``request.app.state`` has no ``denylist`` attribute yet,
-   the first call lazily creates one and stores it there; subsequent
-   calls return the same stored instance (identity preserved).
+1. A token minted by :func:`_issue` authenticates and maps to the expected
+   ``dict[str, str]``. That is the only decode path — the Authentik validator
+   that used to run in front of it never accepted a token this app signed.
+2. Revoking a jti through the admin endpoint causes the very next read on the
+   same app to 401, without leaking the jti or the existence of a denylist.
+3. The denylist gate runs before the DB verify, so a revoked token costs no
+   database lookup.
+4. Separate apps have separate denylists (no module-level singleton).
 
-The tests are hermetic: ``monkeypatch`` replaces
-``gdx_dispatch.core.auth.validate_principal`` per-case, no FastAPI test client is
-spun up, no DB or network is touched, and fake ``Request`` objects are
-built from :class:`types.SimpleNamespace` so ``request.app.state`` is the
-only app surface that matters for the seam.
+The tests are hermetic: no FastAPI test client, no DB, no network. Fake
+``Request`` objects are built from :class:`types.SimpleNamespace`.
 """
 from __future__ import annotations
 
@@ -45,14 +32,7 @@ import jwt as pyjwt
 import pytest
 from fastapi import HTTPException
 
-from gdx_dispatch.core.auth_jwt import (
-    InvalidSignature,
-    JWTValidationError,
-    MalformedToken,
-    TokenRevoked,
-)
 from gdx_dispatch.core.denylist import Denylist
-from gdx_dispatch.core.principal import ActorKind, Principal
 from gdx_dispatch.routers.auth import core as auth_router  # patch target post Slice 8 Phase A —
 # the package shim at gdx_dispatch.routers.auth re-exports these names but functions
 # in core.py resolve them via core's globals; monkeypatch must target core.
@@ -60,30 +40,6 @@ from gdx_dispatch.routers.auth import core as auth_router  # patch target post S
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _principal(
-    *,
-    subject: str = "user-42",
-    tenant_id: str = "tenant-gdx",
-    role: str = "owner",
-    jti: str | None = None,
-) -> Principal:
-    """Construct a ``Principal`` matching what SS-6 SPA tokens yield."""
-    issued_at = int(datetime.now(UTC).timestamp())
-    return Principal(
-        tenant_id=tenant_id,
-        subject=subject,
-        provider="gdx-spa",
-        actor_kind=ActorKind.HUMAN,
-        identity_type="human",
-        issued_at=issued_at,
-        expires_at=issued_at + 900,
-        issuer="https://auth.example.com/application/o/gdx-spa/",
-        audience="gdx-api",
-        jti=jti,
-        raw_claims={"sub": subject, "gdx_tid": tenant_id, "role": role},
-    )
 
 
 def _legacy_token(
@@ -156,203 +112,29 @@ def _fake_request(
 
 
 # ---------------------------------------------------------------------------
-# 1. Happy path — core validator returns a Principal → router returns dict
-# ---------------------------------------------------------------------------
-
-
-def test_valid_principal_is_mapped_to_dict(monkeypatch):
-    captured: dict[str, Any] = {}
-    principal = _principal(subject="user-42", tenant_id="tenant-gdx", role="owner")
-
-    def fake_validate_principal(token: str, **kwargs: Any) -> Principal:
-        captured["token"] = token
-        captured["kwargs"] = kwargs
-        return principal
-
-    monkeypatch.setattr(
-        "gdx_dispatch.core.auth.validate_principal",
-        fake_validate_principal,
-    )
-
-    request = _fake_request(denylist=Denylist())
-    result = asyncio.run(
-        auth_router.get_current_user(request=request, token="opaque-token-string"),
-    )
-
-    # Return-shape contract: user_id/tenant_id/role plus impersonation
-    # markers (imp_actor_id/imp_purpose) added in cc2-s46 for the CC
-    # impersonate flow. None on normal tokens; populated when the issuer
-    # mints an impersonation token. Asserting the strict 3-key dict is
-    # stale — assert each load-bearing field independently.
-    assert result["user_id"] == "user-42"
-    assert result["tenant_id"] == "tenant-gdx"
-    assert result["role"] == "owner"
-    assert result["imp_actor_id"] is None
-    assert result["imp_purpose"] is None
-    # The core validator received the token verbatim (no re-encoding or
-    # mangling by the router).
-    assert captured["token"] == "opaque-token-string"
-    # The router must supply a keyword-only ``public_keys_by_provider`` map
-    # so the validator has keys to try, even when the legacy HS256 path is
-    # the active deployment mode.
-    assert "public_keys_by_provider" in captured["kwargs"]
-
-
-def test_role_defaults_to_user_when_claim_absent(monkeypatch):
-    # Authentik-minted access tokens may omit ``role`` entirely (the claim
-    # is not in the SS-6 property mapping). The router must default rather
-    # than raise KeyError.
-    principal = Principal(
-        tenant_id="tenant-gdx",
-        subject="user-42",
-        provider="gdx-spa",
-        actor_kind=ActorKind.HUMAN,
-        identity_type="human",
-        issued_at=0,
-        expires_at=1,
-        issuer="https://auth.example.com/application/o/gdx-spa/",
-        audience="gdx-api",
-        jti=None,
-        raw_claims={"sub": "user-42", "gdx_tid": "tenant-gdx"},
-    )
-    monkeypatch.setattr(
-        "gdx_dispatch.core.auth.validate_principal",
-        lambda token, **_: principal,
-    )
-
-    request = _fake_request(denylist=Denylist())
-    result = asyncio.run(auth_router.get_current_user(request=request, token="any"))
-
-    assert result["role"] == "user"
-
-
-# ---------------------------------------------------------------------------
-# 2. JWTValidationError → 401 (legacy fallback also fails on this token)
-# ---------------------------------------------------------------------------
-
-
-def test_jwt_validation_error_becomes_401_when_legacy_also_fails(monkeypatch):
-    def raise_jwt_error(token: str, **_: Any) -> Principal:
-        raise InvalidSignature("signature did not verify")
-
-    monkeypatch.setattr(
-        "gdx_dispatch.core.auth.validate_principal",
-        raise_jwt_error,
-    )
-
-    request = _fake_request(denylist=Denylist())
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(
-            auth_router.get_current_user(request=request, token="not.a.real.jwt"),
-        )
-
-    # 401, not 500 — the typed error must not leak as an unhandled
-    # InvalidSignature exception (which would surface as an opaque 500).
-    assert exc_info.value.status_code == 401
-    assert exc_info.value.detail == "Invalid or expired access token"
-
-
-def test_generic_jwt_validation_error_subclass_maps_to_401(monkeypatch):
-    # Any JWTValidationError subclass (not just InvalidSignature) must
-    # collapse to 401 — the router exception handler must pattern-match on
-    # the base class, not a specific subtype.
-    class _Custom(JWTValidationError):
-        pass
-
-    monkeypatch.setattr(
-        "gdx_dispatch.core.auth.validate_principal",
-        lambda token, **_: (_ for _ in ()).throw(_Custom("custom failure")),
-    )
-
-    request = _fake_request(denylist=Denylist())
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(
-            auth_router.get_current_user(request=request, token="not.a.real.jwt"),
-        )
-
-    assert exc_info.value.status_code == 401
-
-
-# ---------------------------------------------------------------------------
-# 3. TokenRevoked → 401, not 500
-# ---------------------------------------------------------------------------
-
-
-def test_token_revoked_is_401_never_500(monkeypatch):
-    def raise_revoked(token: str, **_: Any) -> Principal:
-        raise TokenRevoked("token jti 'abc123' is on the revocation denylist")
-
-    monkeypatch.setattr(
-        "gdx_dispatch.core.auth.validate_principal",
-        raise_revoked,
-    )
-
-    request = _fake_request(denylist=Denylist())
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(
-            auth_router.get_current_user(request=request, token="not.a.real.jwt"),
-        )
-
-    assert exc_info.value.status_code == 401
-    # Do not leak internals — the 401 body must remain the generic
-    # router-level message, not the denylist diagnostic string.
-    assert exc_info.value.detail == "Invalid or expired access token"
-    assert "denylist" not in exc_info.value.detail
-    assert "abc123" not in exc_info.value.detail
-
-
-def test_malformed_token_from_core_also_maps_to_401(monkeypatch):
-    monkeypatch.setattr(
-        "gdx_dispatch.core.auth.validate_principal",
-        lambda token, **_: (_ for _ in ()).throw(MalformedToken("parse failed")),
-    )
-
-    request = _fake_request(denylist=Denylist())
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(auth_router.get_current_user(request=request, token="garbage"))
-
-    assert exc_info.value.status_code == 401
-
-
-# ---------------------------------------------------------------------------
 # 4. Legacy token pass-through — HS256 token accepted via fallback
 # ---------------------------------------------------------------------------
 
 
-def test_legacy_token_passes_through_to_validator_then_legacy_fallback(monkeypatch):
-    captured: dict[str, Any] = {}
+def test_locally_signed_token_is_accepted(monkeypatch):
+    """The only decode path: a token minted by `_issue()`.
 
-    def fake_validate_principal(token: str, **kwargs: Any) -> Principal:
-        # Record what the core validator received so we can assert the
-        # token string was passed through verbatim (no re-encoding).
-        captured["token"] = token
-        raise InvalidSignature(
-            "not an Authentik-shaped token — fall through to legacy decode"
-        )
-
-    monkeypatch.setattr(
-        "gdx_dispatch.core.auth.validate_principal",
-        fake_validate_principal,
-    )
-
+    This used to assert the Authentik validator ran first and rejected the
+    token before the legacy decode accepted it. That branch is gone — it
+    could never succeed, because `_issue()` mints no `iss` claim — so what
+    is left is the contract that actually matters: an HS256 token this app
+    signed is accepted and mapped to the dict the rest of the app expects.
+    """
     token = _legacy_token(sub="legacy-user", tenant_id="legacy-tenant", role="admin")
 
-    # Slice 6 cross-check enforces token tenant == host tenant; this test
-    # exercises the HS256 fallback contract, not the cross-check, so use
-    # a host with the matching tenant id.
+    # Slice 6 cross-check enforces token tenant == host tenant; use a host
+    # with the matching tenant id.
     request = _fake_request(denylist=Denylist(), tenant_id="legacy-tenant")
     result = asyncio.run(auth_router.get_current_user(request=request, token=token))
 
-    # Core validator saw the exact token string (pass-through contract).
-    assert captured["token"] == token
-    # Legacy fallback accepted the HS256 token and returned the dict the
-    # rest of the app expects — HS256 compatibility preserved. Plus the
-    # impersonation markers (None on legacy non-impersonation tokens).
     assert result["user_id"] == "legacy-user"
     assert result["tenant_id"] == "legacy-tenant"
     assert result["role"] == "admin"
-    assert result["imp_actor_id"] is None
-    assert result["imp_purpose"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -381,13 +163,6 @@ def test_legacy_token_with_revoked_jti_returns_401(monkeypatch):
     Post-fix: finalize_login_jwt runs Slice H FIRST → 401 "Token revoked"
     before Slice 2's DB hit.
     """
-    monkeypatch.setattr(
-        "gdx_dispatch.core.auth.validate_principal",
-        lambda token, **_: (_ for _ in ()).throw(
-            InvalidSignature("force legacy path")
-        ),
-    )
-
     # Mint a legacy-shape token with a known jti so we can denylist it.
     known_jti = "regression-test-jti-d-s119"
     claims = {
@@ -418,12 +193,6 @@ def test_legacy_token_denylist_gate_fires_before_db_verify(monkeypatch):
     after. Detected via: patch _db_verify_user; on a revoked token it
     must NOT be called.
     """
-    monkeypatch.setattr(
-        "gdx_dispatch.core.auth.validate_principal",
-        lambda token, **_: (_ for _ in ()).throw(
-            InvalidSignature("force legacy path")
-        ),
-    )
     db_verify_mock = MagicMock()
     monkeypatch.setattr(
         "gdx_dispatch.routers.auth.core._db_verify_user", db_verify_mock,
@@ -451,12 +220,6 @@ def test_legacy_token_denylist_gate_fires_before_db_verify(monkeypatch):
 def test_legacy_token_without_jti_does_not_crash_denylist_gate(monkeypatch):
     """Defensive: a legacy token without a jti claim must not crash the
     new Slice H gate. The `if jti and ...` guard short-circuits cleanly."""
-    monkeypatch.setattr(
-        "gdx_dispatch.core.auth.validate_principal",
-        lambda token, **_: (_ for _ in ()).throw(
-            InvalidSignature("force legacy path")
-        ),
-    )
     # Manually craft a token with no jti claim.
     claims = {
         "sub": "u", "tenant_id": "t", "role": "user", "typ": "access",
@@ -474,13 +237,6 @@ def test_legacy_token_with_non_access_typ_is_rejected(monkeypatch):
     # The fallback path still enforces the ``typ ∈ {None, "access"}``
     # invariant — a refresh token mistakenly presented as a bearer must
     # not authenticate the caller as a user.
-    monkeypatch.setattr(
-        "gdx_dispatch.core.auth.validate_principal",
-        lambda token, **_: (_ for _ in ()).throw(
-            InvalidSignature("fall through to legacy")
-        ),
-    )
-
     refresh_shaped_token = _legacy_token(typ="refresh")
 
     request = _fake_request(denylist=Denylist())
@@ -719,92 +475,45 @@ def test_require_role_rejects_non_admin_caller():
     assert exc_info.value.status_code == 403
 
 
-def test_get_current_user_passes_app_scoped_denylist_to_core_validator(
-    monkeypatch, isolated_denylist,
-):
-    # Pin the wiring contract: ``get_current_user`` MUST hand the denylist
-    # from ``request.app.state`` to ``validate_principal`` so revocations
-    # written by the admin endpoint are observed by the very next request.
-    # An identity check (``is``) is load-bearing here — passing a *copy*
-    # would silently lose writes.
-    denylist, request = isolated_denylist
-    captured: dict[str, Any] = {}
+def test_revoked_token_is_refused_on_the_very_next_request(monkeypatch):
+    """The property Slice H bought, asserted end to end.
 
-    def fake_validate_principal(token: str, **kwargs: Any) -> Principal:
-        captured["kwargs"] = kwargs
-        raise InvalidSignature("force fallthrough for assertion")
-
-    monkeypatch.setattr(
-        "gdx_dispatch.core.auth.validate_principal",
-        fake_validate_principal,
-    )
-
-    with pytest.raises(HTTPException):
-        # Legacy fallback also fails on a garbage token → the HTTPException is
-        # expected. The capture happens inside the core-validator path before
-        # the fallback, which is what we assert against.
-        asyncio.run(
-            auth_router.get_current_user(request=request, token="garbage.not.jwt"),
-        )
-
-    assert captured["kwargs"].get("denylist") is denylist
-
-
-def test_revoke_and_read_share_same_app_scoped_denylist(monkeypatch):
-    # End-to-end identity contract for Slice H: a single request-like object
-    # (same app) is used first to revoke a jti, then to read. The core
-    # validator sees the *same* denylist instance on the read — no module
-    # globals, no copies. This is the property app-scoped lifecycle buys.
-    #
-    # Slice I added audit wiring to the endpoint. The Slice H identity
-    # contract under test here is orthogonal to audit emission, so we stub
-    # the audit helper out to keep the failure surface tight.
-    request = _fake_request()  # lazy-create path
+    This replaces two tests that pinned "the denylist instance reaches
+    validate_principal". That validator is gone — it could never accept a
+    token this app minted — so the wiring they described no longer exists.
+    What still matters, and is what those tests were protecting, is the
+    behaviour: revoke a jti through the admin endpoint, and a token bearing
+    that jti is refused on the next read against the same app.
+    """
+    request = _fake_request(tenant_id="tenant-gdx")
     expires_at = datetime.now(UTC) + timedelta(seconds=900)
     monkeypatch.setattr(auth_router, "log_audit_event_sync", lambda *_a, **_k: None)
     fake_db = SimpleNamespace(commit=lambda: None)
     current_user = {"user_id": "admin-live", "tenant_id": "tenant-gdx", "role": "owner"}
 
+    token = _legacy_token(sub="u-live", tenant_id="tenant-gdx", role="admin")
+    jti = pyjwt.decode(token, options={"verify_signature": False})["jti"]
+
+    # Before revocation the same token authenticates.
+    assert asyncio.run(
+        auth_router.get_current_user(request=request, token=token)
+    )["user_id"] == "u-live"
+
     auth_router.admin_revoke_token(
-        auth_router.RevokeTokenBody(jti="rev-jti-live", expires_at=expires_at),
+        auth_router.RevokeTokenBody(jti=jti, expires_at=expires_at),
         request,
         current_user,
         fake_db,
     )
-
-    written_denylist = request.app.state.denylist
-    assert written_denylist.contains("rev-jti-live") is True
-
-    captured: dict[str, Any] = {}
-
-    def denylist_aware_validate(token: str, **kwargs: Any) -> Principal:
-        captured["denylist"] = kwargs.get("denylist")
-        dl = kwargs.get("denylist")
-        if dl is not None and dl.contains("rev-jti-live"):
-            raise TokenRevoked(
-                "token jti 'rev-jti-live' is on the revocation denylist"
-            )
-        raise InvalidSignature("not authentik-shaped")
-
-    monkeypatch.setattr(
-        "gdx_dispatch.core.auth.validate_principal",
-        denylist_aware_validate,
-    )
+    assert request.app.state.denylist.contains(jti) is True
 
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(
-            auth_router.get_current_user(request=request, token="garbage.not.jwt"),
-        )
+        asyncio.run(auth_router.get_current_user(request=request, token=token))
 
-    # The denylist passed to the validator IS the one the revoke endpoint
-    # wrote to — same FastAPI app, same ``app.state.denylist`` instance.
-    assert captured["denylist"] is written_denylist
-    # 401 body MUST stay the generic Slice F text — Slice H does not
-    # introduce a distinct revoked-token response contract.
     assert exc_info.value.status_code == 401
-    assert exc_info.value.detail == "Invalid or expired access token"
-    assert "denylist" not in exc_info.value.detail
-    assert "rev-jti-live" not in exc_info.value.detail
+    # The 401 body must not leak that a denylist exists or name the jti.
+    assert "denylist" not in str(exc_info.value.detail)
+    assert jti not in str(exc_info.value.detail)
 
 
 def test_separate_apps_have_separate_denylists():
@@ -1184,28 +893,15 @@ def test_slice_k_unset_mode_without_redis_url_returns_none(monkeypatch):
     assert auth_router._denylist_redis_client() is None
 
 
-def test_slice_f_fallback_behavior_survives_slice_h_wiring(
-    monkeypatch, isolated_denylist,
+def test_locally_signed_token_still_authenticates_with_app_scoped_denylist(
+    isolated_denylist,
 ):
     # Regression guard: moving the denylist onto ``app.state`` and adding
-    # the ``request`` parameter must not disturb the HS256 legacy fallback
-    # Slice F restored. A legacy token minted by ``_issue`` still
-    # authenticates even when the core validator is forced to reject it
-    # (because the token shape doesn't match Authentik's iss/aud).
-    denylist, request = isolated_denylist
+    # the ``request`` parameter must not disturb the decode path. A token
+    # minted by ``_issue`` still authenticates.
+    _denylist, request = isolated_denylist
 
-    def force_fallthrough(token: str, **kwargs: Any) -> Principal:
-        # Prove the app-scoped denylist is still routed through on
-        # fallthroughs — future refactors must not drop the kwarg silently.
-        assert kwargs.get("denylist") is denylist
-        raise InvalidSignature("not authentik-shaped — use legacy")
-
-    monkeypatch.setattr(
-        "gdx_dispatch.core.auth.validate_principal",
-        force_fallthrough,
-    )
-
-    # Mint the legacy token for the same tenant the fixture host advertises
+    # Mint the token for the same tenant the fixture host advertises
     # (Slice 6 cross-check rejects token tenant ≠ host tenant; this test
     # exercises HS256 fallback, not the cross-check, so the tenants align).
     host_tid = request.state.tenant["id"]
@@ -1216,9 +912,6 @@ def test_slice_f_fallback_behavior_survives_slice_h_wiring(
     assert result["user_id"] == "legacy-user"
     assert result["tenant_id"] == host_tid
     assert result["role"] == "admin"
-    # Impersonation markers added cc2-s46; None on non-impersonation tokens.
-    assert result["imp_actor_id"] is None
-    assert result["imp_purpose"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -1550,134 +1243,6 @@ def test_slice_q_helper_events_live_in_helper_focused_docs_block():
         "same offset — runbook structure collapsed; re-audit section "
         "layout in docs/ops/denylist_backend_mode.md"
     )
-
-
-# ---------------------------------------------------------------------------
-# 11. SS-8 Slice E — execution_context() adoption at the auth dependency
-#
-# This slice is the first production consumer of
-# :func:`gdx_dispatch.core.contexts.execution_context`. :func:`get_current_user` now
-# wraps the primary-path ``validate_principal`` call with a scoped override
-# that pins ``installation_id=None`` / ``act_chain=()`` for this request.
-#
-# The contract this test pins:
-#
-# A. **Isolation** — pre-seeded outer contextvar values
-#    (``current_installation_id`` / ``current_act_chain``) MUST NOT leak
-#    into the core validator call. The validator sees the helper's
-#    explicit defaults regardless of what the outer scope had set.
-# B. **Restoration** — after :func:`get_current_user` returns, the outer
-#    contextvar values are restored byte-for-byte. A future slice that
-#    quietly drops the ``reset(token)`` half of the lifecycle (or swaps
-#    ``with execution_context(...)`` for bare ``.set(...)`` calls) would
-#    regress this assertion.
-#
-# Hermetic: no FastAPI TestClient, no network, no DB. A fake
-# ``validate_principal`` captures the contextvar state observed inside
-# the wrapped call; a second probe captures the state observed inside
-# the same asyncio context after ``get_current_user`` returns. Outer
-# contextvar pre-seeding happens inside the same ``asyncio.run`` scope
-# so the test cannot accidentally pollute sibling tests.
-# ---------------------------------------------------------------------------
-
-
-def test_slice_e_execution_context_overrides_and_restores_at_auth_boundary(
-    monkeypatch,
-):
-    # Lazy import kept local to the test — keeps the module-level import
-    # surface stable for the rest of this file.
-    from gdx_dispatch.core.contexts import (
-        current_act_chain,
-        current_installation_id,
-        execution_context,
-    )
-
-    outer_installation_id = "installation-outer-slice-e"
-    outer_act_chain: tuple[str, ...] = ("svc-upstream", "svc-midstream")
-
-    seen_inside_validator: dict[str, Any] = {}
-    seen_after_return: dict[str, Any] = {}
-
-    principal = _principal(
-        subject="user-slice-e",
-        tenant_id="tenant-gdx",
-        role="user",
-    )
-
-    def fake_validate_principal(token: str, **kwargs: Any) -> Principal:
-        # Capture the contextvar state the validator observes. If
-        # ``execution_context`` is wired correctly, these are the helper's
-        # defaults; if a regression drops the wrapper, these would be the
-        # pre-seeded outer values instead.
-        seen_inside_validator["installation_id"] = current_installation_id.get()
-        seen_inside_validator["act_chain"] = current_act_chain.get()
-        return principal
-
-    monkeypatch.setattr(
-        "gdx_dispatch.core.auth.validate_principal",
-        fake_validate_principal,
-    )
-
-    request = _fake_request(denylist=Denylist())
-
-    async def exercise() -> None:
-        # Open the outer execution context INSIDE the same asyncio scope
-        # that ``get_current_user`` will use, so this test cannot bleed
-        # into sibling tests — ``asyncio.run`` copies the current context
-        # on entry and discards the copy on exit, and the helper's
-        # ``finally`` unwind handles in-scope restoration.
-        with execution_context(
-            installation_id=outer_installation_id,
-            act_chain=outer_act_chain,
-        ):
-            result = await auth_router.get_current_user(
-                request=request,
-                token="opaque-token-slice-e",
-            )
-
-            # Capture outer-state visibility immediately after the
-            # dependency returns but still inside the outer
-            # ``execution_context`` scope. If ``execution_context.__exit__``
-            # inside ``get_current_user`` skipped either half of the LIFO
-            # unwind, these assertions fail.
-            seen_after_return["installation_id"] = current_installation_id.get()
-            seen_after_return["act_chain"] = current_act_chain.get()
-            seen_after_return["result"] = result
-
-    asyncio.run(exercise())
-
-    # Contract A — isolation: the validator MUST see the helper's
-    # defaults, not the outer scope's pre-seeded values.
-    assert seen_inside_validator["installation_id"] is None, (
-        f"Slice E isolation broken: outer installation_id "
-        f"{outer_installation_id!r} leaked into validate_principal"
-    )
-    assert seen_inside_validator["act_chain"] == (), (
-        f"Slice E isolation broken: outer act_chain "
-        f"{outer_act_chain!r} leaked into validate_principal"
-    )
-
-    # Contract B — restoration: after get_current_user returns, the outer
-    # values are restored byte-for-byte.
-    assert seen_after_return["installation_id"] == outer_installation_id, (
-        "Slice E restoration broken: outer installation_id not restored "
-        "after get_current_user returned"
-    )
-    assert seen_after_return["act_chain"] == outer_act_chain, (
-        "Slice E restoration broken: outer act_chain not restored "
-        "after get_current_user returned"
-    )
-
-    # Regression anchor — the dict-shape return contract is untouched by
-    # Slice E. If this drifts, the auth-dependency return type changed
-    # and every downstream consumer breaks; catch it here. The
-    # impersonation markers (cc2-s46) are part of the contract too.
-    res = seen_after_return["result"]
-    assert res["user_id"] == "user-slice-e"
-    assert res["tenant_id"] == "tenant-gdx"
-    assert res["role"] == "user"
-    assert res["imp_actor_id"] is None
-    assert res["imp_purpose"] is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2182,3 +1747,35 @@ def test_admin_revoke_user_audit_failure_still_returns_ok(monkeypatch):
     )
     assert result["status"] == "ok"
     assert result["sessions_revoked"] == 5
+
+
+def test_garbage_token_is_401_not_500():
+    """An unparseable token must reach the 401, not a NameError.
+
+    Regression guard: while collapsing the two decode branches into one, the
+    `except` handler kept referencing a `primary_error` local that only the
+    deleted branch assigned. Every invalid token would have raised NameError
+    inside the handler and surfaced as a 500 — the browser's normal
+    "token expired, clear it and re-login" path turned into a server error.
+    """
+    request = _fake_request(denylist=Denylist(), tenant_id="tenant-gdx")
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            auth_router.get_current_user(request=request, token="garbage.not.jwt")
+        )
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Invalid or expired access token"
+
+
+def test_expired_token_is_401_not_500():
+    """Same handler, the expiry branch."""
+    claims = {
+        "sub": "u", "tenant_id": "tenant-gdx", "role": "user", "typ": "access",
+        "jti": "expired-jti",
+        "exp": int((datetime.now(UTC) - timedelta(seconds=60)).timestamp()),
+    }
+    token = pyjwt.encode(claims, auth_router.SIGN_KEY, algorithm=auth_router.ALG)
+    request = _fake_request(denylist=Denylist(), tenant_id="tenant-gdx")
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(auth_router.get_current_user(request=request, token=token))
+    assert exc_info.value.status_code == 401

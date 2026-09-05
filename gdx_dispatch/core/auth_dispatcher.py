@@ -27,10 +27,10 @@ Dispatch order (highest priority first):
 
 Stubs / future-slice markers
 ----------------------------
-* **Session capabilities**: SS-7 ``Principal`` (``gdx_dispatch/core/principal.py``)
-  carries no ``capabilities`` field. We fall back to an empty capability
-  tuple for session principals; slice 0.9-e (router sweep) + Phase 3
-  (role→caps map) finalize this.
+* **Session capabilities**: session principals carry no ``capabilities``
+  field, so we fall back to an empty capability tuple. (The SS-7
+  ``Principal`` this once referenced lived in ``core/principal.py``, which
+  went with the Authentik validator.)
 * **SPIFFE tenant_id**: SPIFFE workloads are platform-wide by default.
   We synthesize a placeholder tenant UUID5 from the spiffe_id for the
   ``tenant_scope == "global"`` case; per-tenant workloads pass through a
@@ -350,83 +350,40 @@ async def _dispatch_login_jwt(request: Request, token: str) -> Principal:
     # transitively imports a large dependency graph.
     import jwt as _jwt_lib
 
-    from gdx_dispatch.core.auth import validate_principal
-    from gdx_dispatch.core.auth_jwt import JWTValidationError
     from gdx_dispatch.routers.auth.core import (
         ALG,
         VERIFY_KEY,
-        _get_app_denylist,
         finalize_login_jwt,
     )
 
-    sub: str | None = None
-    tenant_claim: str | None = None
-    role: str = "user"
-    jti: str | None = None
-    actor_kind: str = "human"
-    imp_actor_id: str | None = None
-    imp_purpose: str | None = None
-
-    # Primary path — SS-7 RS256 validator. Pass the app-state denylist
-    # (Slice H) so revoke-writes via /auth/admin/revoke take effect for
-    # routers on the dispatcher too.
-    public_keys: dict[str, bytes | str] = {}
-    if ALG == "RS256" and VERIFY_KEY:
-        public_keys = {"gdx-spa": VERIFY_KEY, "gdx-thirdparty": VERIFY_KEY}
-
-    primary_failed = False
+    # Single decode path. There used to be a "primary" branch here running
+    # the Authentik access-token validator, with this as the fallback.
+    # Nothing ever reached it: `_issue()` mints tokens carrying only
+    # sub/tenant_id/role/jti/typ/exp, so the validator rejected every real
+    # token for a missing `iss` claim. Authentik is gone.
     try:
-        validated = validate_principal(
-            token,
-            public_keys_by_provider=public_keys,
-            denylist=_get_app_denylist(request),
+        payload = _jwt_lib.decode(token, VERIFY_KEY, algorithms=[ALG])
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error_type": "invalid_login_jwt",
+                "detail": "Bearer token is not a valid login JWT",
+            },
+        ) from exc
+    if payload.get("typ") not in (None, "access"):
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error_type": "invalid_login_jwt",
+                "detail": "JWT is not an access token",
+            },
         )
-        # typ guard on the primary path (matches the legacy decode below).
-        if validated.raw_claims.get("typ") not in (None, "access"):
-            raise HTTPException(
-                status_code=401,
-                detail={"error_type": "invalid_login_jwt", "detail": "JWT is not an access token"},
-            )
-        sub = validated.subject
-        tenant_claim = validated.tenant_id
-        role = str(validated.raw_claims.get("role") or "user")
-        jti = validated.jti
-        actor_kind = (
-            getattr(validated.actor_kind, "value", None) or str(validated.actor_kind or "human")
-        )
-        imp_actor_id = validated.raw_claims.get("imp_actor_id")
-        imp_purpose = validated.raw_claims.get("imp_purpose")
-    except JWTValidationError:
-        primary_failed = True
-
-    if primary_failed:
-        # Legacy decode path — locally-signed RS256 / HS256 tokens minted
-        # by `_issue()` lack the Authentik iss/aud shape and fall here.
-        try:
-            payload = _jwt_lib.decode(token, VERIFY_KEY, algorithms=[ALG])
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                status_code=401,
-                detail={
-                    "error_type": "invalid_login_jwt",
-                    "detail": "Bearer token is not a valid login JWT",
-                },
-            ) from exc
-        if payload.get("typ") not in (None, "access"):
-            raise HTTPException(
-                status_code=401,
-                detail={
-                    "error_type": "invalid_login_jwt",
-                    "detail": "JWT is not an access token",
-                },
-            )
-        sub = str(payload.get("sub") or "")
-        tenant_claim = payload.get("gdx_tid") or payload.get("tenant_id")
-        role = str(payload.get("role") or "user")
-        jti = payload.get("jti")
-        actor_kind = "human"
-        imp_actor_id = payload.get("imp_actor_id")
-        imp_purpose = payload.get("imp_purpose")
+    sub = str(payload.get("sub") or "")
+    tenant_claim = payload.get("gdx_tid") or payload.get("tenant_id")
+    role = str(payload.get("role") or "user")
+    jti = payload.get("jti")
+    actor_kind = "human"
 
     if not sub:
         raise HTTPException(
@@ -440,8 +397,7 @@ async def _dispatch_login_jwt(request: Request, token: str) -> Principal:
     # ─── Slice H + 2 + 6 gates via the shared finalizer ────────────────
     # finalize_login_jwt:
     #   - Slice H: consults the request.app.state denylist on the jti so
-    #     /auth/admin/revoke takes effect on EVERY login JWT shape, not
-    #     just Authentik-shape tokens that flow through validate_principal.
+    #     /auth/admin/revoke takes effect on every login JWT.
     #     (D-S119-legacy-denylist-gap, surfaced 2026-05-10 by prod walk.)
     #   - DB-verifies the user (denies missing/deleted/inactive)
     #   - Overlays role from users.role (closes the demoted-admin gap)
@@ -455,8 +411,6 @@ async def _dispatch_login_jwt(request: Request, token: str) -> Principal:
         role=role,
         actor_kind=actor_kind,
         jti=jti,
-        imp_actor_id=imp_actor_id,
-        imp_purpose=imp_purpose,
     )
 
     # Build the Principal from the *verified* user_dict (verified role,

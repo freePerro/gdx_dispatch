@@ -75,7 +75,6 @@ PATCH /api/supplier/portal/orders/{order_id}
 POST /api/ai/pricing/suggest
 POST /api/ai/quote
 POST /api/feedback/client-error
-POST /api/inbound-email/webhook
 POST /api/inventory/parts/{part_id}/adjust
 POST /api/jobs/{job_id}/parts
 POST /api/payments/ach/charge

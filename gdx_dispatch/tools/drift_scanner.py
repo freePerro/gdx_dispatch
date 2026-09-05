@@ -117,13 +117,15 @@ def check_silent_exceptions() -> None:
         """Return True when `except X as <name>:` references <name> in the body.
 
         Catches the capture-and-reuse pattern (2026-04-17 enhancement after
-        a false-positive sat in the bug queue):
+        a false-positive sat in the bug queue). Illustrative shape — the
+        auth code this was drawn from has since collapsed to one decode
+        path, so the rule is kept for the pattern, not that call site:
 
-            primary_error: JWTValidationError | None = None
+            primary_error: SomeError | None = None
             try:
-                principal = validate_principal(...)
-            except JWTValidationError as exc:
-                # Fall through to legacy decoder
+                result = try_primary(...)
+            except SomeError as exc:
+                # Fall through to a secondary path
                 primary_error = exc       # <-- captured, not dropped
             ...
             if primary_error is not None:

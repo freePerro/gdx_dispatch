@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.auth_revoke import revoke_user_sessions
-from gdx_dispatch.core.contexts import execution_context
 from gdx_dispatch.core.database import get_db, get_db
 from gdx_dispatch.core.denylist import Denylist
 from gdx_dispatch.core.modules import require_role
@@ -933,26 +932,25 @@ def finalize_login_jwt(
     role: str,
     actor_kind: str,
     jti: str | None = None,
-    imp_actor_id: str | None = None,
-    imp_purpose: str | None = None,
 ) -> dict[str, str]:
     """Run the post-decode auth-identity-hardening gates (Slices 2 + 6 + H).
 
-    Doug 2026-05-10 / D-S118-dispatcher-jwt-gap: the composite-dispatcher
-    `_dispatch_login_jwt` runs the same decode this function's two callers
-    do (`validate_principal` primary + `jwt.decode` legacy). If those two
-    paths diverge from each other on the AFTER-decode gates, every router
-    on the dispatcher silently re-opens the bypass class the auth-identity
-    hardening sprint just closed. So both callers route through here.
+    Doug 2026-05-10 / D-S118-dispatcher-jwt-gap: two places decode a login
+    JWT — this module's `get_current_user` and the composite dispatcher's
+    `_dispatch_login_jwt`. If they diverge on the AFTER-decode gates, every
+    router on the dispatcher silently re-opens the bypass class the
+    auth-identity hardening sprint closed. So both route through here.
 
     Gates applied in order:
       Slice H (denylist) — runs FIRST so a revoked token doesn't burn a
         DB lookup. Matches FusionAuth's documented order + flask-jwt-extended.
         Pre-fix (D-S119-legacy-denylist-gap, surfaced 2026-05-10 by prod
-        revoke-recipe verification) the denylist check only ran inside
-        `validate_principal` — which is unreachable for locally-signed
-        login JWTs minted by `_issue()` (no Authentik iss/aud). That made
-        `/auth/admin/revoke` silently inert for 100% of prod tokens.
+        revoke-recipe verification) the denylist check only ran inside the
+        Authentik token validator — unreachable for the locally-signed
+        login JWTs `_issue()` mints, which carry no `iss`. That made
+        `/auth/admin/revoke` silently inert for 100% of prod tokens. The
+        validator has since been deleted outright; this gate is now the
+        only revocation check, which is what makes it load-bearing.
         FAPI 2.0 §5.3.1: "Resource servers SHALL verify the validity,
         integrity, expiration and revocation status of access tokens."
       Slice 2 (DB-verify user) — denies missing/deleted/inactive users,
@@ -970,8 +968,6 @@ def finalize_login_jwt(
         "user_id": str(sub),
         "tenant_id": str(tenant_claim or ""),
         "role": str(role or "user"),
-        "imp_actor_id": imp_actor_id,
-        "imp_purpose": imp_purpose,
     }
     # Slice 2 — DB verify + role overlay.
     verified = _db_verify_user(request, user_dict["user_id"], actor_kind)
@@ -991,74 +987,20 @@ async def get_current_user(
     request: Request,
     token: str = Depends(oauth2_scheme),
 ) -> dict[str, str]:
-    # SS-7 Slice F: route the access-token decode through the SS-7 core
-    # validator (`gdx_dispatch.core.auth.validate_principal`) as the primary path, with
-    # the legacy `jwt.decode` retained as a fallback so HS256 deployments and
-    # locally-signed RS256 tokens minted by `_issue()` keep working during the
-    # staged rollout.
+    # Single decode path. There used to be a "primary" branch in front of
+    # this one that validated Authentik-issued access tokens (iss/aud/gdx_tid
+    # shape) and fell through to here on failure. Nothing ever reached it:
+    # `_issue()` mints tokens carrying only sub/tenant_id/role/jti/typ/exp,
+    # so the Authentik validator rejected every real token with
+    # MalformedToken ("missing or non-string 'iss' claim") and every request
+    # landed here anyway. Authentik itself is gone — no container, no
+    # AUTHENTIK_* variables set, and its issuer hard-coded to a placeholder.
     #
-    # SS-7 Slice H: the denylist is resolved from ``request.app.state`` via
-    # :func:`_get_app_denylist` so revoke-writes made through the admin
-    # endpoint are observed by the very next auth-read on the same app.
-    #
-    # Lazy import: `gdx_dispatch.core.auth` re-exports `get_current_user` from this
-    # module for legacy callers, so a module-level import would be circular.
-    from gdx_dispatch.core.auth import validate_principal
-    from gdx_dispatch.core.auth_jwt import JWTValidationError
-
-    public_keys_by_provider: dict[str, bytes | str] = {}
-    if ALG == "RS256" and VERIFY_KEY:
-        # No network JWKS fetch this slice — reuse the locally-configured
-        # RS256 verifying key for both SS-6 providers. A future slice wires
-        # Authentik's JWKS resolver.
-        public_keys_by_provider = {
-            "gdx-spa": VERIFY_KEY,
-            "gdx-thirdparty": VERIFY_KEY,
-        }
-
-    denylist = _get_app_denylist(request)
-
-    # SS-8 Slice E — first production consumer of the execution-context helper.
-    # Wrap the primary-path ``validate_principal`` call in a scoped override
-    # that pins ``installation_id=None`` / ``act_chain=()`` for this request.
-    # Rationale: the auth dependency is the single boundary where an HTTP
-    # request becomes an authenticated principal; binding the Slice B
-    # contextvars here guarantees the validator (and anything it calls) sees
-    # the asUser-without-installation defaults, and the ``finally`` inside
-    # the helper restores the outer context even if validation raises. This
-    # slice is intentionally behavior-preserving for existing traffic — a
-    # later slice plumbs real signed-installation values through here.
-    primary_error: JWTValidationError | None = None
-    try:
-        with execution_context(installation_id=None, act_chain=()):
-            principal = validate_principal(
-                token,
-                public_keys_by_provider=public_keys_by_provider,
-                denylist=denylist,
-            )
-    except JWTValidationError as exc:
-        # Includes TokenRevoked — do not leak internals, do not raise 500.
-        # Fall through to the legacy decode: HS256 tokens and locally-signed
-        # RS256 tokens (which lack the Authentik iss/aud/gdx_tid shape) are
-        # expected to fail the core validator and land on the legacy path.
-        primary_error = exc
-    else:
-        # Phase D cc2-s46: surface impersonation markers (set by the CC
-        # impersonate endpoint) so downstream audit hooks can tag operator
-        # actions distinctly from real-user actions. Both claims are
-        # absent on normal tenant tokens — None means "not impersonation."
-        return finalize_login_jwt(
-            request,
-            sub=principal.subject,
-            tenant_claim=principal.tenant_id,
-            role=str(principal.raw_claims.get("role", "user")),
-            actor_kind=getattr(principal.actor_kind, "value", None)
-            or str(principal.actor_kind or ""),
-            jti=principal.jti,
-            imp_actor_id=principal.raw_claims.get("imp_actor_id"),
-            imp_purpose=principal.raw_claims.get("imp_purpose"),
-        )
-
+    # Revocation is still enforced: finalize_login_jwt runs the
+    # _get_app_denylist(request) check on the jti as its first gate, so a
+    # token revoked through the admin endpoint is refused on the very next
+    # request. Removing the branch above removed a second, redundant lookup,
+    # not the gate.
     try:
         c = jwt.decode(token, VERIFY_KEY, algorithms=[ALG])
         if c.get("typ") not in (None, "access"):
@@ -1071,8 +1013,6 @@ async def get_current_user(
             role=str(c.get("role", "user")),
             actor_kind="human",
             jti=c.get("jti"),
-            imp_actor_id=c.get("imp_actor_id"),
-            imp_purpose=c.get("imp_purpose"),
         )
     except ExpiredSignatureError as exc:
         # Expired tokens are a normal refresh cycle, not an error. The Vue
@@ -1088,16 +1028,7 @@ async def get_current_user(
         # re-logs-in. Logging as ERROR with a full traceback per request was
         # producing 90+ ERROR entries per day for what's expected 401 behavior.
         # Downgrade to WARN with just the exception class + message.
-        if primary_error is not None:
-            log.warning(
-                "auth_access_token_invalid: core=%s:%s legacy=%s:%s",
-                type(primary_error).__name__,
-                str(primary_error)[:60],
-                type(exc).__name__,
-                str(exc)[:60],
-            )
-        else:
-            log.warning("auth_access_token_invalid: %s: %s", type(exc).__name__, str(exc)[:120])
+        log.warning("auth_access_token_invalid: %s: %s", type(exc).__name__, str(exc)[:120])
         raise _unauth("Invalid or expired access token") from exc
 
 

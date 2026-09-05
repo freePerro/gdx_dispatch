@@ -58,8 +58,9 @@ AUTH_DEPENDENCIES = frozenset(
         "_require_api_key",
         "scope_required",
         "_check_scope",
-        # Signature-verified webhook callers
+        # Signature- / secret-verified webhook callers
         "verify_twilio_signature",
+        "verify_inbound_email_secret",
     }
 )
 

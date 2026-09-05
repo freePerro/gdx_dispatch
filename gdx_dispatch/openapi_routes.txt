@@ -105,10 +105,6 @@ DELETE /api/workflows/{rule_id}
 DELETE /payments/methods/{method_id}
 GET /.well-known/gdx-platform
 GET /.well-known/mcp-tools
-GET /.well-known/oauth-authorization-server
-GET /.well-known/oauth-protected-resource
-GET /.well-known/oauth-protected-resource/{resource_path}
-GET /.well-known/openid-configuration
 GET /.well-known/security.txt
 GET /api/.well-known/jwks.json
 GET /api/accounting/journal
