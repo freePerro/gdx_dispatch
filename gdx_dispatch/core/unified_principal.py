@@ -4,7 +4,7 @@ Defines ONE ``Principal`` type that subsumes the auth-flow-specific
 principal dataclasses Sprint 0.8 shipped. Of the original five, two
 legacy variants still exist alongside this type:
 
-* SS-7 session/JWT ``Principal`` (``gdx_dispatch.core.principal.Principal``)
+* SS-7 session/JWT ``Principal`` (formerly ``gdx_dispatch.core.principal``, deleted)
 * SS-32 SPIFFE ``AgentPrincipal`` (``gdx_dispatch.core.middleware.spiffe_auth_middleware.AgentPrincipal``)
 
 The other three are gone — the SS-14 PAT (``pat_validation``), SS-22 SCIM
@@ -29,13 +29,13 @@ is already occupied by the SS-7 ``Principal`` dataclass (one of the five
 variants that MUST stay in place for this slice per the task's own
 scope note — "The 5 existing Principal variants STAY IN PLACE"). Colliding
 on that module name would either silently overwrite SS-7's Principal
-(breaking ~10 importers including ``gdx_dispatch.core.auth``, ``gdx_dispatch.core.policy``,
-``gdx_dispatch.core.auth_jwt`` and several tests) or force a simultaneous rename of
+(breaking ~10 importers, several of which have since been deleted along with
+the Authentik surface) or force a simultaneous rename of
 SS-7, which is explicitly 0.9-e scope.
 
 Parking the unified type at ``gdx_dispatch.core.unified_principal`` preserves the
 "coexistence" contract the task specifies. Slice 0.9-e is expected to
-collapse the path back to ``gdx_dispatch.core.principal`` when it deletes the five
+collapse the path back to a single principal module when it deletes the five
 variants.
 
 Capability semantics

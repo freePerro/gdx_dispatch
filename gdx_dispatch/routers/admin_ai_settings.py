@@ -5,9 +5,9 @@ path) rather than ``gdx_dispatch.core.auth_dispatcher.get_current_principal`` (t
 strict OAuth path). Reason: the SPA login at ``/auth/login`` mints a JWT
 that is sent as ``Authorization: Bearer <jwt>``; the auth_dispatcher
 treats every JWT-shaped Bearer token as an OAuth lookup and rejects it
-with ``invalid_oauth_token``. ``get_current_user`` validates the JWT via
-SS-7 ``validate_principal`` which is what the existing admin routers
-(``audit``, ``admin_ops``) use.
+with ``invalid_oauth_token``. ``get_current_user`` decodes the JWT
+directly, which is what the existing admin routers (``audit``,
+``admin_ops``) use.
 """
 from __future__ import annotations
 
