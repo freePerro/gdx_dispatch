@@ -48,6 +48,13 @@ x-app-env: &app-env
   # gdx.example.com defaults and Outlook subscription creation fails
   # loudly (2026-07-07 audit).
   GDX_PUBLIC_BASE_URL: ${GDX_PUBLIC_BASE_URL:-}
+  # Inbound-webhook caller secrets. These are an ALLOWLIST, not an env_file:
+  # a var absent from this block never reaches the container no matter what
+  # .env says, and the gate that reads it then behaves as "not configured".
+  # TWILIO_AUTH_TOKEN was missing here since the signature check shipped, so
+  # verify_twilio_signature has been 403-ing every inbound SMS in production.
+  INBOUND_EMAIL_WEBHOOK_SECRET: ${INBOUND_EMAIL_WEBHOOK_SECRET:-}
+  TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
 
 services:
   # ── Database ─────────────────────────────────────────────────────────────────
@@ -92,6 +99,11 @@ services:
       <<: *app-env
       # ── app-only ──
       SENTRY_DSN: ${SENTRY_DSN:-}
+      # Scrape secret for GET /metrics. app-only: the celery services do not
+      # serve HTTP. This block is an ALLOWLIST and there is no env_file, so a
+      # var missing here never reaches the container whatever .env says — and
+      # the endpoint would then read it as "not configured" and refuse.
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
       APP_VERSION: ${APP_VERSION:-dev}
       BUILD_TIME: ${BUILD_TIME:-unknown}
       ENVIRONMENT: ${ENVIRONMENT:-development}

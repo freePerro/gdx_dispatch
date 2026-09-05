@@ -9,9 +9,10 @@ Two flows:
   payload. We store it and route to the staff inbox.
 
 Admin endpoints (list/retrieve/mark-read/link) are auth + module gated behind
-`communications`. Webhook endpoints are PUBLIC — tenant is derived from a
-required `?tenant=xxx` query param (Twilio only allows one global webhook URL
-per account, so we disambiguate at the URL level).
+`communications`. The webhook endpoints are unauthenticated by URL but each
+carries its own caller check: Twilio's request signature for SMS, a shared
+secret header for email. Neither takes the company from the request any more —
+this install serves exactly one company and reads it from `company_id()`.
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 
+from gdx_dispatch.core.inbound_email_auth import verify_inbound_email_secret
 from gdx_dispatch.core.twilio_signature import verify_twilio_signature
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -29,6 +31,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.tenant import get_company_id
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -380,31 +383,26 @@ def link_inbound_email(
 
 
 # ---------------------------------------------------------------------------
-# Public webhooks (no auth) — tenant from ?tenant= query param
+# Webhooks — caller-authenticated, company from the server not the URL
+#
+# Both routes used to stamp `company_id` from a `?tenant=` query param, so the
+# caller chose which company owned the row it was creating. Single-tenant: the
+# company is `company_id()`, and the query param is gone rather than accepted
+# and ignored, so a caller cannot believe it still steers anything.
 # ---------------------------------------------------------------------------
-
-
-def _require_tenant_param(tenant: str | None) -> str:
-    tid = (tenant or "").strip()
-    if not tid:
-        raise HTTPException(status_code=400, detail="Missing required tenant query param")
-    if len(tid) > 64:
-        raise HTTPException(status_code=400, detail="Invalid tenant query param")
-    return tid
 
 
 @public_router.post("/api/inbound-sms/webhook", response_model=None)
 def twilio_inbound_sms_webhook(
     request: Request,
     _sig: None = Depends(verify_twilio_signature),
-    tenant: str | None = Query(default=None, max_length=64),
     From: str = Form(..., min_length=1, max_length=30),
     To: str = Form(..., min_length=1, max_length=30),
     Body: str = Form(..., max_length=10000),
     MessageSid: str | None = Form(default=None, max_length=100),
+    tenant_id: str = Depends(get_company_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    tenant_id = _require_tenant_param(tenant)
     now = utcnow()
     row = InboundSMS(
         id=uuid4(),
@@ -444,10 +442,10 @@ def twilio_inbound_sms_webhook(
 def inbound_email_webhook(
     payload: InboundEmailWebhookIn,
     request: Request,
-    tenant: str | None = Query(default=None, max_length=64),
+    _secret: None = Depends(verify_inbound_email_secret),
+    tenant_id: str = Depends(get_company_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    tenant_id = _require_tenant_param(tenant)
     now = utcnow()
     row = InboundEmail(
         id=uuid4(),

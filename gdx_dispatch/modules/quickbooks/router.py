@@ -1063,15 +1063,24 @@ async def qb_webhooks(
     verifier = os.getenv("QB_WEBHOOK_VERIFIER_TOKEN", "")
     raw = await request.body()
 
-    if verifier:
-        sig_header = request.headers.get("intuit-signature", "")
-        if not sig_header:
-            raise HTTPException(status_code=403, detail="Missing QuickBooks signature")
-        expected = base64.b64encode(
-            hmac.new(verifier.encode("utf-8"), raw, hashlib.sha256).digest()
-        ).decode("utf-8")
-        if not hmac.compare_digest(expected, sig_header):
-            raise HTTPException(status_code=403, detail="Invalid QuickBooks signature")
+    if not verifier:
+        # Fail CLOSED. `if verifier:` meant an unset QB_WEBHOOK_VERIFIER_TOKEN
+        # turned signature checking off entirely, so anyone could POST a forged
+        # Intuit event to this route. The sibling handler in
+        # modules/quickbooks/webhook_router.py already refuses in this case;
+        # this one is the same shape as the /metrics gate fixed alongside it.
+        raise HTTPException(
+            status_code=503,
+            detail="QuickBooks webhooks are not configured (set QB_WEBHOOK_VERIFIER_TOKEN)",
+        )
+    sig_header = request.headers.get("intuit-signature", "")
+    if not sig_header:
+        raise HTTPException(status_code=403, detail="Missing QuickBooks signature")
+    expected = base64.b64encode(
+        hmac.new(verifier.encode("utf-8"), raw, hashlib.sha256).digest()
+    ).decode("utf-8")
+    if not hmac.compare_digest(expected, sig_header):
+        raise HTTPException(status_code=403, detail="Invalid QuickBooks signature")
 
     try:
         payload = json.loads(raw.decode("utf-8") or "{}")

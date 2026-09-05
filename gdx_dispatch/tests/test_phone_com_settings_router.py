@@ -44,7 +44,7 @@ def fernet_env(monkeypatch):
     monkeypatch.setenv("GDX_FERNET_KEY", Fernet.generate_key().decode())
     # _build_webhook_url refuses to run without a real base domain (the
     # example.com default silently killed prod webhook delivery).
-    monkeypatch.setenv("TENANT_BASE_DOMAIN", "example.test")
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.example.test")
 
 
 @pytest.fixture(autouse=True)
@@ -374,20 +374,44 @@ def test_sync_now_admin_only(
 # ── webhook URL builder ─────────────────────────────────────────────────
 
 
-def test_build_webhook_url_uses_tenant_slug_and_secret(monkeypatch):
-    monkeypatch.setenv("TENANT_BASE_DOMAIN", "example.test")
+def test_build_webhook_url_uses_public_origin_and_keeps_slug_in_path(monkeypatch):
+    """One origin, slug in the path — not as a subdomain.
+
+    The old builder put the slug in the host ({slug}.{TENANT_BASE_DOMAIN}),
+    which was the multi-tenant layout. The slug stays in the PATH because
+    that segment is part of the URL already registered with Phone.com;
+    moving it would break delivery.
+    """
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.example.test")
     url = phone_com_settings._build_webhook_url("acme-co", "s3cr3t")
-    assert "acme-co" in url
-    assert "s3cr3t" in url
-    assert url.startswith("https://acme-co.")
-    assert "/api/webhooks/phone-com/acme-co/s3cr3t" in url
+    assert url == "https://gdx.example.test/api/webhooks/phone-com/acme-co/s3cr3t"
+    assert not url.startswith("https://acme-co.")
 
 
-def test_build_webhook_url_refuses_without_base_domain(monkeypatch):
+def test_build_webhook_url_is_unchanged_when_slug_is_the_subdomain(monkeypatch):
+    """Regression pin for the one deployment shape that must not move.
+
+    Where the origin happens to be {slug}.{domain}, the old
+    `https://{slug}.{TENANT_BASE_DOMAIN}/...` template and the new
+    `{GDX_PUBLIC_BASE_URL}/...` produce the same string — which is why the
+    swap does not force a re-registration there.
+
+    This only covers THIS builder. It is not evidence about the scheduled
+    rotation task, which builds its own URL; see
+    test_rotate_patches_the_exact_callback_url in test_phone_com_tasks.py.
+    """
+    slug, domain = "gdx", "example.test"
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", f"https://{slug}.{domain}")
+    assert phone_com_settings._build_webhook_url(slug, "SEC") == (
+        f"https://{slug}.{domain}/api/webhooks/phone-com/{slug}/SEC"
+    )
+
+
+def test_build_webhook_url_refuses_without_public_base_url(monkeypatch):
     """Registering {slug}.example.com at Phone.com silently kills webhook
     delivery — the builder must refuse instead of defaulting."""
-    monkeypatch.delenv("TENANT_BASE_DOMAIN", raising=False)
+    monkeypatch.delenv("GDX_PUBLIC_BASE_URL", raising=False)
     with pytest.raises(HTTPException) as exc_info:
         phone_com_settings._build_webhook_url("acme-co", "s3cr3t")
     assert exc_info.value.status_code == 500
-    assert "TENANT_BASE_DOMAIN" in str(exc_info.value.detail)
+    assert "GDX_PUBLIC_BASE_URL" in str(exc_info.value.detail)
