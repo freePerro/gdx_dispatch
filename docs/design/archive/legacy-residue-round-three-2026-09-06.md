@@ -155,6 +155,9 @@ from main independently and rebased on merge, in that order.
    tiers of a subscription never sold; nothing gates on them, but `tier` is
    part of the public plugin manifest contract (warn-and-strip would make
    removal safe for third-party plugins). Product call.
+   → **Built 2026-09-06** (`chore/drop-module-tiers`): `tier` and `default`
+   gone from MODULES and every emitter; the manifest field is accepted and
+   ignored so older plugins keep loading.
 4. **The two-metadata schema split** (Alembic base vs `TenantBase` +
    `create_all`). Real single-tenant simplification; real migration risk.
 5. **`PLATFORM_SMTP_*` and `POWER_APPS_*` env names** are read by live code

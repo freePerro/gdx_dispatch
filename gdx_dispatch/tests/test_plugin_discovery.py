@@ -29,7 +29,7 @@ class _FakeEP:
         return self._value
 
 
-def _manifest(key="foo", name="Foo", tier="professional", requires=""):
+def _manifest(key="foo", name="Foo", tier="", requires=""):
     return PluginManifest(key=key, name=name, tier=tier, requires=requires)
 
 
@@ -37,7 +37,7 @@ def _manifest(key="foo", name="Foo", tier="professional", requires=""):
 
 def test_manifest_valid():
     m = _manifest()
-    assert m.key == "foo" and m.name == "Foo" and m.tier == "professional"
+    assert m.key == "foo" and m.name == "Foo"
 
 
 def test_manifest_rejects_bad_key():
@@ -51,9 +51,24 @@ def test_manifest_rejects_empty_name():
         _manifest(name="")
 
 
-def test_manifest_rejects_bad_tier():
-    with pytest.raises(ValueError):
-        _manifest(tier="enterprise")
+def test_manifest_ignores_tier_but_says_so(caplog):
+    """`tier` is deprecated (2026-09-06): accepted so older plugins keep loading,
+    never validated or read — and the plugin host, which logs at WARNING, sees
+    one line saying so."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="gdx_dispatch.plugin_api.manifest"):
+        m = _manifest(tier="enterprise")  # any value, no validation, no reader
+    assert m.key == "foo"
+    assert any("tier='enterprise'" in r.getMessage() and "ignored" in r.getMessage() for r in caplog.records)
+
+
+def test_manifest_without_tier_is_silent(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="gdx_dispatch.plugin_api.manifest"):
+        _manifest(tier="")
+    assert not [r for r in caplog.records if "tier=" in r.getMessage()]
 
 
 # --- is_compatible -------------------------------------------------------------

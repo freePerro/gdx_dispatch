@@ -93,8 +93,7 @@ describe("Settings branding save", () => {
     requestMock.mockReset();
     applyThemeVarsMock.mockReset();
     getMock.mockResolvedValue({
-      tenant_tier: "starter",
-      modules: [{ key: "jobs", name: "Jobs", tier: "starter", enabled: true, locked: false }],
+      modules: [{ key: "jobs", name: "Jobs", enabled: true, locked: false }],
     });
     postMock.mockResolvedValue({});
     patchMock.mockResolvedValue({});
@@ -115,9 +114,8 @@ describe("Settings branding save", () => {
     getMock.mockImplementation((url) => {
       if (url === "/api/settings/modules") {
         return Promise.resolve({
-          tenant_tier: "professional",
           modules: [
-            { key: "warranties", name: "Warranties", tier: "professional", enabled: warrantiesEnabled, locked: false },
+            { key: "warranties", name: "Warranties", enabled: warrantiesEnabled, locked: false },
           ],
         });
       }
@@ -151,9 +149,8 @@ describe("Settings branding save", () => {
       if (url === "/api/settings/branding") return Promise.resolve({});
       if (url === "/api/settings/modules") {
         return Promise.resolve({
-          tenant_tier: "professional",
           modules: [
-            { key: "warranties", name: "Warranties", tier: "professional", enabled: true, locked: false },
+            { key: "warranties", name: "Warranties", enabled: true, locked: false },
           ],
         });
       }

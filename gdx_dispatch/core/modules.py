@@ -15,26 +15,26 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.roles import normalize_role
 
 MODULES = {
-    "jobs": {"name": "Jobs", "tier": "starter", "default": True},
-    "customers": {"name": "Customers", "tier": "starter", "default": True},
-    "estimates": {"name": "Estimates", "tier": "starter", "default": True},
-    "invoices": {"name": "Invoices", "tier": "starter", "default": True},
-    "dispatch": {"name": "Dispatch Board", "tier": "starter", "default": True},
-    "timeclock": {"name": "Time Clock", "tier": "starter", "default": True},
-    "inventory": {"name": "Inventory", "tier": "professional", "default": False},
-    "quickbooks": {"name": "QuickBooks Sync", "tier": "professional", "default": False},
-    "customer_portal": {"name": "Customer Portal", "tier": "professional", "default": False},
-    "equipment_tracking": {"name": "Equipment Tracking", "tier": "professional", "default": False},
-    "campaigns": {"name": "Marketing Campaigns", "tier": "professional", "default": False},
-    "gps_dispatch": {"name": "GPS Dispatch", "tier": "business", "default": False},
-    "ai_estimates": {"name": "AI Smart Estimates", "tier": "business", "default": False},
-    "ai_dispatch": {"name": "AI Dispatch Optimization", "tier": "business", "default": False},
-    "ai_communication": {"name": "AI Communication Drafts", "tier": "business", "default": False},
-    "llm": {"name": "AI Assistant", "tier": "starter", "default": False},
-    "loyalty": {"name": "Loyalty Programs", "tier": "business", "default": False},
-    "warranties": {"name": "Warranty Tracking", "tier": "professional", "default": False},
-    "automations": {"name": "Workflow Automations", "tier": "business", "default": False},
-    "documents": {"name": "Document Management", "tier": "starter", "default": True},
+    "jobs": {"name": "Jobs"},
+    "customers": {"name": "Customers"},
+    "estimates": {"name": "Estimates"},
+    "invoices": {"name": "Invoices"},
+    "dispatch": {"name": "Dispatch Board"},
+    "timeclock": {"name": "Time Clock"},
+    "inventory": {"name": "Inventory"},
+    "quickbooks": {"name": "QuickBooks Sync"},
+    "customer_portal": {"name": "Customer Portal"},
+    "equipment_tracking": {"name": "Equipment Tracking"},
+    "campaigns": {"name": "Marketing Campaigns"},
+    "gps_dispatch": {"name": "GPS Dispatch"},
+    "ai_estimates": {"name": "AI Smart Estimates"},
+    "ai_dispatch": {"name": "AI Dispatch Optimization"},
+    "ai_communication": {"name": "AI Communication Drafts"},
+    "llm": {"name": "AI Assistant"},
+    "loyalty": {"name": "Loyalty Programs"},
+    "warranties": {"name": "Warranty Tracking"},
+    "automations": {"name": "Workflow Automations"},
+    "documents": {"name": "Document Management"},
     # Key kept for compatibility; the NAME says everything it gates, because
     # Settings → Modules renders this name on a toggle. The `/communications`
     # screen this key was minted for was removed (issue #350 — a
@@ -44,15 +44,15 @@ MODULES = {
     # `routers/ai_communication.py` (AI drafts) all gate on it, and prod holds
     # the grant. Do NOT retire or rename the KEY: a rename would 403 the bell
     # everywhere. Splitting the three gates apart is a separate decision.
-    "communications": {"name": "Notifications, inbound messages & AI drafts", "tier": "starter", "default": True},
-    "reports_advanced": {"name": "Advanced Reports", "tier": "professional", "default": False},
-    "mobile": {"name": "Mobile App", "tier": "starter", "default": True},
-    "segments": {"name": "Customer Segments", "tier": "business", "default": False},
-    "google_maps": {"name": "Google Maps & Routing", "tier": "professional", "default": False},
-    "chrome_extension": {"name": "Supplier Portal Bridge", "tier": "business", "default": False},
-    "phone_com": {"name": "Phone.com Voice & SMS", "tier": "professional", "default": False},
-    "email": {"name": "Email Integration", "tier": "professional", "default": False},
-    "bank_feeds": {"name": "Bank Feeds", "tier": "professional", "default": False},
+    "communications": {"name": "Notifications, inbound messages & AI drafts"},
+    "reports_advanced": {"name": "Advanced Reports"},
+    "mobile": {"name": "Mobile App"},
+    "segments": {"name": "Customer Segments"},
+    "google_maps": {"name": "Google Maps & Routing"},
+    "chrome_extension": {"name": "Supplier Portal Bridge"},
+    "phone_com": {"name": "Phone.com Voice & SMS"},
+    "email": {"name": "Email Integration"},
+    "bank_feeds": {"name": "Bank Feeds"},
 }
 
 # Legacy keys still referenced by older routers are mapped to canonical module keys.
@@ -122,9 +122,9 @@ def _seed_default_modules(db: Session, company_id: str) -> None:
     if has_any:
         return
     # Single-tenant: the owner owns the whole install, so seed EVERY module on
-    # first boot (the per-module `default` flag is vestigial SaaS tiering). This
-    # runs once — guarded by has_any above — so a later admin-disable sticks and
-    # is never resurrected.
+    # first boot. (The per-module `default` flag that once picked a subset left
+    # with the plan tiers, 2026-09-06.) This runs once — guarded by has_any
+    # above — so a later admin-disable sticks and is never resurrected.
     for key in MODULES:
         db.execute(
             text(

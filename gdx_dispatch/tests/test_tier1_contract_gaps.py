@@ -67,8 +67,6 @@ def _request() -> Request:
     request.state.tenant = {
         "id": "tenant-test",
         "slug": "tenant-test",
-        "subscription_tier": "starter",
-        "subscription_status": "trialing",
     }
     return request
 
@@ -308,8 +306,6 @@ def _make_wired_app(db: Session):
         request.state.tenant = {
             "id": "tenant-test",
             "slug": "tenant-test",
-            "subscription_tier": "starter",
-            "subscription_status": "trialing",
         }
         request.state.current_user = _admin()
         return await call_next(request)
