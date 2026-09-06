@@ -8,7 +8,9 @@ The same role has historically been spelled multiple ways:
     may still exist on un-migrated tenants.
   * RBAC catalog (:data:`core.permissions.BUILTIN_ROLES`) and ``tenant_roles.name``
     use LONG forms: ``"technician"``, ``"dispatcher"``.
-  * Superadmin has appeared as ``"super_admin"`` / ``"superadmin"`` / ``"super-admin"``.
+  * A platform "superadmin" role (spelled three ways) existed until 2026-09-06;
+    it belonged to a hosted control plane this single-tenant app never had.
+    Migration 089 folds any such row into ``owner``.
 
 Every IN-MEMORY role comparison should normalize first via :func:`normalize_role`
 so callers never special-case variants. Canonical = the LONG RBAC form (matches
@@ -35,7 +37,6 @@ SALES: Final = "sales"
 ACCOUNTING: Final = "accounting"
 VIEWER: Final = "viewer"
 MANAGER: Final = "manager"
-SUPER_ADMIN: Final = "super_admin"
 
 # Every known spelling → its canonical form. Lowercased keys; normalize_role
 # lowercases input before lookup.
@@ -44,9 +45,6 @@ ROLE_ALIASES: Final[dict[str, str]] = {
     "technician": TECHNICIAN,
     "dispatch": DISPATCHER,
     "dispatcher": DISPATCHER,
-    "superadmin": SUPER_ADMIN,
-    "super_admin": SUPER_ADMIN,
-    "super-admin": SUPER_ADMIN,
 }
 
 
@@ -64,15 +62,15 @@ def normalize_role(raw: object) -> str:
 # Roles permitted to act on OTHER users' records (dispatch-manager tier).
 # Replaces the scattered per-router _DISPATCH_ROLES / DISPATCH_ROLES frozensets.
 DISPATCH_MANAGER_ROLES: Final[frozenset[str]] = frozenset(
-    {OWNER, ADMIN, DISPATCHER, MANAGER, SUPER_ADMIN}
+    {OWNER, ADMIN, DISPATCHER, MANAGER}
 )
 
 # Roles whose ASSIGNMENT of the admin/owner tier is permitted (owner-exclusive
 # privilege; admin == owner for ops but may NOT grant the admin/owner role).
-ROLE_ADMIN_ACTORS: Final[frozenset[str]] = frozenset({OWNER, SUPER_ADMIN})
+ROLE_ADMIN_ACTORS: Final[frozenset[str]] = frozenset({OWNER})
 
-# Full-access tier (owner/admin/superadmin) — see everything, bypass gates.
-ADMIN_TIER_ROLES: Final[frozenset[str]] = frozenset({OWNER, ADMIN, SUPER_ADMIN})
+# Full-access tier (owner/admin) — see everything, bypass gates.
+ADMIN_TIER_ROLES: Final[frozenset[str]] = frozenset({OWNER, ADMIN})
 
 
 def is_dispatch_manager(role: object) -> bool:
@@ -81,12 +79,12 @@ def is_dispatch_manager(role: object) -> bool:
 
 
 def is_role_admin_actor(role: object) -> bool:
-    """True if the role may grant/change the admin/owner tier (owner/superadmin)."""
+    """True if the role may grant/change the admin/owner tier (owner only)."""
     return normalize_role(role) in ROLE_ADMIN_ACTORS
 
 
 def is_admin_tier(role: object) -> bool:
-    """True for owner / admin / superadmin (full-access tier)."""
+    """True for owner / admin (full-access tier)."""
     return normalize_role(role) in ADMIN_TIER_ROLES
 
 
@@ -99,10 +97,9 @@ if __name__ == "__main__":  # pragma: no cover — runnable self-check
     assert normalize_role("tech") == "technician"
     assert normalize_role("TECHNICIAN") == "technician"
     assert normalize_role("dispatch") == "dispatcher"
-    assert normalize_role("super-admin") == normalize_role("superadmin") == "super_admin"
     assert normalize_role(None) == "" and normalize_role("  Owner ") == "owner"
     assert is_dispatch_manager("dispatch") and is_dispatch_manager("dispatcher")
     assert not is_dispatch_manager("tech") and not is_technician("dispatcher")
-    assert is_role_admin_actor("superadmin") and not is_role_admin_actor("admin")
-    assert is_admin_tier("owner") and is_admin_tier("super-admin") and not is_admin_tier("sales")
+    assert is_role_admin_actor("owner") and not is_role_admin_actor("admin")
+    assert is_admin_tier("owner") and is_admin_tier("admin") and not is_admin_tier("sales")
     print("core/roles.py self-check OK")

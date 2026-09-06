@@ -30,9 +30,9 @@ router = APIRouter(prefix="/api/admin/ai-settings", tags=["admin", "ai"])
 def get_admin_principal_for_ai_settings(
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Allow admin/owner/super-admin only. Wrapper so tests can override."""
+    """Allow admin/owner only. Wrapper so tests can override."""
     role = (user.get("role") or "").lower()
-    if role not in ("admin", "owner", "superadmin"):
+    if role not in ("admin", "owner"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="admin only",

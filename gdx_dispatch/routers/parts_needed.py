@@ -61,7 +61,7 @@ def _uid(user: dict) -> str:
 
 def _require_dispatch_role(user: dict) -> None:
     # Shared dispatch-manager predicate (core/roles via core/permissions):
-    # owner/admin/dispatcher/manager/superadmin, variant-aware so the legacy
+    # owner/admin/dispatcher/manager, variant-aware so the legacy
     # 'dispatch' spelling stored in users.role is honored too.
     if not is_dispatch_manager(user):
         raise HTTPException(

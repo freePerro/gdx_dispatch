@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/api/settings",
     tags=["settings"],
-    dependencies=[Depends(require_role("admin", "owner", "superadmin"))],
+    dependencies=[Depends(require_role("admin", "owner"))],
 )
 
 _ALLOWED_INTEGRATIONS = ("quickbooks", "stripe", "twilio", "quickbooks_catalog_sync")
@@ -147,10 +147,10 @@ class BrandingPatchIn(BaseModel):
 
 
 def _require_admin(current_user: dict[str, Any]) -> None:
-    # owner outranks admin (RBAC_HIERARCHY); superadmin is platform-level. Gating
+    # owner outranks admin (RBAC_HIERARCHY). Gating
     # on == "admin" wrongly 403'd the owner — the seeded account — out of every
     # /api/settings endpoint.
-    if str(current_user.get("role", "")) not in {"admin", "owner", "superadmin"}:
+    if str(current_user.get("role", "")) not in {"admin", "owner"}:
         raise HTTPException(status_code=403, detail="Admin access required")
 
 

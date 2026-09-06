@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(
     tags=["invoice_reminders"],
-    dependencies=[Depends(require_module("invoices")), Depends(require_role("admin", "owner", "superadmin"))],
+    dependencies=[Depends(require_module("invoices")), Depends(require_role("admin", "owner"))],
 )
 
 

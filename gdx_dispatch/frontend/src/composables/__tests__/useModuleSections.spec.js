@@ -115,7 +115,7 @@ function roleHas(role, perm) {
 }
 function oldSetAllowed(role, key) {
   const r = canonical(role);
-  if (r === 'admin' || r === 'owner' || r === 'super_admin') return true;
+  if (r === 'admin' || r === 'owner') return true;
   if (r === 'technician') return OLD_FIELD.has(key);
   return OLD_FIELD.has(key) || OLD_OFFICE.has(key);
 }
@@ -366,7 +366,7 @@ describe('SECTION_ORDER invariant', () => {
 // sits in POST_MIGRATION_KEYS and was excluded from the parity checks above.
 describe('timesheets_nav_gate', () => {
   // Mirrors core/roles.py DISPATCH_MANAGER_ROLES, restricted to the builtin
-  // roles that exist in BUILTIN_ROLES (manager/super_admin are not builtins).
+  // roles that exist in BUILTIN_ROLES (manager is not a builtin).
   const MAY_USE = ['owner', 'admin', 'dispatcher'];
   const MAY_NOT = ['technician', 'sales', 'accounting', 'viewer'];
 

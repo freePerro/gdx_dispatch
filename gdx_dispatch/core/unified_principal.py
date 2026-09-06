@@ -149,8 +149,7 @@ class Principal:
         is no "tenantless" principal post-SS-22.
     principal_role
         Coarse role string. Canonical set in the codebase:
-        "owner" | "admin" | "tech" | "viewer" | "agent" | "super-admin"
-        (hyphen per existing router usage). Tool/policy layers combine
+        "owner" | "admin" | "tech" | "viewer" | "agent". Tool/policy layers combine
         this with ``capabilities`` — the role alone does not grant access.
     capabilities
         Immutable tuple of ``(action, resource_type)`` pairs. See

@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/api/games",
     tags=["games"],
-    dependencies=[Depends(require_role("admin", "owner", "superadmin"))],
+    dependencies=[Depends(require_role("admin", "owner"))],
 )
 
 

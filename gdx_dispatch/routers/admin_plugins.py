@@ -44,7 +44,7 @@ router = APIRouter(prefix="/api/admin/plugins", tags=["admin-plugins"])
 
 log = logging.getLogger(__name__)
 
-_OWNER_ROLES = {"owner", "superadmin"}
+_OWNER_ROLES = {"owner"}
 
 
 def _require_owner(user: dict = Depends(get_current_user)) -> dict:

@@ -31,7 +31,7 @@ router = APIRouter(
     prefix="/api/outbound-emails",
     tags=["outbound-emails"],
     # Rendered bodies contain customer PII and money figures — office roles only.
-    dependencies=[Depends(require_role("admin", "owner", "superadmin"))],
+    dependencies=[Depends(require_role("admin", "owner"))],
 )
 
 _MAX_LIMIT = 200

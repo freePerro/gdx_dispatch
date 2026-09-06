@@ -1,4 +1,4 @@
-"""Regression: settings _require_admin must accept owner/superadmin, not only
+"""Regression: settings _require_admin must accept owner, not only
 admin. Gating on role == "admin" 403'd the owner (highest role, seeded account)
 out of every /api/settings endpoint."""
 import pytest
@@ -8,7 +8,7 @@ from gdx_dispatch.routers.settings import _require_admin
 
 
 def test_admin_tier_allowed():
-    for role in ("admin", "owner", "superadmin"):
+    for role in ("admin", "owner"):
         _require_admin({"role": role})  # must not raise
 
 

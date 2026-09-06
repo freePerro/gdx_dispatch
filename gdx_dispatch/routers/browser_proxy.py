@@ -55,7 +55,7 @@ ALG = "RS256" if PRIV else "HS256"
 SIGN_KEY = PRIV or os.getenv("JWT_SECRET", "dev-secret")
 VERIFY_KEY = (PUB or PRIV) if ALG == "RS256" else SIGN_KEY
 
-_OWNER_ROLES = {"owner", "superadmin"}
+_OWNER_ROLES = {"owner"}
 _TICKET_TTL = 30  # seconds — just long enough to open the socket
 _SCOPE = "browserstream"
 

@@ -12,7 +12,6 @@ from gdx_dispatch.core.permissions import BUILTIN_ROLES
     [
         ("tech", "technician"), ("technician", "technician"), ("TECH", "technician"),
         ("dispatch", "dispatcher"), ("dispatcher", "dispatcher"),
-        ("superadmin", "super_admin"), ("super_admin", "super_admin"), ("super-admin", "super_admin"),
         ("  Owner ", "owner"), ("admin", "admin"),
         (None, ""), ("", ""), ("unknown_role", "unknown_role"),
     ],
@@ -25,7 +24,7 @@ def test_normalize_role(raw, expected):
     "role,expected",
     [
         ("owner", True), ("admin", True), ("dispatch", True), ("dispatcher", True),
-        ("manager", True), ("superadmin", True), ("super_admin", True), ("super-admin", True),
+        ("manager", True), ("superadmin", False), ("super_admin", False), ("super-admin", False),
         ("tech", False), ("technician", False), ("viewer", False), ("sales", False),
         ("user", False), ("", False),
     ],
@@ -37,7 +36,7 @@ def test_is_dispatch_manager(role, expected):
 @pytest.mark.parametrize(
     "role,expected",
     [
-        ("owner", True), ("superadmin", True), ("super-admin", True),
+        ("owner", True), ("superadmin", False), ("super-admin", False),
         ("admin", False), ("dispatcher", False), ("tech", False),
     ],
 )
@@ -51,7 +50,7 @@ def test_is_technician_both_spellings():
 
 
 def test_is_admin_tier():
-    for r in ("owner", "admin", "super_admin", "super-admin", "superadmin"):
+    for r in ("owner", "admin", "OWNER", " Admin "):
         assert R.is_admin_tier(r)
     for r in ("dispatcher", "tech", "sales", "viewer"):
         assert not R.is_admin_tier(r)
@@ -68,7 +67,7 @@ def test_aliases_resolve_to_canonical_constants():
     # Every alias target must be a defined canonical constant (no typos).
     valid = {
         R.OWNER, R.ADMIN, R.DISPATCHER, R.TECHNICIAN, R.SALES,
-        R.ACCOUNTING, R.VIEWER, R.MANAGER, R.SUPER_ADMIN,
+        R.ACCOUNTING, R.VIEWER, R.MANAGER,
     }
     for target in R.ROLE_ALIASES.values():
         assert target in valid, f"alias target {target!r} is not a canonical constant"

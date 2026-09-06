@@ -141,7 +141,7 @@ def _audit(
 # Reading a job's photos is an OFFICE-TIER read, not a dispatch-manager one.
 #
 # `assert_job_access` admits only DISPATCH_MANAGER_ROLES (owner, admin,
-# dispatcher, manager, super_admin) or the technician the job is assigned to.
+# dispatcher, manager) or the technician the job is assigned to.
 # But `nav.office` — the key that puts the Photos page and the office nav on
 # screen — is granted to accounting, sales and viewer, none of which are
 # dispatch managers. Those roles got a 404 here, and PhotosView renders a 404

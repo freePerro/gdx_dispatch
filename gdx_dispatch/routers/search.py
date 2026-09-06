@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/api/search",
     tags=["search"],
-    dependencies=[Depends(require_role("admin", "owner", "user", "tech", "dispatcher", "superadmin"))],
+    dependencies=[Depends(require_role("admin", "owner", "user", "tech", "dispatcher"))],
 )
 
 
