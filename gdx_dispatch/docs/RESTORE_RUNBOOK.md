@@ -1,9 +1,9 @@
 # GDX Restore Runbook
 
-**Status: CURRENT — rewritten 2026-09-06 for the one database this install has.
-The commands below were drilled the same day against a throwaway Postgres
-named like production (table in the last section); they have not yet been
-run on the production host.** Until 2026-09-06 this
+**Status: CURRENT — rewritten 2026-09-06 for the one database this install has,
+and drilled the same day on the production host itself (table in the last
+section): the newest pre-update snapshot restored into a scratch database in
+27 s with every business-table count matching live.** Until 2026-09-06 this
 runbook restored `s3://gdx-backups/tenants/<slug>/…` and a separate "control
 plane" dump — a per-tenant layout this deployment never ran, written by a
 script nothing scheduled (removed the same day). What follows is built only
@@ -17,12 +17,14 @@ from mechanisms that exist in this repository, named by file.
 |---|---|---|
 | `gdx_dispatch/docker/update.sh` | `backups/gdx-pre-update-<ts>.sql.gz` at the checkout root (update.sh cds there) — a plain `pg_dump -U gdx gdx \| gzip` taken **before** every image update | every production update |
 | In-app **Admin → Database** (`/admin/database`; `routers/admin_db.py`, `POST /api/admin/db/backup`) | a `pg_dump -Fc` custom-format file under `/app/uploads/_db_backups/` inside the app container (the `gdx_uploads` volume) | an owner, on demand |
-| `scripts/backup-db.sh` | `/var/backups/gdx/dispatch_dev_<ts>.sql.gz`, pruned at 30 days | a cron line the script's header suggests (`0 2 * * *`). ⚠ It dumps from a container named `gdx-postgres-dev`; the production database container is `gdx-db-1`. Fix the name before relying on it |
+| `scripts/backup-db.sh` | `/var/backups/gdx/dispatch_dev_<ts>.sql.gz`, pruned at 30 days | nothing — the production host's cron does NOT run this script (it names a `gdx-postgres-dev` container). Kept as a dev-box template |
+| **The production host's own cron** (not in this repo; read 2026-09-06) | `0 2 * * *`: `pg_dump -Fc` of the live DB from `gdx-db-1`, GPG-encrypted to `/var/backups/gdx/gdx_live_<YYYYMMDD>.dump.gpg`, pruned at 30 days | every night. Restoring one needs the GPG private key on the host (`gpg --decrypt` → then step 2b) |
 
-**What this repository cannot show:** whether any of these actually runs on
-a schedule on the production host. A cron may exist there; check the box
-(`crontab -l`, `/var/backups/gdx`, `ls backups/` at the checkout root) and
-record the answer in the drill table at the bottom of this page.
+**Checked on the production host 2026-09-06:** the nightly GPG-encrypted
+`-Fc` dump above runs and prunes; the pre-update snapshots from `update.sh`
+sit under `backups/` at the checkout root (three, 36–38 MB each). Re-check
+with `crontab -l` and `ls -lt /var/backups/gdx backups/` and record the
+answer in the drill table when you drill.
 
 ## Restore into a throwaway database first — never over the live one
 
@@ -116,3 +118,4 @@ rm -f /tmp/restore.dump
 | Date | Dump | Duration | Result |
 |------|------|----------|--------|
 | 2026-09-06 | throwaway: schema built by the container entrypoint (alembic head 086), dumped both ways | ~1 min | pass — steps 1, 2a, 2b, 3, 6 verbatim; 270 tables and every row count matched; not production data |
+| 2026-09-06 | **production host**, `gdx-pre-update-20260905-051116.sql.gz` (38 MB) into `gdx_restored`; plus a fresh `-Fc` dump of live into `gdx_restored2` | 27 s | pass — customers 412/412, jobs 288/288, invoices 367/367, estimates 126/126, users 14/14; audit_logs 29549 vs 29688 live (a day of activity since the snapshot), 0 rows missing chain columns; head 086; `-Fc` round trip 286/286 tables; both scratch DBs dropped; `/health` 200 throughout |

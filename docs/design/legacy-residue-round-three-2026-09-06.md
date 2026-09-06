@@ -1,6 +1,6 @@
 # Legacy residue, round three — what the purge left behind (2026-09-06)
 
-**Status:** `PARTIALLY BUILT` — PR A (prose) is #612, PR B (dead code) #613, PR C (the `control` package becomes `core/tenant_settings.py`) #614, all below this one in the stack; **PR D (SPIFFE removal) is this PR — the last of the four.**
+**Status:** `MERGED #612 #613 #614 #615` (2026-09-06, squash-merged bottom-up; not yet released). What is NOT built is the owner-decision list at the bottom — nothing in it was started.
 `phase-d-saas-residue.md` (S1–S32, merged through #610, released v1.116.0).
 That doc stays as the record of rounds one and two; this one owns what a
 code-only sweep of main at `88f8d74` still finds.
