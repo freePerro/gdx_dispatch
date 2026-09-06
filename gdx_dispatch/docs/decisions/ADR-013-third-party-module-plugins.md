@@ -220,6 +220,15 @@ All six design steps landed, plus deployment + app wiring:
 6. ✅ Reference plugin (`gdx-plugin-example`) — since extracted to the
    [gdx_dispatch_plugins](https://github.com/freePerro/gdx_dispatch_plugins) repo.
 
+**Correction (2026-09-01):** the line above implied no plugin ships in this repo. That is no
+longer accurate — [`plugins/gdx-plugin-eventlog/`](../../../plugins/gdx-plugin-eventlog/) is a
+second, in-tree reference plugin (added after this ADR's DONE date) proving the event platform:
+`events`/`event_handler` consent-gated delivery, a namespaced `plug_eventlog_*` table, and a
+`type: list` screen. It is read-only and non-money — no plugin here (in-tree or in the external
+repo) has yet exercised a money-mutation path. Verify against `plugins/` and
+`gdx_dispatch/plugin_api/events.py` before citing "the reference plugin" as singular or
+external-only.
+
 **Deployment (compose).** `plugin-host` is a service that reuses the app image with a different
 command (`uvicorn gdx_dispatch.plugin_host.main:app`), shares the `*app-env` anchor, skips
 migrations/bootstrap (the app owns the schema), and mounts a `gdx_plugins:/plugins` volume. It is
@@ -250,10 +259,13 @@ ensures before discovery.) `plugin-host` has a `/health` healthcheck so a wedge 
 
 **Not yet exercised on a live multi-container deploy:** the owner-clicks-install → registry row →
 restart → reconcile pip-install → recreate cycle on a running compose stack (verified per-step, not
-as one live sequence). **Known follow-up (when real plugins exist):** a bad plugin that imports
-fine but fails `metadata.create_all` is unguarded (per-plugin *import* is already skipped in
-`load_manifests`); add a failure-count / quarantine so it can't crash-loop. Not built now — no
-third-party plugins exist yet, and the healthcheck surfaces a wedge.
+as one live sequence). **Known follow-up:** a bad plugin that imports fine but fails
+`metadata.create_all` is unguarded (per-plugin *import* is already skipped in `load_manifests`); add
+a failure-count / quarantine so it can't crash-loop. Not built as of this writing — re-check
+`gdx_dispatch/plugin_host/reconcile.py` and `load_manifests` before relying on this being still true.
+An in-tree reference plugin (`gdx-plugin-eventlog`) exists now, but it is a trivial, consent-gated,
+read-only demo, not the "real" third-party plugin this note anticipated — it has never exercised the
+crash-loop gap described here.
 
 ## Addendum (2026-06-30) — richer declarative UI vocabulary
 

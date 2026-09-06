@@ -186,7 +186,7 @@ under [`docs/`](docs/).
 
 GDX Dispatch is released under the [GNU Affero General Public License v3](LICENSE)
 (AGPLv3), with one additional permission: the
-[Plugin Exception](LICENSE-PLUGIN-EXCEPTION.md).
+[Plugin Exception](PLUGIN-EXCEPTION.md).
 
 What that means in practice:
 
