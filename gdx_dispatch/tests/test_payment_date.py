@@ -178,7 +178,7 @@ def test_payment_date_rejects_tomorrow():
 
 
 def _create_settings_table(db):
-    from gdx_dispatch.control.models import TenantSettings
+    from gdx_dispatch.core.tenant_settings import TenantSettings
 
     TenantSettings.__table__.create(bind=db.get_bind(), checkfirst=True)
 
@@ -253,7 +253,7 @@ def test_workflow_flags_round_trip_includes_pause(db):
     then 049) kept the column out of every create_all schema until now."""
     from types import SimpleNamespace
 
-    from gdx_dispatch.control.models import Tenant, TenantSettings
+    from gdx_dispatch.core.tenant_settings import Tenant, TenantSettings
     from gdx_dispatch.modules.workflow.router import WorkflowFlags, get_flags, update_flags
 
     Tenant.__table__.create(bind=db.get_bind(), checkfirst=True)

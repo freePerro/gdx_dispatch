@@ -119,9 +119,9 @@ def _load_encrypted_columns() -> list[tuple[str, str]]:
     os.environ.setdefault("JWT_SECRET", "scan-stub-" + "x" * 48)
     try:
         # Importing gdx_dispatch.models registers tenant-plane models on TenantBase.
-        # gdx_dispatch.control.models registers the control plane. Both are needed
+        # gdx_dispatch.core.tenant_settings registers the control plane. Both are needed
         # so encryption_status() sees every base.
-        import gdx_dispatch.control.models  # noqa: F401, PLC0415
+        import gdx_dispatch.core.tenant_settings  # noqa: F401, PLC0415
         import gdx_dispatch.models  # noqa: F401, PLC0415
         from gdx_dispatch.core import pii  # noqa: PLC0415
     except Exception as exc:  # noqa: BLE001

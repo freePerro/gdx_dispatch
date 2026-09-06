@@ -1,6 +1,6 @@
 # Legacy residue, round three — what the purge left behind (2026-09-06)
 
-**Status:** `PARTIALLY BUILT` — PR A (prose) is #612; **PR B (dead code, dead config, the bug-report double write) is this PR.** C and D not started. Successor to
+**Status:** `PARTIALLY BUILT` — PR A (prose) is #612; PR B (dead code) is #613, below this one in the stack; **PR C (the `control` package becomes `core/tenant_settings.py`) is this PR.** D not started. Successor to
 `phase-d-saas-residue.md` (S1–S32, merged through #610, released v1.116.0).
 That doc stays as the record of rounds one and two; this one owns what a
 code-only sweep of main at `88f8d74` still finds.
@@ -70,7 +70,7 @@ the name of the one company (`tenant_id` columns, `TenantSettings`,
 
 ### C. The `control` package
 
-`gdx_dispatch/control/models.py` survived the purge as the home of `Tenant`,
+`gdx_dispatch/control/models.py` survived the purge as the home of `Tenant`, <!-- gdx_dispatch/control/models.py moved 2026-09-06 to gdx_dispatch/core/tenant_settings.py; link-ok -->
 `TenantSettings` and the three game models, on a `DeclarativeBase` that is
 **the metadata Alembic autogenerates against** (`migrations/env.py:10`). It
 is imported by 20 live modules, `conftest.py`, and `core/pii.py`'s base
@@ -78,7 +78,7 @@ registry, and `tools/tenant_plane_redundant_filter_scan.py` skips the
 directory by name. The name is the last surviving use of "control plane" as
 a *thing* rather than a comment.
 
-Fix: move the module to `gdx_dispatch/models/tenant_settings.py` (the tenant <!-- gdx_dispatch/models/tenant_settings.py: created by PR C; link-ok -->
+Fix: move the module to `gdx_dispatch/core/tenant_settings.py` (the tenant <!-- gdx_dispatch/core/tenant_settings.py: created by PR C; link-ok -->
 row, its settings row, and the other baseline tables) and delete the package.
 Every importer, the scanner skip-list, `pii.py`, `conftest.py`, `env.py` and
 the README tree follow — plus `ruff.toml:48` (a per-directory B008 exemption

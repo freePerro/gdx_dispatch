@@ -15,8 +15,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from gdx_dispatch.control.models import Base as ControlBase
-from gdx_dispatch.control.models import Tenant
+from gdx_dispatch.core.tenant_settings import Base as ControlBase
+from gdx_dispatch.core.tenant_settings import Tenant
 from gdx_dispatch.modules.phone_com import key_storage
 from gdx_dispatch.modules.phone_com import tasks as pc_tasks
 
@@ -181,7 +181,7 @@ def test_rotate_all_only_dispatches_configured_tenants(control_db):
     """Only tenants with token + callback_id get rotated."""
     sm = control_db
     s = sm()
-    from gdx_dispatch.control.models import TenantSettings
+    from gdx_dispatch.core.tenant_settings import TenantSettings
     a, b, c = uuid4(), uuid4(), uuid4()
     for tid, slug in [(a, "ta"), (b, "tb"), (c, "tc")]:
         s.add(Tenant(id=tid, slug=slug, name=slug.upper()))
@@ -305,7 +305,7 @@ def test_rotate_refuses_without_public_base_url(control_db, monkeypatch):
     """Rotating with GDX_PUBLIC_BASE_URL unset would PATCH the Phone.com
     callback to a placeholder URL and silently kill webhook delivery (live
     on prod until 2026-07-23). The task must refuse."""
-    from gdx_dispatch.control.models import TenantSettings
+    from gdx_dispatch.core.tenant_settings import TenantSettings
 
     monkeypatch.delenv("GDX_PUBLIC_BASE_URL", raising=False)
     sm = control_db
@@ -343,7 +343,7 @@ def test_rotate_patches_the_exact_callback_url(control_db, monkeypatch):
     no operator in the loop, after the secret has already been rotated, so a
     malformed value kills inbound delivery silently once the grace window ends.
     """
-    from gdx_dispatch.control.models import TenantSettings
+    from gdx_dispatch.core.tenant_settings import TenantSettings
 
     monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.example.test")
     sm = control_db

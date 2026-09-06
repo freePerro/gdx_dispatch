@@ -17,11 +17,10 @@ from uuid import UUID
 import httpx
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.control.models import TenantSettings
-from gdx_dispatch.modules.outlook.models import OutlookAccount
+from gdx_dispatch.core.tenant_settings import TenantSettings
 from gdx_dispatch.modules.outlook import key_storage
 from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError, OutlookGraphClient
-
+from gdx_dispatch.modules.outlook.models import OutlookAccount
 
 log = logging.getLogger("gdx_dispatch.modules.outlook.token_refresh")
 

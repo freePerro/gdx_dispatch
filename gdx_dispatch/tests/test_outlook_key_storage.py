@@ -9,8 +9,9 @@ from cryptography.fernet import Fernet
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from gdx_dispatch.control.models import Base as ControlBase, Tenant, TenantSettings
 from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core.tenant_settings import Base as ControlBase
+from gdx_dispatch.core.tenant_settings import Tenant, TenantSettings
 from gdx_dispatch.modules.outlook import key_storage
 from gdx_dispatch.modules.outlook.models import OutlookAccount
 

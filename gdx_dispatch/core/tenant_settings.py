@@ -1,3 +1,24 @@
+"""The tenant row, its settings row, and the other tables on the Alembic base.
+
+Two metadata objects exist on purpose (see docs/BUILD_RULES.md):
+
+* ``TenantBase`` (``models/tenant_models.py``) — every business table, created
+  by ``create_all()`` from the container entrypoint.
+* ``Base`` here — the metadata ``migrations/env.py`` autogenerates against.
+  Its tables come from migration 001's baseline and later migrations, never
+  from ``create_all``. ``routers/admin_db.py`` suppresses them from the
+  ORM-drift check for that reason.
+
+This module lives under ``core/`` (an empty-``__init__`` package), NOT under
+``models/``, on purpose: ``models/__init__.py`` is the create_all registry and
+importing anything beneath it loads the whole application (routers, auth, the
+JWT key check). Alembic must be able to import this base with nothing but a
+database URL — ``tests/test_saas_surfaces_retired.py`` pins that.
+
+This module lived at ``gdx_dispatch/control/models.py`` until 2026-09-06 — the
+last use of "control plane" as a *thing* rather than a comment. Nothing about
+the tables changed with the move.
+"""
 from __future__ import annotations
 
 from datetime import datetime, timezone

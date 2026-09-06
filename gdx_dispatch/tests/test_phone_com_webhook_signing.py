@@ -9,7 +9,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from gdx_dispatch.control.models import Base, Tenant
+from gdx_dispatch.core.tenant_settings import Base, Tenant
 from gdx_dispatch.modules.phone_com.key_storage import get_or_create_webhook_secret
 from gdx_dispatch.modules.phone_com.webhook_signing import (
     WebhookAuthDecision,

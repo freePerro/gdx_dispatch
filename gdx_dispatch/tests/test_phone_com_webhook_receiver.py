@@ -11,9 +11,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from gdx_dispatch.control.models import Base as ControlBase
-from gdx_dispatch.control.models import Tenant
 from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core.tenant_settings import Base as ControlBase
+from gdx_dispatch.core.tenant_settings import Tenant
 from gdx_dispatch.models.tenant_models import AppSettings, Customer
 from gdx_dispatch.modules.phone_com import key_storage
 from gdx_dispatch.modules.phone_com import webhook_router as wr

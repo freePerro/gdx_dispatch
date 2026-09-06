@@ -24,10 +24,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.control.models import Tenant, TenantSettings
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db, get_tenant_db
+from gdx_dispatch.core.tenant_settings import Tenant, TenantSettings
 from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.modules.phone_com import key_storage
 from gdx_dispatch.modules.phone_com.client import PhoneComAPIError, PhoneComClient

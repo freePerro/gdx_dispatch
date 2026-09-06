@@ -15,9 +15,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from gdx_dispatch.control.models import Base as ControlBase
-from gdx_dispatch.control.models import Tenant
 from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core.tenant_settings import Base as ControlBase
+from gdx_dispatch.core.tenant_settings import Tenant
 from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.modules.phone_com import key_storage
 from gdx_dispatch.modules.phone_com.client import BASE_URL
@@ -29,7 +29,6 @@ from gdx_dispatch.modules.phone_com.models import (
     PhoneComVoicemail,
 )
 from gdx_dispatch.modules.phone_com.sync import run_full_resync
-
 
 VID = 1000000
 
@@ -403,7 +402,7 @@ def test_resync_marks_token_validated(setup):
     cs = csm()
     try:
         # Sanity: pre-state is null
-        from gdx_dispatch.control.models import TenantSettings as _TS
+        from gdx_dispatch.core.tenant_settings import TenantSettings as _TS
         ts_pre = cs.get(_TS, tid)
         assert ts_pre.phone_com_token_last_validated_at is None
         result = run_full_resync(cs, tid)

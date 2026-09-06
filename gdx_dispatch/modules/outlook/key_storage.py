@@ -21,7 +21,7 @@ from uuid import UUID
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.control.models import TenantSettings
+from gdx_dispatch.core.tenant_settings import TenantSettings
 from gdx_dispatch.modules.outlook.models import OutlookAccount
 
 

@@ -1,0 +1,1 @@
+{"ts": "2026-09-06T14:30:40.377431+00:00", "id": "health_heartbeat_1788705040377", "source": "test_alert_path_reachability", "severity": "HEARTBEAT", "body": "dead man's switch ping"}

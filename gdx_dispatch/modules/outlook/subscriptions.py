@@ -19,11 +19,10 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.control.models import Tenant
+from gdx_dispatch.core.tenant_settings import Tenant
 from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError
 from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookSubscription
 from gdx_dispatch.modules.outlook.token_refresh import with_outlook_client
-
 
 log = logging.getLogger("gdx_dispatch.modules.outlook.subscriptions")
 

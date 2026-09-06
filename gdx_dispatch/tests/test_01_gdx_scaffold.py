@@ -244,7 +244,7 @@ def test_jobs_routes_registered():
 
 def test_control_models_importable():
     """Control plane models can be imported."""
-    from gdx_dispatch.control.models import Tenant
+    from gdx_dispatch.core.tenant_settings import Tenant
     assert Tenant.__tablename__ == "tenants"
 
 

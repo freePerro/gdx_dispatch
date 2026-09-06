@@ -27,10 +27,9 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, Response
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.control.models import Tenant
-from gdx_dispatch.core.database import SessionLocal, SessionLocal
+from gdx_dispatch.core.database import SessionLocal
+from gdx_dispatch.core.tenant_settings import Tenant
 from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookSubscription
-
 
 log = logging.getLogger("gdx_dispatch.modules.outlook.webhook_router")
 

@@ -8,7 +8,7 @@ from redis import Redis, from_url
 from sqlalchemy import JSON, ForeignKey, String
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from gdx_dispatch.control.models import Base
+from gdx_dispatch.core.tenant_settings import Base
 
 DEFAULT_TERMINOLOGY = {
     "job": "Job", "estimate": "Estimate", "invoice": "Invoice", "customer": "Customer",
