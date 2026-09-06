@@ -4,7 +4,7 @@
 merged through #602–#610 and are live on production (there is no S18 — the
 number was never assigned). **Not built, by
 decision:** S9 (prod seed rows — data, "leave them", recorded below); the
-S7/S8 table-drop migration (decided, unblocked by #610, not yet written).
+S7/S8 table-drop migration — written 2026-09-06 as migration 087 (`chore/migration-087-drop-retired-tables`), which also copies the seven `bug_reports` rows into `support_tickets` first and drops the two dead `tenants` columns after the money-path review recorded in its docstring.
 **Round three** — what a code-only sweep still found after this shipped — is
 `legacy-residue-round-three-2026-09-06.md`. The paragraph that stood here as
 the running status is kept below as history.
@@ -361,7 +361,7 @@ from production, read-only, on 2026-09-04.
 | Item | Decision | Evidence |
 |---|---|---|
 | **S7 / S8 empty tables** | **Drop `tenant_module_grants`, `service_accounts`, `platform_feature_flags`** in a migration. | All three hold **0 rows** on production. |
-| **Dead columns** | **Leave them.** `tenants.subscription_status`, and `stripe_connect_account_id` / `stripe_customer_id` on both `tenants` and `companies`. | All NULL on every row, and never read (`core/tenant.py` hardcodes `"active"`). They sit next to the live Connect threading in `core/payments.py`, so dropping them buys nothing and costs a money-path review. |
+| **Dead columns** | **Leave them.** `tenants.subscription_status`, and `stripe_connect_account_id` / `stripe_customer_id` on both `tenants` and `companies`. **→ 2026-09-06: the two `tenants` columns were dropped by migration 087 after the money-path review its docstring records (no reader, all NULL); the `companies` columns and `stripe_customer_id` stay.** | All NULL on every row, and never read (`core/tenant.py` hardcodes `"active"`). They sit next to the live Connect threading in `core/payments.py`, so dropping them buys nothing and costs a money-path review. |
 | **S9 seed rows** | **Leave them.** See question 2 below. | Seed company owns 0 data rows; no FK targets `companies`; `companies` has no `deleted_at`. |
 
 ⚠ **The table-drop migration is blocked until the single-tenant purge merges.**
