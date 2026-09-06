@@ -10,7 +10,7 @@ office web app. The field-capture screen is still to build.
 That invariant is enforced here, in `_approve`, and nowhere else — no PATCH on
 `status`, no create-with-status.
 
-Permission model (see docs/design/door-listings-website-plan.md §4): submitting
+Permission model (door-listings plan §4): submitting
 needs `inventory.write`, which technicians already hold. Approving needs
 `listings.publish` — a real authz key, NOT a nav key.
 

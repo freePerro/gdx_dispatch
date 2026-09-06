@@ -1,4 +1,4 @@
-"""Tier 1 contract-gap fixes (docs/design/backend-vue-contract-gaps-2026-07-24.md).
+"""Tier 1 contract-gap fixes (backend/Vue contract-gap audit 2026-07-24).
 
 Covers the two backend halves of the tier:
   1.3 — PUT /api/commissions/rules/{id} (edit dialog 404'd forever)

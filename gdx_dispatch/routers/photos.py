@@ -14,8 +14,7 @@ removed; the real path is a DIRECT multipart upload to
 Note this module's own `create_job_photo` is SHADOWED: both it and
 `uploads.upload_job_photo` register `POST /api/jobs/{job_id}/photos`, and
 uploads.py is included first, so it is the one that serves. Do not assume the
-handler below runs — see docs/design/unimplemented-endpoints-decision-list.md,
-"The duplicate-shim trap".
+handler below runs — the duplicate-shim trap (unimplemented-endpoints decision list).
 """
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 """The job detail payload carries what the route card always carried.
 
-PR A of docs/design/mobile-one-job-card-plan.md. `/api/mobile/job/{id}` was
+PR A of the one-job-card plan. `/api/mobile/job/{id}` was
 built from a raw SELECT that never read job_type, priority or is_return_visit,
 and computed no alerts or parts roll-up. A tech who reached a job from the Jobs
 list rather than today's route saw strictly less about it — no priority, no

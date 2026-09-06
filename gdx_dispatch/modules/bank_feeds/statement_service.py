@@ -1,7 +1,7 @@
 """Bank statement import service — tie-out gate, overlap integrity, evidence
 insert, void-by-batch.
 
-The gate philosophy (docs/design/bank-statement-import-plan.md §5): a
+The gate philosophy (statement-import plan §5): a
 statement either ties out completely — balance equation, summary counts and
 totals, daily-balance recompute at the bank's listed dates, ending equation —
 or it contributes NOTHING to the evidence table. A failed import keeps its

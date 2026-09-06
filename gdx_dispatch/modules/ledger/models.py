@@ -6,7 +6,7 @@ Registered onto ``TenantBase.metadata`` via import in
 (balance / immutability / sealing) are DDL and ship in migration
 ``012_gl_core`` — they are Postgres-only and are NOT created by ``create_all``.
 
-Design: docs/design/gl-phase1-core-ledger.md §3. Money is signed integer cents
+Design: GL Phase 1 core-ledger spec §3. Money is signed integer cents
 (``BigInteger``), never float — floats are lint-banned on ledger paths (S4).
 
 Account *roles* (``GlAccount.role``) are the stable keys the posting engine

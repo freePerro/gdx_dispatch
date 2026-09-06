@@ -4,7 +4,7 @@
 records debt found (not created) during the email overhaul, with the reason it
 was deferred. Do not read an unchecked row as unfinished work on that build.
 
-Debt found (not created) while building docs/design/email-readability-and-delivery-plan.md.
+Debt found (not created) while building docs/design/archive/email-readability-and-delivery-plan.md.
 Each entry: what it is, where, why it wasn't fixed in this branch.
 
 | # | Found | Where | Debt | Why deferred |

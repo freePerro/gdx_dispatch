@@ -61,7 +61,7 @@ customer decline when it actually means "the estimate email bounced."
 2. Fixing the address and re-sending must return the tag to the sent state.
    The status vocabulary's name for "delivered as far as we can know" is
    `sent` — in-app re-send already restores it (verified,
-   [estimates.py:1965](../../gdx_dispatch/routers/estimates.py#L1965));
+   [estimates.py:1965](../../../gdx_dispatch/routers/estimates.py#L1965));
    what's missing is detecting a *manual* re-send from the operator's own
    mail client, which the app cannot see today → PR 3.
 
@@ -91,11 +91,11 @@ the red tag meant. Prod today: 9 estimates `declined` (real decisions) vs 1
 
 | # | Path | Route | Actor recorded | Reason | `declined_at` | Webhook | Office bell |
 |---|------|-------|----------------|--------|---------------|---------|-------------|
-| A | Office decline | `POST /api/estimates/{id}/decline` ([estimates.py:2430](../../gdx_dispatch/routers/estimates.py#L2430)) | staff user id | mandatory | yes | `estimate.declined` | no (office is actor) |
-| B | Mobile tech decline | `POST /api/mobile/quotes/{id}/decline` ([mobile_quoting.py:692](../../gdx_dispatch/routers/mobile_quoting.py#L692)) | tech id + IP | mandatory | yes | **missing** | **missing** |
-| C | Public link decline | `POST /api/proposals/{token}/decline` ([proposals/router.py:610](../../gdx_dispatch/modules/proposals/router.py#L610)) | `customer:public-link` | optional | yes | **missing** | yes |
-| D | Portal decline | `POST /api/customer-portal/estimates/{id}/decline` ([portal.py:1344](../../gdx_dispatch/routers/portal.py#L1344)) | `portal:{user_id}` | optional | yes | **missing** | yes |
-| E | Email bounce | `bounce_detect._match_estimates` ([bounce_detect.py:184](../../gdx_dispatch/modules/outlook/bounce_detect.py#L184)) | `bounce-detector` | n/a | no (status only) | **missing** (`email.bounced` not emitted for estimates) | **missing** |
+| A | Office decline | `POST /api/estimates/{id}/decline` ([estimates.py:2430](../../../gdx_dispatch/routers/estimates.py#L2430)) | staff user id | mandatory | yes | `estimate.declined` | no (office is actor) |
+| B | Mobile tech decline | `POST /api/mobile/quotes/{id}/decline` ([mobile_quoting.py:692](../../../gdx_dispatch/routers/mobile_quoting.py#L692)) | tech id + IP | mandatory | yes | **missing** | **missing** |
+| C | Public link decline | `POST /api/proposals/{token}/decline` ([proposals/router.py:610](../../../gdx_dispatch/modules/proposals/router.py#L610)) | `customer:public-link` | optional | yes | **missing** | yes |
+| D | Portal decline | `POST /api/customer-portal/estimates/{id}/decline` ([portal.py:1344](../../../gdx_dispatch/routers/portal.py#L1344)) | `portal:{user_id}` | optional | yes | **missing** | yes |
+| E | Email bounce | `bounce_detect._match_estimates` ([bounce_detect.py:184](../../../gdx_dispatch/modules/outlook/bounce_detect.py#L184)) | `bounce-detector` | n/a | no (status only) | **missing** (`email.bounced` not emitted for estimates) | **missing** |
 
 Every path writes a proper audit row. Nothing else can set these statuses
 (generic PATCH has no `status` field; `_ensure_editable` 409s finalized
@@ -141,8 +141,8 @@ Frontend (`EstimateView.vue`):
     recipient}** bounced on {date}. The customer never received it." with two
     actions: **Fix customer email** (link to customer edit) and **Re-send**
     (the existing send composer — `/send` and `/mark-sent` already permit
-    `rejected`, verified at [estimates.py:1862](../../gdx_dispatch/routers/estimates.py#L1862)
-    and [:1501](../../gdx_dispatch/routers/estimates.py#L1501)). Failed
+    `rejected`, verified at [estimates.py:1862](../../../gdx_dispatch/routers/estimates.py#L1862)
+    and [:1501](../../../gdx_dispatch/routers/estimates.py#L1501)). Failed
     recipient/date come from the `estimate_email_rejected` activity row.
 - **Rename the displayed label** for `rejected` → **"Failed Email"**
   (Doug's wording, decided 2026-08-18) with `warn` severity (not `danger`)

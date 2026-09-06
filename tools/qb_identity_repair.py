@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Identity repair for QB-import damage — Phase 1 of the QB paid-status
-repair plan (docs/design/qb-import-paid-status-repair-plan.md).
+repair plan.
 
 Fixes two kinds of identity loss, both rendered as "Unknown" in the UI:
 

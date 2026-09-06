@@ -15,7 +15,7 @@
  *   five duplicated job *numbers* in prod. `next_job_number` locks the counter
  *   row FOR UPDATE, so a second save takes the NEXT number, never a colliding
  *   one. Those collisions come from the numbering counter being reset backwards
- *   (see docs/design/job-closeout-billing-visibility-plan.md §5) and are a
+ *   (billing-visibility plan §5) and are a
  *   separate fix. Re-saving produces redundant job records, not repeated
  *   numbers — don't let this spec's green imply §5 is handled.
  *

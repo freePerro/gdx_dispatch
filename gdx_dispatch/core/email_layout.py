@@ -5,8 +5,8 @@ different blues, div-based layouts) with the classic email-client failures:
 Outlook's Word renderer doesn't inherit font-family into <td> (Times New
 Roman line items), ignores max-width on divs (full-width sprawl) and padding
 on anchors (the CTA degrades to a bare link), and dark-mode clients invert
-unstyled backgrounds under hardcoded dark text. See
-docs/design/email-readability-and-delivery-plan.md for the full audit.
+unstyled backgrounds under hardcoded dark text. The 2026-08 email-readability
+audit established each of these.
 
 Rules this module encodes (don't undo them piecemeal):
 - Table-based 600px shell; width set as BOTH attribute and inline style —

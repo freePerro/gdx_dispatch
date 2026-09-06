@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Payment-substance repair for QB-import damage — Phase 3 of the QB
-paid-status repair plan (docs/design/qb-import-paid-status-repair-plan.md).
+paid-status repair plan.
 
 The QB importer flattened multi-invoice QB Payments onto their FIRST linked
 invoice at the full TotalAmt (~$70K of phantom allocation), skipped Payment

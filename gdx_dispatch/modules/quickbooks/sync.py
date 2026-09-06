@@ -471,9 +471,8 @@ def _audit(db: Session, event_type: str, entity_id: str, payload: dict[str, Any]
 # The push side already had the rule (see push_invoice's PrivateNote note):
 # "one GDX customer <-> one QB customer; site differentiation lives in the
 # memo, not in sub-customers." The pull side never got that memo. It does now:
-# a sub-customer becomes a SAVED SITE (customer_locations) on the parent.
-#
-# See docs/design/qb-subcustomer-flattening-plan.md.
+# a sub-customer becomes a SAVED SITE (customer_locations) on the parent
+# (sub-customer flattening, RELEASED v1.71.0).
 
 
 def _parent_qb_id(raw: dict[str, Any]) -> str | None:

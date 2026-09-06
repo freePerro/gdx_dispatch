@@ -328,7 +328,7 @@ class TestRevenueBasisRefusesRatherThanReportingZero:
     number and a guess.
 
     The query is deliberately NOT repaired here. Commission is heading for a
-    plugin (`docs/design/commission-as-a-plugin-plan.md`), and repairing it in
+    plugin (owner decision, 2026-08), and repairing it in
     place would turn a silent zero into a confident wrong number: the invoice
     join still counts voided and draft invoices (M27), the status literal
     matches neither spelling this tenant stores, and the deposit basis is

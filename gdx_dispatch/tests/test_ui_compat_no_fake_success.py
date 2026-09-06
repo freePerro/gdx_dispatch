@@ -1,6 +1,6 @@
 """The ui_compat shims must never fake a successful write.
 
-Context (docs/design/frontend-contract-gaps-2026-08-12.md, class C6): these
+Context (contract-gap class C6, 2026-08-12): these
 handlers used to answer a bare ``{"ok": True}`` to mutations that touched
 nothing. The Vue read that as success, popped a toast, closed the dialog, and
 the user's edit vanished.

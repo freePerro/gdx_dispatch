@@ -2,7 +2,7 @@
  * useLineCategories — one place that decides a line's DISPLAY category and its
  * PRICING bucket, shared by every surface that edits line items.
  *
- * Why this exists (2026-08-19 audit, docs/design/invoice-create-line-editor-parity-plan.md):
+ * Why this exists (2026-08-19 line-editor parity audit):
  *
  * `custom_catalog_items.category` is FREE-FORM by design and documented as
  * "independent of pricing_category" (models/tenant_models.py). On prod only 77

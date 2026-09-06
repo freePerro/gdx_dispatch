@@ -19,7 +19,7 @@ live endpoints — `POST /api/email/send` (:370) and `POST /api/communications/s
 The finding at §6 below ("zero live references") was wrong when written.
 Deletion is blocked behind migrating the communications screens off the legacy
 sender and the in-memory `_EMAILS_BY_TENANT` dict — rows 1 and 3 of
-[email-overhaul-tech-debt.md](email-overhaul-tech-debt.md), both deferred there
+[email-overhaul-tech-debt.md](../email-overhaul-tech-debt.md), both deferred there
 as "a UI project of its own". Phase 4b's other two bullets (supplier_invite
 docstring, `/settings/email/test` returning Not-implemented) are done.
 **Update 2026-08-31:** the block cleared the other way — the communications
@@ -58,7 +58,7 @@ silently send nothing at all.
 Every outbound email hand-rolls its own HTML — there is **no shared layout**,
 and the two "designed" templates (`build_estimate_email_html` /
 `build_invoice_email_html` in
-[core/email_sender.py](../../gdx_dispatch/core/email_sender.py) L93/L159)
+[core/email_sender.py](../../../gdx_dispatch/core/email_sender.py) L93/L159)
 copy-paste the same wrapper with the same defects:
 
 1. **Times New Roman line items in Outlook.** `font-family:Arial` is set only
@@ -85,16 +85,16 @@ copy-paste the same wrapper with the same defects:
    mail clients handle unreliably.
 6. **Some bodies have no styling at all.** The dunning/reminder email is
    literally `"<p>" + body.replace("\n", "<br>") + "</p>"`
-   ([routers/invoice_reminders.py:445](../../gdx_dispatch/routers/invoice_reminders.py)).
+   ([routers/invoice_reminders.py:445](../../../gdx_dispatch/routers/invoice_reminders.py)).
    The mobile payment receipt is three bare `<p>` tags
-   ([routers/mobile_invoicing.py:1288](../../gdx_dispatch/routers/mobile_invoicing.py)).
+   ([routers/mobile_invoicing.py:1288](../../../gdx_dispatch/routers/mobile_invoicing.py)).
 7. No plain-text MIME alternative on any send (deliverability + accessibility).
 
 ### B. Features that exist in the app but not in the email
 
 - **No tenant branding.** `AppSettings` carries logo, phone, address, email,
   primary/secondary colors — the PDF generator uses all of them
-  ([routers/pdf.py:60](../../gdx_dispatch/routers/pdf.py) `_branding_payload`);
+  ([routers/pdf.py:60](../../../gdx_dispatch/routers/pdf.py) `_branding_payload`);
   the emails use none. Header is text-only, footer is
   "{company} — Sent via GDX Platform" with no way to call the shop.
 - **The reminder (dunning) email has no pay link.** `public_pay_url` is never
@@ -102,15 +102,15 @@ copy-paste the same wrapper with the same defects:
   way to pay. Template context is only
   invoice_number/customer_name/amount_due/days_overdue/due_date.
 - **Planner digest CTA is a dead link** — relative href `/mobile/planner`
-  ([tasks/planner_digest.py:~187](../../gdx_dispatch/tasks/planner_digest.py)),
+  ([tasks/planner_digest.py:~187](../../../gdx_dispatch/tasks/planner_digest.py)),
   dead in every mail client.
 - **Password reset carries zero tenant branding** — hardcoded "DispatchApp"
-  ([routers/auth/core.py:691](../../gdx_dispatch/routers/auth/core.py)).
+  ([routers/auth/core.py:691](../../../gdx_dispatch/routers/auth/core.py)).
 
 ### C. Backend data that never shows up in the body
 
 - **Tiered proposals are butchered.** `send_estimate`
-  ([routers/estimates.py:1598](../../gdx_dispatch/routers/estimates.py))
+  ([routers/estimates.py:1598](../../../gdx_dispatch/routers/estimates.py))
   serializes flat `EstimateLine` rows and never checks `proposal_mode`. A
   good/better/best proposal emails as one flat item list — on mobile-built
   proposals the lines are *all three tiers' items mixed together* — under a
@@ -146,7 +146,7 @@ copy-paste the same wrapper with the same defects:
 
 1. **Mobile payment receipt is SMTP-only.** It calls
    `core.email_sender.send_email` directly
-   ([routers/mobile_invoicing.py:1296](../../gdx_dispatch/routers/mobile_invoicing.py))
+   ([routers/mobile_invoicing.py:1296](../../../gdx_dispatch/routers/mobile_invoicing.py))
    — the only tenant-facing send that bypasses `send_transactional_email`, so
    it never tries Outlook Graph. The S110 docstring records that GDX has no
    SMTP row in `email_settings`; if that's still true on prod, **every mobile
@@ -157,17 +157,17 @@ copy-paste the same wrapper with the same defects:
    `routers/automations.py` catalogs `send_email`/`send_welcome_email`
    with no execution path. Anything configured there looks alive and is not.
 3. **Supplier invite claims an email that is never sent**
-   ([routers/supplier_invite.py](../../gdx_dispatch/routers/supplier_invite.py)
+   ([routers/supplier_invite.py](../../../gdx_dispatch/routers/supplier_invite.py)
    docstring says "supplier gets email with link"; the router sends nothing).
 4. **Admin "test email" is a stub** —
-   [routers/admin_settings.py:103](../../gdx_dispatch/routers/admin_settings.py)
+   [routers/admin_settings.py:103](../../../gdx_dispatch/routers/admin_settings.py)
    returns `{"ok": True, "message": "Test email queued"}` without sending.
 5. **Tenant estimate email templates are compose-only.** The tenant-editable
    `estimate_email_subject_template`/`estimate_email_body_template` columns
    feed only the composer preview; `send_estimate` ignores them and uses the
    hardcoded builder. Only the reminder template is genuinely tenant-editable
    end-to-end.
-6. ~~Dead code: [core/email.py](../../gdx_dispatch/core/email.py) (SES sender,
+6. ~~Dead code: [core/email.py](../../../gdx_dispatch/core/email.py) (SES sender,
    zero live references).~~ **WRONG — corrected 2026-08-21.** It has live
    references: `routers/communications.py` injects it into `POST /api/email/send`
    and `POST /api/communications/send`. Struck rather than deleted because the
@@ -179,7 +179,7 @@ copy-paste the same wrapper with the same defects:
 
 1. **The mobile receipt fakes success.** Beyond being SMTP-only (D1), it
    discards `send_email`'s return value and responds with a hardcoded
-   `{"sent": True}` ([routers/mobile_invoicing.py:1285-1320](../../gdx_dispatch/routers/mobile_invoicing.py)),
+   `{"sent": True}` ([routers/mobile_invoicing.py:1285-1320](../../../gdx_dispatch/routers/mobile_invoicing.py)),
    and stamps neither `sent_at` nor `sent_via`. The tech is told the customer
    got a receipt no matter what happened.
 2. **No record anywhere of what a customer was sent.** SMTP sends set only
@@ -193,7 +193,7 @@ copy-paste the same wrapper with the same defects:
    detection rung 2 matches on failed-recipient == customer email; reminder
    subjects never match rung 1 (no `" from "`), so an NDR for a *reminder*
    can fall through to rung 2 and clear `sent_at`/`sent_via` on an invoice
-   that was delivered fine ([modules/outlook/bounce_detect.py:273-325](../../gdx_dispatch/modules/outlook/bounce_detect.py)).
+   that was delivered fine ([modules/outlook/bounce_detect.py:273-325](../../../gdx_dispatch/modules/outlook/bounce_detect.py)).
    Receipts and magic links have zero bounce coverage; SMTP-only tenants
    have zero bounce detection at all.
 4. **Send-receipt overwrites invoice delivery history.** The receipt path
@@ -202,11 +202,11 @@ copy-paste the same wrapper with the same defects:
    distinguish invoice-send from receipt-send.
 5. **Composer attachments have no size guard.** `/compose` returns the PDF
    base64 unchecked and the UI shows a locked "auto-attached" checkbox
-   ([routers/invoices.py:1783](../../gdx_dispatch/routers/invoices.py),
+   ([routers/invoices.py:1783](../../../gdx_dispatch/routers/invoices.py),
    InvoiceDetailView.vue:607) — Graph rejects the *entire message* past
    ~4MB, so an oversized PDF means the customer gets nothing while the UI
    promised an attachment. The one-click paths have the 2.5MB guard; the
-   composer and [modules/outlook/send_router.py:180](../../gdx_dispatch/modules/outlook/send_router.py)
+   composer and [modules/outlook/send_router.py:180](../../../gdx_dispatch/modules/outlook/send_router.py)
    do not.
 6. **Silent PDF degradation is invisible.** When the one-click guard skips
    an oversized PDF, `send_estimate`'s response has no `pdf_attached` field
@@ -227,7 +227,7 @@ copy-paste the same wrapper with the same defects:
     (often a relay), while Graph sends thread to the rep's own mailbox.
     Reply behavior silently differs by provider.
 11. **`password_enc` is base64, not encryption**
-    ([routers/email_settings.py:77](../../gdx_dispatch/routers/email_settings.py)) —
+    ([routers/email_settings.py:77](../../../gdx_dispatch/routers/email_settings.py)) —
     plaintext SMTP credentials at rest under an encrypting name. SOC2-relevant.
 12. Minor: subject lines use the bare serial while bodies/PDF names use the
     `str(id)[:8]` fallback — an empty-string serial breaks bounce rung-1
@@ -417,7 +417,7 @@ Priority order:
 ### Phase 4a — automation emails for real, behind a toggle (locked: option, on/off)
 
 Wire the workflow engine's `send_email` action
-([modules/workflows/engine.py:41-45](../../gdx_dispatch/modules/workflows/engine.py))
+([modules/workflows/engine.py:41-45](../../../gdx_dispatch/modules/workflows/engine.py))
 to `send_transactional_email`, on the Phase 1 shell. Design points:
 
 - **Global toggle `automation_emails_enabled`, default OFF.** This default is

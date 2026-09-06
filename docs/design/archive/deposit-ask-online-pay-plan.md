@@ -17,10 +17,10 @@ prod has zero `invoice_voided` audit rows despite a voided invoice — see there
 ## The two reported problems
 
 1. **A deposit makes the job show "Paid."** `derive_job_display_state`
-   ([core/job_display_state.py](../../gdx_dispatch/core/job_display_state.py))
+   ([core/job_display_state.py](../../../gdx_dispatch/core/job_display_state.py))
    declares a job Paid (terminal, won) when every live invoice is settled —
    but its input assembler `_display_state_for_jobs`
-   ([routers/jobs.py](../../gdx_dispatch/routers/jobs.py) ~L569) selects only
+   ([routers/jobs.py](../../../gdx_dispatch/routers/jobs.py) ~L569) selects only
    `status/balance_due/amount_paid`, never `billing_type`. Between acceptance
    and final billing the deposit is usually the job's ONLY invoice, so a paid
    deposit = green "Paid" chip while Ready-for-Billing still lists the job.
@@ -28,8 +28,8 @@ prod has zero `invoice_voided` audit rows despite a voided invoice — see there
    display state never got the same lesson.
 
 2. **Phantom deposit invoices.** Public accept
-   ([modules/proposals/router.py](../../gdx_dispatch/modules/proposals/router.py) ~L485)
-   and portal accept ([routers/portal.py](../../gdx_dispatch/routers/portal.py) ~L1254)
+   ([modules/proposals/router.py](../../../gdx_dispatch/modules/proposals/router.py) ~L485)
+   and portal accept ([routers/portal.py](../../../gdx_dispatch/routers/portal.py) ~L1254)
    auto-mint a `billing_type='deposit'` invoice (status `sent`) whenever the
    tenant `deposit_pct` > 0 — before the customer commits any money. Real
    case: EST-000024 accepted via public link 2026-08-17 → INV-000341, $2,291.89,

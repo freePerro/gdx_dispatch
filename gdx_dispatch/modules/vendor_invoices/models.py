@@ -5,7 +5,7 @@ retail-sale invoice). Each line becomes a ``VendorInvoiceLine`` which the
 office routes — via a human-confirmed review queue — to a job (cost + billing
 checklist), to stock (inventory receipt), or to overhead.
 
-Design: docs/design/vendor-invoice-intake-plan.md (DRAFT v4, 3 audit rounds).
+Design: vendor-invoice intake plan (v4, 3 audit rounds).
 This is Phase 1: models + parser + dedup + match/confirm services + router.
 Full A/P accrual is out of scope (GL Phase 1 owns it); these rows are its
 future source data.

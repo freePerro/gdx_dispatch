@@ -13,8 +13,8 @@ The estimate email carries two things: the PDF attachment and the public link
 
 | Surface | Shows door photos? |
 |---|---|
-| Estimate **PDF** (emailed attachment) | ✅ yes — `_estimate_attachments_for_pdf` ([pdf.py:135](../../gdx_dispatch/routers/pdf.py#L135)) embeds every image `Document` attached to the estimate; `estimate_pdf.html` prints an "Attached Photos" grid |
-| Estimate **link page** (`ProposalPublicView`) | ❌ no — `_serialize_public_estimate` ([proposals/router.py:181](../../gdx_dispatch/modules/proposals/router.py#L181)) never touches attachments; the payload has no photo field at all |
+| Estimate **PDF** (emailed attachment) | ✅ yes — `_estimate_attachments_for_pdf` ([pdf.py:135](../../../gdx_dispatch/routers/pdf.py#L135)) embeds every image `Document` attached to the estimate; `estimate_pdf.html` prints an "Attached Photos" grid |
+| Estimate **link page** (`ProposalPublicView`) | ❌ no — `_serialize_public_estimate` ([proposals/router.py:181](../../../gdx_dispatch/modules/proposals/router.py#L181)) never touches attachments; the payload has no photo field at all |
 
 So the pictures exist (estimate attachments: manual uploads in EstimateView's
 attachment panel, plus the CHI capture flow's `_attachCapturedImage` which POSTs the
@@ -27,16 +27,16 @@ The label gap: attachment images have **no label field in use**. The PDF caption
 photo with `original_name` — for captured photos that's a machine name like
 `chi-pricing-3f2a….jpg`, useless to a customer picking between a 16×7 and a 9×7.
 `Document` already has a nullable `title` column
-([tenant_models.py:818](../../gdx_dispatch/models/tenant_models.py#L818)) that nothing
+([tenant_models.py:818](../../../gdx_dispatch/models/tenant_models.py#L818)) that nothing
 writes — **no migration needed**.
 
 ### Prior art to mirror (don't invent)
 
 The public **pay page** solved this exact problem for invoices
-(`_invoice_public_photos`, [core/payments.py:685](../../gdx_dispatch/core/payments.py#L685)):
+(`_invoice_public_photos`, [core/payments.py:685](../../../gdx_dispatch/core/payments.py#L685)):
 
 - photos ride **inside the JSON payload as downscaled `data:` URIs**
-  (`photo_data_uri`, max 900px / q72, memoised — [core/job_photos.py:142](../../gdx_dispatch/core/job_photos.py#L142)),
+  (`photo_data_uri`, max 900px / q72, memoised — [core/job_photos.py:142](../../../gdx_dispatch/core/job_photos.py#L142)),
   NOT a new anonymous image route. The token already unlocked the page; every extra
   ungated route is another thing to enumerate and get wrong.
 - capped (`_PAY_PAGE_MAX_PHOTOS = 6`) so a phone doesn't download megabytes; the PDF
@@ -96,7 +96,7 @@ at capture time (`draft.line_metadata` — the ADR-013 spec snapshot; `draft.des
 also embeds the size). Manual uploads get a hand-typed label.
 
 6. **Upload accepts a title**: `upload_estimate_attachment`
-   ([estimates.py:2633](../../gdx_dispatch/routers/estimates.py#L2633)) gains an
+   ([estimates.py:2633](../../../gdx_dispatch/routers/estimates.py#L2633)) gains an
    optional `title: str | None = Form(None)` (cap 255, strip), written to
    `Document.title`. `_serialize_attachment` gains `"title"`.
 7. **New `PATCH /api/estimates/{estimate_id}/attachments/{document_id}`** accepting

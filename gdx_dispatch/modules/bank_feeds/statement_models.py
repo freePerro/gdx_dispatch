@@ -4,8 +4,7 @@ These are the tables the bank_feeds module docstring deliberately left
 unclaimed: ``bank_accounts`` / ``bank_statement_lines`` /
 ``bank_statement_imports`` are the append-only *evidence of the bank*,
 fed by manual statement import today and by the Banno/Plaid feeds when
-GL Phase 2 wires them in (docs/design/gl-phase2-reconciliation.md §2.1,
-docs/design/bank-statement-import-plan.md).
+GL Phase 2 wires them in (reconciliation plan §2.1; statement-import plan).
 
 Unlike the Banno tables, these DO ship with an Alembic migration (050) —
 new columns on them later must not depend on ``create_orm_tables()``,

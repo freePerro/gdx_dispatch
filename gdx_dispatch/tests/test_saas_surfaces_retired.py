@@ -357,6 +357,38 @@ def test_alembic_base_imports_without_the_app() -> None:
     assert proc.stdout.strip() == "none", f"importing the Alembic base loaded the app: {proc.stdout.strip()}"
 
 
+_DESIGN_DOC_REF = re.compile(r"docs/design/(?:archive/)?[A-Za-z0-9_.-]+\.md")
+_DESIGN_REF_EXEMPT = ("docs/design/", "gdx_dispatch/migrations/versions/", ".doc_link_baseline")
+
+
+def test_nothing_outside_the_records_names_a_design_doc() -> None:
+    """Owner rule 2026-09-06: design docs are records, not references. No source
+    file, test, guide or root doc may point at one by path — the reasoning a
+    citation carried belongs in the code comment itself. Exempt: the records
+    citing each other, the immutable migration versions (seven cite by path and
+    cannot change; env.py and grant_helpers.py ARE scanned), the link-scanner baseline (keyed by doc path), and this file.
+    Counterfactual: add `see docs/design/foo.md` to any router docstring."""
+    hits: list[str] = []
+    for path in _REPO_ROOT.rglob("*"):
+        if not path.is_file() or path == pathlib.Path(__file__).resolve():
+            continue
+        rel = path.relative_to(_REPO_ROOT).as_posix()
+        if rel.startswith(_DESIGN_REF_EXEMPT) or rel in _SKIP_FILES:
+            continue
+        if any(rel.startswith(prefix) for prefix in _SKIP_PREFIXES if prefix not in ("docs/design/", "gdx_dispatch/migrations/")):
+            continue
+        if path.suffix not in _SCAN_SUFFIXES | {".html", ".ts", ".toml", ".cfg", ".ini", ".css"} and path.name not in (".env.template", ".env.lab.example"):
+            continue
+        try:
+            text = path.read_text(errors="ignore")
+        except OSError:
+            continue
+        m = _DESIGN_DOC_REF.search(text)
+        if m:
+            hits.append(f"{rel}: {m.group(0)}")
+    assert not hits, "files that point at a design doc:\n" + "\n".join(hits)
+
+
 def test_drift_scanner_has_no_multi_tenant_rules() -> None:
     """S17. The fixture rule warned on every TestClient test lacking the legacy
     grants table (71 of 86 warnings); the platform rule waited forever for a

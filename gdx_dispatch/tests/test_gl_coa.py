@@ -1,6 +1,6 @@
 """GL Phase 1 (S2) — chart-of-accounts seed + gl_settings config store.
 
-Plan gates (docs/design/gl-phase1-implementation-plan.md §S2): seed
+Plan gates (GL Phase 1 implementation plan §S2): seed
 idempotency; every role has exactly one active system account; the
 SALES_FALLBACK/4000 fallback exists; config-store defaults load; the engine
 role-resolution helper returns the mapped account. SQLite (no triggers

@@ -2,7 +2,7 @@
 
 **Status: CURRENT.** Describes uploading a plugin artifact rather than
 pip-installing it. Note the in-app **storefront** (RELEASED v1.70.2) is now the
-usual path — see `docs/design/plugin-storefront-plan.md`.
+usual path.
 
 
 Extends ADR-013 step 5 (in-app install). The registry flow installs plugins by

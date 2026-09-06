@@ -1,5 +1,5 @@
 """Tier 9 — customer-facing document correctness
-(docs/design/backend-vue-contract-gaps-2026-07-24.md).
+(backend/Vue contract-gap audit 2026-07-24).
 
 These are the highest-stakes fixes: numbers on the PDFs and emails a
 customer actually receives. Each asserts the document now FOOTS.

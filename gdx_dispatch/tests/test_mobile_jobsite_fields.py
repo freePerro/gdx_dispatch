@@ -1,6 +1,6 @@
 """Mobile endpoints surface the effective JOBSITE, not the customer HQ.
 
-PR 1 of docs/design/jobsite-address-visibility-plan.md. Every mobile
+PR 1 of the jobsite-address visibility plan (#356). Every mobile
 serializer was customer.address-only; a job bound to a customer_locations
 row navigated the tech to the billing address. These tests pin the new
 additive fields (site_label / site_address / site_address_missing), the

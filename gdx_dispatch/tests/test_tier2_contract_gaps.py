@@ -1,5 +1,5 @@
 """Tier 2 contract-gap fixes — backend halves of the new UI doors
-(docs/design/backend-vue-contract-gaps-2026-07-24.md).
+(backend/Vue contract-gap audit 2026-07-24).
 
 Covers:
   2.1 — credit memo accepts raw status "overdue" (the prime target)

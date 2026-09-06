@@ -4,7 +4,7 @@
  * can never disagree about the same shift.
  *
  * The rules it encodes (all inherited from TimesheetsView, 2026-08-10, and
- * docs/design/tech-weekly-timesheet-plan.md):
+ * the tech weekly-timesheet plan):
  *
  *  - Weeks are MONDAY-based and computed from the SHOP's today (tenant
  *    timezone), never the browser's. The old TimeclockView week card was

@@ -20,7 +20,8 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             # planner tasks so call-notes taken on a busy day don't scroll away.
             # Celery has no timezone set → fires in UTC; PLANNER_DIGEST_HOUR
             # (default 13 ≈ morning US Central) tunes it. No-ops unless
-            # PLANNER_DIGEST_EMAIL is set. See docs/design/call-capture-followup-plan.md.
+            # PLANNER_DIGEST_EMAIL is set. Email was chosen over web push (no VAPID
+            # keys, iOS can't receive it) and SMS (Phone.com path is P2P-only).
             "task": "gdx_dispatch.tasks.planner_digest.send_planner_digest",
             "schedule": crontab(hour=int(os.getenv("PLANNER_DIGEST_HOUR", "13") or "13"), minute=0),
             "options": {"queue": "priority:low"},

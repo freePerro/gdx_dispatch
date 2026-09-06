@@ -317,8 +317,8 @@ class RevenueBasisUnavailable(RuntimeError):
     `j.status = 'completed'` while this tenant's data holds 'Complete' (32
     jobs) and 'Completed' (17), so even with the column fixed it would match
     nothing. Both are left as-is deliberately: commission is heading for a
-    plugin rather than a core repair (see
-    docs/design/commission-as-a-plugin-plan.md). What is NOT acceptable in the
+    plugin rather than a core repair (owner decision, 2026-08). What is NOT
+    acceptable in the
     meantime is reporting a computed-looking zero.
     """
 

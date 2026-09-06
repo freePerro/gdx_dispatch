@@ -1,8 +1,8 @@
 """Unit tests for the shared email shell (core/email_layout.py).
 
 These lock the email-client-compat invariants the shell exists to provide —
-each maps to a failure documented in
-docs/design/email-readability-and-delivery-plan.md. jsdom/pytest can't prove
+each maps to a failure the 2026-08 email-readability audit documented.
+jsdom/pytest can't prove
 rendering; what they CAN prove is that the constructions known to survive
 Outlook/dark-mode are present and the known-broken ones are absent.
 """

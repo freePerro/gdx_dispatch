@@ -5,7 +5,7 @@ these "Jobs". The pull read only `DisplayName`, so every one became a
 TOP-LEVEL GDX customer: 77 in a single minute on 2026-04-13, six of them under
 one lumber-yard account, each inheriting the parent's email. The account's
 invoice history stayed on the parent while new estimates were written against
-the fragments. See docs/design/qb-subcustomer-flattening-plan.md.
+the fragments (sub-customer flattening, v1.71.0).
 
 Pinned here, each one a trap an audit named:
 

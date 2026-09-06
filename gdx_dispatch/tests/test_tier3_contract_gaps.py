@@ -1,5 +1,5 @@
 """Tier 3 contract-gap fixes — data captured but never shown
-(docs/design/backend-vue-contract-gaps-2026-07-24.md).
+(backend/Vue contract-gap audit 2026-07-24).
 
 The frontend halves are badges/columns/toasts; the backend half tested here
 is the one wire change: /api/jobs list rows now carry is_return_visit, so

@@ -1,7 +1,6 @@
 """Vendor bill payments — record, void, and the derived paid status.
 
-Books-convergence Track 1 (docs/design/books-convergence-plan.md §Track 1,
-audit conditions applied). The rules, in one place:
+Books-convergence Track 1 (audit conditions applied). The rules, in one place:
 
 - ``status`` is WRITE-THROUGH DERIVED: ``recompute_status`` is the only
   writer of 'paid'/'open' (void stays a header-level office assertion and is

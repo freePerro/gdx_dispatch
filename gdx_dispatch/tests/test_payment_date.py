@@ -6,8 +6,7 @@ Why paid_at threads through record_payment instead of MAX(payment_date):
 invoices can settle to paid with ZERO payments (fully-credited via credit
 memo), and an old partial payment must not backdate a much later settlement.
 Only the payment that flips the invoice in the same request may carry the
-stamp. The audit that caught the MAX() design lives in
-docs/design/payment-date-recording-plan.md.
+stamp. The 2026-07-30 payment-date audit caught the MAX() design.
 """
 from __future__ import annotations
 

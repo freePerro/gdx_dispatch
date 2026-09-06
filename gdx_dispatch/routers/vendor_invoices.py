@@ -7,7 +7,7 @@
     PATCH/api/vendor-invoices/{id}              set matched job / status
     POST /api/vendor-invoices/{id}/lines/{lid}/confirm   route a line + apply effects
 
-Design: docs/design/vendor-invoice-intake-plan.md (Phase 1).
+Vendor-invoice intake, Phase 1.
 """
 from __future__ import annotations
 

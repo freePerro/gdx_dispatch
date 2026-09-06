@@ -2472,8 +2472,7 @@ class JobCloseout(Base):
     `scalar_one_or_none()` on job_id alone raises MultipleResultsFound the
     first time a job is re-closed out, and aggregate readers double-count.
 
-    See `ai-queue/plans/sprint_job_closeout_sheet.md` and
-    docs/design/job-closeout-billing-visibility-plan.md §12.
+    (Job-closeout sheet sprint; billing-visibility plan §12, the supersede model.)
     """
 
     __tablename__ = "job_closeouts"

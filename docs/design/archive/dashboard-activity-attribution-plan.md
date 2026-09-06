@@ -67,15 +67,15 @@ display bug — the information was never written.
 ### D1 — The dashboard throws away the actor it already has
 
 `/api/audit/logs` resolves and returns `user_name` for every row
-([audit.py:102](../../gdx_dispatch/routers/audit.py#L102), batch-resolved via
-`_resolve_user_names` at [audit.py:51](../../gdx_dispatch/routers/audit.py#L51),
+([audit.py:102](../../../gdx_dispatch/routers/audit.py#L102), batch-resolved via
+`_resolve_user_names` at [audit.py:51](../../../gdx_dispatch/routers/audit.py#L51),
 falling back `name → full_name → email → short id`).
 
 The dashboard reads the same endpoint and maps only `action`, `entity_type`,
 and `created_at`
-([DashboardView.vue:754-759](../../gdx_dispatch/frontend/src/views/DashboardView.vue#L754-L759)).
+([DashboardView.vue:754-759](../../../gdx_dispatch/frontend/src/views/DashboardView.vue#L754-L759)).
 `user_name` is dropped on the floor. `meta` is the timestamp and nothing else
-([DashboardView.vue:263](../../gdx_dispatch/frontend/src/views/DashboardView.vue#L263)).
+([DashboardView.vue:263](../../../gdx_dispatch/frontend/src/views/DashboardView.vue#L263)).
 
 Cheapest fix in the whole plan: one line of the map function. It fixes the
 "who" for the 15% of rows that have a real actor, and makes D2's damage
@@ -108,7 +108,7 @@ def patch_line(
 
 `locals().get('user')` misses, `locals().get('current_user')` misses, and every
 row falls through to `'system'`
-([estimates.py:1125-1146](../../gdx_dispatch/routers/estimates.py#L1125-L1146)).
+([estimates.py:1125-1146](../../../gdx_dispatch/routers/estimates.py#L1125-L1146)).
 
 Scanned the whole router tree: **84 generated audit blocks across 17 routers.
 30 resolve a real actor; 54 hard-fail to `system`.**
@@ -131,7 +131,7 @@ turns `customer/<uuid>` into a customer name.
 So `Data Accessed (customer)` is the literal best the current data supports.
 (`data_accessed` isn't in `ACTIVITY_LABELS`, so `formatActivityTitle` falls
 through to title-case + entity suffix —
-[DashboardView.vue:719-725](../../gdx_dispatch/frontend/src/views/DashboardView.vue#L719-L725).)
+[DashboardView.vue:719-725](../../../gdx_dispatch/frontend/src/views/DashboardView.vue#L719-L725).)
 
 ### Secondary — signal-to-noise
 
@@ -141,7 +141,7 @@ shows 10. Even with perfect names, the widget will read as ten near-identical
 
 ### Secondary — stale user cache
 
-[activity.py:31](../../gdx_dispatch/routers/activity.py#L31) holds a
+[activity.py:31](../../../gdx_dispatch/routers/activity.py#L31) holds a
 module-global `_user_cache: dict[str, str]`, never invalidated and never
 bounded. A renamed user shows the old name until the process restarts. Fold it
 into the shared resolver.
@@ -155,7 +155,7 @@ into the shared resolver.
 - `DashboardView.vue` `loadRecentActivity`: carry `evt.user_name` through, and
   build `meta` as `` `${who} · ${when}` ``.
 - Reuse `ActivityView.vue`'s `formatUser` guard
-  ([ActivityView.vue:166-175](../../gdx_dispatch/frontend/src/views/ActivityView.vue#L166-L175))
+  ([ActivityView.vue:166-175](../../../gdx_dispatch/frontend/src/views/ActivityView.vue#L166-L175))
   — it already maps `system`/`anonymous` → "System" and short-circuits a raw
   UUID to `Unknown user (abc12345)`. Lift it to
   `composables/useFormatters.js` so both views share one implementation.
@@ -191,25 +191,25 @@ Registry covers the types that actually occur in prod:
 Unknown types degrade to `null` — the UI falls back to today's text. Wrap the
 whole resolver in try/except so the feed never breaks over a display field
 (same contract as `_display_state_for_jobs` in
-[customers.py:459-467](../../gdx_dispatch/routers/customers.py#L459-L467)).
+[customers.py:459-467](../../../gdx_dispatch/routers/customers.py#L459-L467)).
 
 Emit two new fields per row: `entity_label` and `entity_url` (deep link).
 
 Read-time resolution, not write-time stamping — it retro-labels the existing
 78 `data_accessed` rows and the whole history, and it keeps the hash-chained
 `details` payload untouched (the table is immutable by trigger;
-[audit.py:147-278](../../gdx_dispatch/core/audit.py#L147-L278) — we cannot
+[audit.py:147-278](../../../gdx_dispatch/core/audit.py#L147-L278) — we cannot
 backfill `details` even if we wanted to).
 
 **Encryption caveat:** `Customer.name` is plaintext *for now* by explicit
 decision (search-architecture decision `D-S122-9`,
-[tenant_models.py:128-141](../../gdx_dispatch/models/tenant_models.py#L128-L141)).
+[tenant_models.py:128-141](../../../gdx_dispatch/models/tenant_models.py#L128-L141)).
 If that decision flips to encrypted, this resolver decrypts per row — note it
 in the resolver so it isn't a surprise later.
 
 Frontend: render `title` as `<label> — <entity_label>`, make the row a link to
 `entity_url`, mirroring the Today's Schedule row
-([DashboardView.vue:274](../../gdx_dispatch/frontend/src/views/DashboardView.vue#L274)).
+([DashboardView.vue:274](../../../gdx_dispatch/frontend/src/views/DashboardView.vue#L274)).
 
 ### Phase 3 — Fix the actor at the source (backend, ~half a day, mechanical)
 
@@ -246,9 +246,9 @@ Options, not yet chosen:
 - Move `data_accessed` out of the dashboard feed entirely. It is a GDPR
   read-log, not activity; there is already a dedicated GDPR access log
   (`gdpr_data_access_logs`,
-  [core/data_access_logger.py](../../gdx_dispatch/core/data_access_logger.py)).
+  [core/data_access_logger.py](../../../gdx_dispatch/core/data_access_logger.py)).
   Arguably `data_accessed` should never have been in `audit_logs` at all
-  ([customers.py:482-492](../../gdx_dispatch/routers/customers.py#L482-L492)).
+  ([customers.py:482-492](../../../gdx_dispatch/routers/customers.py#L482-L492)).
 
 ---
 
@@ -263,17 +263,17 @@ customer, not the staff user — which has consequences for Phase 2's resolver.
 
 | action | entity_type | source |
 | --- | --- | --- |
-| `portal_login_verified` (magic link) | `customer_user` | [portal.py:320](../../gdx_dispatch/routers/portal.py#L320) |
-| `portal_password_login` | `customer_user` | [portal.py:366](../../gdx_dispatch/routers/portal.py#L366) |
-| `portal_password_login_failed` | `customer_user` | [portal.py:352](../../gdx_dispatch/routers/portal.py#L352) |
-| `portal_booking_created` | `booking_request` | [portal.py:611](../../gdx_dispatch/routers/portal.py#L611) |
-| `portal_message_sent` | `portal_message` | [portal.py:645](../../gdx_dispatch/routers/portal.py#L645) |
-| `portal_estimate_accepted` | `estimate` | [portal.py:903](../../gdx_dispatch/routers/portal.py#L903) |
-| `portal_estimate_declined` | `estimate` | [portal.py:996](../../gdx_dispatch/routers/portal.py#L996) |
+| `portal_login_verified` (magic link) | `customer_user` | [portal.py:320](../../../gdx_dispatch/routers/portal.py#L320) |
+| `portal_password_login` | `customer_user` | [portal.py:366](../../../gdx_dispatch/routers/portal.py#L366) |
+| `portal_password_login_failed` | `customer_user` | [portal.py:352](../../../gdx_dispatch/routers/portal.py#L352) |
+| `portal_booking_created` | `booking_request` | [portal.py:611](../../../gdx_dispatch/routers/portal.py#L611) |
+| `portal_message_sent` | `portal_message` | [portal.py:645](../../../gdx_dispatch/routers/portal.py#L645) |
+| `portal_estimate_accepted` | `estimate` | [portal.py:903](../../../gdx_dispatch/routers/portal.py#L903) |
+| `portal_estimate_declined` | `estimate` | [portal.py:996](../../../gdx_dispatch/routers/portal.py#L996) |
 
 **The bug:** these rows set `user_id = str(customer_user.id)` — a `CustomerUser`
 UUID. `_resolve_user_names` looks IDs up in the **`User`** table
-([audit.py:69-72](../../gdx_dispatch/routers/audit.py#L69-L72)), misses, and
+([audit.py:69-72](../../../gdx_dispatch/routers/audit.py#L69-L72)), misses, and
 the frontend's UUID guard renders **`Unknown user (a1b2c3d4)`**. So the moment a
 customer does log in, the feed will misreport it as an unknown staff member.
 
@@ -300,9 +300,9 @@ Two public, unauthenticated endpoints already exist and are exactly what the
 customer hits when they click the link in an email. Neither writes an audit row:
 
 - `GET /pay/{invoice_token}` — server-rendered Stripe payment form,
-  [core/payments.py:458-485](../../gdx_dispatch/core/payments.py#L458-L485)
+  [core/payments.py:458-485](../../../gdx_dispatch/core/payments.py#L458-L485)
 - `GET /proposals/{token}` — public proposal/estimate view,
-  [modules/proposals/router.py:42-48](../../gdx_dispatch/modules/proposals/router.py#L42-L48)
+  [modules/proposals/router.py:42-48](../../../gdx_dispatch/modules/proposals/router.py#L42-L48)
 
 Adding a `log_audit_event_sync` to each yields `invoice_viewed_by_customer` /
 `estimate_viewed_by_customer` with `user_id="customer"`, `actor_type="customer"`,
@@ -330,13 +330,13 @@ Worth being straight about the cost/benefit before committing:
 
 **There is no open tracking today, and no provider to borrow it from.** Mail
 goes out over the tenant's own SMTP (or SES) —
-[core/email.py:58](../../gdx_dispatch/core/email.py#L58),
-[core/email_sender.py:81](../../gdx_dispatch/core/email_sender.py#L81) — so
+[core/email.py:58](../../../gdx_dispatch/core/email.py#L58),
+[core/email_sender.py:81](../../../gdx_dispatch/core/email_sender.py#L81) — so
 there are no ESP webhooks (SendGrid/Postmark-style) to subscribe to. Open
 tracking has to be built here.
 
 `campaign_sends.opened_at` exists in the schema
-([modules/campaigns/router.py:73](../../gdx_dispatch/modules/campaigns/router.py#L73))
+([modules/campaigns/router.py:73](../../../gdx_dispatch/modules/campaigns/router.py#L73))
 and is aggregated in the campaign stats query — but **nothing in production
 code ever writes it**. Only `tests/test_marketing.py` sets it. It is a dead
 column, and the campaign "open rate" it feeds is therefore structurally 0%.

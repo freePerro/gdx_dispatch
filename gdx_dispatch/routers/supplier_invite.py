@@ -3,7 +3,7 @@
 Flow:
 1. Dealer sends invite → an invite LINK is minted (NO email is sent —
    surface the link in the UI for the dealer to deliver; a real email send
-   is future work, see docs/design/email-overhaul-tech-debt.md)
+   is future work, recorded in the email-overhaul debt register)
 2. Supplier clicks link → creates account
 3. Supplier uploads/updates catalog → dealer sees live pricing
 4. Dealer places order → supplier sees it and updates status
