@@ -114,13 +114,15 @@ class TestSeed:
         assert row.color == "#abcdef"
         assert row.description == "custom desc"
 
-    def test_per_tenant_isolation(self, db):
-        seed_default_customer_alert_tags(db, "tenant-A")
-        seed_default_customer_alert_tags(db, "tenant-B")
-        a_count = db.query(Tag).filter(Tag.company_id == "tenant-A").count()
-        b_count = db.query(Tag).filter(Tag.company_id == "tenant-B").count()
-        assert a_count == len(DEFAULT_CUSTOMER_ALERT_TAGS)
-        assert b_count == len(DEFAULT_CUSTOMER_ALERT_TAGS)
+    def test_seed_is_install_wide_not_per_tenant(self, db):
+        """Single tenant: names are unique across the install, so a second
+        seed under any other id inserts nothing (until 2026-09-06 the seeder
+        filtered by company_id, the redundant-filter shape BUILD_RULES bans)."""
+        first = seed_default_customer_alert_tags(db, "tenant-A")
+        second = seed_default_customer_alert_tags(db, "tenant-B")
+        assert first == len(DEFAULT_CUSTOMER_ALERT_TAGS)
+        assert second == 0
+        assert db.query(Tag).count() == len(DEFAULT_CUSTOMER_ALERT_TAGS)
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────

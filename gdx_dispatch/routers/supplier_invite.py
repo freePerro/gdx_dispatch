@@ -126,10 +126,9 @@ def list_invitations(
     db: Session = Depends(get_db),
 ) -> dict:
     """Dealer sees their sent invitations."""
-    tid = _tid(request)
+    _tid(request)
     stmt = (
         select(SupplierInvitation)
-        .where(SupplierInvitation.tenant_id == tid)
         .order_by(SupplierInvitation.created_at.desc())
     )
     rows = db.execute(stmt).scalars().all()
@@ -213,10 +212,7 @@ def register_supplier(body: SupplierRegisterRequest, db: Session = Depends(get_d
 
     # Link to tenant — check if link already exists
     existing_link = db.execute(
-        select(SupplierTenantLink).where(
-            SupplierTenantLink.supplier_id == supplier_id,
-            SupplierTenantLink.tenant_id == str(invite.tenant_id),
-        )
+        select(SupplierTenantLink).where(SupplierTenantLink.supplier_id == supplier_id)
     ).scalars().first()
     if not existing_link:
         link = SupplierTenantLink(
