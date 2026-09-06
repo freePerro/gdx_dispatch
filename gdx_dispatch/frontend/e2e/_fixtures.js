@@ -48,7 +48,7 @@ export const test = base.extend({
             'campaigns', 'gps_dispatch', 'ai_estimates', 'ai_dispatch',
             'ai_communication', 'stripe_connect', 'loyalty', 'warranties',
             'automations', 'documents', 'communications', 'reports_advanced',
-            'mobile', 'segments', 'google_maps', 'chrome_extension',
+            'mobile', 'segments', 'google_maps',
           ].map((key) => ({ key, enabled: true, tier: 'business', locked: false })),
         ),
       });

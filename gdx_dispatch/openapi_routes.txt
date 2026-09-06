@@ -589,13 +589,6 @@ GET /api/settings/notifications
 GET /api/signatures/pending
 GET /api/signatures/token/{token}
 GET /api/signatures/{document_type}/{document_id}
-GET /api/supplier/catalog
-GET /api/supplier/invitations
-GET /api/supplier/orders
-GET /api/supplier/orders/{order_id}
-GET /api/supplier/portal/catalog
-GET /api/supplier/portal/delivery-loadsheet
-GET /api/supplier/portal/orders
 GET /api/support/my
 GET /api/surveys/metrics
 GET /api/surveys/public/{token}
@@ -789,7 +782,6 @@ PATCH /api/settings/branding
 PATCH /api/settings/integrations/google-maps
 PATCH /api/settings/integrations/phone-com
 PATCH /api/settings/notifications
-PATCH /api/supplier/portal/orders/{order_id}
 PATCH /api/surveys/templates/{template_id}
 PATCH /api/tags/{tag_id}
 PATCH /api/tasks/{task_id}
@@ -1220,12 +1212,6 @@ POST /api/signatures
 POST /api/signatures/request-remote
 POST /api/signatures/token/{token}
 POST /api/signatures/{signature_id}/cancel
-POST /api/supplier/catalog
-POST /api/supplier/invite
-POST /api/supplier/login
-POST /api/supplier/orders
-POST /api/supplier/portal/catalog
-POST /api/supplier/register
 POST /api/support/bug
 POST /api/support/feature
 POST /api/surveys/public/{token}

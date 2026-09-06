@@ -250,8 +250,6 @@ const MOBILE_ROUTE_OVERRIDES = {
   // techs don't get them in the drawer; the API itself is not role-gated).
   '/phone-com/calls': '/mobile/phone',
   '/phone-com/messages': '/mobile/sms',
-  // /delivery-loadsheet stays on /delivery-loadsheet — it's already
-  // mobile-friendly via @media rules in its scoped styles.
 };
 
 // Mobile-walk 2026-06-04 finding: the More drawer surfaced ~50 modules,
@@ -280,7 +278,6 @@ const MOBILE_FRIENDLY_PATHS = new Set([
   '/jobs', // bottom-nav handles the mobile redirect at the view level
   '/dispatch',
   '/timeclock',
-  '/delivery-loadsheet', // explicitly mobile-friendly per the comment above
   '/profile',
   '/photos',
 ]);

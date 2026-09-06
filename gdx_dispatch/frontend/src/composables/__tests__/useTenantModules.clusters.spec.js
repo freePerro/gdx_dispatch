@@ -72,10 +72,10 @@ describe('collapseClusters', () => {
     const modules = [
       mk('fleet', 'fleet_hub'),
       mk('gps', 'fleet_hub'),
-      mk('daily_loadsheet', 'loadsheets_hub'),
-      mk('delivery_loadsheet', 'loadsheets_hub'),
+      mk('timesheets', 'payroll_hub'),
+      mk('commissions', 'payroll_hub'),
     ];
     const out = collapseClusters(modules);
-    expect(out.map((m) => m.key)).toEqual(['fleet_hub', 'loadsheets_hub']);
+    expect(out.map((m) => m.key)).toEqual(['fleet_hub', 'payroll_hub']);
   });
 });

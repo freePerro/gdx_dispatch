@@ -222,8 +222,6 @@
   "gdx_dispatch/routers/signatures.py:T6:DocumentSignature.company_id:198",
   "gdx_dispatch/routers/signatures.py:T6:DocumentSignature.company_id:221",
   "gdx_dispatch/routers/signatures.py:T6:DocumentSignature.company_id:338",
-  "gdx_dispatch/routers/supplier_invite.py:T5:SupplierInvitation.tenant_id:127",
-  "gdx_dispatch/routers/supplier_invite.py:T5:SupplierTenantLink.tenant_id:212",
   "gdx_dispatch/routers/support.py:T1:SupportTicket.tenant_id:262",
   "gdx_dispatch/routers/surveys.py:T6:SurveyResponse.company_id:434",
   "gdx_dispatch/routers/surveys.py:T6:SurveyResponse.company_id:481",

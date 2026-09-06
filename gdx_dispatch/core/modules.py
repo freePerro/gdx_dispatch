@@ -49,7 +49,6 @@ MODULES = {
     "mobile": {"name": "Mobile App", "tier": "starter", "default": True},
     "segments": {"name": "Customer Segments", "tier": "business", "default": False},
     "google_maps": {"name": "Google Maps & Routing", "tier": "professional", "default": False},
-    "chrome_extension": {"name": "Supplier Portal Bridge", "tier": "business", "default": False},
     "phone_com": {"name": "Phone.com Voice & SMS", "tier": "professional", "default": False},
     "email": {"name": "Email Integration", "tier": "professional", "default": False},
     "bank_feeds": {"name": "Bank Feeds", "tier": "professional", "default": False},
