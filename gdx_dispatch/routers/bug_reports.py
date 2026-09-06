@@ -1,71 +1,25 @@
-"""Bug Report — in-app bug reporting for users."""
+"""Client-side error capture (``/api/feedback/client-error``).
+
+The in-app bug-report form posts to ``/api/support/bug`` (routers/support.py),
+which is what the Feedback page reads back. The ``/bug-report`` POST and
+``/bug-reports`` GET that lived here wrote a second copy to ``bug_reports``,
+a table no screen ever read; removed 2026-09-06 (the physical table and its
+rows stay).
+"""
 from __future__ import annotations
 
 import contextlib
 import logging
 from datetime import datetime, timezone
-from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
-from gdx_dispatch.core.database import get_db
-from gdx_dispatch.models.tenant_models import BugReport, ClientError
-from gdx_dispatch.routers.auth import get_current_user
+from gdx_dispatch.models.tenant_models import ClientError
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/feedback", tags=["feedback"])
-
-
-class BugReportIn(BaseModel):
-    subject: str = Field(min_length=3, max_length=200)
-    description: str = Field(min_length=5, max_length=5000)
-    priority: str = Field(default="medium", pattern="^(low|medium|high|critical)$")
-    page_url: str | None = Field(default=None, max_length=500)
-    browser_info: str | None = Field(default=None, max_length=500)
-
-
-@router.post("/bug-report", status_code=201)
-def create_bug_report(
-    request: Request,
-    payload: BugReportIn,
-    user: dict[str, Any] = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    tid = str((getattr(request.state, "tenant", {}) or {}).get("id", ""))
-    uid = str(user.get("sub") or user.get("user_id") or "system")
-    report_id = str(uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-
-    report = BugReport(
-        id=report_id,
-        company_id=tid,
-        user_id=uid,
-        subject=payload.subject,
-        description=payload.description,
-        priority=payload.priority,
-        page_url=payload.page_url,
-        browser_info=payload.browser_info,
-        status="new",
-        created_at=now,
-    )
-    db.add(report)
-    db.commit()
-
-    log.info("Bug report created: %s — %s (priority: %s)", report_id, payload.subject, payload.priority)
-
-    log_audit_event_sync(
-        db, tenant_id=tid, user_id=uid, action="create",
-        entity_type="bug_report", entity_id=report_id,
-        details={"subject": payload.subject, "priority": payload.priority},
-        request=request,
-    )
-
-    return {"status": "created", "id": report_id, "subject": payload.subject}
 
 
 class ClientErrorIn(BaseModel):
@@ -182,29 +136,3 @@ def report_client_error(
 
     return {"status": "logged"}
 
-
-@router.get("/bug-reports")
-def list_bug_reports(
-    request: Request,
-    user: dict[str, Any] = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> list[dict[str, Any]]:
-    # Three-plane (2026-04-24 B1): tenant isolation is the connection itself
-    # (per-tenant DB). No company_id filter needed.
-    reports = db.execute(
-        select(BugReport)
-        .order_by(BugReport.created_at.desc())
-        .limit(100)
-    ).scalars().all()
-    return [
-        {
-            "id": r.id,
-            "subject": r.subject,
-            "description": r.description,
-            "priority": r.priority,
-            "status": r.status,
-            "page_url": r.page_url,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
-        }
-        for r in reports
-    ]

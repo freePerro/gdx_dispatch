@@ -12,8 +12,8 @@ before the 2026-07-07 audit caught it. Tickets now land in the
 tenant-plane ``SupportTicket`` model (``support_tickets``), created at
 deploy by ``create_orm_tables()`` like every other ORM table.
 
-Distinct from the legacy ``/api/feedback/bug-report`` flow in
-``bug_reports.py`` (tenant-plane ``BugReport``); both can coexist.
+The in-app bug button (``BugReportButton.vue``) posts here and nowhere
+else since 2026-09-06.
 
 Auth: standard tenant JWT via ``get_current_user``. Tenant ID comes
 from ``request.state.tenant['id']`` (set by TenantMiddleware).
@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.models.tenant_models import AppSettings, SupportTicket
 from gdx_dispatch.routers.auth import get_current_user
@@ -177,6 +178,14 @@ def _create_ticket(
                 detail="Support ticketing is temporarily unavailable. Please try again later.",
             ) from exc
         raise
+    # Invariant #1: who filed it, what, when. The retired /api/feedback path
+    # audited its copy; this path never did (0 rows on prod for either).
+    log_audit_event_sync(
+        db, tenant_id=tenant_id, user_id=opened_by_user_id or "system", action="create",
+        entity_type="support_ticket", entity_id=ticket.id,
+        details={"category": category, "subject": payload.subject, "priority": payload.priority},
+        request=request,
+    )
     return ticket.id
 
 

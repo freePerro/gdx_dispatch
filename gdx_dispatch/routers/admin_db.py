@@ -2,9 +2,9 @@
 
 Surfaces what `ssh + alembic + psql` would, behind guardrails:
 
-* control-plane Alembic state (current rev vs head, pending, ORPHANED detection)
-* tenant-plane ORM-vs-live drift (the `create_all` plane — where "model has
-  column X, table lacks it" bugs live, e.g. invoices.job_id)
+* Alembic state (current rev vs head, pending, ORPHANED detection)
+* ORM-vs-live drift for the `create_all` tables — where "model has
+  column X, table lacks it" bugs live, e.g. invoices.job_id
 * safe actions: backup (pg_dump -Fc), offline SQL preview, and a guarded
   migrate-to-head (backup-gated → advisory-locked in env.py → audited).
 
@@ -55,36 +55,37 @@ def _alembic_cfg() -> Config:
     base = Path(__file__).resolve().parent.parent  # gdx_dispatch/
     cfg = Config(str(base / "alembic.ini"))
     cfg.set_main_option("script_location", str(base / "migrations"))
-    # env.py prefers ALEMBIC_DATABASE_URL/CONTROL_DATABASE_URL; this is the fallback.
+    # env.py prefers ALEMBIC_DATABASE_URL, then DATABASE_URL; this is the fallback.
     cfg.set_main_option("sqlalchemy.url", os.getenv("ALEMBIC_DATABASE_URL") or DATABASE_URL)
     return cfg
 
 
-# Control-plane tables live on the control Base (gdx_dispatch/control/models.py)
-# and are owned by Alembic migrations, NOT create_all. compare_metadata runs
-# against TenantBase.metadata, which doesn't know them, so it reports each as
-# "in DB, not in ORM" — a false positive. Suppress those rows. (Mirrors
-# migration 001's _BASELINE_TABLES.) tenant_module_grants, service_accounts
-# and platform_feature_flags are still physical tables (0 rows on prod) but
-# no longer have an ORM model since the 2026-09-03 SaaS-residue purge.
-_CONTROL_PLANE_TABLES = frozenset({
+# Tables TenantBase.metadata does not know, so compare_metadata reports each
+# as "in DB, not in ORM" — a false positive to suppress. Two kinds:
+#   * owned by Alembic on its own base (Tenant, TenantSettings, the game
+#     tables, server_errors — migration 001's baseline);
+#   * physical tables whose ORM model was retired but whose rows stay:
+#     tenant_module_grants, service_accounts, platform_feature_flags (0 rows,
+#     2026-09-03) and bug_reports (7 rows, 2026-09-06).
+_TABLES_WITHOUT_ORM_MODEL = frozenset({
     "tenants", "tenant_settings", "tenant_module_grants", "platform_feature_flags",
     "service_accounts", "server_errors", "game_definitions", "game_events", "game_state",
+    "bug_reports",
 })
 
 
 def _render_diff(diff) -> dict | None:
     """Turn one compare_metadata tuple into a UI-friendly row, or None to skip."""
     kind = diff[0]
-    # Don't flag Alembic-managed control-plane tables (or their columns/indexes)
-    # as drift against TenantBase — they live on the control Base.
-    if kind == "remove_table" and diff[1].name in _CONTROL_PLANE_TABLES:
+    # Don't flag tables the ORM does not model (or their columns/indexes) as
+    # drift against TenantBase.
+    if kind == "remove_table" and diff[1].name in _TABLES_WITHOUT_ORM_MODEL:
         return None
-    if kind == "remove_column" and diff[2] in _CONTROL_PLANE_TABLES:
+    if kind == "remove_column" and diff[2] in _TABLES_WITHOUT_ORM_MODEL:
         return None
     if kind in ("remove_index", "remove_constraint"):
         tbl = getattr(getattr(diff[1], "table", None), "name", None)
-        if tbl in _CONTROL_PLANE_TABLES:
+        if tbl in _TABLES_WITHOUT_ORM_MODEL:
             return None
     # model-ahead (DB is MISSING something the ORM expects) = the dangerous kind
     if kind == "add_table":
@@ -188,7 +189,7 @@ def status() -> dict:
 
 @router.get("/preview")
 def preview() -> dict:
-    """Offline `--sql` of pending control-plane migrations — exact DDL, no apply."""
+    """Offline `--sql` of pending migrations — exact DDL, no apply."""
     s = _status_payload()["alembic"]
     if s["orphaned"]:
         raise HTTPException(status_code=409, detail="DB is at an orphaned revision; cannot preview. Re-pave or hand-migrate (CLI).")

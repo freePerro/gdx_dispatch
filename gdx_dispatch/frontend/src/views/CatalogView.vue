@@ -95,7 +95,7 @@
                     {{ formatMoney(readField(data, col.field)) }}<span
                       v-if="col.field === 'price' && data.price_source === 'computed'"
                       class="muted"
-                      title="Retail computed from cost × tenant margin tier (no fixed catalog price set)"
+                      title="Retail computed from cost × your margin tier (no fixed catalog price set)"
                     > *</span>
                   </template>
                 </span>

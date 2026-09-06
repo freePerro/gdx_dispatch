@@ -510,8 +510,8 @@
                 <div>
                   <strong>Record handled server errors</strong>
                   <div class="muted">
-                    When on, errors that are normally handled silently — like the
-                    support / <code>cc_support_tickets</code> integration being unavailable —
+                    When on, errors that are normally handled silently — like
+                    an optional integration being unavailable —
                     are also written to the
                     <RouterLink to="/server-errors">Server Errors</RouterLink> log (grouped by
                     type) so you can confirm whether an integration is failing. Leave off for
@@ -806,7 +806,7 @@
                   <ToggleSwitch v-model="catalogPolicy.catalog_ai_suggest_descriptions" data-testid="cat-ai-suggest" />
                   <div>
                     <strong>AI suggestion button in catalog editor</strong>
-                    <div class="muted">Adds "Suggest description" — uses your tenant AI assistant. Customer can review before saving.</div>
+                    <div class="muted">Adds "Suggest description" — uses your AI assistant. Customer can review before saving.</div>
                   </div>
                 </div>
                 <Divider />
@@ -949,7 +949,7 @@
                   <ToggleSwitch v-model="workflowFlags.sms_arrival_notify" data-testid="wf-sms" />
                   <div>
                     <strong>Text customer "Tech is on the way"</strong>
-                    <div class="muted">Requires phone.com integration. Sends from the configured tenant number.</div>
+                    <div class="muted">Requires phone.com integration. Sends from the configured company number.</div>
                   </div>
                 </div>
                 <Divider />
@@ -1016,7 +1016,7 @@
               </p>
               <div class="form-grid" style="display:flex; flex-direction:column; gap:0.75rem; max-width: 480px;">
                 <div>
-                  <label style="display:block; font-weight:500; margin-bottom:0.25rem;">Tenant timezone</label>
+                  <label style="display:block; font-weight:500; margin-bottom:0.25rem;">Company timezone</label>
                   <Select
                     v-model="timeClockSettings.timezone"
                     :options="TIMEZONE_OPTIONS"
@@ -1399,7 +1399,7 @@
 
         <!-- Job Numbers Tab — 2026-04-29 / UX audit F-11. Tenant picks a format
              template and a starting sequence. Counter + yearly reset live in
-             the control plane (tenant_settings). Future: estimates / invoices
+             tenant_settings. Future: estimates / invoices
              share the same `numbering` module. -->
         </TabPanels>
       </Tabs>

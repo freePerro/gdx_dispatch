@@ -111,9 +111,6 @@ services:
       PLATFORM_SMTP_PORT: "465"
       PLATFORM_SMTP_USER: info@example.com
       PLATFORM_SMTP_PASS: ${PLATFORM_SMTP_PASS:-}
-      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
-      CLOUDFLARE_ZONE_ID: ${CLOUDFLARE_ZONE_ID:-}
-      VPS_IP: ${VPS_IP:-}
       GDX_E2E_BYPASS: ${GDX_E2E_BYPASS:-0}
       # Where the in-app plugin storefront reads its curated catalog. Empty
       # falls back to the built-in default, so an operator only sets this to
@@ -128,7 +125,6 @@ services:
       QB_REDIRECT_URI: ${QB_REDIRECT_URI:-http://localhost:8001/api/qb/oauth/callback}
       QB_ENVIRONMENT: ${QB_ENVIRONMENT:-sandbox}
       QB_WEBHOOK_VERIFIER_TOKEN: ${QB_WEBHOOK_VERIFIER_TOKEN:-}
-      GDX_SVC_KEY: ${GDX_SVC_KEY:-}
       POWER_APPS_TENANT_ID: ${POWER_APPS_TENANT_ID:-}
       POWER_APPS_CLIENT_ID: ${POWER_APPS_CLIENT_ID:-}
       GDX_MICROSOFT_SECRET_KEY: ${GDX_MICROSOFT_SECRET_KEY:-}

@@ -369,15 +369,17 @@
     "containers": {
       "check": "docker ps --format '{{.Names}}' | sort",
       "expect": [
-        "docker-app-1",
-        "gdx-nginx",
-        "gdx-postgres",
-        "docker-control-db-1",
-        "docker-tenant-db-1",
-        "docker-redis-1"
+        "gdx-app-1",
+        "gdx-db-1",
+        "gdx-redis-1",
+        "gdx-celery-high-1",
+        "gdx-celery-low-1",
+        "gdx-celery-beat-1",
+        "gdx-plugin-host-1",
+        "gdx-nginx"
       ],
       "status": "all healthy",
-      "last_checked": "2026-04-08"
+      "last_checked": "2026-09-06"
     },
     "ssl": {
       "check": "curl -sv https://gdx.example.com 2>&1 | grep 'expire date'",

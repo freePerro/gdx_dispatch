@@ -12,10 +12,10 @@
           below.
           <span v-if="status.delete_sync_source === 'env'">
             Currently following the global <code>QB_DELETE_SYNC_ENABLED</code>
-            env var. Flip the toggle to override for this tenant.
+            env var. Flip the toggle to override it here.
           </span>
           <span v-else>
-            Per-tenant override is active. Clear it to fall back to the
+            A local override is active. Clear it to fall back to the
             global default.
           </span>
         </p>

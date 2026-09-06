@@ -16,7 +16,7 @@
      self-edits to a recent window (the 422 renders in the dialog's error
      slot if a row slips past the page's own affordance gating).
 
-  Every stamp means SHOP time (Settings → Time Clock → Tenant timezone) —
+  Every stamp means SHOP time (Settings → Time Clock → Company timezone) —
   display, the DatePicker's input, and what goes on the wire. Conversion lives
   in useTenantTimezone (toShopWallClock / shopWallClockToIso), shared with the
   pages that open this dialog.

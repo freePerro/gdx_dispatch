@@ -15,7 +15,7 @@ from redis.asyncio import Redis, from_url
 
 logger = logging.getLogger(__name__)
 
-KNOWN_SERVICES = ["db_provisioning", "stripe_api", "qb_api", "email_delivery"]
+KNOWN_SERVICES = ["stripe_api", "qb_api", "email_delivery"]
 
 
 class CircuitOpenError(Exception):
@@ -208,9 +208,9 @@ def circuit_breaker(service_name: str) -> Callable:
 
     Usage::
 
-        @router.post("/provision")
-        @circuit_breaker("db_provisioning")
-        async def provision_endpoint(...):
+        @router.post("/qb/sync")
+        @circuit_breaker("qb_api")
+        async def sync_endpoint(...):
             ...
     """
 

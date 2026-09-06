@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib
 import pathlib
+import re
 
 import pytest
 
@@ -260,6 +261,59 @@ def test_surviving_tools_resolve_the_one_database() -> None:
         src = inspect.getsource(mod)
         assert "FROM tenants" not in src, mod.__name__
         assert "CONTROL_DATABASE_URL" not in src, mod.__name__
+
+
+_RETIRED_ENV_NAMES = (
+    "CONTROL_DATABASE_URL", "GDX_CONTROL_DATABASE_URL", "CONTROL_DB_PASSWORD",
+    "TENANT_DB_PASSWORD", "TENANT_DB_BASE_URL", "TENANT_TEMPLATE_DB",
+    "SIGNUP_BASE_URL", "SIGNUP_BYPASS_CODE", "GDX_SVC_KEY", "VPS_IP",
+    "STRIPE_TRIAL_DAYS", "STRIPE_PORTAL_RETURN_URL", "STRIPE_PRICE_STARTER",
+    "acting_on_tenant_id", "db_provisioning",
+)
+_RETIRED_NAME_RE = re.compile(r"\b(" + "|".join(map(re.escape, _RETIRED_ENV_NAMES)) + r")\b")
+_REPO_ROOT = _HERE.parent
+# Directories git ignores or that hold immutable / dated records. Matched as
+# path prefixes relative to the repo root, not by bare name.
+_SKIP_PREFIXES = (
+    "gdx_dispatch/migrations/", "docs/design/", ".git/", "node_modules/", "dist/",
+    ".venv/", ".mypy_cache/", ".ruff_cache/", ".pytest_cache/", ".hypothesis/",
+    ".playwright-mcp/", "scratch_e2e/", "gdx_dispatch/frontend/node_modules/",
+    "gdx_dispatch/frontend/dist/",
+)
+# Git-ignored working files the process writes locally (never committed).
+_SKIP_FILES = {"VERIFICATION_MANIFEST.md"}
+_SCAN_SUFFIXES = {".py", ".sh", ".yml", ".yaml", ".js", ".vue", ".json", ".template", ".example", ".txt", ".md"}
+
+
+def test_retired_env_and_state_names_appear_nowhere() -> None:
+    """Round three, B1/B3/B7/B8/B9. A source-absence guard: every retired env var
+    and the two dead state names are gone from every file that ships, outside
+    the immutable migrations and the dated design docs. Counterfactual:
+    re-adding `CONTROL_DATABASE_URL=` to .env.template, or the
+    `acting_on_tenant_id` extractor to tracing.py, turns this red. Whole-word
+    matches only (`VPS_IPV4` would not fire); docs whose status line says
+    HISTORICAL keep their vocabulary; this file's own list is exempt."""
+    hits: list[str] = []
+    for path in _REPO_ROOT.rglob("*"):
+        if not path.is_file() or path == pathlib.Path(__file__).resolve():
+            continue
+        rel = path.relative_to(_REPO_ROOT).as_posix()
+        if rel in _SKIP_FILES or any(part == "__pycache__" for part in path.parts):
+            continue
+        if any(rel.startswith(prefix) for prefix in _SKIP_PREFIXES):
+            continue
+        if path.suffix not in _SCAN_SUFFIXES and path.name not in (".env.template", ".env.lab.example"):
+            continue
+        try:
+            text = path.read_text(errors="ignore")
+        except OSError:
+            continue
+        if path.suffix == ".md" and "HISTORICAL" in "\n".join(text.split("\n")[:5]):
+            continue  # a dated record of the removed system keeps its vocabulary
+        for m in _RETIRED_NAME_RE.finditer(text):
+            hits.append(f"{rel}: {m.group(1)}")
+            break
+    assert not hits, "retired names still present:\n" + "\n".join(hits)
 
 
 def test_drift_scanner_has_no_multi_tenant_rules() -> None:

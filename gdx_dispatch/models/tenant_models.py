@@ -2223,23 +2223,6 @@ class PdfTemplate(Base):
     __table_args__ = (UniqueConstraint("company_id", "template_type", name="uq_pdf_template"),)
 
 
-class BugReport(Base):
-    __tablename__ = "bug_reports"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    user_id: Mapped[str] = mapped_column(String(36), nullable=True)
-    subject: Mapped[str] = mapped_column(String(200), nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    priority: Mapped[str] = mapped_column(String(20), nullable=True, default="medium")
-    page_url: Mapped[str] = mapped_column(Text, nullable=True)
-    browser_info: Mapped[str] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(20), nullable=True, default="new")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    resolved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    resolved_by: Mapped[str] = mapped_column(String(36), nullable=True)
-    resolution_notes: Mapped[str] = mapped_column(Text, nullable=True)
-
-
 class SupportTicket(Base):
     """Tenant-plane home for /api/support submissions.
 

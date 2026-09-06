@@ -1,4 +1,4 @@
-"""Alembic environment for GDX control plane database."""
+"""Alembic environment for the GDX application database."""
 import os
 import sys
 from logging.config import fileConfig
@@ -15,20 +15,18 @@ if config.config_file_name:
 
 target_metadata = Base.metadata
 
-# Migration URL resolution (post D97 Phase 1):
-#   ALEMBIC_DATABASE_URL  — preferred override; should point at a DDL-capable
-#                           role (the "gdx" superuser) since CREATE TABLE,
-#                           CREATE POLICY, etc. require schema-level privileges
-#                           that the runtime "gdx_app" role does NOT have.
-#   CONTROL_DATABASE_URL  — runtime app URL (NOSUPERUSER NOBYPASSRLS in
-#                           Phase 1); falls back here when ALEMBIC_DATABASE_URL
-#                           is unset, but new schema-changing migrations will
-#                           fail with "permission denied for schema public"
-#                           when this is the path.
+# Migration URL resolution:
+#   ALEMBIC_DATABASE_URL  — preferred; the container entrypoint exports it from
+#                           DATABASE_URL before running `alembic upgrade head`.
+#                           Point it at a DDL-capable role: CREATE TABLE etc.
+#                           need schema-level privileges a restricted runtime
+#                           role may not have.
+#   DATABASE_URL          — the application database; used when the override
+#                           is unset (a bare `alembic` shell run).
 #   sqlalchemy.url (ini)  — last-resort default for offline/test envs.
 db_url = (
     os.getenv("ALEMBIC_DATABASE_URL")
-    or os.getenv("CONTROL_DATABASE_URL")
+    or os.getenv("DATABASE_URL")
     or config.get_main_option("sqlalchemy.url")
 )
 if db_url:

@@ -409,8 +409,8 @@ onMounted(async () => {
       <div>
         <h3>Phone.com Voice &amp; SMS</h3>
         <p class="muted">
-          Per-tenant Phone.com integration. Bring your own Phone.com access token —
-          we never share keys across tenants.
+          Bring your own Phone.com access token. It is stored encrypted on this
+          install and sent only to Phone.com.
         </p>
       </div>
       <div class="toggle-row">

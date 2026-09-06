@@ -76,25 +76,18 @@ watch(showDialog, (open) => {
 async function submit() {
   submitting.value = true;
   try {
-    // Tenant-plane record (legacy /api/feedback/bug-report flow).
-    await api.post("/api/feedback/bug-report", {
-      subject: form.value.subject,
-      description: form.value.description,
-      priority: form.value.priority,
-      page_url: form.value.page_url,
-      browser_info: form.value.browser_info,
-    });
-    // Control-plane mirror (cc2-s49a) — surfaces the report in the
-    // apartment-manager cockpit's support queue. Best-effort: if the
-    // CP write fails, the tenant-plane record still landed.
-    const ccPriority = form.value.priority === "critical" ? "urgent" : form.value.priority;
+    // One write, awaited, and the toast follows its result. Until 2026-09-06
+    // this posted twice: an awaited /api/feedback/bug-report (a table no
+    // screen ever read) plus an un-awaited, error-swallowed copy here — the
+    // only one a person can see afterwards, on the Feedback page.
+    const priority = form.value.priority === "critical" ? "urgent" : form.value.priority;
     const browserSummary = shortBrowser.value;
     const annotated = `${form.value.description}\n\n---\nPage: ${form.value.page_url}\nBrowser: ${browserSummary}`;
-    api.post("/api/support/bug", {
+    await api.post("/api/support/bug", {
       subject: form.value.subject,
       body: annotated,
-      priority: ccPriority,
-    }).catch(() => { /* CP write failed — tenant record is the source of truth */ });
+      priority,
+    });
     toast.add({ severity: "success", summary: "Bug Reported", detail: "Thank you! We'll look into it.", life: 4000 });
     showDialog.value = false;
     form.value.subject = "";

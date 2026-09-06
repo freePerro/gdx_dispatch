@@ -49,7 +49,7 @@ onMounted(fetchKey)
         <h3>Google Maps</h3>
         <p class="muted">
           Drives the Maps and GPS tabs. Bring your own Google Cloud project — restrict the
-          key to your tenant domain in Google Cloud Console.
+          key to your domain in Google Cloud Console.
         </p>
       </div>
       <span :class="['badge', configured ? 'badge-ok' : 'badge-warn']">

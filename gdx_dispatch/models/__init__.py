@@ -13,7 +13,6 @@ from gdx_dispatch.models.tenant_models import (  # noqa: F401
     # Phase 3: DDL replacement models (all _ensure_tables DDL now has ORM equivalents)
     BookingJob,
     BookingRequest,
-    BugReport,
     ChangeOrderLine,
     Checklist,
     ChecklistItem,

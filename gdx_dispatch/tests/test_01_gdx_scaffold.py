@@ -79,7 +79,6 @@ def test_health_endpoint_sqlite_url_is_healthy(gdx_client, monkeypatch):
     before 2026-08-04 any sqlite DATABASE_URL made /health 503 forever.
     """
     monkeypatch.setenv("DATABASE_URL", "sqlite://")
-    monkeypatch.delenv("CONTROL_DATABASE_URL", raising=False)
     rv = gdx_client.get("/health")
     assert rv.status_code == 200, (
         f"/health must be green on a sqlite URL, got {rv.status_code}: {rv.text}"
