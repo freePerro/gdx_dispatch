@@ -49,7 +49,6 @@ MODULES = {
     "mobile": {"name": "Mobile App"},
     "segments": {"name": "Customer Segments"},
     "google_maps": {"name": "Google Maps & Routing"},
-    "chrome_extension": {"name": "Supplier Portal Bridge"},
     "phone_com": {"name": "Phone.com Voice & SMS"},
     "email": {"name": "Email Integration"},
     "bank_feeds": {"name": "Bank Feeds"},

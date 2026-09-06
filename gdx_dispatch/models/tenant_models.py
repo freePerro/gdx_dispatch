@@ -2801,43 +2801,6 @@ class PORequestLine(Base):
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
 
 
-class SupplierCatalogItem(Base):
-    __tablename__ = "supplier_catalog"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    supplier_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    sku: Mapped[str] = mapped_column(String(100), nullable=True)
-    name: Mapped[str] = mapped_column(String(300), nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=True)
-    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
-    stock_level: Mapped[int] = mapped_column(Integer, nullable=True, default=0)
-    category: Mapped[str] = mapped_column(String(100), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
-
-
-class SupplierOrder(Base):
-    __tablename__ = "supplier_orders"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    supplier_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
-    total_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
-    notes: Mapped[str] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
-
-
-class SupplierOrderLine(Base):
-    __tablename__ = "supplier_order_lines"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    order_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
-    sku: Mapped[str] = mapped_column(String(100), nullable=True)
-    name: Mapped[str] = mapped_column(String(300), nullable=True)
-    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
-    line_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
-
-
 class TimeclockEntry(Base):
     __tablename__ = "timeclock_entries_router"
     id: Mapped[str] = mapped_column(Text, primary_key=True)
@@ -3006,38 +2969,6 @@ class RolePermission(Base):
     role: Mapped[str] = mapped_column(Text, primary_key=True)
     permissions: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
-
-
-class SupplierInvitation(Base):
-    __tablename__ = "supplier_invitations"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    supplier_email: Mapped[str] = mapped_column(String(254), nullable=False)
-    supplier_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    token: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
-    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class SupplierAccount(Base):
-    __tablename__ = "supplier_accounts"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    email: Mapped[str] = mapped_column(String(254), nullable=False, unique=True)
-    password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
-    company_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    phone: Mapped[str] = mapped_column(String(50), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
-
-
-class SupplierTenantLink(Base):
-    __tablename__ = "supplier_tenant_links"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    supplier_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
-    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
-    __table_args__ = (UniqueConstraint("supplier_id", "tenant_id", name="uq_supplier_tenant"),)
 
 
 class User(Base):

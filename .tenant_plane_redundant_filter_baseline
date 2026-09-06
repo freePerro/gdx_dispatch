@@ -15,7 +15,7 @@
   "gdx_dispatch/core/locations.py:T5:ServiceLocation.tenant_id:198",
   "gdx_dispatch/core/locations.py:T5:ServiceLocation.tenant_id:209",
   "gdx_dispatch/core/locations.py:T5:ServiceLocation.tenant_id:267",
-  "gdx_dispatch/core/modules.py:T6:UserRoleAssignment.company_id:425",
+  "gdx_dispatch/core/modules.py:T6:UserRoleAssignment.company_id:424",
   "gdx_dispatch/core/next_action.py:T1:NextAction.tenant_id:142",
   "gdx_dispatch/core/next_action.py:T1:NextAction.tenant_id:193",
   "gdx_dispatch/core/next_action.py:T1:NextAction.tenant_id:226",
