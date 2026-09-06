@@ -12,9 +12,8 @@ filter added on top is:
      rows that should be visible. The 2026-04-22 documents bug shipped
      because of this exact pattern: tenant-plane documents got a
      `tenant_id IS NOT NULL` predicate, hiding every legacy row.
-  3. A code smell that signals the author hasn't internalized the
-     three-plane model — they're treating the tenant plane like the
-     shared control plane.
+  3. A code smell that signals the author is defending against a second
+     tenant that cannot exist.
 
 What it flags (baseline-aware, --strict for CI)
 -----------------------------------------------
@@ -31,17 +30,15 @@ and the same wrapped in `and_()`/`or_()`/`not_()`/`cast()`. The
 
 Scan scope
 ----------
-All `.py` files under `gdx/` except: `gdx_dispatch/tests/`, `gdx_dispatch/migrations/`,
-`gdx_dispatch/control/` (the control plane LEGITIMATELY filters by tenant_id —
-that's its isolation model), and `__pycache__`.
+All `.py` files under `gdx_dispatch/` except `gdx_dispatch/tests/`,
+`gdx_dispatch/migrations/`, `gdx_dispatch/tools/` and `__pycache__`.
 
 False positives & how to triage
 -------------------------------
 A scan finding here is not always a real bug — sometimes the `Foo` in
-`Foo.tenant_id == x` is a control-plane model (Tenant, TenantSettings)
-that legitimately needs the filter. The signature
-records the model name, so review can spot those quickly. If the model
-is control-plane, either:
+`Foo.tenant_id == x` is `Tenant` or `TenantSettings`, whose primary key IS
+the tenant id, so the filter is the lookup. The signature records the model
+name, so review can spot those quickly. If so, either:
   - Annotate the line with `# noqa: T1` (or T2/T3/T4/T5/T6 as appropriate), or
   - Run `--baseline` to fold it into the baseline.
 
@@ -77,7 +74,6 @@ SCAN_ROOTS = [REPO_ROOT / "gdx_dispatch"]
 SKIP_DIR_PARTS = {
     "tests",
     "migrations",
-    "control",       # control plane filters by tenant_id legitimately
     "__pycache__",
     "tools",         # the scans themselves
 }
@@ -381,7 +377,7 @@ def main() -> int:
         print("   See CLAUDE.md § Tenant Isolation. The tenant plane isolates by")
         print("   connection; tenant_id/company_id filters are redundant and break")
         print("   on NULL (the 2026-04-22 documents bug pattern). If the model is")
-        print("   actually control-plane, add it to .tenant_plane_redundant_filter_baseline")
+        print("   a Tenant/TenantSettings lookup, add it to .tenant_plane_redundant_filter_baseline")
         print("   or annotate the line with `# noqa: T1` (etc).")
         return 1
 

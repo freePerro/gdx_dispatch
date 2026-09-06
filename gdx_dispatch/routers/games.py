@@ -24,9 +24,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.control.models import GameDefinition, GameEvent, GameState
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_role
+from gdx_dispatch.core.tenant_settings import GameDefinition, GameEvent, GameState
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)

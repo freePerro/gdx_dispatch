@@ -210,7 +210,7 @@ def test_database_schema_conformance():
     import sqlalchemy.exc
     from sqlalchemy import create_engine, inspect
 
-    from gdx_dispatch.control.models import Base
+    from gdx_dispatch.core.tenant_settings import Base
 
     # Context-awareness: if we can't reach the DB from this host, the detector
     # can't do its job HERE — but the drift it's looking for may still exist

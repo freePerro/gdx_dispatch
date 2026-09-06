@@ -7,7 +7,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-from gdx_dispatch.control.models import Base
+from gdx_dispatch.core.tenant_settings import Base
 
 config = context.config
 if config.config_file_name:

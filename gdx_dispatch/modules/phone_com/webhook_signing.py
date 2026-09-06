@@ -18,7 +18,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.control.models import TenantSettings
+from gdx_dispatch.core.tenant_settings import TenantSettings
 from gdx_dispatch.modules.phone_com.key_storage import _fernet
 
 log = logging.getLogger(__name__)

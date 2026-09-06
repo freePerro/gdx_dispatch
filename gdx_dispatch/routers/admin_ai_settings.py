@@ -16,15 +16,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from sqlalchemy import text
-
-from gdx_dispatch.control.models import TenantSettings
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.llm.key_storage import clear_key, set_key, test_the_key
+from gdx_dispatch.core.tenant_settings import TenantSettings
 from gdx_dispatch.routers.auth import get_current_user
-
 
 router = APIRouter(prefix="/api/admin/ai-settings", tags=["admin", "ai"])
 

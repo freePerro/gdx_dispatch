@@ -31,14 +31,13 @@ from itsdangerous import URLSafeTimedSerializer
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.control.models import Tenant, TenantSettings
-from gdx_dispatch.core.database import get_db, get_db
+from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.tenant_settings import Tenant, TenantSettings
 from gdx_dispatch.modules.outlook import key_storage
 from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError, OutlookGraphClient
 from gdx_dispatch.modules.outlook.models import OutlookAccount
 from gdx_dispatch.routers.auth import get_current_user
-
 
 log = logging.getLogger("gdx_dispatch.routers.outlook_oauth")
 

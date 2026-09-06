@@ -12,8 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from gdx_dispatch.control.models import TenantSettings
-
+from gdx_dispatch.core.tenant_settings import TenantSettings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

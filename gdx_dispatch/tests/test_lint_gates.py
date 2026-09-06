@@ -22,7 +22,6 @@ from gdx_dispatch.tools import (
     tenant_plane_redundant_filter_scan,
 )
 
-
 # ────────────────────────────────────────────────────────────────────────
 # is_suppressed (`# noqa: <CODE>`)
 # ────────────────────────────────────────────────────────────────────────
@@ -34,12 +33,12 @@ from gdx_dispatch.tools import (
 )
 class TestNoqa:
     def test_bare_noqa_suppresses_all(self, scan_module):
-        assert scan_module.is_suppressed("from gdx_dispatch.control import x  # noqa", "X1")
-        assert scan_module.is_suppressed("from gdx_dispatch.control import x  # noqa", "X2")
+        assert scan_module.is_suppressed("from gdx_dispatch.models import x  # noqa", "X1")
+        assert scan_module.is_suppressed("from gdx_dispatch.models import x  # noqa", "X2")
 
     def test_noqa_with_code_suppresses_only_that(self, scan_module):
-        assert scan_module.is_suppressed("from gdx_dispatch.control import x  # noqa: X1", "X1")
-        assert not scan_module.is_suppressed("from gdx_dispatch.control import x  # noqa: X1", "X2")
+        assert scan_module.is_suppressed("from gdx_dispatch.models import x  # noqa: X1", "X1")
+        assert not scan_module.is_suppressed("from gdx_dispatch.models import x  # noqa: X1", "X2")
 
     def test_noqa_with_multiple_codes(self, scan_module):
         assert scan_module.is_suppressed("foo  # noqa: T1, T3", "T1")
@@ -47,7 +46,7 @@ class TestNoqa:
         assert not scan_module.is_suppressed("foo  # noqa: T1, T3", "T5")
 
     def test_no_noqa(self, scan_module):
-        assert not scan_module.is_suppressed("from gdx_dispatch.control import x", "X1")
+        assert not scan_module.is_suppressed("from gdx_dispatch.models import x", "X1")
 
 
 # ────────────────────────────────────────────────────────────────────────

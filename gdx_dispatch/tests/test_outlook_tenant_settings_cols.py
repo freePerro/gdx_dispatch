@@ -1,7 +1,7 @@
 """Slice outlook-s2 — verify the 4 new TenantSettings columns exist + are nullable."""
 from __future__ import annotations
 
-from gdx_dispatch.control.models import TenantSettings
+from gdx_dispatch.core.tenant_settings import TenantSettings
 
 
 def test_outlook_columns_exist():
@@ -32,7 +32,7 @@ def test_outlook_secret_column_is_text_for_fernet_ciphertext():
     col = TenantSettings.__table__.columns["outlook_client_secret_enc"]
     # Text columns have no length on Postgres; on sqlite, they map to TEXT.
     # We check the SQLAlchemy type isn't a length-bounded String.
-    from sqlalchemy import Text, String
+    from sqlalchemy import String, Text
     assert isinstance(col.type, Text) or (isinstance(col.type, String) and col.type.length is None), (
         f"outlook_client_secret_enc must be Text (Fernet ciphertext is variable-length); got {col.type}"
     )

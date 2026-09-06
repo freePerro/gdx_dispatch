@@ -50,7 +50,6 @@ gdx_dispatch/                  repo root
 │   ├── models/                SQLAlchemy ORM models
 │   ├── services/              domain services (pricing engine, …)
 │   ├── core/                  shared services, settings, auth helpers
-│   ├── control/               Tenant + TenantSettings ORM on the Alembic base
 │   ├── integrations/          third-party integration glue
 │   ├── plugin_host/           sandboxed plugin runtime (separate container)
 │   ├── plugin_api/            stable API surface exposed to plugins

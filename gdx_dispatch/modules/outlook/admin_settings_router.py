@@ -28,13 +28,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.control.models import TenantSettings
-from gdx_dispatch.core.database import get_db, get_db
+from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.tenant_settings import TenantSettings
 from gdx_dispatch.modules.outlook import key_storage
 from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookSettings
 from gdx_dispatch.modules.outlook.vendor_bill_ingest import normalize_allowlist
 from gdx_dispatch.routers.auth import get_current_user
-
 
 log = logging.getLogger("gdx_dispatch.modules.outlook.admin_settings_router")
 

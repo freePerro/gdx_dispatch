@@ -322,7 +322,7 @@ def _default_bases() -> tuple[list[Any], str | None]:
     errors: list[str] = []
     candidates = [
         ("TenantBase", "gdx_dispatch.core.audit", "TenantBase"),
-        ("ControlBase", "gdx_dispatch.control.models", "Base"),
+        ("AlembicBase", "gdx_dispatch.core.tenant_settings", "Base"),
     ]
     for label, module, attr in candidates:
         try:

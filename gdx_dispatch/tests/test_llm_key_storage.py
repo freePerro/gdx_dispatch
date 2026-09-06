@@ -16,7 +16,6 @@ from cryptography.fernet import Fernet
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from gdx_dispatch.control.models import Base, Tenant, TenantSettings
 from gdx_dispatch.core.llm.key_storage import (
     LLMKeyStorageError,
     clear_key,
@@ -24,6 +23,7 @@ from gdx_dispatch.core.llm.key_storage import (
     set_key,
     test_the_key,
 )
+from gdx_dispatch.core.tenant_settings import Base, Tenant, TenantSettings
 
 
 @pytest.fixture

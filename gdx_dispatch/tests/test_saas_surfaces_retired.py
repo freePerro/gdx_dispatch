@@ -153,7 +153,7 @@ def test_platform_orm_is_gone(modname: str) -> None:
 
 
 def test_control_models_carry_no_saas_state() -> None:
-    from gdx_dispatch.control import models as cm
+    from gdx_dispatch.core import tenant_settings as cm
 
     assert not hasattr(cm, "TenantModuleGrant")
     assert not hasattr(cm, "ServiceAccount")
@@ -314,6 +314,47 @@ def test_retired_env_and_state_names_appear_nowhere() -> None:
             hits.append(f"{rel}: {m.group(1)}")
             break
     assert not hits, "retired names still present:\n" + "\n".join(hits)
+
+
+def test_control_package_is_gone() -> None:
+    """Round three, C. ``gdx_dispatch/control/`` — the last place "control
+    plane" was a package rather than a comment — moved to
+    ``gdx_dispatch/core/tenant_settings.py`` on 2026-09-06. Counterfactual:
+    re-creating the package (even an empty ``__init__.py``) turns this red."""
+    stale = _HERE / "control"
+    assert not stale.exists(), (
+        f"{stale} exists — a leftover __pycache__ makes it an importable namespace "
+        "package; `rm -rf` it (the package was deleted 2026-09-06)"
+    )
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("gdx_dispatch.control")
+    from gdx_dispatch.core import tenant_settings
+
+    assert {"tenants", "tenant_settings"} <= set(tenant_settings.Base.metadata.tables)
+
+
+def test_alembic_base_imports_without_the_app() -> None:
+    """Round three, C. ``migrations/env.py`` imports the Alembic base; that import
+    must not drag in routers, auth or the JWT-key check, or a bare
+    ``alembic upgrade`` with only DATABASE_URL set dies at env.py. Run in a fresh
+    interpreter with a scrubbed environment. Counterfactual: moving the module
+    back under ``gdx_dispatch/models/`` (the eager create_all registry) turns
+    this red."""
+    import os
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; import gdx_dispatch.core.tenant_settings as ts; "
+        "loaded = sorted(m for m in sys.modules if m.startswith(('gdx_dispatch.routers', "
+        "'gdx_dispatch.models', 'gdx_dispatch.app', 'gdx_dispatch.modules'))); "
+        "print(','.join(loaded) or 'none'); "
+        "assert {'tenants', 'tenant_settings'} <= set(ts.Base.metadata.tables)"
+    )
+    env = {"PATH": os.environ.get("PATH", ""), "DATABASE_URL": "sqlite://", "PYTHONPATH": str(_HERE.parent)}
+    proc = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert proc.stdout.strip() == "none", f"importing the Alembic base loaded the app: {proc.stdout.strip()}"
 
 
 def test_drift_scanner_has_no_multi_tenant_rules() -> None:

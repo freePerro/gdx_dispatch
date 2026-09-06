@@ -10,7 +10,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from gdx_dispatch.control.models import Base, Tenant
+from gdx_dispatch.core.tenant_settings import Base, Tenant
 from gdx_dispatch.modules.phone_com.key_storage import (
     get_or_create_webhook_secret,
     revert_webhook_secret,
@@ -55,7 +55,7 @@ def test_rotate_grace_window_expires(control_session, fernet_env):
     old = get_or_create_webhook_secret(sess, tid)
     rotate_webhook_secret(sess, tid, grace_seconds=1)
     # Force the prev_until into the past.
-    from gdx_dispatch.control.models import TenantSettings
+    from gdx_dispatch.core.tenant_settings import TenantSettings
     s = sess.get(TenantSettings, tid)
     s.phone_com_webhook_secret_prev_until = datetime.now(timezone.utc) - timedelta(minutes=1)
     sess.commit()
@@ -87,7 +87,7 @@ def test_clear_webhook_secret_clears_prev_too(control_session, fernet_env):
     get_or_create_webhook_secret(sess, tid)
     rotate_webhook_secret(sess, tid)
     clear_webhook_secret(sess, tid)
-    from gdx_dispatch.control.models import TenantSettings
+    from gdx_dispatch.core.tenant_settings import TenantSettings
     s = sess.get(TenantSettings, tid)
     assert s.phone_com_webhook_secret is None
     assert s.phone_com_webhook_secret_prev is None

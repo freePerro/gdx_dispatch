@@ -9,6 +9,7 @@ import json
 from uuid import uuid4
 
 import httpx
+import pytest
 import respx
 from cryptography.fernet import Fernet
 from fastapi import FastAPI
@@ -17,14 +18,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-import pytest
-
-from gdx_dispatch.control.models import Base as ControlBase
-from gdx_dispatch.control.models import Tenant
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db, get_tenant_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.tenant_settings import Base as ControlBase
+from gdx_dispatch.core.tenant_settings import Tenant
 from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.modules.phone_com import key_storage
 from gdx_dispatch.modules.phone_com.models import PhoneComMessage

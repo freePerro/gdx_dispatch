@@ -45,7 +45,6 @@ known-first-party = ["gdx_dispatch"]
 "gdx_dispatch/tests/test_38_data_export.py" = ["F821", "S101", "S106", "B011"]
 "gdx_dispatch/tests/test_07_gdpr_deletion.py" = ["F821", "S101", "S106", "B011"]
 "gdx_dispatch/core/**" = ["B008"]  # FastAPI Depends() pattern across all core routers/deps
-"gdx_dispatch/control/**" = ["B008"]  # FastAPI Depends() in control-plane endpoints
 "gdx_dispatch/integrations/**" = ["B008"]  # FastAPI Depends() in integration router modules
 "gdx_dispatch/modules/**" = ["B008"]  # FastAPI Depends() in feature-module routers (customer_portal, etc.)
 "gdx_dispatch/tests/e2e/**" = ["S501", "S101", "S106", "B011"]  # tests hit local test server; S501 intentional

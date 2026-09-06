@@ -349,7 +349,7 @@ def control_db():
       mid-request. The engine is reused across tests to avoid connection
       churn.
     """
-    from gdx_dispatch.control.models import Base as ControlBase
+    from gdx_dispatch.core.tenant_settings import Base as ControlBase
 
     pg_url = os.environ.get("GDX_TEST_CONTROL_DB_URL", "").strip()
     if pg_url:

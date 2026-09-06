@@ -27,11 +27,10 @@ from contextlib import closing
 
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.control.models import Tenant, TenantSettings
 from gdx_dispatch.core.database import tenant_context
 from gdx_dispatch.core.tenant import single_tenant
+from gdx_dispatch.core.tenant_settings import Tenant, TenantSettings
 from gdx_dispatch.modules.outlook import key_storage
-
 
 log = logging.getLogger("gdx_dispatch.modules.outlook.bootstrap")
 

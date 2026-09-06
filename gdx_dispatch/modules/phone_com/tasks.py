@@ -23,8 +23,8 @@ from typing import Any
 from uuid import UUID
 
 from gdx_dispatch.core.celery_app import celery_app
-from gdx_dispatch.core.database import SessionLocal, SessionLocal
-from gdx_dispatch.control.models import Tenant, TenantSettings
+from gdx_dispatch.core.database import SessionLocal
+from gdx_dispatch.core.tenant_settings import Tenant, TenantSettings
 from gdx_dispatch.modules.phone_com.stats import roll_up_recent
 from gdx_dispatch.modules.phone_com.sync import (
     _open_tenant_session,
@@ -32,7 +32,6 @@ from gdx_dispatch.modules.phone_com.sync import (
     sync_recent_calls,
     sync_recent_messages,
 )
-
 
 log = logging.getLogger("gdx_dispatch.modules.phone_com.tasks")
 
@@ -168,10 +167,10 @@ def roll_up_phone_com_stats(self, tenant_id: str) -> dict[str, Any]:
 def reconcile_call_reports(self, tenant_id: str) -> dict[str, Any]:
     """P3.11 — compare Phone.com /call-reports against phone_com_stats_daily."""
     _ = self
+    from gdx_dispatch.models.tenant_models import AppSettings
     from gdx_dispatch.modules.phone_com import key_storage
     from gdx_dispatch.modules.phone_com.client import PhoneComClient
     from gdx_dispatch.modules.phone_com.reconcile import reconcile_recent
-    from gdx_dispatch.models.tenant_models import AppSettings
 
     tid = UUID(tenant_id) if not isinstance(tenant_id, UUID) else tenant_id
     with contextlib.closing(SessionLocal()) as cdb:
@@ -222,10 +221,10 @@ def push_contacts(self, tenant_id: str) -> dict[str, Any]:
     """P2.8 — push GDX customers as Phone.com contacts for one tenant.
     See push_contacts.push_contacts_for_tenant for the inner loop."""
     _ = self
+    from gdx_dispatch.models.tenant_models import AppSettings
     from gdx_dispatch.modules.phone_com import key_storage
     from gdx_dispatch.modules.phone_com.client import PhoneComClient
     from gdx_dispatch.modules.phone_com.push_contacts import push_contacts_for_tenant
-    from gdx_dispatch.models.tenant_models import AppSettings
 
     tid = UUID(tenant_id) if not isinstance(tenant_id, UUID) else tenant_id
     with contextlib.closing(SessionLocal()) as cdb:
@@ -288,6 +287,7 @@ def rotate_webhook_secret(self, tenant_id: str) -> dict[str, Any]:
     """
     _ = self
     import os
+
     from gdx_dispatch.modules.phone_com import key_storage
     from gdx_dispatch.modules.phone_com.client import PhoneComClient
 

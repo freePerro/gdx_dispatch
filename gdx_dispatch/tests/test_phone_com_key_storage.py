@@ -15,7 +15,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from gdx_dispatch.control.models import Base, Tenant, TenantSettings
+from gdx_dispatch.core.tenant_settings import Base, Tenant, TenantSettings
 from gdx_dispatch.modules.phone_com.key_storage import (
     PhoneComKeyStorageError,
     clear_token,

@@ -13,8 +13,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.control.models import TenantSettings
-
+from gdx_dispatch.core.tenant_settings import TenantSettings
 
 _INITIALS_RE = re.compile(r"[A-Za-z]+")
 
