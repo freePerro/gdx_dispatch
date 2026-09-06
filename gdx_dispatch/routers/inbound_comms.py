@@ -188,8 +188,8 @@ def list_inbound_sms(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    tenant_id = _tenant_id(request)
-    stmt = select(InboundSMS).where(InboundSMS.company_id == tenant_id)
+    _tenant_id(request)
+    stmt = select(InboundSMS)
     if from_number:
         stmt = stmt.where(InboundSMS.from_number == from_number)
     stmt = stmt.order_by(InboundSMS.received_at.desc()).limit(limit).offset(offset)
@@ -204,12 +204,9 @@ def get_inbound_sms(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    tenant_id = _tenant_id(request)
+    _tenant_id(request)
     row = db.execute(
-        select(InboundSMS).where(
-            InboundSMS.id == sms_id,
-            InboundSMS.company_id == tenant_id,
-        )
+        select(InboundSMS).where(InboundSMS.id == sms_id)
     ).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="Inbound SMS not found")
@@ -226,10 +223,7 @@ def link_inbound_sms(
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
     row = db.execute(
-        select(InboundSMS).where(
-            InboundSMS.id == sms_id,
-            InboundSMS.company_id == tenant_id,
-        )
+        select(InboundSMS).where(InboundSMS.id == sms_id)
     ).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="Inbound SMS not found")
@@ -275,8 +269,8 @@ def list_inbound_email(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    tenant_id = _tenant_id(request)
-    stmt = select(InboundEmail).where(InboundEmail.company_id == tenant_id)
+    _tenant_id(request)
+    stmt = select(InboundEmail)
     if unread_only:
         stmt = stmt.where(InboundEmail.read_at.is_(None))
     if from_email:
@@ -293,12 +287,9 @@ def get_inbound_email(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    tenant_id = _tenant_id(request)
+    _tenant_id(request)
     row = db.execute(
-        select(InboundEmail).where(
-            InboundEmail.id == email_id,
-            InboundEmail.company_id == tenant_id,
-        )
+        select(InboundEmail).where(InboundEmail.id == email_id)
     ).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="Inbound email not found")
@@ -314,10 +305,7 @@ def mark_inbound_email_read(
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
     row = db.execute(
-        select(InboundEmail).where(
-            InboundEmail.id == email_id,
-            InboundEmail.company_id == tenant_id,
-        )
+        select(InboundEmail).where(InboundEmail.id == email_id)
     ).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="Inbound email not found")
@@ -349,10 +337,7 @@ def link_inbound_email(
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
     row = db.execute(
-        select(InboundEmail).where(
-            InboundEmail.id == email_id,
-            InboundEmail.company_id == tenant_id,
-        )
+        select(InboundEmail).where(InboundEmail.id == email_id)
     ).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="Inbound email not found")

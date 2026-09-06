@@ -10,7 +10,6 @@ tests run everywhere on in-memory sqlite.
 from __future__ import annotations
 
 from collections.abc import Generator
-from datetime import UTC, datetime
 
 import pytest
 from fastapi import FastAPI, Request
@@ -122,7 +121,7 @@ def test_submit_short_body_422(client):
     assert r.status_code == 422
 
 
-def test_my_lists_own_tenant_newest_first_with_category_filter(client, db):
+def test_my_lists_newest_first_with_category_filter(client, db):
     client.post(
         "/api/support/bug",
         json={"subject": "First bug", "body": "details details"},
@@ -135,21 +134,8 @@ def test_my_lists_own_tenant_newest_first_with_category_filter(client, db):
         "/api/support/bug",
         json={"subject": "Second bug", "body": "details details"},
     )
-    # A foreign tenant's ticket must never appear in /my.
-    db.add(
-        SupportTicket(
-            id="99999999-9999-9999-9999-999999999999",
-            tenant_id="22222222-2222-2222-2222-222222222bbb",
-            opened_by_email="other@example.com",
-            subject="Other tenant ticket",
-            body="should not leak",
-            category="bug",
-            priority="low",
-            status="open",
-            created_at=datetime.now(UTC),
-        )
-    )
-    db.commit()
+    # Single tenant: the connection is the isolation, so /my lists every
+    # ticket in the database — there is no second tenant to hide from.
 
     r = client.get("/api/support/my")
     assert r.status_code == 200, r.text

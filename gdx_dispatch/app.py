@@ -740,12 +740,6 @@ except Exception:
     ai_estimates_router = APIRouter(prefix="/api/ai/estimates", tags=["ai-estimates"])
 
 try:
-    from gdx_dispatch.routers.supplier_portal import router as supplier_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: supplier_router")
-    supplier_router = APIRouter(prefix="/api/supplier", tags=["supplier-portal"])
-
-try:
     from gdx_dispatch.routers.door_catalog import router as door_catalog_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: door_catalog_router")
@@ -762,12 +756,6 @@ try:
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: planner_router_mod")
     planner_router_mod = APIRouter(prefix="/api/planner", tags=["planner"])
-
-try:
-    from gdx_dispatch.routers.supplier_invite import router as supplier_invite_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: supplier_invite_router")
-    supplier_invite_router = APIRouter(tags=["supplier-portal"])
 
 try:
     from gdx_dispatch.core.audit_dashboard import router as audit_dashboard_router
@@ -1312,8 +1300,8 @@ def create_app() -> FastAPI:
     # the DB. Nothing in the app sent the header. It was also the only producer
     # of service-account identity, which is why the `actor_kind ==
     # "service_account"` branch in routers/auth/core.py now fails closed.
-    # The `service_accounts` table still exists physically (0 rows); its ORM
-    # model was deleted 2026-09-03 with the SaaS-residue purge.
+    # Its ORM model was deleted 2026-09-03 with the SaaS-residue purge and
+    # migration 087 dropped the empty `service_accounts` table.
     if _TenantRateLimitMiddleware is not None:
         app.add_middleware(_TenantRateLimitMiddleware)
     try:
@@ -1679,8 +1667,6 @@ def create_app() -> FastAPI:
     app.include_router(locations_router)
     app.include_router(ai_comms_router)
     app.include_router(ai_estimates_router)
-    app.include_router(supplier_router)
-    app.include_router(supplier_invite_router)
     app.include_router(door_catalog_router)
     app.include_router(planner_router_mod)
     app.include_router(audit_dashboard_router)

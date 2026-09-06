@@ -40,7 +40,7 @@ const OLD_OFFICE = new Set([
   'collections', 'invoice_reminders', 'reviews', 'referrals', 'surveys', 'booking',
   'warranties', 'phone_com_calls', 'phone_com_messages', 'phone_com_faxes', 'campaigns',
   'segments', 'automations', 'winback', 'loyalty', 'fleet', 'performance',
-  'equipment_tracking', 'delivery_loadsheet', 'documents', 'pdf_templates', 'resources',
+  'equipment_tracking', 'documents', 'pdf_templates', 'resources',
   'reports', 'tags', 'catalog', 'vendors', 'purchase_orders',
 ]);
 const OLD_MODULE_PERM = {

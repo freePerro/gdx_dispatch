@@ -67,9 +67,7 @@ def seed_default_customer_alert_tags(db: Session, tenant_id: str) -> int:
     """
     existing_names = {
         n
-        for (n,) in db.query(Tag.name)
-        .filter(Tag.company_id == tenant_id)
-        .all()
+        for (n,) in db.query(Tag.name).all()
     }
     inserted = 0
     for name, color, description in DEFAULT_CUSTOMER_ALERT_TAGS:

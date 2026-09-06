@@ -63,8 +63,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
 
     _BYPASS_PREFIXES = (
         "/admin/", "/pwa/", "/api/push/", "/assets",
-        "/onboarding", "/stripe/webhook", "/supplier/join/",
-        "/api/supplier/register", "/api/supplier/login",
+        "/onboarding", "/stripe/webhook",
     )
 
     def __init__(self, app: Any, **_kwargs: Any) -> None:

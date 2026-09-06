@@ -1,6 +1,6 @@
 # Legacy residue, round three — what the purge left behind (2026-09-06)
 
-**Status:** `MERGED #612 #613 #614 #615` (2026-09-06, squash-merged bottom-up; not yet released). What is NOT built is the owner-decision list at the bottom — nothing in it was started.
+**Status:** `MERGED #612 #613 #614 #615` (2026-09-06, squash-merged bottom-up; not yet released). The owner-decision list at the bottom: items 1–3 were built the same day in their own PRs (each item carries its dated line); items 4–6 are left as is.
 `phase-d-saas-residue.md` (S1–S32, merged through #610, released v1.116.0).
 That doc stays as the record of rounds one and two; this one owns what a
 code-only sweep of main at `88f8d74` still finds.
@@ -56,7 +56,7 @@ the name of the one company (`tenant_id` columns, `TenantSettings`,
 | B1 | `core/middleware/tracing.py` | Reads `request.state.acting_on_tenant_id` and stamps it on the span. **No writer exists anywhere.** | Remove the attribute, the extractor, and the tests that feed it |
 | B2 | `core/tenant.py:70` | `_API_PREFIXES` defined, never read | Delete |
 | B3 | `core/circuit_breaker.py:18,211-213` | `KNOWN_SERVICES` lists `db_provisioning`; no breaker uses it; the docstring example is a `/provision` endpoint | Drop the entry; new docstring example |
-| B4 | `routers/supplier_invite.py:94` + `.env.template:238` + `.env.lab.example:63` | Supplier invite links built from `SIGNUP_BASE_URL`, **default `https://example.com`** — the one URL builder #604 did not reach. ⚠ Re-classified by the audit: the invite has **no SPA caller** (`api/supplier` appears only in `DeliveryLoadsheetView.vue:98`), `/api/supplier/login` and `/register` have no route in `router/index.js`, no email is sent, and prod has **0** `supplier_invitations` and **0** `supplier_accounts`. The whole supplier portal is an orphan feature | Swap the origin to `GDX_PUBLIC_BASE_URL` and drop the var (two lines); the portal itself goes on the decision list |
+| B4 | `routers/supplier_invite.py:94` + `.env.template:238` + `.env.lab.example:63` | Supplier invite links built from `SIGNUP_BASE_URL`, **default `https://example.com`** — the one URL builder #604 did not reach. ⚠ Re-classified by the audit: the invite has **no SPA caller** (`api/supplier` appears only in `DeliveryLoadsheetView.vue:98`), `/api/supplier/login` and `/register` have no route in `router/index.js`, no email is sent, and prod has **0** `supplier_invitations` and **0** `supplier_accounts`. The whole supplier portal is an orphan feature | Swap the origin to `GDX_PUBLIC_BASE_URL` and drop the var (two lines); the portal itself goes on the decision list **→ The whole router left 2026-09-06 (`chore/remove-supplier-portal`, migration 088).** |
 | B5 | `tools/pave_tenant_db.py` | `--all-tenants` / `--tenant <slug>` CLI over `resolve_tenant_urls()`, which always returns the one DB; a "sort gdx first" over a one-element list | One target: `DATABASE_URL` (or an explicit URL). Keep `--yes` |
 | B6 | `api/public_router.py:35-55` | `get_control_db` — a second session dependency named for a plane; comment explains a "future split-DB deployment" | Rename to `get_auth_db`, keep the separate dependency (tests override `get_db`), rewrite the comment |
 | B7 | `app.py:1435-1440`, `migrations/env.py:17-32`, `.env.template:25-28,310`, `docker/demo/docker-compose.demo.yml:33-35` | `CONTROL_DATABASE_URL` still read as a fallback by the startup probe and Alembic; the template ships it. Unreachable on prod: `docker-compose.yml` is an env allowlist with no `env_file`, the prod container's env carries no `CONTROL_*` name (read 2026-09-06), and `entrypoint.sh:35-37` exports `ALEMBIC_DATABASE_URL` before `exec`, so even the in-app migrate (`admin_db.py:59`) never reaches the fallback | Read `ALEMBIC_DATABASE_URL` → `DATABASE_URL` only; delete the var everywhere. Add a guard that can actually fail: a test asserting the name appears in no tracked file outside `migrations/` and `docs/design/` (the existing `test_saas_surfaces_retired.py:262` inspects five tool modules only and cannot go red for `app.py` or `env.py`) |
@@ -151,10 +151,15 @@ from main independently and rebased on merge, in that order.
    `platform_feature_flags` (0 rows), `tenants.subscription_status`,
    `tenants.stripe_connect_account_id`. A drop migration was already decided
    in `phase-d-saas-residue.md` and blocked on the purge; it is unblocked now.
+   → **Built 2026-09-06** (`chore/migration-087-drop-retired-tables`, migration 087): the three tables and two
+   columns dropped; `bug_reports` (7 rows) copied into `support_tickets` first.
 3. **Module `tier` (`core/modules.py`, `plugin_api/manifest.py`).** Plan
    tiers of a subscription never sold; nothing gates on them, but `tier` is
    part of the public plugin manifest contract (warn-and-strip would make
    removal safe for third-party plugins). Product call.
+   → **Built 2026-09-06** (`chore/drop-module-tiers`): `tier` and `default`
+   gone from MODULES and every emitter; the manifest field is accepted and
+   ignored so older plugins keep loading.
 4. **The two-metadata schema split** (Alembic base vs `TenantBase` +
    `create_all`). Real single-tenant simplification; real migration risk.
 5. **`PLATFORM_SMTP_*` and `POWER_APPS_*` env names** are read by live code

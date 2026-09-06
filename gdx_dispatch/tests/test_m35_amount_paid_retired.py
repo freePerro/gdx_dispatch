@@ -170,8 +170,8 @@ def test_no_code_reads_any_dropped_invoice_column():
     # `amount_paid` — and `total_amount` was the one with live readers: two MCP
     # tools summing it inside raw-SQL STRINGS, invisible to an attribute-level
     # pattern. That miss is what this closes.
-    # `total_amount` is a live column on SupplierOrder / DealerOrder /
-    # PurchaseOrder / qb_deposits. Only an INVOICE receiver is a violation, or
+    # `total_amount` is a live column on DealerOrder / PurchaseOrder /
+    # qb_deposits. Only an INVOICE receiver is a violation, or
     # SQL that reads the invoices table — otherwise this guard cries wolf on
     # four healthy models and gets deleted.
     _receiver = {
@@ -193,14 +193,12 @@ def test_no_code_reads_any_dropped_invoice_column():
     # Nothing is allowed for `amount_paid` any more: the column is gone, and so
     # are the demo seeder's write, the GL legacy-suspect probe, and the model
     # definition. `Invoice` is not the only model with a `total_amount`,
-    # though — SupplierOrder, DealerOrder, PurchaseOrder and qb_deposits each
-    # have a live one — so skip the modules that own those rather than
+    # though — DealerOrder, PurchaseOrder and qb_deposits each have a live one — so skip the modules that own those rather than
     # blanket-allowing the name.
     allowed: set[str] = set()
     other_models = (
         "modules/distributor/", "modules/purchase_orders/", "modules/inventory/",
         "modules/quickbooks/banking.py",
-        "routers/supplier_portal.py", "routers/supplier_invite.py",
     )
 
     def _sql_string_hits(src: str, col: str) -> list[tuple[int, str]]:

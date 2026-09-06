@@ -37,7 +37,6 @@
         <div v-for="p in store.plugins" :key="p.key" class="store-card" :data-plugin="p.key">
           <div class="store-card-head">
             <span class="store-name">{{ p.name }}</span>
-            <Tag :value="p.tier" severity="secondary" rounded />
           </div>
           <p class="store-desc">{{ p.description }}</p>
           <!-- Permissions are shown BEFORE install, not after: an owner should
@@ -213,7 +212,6 @@
             <span v-else class="muted" title="This plugin was not installed from a package">unknown</span>
           </template>
         </Column>
-        <Column field="tier" header="Tier" />
         <Column header="Permissions">
           <template #body="{ data }">
             <span v-if="!data.permissions || !data.permissions.length">—</span>

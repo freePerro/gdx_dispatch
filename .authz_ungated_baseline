@@ -49,9 +49,6 @@ GET /api/qb/oauth/callback
 GET /api/recommendations
 GET /api/settings/branding/logo/{filename}
 GET /api/signatures/token/{token}
-GET /api/supplier/portal/catalog
-GET /api/supplier/portal/delivery-loadsheet
-GET /api/supplier/portal/orders
 GET /api/surveys/public/{token}
 GET /api/webhooks/outlook/{tenant_slug}/{client_state}
 GET /auth/sso/google
@@ -67,11 +64,8 @@ GET /public/door-listings.json
 GET /public/door-listings/{photo_id}.jpg
 GET /pwa/manifest.json
 GET /pwa/version
-GET /supplier/join/{token}
-GET /supplier/join/{token}/form.js
 GET /sw.js
 GET /{full_path:path}
-PATCH /api/supplier/portal/orders/{order_id}
 POST /api/ai/pricing/suggest
 POST /api/ai/quote
 POST /api/feedback/client-error
@@ -99,9 +93,6 @@ POST /api/push/subscribe
 POST /api/qb/webhooks
 POST /api/signatures/token/{token}
 POST /api/stripe/connect/webhook
-POST /api/supplier/login
-POST /api/supplier/portal/catalog
-POST /api/supplier/register
 POST /api/surveys/public/{token}
 POST /api/webhooks/outlook/{tenant_slug}/{client_state}
 POST /api/webhooks/phone-com/{tenant_slug}/{secret}

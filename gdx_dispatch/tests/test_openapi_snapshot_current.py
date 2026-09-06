@@ -109,7 +109,9 @@ def test_every_router_app_tries_to_include_is_importable():
     attribute rather than a submodule (a function, a router object) is
     accepted when the package imports and exposes it."""
     modules = _modules_named_by_app_py()
-    assert len(modules) > 300, f"expected app.py to name >300 modules/objects, found {len(modules)}"
+    # 303 on main at 3caf2fe, 299 after the supplier portal left (2026-09-06); the
+    # floor only guards against the regex silently matching nothing.
+    assert len(modules) > 280, f"expected app.py to name >280 modules/objects, found {len(modules)}"
     failures = {}
     for name in sorted(modules):
         try:

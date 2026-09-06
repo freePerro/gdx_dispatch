@@ -125,7 +125,7 @@ def create_plugin_host(plugins=None, degraded=None, stale=None, dists=None) -> F
         # Stale plugins are absent from the catalog so the frontend shows them as
         # unavailable rather than offering a possibly-stale plugin.
         return [
-            {"key": p.key, "name": p.name, "tier": p.tier, "ui": p.ui,
+            {"key": p.key, "name": p.name, "ui": p.ui,
              # The version whose code is actually loaded in THIS process, and
              # the package that provides it. Without these, "which version is
              # running?" had no answer outside plugin-host, and a plugin key

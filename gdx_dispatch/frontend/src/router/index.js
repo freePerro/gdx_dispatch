@@ -33,7 +33,6 @@ const DoorListingsView = () => import('../views/DoorListingsView.vue');
 const TimeclockView = () => import('../views/TimeclockView.vue');
 const TimesheetsView = () => import('../views/TimesheetsView.vue');
 const DailyLoadsheetView = () => import('../views/DailyLoadsheetView.vue');
-const DeliveryLoadsheetView = () => import('../views/DeliveryLoadsheetView.vue');
 const PlannerView = () => import('../views/PlannerView.vue');
 const EquipmentView = () => import('../views/EquipmentView.vue');
 const CampaignsView = () => import('../views/CampaignsView.vue');
@@ -313,16 +312,9 @@ export const routes = [
       { path: '/commissions', name: 'commissions', component: CommissionsView },
     ],
   },
-  // Load-sheets cluster — Daily / Delivery under one tab bar.
-  {
-    path: '/daily-loadsheet',
-    component: ModuleTabsPage,
-    props: { clusterKey: 'loadsheets_hub' },
-    children: [
-      { path: '', name: 'daily-loadsheet', component: DailyLoadsheetView },
-      { path: '/delivery-loadsheet', name: 'delivery-loadsheet', component: DeliveryLoadsheetView },
-    ],
-  },
+  // Was a two-tab "Load Sheets" cluster until the supplier-portal delivery
+  // sheet left (2026-09-06); a lone tab is just a page.
+  { path: '/daily-loadsheet', name: 'daily-loadsheet', component: DailyLoadsheetView },
   { path: '/planner', name: 'planner', component: PlannerView },
   { path: '/catalog', name: 'catalog', component: CatalogView },
   { path: '/vendors', name: 'vendors', component: VendorsView },

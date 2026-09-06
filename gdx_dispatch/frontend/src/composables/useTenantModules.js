@@ -28,7 +28,7 @@ function normalizeEnabledModules(payload) {
   };
 
   // The /api/settings/modules endpoint shape is
-  //   { tenant_tier: "...", modules: [ { key, enabled, ... }, ... ] }
+  //   { modules: [ { key, enabled, ... }, ... ] }
   // Array (no envelope) and bare-record fallbacks remain for older callers.
   const fromArray = (entries) => {
     entries.forEach((entry) => {
@@ -75,7 +75,7 @@ function normalizeEnabledModules(payload) {
 const _loading = ref(false);
 const _enabledModules = ref({});
 // Installed third-party plugins, from the /api/plugins catalog (ADR-013). Each
-// entry: { key, name, tier, ui }. Drives a synthetic "Plugins" nav category.
+// entry: { key, name, ui }. Drives a synthetic "Plugins" nav category.
 const _plugins = ref([]);
 let _loadPromise = null;
 

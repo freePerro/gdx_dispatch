@@ -41,7 +41,7 @@ const SECTION_BY_KEY = {
   checklists: 'Field', job_templates: 'Field',
   maintenance: 'Field', technicians: 'Field', performance: 'Field',
   timeclock: 'Field', timesheets: 'Field', fleet: 'Field', gps: 'Field', maps: 'Field',
-  daily_loadsheet: 'Field', delivery_loadsheet: 'Field',
+  daily_loadsheet: 'Field',
   equipment: 'Field',
   photos: 'Field',
   // Customers & Comms

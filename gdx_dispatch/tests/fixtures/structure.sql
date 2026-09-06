@@ -490,27 +490,6 @@ CREATE TABLE public.booking_requests_router (
 
 
 --
--- Name: bug_reports; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.bug_reports (
-    id character varying(36) NOT NULL,
-    company_id character varying(36) NOT NULL,
-    user_id character varying(36),
-    subject character varying(200) NOT NULL,
-    description text NOT NULL,
-    priority character varying(20),
-    page_url text,
-    browser_info text,
-    status character varying(20),
-    created_at timestamp with time zone,
-    resolved_at timestamp with time zone,
-    resolved_by character varying(36),
-    resolution_notes text
-);
-
-
---
 -- Name: campaign_sends; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2874,98 +2853,6 @@ CREATE TABLE public.stock_adjustments (
 
 
 --
--- Name: supplier_accounts; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.supplier_accounts (
-    id uuid NOT NULL,
-    email character varying(254) NOT NULL,
-    password_hash character varying(256) NOT NULL,
-    company_name character varying(200) NOT NULL,
-    phone character varying(50),
-    created_at timestamp with time zone
-);
-
-
---
--- Name: supplier_catalog; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.supplier_catalog (
-    id uuid NOT NULL,
-    company_id character varying(36) NOT NULL,
-    supplier_name character varying(200) NOT NULL,
-    sku character varying(100),
-    name character varying(300) NOT NULL,
-    description text,
-    unit_price numeric(12,2) NOT NULL,
-    stock_level integer,
-    category character varying(100),
-    created_at timestamp with time zone
-);
-
-
---
--- Name: supplier_invitations; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.supplier_invitations (
-    id uuid NOT NULL,
-    tenant_id character varying(36) NOT NULL,
-    supplier_email character varying(254) NOT NULL,
-    supplier_name character varying(200) NOT NULL,
-    token character varying(100) NOT NULL,
-    status character varying(20) NOT NULL,
-    created_at timestamp with time zone,
-    accepted_at timestamp with time zone
-);
-
-
---
--- Name: supplier_order_lines; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.supplier_order_lines (
-    id uuid NOT NULL,
-    order_id uuid NOT NULL,
-    sku character varying(100),
-    name character varying(300),
-    quantity integer NOT NULL,
-    unit_price numeric(12,2) NOT NULL,
-    line_total numeric(12,2) NOT NULL
-);
-
-
---
--- Name: supplier_orders; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.supplier_orders (
-    id uuid NOT NULL,
-    company_id character varying(36) NOT NULL,
-    supplier_name character varying(200) NOT NULL,
-    status character varying(50) NOT NULL,
-    total_amount numeric(12,2) NOT NULL,
-    notes text,
-    created_at timestamp with time zone,
-    updated_at timestamp with time zone
-);
-
-
---
--- Name: supplier_tenant_links; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.supplier_tenant_links (
-    id uuid NOT NULL,
-    supplier_id uuid NOT NULL,
-    tenant_id character varying(36) NOT NULL,
-    status character varying(20) NOT NULL,
-    created_at timestamp with time zone
-);
-
-
---
 -- Name: survey_responses; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3747,14 +3634,6 @@ ALTER TABLE ONLY public.booking_jobs_router
 
 ALTER TABLE ONLY public.booking_requests_router
     ADD CONSTRAINT booking_requests_router_pkey PRIMARY KEY (id);
-
-
---
--- Name: bug_reports bug_reports_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.bug_reports
-    ADD CONSTRAINT bug_reports_pkey PRIMARY KEY (id);
 
 
 --
@@ -4862,70 +4741,6 @@ ALTER TABLE ONLY public.stock_adjustments
 
 
 --
--- Name: supplier_accounts supplier_accounts_email_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.supplier_accounts
-    ADD CONSTRAINT supplier_accounts_email_key UNIQUE (email);
-
-
---
--- Name: supplier_accounts supplier_accounts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.supplier_accounts
-    ADD CONSTRAINT supplier_accounts_pkey PRIMARY KEY (id);
-
-
---
--- Name: supplier_catalog supplier_catalog_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.supplier_catalog
-    ADD CONSTRAINT supplier_catalog_pkey PRIMARY KEY (id);
-
-
---
--- Name: supplier_invitations supplier_invitations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.supplier_invitations
-    ADD CONSTRAINT supplier_invitations_pkey PRIMARY KEY (id);
-
-
---
--- Name: supplier_invitations supplier_invitations_token_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.supplier_invitations
-    ADD CONSTRAINT supplier_invitations_token_key UNIQUE (token);
-
-
---
--- Name: supplier_order_lines supplier_order_lines_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.supplier_order_lines
-    ADD CONSTRAINT supplier_order_lines_pkey PRIMARY KEY (id);
-
-
---
--- Name: supplier_orders supplier_orders_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.supplier_orders
-    ADD CONSTRAINT supplier_orders_pkey PRIMARY KEY (id);
-
-
---
--- Name: supplier_tenant_links supplier_tenant_links_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.supplier_tenant_links
-    ADD CONSTRAINT supplier_tenant_links_pkey PRIMARY KEY (id);
-
-
---
 -- Name: survey_responses survey_responses_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5139,14 +4954,6 @@ ALTER TABLE ONLY public.qb_entity_maps
 
 ALTER TABLE ONLY public.qb_vendors
     ADD CONSTRAINT uq_qb_vendor_tenant UNIQUE (tenant_id, qb_vendor_id);
-
-
---
--- Name: supplier_tenant_links uq_supplier_tenant; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.supplier_tenant_links
-    ADD CONSTRAINT uq_supplier_tenant UNIQUE (supplier_id, tenant_id);
 
 
 --

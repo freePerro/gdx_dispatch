@@ -196,8 +196,51 @@ def main() -> int:
             title = "initial admin account created" if not revived else "owner account restored"
             log.warning(_admin_banner(title, admin_email, admin_password, generated=generated))
 
+    # ── 5. Default customer-alert tags, first boot only ──
+    with SessionLocal() as db:
+        seed_customer_alert_tags_on_first_boot(db, tenant_id)
+
     log.info("Bootstrap complete.")
     return 0
+
+
+def seed_customer_alert_tags_on_first_boot(db, tenant_id: str) -> int:
+    """Seed the default customer-alert taxonomy once, on the install's first boot.
+
+    The seeder existed since sprint tech_mobile S1-A8 but nothing called it, so
+    every fresh install started with an empty taxonomy. "First boot" is the
+    same signal `core.modules._seed_default_modules` uses: no module-grant
+    rows yet. An install that later deletes every tag on purpose keeps its
+    empty list — bootstrap runs on every boot (entrypoint.sh), and a seeder
+    keyed on "no tags" would quietly put the fourteen defaults back after a
+    restart (adversarial audit, 2026-09-06). The seed writes one audit row so
+    the rows are traceable to this step, not to a person who never acted.
+    """
+    from gdx_dispatch.core.audit import log_audit_event_sync
+    from gdx_dispatch.core.customer_alert_tags import seed_default_customer_alert_tags
+    from gdx_dispatch.models.tenant_models import CompanyModuleGrant, Tag
+
+    if db.query(Tag).count():
+        log.info("Customer-alert tags already present — leaving them untouched.")
+        return 0
+    if db.query(CompanyModuleGrant).count():
+        log.info("Customer-alert tags absent on a booted install — leaving the empty list alone.")
+        return 0
+    seeded = seed_default_customer_alert_tags(db, tenant_id)
+    if seeded:
+        log_audit_event_sync(
+            db,
+            tenant_id=tenant_id,
+            user_id=None,
+            action="customer_alert_tags_seeded",
+            entity_type="tag",
+            entity_id=None,
+            details={"inserted": seeded, "source": "bootstrap_app first boot"},
+            actor_role="system",
+        )
+        db.commit()
+    log.info("Seeded %d default customer-alert tags (first boot).", seeded)
+    return seeded
 
 
 if __name__ == "__main__":
