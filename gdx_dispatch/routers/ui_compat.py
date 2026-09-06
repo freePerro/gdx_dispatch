@@ -62,7 +62,7 @@ zero GETs to any of the five `/api` paths (nginx, 21-24 Aug 2026). Note the
 "zero 501s" figure alone does NOT prove nobody opened the pages — those GETs
 answered 200 — the per-path GET count is the load-bearing measurement, and
 nginx rotation has since aged the window out, so it is not reproducible.
-Decisions recorded in docs/design/unimplemented-endpoints-decision-list.md.
+Decisions recorded in the unimplemented-endpoints decision list (2026-08-12; decisions taken 2026-08-24).
 
 2026-08-24, second pass. Seventeen more handlers removed — every surface the
 owner declined that had NO UI caller at all, verified by literal grep across
@@ -81,8 +81,8 @@ real UI callers. The route-shadow gate covers their absence.
 Those handlers now call `_not_implemented(...)`, which logs at WARNING and
 raises 501. A write endpoint here must either do the work or fail — never
 report a success that did not happen. The running list of what is unbuilt,
-and whether each should be built or removed, is in
-docs/design/frontend-contract-gaps-2026-08-12.md.
+and whether each should be built or removed, was adjudicated 2026-08-12
+(contract-gap classes C1–C6).
 
 `gdx_dispatch/tools/frontend_contract_scan.py --check C6` is the regression gate.
 
@@ -153,7 +153,7 @@ def _not_implemented(
     These handlers used to `return {"ok": True}` for mutations that touched
     nothing: no model, no table, no write. The frontend read that as success,
     popped a "Saved" toast, and the user's edit vanished — pricing edits and
-    payroll runs among them (see docs/design/frontend-contract-gaps-2026-08-12.md).
+    payroll runs among them (contract-gap class C6, 2026-08-12).
 
     A 501 is the honest answer: the endpoint exists, the operation is not
     implemented. It is logged at WARNING with the caller so the volume of

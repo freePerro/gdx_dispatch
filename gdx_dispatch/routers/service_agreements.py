@@ -253,8 +253,7 @@ def update_template(
 
     Added 2026-08-12. Until then this path was served by a `ui_compat` handler
     whose whole body was `return {"ok": True}` — the Vue showed "Template
-    updated" and the edit was discarded. See
-    docs/design/frontend-contract-gaps-2026-08-12.md (C6).
+    updated" and the edit was discarded (contract-gap class C6, 2026-08-12).
     """
     tenant_id = _tenant_id(request)
     row = db.execute(

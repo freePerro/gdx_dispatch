@@ -4,7 +4,7 @@ Every test here asserts what SHOULD be true. A failure is a proven defect, not
 an opinion; a pass proves the invariant actually holds on this branch. This is
 the difference between "I read the code and think X" and evidence.
 
-Companion to docs/design/money-audit-2026-08-04.md — each test names the finding
+Companion to the 2026-08-04 money audit — each test names the finding
 it decides (M1, M7, …).
 
 These began as DIAGNOSTIC probes — 9 of the 10 failed by design when this file

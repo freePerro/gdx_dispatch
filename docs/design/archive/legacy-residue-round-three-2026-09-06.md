@@ -35,7 +35,7 @@ the name of the one company (`tenant_id` columns, `TenantSettings`,
 | A2 | `docs/BUILD_RULES.md:44-80` | Status CURRENT; "Three Planes" section instructs `TenantBase.metadata.create_all()` at signup, a shared control DB with `tenants, memberships, tenant_module_grants, billing_plan, metering_usage`, and `Depends(get_control_db)` | guide |
 | A3 | `docs/E2E_VERIFICATION_MASTER_CHECKLIST.md` §22, §39 heading, "Multi-Tenant Test Strategy", line 88 | Thirteen live Tenant-A-vs-Tenant-B cases (only 13 and 15 retired); a Playwright config for `tenant-a.app.com` / `tenant-b.app.com` | checklist |
 | A4 | `docs/RESTORE_RUNBOOK.md` | Marked UNRELIABLE but the steps still restore `s3://gdx-backups/tenants/<slug>`, set `CONTROL_DATABASE_URL`, count `tenants` | runbook |
-| A5 | `docs/design/phase-d-saas-residue.md:3` | Status line says "PARTIALLY BUILT — S1–S6 built" while its own table records S26/S27 merged and the purge shipped | tracker |
+| A5 | `docs/design/archive/phase-d-saas-residue.md:3` | Status line says "PARTIALLY BUILT — S1–S6 built" while its own table records S26/S27 merged and the purge shipped | tracker |
 | A6 | `README.md:53` | Tree labels `control/` as "control-plane models" | front page |
 | A7 | `routers/auth/__init__.py:10-12` | Docstring lists gateway, login_picker, oauth2, sso, scim, signup, pats, admin_pats, pats_support as sub-modules; the directory holds `core.py` and `sso.py` | docstring |
 | A8 | `core/unified_principal.py:124,158` | Casts for `Membership.tenant_id`; there is no `Membership` model | docstring |

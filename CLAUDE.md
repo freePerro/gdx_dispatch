@@ -142,7 +142,8 @@ in this repo has ever overclaimed; the record only ever undersells what exists.
   is not a regression net. Shipping the test and leaving it unrun is a silent
   no-op.
 - **Check for a rival plan first.** Before writing a plan, grep `docs/design/`
-  for others naming the same files. If one exists, cite it or mark it
+  recursively (finished records live in `docs/design/archive/` since
+  2026-09-06) for others naming the same files. If one exists, cite it or mark it
   superseded — in both docs. Two plans in this repo reached opposite decisions
   about the same money path without ever referencing each other.
 - **Keep the past; retire the present.** A shipped plan stays — its rejected

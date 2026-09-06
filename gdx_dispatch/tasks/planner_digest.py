@@ -3,7 +3,7 @@
 Emails a short summary of open planner tasks (with overdue + captured-call
 counts) once a day so a note taken on a busy day doesn't quietly scroll away.
 
-Channel history (see docs/design/call-capture-followup-plan.md): web push is
+Channel history: web push is
 not functional in prod (no VAPID keys / no PWA manifest / iOS can't receive it
 in a plain tab) and the Phone.com SMS path is deliberately P2P-only (automated
 sends risk carrier-blocking the number until 10DLC clears). Email via

@@ -1,6 +1,6 @@
 """Tier 10 — make invisible QuickBooks state visible.
 
-Two contract gaps (docs/design/backend-vue-contract-gaps-2026-07-24.md Tier 10):
+Two contract gaps (backend/Vue contract-gap audit 2026-07-24, Tier 10):
 
 1. Per-record QB state was serialized nowhere. The AUTHORITATIVE "is this record
    in QuickBooks" signal is a ``QBEntityMap`` row (what every push path writes and

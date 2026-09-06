@@ -1,6 +1,6 @@
 """Domain-event emission — the live wire between business events and receivers.
 
-Sprint 1 of the n8n / plugin-event platform (docs/design/n8n-automation-plan.md).
+Sprint 1 of the n8n / plugin-event platform.
 
 Two facts drove this module's shape, both from the adversarial audits:
 

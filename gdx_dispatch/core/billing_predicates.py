@@ -7,8 +7,7 @@ jobs, and the two Ready-for-Billing queries disagreed with the display state
 about voided invoices. Per the locked derive-don't-cache model (Doug
 2026-05-17), readers derive from invoices instead.
 
-The definition (design doc: docs/design/billing-capture-hardening-plan.md,
-audit round 1):
+The definition (billing-capture hardening, audit round 1):
 
     A job is BILLED iff it has an invoice with
         deleted_at IS NULL

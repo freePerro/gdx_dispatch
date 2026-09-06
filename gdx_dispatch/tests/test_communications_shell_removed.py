@@ -7,7 +7,7 @@ the API process; its senders were unconfigured on prod; and
 ``POST /api/communications/send`` answered 201 with a green "Message sent"
 toast when nothing left the building. It was deleted together with
 ``core/email.py`` (its only non-test importer) and the ``/communications``
-screen. Spec: docs/design/communications-parallel-fake-removal-plan.md.
+screen (parallel-fake removal — issue #350, PR #549).
 
 These are ROUTE-TABLE assertions, not status-code assertions. This app
 answers 405 for a POST to any unmatched path (the SPA catch-all is GET-only

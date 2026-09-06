@@ -353,7 +353,7 @@ Stripe Connect is configured per tenant, payment intents are created with correc
 
 | ID | Test Case | Verification |
 |----|-----------|-------------|
-| ~~PAY-01…PAY-09~~ | **RETIRED 2026-09-01** | The entire Stripe Connect surface was deleted (9 routes, issue #421 / `docs/design/phase-d-saas-residue.md` S3+S6). Do not verify these — they no longer exist. The live card path is `POST /api/payments/intent` and the token-scoped `/pay/{invoice_token}` page, covered by PAY-10 onward. |
+| ~~PAY-01…PAY-09~~ | **RETIRED 2026-09-01** | The entire Stripe Connect surface was deleted (9 routes, issue #421, Phase D items S3+S6). Do not verify these — they no longer exist. The live card path is `POST /api/payments/intent` and the token-scoped `/pay/{invoice_token}` page, covered by PAY-10 onward. |
 | PAY-10 | Customer portal payment | Invoice with "Pay Now" button -> Stripe Checkout -> payment processes -> invoice status updates |
 | PAY-11 | Payment methods | CRUD on saved payment methods |
 | PAY-12 | Stripe not configured | When STRIPE_SECRET_KEY is empty, returns 500 with clear error, not crash |

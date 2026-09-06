@@ -44,15 +44,9 @@ prod and demo and walked on prod in light and dark.
       `arrived_at`, latest 2026-08-21 — so it is load-bearing and stays. Whether
       pressing it should notify the customer via Phone.com is customer-facing product
       shape. _(verified on prod 2026-08-23)_
-- [x] **D6 auto-email on/off** — `outlook/automations.py:73 dispatch_trigger` has zero **[DECIDED 2026-08-31: deleted — `dispatch_trigger`, its tests and the Outlook Auto-Email tab are removed; Event Rules (`modules/workflows`) is the event-email path. See docs/design/unimplemented-endpoints-decision-list.md § 2026-08-31.]**
+- [x] **D6 auto-email on/off** — `outlook/automations.py:73 dispatch_trigger` has zero **[DECIDED 2026-08-31: deleted — `dispatch_trigger`, its tests and the Outlook Auto-Email tab are removed; Event Rules (`modules/workflows`) is the event-email path. Decided 2026-08-31.]**
       production callers. Revive or delete. _(carried from 2026-08-20 read)_
-- [ ] **17 unimplemented endpoints** — `unimplemented-endpoints-decision-list` still
-      awaits a build/remove/leave call on each. _(carried)_
-
----
-
-## 🟠 Real work, verified open
-
+- [x] **17 unimplemented endpoints** — all seventeen adjudicated 2026-08-24 (16 shipped, 1 removed by decision); the decision list is a closed record in the archive.
 - [ ] **PG test fixture has drifted badly from the ORM.** `tests/fixtures/structure.sql`
       is missing **90 tables and 128 columns**, so every `requires_pg` test runs against
       a schema production does not have. #403 patched only the three money tables and
@@ -127,10 +121,10 @@ prod and demo and walked on prod in light and dark.
 
 Anything the [Design Doc Completion Ledger](https://claude.ai/code/artifact/6294e8e2-c7ab-4f8f-9b6f-cf9480c9dd5b)
 already tracks row by row — **24 completed, 23 not completed, 10 not started, 2 superseded**,
-which is all 59 files in `docs/design/`. This file is the short list of what needs a person;
+which is every record under `docs/design/` and its archive. This file is the short list of what needs a person;
 the ledger is the exhaustive one.
 
-One caveat that applies to both: of those 59 docs, **46 are on `origin/main` and 13 are
+One caveat that applies to both: of those docs, **46 are on `origin/main` and 13 are
 untracked** — local to one machine. A ledger row for an untracked doc describes a plan that
 exists nowhere else, so committing them is what makes this audit reproducible by anyone but
 the person holding the laptop.

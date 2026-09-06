@@ -131,7 +131,7 @@ def test_create_template(client: TestClient):
 # Added 2026-08-12. This path used to be served by a `ui_compat` handler whose
 # whole body was `return {"ok": True}` — it won route arbitration over this
 # router, so the Vue showed "Template updated" and the edit was discarded.
-# See docs/design/frontend-contract-gaps-2026-08-12.md (C6).
+# Contract-gap class C6, 2026-08-12.
 
 
 def _create_template(client: TestClient) -> dict:

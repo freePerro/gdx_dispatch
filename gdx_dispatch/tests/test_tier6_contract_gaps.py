@@ -1,5 +1,5 @@
 """Tier 6 contract-gap fixes — write-path data loss
-(docs/design/backend-vue-contract-gaps-2026-07-24.md).
+(backend/Vue contract-gap audit 2026-07-24).
 
 Every test here writes the exact fields the UI has ALWAYS sent and asserts
 they now persist — before this round, each PATCH toasted "Saved" while the

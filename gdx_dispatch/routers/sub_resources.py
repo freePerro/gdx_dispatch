@@ -14,7 +14,7 @@ is exactly how `GET /api/customers/{id}/recurring-jobs` got written up as
 `recurring_job_schedules` for real.
 
 The billing and AI-quality blocks were removed 2026-08-24 (owner decision,
-docs/design/unimplemented-endpoints-decision-list.md items 16 and 17): six
+decision-list items 16 and 17): six
 handlers with no UI caller anywhere. `/api/billing/subscription` was the worst
 of them — it answered a hardcoded `{"plan": "pro", "status": "active",
 "seats": 5}`, SaaS-plan fiction in a single-tenant app. Removing them from

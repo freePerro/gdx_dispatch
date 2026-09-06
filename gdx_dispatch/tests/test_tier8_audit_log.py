@@ -1,5 +1,5 @@
 """Tier 8 — the audit-log page is reachable AND functional
-(docs/design/backend-vue-contract-gaps-2026-07-24.md).
+(backend/Vue contract-gap audit 2026-07-24).
 
 The nav entry was revived (its only link lived in the retired
 AdminSettingsView). The adversarial audit caught that the viewer's contract

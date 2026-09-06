@@ -4,7 +4,7 @@
 ever executed — no task, no beat entry, no reader of `AutomationStep.action_type`.
 Its UI toasted "Automation created" over a no-op. The engine that runs is
 `modules/workflows` (`/api/workflows`), gated by the same `automations` module
-key. See docs/design/unimplemented-endpoints-decision-list.md (2026-08-31).
+key. Owner decision 2026-08-31.
 
 These are absence assertions on the live route table (not source-text
 presence): a re-added router shows up here whatever file it lives in.

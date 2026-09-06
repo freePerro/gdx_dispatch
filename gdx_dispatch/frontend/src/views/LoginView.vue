@@ -20,7 +20,7 @@ const submitting = ref(false)
 // 2026-09-01 (Phase D S2). It answered "Unknown tenant" — a reply Phase A
 // deleted from the backend, so condition (a) could never fire — and its
 // manual escape link sent single-tenant users to a subdomain picker for
-// workspaces that do not exist. See docs/design/phase-d-saas-residue.md.
+// workspaces that do not exist.
 
 async function handleLogin() {
   error.value = ''

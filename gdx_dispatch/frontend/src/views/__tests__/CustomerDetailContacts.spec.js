@@ -4,8 +4,8 @@
  * Why this spec exists: `customer_contacts` shipped with a model, a mobile
  * writer and an email recipient picker, and held ZERO rows in production —
  * because the office had no way in. A second person at a business account
- * ended up as a QuickBooks sub-customer instead. See
- * docs/design/qb-subcustomer-flattening-plan.md.
+ * ended up as a QuickBooks sub-customer instead (sub-customer flattening,
+ * RELEASED v1.71.0).
  *
  * Pins:
  *  - the tab exists and is reachable (a feature nobody can find is not shipped)

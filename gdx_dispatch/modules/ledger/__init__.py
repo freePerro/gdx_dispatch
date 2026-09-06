@@ -7,8 +7,7 @@ in migration 012). Nothing posts until the engine (S3) and chokepoint (S4)
 land and ``ledger_posting_enabled`` is turned on; S1 only stands up the tables
 and their guarantees.
 
-See docs/design/gl-phase1-core-ledger.md (spec) and
-docs/design/gl-phase1-implementation-plan.md (slice sequencing). The engine
+GL Phase 1 spec and implementation plan, 2026-07. The engine
 posts to stable account *roles* (GlAccount.role), never to account numbers, so
 the chart of accounts stays operator-editable without breaking posting rules.
 """

@@ -5,7 +5,7 @@ connected account and the platform keeps an application fee. This deployment is
 single-tenant — it IS the business receiving the money — so there was never a
 second party for the machinery to serve. Nothing in `frontend/src` ever called
 any of its nine routes, no connected account was ever configured, and it minted
-nothing. See `docs/design/phase-d-saas-residue.md` (S3/S6) and issue #421.
+nothing. Phase D items S3/S6; issue #421.
 
 These are **absence assertions on the live route table**, not source-text
 checks: a re-added router shows up here whatever file it lives in. They are

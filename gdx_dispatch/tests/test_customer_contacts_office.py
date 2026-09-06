@@ -4,8 +4,7 @@ Why this file exists: `customer_contacts` shipped with a real model, a mobile
 create path and an email recipient picker — and **zero rows in production**.
 The only way to create a contact was a tech tapping through a mobile job
 screen, so a second person at a business account had nowhere to live and ended
-up as a QuickBooks sub-customer instead (see
-docs/design/qb-subcustomer-flattening-plan.md).
+up as a QuickBooks sub-customer instead (sub-customer flattening, v1.71.0).
 
 Contracts pinned here:
 

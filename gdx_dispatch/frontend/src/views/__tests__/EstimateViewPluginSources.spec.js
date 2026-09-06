@@ -1,6 +1,6 @@
 /**
  * EstimateView — multi-provider estimate_source buttons + finalized line lock
- * (2026-08-13, docs/design/estimate-screen-plugin-pricing-plan.md Phase 1).
+ * (2026-08-13, estimate-screen plugin pricing, Phase 1).
  *
  * Source-pin style (EstimateView has no mount harness): the discovery /
  * filtering logic is mount-tested in composables/__tests__/

@@ -4,7 +4,7 @@
  * customer_contacts shipped with a model, a mobile writer and a recipient
  * picker, and held ZERO rows in production because the office had no way in.
  * A unit test proves wiring; only a browser proves the office can find and
- * finish the job. See docs/design/qb-subcustomer-flattening-plan.md.
+ * finish the job.
  *
  * Uses the shared `paramIds` fixture and the pre-primed `page` from
  * _fixtures.js — global-setup seeds a customer and logs in once. An earlier

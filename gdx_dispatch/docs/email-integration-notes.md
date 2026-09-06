@@ -3,7 +3,6 @@
 **Status: HISTORICAL.** Its own text says it was scoped against the Flask
 dispatch app (`dispatch/gdx_app.py` + Flask-Mail) and re-framed for FastAPI.
 That app is gone. For current email behaviour read
-`docs/design/email-readability-and-delivery-plan.md` (RELEASED v1.68.0) and
 `core/email_layout.py` / `core/email_sender.py`, not this.
 
 

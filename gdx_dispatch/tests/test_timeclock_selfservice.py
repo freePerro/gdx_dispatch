@@ -1,5 +1,5 @@
 """Tech self-service timesheet — the backend contract under the tech's own
-weekly timesheet (2026-08-13, docs/design/tech-weekly-timesheet-plan.md).
+weekly timesheet (2026-08-13).
 
 PATCH/POST /api/timeclock/entries have allowed a tech to edit their OWN rows
 since the module shipped — permission-gated and audit-logged, but with no

@@ -7,7 +7,7 @@ continuity — against a scratch SQLite DB, and exits non-zero on any failure.
 The statements themselves stay OUT of the repo (they carry names, addresses
 and account digits — public-repo hygiene); this tool is what makes the
 "all statements green" acceptance claim reproducible against a local corpus
-(docs/design/bank-statement-import-plan.md §8).
+(statement-import plan §8).
 
 Usage (throwaway container, statements mounted read-only):
 

@@ -18,7 +18,7 @@
  *    "Don't have a workspace yet? Create one" link pointed at the dead
  *    `/signup`.
  *
- * See docs/design/phase-d-saas-residue.md (S2).
+ * (Phase D, item S2.)
  */
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';

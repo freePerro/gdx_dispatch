@@ -21,8 +21,7 @@ leading zero (``.48``). Dates lack a year — resolved from the statement
 period (month earlier than the period-start month ⇒ period-end year, for
 Dec→Jan spans).
 
-Traps this grammar was audited against (docs/design/
-bank-statement-import-plan.md §11):
+Traps this grammar was audited against (statement-import plan §11):
 - ``ACCT ENDING nnnn`` appears INSIDE loan-autopay descriptions — account
   resolution anchors on the one summary line that also carries
   ``Statement Dates``.
