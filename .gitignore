@@ -140,3 +140,6 @@ uploads/
 
 # Browser-walk artifacts (screenshots, downloaded exports)
 gdx_dispatch/frontend/e2e-shots/
+
+# Orchestrator / health-test output (tests/health writes alerts.jsonl here); never repo content
+ai-queue/orchestrator_status/
