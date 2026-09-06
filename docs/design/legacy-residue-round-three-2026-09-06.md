@@ -1,6 +1,6 @@
 # Legacy residue, round three — what the purge left behind (2026-09-06)
 
-**Status:** `PARTIALLY BUILT` — PR A (prose) is #612; PR B (dead code) is #613, below this one in the stack; **PR C (the `control` package becomes `models/tenant_settings.py`) is this PR.** D not started. Successor to
+**Status:** `PARTIALLY BUILT` — PR A (prose) is #612; PR B (dead code) is #613, below this one in the stack; **PR C (the `control` package becomes `core/tenant_settings.py`) is this PR.** D not started. Successor to
 `phase-d-saas-residue.md` (S1–S32, merged through #610, released v1.116.0).
 That doc stays as the record of rounds one and two; this one owns what a
 code-only sweep of main at `88f8d74` still finds.
