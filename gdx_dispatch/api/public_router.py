@@ -2,10 +2,10 @@
 gdx_dispatch/api/public_router.py — Public REST API v1 for GDX (single-tenant,
 self-hosted; see the SINGLE-TENANT INVARIANT note in verify_api_key below).
 
-Authentication: X-API-Key header validated against the control-plane api_keys table.
-All routes require a valid, non-revoked API key.  The key is looked up in the
-control DB and the tenant context is injected onto request.state so the
-standard get_db() dependency works transparently.
+Authentication: X-API-Key header validated against the api_keys table.
+All routes require a valid, non-revoked API key.  The key is looked up and
+the tenant context is injected onto request.state so the standard get_db()
+dependency works transparently.
 
 Response envelope for lists:
     {"data": [...], "meta": {"page": N, "per_page": N, "total": N}}
@@ -32,20 +32,17 @@ from gdx_dispatch.core.tenant import company_id, single_tenant
 from gdx_dispatch.core.webhooks.models import WebhookEndpoint
 
 # ---------------------------------------------------------------------------
-# Control-plane DB dependency for API-key auth
+# DB dependency for API-key auth
 # ---------------------------------------------------------------------------
 #
-# The api_keys table lives in the control plane. In production the control and
-# tenant databases are the same physical DB, so a plain SessionLocal() session
-# resolves api_keys fine. But the auth lookup MUST NOT ride the same get_db
-# dependency the data routes use: tests (and any future split-DB deployment)
-# override get_db to point at the tenant database, which has no api_keys table.
-# Keeping a distinct dependency lets the auth path always reach the control DB
-# (or its test double) independently of the tenant-data override.
+# Same database as everything else. The auth lookup deliberately does NOT
+# ride the `get_db` dependency the data routes use: tests override `get_db`
+# with a fixture database that has no api_keys table, and the key check must
+# keep reaching the real (or separately-overridden) session.
 
 
-def get_control_db() -> Any:
-    """Yield a control-plane DB session for API-key verification."""
+def get_auth_db() -> Any:
+    """Yield a DB session for API-key verification."""
     from gdx_dispatch.core.database import SessionLocal
 
     db = SessionLocal()
@@ -62,7 +59,7 @@ def get_control_db() -> Any:
 
 async def _require_api_key(
     request: Request,
-    control_db: Annotated[Session, Depends(get_control_db)],
+    auth_db: Annotated[Session, Depends(get_auth_db)],
 ) -> dict[str, Any]:
     """Validate X-API-Key header and inject tenant context onto request.state.
 
@@ -79,7 +76,7 @@ async def _require_api_key(
     # Defer import to avoid circular deps at module load time
     from gdx_dispatch.core.api_keys import verify_api_key
 
-    api_key = verify_api_key(control_db, raw_key)
+    api_key = verify_api_key(auth_db, raw_key)
     if api_key is None:
         raise HTTPException(status_code=401, detail="Invalid or revoked API key")
 

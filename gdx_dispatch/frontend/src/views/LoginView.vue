@@ -61,7 +61,7 @@ async function handleLogin() {
     <div class="login-card">
       <div class="header">
         <h1>Sign In</h1>
-        <p>Enter your credentials to access your workspace</p>
+        <p>Enter your credentials to continue</p>
       </div>
 
       <form @submit.prevent="handleLogin" class="login-form" data-testid="login-form">

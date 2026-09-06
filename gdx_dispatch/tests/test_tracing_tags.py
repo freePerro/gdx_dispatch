@@ -115,13 +115,12 @@ def _only_finished_span(exporter: InMemorySpanExporter) -> ReadableSpan:
 # ── attributes set when state is present ─────────────────────────────────────
 
 
-def test_dispatch_tags_both_attributes_when_state_present(
-    span_exporter, middleware
-):
+def test_dispatch_tags_tenant_id_when_state_present(span_exporter, middleware):
     request = _make_request(
         {
             "tenant": {"id": "tenant-abc"},
-            "acting_on_tenant_id": "tenant-other",
+            # Unrelated state must not leak onto the span.
+            "unrelated_state": "tenant-other",
         }
     )
 
@@ -130,10 +129,7 @@ def test_dispatch_tags_both_attributes_when_state_present(
     assert response.status_code == 200
     span = _only_finished_span(span_exporter)
     assert span.attributes["gdx_dispatch.tenant_id"] == "tenant-abc"
-    assert span.attributes["gdx_dispatch.acting_on_tenant_id"] == "tenant-other"
-    # installation_id is gone: Principal no longer carries the field, so the
-    # attribute could only ever have been absent.
-    assert "gdx_dispatch.installation_id" not in span.attributes
+    assert set(span.attributes) == {"gdx_dispatch.tenant_id"}
 
 
 def test_dispatch_handles_tenant_object_with_id_attribute(
@@ -145,7 +141,7 @@ def test_dispatch_handles_tenant_object_with_id_attribute(
 
     span = _only_finished_span(span_exporter)
     assert span.attributes["gdx_dispatch.tenant_id"] == "tenant-obj"
-    assert "gdx_dispatch.acting_on_tenant_id" not in span.attributes
+    assert set(span.attributes) <= {"gdx_dispatch.tenant_id"}
 
 
 def test_dispatch_stringifies_uuid_like_values(span_exporter, middleware):
@@ -173,7 +169,7 @@ def test_dispatch_no_state_does_not_raise_or_set_defaults(
     assert response.status_code == 200
     span = _only_finished_span(span_exporter)
     assert "gdx_dispatch.tenant_id" not in span.attributes
-    assert "gdx_dispatch.acting_on_tenant_id" not in span.attributes
+    assert set(span.attributes) <= {"gdx_dispatch.tenant_id"}
 
 
 def test_dispatch_partial_state_only_tags_present_fields(
@@ -185,14 +181,14 @@ def test_dispatch_partial_state_only_tags_present_fields(
 
     span = _only_finished_span(span_exporter)
     assert span.attributes["gdx_dispatch.tenant_id"] == "tenant-only"
-    assert "gdx_dispatch.acting_on_tenant_id" not in span.attributes
+    assert set(span.attributes) <= {"gdx_dispatch.tenant_id"}
 
 
 def test_dispatch_empty_string_values_do_not_tag(span_exporter, middleware):
     request = _make_request(
         {
             "tenant": {"id": ""},
-            "acting_on_tenant_id": "",
+            "unrelated_state": "",
         }
     )
 
@@ -200,7 +196,7 @@ def test_dispatch_empty_string_values_do_not_tag(span_exporter, middleware):
 
     span = _only_finished_span(span_exporter)
     assert "gdx_dispatch.tenant_id" not in span.attributes
-    assert "gdx_dispatch.acting_on_tenant_id" not in span.attributes
+    assert set(span.attributes) <= {"gdx_dispatch.tenant_id"}
 
 
 def test_dispatch_outside_active_span_passes_through_silently(
@@ -227,16 +223,9 @@ def test_dispatch_swallow_extraction_exceptions(span_exporter, middleware):
         def __str__(self) -> str:
             raise RuntimeError("synthetic-extraction-failure")
 
-    # tenant is extracted FIRST and must survive; the later extractor blows
-    # up. This ordering is the property the test exists to pin — a version
-    # that raises on the first extractor asserts only absence and would pass
-    # even if the middleware wrote nothing at all.
-    request = _make_request(
-        {"tenant": {"id": "tenant-abc"}, "acting_on_tenant_id": _Boom()}
-    )
+    request = _make_request({"tenant": {"id": _Boom()}})
 
     response = _run_under_span(middleware, request)
     assert response.status_code == 200
     span = _only_finished_span(span_exporter)
-    assert span.attributes["gdx_dispatch.tenant_id"] == "tenant-abc"
-    assert "gdx_dispatch.acting_on_tenant_id" not in span.attributes
+    assert "gdx_dispatch.tenant_id" not in span.attributes

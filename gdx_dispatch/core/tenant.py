@@ -67,8 +67,6 @@ class TenantMiddleware(BaseHTTPMiddleware):
         "/api/supplier/register", "/api/supplier/login",
     )
 
-    _API_PREFIXES = ("/api/", "/auth/")
-
     def __init__(self, app: Any, **_kwargs: Any) -> None:
         super().__init__(app)
 

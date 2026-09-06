@@ -18,7 +18,7 @@
 
       <!-- Migration state -->
       <div class="rounded-lg border border-gray-200 p-3">
-        <h3 class="font-medium mb-2">Migrations (control plane)</h3>
+        <h3 class="font-medium mb-2">Migrations (Alembic)</h3>
         <dl class="grid grid-cols-2 gap-y-1 text-sm">
           <dt class="text-gray-500">Current revision</dt><dd class="font-mono">{{ status.alembic.current || '—' }}</dd>
           <dt class="text-gray-500">Head revision</dt><dd class="font-mono">{{ status.alembic.head || '—' }}</dd>
@@ -122,7 +122,7 @@ const verdictTitle = computed(() => ({
 }[verdict.value] || 'Unknown'));
 const verdictDetail = computed(() => ({
   ok: 'At head, ORM matches the database.',
-  pending: 'Control-plane migrations are available to apply.',
+  pending: 'Migrations are available to apply.',
   drift: 'The ORM expects columns/tables the database is missing — some features will 500.',
   orphaned: 'DB revision is not in the migration tree; forward migration is blocked.',
 }[verdict.value] || ''));

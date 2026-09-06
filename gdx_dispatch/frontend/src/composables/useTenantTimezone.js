@@ -7,7 +7,7 @@
  * to "2026-07-11T01:00:00Z", so naively slicing the UTC date string (or reading
  * a UTC-based day) drops it into the Jul 11 column. The fix is to bucket and
  * display everything in the tenant's configured zone (Settings → Time Clock →
- * Tenant timezone, e.g. America/Chicago), which is the single source of truth
+ * Company timezone, e.g. America/Chicago), which is the single source of truth
  * for "what day/time is this job on".
  *
  * The timezone is a tenant-wide setting, so it's fetched once and shared via a

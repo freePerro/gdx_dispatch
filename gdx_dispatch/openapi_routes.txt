@@ -292,7 +292,6 @@ GET /api/exports/jobs
 GET /api/exports/leads
 GET /api/exports/payments
 GET /api/exports/technicians
-GET /api/feedback/bug-reports
 GET /api/fleet/due-maintenance
 GET /api/fleet/vehicles
 GET /api/fleet/vehicles/due-for-service
@@ -964,7 +963,6 @@ POST /api/expenses
 POST /api/expenses/promote-from-receipt
 POST /api/expenses/{expense_id}/lines
 POST /api/expenses/{expense_id}/receipts
-POST /api/feedback/bug-report
 POST /api/feedback/client-error
 POST /api/fleet/vehicles
 POST /api/fleet/vehicles/{vehicle_id}/service

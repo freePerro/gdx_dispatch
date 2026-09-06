@@ -3,10 +3,11 @@
 ``PlatformTracingMiddleware`` enriches the active OpenTelemetry request
 span with platform context fields harvested from ``request.state``:
 
-* ``gdx.tenant_id`` — from ``request.state.tenant["id"]`` (or an object
-  with an ``id`` attribute).
-* ``gdx.acting_on_tenant_id`` — from
-  ``request.state.acting_on_tenant_id``.
+* ``gdx_dispatch.tenant_id`` — from ``request.state.tenant["id"]`` (or an
+  object with an ``id`` attribute).
+
+(A second, "acting on" tenant attribute was read here until 2026-09-06;
+nothing in the codebase ever wrote that state, so it could never appear.)
 
 Failure policy is **fail-open**: missing state, missing fields, a
 non-recording span, or a raised exception while extracting attributes
@@ -30,7 +31,6 @@ from starlette.responses import Response
 logger = logging.getLogger(__name__)
 
 _ATTR_TENANT_ID = "gdx_dispatch.tenant_id"
-_ATTR_ACTING_ON_TENANT_ID = "gdx_dispatch.acting_on_tenant_id"
 
 
 class PlatformTracingMiddleware(BaseHTTPMiddleware):
@@ -59,10 +59,6 @@ class PlatformTracingMiddleware(BaseHTTPMiddleware):
         if tenant_id is not None:
             span.set_attribute(_ATTR_TENANT_ID, tenant_id)
 
-        acting_on = _extract_acting_on_tenant_id(request)
-        if acting_on is not None:
-            span.set_attribute(_ATTR_ACTING_ON_TENANT_ID, acting_on)
-
 
 def _extract_tenant_id(request: Request) -> str | None:
     tenant = getattr(request.state, "tenant", None)
@@ -70,10 +66,6 @@ def _extract_tenant_id(request: Request) -> str | None:
         return None
     raw: Any = tenant.get("id") if isinstance(tenant, dict) else getattr(tenant, "id", None)
     return _stringify(raw)
-
-
-def _extract_acting_on_tenant_id(request: Request) -> str | None:
-    return _stringify(getattr(request.state, "acting_on_tenant_id", None))
 
 
 def _stringify(value: Any) -> str | None:

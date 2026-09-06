@@ -309,7 +309,7 @@ defineExpose({ load, saveCredentials, saveSettings, clearSecret, runSweep, sweep
                 </div>
                 <div class="flex items-center gap-2">
                   <ToggleSwitch v-model="settings.tag_strategy_enabled.ai" />
-                  <span>AI-assisted tagging (uses tenant Anthropic key)</span>
+                  <span>AI-assisted tagging (uses your Anthropic key)</span>
                 </div>
               </div>
             </div>

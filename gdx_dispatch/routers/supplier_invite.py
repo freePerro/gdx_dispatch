@@ -91,7 +91,11 @@ def invite_supplier(
     tid = _tid(request)
     token = secrets.token_urlsafe(32)
     invite_id = str(uuid4())
-    base_url = os.getenv("SIGNUP_BASE_URL", "https://example.com")
+    # One install, one public origin (#604). Fall back to the request's own
+    # origin rather than a placeholder host, so a mis-set env never mints a
+    # link to example.com. The fallback carries the scheme uvicorn saw (http
+    # behind a proxy that does not forward it) — set GDX_PUBLIC_BASE_URL.
+    base_url = os.getenv("GDX_PUBLIC_BASE_URL", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
 
     invitation = SupplierInvitation(
         id=invite_id,

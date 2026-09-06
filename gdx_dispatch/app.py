@@ -1432,15 +1432,9 @@ def create_app() -> FastAPI:
                 logging.getLogger("gdx_dispatch.app").exception("import/init failed")
                 return False
 
-        # ── Probe the DB. CONTROL_DATABASE_URL is a legacy variable from the
-        # control-plane era that .env.template still carries and
-        # migrations/env.py still reads; on a single-tenant install it must
-        # point at the same database as DATABASE_URL. ─
-        control_url = os.environ.get(
-            "CONTROL_DATABASE_URL",
-            os.environ.get("DATABASE_URL", ""),
-        )
-        if control_url and not _probe(control_url):
+        # ── Probe the one database ─
+        db_url = os.environ.get("DATABASE_URL", "")
+        if db_url and not _probe(db_url):
             return JSONResponse(
                 status_code=503,
                 content={"status": "down", "db": "error"},

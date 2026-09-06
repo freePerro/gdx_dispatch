@@ -21,7 +21,7 @@
      employee's hours lose their name). Ids matching nobody are shown as
      "Unknown" rather than dropped — an orphaned shift is still real payroll.
 
-  2. Every stamp here means SHOP time (Settings → Time Clock → Tenant timezone),
+  2. Every stamp here means SHOP time (Settings → Time Clock → Company timezone),
      never the browser's — display, the DatePicker's input, and which DAY a
      shift belongs to. See the Time zones section in the script below for why
      that last one is not cosmetic.

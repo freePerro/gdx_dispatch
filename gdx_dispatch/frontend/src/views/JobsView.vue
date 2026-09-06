@@ -480,7 +480,7 @@
               :label="isEditMode ? 'Save Changes' : 'Create Job'"
               :loading="isSaving"
               :disabled="hardGateBlocksSave"
-              :title="hardGateBlocksSave ? 'A technician is required for scheduled jobs (tenant policy).' : undefined"
+              :title="hardGateBlocksSave ? 'A technician is required for scheduled jobs (company policy).' : undefined"
               data-testid="job-submit-btn"
             />
           </div>

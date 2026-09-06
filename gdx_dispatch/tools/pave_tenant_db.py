@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""D1 Phase 2 — Nuke-and-pave a tenant database.
+"""D1 Phase 2 — Nuke-and-pave the application database.
 
 Drops all tables, recreates from ORM create_all(), reloads data.
 The schema will match the ORM exactly — no more drift.
 
-Usage (inside docker-app-1):
-    python gdx_dispatch/tools/pave_tenant_db.py --all-tenants   # pave the application DB (DATABASE_URL)
-    python gdx_dispatch/tools/pave_tenant_db.py --tenant <slug>  # same, guarded by the ambient tenant slug
-    python gdx_dispatch/tools/pave_tenant_db.py <database_url>   # pave one DB by direct URL
+Usage (inside the app container):
+    python gdx_dispatch/tools/pave_tenant_db.py --yes                  # pave DATABASE_URL
+    python gdx_dispatch/tools/pave_tenant_db.py --yes <database_url>   # pave one DB by direct URL
 
 Flags:
     --strict     (default) ON_ERROR_STOP=on; aborts on first reload error. Safe.
@@ -245,19 +244,14 @@ def verify_counts(pre_counts: dict[str, int], post_counts: dict[str, int]) -> bo
     return ok
 
 
-def resolve_tenant_urls() -> list[tuple[str, str]]:
-    """The one (slug, db_url) pair this single-tenant install has.
-
-    The multi-tenant version read every tenant's ``db_url_enc`` from a
-    control plane; that column was dropped in the squash. DATABASE_URL is
-    the only database.
-    """
+def default_target() -> tuple[str, str]:
+    """The one (label, db_url) pair this install has: DATABASE_URL."""
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
         log.error("DATABASE_URL not set")
         sys.exit(1)
     from gdx_dispatch.core.tenant import single_tenant
-    return [(str(single_tenant()["slug"]), db_url)]
+    return str(single_tenant()["slug"]), db_url
 
 
 def _bypass_proxy_host(db_url: str) -> str:
@@ -402,54 +396,31 @@ def main():
     confirmed = "--yes" in args
     if confirmed:
         args.remove("--yes")
-    if not args:
+    if args and args[0] in ("-h", "--help"):
         print("Usage:")
-        print("  python pave_tenant_db.py [--strict|--no-strict] --yes --all-tenants")
-        print("  python pave_tenant_db.py [--strict|--no-strict] --yes --tenant <slug>")
+        print("  python pave_tenant_db.py [--strict|--no-strict] --yes                 # DATABASE_URL")
         print("  python pave_tenant_db.py [--strict|--no-strict] --yes <database_url>")
         print("")
         print("  --yes        REQUIRED. This tool DROPS EVERY TABLE in the target database")
         print("               and rebuilds it from the ORM (data reloaded from the dump it")
-        print("               takes first). On a single-tenant install the target IS the")
-        print("               application database.")
+        print("               takes first). With no URL the target IS the application")
+        print("               database.")
         print("  --strict     (default) abort on any reload error; preserves full backup.")
         print("  --no-strict  legacy behavior; logs errors but continues. Risk: silent data loss.")
         sys.exit(1)
+    if args and args[0] in ("--all-tenants", "--tenant"):
+        log.error("%s was removed 2026-09-06: there is one database. Run with --yes (DATABASE_URL) or --yes <database_url>.", args[0])
+        sys.exit(2)
     if not confirmed:
-        log.error("Refusing to pave without --yes: this drops every table in the target database.")
+        log.error("Refusing to pave without --yes: this drops every table in the target database. Run with --help for usage.")
         sys.exit(2)
 
-    if args[0] == "--all-tenants":
-        tenants = resolve_tenant_urls()
-        log.info("Found %d tenants to pave (strict=%s)", len(tenants), strict)
-        tenants.sort(key=lambda x: (0 if x[0].lower() == "gdx" else 1, x[0]))
-        results = {}
-        for code, url in tenants:
-            results[code] = pave_one(url, code, strict=strict)
-        log.info("")
-        log.info("=" * 60)
-        log.info("SUMMARY")
-        log.info("=" * 60)
-        for code, ok in results.items():
-            status = "✅" if ok else "⚠ MISMATCHES"
-            log.info("  %-20s %s", code, status)
-
-    elif args[0] == "--tenant":
-        if len(args) < 2:
-            print("Usage: python pave_tenant_db.py --tenant <COMPANY_CODE>")
-            sys.exit(1)
-        code = args[1].lower()
-        tenants = resolve_tenant_urls()
-        match = [(c, u) for c, u in tenants if c.lower() == code]
-        if not match:
-            log.error("Tenant %s not found. Available: %s",
-                      code, ", ".join(c for c, _ in tenants))
-            sys.exit(1)
-        pave_one(match[0][1], match[0][0], strict=strict)
-
-    else:
-        # Direct URL
+    if args:
         pave_one(args[0], "direct", strict=strict)
+    else:
+        label, url = default_target()
+        ok = pave_one(url, label, strict=strict)
+        log.info("  %-20s %s", label, "✅" if ok else "⚠ MISMATCHES")
 
 
 if __name__ == "__main__":
