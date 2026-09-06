@@ -11,13 +11,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-# Per-minute request ceilings. ``professional`` is the general per-caller limit
-# (single-tenant: the one company is "active"); ``starter`` is retained for any
-# caller without a paid context. ``auth`` is a deliberately stricter per-IP limit
-# for the unauthenticated brute-force surface (login / signup).
+# Per-minute request ceilings. ``general`` is the per-caller limit for every
+# API key, session and anonymous IP; ``auth`` is a deliberately stricter per-IP
+# limit for the unauthenticated brute-force surface (login / signup). The keys
+# were plan-tier names ("starter" / "professional") until 2026-09-06; the
+# numbers never varied by caller and "starter" had no reader.
 DEFAULT_LIMITS: dict[str, int] = {
-    "starter": 120,
-    "professional": 600,
+    "general": 600,
     "auth": 30,
 }
 DEFAULT_WINDOW: int = 60  # seconds
@@ -154,11 +154,11 @@ class TenantRateLimitMiddleware(BaseHTTPMiddleware):
         # identity. Hash the credential so raw secrets never land in a Redis key.
         api_key = request.headers.get("x-api-key")
         if api_key:
-            return "key:" + hashlib.sha256(api_key.encode()).hexdigest()[:16], DEFAULT_LIMITS["professional"]
+            return "key:" + hashlib.sha256(api_key.encode()).hexdigest()[:16], DEFAULT_LIMITS["general"]
         authz = request.headers.get("authorization", "")
         if authz[:7].lower() == "bearer ":
-            return "sess:" + hashlib.sha256(authz.encode()).hexdigest()[:16], DEFAULT_LIMITS["professional"]
-        return f"ip:{self._client_ip(request)}", DEFAULT_LIMITS["professional"]
+            return "sess:" + hashlib.sha256(authz.encode()).hexdigest()[:16], DEFAULT_LIMITS["general"]
+        return f"ip:{self._client_ip(request)}", DEFAULT_LIMITS["general"]
 
     async def dispatch(self, request: Request, call_next: Any) -> Response:
         if request.url.path in self._BYPASS_PATHS:
@@ -169,8 +169,8 @@ class TenantRateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Per-caller key + limit (see _key_and_limit). Rate-limit by default for
-        # every non-bypassed path (OWASP fail-safe-defaults) — no tenant context
-        # needed, no per-request tier lookup.
+        # every non-bypassed path (OWASP fail-safe-defaults) — no per-request
+        # lookup of any kind.
         rate_key, limit = self._key_and_limit(request)
         operation = "http"
 

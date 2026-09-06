@@ -14,8 +14,8 @@ mean a feature is missing.
 ## Module Configuration
 
 - Navigate to **Settings** > **Modules** tab
-- Toggle modules on/off per your subscription tier
-- Available modules: jobs, estimates, invoices, dispatch, communications, equipment_tracking, fleet, campaigns, quickbooks, stripe_connect
+- Toggle modules on/off (every module is available; there are no plan tiers)
+- The Modules tab lists every module the install knows; all of them are on after first boot, and switching one off sticks until an admin switches it back on
 
 ## QuickBooks Connection
 

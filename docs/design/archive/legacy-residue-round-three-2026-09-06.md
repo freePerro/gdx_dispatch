@@ -1,6 +1,6 @@
 # Legacy residue, round three — what the purge left behind (2026-09-06)
 
-**Status:** `MERGED #612 #613 #614 #615` (2026-09-06, squash-merged bottom-up; not yet released). What is NOT built is the owner-decision list at the bottom — nothing in it was started.
+**Status:** `MERGED #612 #613 #614 #615` (2026-09-06, squash-merged bottom-up; not yet released). The owner-decision list at the bottom: items 1–3 were built the same day in their own PRs (each item carries its dated line); items 4–6 are left as is.
 `phase-d-saas-residue.md` (S1–S32, merged through #610, released v1.116.0).
 That doc stays as the record of rounds one and two; this one owns what a
 code-only sweep of main at `88f8d74` still finds.
@@ -153,6 +153,9 @@ from main independently and rebased on merge, in that order.
    tiers of a subscription never sold; nothing gates on them, but `tier` is
    part of the public plugin manifest contract (warn-and-strip would make
    removal safe for third-party plugins). Product call.
+   → **Built 2026-09-06** (`chore/drop-module-tiers`): `tier` and `default`
+   gone from MODULES and every emitter; the manifest field is accepted and
+   ignored so older plugins keep loading.
 4. **The two-metadata schema split** (Alembic base vs `TenantBase` +
    `create_all`). Real single-tenant simplification; real migration risk.
 5. **`PLATFORM_SMTP_*` and `POWER_APPS_*` env names** are read by live code
