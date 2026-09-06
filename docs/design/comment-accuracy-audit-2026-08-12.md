@@ -66,8 +66,8 @@ Grouped by what the comment claimed:
   `routers/mcp_execute.py`, `routers/mcp_sse.py`, `routers/mcp_registry.py`.
   **None were ever built**; the real callers are `routers/ai` and the MCP
   adapter/bridge. Also referenced a `RouterPrincipal` type that exists nowhere.
-- `core/spiffe/__init__.py` — TODO said "none of these components are wired".
-  The middleware **is** wired (opt-in via `SPIFFE_ENABLE`). The claimed
+- `core/spiffe/__init__.py` — TODO said "none of these components are wired". <!-- SPIFFE layer deleted 2026-09-06 (PR D); link-ok -->
+  The middleware **was** wired (opt-in via `SPIFFE_ENABLE`; the whole layer was removed 2026-09-06). The claimed
   super-admin router was never built.
 - `core/service_accounts.py` — "Minted by CLI
   (`tools/service_account_mint.py`)". **No such CLI, and no web UI** — see
@@ -79,7 +79,7 @@ Grouped by what the comment claimed:
   and moved to `modules/proposals/`. Repointed at live exemplars.
 - `modules/billing_terms` (`resolve_terms` → `resolve_effective_terms`),
   `core/tenant_ctx.py` (`_per_tenant_settings` → `_tenant_settings`),
-  `core/spiffe/spire_trust_bundle.py` (`MAX_STALE_SECONDS` →
+  `core/spiffe/spire_trust_bundle.py` (`MAX_STALE_SECONDS` → <!-- SPIFFE layer deleted 2026-09-06 (PR D); link-ok -->
   `max_stale_seconds`), `routers/catalog.py` (`CatalogGroup` → `CustomCatalog`),
   `models/platform_extensions.py`, `models/tenant_models.py`, `routers/tours.py`, <!-- file deleted 2026-09-03 with the SaaS-residue purge; link-ok -->
   `routers/custom_fields.py`.

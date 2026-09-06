@@ -1327,8 +1327,8 @@ def create_app() -> FastAPI:
     #
     # Starlette semantics: the LAST ``add_middleware`` call wraps OUTERMOST.
     # Actual request flow through this block (outermost → innermost):
-    #     TenantMiddleware → SPIFFEAuthMiddleware (opt-in, SPIFFE_ENABLE)
-    #     → APIVersioningMiddleware → IdempotencyMiddleware → handler
+    #     TenantMiddleware → APIVersioningMiddleware → IdempotencyMiddleware
+    #     → handler
     # Written below in reverse (innermost first) so the LAST line (Tenant)
     # ends up outermost. Middlewares registered ABOVE this block
     # (AuditMiddleware, APIKeyMiddleware, _TenantRateLimitMiddleware,
@@ -1382,27 +1382,6 @@ def create_app() -> FastAPI:
         app.add_middleware(APIVersioningMiddleware)
     except Exception:
         logging.getLogger("gdx_dispatch.app").exception("ss25_api_versioning_middleware_unavailable")
-
-    # SS-32 SPIFFE workload attestation (opt-in via SPIFFE_ENABLE env).
-    try:
-        if os.getenv("SPIFFE_ENABLE", "").lower() in ("1", "true", "yes"):
-            from gdx_dispatch.core.middleware.spiffe_auth_middleware import SPIFFEAuthMiddleware
-            from gdx_dispatch.core.spiffe.spire_trust_bundle import TrustBundleCache as _SpiffeTrustBundle
-
-            _spiffe_audiences = [
-                a.strip()
-                for a in os.getenv("SPIFFE_EXPECTED_AUDIENCES", "gdx-api").split(",")
-                if a.strip()
-            ]
-            app.add_middleware(
-                SPIFFEAuthMiddleware,
-                trust_bundle=_SpiffeTrustBundle(),
-                expected_audiences=_spiffe_audiences,
-            )
-        else:
-            logging.getLogger("gdx_dispatch.app").info("ss32_spiffe_middleware_disabled: SPIFFE_ENABLE not set")
-    except Exception:
-        logging.getLogger("gdx_dispatch.app").exception("ss32_spiffe_middleware_unavailable")
 
     # TenantMiddleware stays LAST = outermost (sets request.state.tenant
     # before any SS-14..35 middleware inspects it).

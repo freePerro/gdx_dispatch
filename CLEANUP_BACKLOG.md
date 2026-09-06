@@ -77,16 +77,6 @@ already happened in `app.py`. Status below was re-verified against `app.py`
 
 ### B1. Unwired-by-design (additive readiness — waiting on a flag / sprint merge)
 
-- **SPIFFE (SS-32)** — `core/spiffe/__init__.py:10`, `core/middleware/spiffe_auth_middleware.py:36`.
-  **Dormant — not in use.** The code exists (SPIFFE-ID/SVID verification, SPIRE
-  trust-bundle fetcher, capability map, additive auth middleware, admin router)
-  and is tested, but nothing runs at request time. An activation hook exists at
-  `app.py:1408` gated on `SPIFFE_ENABLE`; that var is **unset** in prod (`app.env`)
-  and absent from every repo env/compose file, so the middleware takes the `else`
-  branch (`ss32_spiffe_middleware_disabled`) and is never added. `routers.spiffe_admin`
-  is never included either. To turn on: set `SPIFFE_ENABLE=1`, include the
-  `spiffe_admin` router, and stand up a SPIRE deployment to issue the SVIDs.
-  Until then every request authenticates the existing Bearer/JWT way.
 - **MCP registry router (SS-19)** — `core/mcp_registry.py:7`. Remaining work:
   register `routers/mcp_registry.py` in `app.py` (NOT mounted). The other two
   former sub-tasks are **done**: `mcp_tools` is side-effect-imported at app start

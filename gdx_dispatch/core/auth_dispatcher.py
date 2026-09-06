@@ -1,29 +1,21 @@
 """Sprint 0.9 slice 0.9-d — composite ``get_current_principal`` dispatcher.
 
-Accepts any of two auth flows and returns a unified
+Accepts the one auth flow this app has and returns a unified
 :class:`gdx_dispatch.core.unified_principal.Principal`:
 
-* **session**  — session/JWT cookie-or-Bearer (SS-7)
-* **spiffe**   — SPIFFE X.509 (mTLS-peer) or JWT-SVID (SS-32)
+* **session**  — the login JWT, as a Bearer header or the ``access_token``
+  cookie (SS-7)
 
-(The PAT, SCIM, and OAuth2 dev-portal flows were removed with the
-single-tenant cleanup — the identity island and SS-21 authorization
-server that backed them are gone.)
+(The PAT, SCIM and OAuth2 dev-portal flows went with the single-tenant
+cleanup; the SPIFFE JWT-SVID / mTLS flows went 2026-09-06 — no SPIRE
+deployment ever existed and ``SPIFFE_ENABLE`` was set nowhere.)
 
-Dispatch order (highest priority first):
+Dispatch order:
 
-1. ``Authorization: Bearer <token>`` header. Sub-dispatch by token shape:
-
-   * Three-segment ``eyJ...`` JWT shape → SPIFFE JWT-SVID if ``sub``
-     starts with ``spiffe://``, else the SS-7 login-JWT flow.
-   * Otherwise: opaque → 401 ``unknown_bearer_shape``.
-
-2. Session cookie (``access_token``) → SS-7 session flow.
-
-3. ``request.state.peer_spiffe_id`` (set by upstream mTLS layer) →
-   SPIFFE X.509 flow.
-
-4. Nothing authenticates → 401 ``missing_credentials``.
+1. ``Authorization: Bearer <token>`` header — a three-segment ``eyJ...``
+   JWT is the login-JWT flow; any other shape → 401 ``unknown_bearer_shape``.
+2. Session cookie (``access_token``) → the same flow.
+3. Nothing authenticates → 401 ``missing_credentials``.
 
 Stubs / future-slice markers
 ----------------------------
@@ -31,23 +23,15 @@ Stubs / future-slice markers
   field, so we fall back to an empty capability tuple. (The SS-7
   ``Principal`` this once referenced lived in ``core/principal.py``, which
   went with the Authentik validator.)
-* **SPIFFE tenant_id**: SPIFFE workloads are platform-wide by default.
-  We synthesize a placeholder tenant UUID5 from the spiffe_id for the
-  ``tenant_scope == "global"`` case; per-tenant workloads pass through a
-  tenant id from ``request.state.tenant`` if set.
 """
 from __future__ import annotations
 
-import base64
-import json
 import logging
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from fastapi import Depends, HTTPException, Request
-from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.auth_capabilities import caps_for_role
-from gdx_dispatch.core.tenant import single_tenant
 from gdx_dispatch.core.unified_principal import Principal
 
 log = logging.getLogger(__name__)
@@ -58,76 +42,12 @@ __all__ = [
     "require_tenant_admin",
     "require_super_admin",
     "require_authenticated",
-    "default_caps_for_role",
 ]
 
 
-# ── Role → default capabilities (0.9-e scaffolding) ─────────────────────
-#
-# Minimal mapping so session-auth principals carry non-empty capability
-# tuples out of the box. (A "tenant-configurable map driven by
-# platform_extensions.access_tokens" was once planned here; that platform
-# ORM was deleted 2026-09-03 with the SaaS-residue purge.)
-
-
-# DEPRECATED: Use gdx_dispatch.core.auth_capabilities.caps_for_role instead.
-_DEFAULT_ROLE_CAPS: dict[str, tuple[tuple[str, str], ...]] = {
-    # Platform super-admin — unrestricted wildcard.
-    "super_admin": (("*", "*"),),
-    # Tenant owner — full access inside the tenant plus the broad r/w
-    # wildcards that session routes rely on.
-    "owner": (
-        ("*", "customers"),
-        ("*", "jobs"),
-        ("*", "invoices"),
-        ("*", "leads"),
-        ("read", "*"),
-        ("write", "*"),
-    ),
-    # Tenant admin — admin surface, read-anything, no blanket write.
-    "admin": (
-        ("*", "customers"),
-        ("*", "jobs"),
-        ("*", "invoices"),
-        ("*", "leads"),
-        ("read", "*"),
-    ),
-    # Technician — job-scoped r/w, lead intake, customer read.
-    "tech": (
-        ("read", "jobs"),
-        ("write", "jobs"),
-        ("read", "customers"),
-        ("read", "leads"),
-        ("write", "leads"),
-    ),
-    # Read-only role.
-    "viewer": (("read", "*"),),
-    # SPIFFE workloads — caps come from workload_capability_map, not the role.
-    "agent": (),
-}
-
-
-def default_caps_for_role(role: str) -> tuple[tuple[str, str], ...]:
-    """Return the default capability tuple for a coarse role name.
-
-    Unknown roles map to ``()`` (empty) — fail-closed. Phase 3 / SS-15
-    will replace this call site with a tenant-configurable lookup.
-    """
-    return _DEFAULT_ROLE_CAPS.get(role, ())
-
-# Module-level sentinel UUID namespaces for synthesizing stable ids
-# where a real row id is not (yet) available. Distinct from
-# SPIFFE_ID_NAMESPACE so collisions cannot span scopes.
+# Module-level sentinel UUID namespace for synthesizing stable ids where a
+# real row id is not (yet) available.
 _SESSION_IDENTITY_NAMESPACE = uuid5(NAMESPACE_URL, "gdx:session_identity_synth")
-
-# Reserved tenant slug for platform-scoped (non-tenant) principals —
-# e.g. SPIFFE workloads with ``tenant_scope == "global"``. Chosen with
-# underscores so it CANNOT collide with a real ``tenants.slug`` value
-# (slugs are `[a-z0-9-]+` per onboarding validation). Platform ORM
-# filters comparing ``tenant_id == principal.tenant_id`` will miss
-# every row — which is the correct fail-closed behavior for a platform
-# principal reaching into tenant-scoped data.
-_PLATFORM_TENANT_SLUG = "__platform__"
 
 
 # ── Shape detection helpers (pure, cheap) ────────────────────────────────
@@ -141,191 +61,6 @@ def _looks_like_jwt(token: str) -> bool:
     if not token.startswith("eyJ"):
         return False
     return token.count(".") == 2
-
-
-def _jwt_has_spiffe_sub(token: str) -> bool:
-    """Return True iff the (unverified) JWT payload's ``sub`` claim starts
-    with ``spiffe://``.
-
-    Used only for dispatch routing — the signature is validated later in
-    ``_dispatch_spiffe_jwt``. A malformed payload returns False (falls
-    through to OAuth dispatch, which will reject it loudly).
-    """
-    try:
-        _, payload_b64, _ = token.split(".")
-        # JWT uses base64url without padding — reintroduce padding for b64decode.
-        pad = "=" * (-len(payload_b64) % 4)
-        payload_bytes = base64.urlsafe_b64decode(payload_b64 + pad)
-        payload = json.loads(payload_bytes)
-    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
-        return False
-    sub = payload.get("sub")
-    return isinstance(sub, str) and sub.startswith("spiffe://")
-
-
-# ── Capability translation helpers ────────────────────────────────────────
-
-
-def _colon_cap_to_tuple(flat: str) -> tuple[str, str] | None:
-    """Translate an SS-22 SCIM colon-flattened capability string
-    ``"<action>:<resource>"`` into the unified 2-tuple.
-
-    Returns None for malformed entries.
-    """
-    if not isinstance(flat, str) or flat.count(":") != 1:
-        return None
-    action, resource = flat.split(":", 1)
-    if not action or not resource:
-        return None
-    return (action, resource)
-
-
-# ── Per-flow dispatch shims ──────────────────────────────────────────────
-
-
-def _get_db_or_none(request: Request) -> Session | None:
-    """Extract a DB session from request state if the host app provided one.
-
-    The dispatcher can't create a session on its own (that would duplicate
-    engine wiring); host apps with a DB dep should set
-    ``request.state.db`` before dispatch. Returns None if not available —
-    PAT / OAuth dispatch will raise a 503-ish HTTPException in that case.
-    """
-    return getattr(request.state, "db", None)
-
-
-async def _dispatch_spiffe_jwt(request: Request, token: str) -> Principal:
-    """Validate a SPIFFE JWT-SVID and return a unified Principal.
-
-    Trust bundle + expected audiences come from app.state (populated by
-    :class:`gdx_dispatch.core.middleware.spiffe_auth_middleware.SPIFFEAuthMiddleware`
-    wiring). If the host app has not wired SPIFFE, we 503 — presenting a
-    JWT-SVID to an app that can't verify it is a config error, not a 401.
-    """
-    from gdx_dispatch.core.spiffe.svid_validator import JWTSVIDError, validate_jwt_svid
-    from gdx_dispatch.core.spiffe.workload_capability_map import resolve_capabilities
-
-    bundle_cache = getattr(request.app.state, "spiffe_trust_bundle", None)
-    audiences = getattr(request.app.state, "spiffe_audiences", None)
-    if bundle_cache is None or not audiences:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error_type": "spiffe_not_wired",
-                "detail": "SPIFFE JWT-SVID presented but host app has no trust bundle configured",
-            },
-        )
-
-    try:
-        # TrustBundleCache exposes a zero-arg ``.get()`` returning a dict;
-        # tests/dev may pass a plain dict directly. Distinguish by checking
-        # whether ``get`` is bound with a default-zero arity.
-        if isinstance(bundle_cache, dict):
-            bundle = bundle_cache
-        elif hasattr(bundle_cache, "get") and callable(bundle_cache.get):
-            bundle = bundle_cache.get()
-        else:
-            bundle = bundle_cache
-        validated = validate_jwt_svid(
-            token, trust_bundle=bundle, expected_audiences=audiences
-        )
-    except JWTSVIDError as exc:
-        raise HTTPException(
-            status_code=401,
-            detail={"error_type": "spiffe_jwt_invalid", "detail": str(exc)},
-        ) from exc
-
-    resolved = resolve_capabilities(validated.spiffe_id.uri)
-    caps = _translate_spiffe_caps(resolved.capabilities)
-    tenant_id = _spiffe_tenant_id(request, validated.spiffe_id.uri, resolved.tenant_scope)
-
-    return Principal.from_spiffe(
-        spiffe_id=validated.spiffe_id.uri,
-        tenant_id=tenant_id,
-        capabilities=caps,
-    )
-
-
-async def _dispatch_spiffe_mtls(request: Request) -> Principal:
-    """Build a Principal for an mTLS-peer SPIFFE identity.
-
-    ``request.state.peer_spiffe_id`` is set by an upstream layer (SPIRE
-    agent sidecar, envoy SDS, etc.). We trust that assertion — the TLS
-    handshake already verified the peer cert against the trust bundle.
-    """
-    from gdx_dispatch.core.spiffe.workload_capability_map import resolve_capabilities
-
-    peer_id = getattr(request.state, "peer_spiffe_id", None)
-    if not isinstance(peer_id, str) or not peer_id.startswith("spiffe://"):
-        # Should never reach here if the caller gated on this, but fail loud.
-        raise HTTPException(
-            status_code=401,
-            detail={
-                "error_type": "spiffe_mtls_invalid",
-                "detail": "request.state.peer_spiffe_id is not a valid SPIFFE ID",
-            },
-        )
-
-    resolved = resolve_capabilities(peer_id)
-    caps = _translate_spiffe_caps(resolved.capabilities)
-    tenant_id = _spiffe_tenant_id(request, peer_id, resolved.tenant_scope)
-
-    return Principal.from_spiffe(
-        spiffe_id=peer_id,
-        tenant_id=tenant_id,
-        capabilities=caps,
-    )
-
-
-def _translate_spiffe_caps(
-    caps: tuple[str, ...],
-) -> list[tuple[str, str]]:
-    """Translate SS-32 workload-capability-map strings into unified tuples.
-
-    SS-32 emits colon-flattened strings like ``"invoke:mcp.tool"`` or bare
-    action strings. We prefer colon-split; bare strings map to
-    ``(action, "*")``.
-    """
-    out: list[tuple[str, str]] = []
-    for c in caps:
-        if not isinstance(c, str) or not c:
-            continue
-        if ":" in c:
-            t = _colon_cap_to_tuple(c)
-            if t is not None:
-                out.append(t)
-        else:
-            out.append((c, "*"))
-    return out
-
-
-def _spiffe_tenant_id(
-    request: Request, spiffe_id: str, tenant_scope: str
-) -> str:
-    """Resolve a tenant slug for a SPIFFE principal.
-
-    * If ``request.state.tenant["slug"]`` is set (the tenant
-      middleware resolved a concrete tenant from host/header), use it.
-    * If ``tenant_scope == "global"``, return the reserved platform
-      slug (:data:`_PLATFORM_TENANT_SLUG`).
-    * Otherwise, the workload is tenant-scoped but no concrete tenant
-      was resolved — return a namespaced ``spiffe-unresolved:...``
-      slug so platform ORM filters miss loudly rather than fall
-      through to a synthesized hash that could accidentally collide.
-    """
-    # Single-tenant: every request resolves to the one pinned company, so its
-    # slug (single_tenant()["slug"]) is authoritative. Pre-collapse this read
-    # the host-resolved tenant from request.state.tenant; host-based resolution
-    # no longer exists, and single_tenant() always yields a non-empty slug, so
-    # the first branch always returns here. The "global"/unresolved branches are
-    # kept (unreachable today) so the SPIFFE scope contract survives intact if
-    # multi-tenancy is ever reintroduced.
-    slug = single_tenant().get("slug")
-    if isinstance(slug, str) and slug:
-        return slug
-    if tenant_scope == "global":
-        return _PLATFORM_TENANT_SLUG
-    return f"spiffe-unresolved:{spiffe_id}"
 
 
 async def _dispatch_login_jwt(request: Request, token: str) -> Principal:
@@ -484,9 +219,7 @@ async def get_current_principal(request: Request) -> Principal:
 
     Dispatches by auth material shape. See module docstring for the full
     priority list. Raises ``HTTPException(401)`` when no credential shape
-    authenticates; ``HTTPException(503)`` when a credential needs backing
-    infra the host app has not wired (e.g. DB for PAT, trust bundle for
-    SPIFFE JWT).
+    authenticates.
     """
     # 1. Authorization header
     auth = request.headers.get("authorization") or ""
@@ -502,14 +235,11 @@ async def get_current_principal(request: Request) -> Principal:
             )
 
         if _looks_like_jwt(token):
-            if _jwt_has_spiffe_sub(token):
-                return await _dispatch_spiffe_jwt(request, token)
             return await _dispatch_login_jwt(request, token)
 
         # Opaque bearer token — no recognized shape. The OAuth2 dev-portal
         # authorization server (SS-21) was removed with the single-tenant
-        # cleanup; the only bearer tokens we accept now are login JWTs
-        # (handled above) and SPIFFE JWT-SVIDs.
+        # cleanup; the only bearer tokens we accept are login JWTs.
         raise HTTPException(
             status_code=401,
             detail={
@@ -526,16 +256,12 @@ async def get_current_principal(request: Request) -> Principal:
     if request.cookies.get("access_token"):
         return await _dispatch_session(request)
 
-    # 3. mTLS-derived SPIFFE peer identity
-    if getattr(request.state, "peer_spiffe_id", None):
-        return await _dispatch_spiffe_mtls(request)
-
-    # 4. No credential material present
+    # 3. No credential material present
     raise HTTPException(
         status_code=401,
         detail={
             "error_type": "missing_credentials",
-            "detail": "No session cookie, Authorization header, or SPIFFE mTLS peer identity present",
+            "detail": "No session cookie or Authorization header present",
         },
     )
 
