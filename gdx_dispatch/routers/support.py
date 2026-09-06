@@ -268,7 +268,7 @@ def list_my_tickets(
     """List the current tenant's support tickets (optionally filtered by category)."""
     tenant_id = _resolve_tenant_id(request)
 
-    query = db.query(SupportTicket).filter(SupportTicket.tenant_id == tenant_id)
+    query = db.query(SupportTicket)
     if category:
         query = query.filter(SupportTicket.category == category)
     try:

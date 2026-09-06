@@ -49,7 +49,12 @@ Known limitations (audit-flagged, not yet closed)
   Attribute. Closing this requires symbol-tracking dataflow which AST
   alone can't do. Don't write that pattern.
 - Lineno is part of the signature, so refactors that shift line numbers
-  show up as net-new findings. Use `--prune` after such refactors.
+  show up as net-new findings. Re-freeze with `--baseline`: it refuses to
+  admit a NEW shape (file, rule, identifier, count) that the old baseline did
+  not hold, so a moved line re-freezes cleanly while a new filter smuggled in
+  with the move still stops it (pass `--allow-new` only for a filter you have
+  read and mean to keep). `--prune` only drops entries whose code is gone; it
+  cannot repair a move (audit, 2026-09-06).
 
 Usage
 -----
@@ -64,8 +69,8 @@ import ast
 import json
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_FILE = REPO_ROOT / ".tenant_plane_redundant_filter_baseline"
@@ -285,6 +290,13 @@ def _to_signature(finding: tuple[Path, int, str, str, str]) -> str:
     return f"{rel}:{code}:{identifier}:{lineno}"
 
 
+def _display(path: Path) -> str:
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:  # a baseline outside the tree (tests point it at a tmp dir)
+        return str(path)
+
+
 def _load_baseline() -> set[str]:
     if not BASELINE_FILE.exists():
         return set()
@@ -297,6 +309,21 @@ def _load_baseline() -> set[str]:
 def _write_baseline(findings: list[tuple[Path, int, str, str, str]]) -> None:
     sigs = sorted({_to_signature(f) for f in findings})
     BASELINE_FILE.write_text(json.dumps(sigs, indent=2) + "\n")
+
+
+def _shape(sig: str) -> str:
+    return sig.rsplit(":", 1)[0]  # file:rule:identifier — the signature without its line
+
+
+def _shapes_beyond_baseline(baseline: set[str], findings: list[tuple[Path, int, str, str, str]]) -> list[str]:
+    """Shapes (file, rule, identifier) that the current findings hold MORE of
+    than the baseline did. A re-freeze after a line shift must yield nothing
+    here; a new filter hidden under the shift shows up as one entry."""
+    from collections import Counter
+
+    before = Counter(_shape(s) for s in baseline)
+    now = Counter(_shape(_to_signature(f)) for f in findings)
+    return sorted(f"{shape}: {n} (baseline {before.get(shape, 0)})" for shape, n in now.items() if n > before.get(shape, 0))
 
 
 def _net_new_findings(
@@ -323,13 +350,20 @@ def main() -> int:
     parser.add_argument("--baseline", action="store_true")
     parser.add_argument("--no-baseline", action="store_true")
     parser.add_argument("--prune", action="store_true", help="drop baseline entries that no longer match current findings")
+    parser.add_argument("--allow-new", action="store_true", help="let --baseline admit shapes the old baseline did not hold")
     args = parser.parse_args()
 
     findings = scan()
 
     if args.baseline:
+        beyond = _shapes_beyond_baseline(_load_baseline(), findings)
+        if beyond and not args.allow_new:
+            print("Refusing to re-freeze: these shapes exceed the old baseline (fix them, or pass --allow-new for a filter you have read and mean to keep):")
+            for line in beyond:
+                print("  " + line)
+            return 2
         _write_baseline(findings)
-        print(f"Wrote {len(findings)} signatures to {BASELINE_FILE.relative_to(REPO_ROOT)}")
+        print(f"Wrote {len(findings)} signatures to {_display(BASELINE_FILE)}")
         return 0
 
     if args.prune:
