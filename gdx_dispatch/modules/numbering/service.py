@@ -1,6 +1,6 @@
 """Numbering service — atomic next-number generation.
 
-Locks the TenantSettings row (control plane) via SELECT ... FOR UPDATE
+Locks the TenantSettings row via SELECT ... FOR UPDATE
 so two concurrent jobs creating in parallel can't grab the same seq.
 """
 from __future__ import annotations

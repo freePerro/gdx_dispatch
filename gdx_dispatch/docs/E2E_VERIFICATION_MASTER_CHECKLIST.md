@@ -47,7 +47,7 @@ PDF generation, file uploads.
 19. [Settings and Configuration](#19-settings-and-configuration)
 20. [PDF Generation](#20-pdf-generation)
 21. [Module Gating](#21-module-gating)
-22. [Multi-Tenant Isolation](#22-multi-tenant-isolation)
+22. [Multi-Tenant Isolation](#22-multi-tenant-isolation) — retired 2026-09-06
 23. [Automations](#23-automations)
 24. [Segments](#24-segments)
 25. [Warranties](#25-warranties)
@@ -85,7 +85,7 @@ PDF generation, file uploads.
       /     Unit (pytest, Vitest)            \ ~1200 tests, 1 min
 ```
 
-**Why a diamond, not a pyramid**: For a multi-tenant SaaS with complex UI workflows, integration tests (API contracts) catch more real bugs per test than unit tests. E2E tests are essential because the Vue frontend is where most user-facing bugs hide.
+**Why a diamond, not a pyramid**: For an app with complex UI workflows, integration tests (API contracts) catch more real bugs per test than unit tests. E2E tests are essential because the Vue frontend is where most user-facing bugs hide.
 
 ### Tool Stack
 
@@ -673,29 +673,16 @@ When a module is disabled for a tenant, all API endpoints for that module return
 
 ## 22. Multi-Tenant Isolation
 
-### What "works" means
-
-Tenant A's data is completely invisible to Tenant B. No cross-tenant data leakage through any path: API, WebSocket, file storage, caching, search, or exports.
-
-### Functional Tests
+**RETIRED 2026-09-06.** One tenant per database, forever (`CLAUDE.md`). The
+fifteen TENANT-* cases that stood here described a Tenant B that cannot exist
+(TENANT-13 and TENANT-15 had already been retired 2026-09-03 when the tenant
+header stopped being read). Do not write cross-tenant tests. What stands in
+their place:
 
 | ID | Test Case | Verification |
 |----|-----------|-------------|
-| TENANT-01 | Data isolation: customers | Tenant A creates customer, Tenant B's GET /api/customers does not return it |
-| TENANT-02 | Data isolation: jobs | Tenant A's job not visible to Tenant B |
-| TENANT-03 | Data isolation: invoices | Tenant A's invoice not accessible by Tenant B |
-| TENANT-04 | Data isolation: documents | Tenant A's uploaded file not downloadable by Tenant B |
-| TENANT-05 | Data isolation: estimates | Tenant B cannot access Tenant A's estimates |
-| TENANT-06 | IDOR prevention | Tenant B with valid token cannot GET /api/jobs/{tenant_a_job_id} |
-| TENANT-07 | WebSocket isolation | Tenant A's dispatch board messages not received by Tenant B |
-| TENANT-08 | File storage isolation | Tenant A's files stored under /uploads/tenant_a_id/, not accessible by Tenant B's path |
-| TENANT-09 | Search isolation | Search results only return current tenant's data |
-| TENANT-10 | Export isolation | Data exports contain only current tenant's data |
-| TENANT-11 | Audit log isolation | Tenant A's audit log not visible to Tenant B |
-| TENANT-12 | Settings isolation | Tenant A's settings change does not affect Tenant B |
-| ~~TENANT-13~~ | ~~Missing tenant header~~ | RETIRED 2026-09-03: there is no tenant header; the middleware pins the one tenant |
-| TENANT-14 | Invalid tenant ID | Request with non-existent tenant ID returns 404 or 403 |
-| ~~TENANT-15~~ | ~~Tenant header spoofing~~ | RETIRED 2026-09-03: the header is no longer read anywhere on the backend |
+| TENANT-PIN | Every request is pinned to the one tenant | `tests/test_single_tenant_pin.py` — the middleware sets `request.state.tenant` from env, never from a header, host or path |
+| TENANT-RETIRED | The multi-tenant surfaces stay gone | `tests/test_saas_surfaces_retired.py`, `tests/test_control_plane_removed.py` |
 
 ---
 
@@ -966,7 +953,7 @@ Tenant A's data is completely invisible to Tenant B. No cross-tenant data leakag
 
 ## 39. Security (OWASP)
 
-### Based on OWASP ASVS 5.0 and Multi-Tenant Cheat Sheet
+### Based on OWASP ASVS 5.0
 
 | ID | Test Case | Verification |
 |----|-----------|-------------|
@@ -1188,34 +1175,11 @@ def test_job(test_tenant, admin_token, test_customer):
     delete_job(admin_token, job.id)
 ```
 
-### Multi-Tenant Test Strategy (Playwright)
+### Playwright projects
 
-```typescript
-// playwright.config.ts
-export default defineConfig({
-  projects: [
-    {
-      name: 'tenant-a',
-      use: {
-        baseURL: 'https://tenant-a.app.com',
-        storageState: '.auth/tenant-a.json',
-      },
-    },
-    {
-      name: 'tenant-b',
-      use: {
-        baseURL: 'https://tenant-b.app.com',
-        storageState: '.auth/tenant-b.json',
-      },
-    },
-    {
-      name: 'cross-tenant',
-      dependencies: ['tenant-a', 'tenant-b'],
-      // Tests that verify isolation between tenants
-    },
-  ],
-});
-```
+Retired 2026-09-06: a `tenant-a` / `tenant-b` / `cross-tenant` project layout
+stood here. There is one tenant, so the real config (`frontend/playwright.config.js`)
+has one project against one `baseURL`.
 
 ### Reporting
 

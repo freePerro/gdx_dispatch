@@ -2,7 +2,7 @@
 
 Mirrors ``gdx_dispatch/core/llm/key_storage.py``: Fernet-encrypts the Phone.com
 permanent (or OAuth) access token against ``GDX_FERNET_KEY``, persists
-into ``tenant_settings.phone_com_token_enc`` (control plane).
+into ``tenant_settings.phone_com_token_enc``.
 
 Also stores the per-tenant webhook HMAC secret
 (``phone_com_webhook_secret``). The secret is generated locally — Phone.com

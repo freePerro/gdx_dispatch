@@ -6,11 +6,11 @@ can actually log in. Designed to run on every container start — each step
 is a no-op when its work is already done.
 
 Pipeline:
-  1. Create the ORM-managed tenant-plane tables (users, companies,
+  1. Create the ORM-managed tables (users, companies,
      company_module_grants, …) via TenantBase.metadata.create_all().
-     Alembic (run separately, before this) creates the control-plane tables
-     (tenants, audit_logs, …); the tenant-plane tables are ORM-only, so
-     `alembic upgrade head` alone never creates them.
+     Alembic (run separately) creates the baseline tables on its own
+     metadata (tenants, tenant_settings, …); the TenantBase tables are
+     create_all-only, so `alembic upgrade head` alone never creates them.
   2. Seed the single default tenant row (matches what TenantMiddleware pins
      every request to via single_tenant()), so the audit_logs → tenants FK
      resolves and the audit trail works.
@@ -89,11 +89,11 @@ def _admin_banner(title: str, email: str, password: str, *, generated: bool) -> 
 
 
 def create_orm_tables() -> None:
-    """Create the ORM-managed tenant-plane tables (idempotent; checkfirst).
+    """Create the ORM-managed (TenantBase) tables (idempotent; checkfirst).
 
     #41 — this MUST run BEFORE `alembic upgrade head` on a fresh DB so any
     migration that ALTERs a non-baseline (ORM-managed) table finds it present.
-    The squashed baseline only creates the disjoint control-plane tables, so
+    The squashed baseline only creates the disjoint Alembic-base tables, so
     create_all-first does not collide with migration 001. Safe to call again
     inside main() (checkfirst makes it a no-op once tables exist).
     """
@@ -112,7 +112,7 @@ def main() -> int:
         return 0
 
     # Importing the models package registers every ORM model on TenantBase's
-    # metadata so create_all() sees the full tenant-plane schema.
+    # metadata so create_all() sees the full schema.
     import gdx_dispatch.models  # noqa: F401
 
     from gdx_dispatch.control.models import Tenant
@@ -120,7 +120,7 @@ def main() -> int:
     from gdx_dispatch.core.tenant import single_tenant
     from gdx_dispatch.models.tenant_models import Company, User
 
-    # ── 1. Tenant-plane tables (ORM-managed; alembic doesn't create these) ──
+    # ── 1. TenantBase tables (ORM-managed; alembic doesn't create these) ──
     # Idempotent — the entrypoint already ran this before alembic (#41), but a
     # bare `python -m bootstrap_app` (e.g. local dev) still needs it here.
     create_orm_tables()
@@ -129,7 +129,7 @@ def main() -> int:
     tenant_id = str(tenant["id"])
 
     with SessionLocal() as db:
-        # ── 2. Default tenant row (control-plane; FK target for audit_logs) ──
+        # ── 2. The one tenant row (FK target for audit_logs) ──
         if db.get(Tenant, tenant_id) is None:
             db.add(Tenant(id=tenant_id, slug=str(tenant["slug"]), name=str(tenant["name"])))
             db.flush()

@@ -20,7 +20,7 @@ Exit code:
     1 — drift detected (CI / cron should fail)
     2 — operator error (bad args, can't reach the database)
 
-The scanner does not write to tenant DBs. Resolution remains
+The scanner does not write to the database. Resolution remains
 ``gdx_dispatch/tools/pave_tenant_db.py`` for missing/changed columns, or a manual
 ALTER for special cases.
 """
@@ -82,14 +82,13 @@ class TenantDriftReport:
         }
 
 
-# Tables we deliberately don't expect to exist on every tenant DB. These
-# are forward-feature tables, multi-tenant-only tables, or things paved
-# only on specific tenant cohorts. Filter them out of "missing tables".
+# Tables create_all is not expected to own. Filter them out of "missing
+# tables".
 _TABLE_ALLOWLIST_MISSING: set[str] = {
-    "alembic_version",  # tenant-plane is ORM-only, no alembic table
+    "alembic_version",  # owned by Alembic, not by TenantBase
 }
 
-# Orphan-column allowlist: columns we know exist in legacy tenant DBs
+# Orphan-column allowlist: columns we know exist in older databases
 # but are not declared in the current ORM. These were noted in
 # ARCHITECTURAL_INVARIANTS / pave_tenant_db work and don't need to
 # block CI.

@@ -236,7 +236,7 @@ def list_parts(
 # Sprint 1.0.5 — singular cost→sell math via the canonical pricing engine.
 # Replaces the prior hardcoded margin tiers (Doors/Openers fixed at 30/25/22%
 # regardless of cost; Parts at hardcoded cost cutoffs) which conflicted with
-# the editable per-tenant tier sets seeded into the DB at signup/pave.
+# the editable tier sets seeded into the DB on first use / after a pave.
 #
 # Endpoint contract preserved: same path, same query params, same response
 # keys. Map: category (door|opener|part) → pricing_category (doors|openers|

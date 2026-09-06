@@ -1,6 +1,6 @@
 # Secrets Rotation Runbook — GDX Platform
 
-**Status: CURRENT.** Newer of the two secrets-rotation docs (2026-08-31); see
+**Status: CURRENT** — container and env names corrected 2026-09-06 (they named a control-plane database this install never had). Newer of the two secrets-rotation docs (2026-08-31); see
 also `SECRETS_ROTATION.md`, which overlaps and has not been reconciled with
 this one.
 
@@ -32,13 +32,21 @@ All secrets must be rotated on a regular schedule or immediately after suspected
 NEW_PW=$(openssl rand -base64 32)
 
 # 2. Update PostgreSQL
-docker exec gdx-control-db psql -U gdx -c "ALTER USER gdx PASSWORD '$NEW_PW';"
+docker exec gdx-db-1 psql -U gdx -d gdx -c "ALTER USER gdx PASSWORD '$NEW_PW';"
 
 # 3. Update .env on VPS
-# Edit CONTROL_DB_URL and TENANT_DB_URL with new password
+# Edit DATABASE_URL and DB_PASSWORD (the db service reads the latter) with the new password
 
-# 4. Restart app containers
-docker compose -f gdx_dispatch/docker/docker-compose.yml restart app celery-high celery-low celery-beat
+# 4. Restart app containers (project name required — see update.sh)
+# The production stack is compose project `gdx`, built from THREE files by
+# gdx_dispatch/docker/update.sh. Plain `docker compose -f …docker-compose.yml`
+# addresses a project that does not exist: `stop` stops nothing and `up`
+# creates a SECOND stack on the same volumes. Always use the same array
+# update.sh uses (run from the checkout root, where .env lives):
+COMPOSE=(docker compose -p gdx --env-file ./.env
+  -f gdx_dispatch/docker/docker-compose.yml
+  -f gdx_dispatch/docker/docker-compose.selfhost.yml)
+"${COMPOSE[@]}" restart app celery-high celery-low celery-beat
 
 # 5. Verify
 curl -sk https://gdx.example.com/health
@@ -54,7 +62,7 @@ NEW_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(64))")
 # Set JWT_SECRET_KEY=$NEW_KEY
 
 # 3. Restart app (all active sessions will be invalidated)
-docker compose -f gdx_dispatch/docker/docker-compose.yml restart app
+"${COMPOSE[@]}" restart app   # COMPOSE as defined in step 1
 
 # 4. Verify login works
 curl -sk -X POST https://gdx.example.com/api/auth/login \
@@ -80,7 +88,8 @@ curl -sk -X POST https://gdx.example.com/api/auth/login \
 # 1. Create new IAM access key in AWS Console
 # 2. Update AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env
 # 3. Delete old key in AWS Console
-# 4. Verify backups: bash gdx/scripts/backup.sh
+# 4. Verify backups: see RESTORE_RUNBOOK.md — nothing in this repo ships
+#    backups to S3 (the script that did was removed 2026-09-06)
 ```
 
 ## Emergency Rotation (Suspected Compromise)

@@ -12,7 +12,7 @@ intake feature, but no endpoint read or wrote it, so turning the feature on
 required someone with database access. It is here now.
 
 Tenant Entra app credentials (client_id, client_secret) live in
-``TenantSettings`` (control plane) and are managed via a separate endpoint
+``TenantSettings`` and are managed via a separate endpoint
 (slice S39 backend, also here below: ``/api/admin/outlook-credentials``).
 """
 from __future__ import annotations

@@ -90,7 +90,7 @@ What CPAs uniformly need from clients on third-party GLs (**[CONVERGENT]** — p
 
 ### 5.4 Safeguards cadence
 
-Monthly: close ritual + diff. Quarterly: CPA glance at the diff trend + classification register (**[CPA]** confirm appetite/fee). Yearly: year-end package, AJE flow-back, book-to-return check, and a retention snapshot. **Retention correction** (**[AUDIT-R1]**, verified against code): both existing backup scripts prune at 30 days (`scripts/backup-db.sh:26` `-mtime +30 -delete`; `gdx_dispatch/scripts/backup.sh` 30-day S3 cutoff), so the GL export cannot simply "ride the DB backups" — it gets a **dedicated archival tier** (separate path/S3 prefix with a ≥7-year lifecycle, added to the `/backup` runbook and exercised in the next restore drill). The GL is IRS "books and records" now; 30-day retention would be a compliance failure.
+Monthly: close ritual + diff. Quarterly: CPA glance at the diff trend + classification register (**[CPA]** confirm appetite/fee). Yearly: year-end package, AJE flow-back, book-to-return check, and a retention snapshot. **Retention correction** (**[AUDIT-R1]**, verified against code): both existing backup scripts prune at 30 days (`scripts/backup-db.sh:26` `-mtime +30 -delete`; `gdx_dispatch/scripts/backup.sh` 30-day S3 cutoff), so the GL export cannot simply "ride the DB backups" — it gets a **dedicated archival tier** (separate path/S3 prefix with a ≥7-year lifecycle, added to the `/backup` runbook and exercised in the next restore drill). The GL is IRS "books and records" now; 30-day retention would be a compliance failure. <!-- gdx_dispatch/scripts/backup.sh deleted 2026-09-06 (multi-tenant S3 script nothing scheduled); link-ok -->
 
 ## 6. QBO end-state — decision matrix
 

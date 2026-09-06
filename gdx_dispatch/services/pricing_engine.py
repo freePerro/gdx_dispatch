@@ -449,10 +449,10 @@ def hydrate_settings_from_db(session) -> PricingSettingsView:
 
     settings_row = session.query(PricingSettings).first()
     if settings_row is None:
-        # Fail loud — every tenant should be seeded at signup/pave
+        # Fail loud — the install should have been seeded by now
         raise PricingConfigError(
-            "no PricingSettings row in this tenant DB — seed_default_pricing() "
-            "was not called at signup/pave"
+            "no PricingSettings row in this database — seed_default_pricing() "
+            "has not run (open Settings → Pricing once, or run a pave)"
         )
 
     vtiers = (

@@ -10,8 +10,8 @@ records an audit row.
 
 Meanwhile the same tenant has a fully-functional Outlook OAuth integration
 (see `gdx_dispatch/modules/outlook/`) that can send through Microsoft Graph as the
-calling user. The token plumbing, control-plane app registration, and per-
-user `outlook_accounts` row are already present.
+calling user. The token plumbing, the Entra app registration in
+`tenant_settings`, and the per-user `outlook_accounts` row are already present.
 
 `send_transactional_email` is the new single entry point. It picks a
 provider in this order:

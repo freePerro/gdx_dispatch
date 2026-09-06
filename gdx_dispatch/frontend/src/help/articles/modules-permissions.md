@@ -49,7 +49,7 @@ Once a module is on, **role** decides who in the shop can use it. The defaults w
 
 You can fine-tune what each role sees under **Settings → Role permissions**. Useful when a dispatcher needs to see jobs but not customer payment info, or a salesperson needs read-only access to dispatch.
 
-## Tenant-level vs user-level
+## Shop-wide vs per-user
 
 | Concern | Where to change it |
 |---|---|
@@ -60,7 +60,7 @@ You can fine-tune what each role sees under **Settings → Role permissions**. U
 
 ## When a permission feels wrong
 
-- Someone seeing more than they should: tighten role permissions, then test by logging in as them ("Impersonate" — admins only).
+- Someone seeing more than they should: tighten role permissions, then check from their side — have them refresh and confirm what they can see, or sign in as them on a second device. There is no "impersonate" switch.
 - Someone seeing less than they should: confirm the module is on AND their role has the permission. The combination has to be true.
 
 ## Related

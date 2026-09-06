@@ -696,7 +696,7 @@ Grouped by OpenAPI tag. `{voip_id}` = account ID, `{extension_id}` = extension I
 
 ## Notes for GDX integration
 
-- **Tenant identity rule still applies:** when we store a Phone.com `voip_id` against a GDX tenant, it goes in a control-plane row keyed by `tenant_id` (UUID). The `voip_id` is just a vendor identifier — never an FK target on our side.
+- **Tenant identity rule still applies:** when we store a Phone.com `voip_id` against a GDX tenant, it goes in a settings row keyed by `tenant_id` (UUID). The `voip_id` is just a vendor identifier — never an FK target on our side.
 - **Webhook receiver:** add a router under `gdx_dispatch/routers/integrations/phonecom.py` that verifies the bearer/HMAC Phone.com signs callbacks with (TBD — confirm signature scheme from `Events Callbacks` POST request schema before shipping).
 - **Rate limits:** spec doesn't expose explicit limits; the docs site references an "API rate limits" page — ask support for written numbers before relying on a value in code.
 - **Pagination defaults** (offset/limit, max 500) match what we already do in GDX list endpoints — wrap calls so the cursor pattern is consistent.

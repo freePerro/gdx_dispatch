@@ -372,8 +372,8 @@ def _load_user_permissions(db: Session, request: Request, user: dict) -> set[str
          JWT claim outlive the DB-recorded role).
       3. If the assigned-role name equals the DB role AND that role is
          admin/owner: **UNION** the snapshot with BUILTIN_ROLES[role]. This
-         closes the S97 D-item (`D-S97-perm-snapshot`): snapshots taken at
-         signup miss any BUILTIN keys added later (e.g.,
+         closes the S97 D-item (`D-S97-perm-snapshot`): snapshots taken
+         when the role was created miss any BUILTIN keys added later (e.g.,
          `pricing.labor_matrix.read`), silently locking the admin out of
          new features. Admin/owner BUILTIN is the platform contract;
          snapshot is advisory only when admin/owner.
@@ -463,7 +463,7 @@ def _load_user_permissions(db: Session, request: Request, user: dict) -> set[str
         )
 
     # 3. Admin/owner with a matching assignment → BUILTIN only (snapshot
-    # ignored). This is the S97 fix: a stale snapshot from signup can't
+    # ignored). This is the S97 fix: a stale snapshot can't
     # lock the admin out of newly-added BUILTIN keys, AND a tenant who
     # edited the admin snapshot can't escalate beyond the platform contract
     # (e.g., adding billing.write to admin doesn't actually grant it —

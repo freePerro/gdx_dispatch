@@ -1,7 +1,7 @@
 """Single-source email normalization for the auth-identity surface.
 
-Every write site that persists an email — tenant `users.email`, control-plane
-`identities.email`, SCIM imports, federation linking, invitations — MUST
+Every write site that persists an email — `users.email`, invitations,
+portal accounts — MUST
 normalize through this helper before persistence. Reads continue to compare
 case-insensitively (`func.lower(...) == normalize_email(...)`) so the
 normalization holds across the round-trip.
@@ -11,7 +11,7 @@ Why this exists (audit Finding 4, Sprint Auth & Identity Hardening):
     rows for the same human. JWTs minted under one row and cookies
     recovered against the other returned "no profile" 500s. The data
     structure permits two identity rows for the same lowercased email
-    because there's no UNIQUE INDEX on `lower(email)` and signup wrote
+    because there's no UNIQUE INDEX on `lower(email)` and the old signup wrote
     literal-case email. This helper is the single chokepoint that
     eliminates the asymmetry.
 
@@ -22,8 +22,8 @@ Behavior:
       sites can branch on truthiness without a NoneType crash).
 
 Out of scope (handled elsewhere):
-    - Validation of address shape (`@`, length, RFC) — Pydantic / signup
-      input validation owns that.
+    - Validation of address shape (`@`, length, RFC) — Pydantic input
+      validation owns that.
     - Idempotency at the DB layer — that's the unique-index migration.
 """
 from __future__ import annotations

@@ -97,7 +97,7 @@ def get_user_for_oauth_start(
 
 
 def get_db_for_oauth_start(db: Session = Depends(get_db)) -> Session:
-    """Wrapper so tests can override the control-plane Session dep."""
+    """Wrapper so tests can override the Session dep."""
     return db
 
 

@@ -41,58 +41,28 @@ These rules exist because specific patterns kept causing production bugs. Non-ne
 - Test the import after deploy: `docker exec <app> python -c "from gdx_dispatch.routers import <mod>"`
 - WHY: missing `python-multipart` once silently killed 17 mobile endpoints.
 
-## Tenant Isolation — Three Planes
+## Database — One Database, Two Ways a Table Gets Created
 
-**There is no `ARCHITECTURAL_STATE.md`** — this line pointed at it as "the canonical picture" until 2026-09-01 and the file has never existed in this repo (`encryption_at_rest.md` cites it too). The canonical statement is `CLAUDE.md` § *Project map*: **single-tenant, forever — one tenant per database, isolation is the connection.** The three-plane description below is retained because the tenant-plane rules in it are correct and load-bearing; the control/commerce planes describe a shared-database SaaS this deployment does not run.
+Single-tenant, forever (`CLAUDE.md` § *Project map*): one Postgres database per
+install, and the connection is the isolation boundary. There is no control
+plane, no commerce plane, no row-level security and no per-tenant database
+resolution. (The "three planes" section that stood here until 2026-09-06
+described the shared-database SaaS this deployment never ran.)
 
-### Tenant plane (per-tenant Postgres)
-Tables: customers, jobs, invoices, documents, technicians, estimates, notes, leads, catalog, parts, photos, signatures, equipment, schedules.
+- ALWAYS `Depends(get_db)`. `get_tenant_db` is the same generator under its older name.
+- DO NOT add `WHERE tenant_id = :tid` / `WHERE company_id = :tid` filters. Redundant, and `IS NOT NULL` variants hide rows (the 2026-04-22 documents bug). `tools/tenant_plane_redundant_filter_scan.py` flags them.
+- DO NOT add `tenant_id` / `company_id` columns to new models. Redundant and misleading.
+- Read `request.state.tenant["id"]` — or call `core.tenant.company_id()` — only as a *value* (audit logs, storage key prefixes, log lines).
+- Every unit of work (request OR Celery task) opens its own session (`get_db` / `SessionLocal`). There is one engine.
 
-- ALWAYS `Depends(get_tenant_db)` — the connection is the isolation boundary.
-- DO NOT add `WHERE tenant_id = :tid` / `WHERE company_id = :tid` filters. Redundant and breaks on NULL (caused the 2026-04-22 document failure; same pattern as Flask bug fixed 2026-03-29 — it keeps recurring).
-- DO NOT add `tenant_id` / `company_id` columns to new tenant-plane models. Redundant and misleading.
-- DO NOT add RLS policies on tenant-plane tables — no-op in db-per-tenant.
-- Read `request.state.tenant["id"]` only as a *value* (audit logs, R2 key prefixes, log lines, control-plane FKs).
-- Every unit of work (request OR Celery task) must open its own session (`get_db` / `SessionLocal`). There is one engine, `app_engine`; the per-tenant `engine_registry` shim was removed 2026-09-03.
+### Two metadata objects, two creation paths
 
-#### Adding columns / tables to tenant-plane models
-`TenantBase.metadata.create_all()` runs at signup and creates *new tables* on demand. It does NOT add new columns to existing tables. So every column you add to an existing tenant-plane model silently drifts on every long-running tenant DB until someone repaves it. Symptom: `psycopg2.errors.UndefinedColumn` 500s on whichever endpoint touches the new column, only on tenants that existed before the column was added.
+- **`TenantBase`** (`models/tenant_models.py`, registry in `models/__init__.py`) — every business table. Created by `TenantBase.metadata.create_all()`, which `tools/bootstrap_app.create_orm_tables()` runs from the container entrypoint on every boot, *before* Alembic. **`create_all` creates missing tables only; it never adds a column to an existing table.**
+- **The Alembic base** (`gdx_dispatch/control/models.py` — `Tenant`, `TenantSettings`, the game tables — plus everything migration 001's baseline creates) — owned by `alembic upgrade head`, also run by the entrypoint. `routers/admin_db.py` suppresses these tables from its ORM-drift check because `compare_metadata` runs against `TenantBase` only.
 
-After merging any tenant-plane model change, run the non-destructive sync tool to bring every tenant DB up to the model:
+#### Adding a column to an existing `TenantBase` table
 
-    # ⚠ `gdx_dispatch.tools.sync_tenant_db` DOES NOT EXIST. This block gave it as
-    # the mandatory step after any tenant-plane model change; there is no such
-    # module (checked 2026-09-01), and a source comment in
-    # modules/forecasting/tasks.py:28 cites it too. Nothing additive-syncs a
-    # live DB today. The only tenant-DB tool that exists is:
-    #     gdx_dispatch/tools/pave_tenant_db.py   # DESTRUCTIVE: DROP SCHEMA + reload
-    # so a new column on an existing tenant-plane table still needs a
-    # deliberate migration or hand-written ALTER. Treat the drift warning above
-    # as real and the remedy below as unwritten.
-
-The tool only does *additive* DDL: `add_table`, `add_column`, `add_index`, `add_constraint` (CHECK only). It refuses to drop, change types, or change nullability — those are deliberate human decisions, not auto-fixes. It prints a per-tenant report of what was applied and what was skipped (so you can hand-write the risky ALTERs if the model intends them). Idempotent: re-running on a synced DB is a no-op.
-
-Use `pave_tenant_db.py` only when the diff is too tangled to apply additively (large type migrations, FK restructures with existing rows). It DROP SCHEMA + reloads — destructive, slow, last resort.
-
-### Control plane (shared `gdx_control`)
-Tables: tenants, memberships, tenant_module_grants, billing_plan, metering_usage, notification_template (if shared), tenant_relationships, cross_tier_module_grants, audit aggregation.
-
-- ALWAYS `Depends(get_control_db)`. ⚠ Not in `core/database.py` — the only definition is a local one at `api/public_router.py:47` (checked 2026-09-01). Confirm the import before copying this.
-- Every tenant-scoped control-plane table MUST have:
-  - `tenant_id` / `company_id` column, `NOT NULL`.
-  - RLS enabled, SELECT policy `USING (tenant_id = current_setting('app.tenant_id')::text)`.
-  - RLS `WITH CHECK (...)` on INSERT and UPDATE for write-capable roles.
-- Every `get_control_db` session MUST call `set_session_role(tenant_id=..., principal_role=..., ...)` immediately after open — RLS cannot enforce without the GUCs.
-- App-level filters (`.where(Model.tenant_id == tid)`) are allowed as readability sugar but are NOT the isolation boundary — RLS is. Do not rely on app filters for security.
-
-### Commerce plane (shared B2B data)
-Tables: dealer_orders, wholesale catalog items, pricing_tier, channel_analytics, distributor_analytics, cross-tier documents — any table with TWO tenant IDs on the same row.
-
-- Shared DB by design. One row legitimately visible to two tenants.
-- RLS policies reference all party columns:
-  - SELECT: `USING (current_setting('app.tenant_id')::text IN (supplier_tenant_id, dealer_tenant_id))`
-  - WITH CHECK on writes prevents forging the counterparty.
-- Same session-role requirement as control plane.
+Write an Alembic migration (`/migrate`); it must run on both SQLite and Postgres. There is no additive sync tool — `gdx_dispatch.tools.sync_tenant_db` never existed (checked 2026-09-06: no source file names it) — and the drift scanners (`tools/tenant_plane_schema_drift.py`, `tools/tenant_schema_drift_check.py`) only *detect*. `tools/pave_tenant_db.py` is the last resort: it DROP SCHEMAs the application database and reloads it from the dump it takes first. Destructive; requires `--yes`.
 
 ## AI Access — Three Layers
 
@@ -100,7 +70,7 @@ Any AI-driven read or write uses three independent enforcement layers:
 
 1. **Tool layer** — narrow, typed Python functions. Never free SQL. Tools own validation, audit, idempotency.
 2. **Postgres role layer** — `gdx_ai_readonly` (SELECT only) or `gdx_ai_write` (explicit column grants). Never `ALL PRIVILEGES`.
-3. **RLS layer** — mandatory on control + commerce planes; WITH CHECK clauses required for any table AI can write to.
+3. **Audit layer** — every AI write goes through `log_audit_event()` like any other mutation. (An RLS layer was listed here until 2026-09-06; no migration in this repo creates a policy, and single-tenant isolation is the connection, not RLS.)
 
 Tool blast-radius classes: Green (apply directly), Yellow (AI proposes → UI confirms → apply), Red (explicit admin gate or never). Prompt text is NOT a security boundary.
 

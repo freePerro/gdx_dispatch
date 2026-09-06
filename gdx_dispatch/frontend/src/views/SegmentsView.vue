@@ -386,8 +386,8 @@ const segmentForm = ref({
 
 const CUSTOMER_PAGE_SIZE = 25;
 // 2026-04-29: was 250, capping the embedded customers list at ~250 rows
-// even on tenants with 500+ records. Bumped to 1000 (server hard cap) to
-// cover all GDX customers and similar mid-size tenants in one fetch.
+// even on installs with 500+ records. Bumped to 1000 (server hard cap) to
+// cover a mid-size shop's whole customer list in one fetch.
 const CUSTOMER_FETCH_LIMIT = 1000;
 const customers = ref([]);
 const customerLoading = ref(false);
