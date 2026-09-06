@@ -55,14 +55,9 @@ def _tech() -> dict[str, str]:
     return {"user_id": "tech-1", "tenant_id": "tenant-test", "role": "technician"}
 
 
-def _request(tier: str = "starter", slug: str = "tenant-test") -> Request:
+def _request(slug: str = "tenant-test") -> Request:
     request = Request({"type": "http", "headers": []})
-    request.state.tenant = {
-        "id": "tenant-test",
-        "slug": slug,
-        "subscription_tier": tier,
-        "subscription_status": "trialing",
-    }
+    request.state.tenant = {"id": "tenant-test", "slug": slug}
     return request
 
 
@@ -122,7 +117,7 @@ def test_get_modules_defaults_empty(db_session: Session):
 
 
 def test_enable_module_adds_once(db_session: Session):
-    request = _request(tier="professional")
+    request = _request()
     r1 = settings_router.enable_module(request=request, key="quickbooks", current_user=_admin(), db=db_session)
     r2 = settings_router.enable_module(request=request, key="quickbooks", current_user=_admin(), db=db_session)
     assert r1 == {"status": "enabled", "key": "quickbooks"}
@@ -130,7 +125,7 @@ def test_enable_module_adds_once(db_session: Session):
 
 
 def test_disable_module_removes(db_session: Session):
-    request = _request(tier="professional")
+    request = _request()
     settings_router.enable_module(request=request, key="inventory", current_user=_admin(), db=db_session)
     data = settings_router.disable_module(request=request, key="inventory", current_user=_admin(), db=db_session)
     assert data == {"status": "disabled", "key": "inventory"}
@@ -144,7 +139,7 @@ def test_disable_persists_across_get_for_gdx_tenant(db_session: Session):
     so the admin disable was effectively a no-op (toggle off → toggle on
     by the next read). Assert disable now sticks across a subsequent GET.
     """
-    request = _request(tier="business", slug="gdx")
+    request = _request(slug="gdx")
     pre_get = branding_public_router.get_modules_public(
         request=request, current_user=_admin(), db=db_session
     )
