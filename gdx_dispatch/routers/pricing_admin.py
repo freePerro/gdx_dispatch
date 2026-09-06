@@ -291,8 +291,8 @@ def replace_tiers(
 def _get_or_seed_settings(db: Session) -> PricingSettings:
     """Return the singleton PricingSettings row. Seed if missing.
 
-    Defensive: if a tenant somehow doesn't have a settings row (legacy or
-    failed signup), seed it lazily so the admin UI has something to edit
+    Defensive: if the install has no settings row yet (fresh database),
+    seed it lazily so the admin UI has something to edit
     instead of 500-ing.
     """
     s = db.execute(select(PricingSettings).options(selectinload(PricingSettings.volume_tiers))).scalar_one_or_none()

@@ -1,7 +1,7 @@
 """API Key management for tenant public API access.
 
 Provides:
-- APIKey ORM model (control plane table)
+- APIKey ORM model (``api_keys``, on TenantBase like every business table)
 - Key generation / hashing helpers
 - FastAPI router: GET/POST/DELETE /api/developer/keys
 - APIKeyMiddleware: validates X-API-Key header, rate-limits via Redis
@@ -400,8 +400,8 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         # regardless of which auth path served the request.
         request.state.api_key_prefix = api_key.key_prefix
 
-        # Propagate tenant_id so TenantMiddleware lookup is consistent
-        # (api key requests bypass subdomain-based tenant resolution)
+        # Make request.state.tenant available downstream when the tenant
+        # middleware has not already set it.
         if not getattr(request.state, "tenant", None):
             request.state.tenant = {"id": str(api_key.tenant_id)}
 

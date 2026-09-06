@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 
-/* Auth store — tenant resolved server-side via subdomain aliases */
+/* Auth store — session token + current user. The server pins the one tenant. */
 export const useAuthStore = defineStore('auth', () => {
   const accessToken = ref(sessionStorage.getItem('gdx_access_token') || null);
   // Hydrate user from sessionStorage on store init so the topbar +

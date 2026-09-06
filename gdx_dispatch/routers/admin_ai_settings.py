@@ -43,7 +43,7 @@ def get_admin_principal_for_ai_settings(
 
 
 def get_db_for_ai_settings(db: Session = Depends(get_db)) -> Session:
-    """Wrapper so tests can override the control-plane Session dep."""
+    """Wrapper so tests can override the settings Session dep."""
     return db
 
 
@@ -115,13 +115,11 @@ def delete_ai_settings(
 def _fetch_ai_audit_rows(
     db: Session, tenant_id: UUID, *, limit: int = 10
 ) -> list[dict[str, Any]]:
-    """Fetch recent AI settings audit logs from the control-plane audit_logs.
+    """Fetch recent AI settings audit logs from ``audit_logs``.
 
-    Uses raw SQL to select only the columns that exist in the control-plane
-    schema. The tenant-plane ``AuditLog`` ORM model includes columns
-    (``request_id``, ...) that the control-plane table does not have, so a
-    full ORM SELECT raises ``UndefinedColumn``. Each row is returned as a
-    dict matching the ``_audit_row_to_dict`` shape.
+    Uses raw SQL to select only the columns this view needs rather than a
+    full ORM SELECT over a wide, append-only table. Each row is returned as
+    a dict matching the ``_audit_row_to_dict`` shape.
     """
     rows = db.execute(
         text(

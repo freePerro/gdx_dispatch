@@ -2,7 +2,7 @@
 
 Mirrors the QuickBooks module layout (client / oauth / router / sync /
 tasks / webhook_router) and the LLM key_storage pattern (Fernet-
-encrypted token in control-plane ``tenant_settings``).
+encrypted token in ``tenant_settings``).
 
 Phase 1 (close gate): paste-permanent-token + webhooks + 5-min poll
 backstop + core read/write (calls, messages, voicemails, dashboard).

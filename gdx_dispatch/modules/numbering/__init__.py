@@ -16,7 +16,7 @@ Format template tokens:
 Reserved for later: {site}, {region}, {tech_initials}.
 
 The counter resets on Jan 1 only when the format includes {year} or {yy}
-— the control-plane row tracks `job_number_year_seen` so a tenant who
+— the `tenant_settings` row tracks `job_number_year_seen` so a shop that
 moved to a non-year format mid-stream doesn't accidentally re-number.
 
 Per Doug 2026-04-29 (UX audit F-11): "I like b but can we make it so the

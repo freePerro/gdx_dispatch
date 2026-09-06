@@ -185,22 +185,19 @@ confirm a non-default salt without reading the raw env.
 `/opt/gdx_dispatch/.env`, owned `root:root`, mode `0600`. It is never committed
 to source. App processes read it at boot.
 
-### 4. Tenant isolation as a complement to encryption
+### 4. Isolation as a complement to encryption
 
-Three-plane isolation (`ARCHITECTURAL_STATE.md`) means:
+Single-tenant, one database per install (`CLAUDE.md` § *Project map*): the
+connection is the isolation boundary. There is no row-level security and no
+second tenant to isolate from. (A "three-plane isolation" description —
+per-tenant databases, a `gdx_control` database with RLS, a commerce plane —
+stood here until 2026-09-06; it described the shared-database SaaS this
+deployment never ran, and cited an `ARCHITECTURAL_STATE.md` that never
+existed.)
 
-- **Tenant plane** — per-tenant Postgres database. Isolation is the
-  connection itself; cross-tenant queries are physically impossible.
-- **Control plane** — single `gdx_control` DB with RLS policies referencing
-  `current_setting('app.tenant_id')`. Every `tenant_id` column is `NOT
-  NULL` with `WITH CHECK` policies preventing forged writes.
-- **Commerce plane** — RLS keyed on either `supplier_tenant_id` or
-  `dealer_tenant_id`.
-
-Encryption is *additive* to isolation, not a replacement. RLS keeps tenant A
-from reading tenant B's plaintext via SQL; field encryption keeps a
-ciphertext leak (backup theft, raw filesystem access) from yielding
-plaintext.
+Encryption is therefore the only control between a leaked copy of the
+database and plaintext: field encryption keeps a ciphertext leak (backup
+theft, raw filesystem access) from yielding PII.
 
 ### 5. AI-access guardrails
 
@@ -383,7 +380,6 @@ automating to a quarterly cron is filed under
 - [CLAUDE.md — GDX development instructions and architecture summary][claude-md]
 - `gdx_dispatch/core/pii.py` — implementation
 - `gdx_dispatch/modules/quickbooks/oauth.py` — manual encrypted columns
-- `ARCHITECTURAL_STATE.md` — three-plane isolation reference
 - `memory/reference_backup_encryption.md` — key locations + restore cheat-sheet
 
 [soc2-sprinto]: https://sprinto.com/blog/soc-2-requirements/

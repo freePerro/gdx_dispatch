@@ -3338,7 +3338,7 @@ class ChiDoorCatalog(Base):
     imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     chi_order_number: Mapped[str] = mapped_column(String(100), nullable=True)
     sell_price: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=True)
-    # Sprint 1.0.5 — engine label. Defaults 'doors' at signup/pave seeder.
+    # Sprint 1.0.5 — engine label. Defaults 'doors' (the pricing seeder).
     pricing_category: Mapped[str] = mapped_column(String(40), nullable=True, index=True, default="doors")
 
 
@@ -3362,7 +3362,7 @@ class ChiPartsCatalog(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     sell_price: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=True)
-    # Sprint 1.0.5 — engine label. Defaults 'parts' at signup/pave seeder.
+    # Sprint 1.0.5 — engine label. Defaults 'parts' (the pricing seeder).
     pricing_category: Mapped[str] = mapped_column(String(40), nullable=True, index=True, default="parts")
 
 

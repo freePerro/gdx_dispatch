@@ -2,8 +2,8 @@
 
 Sprint tech_mobile S1-A8.
 
-The default taxonomy is seeded on tenant provisioning (see
-gdx_dispatch/core/customer_alert_tags.py). Tenants can then manage their own
+A default taxonomy exists in gdx_dispatch/core/customer_alert_tags.py
+(its seeder currently has no caller). Admins manage the
 taxonomy through this router — add new tags, rename, recolor, edit
 descriptions, or delete tags they don't use.
 

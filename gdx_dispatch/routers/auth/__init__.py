@@ -7,14 +7,16 @@ ones external callers reach via ``from gdx_dispatch.routers.auth import X`` or
 ``grep -rn`` over the entire gdx_dispatch/ tree before commit; any addition here
 should be paired with a comment naming the importer.
 
-The auth-cluster siblings (gateway, login_picker, oauth2, sso, scim,
-signup, pats, admin_pats, pats_support) live as sub-modules of this
-package but are NOT re-exported at the package level — they are reached
-via ``gdx_dispatch.routers.auth.<name>`` directly. Re-exporting them here would
-force them into the eager-import path of every caller that does
-``from gdx_dispatch.routers.auth import get_current_user`` (~50 routers), which
-widens the failure surface from one sub-module to the whole package
-without giving any caller a shorter import path.
+The one auth-cluster sibling, ``sso``, lives as a sub-module of this
+package but is NOT re-exported at the package level — it is reached via
+``gdx_dispatch.routers.auth.sso`` directly. (gateway, login_picker, oauth2,
+scim, signup, pats, admin_pats and pats_support were removed with the
+multi-tenant platform; the directory holds ``core.py`` and ``sso.py``.)
+Re-exporting a sibling here would force it into the eager-import path of
+every caller that does ``from gdx_dispatch.routers.auth import
+get_current_user`` (~50 routers), which widens the failure surface from one
+sub-module to the whole package without giving any caller a shorter import
+path.
 
 Test code that needs to monkeypatch a function inside this module must
 import the implementation directly (``from gdx_dispatch.routers.auth import core``)

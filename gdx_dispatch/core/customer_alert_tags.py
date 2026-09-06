@@ -10,7 +10,8 @@ which had no platform-default seed before this sprint.
 This module owns:
 
 - ``DEFAULT_CUSTOMER_ALERT_TAGS`` — the list of seed entries that ship
-  with every new tenant on first provisioning.
+  with a fresh database. ⚠ Nothing calls the seeder below today (checked
+  2026-09-06) — a fresh install starts with an empty taxonomy.
 - ``seed_default_customer_alert_tags(db, tenant_id)`` — idempotent
   bootstrapper. Inserts any tag from the default list whose ``name`` is
   not already present for the tenant. Safe to re-run; the existing

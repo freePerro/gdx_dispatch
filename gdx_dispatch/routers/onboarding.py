@@ -1,9 +1,9 @@
 """
-Onboarding router — first-run wizard for new tenants.
+Onboarding router — first-run wizard for a new install.
 
-Tracks which setup steps the dealer has completed, seeds a starter catalog,
-and offers demo-data generation/cleanup so new dealers see a populated
-dashboard immediately after signup.
+Tracks which setup steps the owner has completed, seeds a starter catalog,
+and offers demo-data generation/cleanup so a new install shows a populated
+dashboard on day one.
 
 Pattern: ORM models from gdx_dispatch.models.tenant_models for all database operations.
 """

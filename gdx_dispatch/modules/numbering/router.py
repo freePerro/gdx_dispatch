@@ -1,6 +1,6 @@
 """Numbering API — read/write the per-tenant job number format + counter.
 
-Lives on the control plane (TenantSettings owns the columns); endpoints
+``TenantSettings`` owns the columns; endpoints
 are admin-gated because changing the format mid-stream can collide with
 existing numbers if the tenant rewinds the counter."""
 from __future__ import annotations

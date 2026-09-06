@@ -930,7 +930,7 @@ def create_job(payload: JobCreate, request: Request, current_user: Any = Depends
     )
     try:
         # Validate an explicit holding_area_id BEFORE anything irreversible.
-        # next_job_number (below) commits a job number on the control plane
+        # next_job_number (below) commits a job number in tenant_settings
         # and cannot be rolled back, so rejecting a doomed request here
         # avoids burning a number and leaving a non-monotonic gap in the
         # tenant's job/invoice sequence (QB reconciliation defect). The
@@ -956,7 +956,7 @@ def create_job(payload: JobCreate, request: Request, current_user: Any = Depends
             ).first()
             if cust:
                 customer_name = cust[0]
-        # Allocate the next job number on the control plane (atomic, FOR UPDATE).
+        # Allocate the next job number (atomic: FOR UPDATE on tenant_settings).
         # Wrapped in try so a numbering hiccup never blocks job creation.
         assigned_number: str | None = None
         try:

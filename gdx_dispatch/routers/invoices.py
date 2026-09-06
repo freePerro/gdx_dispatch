@@ -1327,7 +1327,7 @@ def create_invoice(
         else [(ln.description, ln.unit_price) for ln in (payload.line_items or [])]
     )
     if any(float(_p or 0) <= 0 for _, _p in _policy_lines):
-        # Only pay the control-plane policy read when a $0 line is present.
+        # Only pay the policy read when a $0 line is present.
         # get_policy never raises (it catches internally and returns
         # defaults), so no try/except here.
         _pol = get_policy(str(_["tenant_id"]))

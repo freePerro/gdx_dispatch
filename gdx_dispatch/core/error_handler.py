@@ -156,8 +156,8 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
             },
         )
 
-        # Persist server-side faults to the control-plane sink so they
-        # surface on the CC dashboard (/cockpit/support/errors).
+        # Persist server-side faults to the server_errors sink so they
+        # surface on the in-app Server Errors page (/server-errors).
         # Exceptions caught HERE propagate through the middleware stack
         # and never reached the FastAPI exception handler, so before this
         # they were container-log-only and invisible to operators — the

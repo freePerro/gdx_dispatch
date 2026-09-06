@@ -104,19 +104,19 @@ def get_db_for_ai(db: Session = Depends(get_db)) -> Session:
     via app.dependency_overrides without touching the database path.
 
     Used for: TenantSettings reads (the LLM key + last_validated_at),
-    audit log writes (control-plane).
+    audit log writes.
     """
     return db
 
 
 def get_db_for_ai(db: Session = Depends(get_db)) -> Session:
-    """Tenant-plane DB session for AI tool invocations.
+    """DB session for AI tool invocations.
 
-    The control-plane db (above) holds the LLM key + audit logs; the
-    tenant-plane db holds the actual business data (customers, jobs,
-    invoices, etc). Tools registered in ``gdx_dispatch/core/mcp_tools/`` query
-    the tenant-plane tables, so ``invoke_tool`` must receive THIS
-    session, not the control-plane one.
+    Same database as the settings session above; kept as a separate
+    dependency so tests can override the tool session independently of the
+    settings session. Tools registered in ``gdx_dispatch/core/mcp_tools/``
+    query the business tables (customers, jobs, invoices, …), so
+    ``invoke_tool`` must receive THIS session.
     """
     return db
 

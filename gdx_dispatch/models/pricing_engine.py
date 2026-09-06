@@ -222,9 +222,9 @@ class PricingClassSettings(TenantBase):
 
 
 # ---------------------------------------------------------------------------
-# Stub seeds — written into a fresh tenant DB at signup OR after pave.
-# Numbers are placeholders. Doug edits via PricingView.vue on day one;
-# real-world tier values live in the per-tenant DB, not in code.
+# Stub seeds — written into a fresh database on first use OR after a pave.
+# Numbers are placeholders. The owner edits them via PricingView.vue on day
+# one; real-world tier values live in the database, not in code.
 # ---------------------------------------------------------------------------
 
 # (cost_min, cost_max_or_None, margin_pct as Decimal in 0.0–1.0)
@@ -251,10 +251,11 @@ _STUB_TIERS_BY_CLASS: dict[str, list[tuple[Decimal, Decimal | None, Decimal]]] =
 
 
 def seed_default_pricing(session) -> None:
-    """Idempotent seed of default tier sets + settings into a tenant DB.
+    """Idempotent seed of default tier sets + settings into the database.
 
-    Safe to call repeatedly — checks before inserting. Called from the
-    tenant signup flow and from pave_tenant_db.py post-create_all().
+    Safe to call repeatedly — checks before inserting. Called by
+    tools/pave_tenant_db.py after create_all() and lazily by
+    routers/pricing_admin.py when the settings row is missing.
     """
     # Settings singleton
     existing_settings = session.query(PricingSettings).first()

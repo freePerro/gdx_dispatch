@@ -13,16 +13,11 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
 engine = create_engine(DATABASE_URL, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
-# ─── Single-tenant collapse compatibility shims ───────────────────────────
-# The control/app plane and tenant plane are one database now, so the old
-# multi-tenant symbols collapse to the single engine/URL. Several call sites
-# still import these; without the shims they raise ImportError at call time:
-#   - app_engine:        auth.core._db_verify_user — runs on EVERY authenticated
-#                        request, so its absence 401s the entire API.
-#   (control_engine, CONTROL_DATABASE_URL and the _decrypt_db_url identity
-#   shim were removed 2026-09-03 with the SaaS-residue purge: their last
-#   consumers were ops tools that walked a control-plane tenants table whose
-#   db_url_enc column no longer exists.)
+# ─── Older names, still imported ──────────────────────────────────────────
+# `app_engine`, `tenant_context` and `get_tenant_db` are the one engine, a
+# no-op context and `get_db` under the names call sites still use.
+# `auth.core._db_verify_user` reads `app_engine` on EVERY authenticated
+# request, so its absence 401s the entire API.
 app_engine = engine
 
 
@@ -35,10 +30,10 @@ def get_db(request=None) -> Generator[Session, None, None]:
         db.close()
 
 def tenant_context():
-    """Fallback stub for tenant_context imported by modules prior to refactor."""
+    """No-op context under the name older modules import."""
     return nullcontext()
 
 def get_tenant_db(request=None):
-    """Fallback stub for get_tenant_db imported by modules prior to refactor.
+    """`get_db` under the name older modules import.
     Must be a generator (not return one) so FastAPI's Depends() injects a Session."""
     yield from get_db(request)

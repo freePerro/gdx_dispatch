@@ -8,7 +8,7 @@ This module owns:
   - record_server_error()  — write path, called from the global
     FastAPI exception handler. Best-effort; never raises.
   - GET/PATCH /api/admin/errors  — admin read + resolve workflow.
-  - server_errors table on the control plane (migration 041).
+  - server_errors table (in the Alembic baseline, migration 001).
 
 The AI watcher hook is intentionally *not* wired today. The schema is
 shaped so it can be added later: group_fingerprint dedups error classes,

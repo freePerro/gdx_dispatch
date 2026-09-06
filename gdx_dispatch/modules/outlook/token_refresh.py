@@ -98,11 +98,9 @@ def refresh_user_tokens(
         raise OutlookReconnectRequired("token decrypt failed")
     _, refresh_token, _ = tokens
 
-    # Look up tenant from the OutlookAccount's connection — the tenant_db is
-    # already scoped to this tenant by connection isolation. The control-plane
-    # settings live in control_db; we need the tenant_id to look them up. We
-    # carry it via the user_id: every user belongs to exactly one tenant; the
-    # caller must already know the tenant_id (passes control_db scoped to it).
+    # The Entra app secret lives on TenantSettings, keyed by tenant_id. The
+    # caller already knows the id (there is one tenant) and passes the
+    # session that row lives in as control_db.
     # To avoid an extra arg, accept the tenant_id as a session attribute the
     # caller sets via control_db.info["tenant_id"].
     tenant_id = control_db.info.get("tenant_id") if hasattr(control_db, "info") else None

@@ -58,7 +58,7 @@ def record_server_error(
     status_code: int,
     request_id: str | None = None,
 ) -> None:
-    """Persist one error to the control-plane sink. Swallows everything."""
+    """Persist one error to the server_errors table. Swallows everything."""
     try:
         path = getattr(getattr(request, "url", None), "path", None) if request else None
         method = getattr(request, "method", None) if request else None

@@ -1,8 +1,8 @@
 """Sprint phone-com pc-s8 — Phone.com integration Settings router.
 
 Five endpoints under ``/api/settings/integrations/phone-com``. Mirrors the
-shape of ``admin_ai_settings.py`` (Sprint 1.x-S26): control-plane DB for
-token state, tenant-plane DB for cached account features (AppSettings).
+shape of ``admin_ai_settings.py`` (Sprint 1.x-S26): ``TenantSettings`` for
+token state, ``AppSettings`` for cached account features.
 
 Auth: ``gdx_dispatch.core.auth.get_current_user`` (SS-7 SPA path) — same pattern
 that the rest of ``gdx_dispatch/routers/settings.py`` uses for the other
@@ -165,8 +165,8 @@ def _phone_com_settings_state(
             default_cid = app.phone_com_default_caller_id
             features = app.phone_com_account_features
             # last_synced_at is added in Wave B / S17. Tolerate AppSettings
-            # rows from before the column was added (tenant-plane is ORM-only,
-            # so older paved tenants may lack the attribute until pave_tenant_db).
+            # rows from before the column was added (create_all never adds
+            # columns, so an older database may lack it until migrated).
             ts = getattr(app, "phone_com_last_synced_at", None)
             last_synced_at = ts.isoformat() if ts else None
 

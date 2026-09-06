@@ -1,11 +1,22 @@
 # Phase D — the SaaS residue the single-tenant refactor left behind
 
-**Status:** `PARTIALLY BUILT` — **S1, S2, S3, S4, S5 and S6 built.** Connect
+**Status:** `RELEASED v1.116.0` (2026-09-05). S1–S8, S10–S17 and S19–S32
+merged through #602–#610 and are live on production (there is no S18 — the
+number was never assigned). **Not built, by
+decision:** S9 (prod seed rows — data, "leave them", recorded below); the
+S7/S8 table-drop migration (decided, unblocked by #610, not yet written).
+**Round three** — what a code-only sweep still found after this shipped — is
+`legacy-residue-round-three-2026-09-06.md`. The paragraph that stood here as
+the running status is kept below as history.
+
+<details><summary>Status history (as written while the work was in flight)</summary>
+
+`PARTIALLY BUILT` — S1, S2, S3, S4, S5 and S6 built. Connect
 retired entirely (owner decision 2026-09-01); the `x-tenant-tier` selector
-removed after measurement proved it was **dead code, not the exploit this
-document first claimed**; the public signup page removed together with the
+removed after measurement proved it was dead code, not the exploit this
+document first claimed; the public signup page removed together with the
 multi-tenant workspace picker on the login page that this document's sweep had
-missed. **2026-09-03, the legacy purge (branch `chore/legacy-purge`):** S4 and
+missed. 2026-09-03, the legacy purge (branch `chore/legacy-purge`): S4 and
 S5 deleted, plus the round-two items the 2026-09-03 residue audit found —
 the unauthenticated `/superadmin` vendor console (S12), the `/legacy/*` Jinja
 tenant UI and the `/integrations` page that answered 302-without-Location for
@@ -15,21 +26,19 @@ billing reconciliation route and Celery task, the vendor-upsell
 `core/recommendation_routes.py` — was serving `GET /api/recommendations`;
 zero callers anywhere, and the survivor now answers that path with a
 different shape behind `require_role`; link-ok), and an unreferenced
-"retention playbook" health-score module. **Commit 2 (same branch): S7 and S8's code halves built**, plus the dead
-platform ORM (`models/platform_extensions.py`, 16 tables that never existed <!-- link-ok -->
+"retention playbook" health-score module. Commit 2 (same branch): S7 and S8's code halves built,
+plus the dead platform ORM (`models/platform_extensions.py`, 16 tables that never existed <!-- link-ok -->
 on prod, and `core/events.py`, its only importer, which nothing called), <!-- link-ok -->
 `ServiceAccount` (0 references; the empty table stays), the `_lookup_tenant`
 test stub the middleware never called, and the four backend readers that let a
-client stamp any `x-tenant-id` into logs and metrics. **Commit 3: S11's frontend half and S15 built. Commit 4: S10, S16, S17 and
+client stamp any `x-tenant-id` into logs and metrics. Commit 3: S11's frontend half and S15 built. Commit 4: S10, S16, S17 and
 S19 built, plus the seven comment-drift lines the residue audit tied to the
-collapse.** **Commit 5: S20, the plan-tier headings the browser walk found on the Modules tab.
+collapse. Commit 5: S20, the plan-tier headings the browser walk found on the Modules tab.
 Commit 6 (2026-09-04): S24, S28–S32 — the pure dead code a model-driven
-sweep (248 candidates, 12 findings) turned up.** **NOT built: S9 (prod seed
-rows — data, no code); S21, S22+S23, S25 (they change live webhook / discovery
-behaviour — owner's call); S26, S27 (dead code on the auth spine — their own
-PRs); E1–E3 decisions.** — it is
-prod data, the owner's call, and needs no code. ⚠ Nothing here is deployed or
-walked on prod yet.
+sweep (248 candidates, 12 findings) turned up. S21, S22+S23, S25, S26, S27 and
+the E1–E3 decisions followed as #602–#609.
+
+</details>
 
 ## What already exists (do not rebuild)
 

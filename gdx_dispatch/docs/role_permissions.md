@@ -39,7 +39,7 @@ The full list lives in `PERMISSIONS` in [`gdx_dispatch/core/permissions.py`](../
 
 ## Builtin roles
 
-Defined as `BUILTIN_ROLES` in `permissions.py`. Seeded per-tenant on provisioning (slice 1.4) and on first hit to `GET /api/role-permissions/roles` for legacy tenants.
+Defined as `BUILTIN_ROLES` in `permissions.py`. Seeded on first hit to `GET /api/role-permissions/roles` for legacy tenants.
 
 | Role | Description | Notes |
 |---|---|---|

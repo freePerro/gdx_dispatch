@@ -327,9 +327,8 @@ def _push_other_party(db: Session, *, job_id: str, msg: JobChatMessage, user: di
             except Exception:
                 log.exception("send_push failed user=%s", r[0])
     else:
-        # Tech sent → notify dispatcher(s). User-role lookup needs the
-        # control plane; cheap fallback: look up users whose tenant role
-        # is dispatcher in the user_roles table if it exists.
+        # Tech sent → notify dispatcher(s): look up users whose role is
+        # dispatcher in the user_roles table if it exists.
         try:
             rows = db.execute(
                 _text(

@@ -151,15 +151,15 @@ def seed_outlook_credentials_from_env(
 
 
 def run_outlook_bootstrap_safely() -> dict:
-    """App-startup wrapper: opens a control-plane session, calls the seeder,
+    """App-startup wrapper: opens a DB session, calls the seeder,
     catches+logs every exception (with full traceback) so a single bootstrap
     failure cannot block app startup. Returns a status dict for the startup
     logs."""
     try:
         from gdx_dispatch.core.database import SessionLocal
     except Exception as exc:  # noqa: BLE001
-        log.exception("outlook bootstrap: control-plane import failed at startup")
-        return {"seeded": False, "error": f"control-plane import failed: {exc}"}
+        log.exception("outlook bootstrap: database import failed at startup")
+        return {"seeded": False, "error": f"database import failed: {exc}"}
     try:
         with closing(SessionLocal()) as cdb:
             return seed_outlook_credentials_from_env(cdb)

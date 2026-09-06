@@ -2,10 +2,10 @@
 
 Two layers of Fernet encryption:
 
-- Tenant level (control plane): TenantSettings.outlook_client_secret_enc holds
+- Tenant level: TenantSettings.outlook_client_secret_enc holds
   the Entra app's client secret. Set once per tenant when Doug pastes from the
   Azure portal (slice S0 runbook).
-- Per-user (tenant plane): OutlookAccount.access_token_enc + refresh_token_enc
+- Per-user: OutlookAccount.access_token_enc + refresh_token_enc
   hold each employee's OAuth tokens. Set on the OAuth callback (slice S8),
   refreshed by the token-refresh helper (slice S9).
 
@@ -45,7 +45,7 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# ── Tenant-level: client secret on TenantSettings (control plane) ────
+# ── Tenant-level: client secret on TenantSettings ────
 
 
 def _ensure_tenant_settings(db: Session, tenant_id: UUID) -> TenantSettings:

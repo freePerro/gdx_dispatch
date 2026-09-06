@@ -1,4 +1,5 @@
-"""Sprint 1.0 Phase E5 — nightly tenant-plane schema drift detector.
+"""Sprint 1.0 Phase E5 — ORM-vs-database schema drift detector (run by hand;
+nothing schedules it — ARCHITECTURAL_INVARIANTS.md row 6).
 
 Defends the an earlier session invariant: every tenant DB must equal what
 `TenantBase.metadata.create_all()` would produce. Without this, the pave

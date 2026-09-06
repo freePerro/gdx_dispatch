@@ -89,7 +89,7 @@ def block_or_warn_invoice_line(
     Returns None when neither toggle fires.
 
     Pass a pre-fetched ``policy`` when checking many lines in one request —
-    each get_policy() call is a control-plane query."""
+    each get_policy() call is a database query."""
     p = float(price or 0)
     if p > 0:
         return None

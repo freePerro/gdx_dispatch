@@ -1079,7 +1079,7 @@ def sweep_vendor_bills_all_accounts(self, days: int = 120) -> dict:
     except Exception as exc:  # noqa: BLE001
         # A beat tick must never raise into the worker. But it must not lie
         # about why it gave up either: the usual cause is a DB without the
-        # outlook_* tables (module not provisioned), and a dead broker or a
+        # outlook_* tables (module tables never created), and a dead broker or a
         # failing .delay() lands here too. Report the real error and mark the
         # run failed, so a broken fan-out can't read as a quiet success.
         log.exception(
@@ -1298,7 +1298,7 @@ def poll_outlook_mailboxes_fallback(self) -> dict:
             if healthy and sync_stale:
                 triggered_stale += 1
     except Exception:
-        # DB may lack outlook_* tables (module not provisioned).
+        # DB may lack outlook_* tables (module tables never created).
         log.warning("fallback_poll: tenant %s skipped (likely missing outlook tables)", tenant_id_str)
     finally:
         tdb.close()
