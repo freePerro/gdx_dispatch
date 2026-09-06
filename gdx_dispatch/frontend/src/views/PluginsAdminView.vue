@@ -278,7 +278,7 @@ const { confirmAsync } = useDestructiveConfirm();
 const auth = useAuthStore();
 const router = useRouter();
 
-// Match the backend gate exactly (_OWNER_ROLES = {owner, superadmin}); `admin`
+// Match the backend gate exactly (_OWNER_ROLES = {owner}); `admin`
 // is intentionally excluded — an admin would see the form but 403 on submit.
 const isOwner = computed(() => isOwnerRole(auth.role));
 

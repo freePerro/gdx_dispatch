@@ -138,7 +138,7 @@ def get_admin_principal(
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     role = (user.get("role") or "").lower()
-    if role not in ("admin", "owner", "superadmin"):
+    if role not in ("admin", "owner"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin only")
     return user
 

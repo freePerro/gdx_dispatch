@@ -6,7 +6,7 @@ from gdx_dispatch.routers.session_policy import _is_admin
 def test_is_admin():
     assert _is_admin("owner") is True
     assert _is_admin("admin") is True
-    assert _is_admin("superadmin") is True
+    assert _is_admin("superadmin") is False  # the platform role left 2026-09-06
     assert _is_admin("OWNER") is True  # case-insensitive
     # Non-admin roles must be denied.
     assert _is_admin("technician") is False

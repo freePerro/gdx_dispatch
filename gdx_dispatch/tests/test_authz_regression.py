@@ -90,7 +90,7 @@ def test_privileged_routes_deny_technician(client: TestClient, tech_hdr: dict, m
         # BOTH spellings of dispatcher must be privileged — users.role stores the
         # legacy "dispatch"; the RBAC catalog uses "dispatcher".
         ("dispatch", True), ("dispatcher", True),
-        ("manager", True), ("superadmin", True), ("super_admin", True),
+        ("manager", True), ("superadmin", False), ("super_admin", False),
         # Technicians are NOT dispatch managers (both legacy + canonical spelling).
         ("tech", False), ("technician", False),
         ("viewer", False), ("user", False), ("", False),

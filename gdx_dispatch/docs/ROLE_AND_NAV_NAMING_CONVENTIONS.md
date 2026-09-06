@@ -20,7 +20,6 @@ The same role has been spelled multiple ways:
 |---|---|---|
 | Field technician | `tech` | `technician` |
 | Shop-floor coordinator | `dispatch` | `dispatcher` |
-| Platform superadmin | — | `super_admin` (also seen: `superadmin`, `super-admin`) |
 
 **As of #45, `users.role` stores the LONG (canonical) form.** The user-write
 path (`routers/users.py`) normalizes input through
@@ -49,7 +48,7 @@ canonical constants in sync (the tests `test_roles_canonical.py` /
 ```python
 from gdx_dispatch.core import roles
 if roles.is_technician(user_role): ...          # accepts 'tech' AND 'technician'
-if roles.is_dispatch_manager(user): ...         # owner/admin/dispatcher/manager/superadmin
+if roles.is_dispatch_manager(user): ...         # owner/admin/dispatcher/manager
 ```
 ```js
 import { isTechnician } from '@/constants/roles';

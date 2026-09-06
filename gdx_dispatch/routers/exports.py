@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 # Role gate (admin/owner) enforced per-handler via Depends(require_role(...)).
 router = APIRouter(
     tags=["exports"],
-    dependencies=[Depends(require_module("customers")), Depends(require_role("admin", "owner", "superadmin"))],
+    dependencies=[Depends(require_module("customers")), Depends(require_role("admin", "owner"))],
 )
 
 ALLOWED_ENTITIES = {

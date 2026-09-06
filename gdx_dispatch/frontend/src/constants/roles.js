@@ -4,7 +4,8 @@
  * Mirror of backend core/roles.py. The same role is spelled multiple ways:
  *   - users.role (DB / JWT claim) uses SHORT legacy forms: 'tech', 'dispatch'
  *   - the RBAC catalog uses LONG forms: 'technician', 'dispatcher'
- *   - superadmin has appeared as super_admin / superadmin / super-admin
+ *   - a platform 'superadmin' role existed until 2026-09-06 (never a real
+ *     account here; migration 089 folds any row into owner)
  *
  * Always normalizeRole() before comparing, so UI code never special-cases
  * variants. Canonical = the LONG form. See the wiki "Role naming conventions".
@@ -18,16 +19,12 @@ export const SALES = 'sales';
 export const ACCOUNTING = 'accounting';
 export const VIEWER = 'viewer';
 export const MANAGER = 'manager';
-export const SUPER_ADMIN = 'super_admin';
 
 const ALIASES = {
   tech: TECHNICIAN,
   technician: TECHNICIAN,
   dispatch: DISPATCHER,
   dispatcher: DISPATCHER,
-  superadmin: SUPER_ADMIN,
-  super_admin: SUPER_ADMIN,
-  'super-admin': SUPER_ADMIN,
 };
 
 /** Collapse any known spelling of a role to its canonical (long) form. */
@@ -41,18 +38,16 @@ export function isTechnician(role) {
   return normalizeRole(role) === TECHNICIAN;
 }
 
-/** True for owner / admin / superadmin (full-access tier). */
+/** True for owner / admin (full-access tier). */
 export function isAdminTier(role) {
   const r = normalizeRole(role);
-  return r === OWNER || r === ADMIN || r === SUPER_ADMIN;
+  return r === OWNER || r === ADMIN;
 }
 
-/** True for the owner tier — owner or superadmin (NOT admin). Use for
- *  owner-exclusive surfaces (e.g. "Manage plugins"). Variant-aware, so the
- *  super_admin / super-admin spellings resolve correctly. */
+/** True for the owner tier — owner only (NOT admin). Use for
+ *  owner-exclusive surfaces (e.g. "Manage plugins"). */
 export function isOwner(role) {
-  const r = normalizeRole(role);
-  return r === OWNER || r === SUPER_ADMIN;
+  return normalizeRole(role) === OWNER;
 }
 
 const HUMAN = {
@@ -64,7 +59,6 @@ const HUMAN = {
   accounting: 'Accounting',
   viewer: 'Viewer',
   manager: 'Manager',
-  super_admin: 'Super admin',
 };
 
 /** Human-readable label for a role, variant-aware. */

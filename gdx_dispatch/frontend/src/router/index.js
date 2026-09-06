@@ -447,7 +447,7 @@ export const routes = [
   // plugin grant the builtin admin contract can hold. See the guard below.
   { path: '/plugins/:key', name: 'plugin', component: () => import('../components/PluginScreen.vue'), props: (route) => ({ pluginKey: route.params.key }), meta: { requiresPluginPermission: true } },
   // Owner-only in-app plugin install/manage UI (ADR-013 step 5). The view
-  // render-guards on role and the backend enforces owner/superadmin, so no
+  // render-guards on role and the backend enforces owner, so no
   // route-meta permission gate (there's no owner-only permission key).
   { path: '/admin/plugins', name: 'admin-plugins', component: () => import('../views/PluginsAdminView.vue') },
   // In-shell (nav stays visible) so a denied user can simply pick another page.

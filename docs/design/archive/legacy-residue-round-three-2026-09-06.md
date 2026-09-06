@@ -145,6 +145,8 @@ from main independently and rebased on merge, in that order.
 1. **`superadmin` role.** `core/roles.py` still defines a platform-level
    `super_admin` above `owner`; 30+ gates list it. Removing a role is a
    user-facing and data question (existing users, role dropdowns). Left as is.
+   → **Built 2026-09-06** (`chore/drop-superadmin-role`): role, aliases and
+   gates removed; migration 089 folds any stray row into owner.
 2. **Physical leftovers on prod:** `tenant_module_grants`, `service_accounts`,
    `platform_feature_flags` (0 rows), `tenants.subscription_status`,
    `tenants.stripe_connect_account_id`. A drop migration was already decided

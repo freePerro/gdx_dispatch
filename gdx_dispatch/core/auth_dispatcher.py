@@ -40,7 +40,6 @@ __all__ = [
     "get_current_principal",
     "require_role",
     "require_tenant_admin",
-    "require_super_admin",
     "require_authenticated",
 ]
 
@@ -316,7 +315,6 @@ def require_role(*allowed_roles: str):
 # Canonical role gates built on ``require_role``. These are deps
 # themselves — use them directly in ``Depends(...)``.
 require_tenant_admin = require_role("owner", "admin")
-require_super_admin = require_role("super_admin")
 
 
 # ``require_authenticated`` is simply an alias for ``get_current_principal``

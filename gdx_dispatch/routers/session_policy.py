@@ -23,7 +23,7 @@ from gdx_dispatch.routers.auth import get_current_user
 router = APIRouter(prefix="/api/session-policy", tags=["session-policy"])
 
 _COL = "session_idle_timeout_minutes"
-_ADMIN_ROLES = {"admin", "owner", "superadmin"}
+_ADMIN_ROLES = {"admin", "owner"}
 
 
 def _is_admin(role: str | None) -> bool:

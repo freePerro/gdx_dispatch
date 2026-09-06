@@ -4,14 +4,13 @@
 import { describe, it, expect } from 'vitest';
 import {
   normalizeRole, isTechnician, isAdminTier, isOwner, humanizeRole,
-  TECHNICIAN, DISPATCHER, SUPER_ADMIN, OWNER,
+  TECHNICIAN, DISPATCHER, OWNER,
 } from '../roles';
 
 describe('normalizeRole', () => {
   it.each([
     ['tech', TECHNICIAN], ['technician', TECHNICIAN], ['TECH', TECHNICIAN],
     ['dispatch', DISPATCHER], ['dispatcher', DISPATCHER],
-    ['superadmin', SUPER_ADMIN], ['super_admin', SUPER_ADMIN], ['super-admin', SUPER_ADMIN],
     ['  Owner ', OWNER], ['admin', 'admin'],
     [null, ''], [undefined, ''], ['', ''], ['weird', 'weird'],
   ])('normalizes %s → %s', (raw, expected) => {
@@ -33,8 +32,8 @@ describe('isTechnician', () => {
 });
 
 describe('isAdminTier', () => {
-  it('true for owner/admin/superadmin variants', () => {
-    for (const r of ['owner', 'admin', 'super_admin', 'super-admin', 'superadmin']) {
+  it('true for owner/admin variants', () => {
+    for (const r of ['owner', 'admin', 'OWNER', ' Admin ']) {
       expect(isAdminTier(r)).toBe(true);
     }
   });
@@ -45,9 +44,9 @@ describe('isAdminTier', () => {
   });
 });
 
-describe('isOwner (owner tier — owner/superadmin, NOT admin)', () => {
-  it('true for owner + all superadmin spellings', () => {
-    for (const r of ['owner', 'super_admin', 'superadmin', 'super-admin']) {
+describe('isOwner (owner tier — owner only, NOT admin)', () => {
+  it('true for owner spellings', () => {
+    for (const r of ['owner', 'OWNER', ' owner ']) {
       expect(isOwner(r)).toBe(true);
     }
   });
@@ -62,7 +61,6 @@ describe('humanizeRole', () => {
   it('maps canonical + legacy spellings to a friendly label', () => {
     expect(humanizeRole('tech')).toBe('Technician');
     expect(humanizeRole('dispatch')).toBe('Dispatcher');
-    expect(humanizeRole('super_admin')).toBe('Super admin');
     expect(humanizeRole('owner')).toBe('Owner');
   });
   it('title-cases unknown roles and handles empty', () => {

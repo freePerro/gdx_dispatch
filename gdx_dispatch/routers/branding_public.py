@@ -1,7 +1,7 @@
 """Tenant branding read — accessible to every authenticated user.
 
 The full settings router (``gdx_dispatch/routers/settings.py``) gates the entire
-``/api/settings`` prefix on admin / owner / super_admin. That's the
+``/api/settings`` prefix on admin / owner. That's the
 right rule for the rest of settings (integrations, role permissions,
 etc.) but branding (company name, logo, colors) is the data the SPA
 topbar and login picker need to render correctly for every signed-in
@@ -54,7 +54,7 @@ def get_google_maps_key_public(
 
     The gated twin in ``routers/settings.py:get_google_maps_key`` documents
     "reachable by any authenticated user", but the router-level
-    admin/owner/superadmin dependency silently overrode that: technicians got
+    admin/owner dependency silently overrode that: technicians got
     403 and the tech-mobile map view never rendered (2026-07-16, reported
     from a tech's device via /api/feedback/client-error). Same pattern as
     ``/modules`` above — this public copy wins by include order in

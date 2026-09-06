@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/api/resources",
     tags=["resources"],
-    dependencies=[Depends(require_role("admin", "owner", "user", "tech", "dispatcher", "superadmin"))],
+    dependencies=[Depends(require_role("admin", "owner", "user", "tech", "dispatcher"))],
 )
 
 # Upload directory for resource files — must be writable inside the container
@@ -89,7 +89,7 @@ def _client_ip(request: Request | None) -> str | None:
 
 def _require_admin(user: dict[str, Any]) -> None:
     role = _user_role(user)
-    if role not in ("admin", "owner", "superadmin"):
+    if role not in ("admin", "owner"):
         raise HTTPException(status_code=403, detail="Admin privileges required")
 
 

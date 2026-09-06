@@ -256,7 +256,7 @@ PLATFORM_LOCKED_ROLES: Final[frozenset[str]] = frozenset({"owner", "admin"})
 
 
 # Roles whose *assignment* to a user is owner-exclusive. admin == owner for
-# operations, but only an owner (or superadmin) may grant, change, or remove the
+# operations, but only an owner may grant, change, or remove the
 # admin/owner role on a user — that's the single owner-only privilege.
 _OWNER_ASSIGNABLE_ROLES: Final[frozenset[str]] = frozenset({"owner", "admin"})
 
@@ -286,8 +286,8 @@ def assert_can_assign_role(actor: object, target_role: str | None, current_role:
     """Raise 403 unless the actor may assign/change this role.
 
     Guards both directions: granting admin/owner to a user, AND changing the
-    role of a user who is currently admin/owner (demote/edit). Only owner /
-    superadmin pass. Everyone else (incl. admin) is blocked from touching the
+    role of a user who is currently admin/owner (demote/edit). Only an owner
+    passes. Everyone else (incl. admin) is blocked from touching the
     admin tier.
     """
     target = (target_role or "").strip().lower()

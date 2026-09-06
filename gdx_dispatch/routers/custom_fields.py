@@ -42,7 +42,7 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(
     tags=["custom_fields"],
-    dependencies=[Depends(require_module("jobs")), Depends(require_role("admin", "owner", "superadmin"))],
+    dependencies=[Depends(require_module("jobs")), Depends(require_role("admin", "owner"))],
 )
 
 

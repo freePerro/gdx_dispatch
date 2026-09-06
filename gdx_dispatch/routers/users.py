@@ -406,9 +406,9 @@ def _sync_user_role_assignment(db: Session, tenant_id: str, user_id: str, legacy
 
 
 def _assert_not_last_owner(db: Session, tenant_id: str, target: User, *, action: str) -> None:
-    """Block an action that would remove the tenant's final owner/superadmin.
+    """Block an action that would remove the company's final owner.
 
-    Owner-tier (owner + superadmin, per core/roles.ROLE_ADMIN_ACTORS) is the
+    Owner-tier (owner, per core/roles.ROLE_ADMIN_ACTORS) is the
     only tier that can grant the admin/owner role, so zeroing it out locks the
     tenant out of all owner-only administration with no in-app recovery. The
     genesis owner is seeded out-of-band by tools/bootstrap_app.py and never
@@ -446,7 +446,7 @@ def change_role(user_id: str, payload: RoleChangeIn, request: Request, user: dic
     old_role = u.role or "user"
     assert_can_assign_role(user, payload.role, old_role)
     # Last-owner guard: a demotion off the owner tier must leave at least one
-    # other owner/superadmin standing (owner→admin/superadmin stays owner-tier
+    # other owner standing (owner→admin drops out of the owner tier
     # and is exempt).
     if is_role_admin_actor(old_role) and not is_role_admin_actor(payload.role):
         _assert_not_last_owner(db, tid, u, action="demote")
@@ -525,7 +525,7 @@ def lockout_user(user_id: str, payload: LockoutIn, request: Request, user: dict 
     if (u.role or "").lower() == "owner":
         raise HTTPException(status_code=400, detail="Owners cannot be locked out")
     # Owners are already fully blocked above; this additionally stops locking
-    # out the last superadmin (also owner-tier) from leaving the tenant with
+    # out the last owner from leaving the company with
     # no usable owner-tier login.
     _assert_not_last_owner(db, tid, u, action="lock out")
     if u.active is False:

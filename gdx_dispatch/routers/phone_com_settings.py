@@ -56,7 +56,7 @@ def _coerce_user_id(user: dict[str, Any]) -> str:
 
 def _require_admin(user: dict[str, Any]) -> dict[str, Any]:
     role = (user.get("role") or "").lower()
-    if role not in ("admin", "owner", "superadmin"):
+    if role not in ("admin", "owner"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="admin only"
         )

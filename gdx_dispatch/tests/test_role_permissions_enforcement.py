@@ -222,14 +222,13 @@ def test_builtin_role_jobs_read_all_matches_catalog(tc, role_name, perms):
 
 
 # --- Owner-exclusive role assignment (admin == owner EXCEPT granting admin) ---
-# Only an owner/superadmin may grant, change, or remove the admin/owner role.
+# Only an owner may grant, change, or remove the admin/owner role.
 # Admins manage non-privileged roles only.
 
 @pytest.mark.parametrize(
     "actor_role,target,current,expect_denied",
     [
         ("owner", "admin", None, False),       # owner grants admin — ok
-        ("superadmin", "owner", None, False),  # superadmin grants owner — ok
         ("admin", "admin", None, True),        # admin grants admin — DENIED
         ("admin", "owner", None, True),        # admin grants owner — DENIED
         ("admin", "technician", None, False),  # admin grants non-priv — ok
@@ -252,7 +251,7 @@ def test_assert_can_assign_role(actor_role, target, current, expect_denied):
 
 
 # --- Last-owner guard (delete / demote / lockout must not zero out owners) ---
-# Owner-tier = owner + superadmin (core/roles.ROLE_ADMIN_ACTORS). The genesis
+# Owner-tier = owner (core/roles.ROLE_ADMIN_ACTORS). The genesis
 # owner is seeded out-of-band by tools/bootstrap_app.py, so this guard can
 # never deadlock first-run; it only blocks the LAST live owner-tier account
 # from being removed through the API.
@@ -319,13 +318,18 @@ def test_last_owner_guard_allows_when_second_owner_exists(owner_db):
     _assert_not_last_owner(owner_db, _OWNER_TENANT, o1, action="delete")  # no raise
 
 
-def test_last_owner_guard_counts_superadmin_as_owner_tier(owner_db):
-    """A lone superadmin satisfies the invariant — the last owner may go."""
+def test_last_owner_guard_does_not_count_a_stray_superadmin_row(owner_db):
+    """The platform superadmin role left 2026-09-06 (migration 089 folds any
+    such row into owner). A row that somehow still carries the old spelling
+    is NOT owner-tier, so the last real owner stays protected."""
+    from fastapi import HTTPException
+
     from gdx_dispatch.routers.users import _assert_not_last_owner
 
     o1 = _add_user(owner_db, role="owner")
     _add_user(owner_db, role="super_admin")
-    _assert_not_last_owner(owner_db, _OWNER_TENANT, o1, action="delete")  # no raise
+    with pytest.raises(HTTPException):
+        _assert_not_last_owner(owner_db, _OWNER_TENANT, o1, action="delete")
 
 
 def test_last_owner_guard_ignores_locked_out_owner(owner_db):

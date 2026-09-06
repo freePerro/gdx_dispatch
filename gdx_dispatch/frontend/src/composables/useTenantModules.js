@@ -246,7 +246,7 @@ const _pluginModules = computed(() => {
   let _mayUse = () => true;
   try {
     const auth = useAuthStore();
-    // Owner/superadmin get the "Manage plugins" install link (ADR-013 step 5);
+    // Owners get the "Manage plugins" install link (ADR-013 step 5);
     // matches the backend gate on /api/admin/plugins.
     _isOwner = isOwner(auth.role);
     _mayUse = (key) => auth.hasPluginPermission(key, 'read');

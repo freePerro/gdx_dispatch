@@ -40,7 +40,7 @@ mean a feature is missing.
 ## Plugins
 
 Third-party plugins add full-stack modules (their own screens + backend) without forking the
-app. **Owner/superadmin only** — installing a plugin runs operator-vetted code with backend
+app. **Owner only** — installing a plugin runs operator-vetted code with backend
 access, so it sits at the same trust tier as adding a dependency.
 
 1. Go to **Plugins** > **Manage plugins** (`/admin/plugins`).
