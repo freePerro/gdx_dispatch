@@ -22,15 +22,14 @@ describe("useTenantModules — D101 sidebar visibility (an earlier session, 2026
   });
 
   it("respects per-module enabled=false from the server response array", async () => {
-    // Server shape: { tenant_tier, modules: [{key, enabled, ...}, ...] }.
+    // Server shape: { modules: [{key, enabled, ...}, ...] }.
     // Pre-fix this branch keyed by array index ("0"/"1"/...) so disabled
     // modules still showed in the sidebar.
     getMock.mockResolvedValueOnce({
-      tenant_tier: "professional",
       modules: [
-        { key: "jobs", name: "Jobs", tier: "starter", enabled: true, locked: false },
-        { key: "warranties", name: "Warranty Tracking", tier: "professional", enabled: false, locked: false },
-        { key: "quickbooks", name: "QuickBooks Sync", tier: "professional", enabled: true, locked: false },
+        { key: "jobs", name: "Jobs", enabled: true, locked: false },
+        { key: "warranties", name: "Warranty Tracking", enabled: false, locked: false },
+        { key: "quickbooks", name: "QuickBooks Sync", enabled: true, locked: false },
       ],
     });
     const { loadTenantModules, isEnabled, enabledModules } = useTenantModules();

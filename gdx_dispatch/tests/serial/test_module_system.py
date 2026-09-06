@@ -73,7 +73,6 @@ def test_module_gating(client: TestClient):
 def test_module_enable(client: TestClient):
     enable_response = client.post(
         "/api/settings/modules/inventory/enable",
-        headers={"x-tenant-tier": "professional"},
     )
     assert enable_response.status_code == 200, enable_response.text
 

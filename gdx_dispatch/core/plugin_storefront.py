@@ -110,7 +110,6 @@ def _validate_entry(entry: dict) -> dict:
         "name": str(entry["name"]),
         "description": str(entry.get("description") or ""),
         "author": str(entry.get("author") or ""),
-        "tier": str(entry.get("tier") or ""),
         "permissions": [str(p) for p in entry.get("permissions", [])],
         "requires": str(entry.get("requires") or ""),
         "license": str(entry.get("license") or "free"),

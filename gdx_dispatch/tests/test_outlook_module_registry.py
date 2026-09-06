@@ -11,8 +11,7 @@ def test_email_module_present():
 def test_email_module_shape_matches_other_integrations():
     entry = MODULES["email"]
     assert entry["name"] == "Email Integration"
-    assert entry["tier"] == "professional"
-    assert entry["default"] is False  # opt-in per tenant
+    assert set(entry) == {"name"}, "plan tiers and the default flag left the catalog 2026-09-06"
 
 
 def test_email_is_not_an_alias_target():

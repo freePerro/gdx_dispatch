@@ -74,7 +74,9 @@ class PluginManifest:
       key             stable module key (lowercase), e.g. "foo". Becomes the
                       company_module_grants key and the /api/plugins/<key> route.
       name            human label shown in the admin UI.
-      tier            "starter" | "professional" | "business" (mirrors core MODULES).
+      tier            accepted and ignored (deprecated 2026-09-06). Plan tiers of a
+                      subscription this app never sold; plugins that still pass
+                      one keep loading.
       requires        host-version constraint, e.g. "gdx>=1.2". "" = any version.
       router          the plugin's FastAPI APIRouter (set in step 2; Any here so
                       this module stays import-light).
@@ -112,7 +114,7 @@ class PluginManifest:
 
     key: str
     name: str
-    tier: str = "professional"
+    tier: str = ""  # deprecated: accepted, never read
     requires: str = ""
     router: Any = None
     migrations_path: str | None = None
@@ -144,8 +146,11 @@ class PluginManifest:
             raise ValueError(f"PluginManifest.key must be lowercase/trimmed: {self.key!r}")
         if not self.name or not self.name.strip():
             raise ValueError("PluginManifest.name must be non-empty")
-        if self.tier not in ("starter", "professional", "business"):
-            raise ValueError(f"PluginManifest.tier invalid: {self.tier!r}")
+        if self.tier:
+            log.warning(
+                "plugin %s passes tier=%r: accepted and ignored since 2026-09-06 (plan tiers are gone)",
+                self.key, self.tier,
+            )
         unknown = set(self.permissions) - KNOWN_PERMISSIONS
         if unknown:
             raise ValueError(f"PluginManifest.permissions unknown: {sorted(unknown)}")
