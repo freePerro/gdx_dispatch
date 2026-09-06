@@ -52,7 +52,7 @@ def test_api_key_keyed_per_key_not_per_company() -> None:
     mw = _mw()
     key, limit = mw._key_and_limit(_req("/api/customers", {"x-api-key": "tgd_live_abc"}))
     assert key.startswith("key:")
-    assert limit == DEFAULT_LIMITS["professional"]
+    assert limit == DEFAULT_LIMITS["general"]
     # Two different keys land in different buckets (no shared global bucket).
     k1, _ = mw._key_and_limit(_req("/api/x", {"x-api-key": "aaa"}))
     k2, _ = mw._key_and_limit(_req("/api/x", {"x-api-key": "bbb"}))
@@ -63,14 +63,14 @@ def test_bearer_keyed_per_session() -> None:
     mw = _mw()
     key, limit = mw._key_and_limit(_req("/api/jobs", {"authorization": "Bearer xyz"}))
     assert key.startswith("sess:")
-    assert limit == DEFAULT_LIMITS["professional"]
+    assert limit == DEFAULT_LIMITS["general"]
 
 
 def test_anonymous_falls_back_to_per_ip() -> None:
     mw = _mw()
     key, limit = mw._key_and_limit(_req("/api/jobs"))
     assert key == "ip:1.2.3.4"
-    assert limit == DEFAULT_LIMITS["professional"]
+    assert limit == DEFAULT_LIMITS["general"]
 
 
 def test_x_forwarded_for_first_hop_is_used() -> None:

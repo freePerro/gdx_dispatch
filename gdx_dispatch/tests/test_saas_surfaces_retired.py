@@ -357,6 +357,34 @@ def test_alembic_base_imports_without_the_app() -> None:
     assert proc.stdout.strip() == "none", f"importing the Alembic base loaded the app: {proc.stdout.strip()}"
 
 
+def test_redundant_tenant_filter_scan_is_clean() -> None:
+    """The redundant-filter scanner (`tools/tenant_plane_redundant_filter_scan.py`)
+    was red on main with 11 net-new `company_id == …` filters for weeks because
+    nothing ran it in a gate. Now it runs here, on the tool's own signatures —
+    file, rule, identifier AND line — in both directions. Line-keyed on purpose:
+    a shape+count comparison lets a filter be deleted in one place and re-added
+    in the same file unseen (the blind spot the scanner's docstring records an
+    audit closing). The price is that an edit shifting lines in a listed file
+    turns this red; the fix is in the same PR:
+    `python -m gdx_dispatch.tools.tenant_plane_redundant_filter_scan --baseline`
+    (re-freeze) — the tool itself refuses to admit a shape the old baseline
+    did not hold, so only `--allow-new` (visible in the PR) can widen it; a
+    same-shape move within one file is, by definition, a move. Counterfactuals: add
+    `.where(Job.company_id == tid)` to any router query (new signature), or
+    delete one listed filter without re-freezing (stale signature)."""
+    from gdx_dispatch.tools import tenant_plane_redundant_filter_scan as scanner
+
+    baseline = scanner._load_baseline()
+    current = {scanner._to_signature(f) for f in scanner.scan()}
+    new = sorted(current - baseline)
+    stale = sorted(baseline - current)
+    assert not new and not stale, (
+        "redundant tenant filters differ from the baseline — new (fix or, if only a "
+        "line moved, re-freeze with --baseline):\n" + "\n".join(new)
+        + "\nstale (gone from the code; drop from the baseline with --prune):\n" + "\n".join(stale)
+    )
+
+
 _DESIGN_DOC_REF = re.compile(r"docs/design/(?:archive/)?[A-Za-z0-9_.-]+\.md")
 _DESIGN_REF_EXEMPT = ("docs/design/", "gdx_dispatch/migrations/versions/", ".doc_link_baseline")
 

@@ -490,27 +490,6 @@ CREATE TABLE public.booking_requests_router (
 
 
 --
--- Name: bug_reports; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.bug_reports (
-    id character varying(36) NOT NULL,
-    company_id character varying(36) NOT NULL,
-    user_id character varying(36),
-    subject character varying(200) NOT NULL,
-    description text NOT NULL,
-    priority character varying(20),
-    page_url text,
-    browser_info text,
-    status character varying(20),
-    created_at timestamp with time zone,
-    resolved_at timestamp with time zone,
-    resolved_by character varying(36),
-    resolution_notes text
-);
-
-
---
 -- Name: campaign_sends; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3655,14 +3634,6 @@ ALTER TABLE ONLY public.booking_jobs_router
 
 ALTER TABLE ONLY public.booking_requests_router
     ADD CONSTRAINT booking_requests_router_pkey PRIMARY KEY (id);
-
-
---
--- Name: bug_reports bug_reports_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.bug_reports
-    ADD CONSTRAINT bug_reports_pkey PRIMARY KEY (id);
 
 
 --

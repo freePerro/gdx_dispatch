@@ -1,6 +1,6 @@
 """The plugin catalog publishes which version is actually running.
 
-`/api/plugins` used to return key/name/tier/ui/permissions and nothing about
+`/api/plugins` used to return key/name/ui/permissions and nothing about
 the distribution behind them. Two things were therefore impossible outside the
 plugin-host process:
 
@@ -46,7 +46,7 @@ def test_catalog_reports_the_running_version_and_distribution():
     # The pre-existing contract must not shift underneath core.
     assert entry["key"] == "n8n"
     assert entry["name"] == "N8N Plugin"
-    assert entry["tier"] == "starter"
+    assert "tier" not in entry, "tier left the plugin catalog 2026-09-06"
     assert "permissions" in entry and "ui" in entry
 
 

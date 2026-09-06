@@ -49,7 +49,7 @@ export const test = base.extend({
             'ai_communication', 'stripe_connect', 'loyalty', 'warranties',
             'automations', 'documents', 'communications', 'reports_advanced',
             'mobile', 'segments', 'google_maps',
-          ].map((key) => ({ key, enabled: true, tier: 'business', locked: false })),
+          ].map((key) => ({ key, enabled: true, locked: false })),
         ),
       });
     });

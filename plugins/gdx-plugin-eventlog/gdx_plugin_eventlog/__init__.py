@@ -15,7 +15,6 @@ from gdx_plugin_eventlog.ui import UI
 manifest = PluginManifest(
     key="eventlog",
     name="Event Log (example)",
-    tier="starter",
     requires="",
     router=router,
     ui=UI,
