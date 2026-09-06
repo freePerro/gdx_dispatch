@@ -1,6 +1,6 @@
 # Legacy residue, round three — what the purge left behind (2026-09-06)
 
-**Status:** `PARTIALLY BUILT` — PR A (prose) is #612; PR B (dead code) is #613, below this one in the stack; **PR C (the `control` package becomes `core/tenant_settings.py`) is this PR.** D not started. Successor to
+**Status:** `PARTIALLY BUILT` — PR A (prose) is #612, PR B (dead code) #613, PR C (the `control` package becomes `core/tenant_settings.py`) #614, all below this one in the stack; **PR D (SPIFFE removal) is this PR — the last of the four.**
 `phase-d-saas-residue.md` (S1–S32, merged through #610, released v1.116.0).
 That doc stays as the record of rounds one and two; this one owns what a
 code-only sweep of main at `88f8d74` still finds.
@@ -66,7 +66,7 @@ the name of the one company (`tenant_id` columns, `TenantSettings`,
 | B11 | `frontend/src/components/BugReportButton.vue:79-95` | **Every bug report is written twice**: an awaited POST to `/api/feedback/bug-report` (`bug_reports`) drives the toast, then an **un-awaited, error-swallowed** POST to `/api/support/bug` (`support_tickets`) as the "control-plane mirror" for a cockpit that no longer exists. Prod has **7** `bug_reports` rows and **5** `support_tickets` rows (read 2026-09-06): two mirrored writes already failed silently. Only the support row is visible to anyone (nav → `/feedback` → `/api/support/my`, `constants/modules.js:258`); `GET /api/feedback/bug-reports` has no caller | One **awaited** write to `/api/support/bug`, toast tied to its response, no `.catch` swallow. Remove the orphaned `POST /api/feedback/bug-report` + `GET /api/feedback/bug-reports` and the `BugReport` model (`/api/feedback/client-error` stays — `errorCapture.js` and `useApi.js` call it). The physical `bug_reports` table and its 7 rows stay, per invariant #2; they were never shown anywhere. `openapi_routes.txt` loses two rows. ⚠ The audit caught my first version of this row, which kept the un-awaited write — that would have made "Bug Reported" fire on a failed POST |
 | B12 | `routers/admin_db.py:70` | `_CONTROL_PLANE_TABLES` — the set of Alembic-baseline tables the drift check must not flag | Rename `_ALEMBIC_BASELINE_TABLES`; same contents |
 | B13 | User-visible strings: `LoginView.vue:64` "access your workspace"; `DatabaseAdminView.vue:21,125` "Migrations (control plane)"; `PhoneComIntegrationCard.vue:412-413` "Per-tenant … we never share keys across tenants" | Say what is true |
-| B14 | `core/unified_principal.py:76,140` | `ActorType` still admits `service_account` (removed, `auth/core.py:836` fails closed on it) and `spiffe_workload`; `AuthKind` admits `pat`, `scim`, `oauth` (removed). These are typing `Literal`s — narrowing them changes nothing at runtime, and the string compare at `auth/core.py:836` must stay for stale tokens | Narrow the literals and the docstring in D. Housekeeping, not a finding |
+| B14 | `core/unified_principal.py:76,140` | `ActorType` still admits `service_account` (removed, `auth/core.py:836` fails closed on it) and `spiffe_workload`; `AuthKind` admits `pat`, `scim` (removed) and `spiffe`; `oauth` stays — the MCP bridge produces it. These are typing `Literal`s — narrowing them changes nothing at runtime, and the string compare at `auth/core.py:836` must stay for stale tokens | Narrow the literals and the docstring in D. Housekeeping, not a finding |
 
 ### C. The `control` package
 
@@ -99,7 +99,7 @@ risk and is listed under decisions.
 
 ### D. SPIFFE workload identity
 
-`core/spiffe/` (4 modules, 1052 lines), `core/middleware/spiffe_auth_middleware.py`
+`core/spiffe/` (4 modules, 1052 lines), `core/middleware/spiffe_auth_middleware.py` <!-- SPIFFE layer deleted 2026-09-06 (PR D); link-ok -->
 (198 lines), the SPIFFE branch of `core/auth_dispatcher.py`, and 7 test files.
 Mounted only when `SPIFFE_ENABLE` is truthy; **no compose file, env template,
 or doc sets it**, no SPIRE agent exists, and the middleware's own docstring
@@ -108,10 +108,10 @@ platform that was never built. Removing it narrows `get_current_principal`
 to the session flow, which is the only one that has ever run.
 
 D followers the first draft missed: `_jwt_has_spiffe_sub` at
-`auth_dispatcher.py:505`, `core/spiffe/workload_caps.json`, the
-`CLEANUP_BACKLOG.md` entry (A14). Tests: delete `test_spire_trust_bundle.py`,
-`test_svid_validator.py`, `test_spiffe_id.py`, `test_spiffe_auth_middleware.py`,
-`test_workload_capability_map.py`; edit `test_auth_dispatcher.py` and
+`auth_dispatcher.py:505`, `core/spiffe/workload_caps.json`, the <!-- SPIFFE layer deleted 2026-09-06 (PR D); link-ok -->
+`CLEANUP_BACKLOG.md` entry (A14). Tests: delete `test_spire_trust_bundle.py`, <!-- SPIFFE layer deleted 2026-09-06 (PR D); link-ok -->
+`test_svid_validator.py`, `test_spiffe_id.py`, `test_spiffe_auth_middleware.py`, <!-- SPIFFE layer deleted 2026-09-06 (PR D); link-ok -->
+`test_workload_capability_map.py`; edit `test_auth_dispatcher.py` and <!-- SPIFFE layer deleted 2026-09-06 (PR D); link-ok -->
 `test_principal.py`. `SPIFFE_ENABLE` is set nowhere: not in any compose file,
 `.env.demo.example`, a workflow, or the prod container's env (read 2026-09-06).
 
@@ -133,9 +133,9 @@ Prod facts read for it (all read-only): app container env names carry
 | PR | Contents | Behaviour change |
 |---|---|---|
 | **A** `docs/legacy-residue-prose` | A1–A7, A9, A10, A12, A13; A11 except the three lines B rewrites anyway (`SettingsView.vue:1402`, `BugReportButton.vue`, `constants/modules.js:15` — a dated changelog line, left) | none (prose, docstrings, comments, one dead script). A8 goes with D, which rewrites that module |
-| **B** `chore/legacy-residue-dead-code` | B1–B14 (B14 partial: drop `service_account`, `pat`, `scim`, `oauth`; `spiffe*` goes with D) | supplier invite links stop pointing at example.com; bug reports written once; five env vars and one compose file removed |
+| **B** `chore/legacy-residue-dead-code` | B1–B13 (B14 is done in D, which rewrites that module) | supplier invite links stop pointing at example.com; bug reports written once; five env vars and one compose file removed |
 | **C** `chore/rename-control-package` | Section C | none (import paths) |
-| **D** `chore/drop-spiffe` | Section D + the rest of B14 | `SPIFFE_ENABLE` no longer does anything (it never did outside a lab) |
+| **D** `chore/drop-spiffe` | Section D + B14 (`AuthKind` keeps `oauth`: the MCP bridge produces it) | `SPIFFE_ENABLE` no longer does anything (it never did outside a lab) |
 
 B, C and D each touch `core/unified_principal.py` or `app.py`; they are cut
 from main independently and rebased on merge, in that order.

@@ -1,22 +1,18 @@
 """Sprint 0.9 slice 0.9-c — unified ``Principal`` type.
 
-Defines ONE ``Principal`` type that subsumes the auth-flow-specific
-principal dataclasses Sprint 0.8 shipped. Of the original five, two
-legacy variants still exist alongside this type:
+Defines ONE ``Principal`` type. The auth-flow-specific dataclasses Sprint
+0.8 shipped are all gone: the SS-7 ``core.principal`` variant, the SS-14
+PAT, SS-22 SCIM and SS-21 OAuth-bearer modules, and (2026-09-06) the SS-32
+SPIFFE ``AgentPrincipal`` with the middleware and package behind it.
 
-* SS-7 session/JWT ``Principal`` (formerly ``gdx_dispatch.core.principal``, deleted)
-* SS-32 SPIFFE ``AgentPrincipal`` (``gdx_dispatch.core.middleware.spiffe_auth_middleware.AgentPrincipal``)
-
-The other three are gone — the SS-14 PAT (``pat_validation``), SS-22 SCIM
-(``scim_auth``) and SS-21 OAuth bearer (``oauth2_grants``) modules were
-deleted. ``auth_kind`` still declares ``"pat"``/``"scim"``/``"oauth"`` and
-the matching id fields remain on the type, so a re-introduced flow has a
-slot to land in, but nothing produces those kinds today.
+``auth_kind`` names the two producers that exist: ``"session"`` (the login
+JWT, via :mod:`gdx_dispatch.core.auth_dispatcher`) and ``"oauth"`` (the MCP
+bridge's bearer principal in :mod:`gdx_dispatch.core.mcp_fastmcp_bridge`).
+``actor_type`` likewise: ``"human"`` and ``"ai_worker"``.
 
 Current wiring: slice 0.9-d shipped the composite dispatcher
 ``get_current_principal`` in :mod:`gdx_dispatch.core.auth_dispatcher`, which
-produces this type for the session, login-JWT, SPIFFE-JWT and SPIFFE-mTLS
-flows. Consumers today are :mod:`gdx_dispatch.routers.ai`,
+produces this type for the session / login-JWT flow. Consumers today are :mod:`gdx_dispatch.routers.ai`,
 :mod:`gdx_dispatch.core.mcp_protocol_adapter` and
 :mod:`gdx_dispatch.core.mcp_fastmcp_bridge`. The 0.9-e sweep of the
 remaining SS routers has NOT happened — most routers still take the SS-7
@@ -67,21 +63,14 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import UUID
 
-__all__ = ["AuthKind", "Principal", "SPIFFE_ID_NAMESPACE", "ActorType"]
+__all__ = ["AuthKind", "Principal", "ActorType"]
 
-AuthKind = Literal["session", "pat", "scim", "spiffe", "oauth"]
+AuthKind = Literal["session", "oauth"]
 
-ActorType = Literal["human", "ai_worker", "service_account", "spiffe_workload"]
+ActorType = Literal["human", "ai_worker"]
 
-# UUID5 namespace for synthesizing a stable identity_id from a SPIFFE id.
-# SPIFFE principals are workload identities that don't have a corresponding
-# row in the ``identities`` table — the synthesized UUID gives policy /
-# audit a stable handle while staying deterministic across process
-# restarts and replicas. NAMESPACE_URL is used because a spiffe:// ID is
-# URL-shaped.
-SPIFFE_ID_NAMESPACE = NAMESPACE_URL
 
 
 def _coerce_caps(
@@ -139,7 +128,7 @@ def principal_tenant_uuid(principal: Principal) -> UUID | None:
 
 @dataclass(frozen=True)
 class Principal:
-    """Unified auth principal across session / PAT / SCIM / SPIFFE / OAuth flows.
+    """Unified auth principal across the session and MCP-bearer flows.
 
     Produced by the composite ``get_current_principal`` dependency
     (slice 0.9-d). Consumed today by ``routers.ai`` and the MCP
@@ -149,8 +138,8 @@ class Principal:
     Fields
     ------
     identity_id
-        UUID row id in ``identities`` — or, for SPIFFE agents, a UUID5
-        synthesized from ``spiffe_id`` (see :data:`SPIFFE_ID_NAMESPACE`).
+        UUID row id of the user (or a synthesized UUID5 for a non-human
+        caller — see the MCP bridge).
     tenant_id
         Tenant UUID stringification (D97, 031). String form is kept on
         Principal so the Principal stays JSON-serializable for redis
@@ -169,8 +158,8 @@ class Principal:
         capabilities — ``has_capability`` returns False for everything.
     auth_kind
         Which flow produced this principal. Routers can gate on this
-        for flow-specific behaviour (e.g. SCIM-only endpoints).
-    session_id, pat_id, pat_prefix, scim_token_id, spiffe_id, oauth_token_id
+        for flow-specific behaviour (e.g. MCP-bearer-only handling).
+    session_id, pat_id, oauth_token_id
         Auth-kind-specific audit/trace handles. Exactly one set is
         populated per principal based on ``auth_kind``; the others stay
         ``None``. Carrying them all on one type avoids isinstance churn
@@ -197,9 +186,6 @@ class Principal:
     # Auth-kind-specific metadata (all optional)
     session_id: str | None = None
     pat_id: UUID | None = None
-    pat_prefix: str | None = None
-    scim_token_id: str | None = None
-    spiffe_id: str | None = None
     oauth_token_id: UUID | None = None
     # Cross-cutting flags
     is_restricted: bool = False
@@ -286,39 +272,3 @@ class Principal:
             is_restricted=is_restricted,
             is_super_admin=("*", "*") in caps_t,
         )
-
-    @classmethod
-    def from_spiffe(
-        cls,
-        *,
-        spiffe_id: str,
-        tenant_id: str,
-        capabilities: Iterable[tuple[str, str]],
-        role: str = "agent",
-        is_restricted: bool = False,
-    ) -> Principal:
-        """Construct a SPIFFE-flow principal (SS-32).
-
-        No backing ``identities`` row — ``identity_id`` is synthesized
-        deterministically from ``spiffe_id`` via UUID5 under the
-        :data:`SPIFFE_ID_NAMESPACE` (NAMESPACE_URL, since spiffe IDs are
-        URL-shaped). Same ``spiffe_id`` ALWAYS maps to the same
-        ``identity_id`` across process restarts, replicas, and regions.
-        """
-        if not isinstance(spiffe_id, str) or not spiffe_id.startswith("spiffe://"):
-            raise ValueError(
-                f"spiffe_id must be a string starting with 'spiffe://', got {spiffe_id!r}"
-            )
-        synth_identity = uuid5(SPIFFE_ID_NAMESPACE, spiffe_id)
-        caps_t = _coerce_caps(capabilities)
-        return cls(
-            identity_id=synth_identity,
-            tenant_id=tenant_id,
-            principal_role=role,
-            capabilities=caps_t,
-            auth_kind="spiffe",
-            spiffe_id=spiffe_id,
-            is_restricted=is_restricted,
-            is_super_admin=("*", "*") in caps_t,
-        )
-

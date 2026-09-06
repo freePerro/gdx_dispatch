@@ -5,7 +5,6 @@ Tests cover:
 * Immutability (frozen dataclass).
 * Capabilities shape lock — reject non-tuple/list entries; coerce to tuple.
 * Factory helpers populate the right ``auth_kind`` + audit handles.
-* SPIFFE-id → identity_id UUID5 synthesis is deterministic.
 * ``has_capability`` wildcard semantics match SS-18
   ``mcp_registry.check_capability`` (with restricted-flag override).
 
@@ -15,12 +14,11 @@ sweeps routers. This slice is type-only — no FastAPI / DB imports here.
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
-from uuid import uuid4, uuid5
+from uuid import uuid4
 
 import pytest
 
 from gdx_dispatch.core.unified_principal import (
-    SPIFFE_ID_NAMESPACE,
     Principal,
 )
 
@@ -95,43 +93,7 @@ def test_from_session_populates_auth_kind_session():
     assert p.tenant_id == tid
     assert p.principal_role == "admin"
     assert p.pat_id is None
-    assert p.scim_token_id is None
-    assert p.spiffe_id is None
     assert p.oauth_token_id is None
-
-
-def test_from_spiffe_synthesizes_identity_from_uuid5():
-    """Same spiffe_id → same identity_id across calls (deterministic)."""
-    sid = "spiffe://garagedoor.ai/agent/dispatcher-01"
-    tid = "acme-corp"
-    p1 = Principal.from_spiffe(
-        spiffe_id=sid, tenant_id=tid, capabilities=[("read", "*")]
-    )
-    p2 = Principal.from_spiffe(
-        spiffe_id=sid, tenant_id="acme-corp", capabilities=[("write", "job")]
-    )
-    assert p1.identity_id == p2.identity_id
-    assert p1.identity_id == uuid5(SPIFFE_ID_NAMESPACE, sid)
-    assert p1.auth_kind == "spiffe"
-    assert p1.spiffe_id == sid
-    assert p1.principal_role == "agent"
-
-    # A different spiffe_id produces a different identity_id.
-    p3 = Principal.from_spiffe(
-        spiffe_id="spiffe://garagedoor.ai/agent/other",
-        tenant_id=tid,
-        capabilities=[("read", "*")],
-    )
-    assert p3.identity_id != p1.identity_id
-
-
-def test_from_spiffe_rejects_non_spiffe_id():
-    with pytest.raises(ValueError):
-        Principal.from_spiffe(
-            spiffe_id="not-a-spiffe-id",
-            tenant_id="acme-corp",
-            capabilities=[("read", "*")],
-        )
 
 
 # ── 8–12. has_capability semantics ───────────────────────────────────

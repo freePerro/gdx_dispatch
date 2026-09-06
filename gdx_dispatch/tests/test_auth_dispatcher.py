@@ -1,26 +1,22 @@
 """Sprint 0.9 slice 0.9-d — composite ``get_current_principal`` dispatcher tests.
 
 Mocks each underlying validator so this test module can verify the
-dispatcher's DECISION LOGIC without standing up the full SS-32 SPIFFE
-trust bundle or SS-21 OAuth token store.
+dispatcher's DECISION LOGIC without a database: the login-JWT decode is
+patched where a test needs it.
 
 Covered flows:
 
 * missing credentials → 401 missing_credentials
 * unknown bearer shape → 401 unknown_bearer_shape
-* JWT with ``spiffe://`` sub → SPIFFE JWT dispatch (mocked validate_jwt_svid)
-* JWT with user sub → OAuth dispatch (mocked token store)
+* JWT-shaped bearer → login-JWT dispatch (patched decode)
 * session cookie → session dispatch
-* mTLS peer_spiffe_id → SPIFFE mTLS dispatch (mocked resolve_capabilities)
 * scope-to-capability translation convention
-* colon-flattened caps translation
 """
 from __future__ import annotations
 
 import base64
 import contextlib
 import json
-from dataclasses import dataclass
 from typing import Any
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -29,7 +25,6 @@ import pytest
 from fastapi import HTTPException
 
 from gdx_dispatch.core.auth_dispatcher import (
-    _colon_cap_to_tuple,
     get_current_principal,
 )
 
@@ -98,67 +93,16 @@ async def test_unknown_bearer_shape_raises_401() -> None:
     assert exc.value.detail["error_type"] == "unknown_bearer_shape"
 
 
-# ── SPIFFE JWT ─────────────────────────────────────────────────────────
-
-
 def _make_jwt(payload: dict[str, Any]) -> str:
     """Build an unsigned-shape JWT for routing tests.
 
-    The dispatcher's routing layer only shape-checks + peeks at ``sub``;
-    full signature verification happens inside the (mocked) SVID validator.
+    The dispatcher's routing layer only shape-checks the token; the tests
+    that need a decoded payload patch ``jwt.decode``.
     """
     header = base64.urlsafe_b64encode(json.dumps({"alg": "RS256", "typ": "JWT"}).encode()).rstrip(b"=").decode()
     body = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
     sig = base64.urlsafe_b64encode(b"fake-sig").rstrip(b"=").decode()
     return f"{header}.{body}.{sig}"
-
-
-@pytest.mark.asyncio
-async def test_bearer_jwt_with_spiffe_sub_dispatches_spiffe_jwt() -> None:
-    spiffe_id = "spiffe://gdx.local/workload/x"
-    token = _make_jwt({"sub": spiffe_id, "aud": "gdx-api", "iat": 1, "exp": 9999999999})
-
-    @dataclass
-    class _FakeSid:
-        uri: str
-        trust_domain: str
-
-    @dataclass
-    class _FakeValidated:
-        spiffe_id: Any
-        kind: str = "jwt"
-        claims: dict = None  # type: ignore[assignment]
-
-    fake_validated = _FakeValidated(
-        spiffe_id=_FakeSid(uri=spiffe_id, trust_domain="gdx_dispatch.local"),
-        claims={},
-    )
-
-    @dataclass
-    class _FakeResolved:
-        capabilities: tuple
-        tenant_scope: str
-
-    req = _FakeRequest(
-        headers={"authorization": f"Bearer {token}"},
-        app_state={
-            "spiffe_trust_bundle": {"gdx_dispatch.local": {}},  # pass hasattr('get') == False branch
-            "spiffe_audiences": ["gdx-api"],
-        },
-    )
-
-    with patch(
-        "gdx_dispatch.core.spiffe.svid_validator.validate_jwt_svid",
-        return_value=fake_validated,
-    ), patch(
-        "gdx_dispatch.core.spiffe.workload_capability_map.resolve_capabilities",
-        return_value=_FakeResolved(capabilities=("invoke:mcp.tool",), tenant_scope="global"),
-    ):
-        principal = await get_current_principal(req)  # type: ignore[arg-type]
-
-    assert principal.auth_kind == "spiffe"
-    assert principal.spiffe_id == spiffe_id
-    assert ("invoke", "mcp.tool") in principal.capabilities
 
 
 # ── Bearer login JWT (D-S118-dispatcher-jwt-gap) ───────────────────────
@@ -451,43 +395,6 @@ async def test_session_jwt_cookie_extracts_sub_and_tenant() -> None:
     assert principal.principal_role == "admin"
 
 
-# ── 9. mTLS peer SPIFFE ───────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_mtls_peer_spiffe_id_dispatches_spiffe_mtls() -> None:
-    spiffe_id = "spiffe://gdx.local/workload/backend"
-
-    @dataclass
-    class _FakeResolved:
-        capabilities: tuple
-        tenant_scope: str
-
-    req = _FakeRequest(state={"peer_spiffe_id": spiffe_id})
-    with patch(
-        "gdx_dispatch.core.spiffe.workload_capability_map.resolve_capabilities",
-        return_value=_FakeResolved(capabilities=("read:widget",), tenant_scope="global"),
-    ):
-        principal = await get_current_principal(req)  # type: ignore[arg-type]
-
-    assert principal.auth_kind == "spiffe"
-    assert principal.spiffe_id == spiffe_id
-    assert ("read", "widget") in principal.capabilities
-
-
-# ── Colon-flattened caps translation ──────────────────────────────────
-
-
-def test_scim_colon_caps_translation() -> None:
-    assert _colon_cap_to_tuple("write:identity") == ("write", "identity")
-    assert _colon_cap_to_tuple("read:user") == ("read", "user")
-    # Malformed
-    assert _colon_cap_to_tuple("nocolon") is None
-    assert _colon_cap_to_tuple("a:b:c") is None
-    assert _colon_cap_to_tuple(":identity") is None
-    assert _colon_cap_to_tuple("write:") is None
-
-
 # ── Empty bearer token ─────────────────────────────────────────────────
 
 
@@ -501,18 +408,6 @@ async def test_empty_bearer_token_raises_401() -> None:
 
 
 # ── 14. Shared role-gate helpers (0.9-e) ─────────────────────────────
-
-
-def test_default_caps_for_role_known_and_unknown() -> None:
-    from gdx_dispatch.core.auth_dispatcher import default_caps_for_role
-
-    assert default_caps_for_role("super_admin") == (("*", "*"),)
-    assert ("read", "*") in default_caps_for_role("admin")
-    assert default_caps_for_role("viewer") == (("read", "*"),)
-    # Unknown / SPIFFE agent → empty tuple.
-    assert default_caps_for_role("not_a_real_role") == ()
-    assert default_caps_for_role("agent") == ()
-
 
 @pytest.mark.asyncio
 async def test_require_role_allows_matching_role() -> None:
@@ -614,8 +509,6 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from gdx_dispatch.core.denylist import Denylist
-
-
 
 
 @pytest.fixture(scope="module")
