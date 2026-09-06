@@ -1312,8 +1312,8 @@ def create_app() -> FastAPI:
     # the DB. Nothing in the app sent the header. It was also the only producer
     # of service-account identity, which is why the `actor_kind ==
     # "service_account"` branch in routers/auth/core.py now fails closed.
-    # The `service_accounts` table still exists physically (0 rows); its ORM
-    # model was deleted 2026-09-03 with the SaaS-residue purge.
+    # Its ORM model was deleted 2026-09-03 with the SaaS-residue purge and
+    # migration 087 dropped the empty `service_accounts` table.
     if _TenantRateLimitMiddleware is not None:
         app.add_middleware(_TenantRateLimitMiddleware)
     try:

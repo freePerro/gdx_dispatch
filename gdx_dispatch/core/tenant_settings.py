@@ -58,13 +58,9 @@ class Tenant(Base):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    # ``stripe_connect_account_id`` and ``subscription_status`` (NOT NULL DEFAULT
-    # 'trialing') still exist as physical columns in ``tenants`` — the baseline
-    # SQL creates them and prod carries them — but no code reads the columns
-    # (core/payments.py reads a same-named key off the ambient tenant dict,
-    # which never carries it), so the ORM no longer maps them. The column
-    # default satisfies inserts. Dropping the columns is a separate migration
-    # decision.
+    # ``stripe_connect_account_id`` and ``subscription_status`` were physical
+    # columns here (the baseline SQL created them) that no code read; the ORM
+    # stopped mapping them 2026-09-03 and migration 087 dropped them.
     timezone: Mapped[str] = mapped_column(String(60), nullable=False, default="America/New_York")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

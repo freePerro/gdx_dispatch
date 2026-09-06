@@ -1,6 +1,6 @@
 # Legacy residue, round three — what the purge left behind (2026-09-06)
 
-**Status:** `MERGED #612 #613 #614 #615` (2026-09-06, squash-merged bottom-up; not yet released). What is NOT built is the owner-decision list at the bottom — nothing in it was started.
+**Status:** `MERGED #612 #613 #614 #615` (2026-09-06, squash-merged bottom-up; not yet released). The owner-decision list at the bottom: items 1–3 were built the same day in their own PRs (each item carries its dated line); items 4–6 are left as is.
 `phase-d-saas-residue.md` (S1–S32, merged through #610, released v1.116.0).
 That doc stays as the record of rounds one and two; this one owns what a
 code-only sweep of main at `88f8d74` still finds.
@@ -149,6 +149,8 @@ from main independently and rebased on merge, in that order.
    `platform_feature_flags` (0 rows), `tenants.subscription_status`,
    `tenants.stripe_connect_account_id`. A drop migration was already decided
    in `phase-d-saas-residue.md` and blocked on the purge; it is unblocked now.
+   → **Built 2026-09-06** (`chore/migration-087-drop-retired-tables`, migration 087): the three tables and two
+   columns dropped; `bug_reports` (7 rows) copied into `support_tickets` first.
 3. **Module `tier` (`core/modules.py`, `plugin_api/manifest.py`).** Plan
    tiers of a subscription never sold; nothing gates on them, but `tier` is
    part of the public plugin manifest contract (warn-and-strip would make

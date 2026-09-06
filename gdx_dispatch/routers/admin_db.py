@@ -64,13 +64,10 @@ def _alembic_cfg() -> Config:
 # as "in DB, not in ORM" — a false positive to suppress. Two kinds:
 #   * owned by Alembic on its own base (Tenant, TenantSettings, the game
 #     tables, server_errors — migration 001's baseline);
-#   * physical tables whose ORM model was retired but whose rows stay:
-#     tenant_module_grants, service_accounts, platform_feature_flags (0 rows,
-#     2026-09-03) and bug_reports (7 rows, 2026-09-06).
+#   (The retired-model tables — tenant_module_grants, service_accounts,
+#   platform_feature_flags, bug_reports — were dropped by migration 087.)
 _TABLES_WITHOUT_ORM_MODEL = frozenset({
-    "tenants", "tenant_settings", "tenant_module_grants", "platform_feature_flags",
-    "service_accounts", "server_errors", "game_definitions", "game_events", "game_state",
-    "bug_reports",
+    "tenants", "tenant_settings", "server_errors", "game_definitions", "game_events", "game_state",
 })
 
 
