@@ -149,6 +149,8 @@ from main independently and rebased on merge, in that order.
    `platform_feature_flags` (0 rows), `tenants.subscription_status`,
    `tenants.stripe_connect_account_id`. A drop migration was already decided
    in `phase-d-saas-residue.md` and blocked on the purge; it is unblocked now.
+   → **Built 2026-09-06** (`chore/migration-087-drop-retired-tables`, migration 087): the three tables and two
+   columns dropped; `bug_reports` (7 rows) copied into `support_tickets` first.
 3. **Module `tier` (`core/modules.py`, `plugin_api/manifest.py`).** Plan
    tiers of a subscription never sold; nothing gates on them, but `tier` is
    part of the public plugin manifest contract (warn-and-strip would make
