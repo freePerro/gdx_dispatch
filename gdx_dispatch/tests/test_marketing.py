@@ -19,8 +19,6 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.modules.campaigns import router as campaigns_router
-from gdx_dispatch.modules.campaigns.router import _ensure_campaign_tables, get_campaign_stats
 from gdx_dispatch.routers import segments as segments_router
 from gdx_dispatch.routers.marketing import ReferralCreateIn
 from gdx_dispatch.routers.segments import (
@@ -100,40 +98,6 @@ def db_sessionmaker():
                 rules JSON NOT NULL,
                 created_at TEXT,
                 deleted_at TEXT
-            )
-            """
-        )
-    )
-    db.execute(
-        text(
-            """
-            CREATE TABLE marketing_campaigns (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                segment_id TEXT NOT NULL,
-                template_id TEXT NOT NULL,
-                channel TEXT NOT NULL,
-                campaign_type TEXT NOT NULL,
-                created_at TEXT,
-                updated_at TEXT
-            )
-            """
-        )
-    )
-    db.execute(
-        text(
-            """
-            CREATE TABLE marketing_campaign_sends (
-                id TEXT PRIMARY KEY,
-                campaign_id TEXT NOT NULL,
-                customer_id TEXT NOT NULL,
-                channel TEXT NOT NULL,
-                status TEXT NOT NULL,
-                sent_at TEXT,
-                opened_at TEXT,
-                clicked_at TEXT,
-                converted_at TEXT,
-                created_at TEXT
             )
             """
         )
@@ -325,72 +289,15 @@ async def test_segment_count_endpoint(db_sessionmaker):
     assert count["count"] >= 1
 
 
-async def test_campaign_stats_tracking(db_sessionmaker):
-    Session = db_sessionmaker
-    c1 = _seed_customer(Session, name="HV A", created_days_ago=100)
-    c2 = _seed_customer(Session, name="HV B", created_days_ago=100)
-    j1 = _seed_job(Session, customer_id=c1, created_days_ago=10, completed=True)
-    j2 = _seed_job(Session, customer_id=c2, created_days_ago=10, completed=True)
-    _seed_invoice(Session, job_id=j1, total=7000)
-    _seed_invoice(Session, job_id=j2, total=8000)
-
-    db = Session()
-    # The module's create/send handlers were deleted 2026-09-06 (#569) —
-    # routers/campaigns.py owns those paths — so seed the module's own
-    # tables directly: one campaign, one send per customer.
-    _ensure_campaign_tables(db)
-    campaign = {"id": str(uuid.uuid4())}
-    now = datetime.now(UTC).isoformat()
-    db.execute(
-        text(
-            "INSERT INTO marketing_campaigns (id, name, segment_id, template_id, channel, campaign_type, created_at, updated_at) "
-            "VALUES (:id, 'Stats Blast', 'high-value', 'tpl-2', 'sms', 'drip sequence', :now, :now)"
-        ),
-        {"id": campaign["id"], "now": now},
-    )
-    for customer_id in (c1, c2):
-        db.execute(
-            text(
-                "INSERT INTO marketing_campaign_sends (id, campaign_id, customer_id, channel, status, sent_at, created_at) "
-                "VALUES (:id, :campaign_id, :customer_id, 'sms', 'sent', :now, :now)"
-            ),
-            {"id": str(uuid.uuid4()), "campaign_id": campaign["id"], "customer_id": str(customer_id), "now": now},
-        )
-    db.commit()
-
-    db.execute(
-        text(
-            """
-            UPDATE marketing_campaign_sends
-            SET opened_at = :opened_at, clicked_at = :clicked_at, converted_at = :converted_at
-            WHERE campaign_id = :campaign_id
-            LIMIT 1
-            """
-        ),
-        {"campaign_id": campaign["id"], "opened_at": now, "clicked_at": now, "converted_at": now},
-    )
-    db.commit()
-
-    stats = await get_campaign_stats(campaign_id=campaign["id"], current_user={}, db=db)
-    db.close()
-
-    assert stats["sent"] == 2
-    assert stats["opened"] == 1
-    assert stats["clicked"] == 1
-    assert stats["converted"] == 1
-
-
 def test_module_requirements_wired_for_segments_campaigns_loyalty():
+    from gdx_dispatch.routers import campaigns as live_campaigns_router
     from gdx_dispatch.routers import referrals as referrals_router
 
     seg_dep = require_module("segments")
-    camp_dep = require_module("campaigns")
 
     segment_route = next(r for r in segments_router.router.routes if getattr(r, "path", "") == "/api/segments/{segment_id}/count")
-    campaign_route = next(r for r in campaigns_router.router.routes if getattr(r, "path", "") == "/api/campaigns/{campaign_id}/stats")
 
     assert any(dep.call is seg_dep for dep in segment_route.dependant.dependencies)
-    assert any(dep.call is camp_dep for dep in campaign_route.dependant.dependencies)
 
     # /api/referrals moved from marketing_router to dedicated referrals_router
     # The loyalty module gate is set at the router level via dependencies=[Depends(require_module("loyalty"))]
@@ -414,6 +321,19 @@ def test_module_requirements_wired_for_segments_campaigns_loyalty():
         if isinstance(cell.cell_contents, str)
     ]
     assert "loyalty" in captured_keys, f"Expected 'loyalty' module gate, got: {captured_keys}"
+
+    # The campaigns gate moved with the feature: modules/campaigns/router.py is gone
+    # (2026-09-07), so the surviving routers/campaigns.py must carry it at router level.
+    campaign_routes = [r for r in live_campaigns_router.router.routes if hasattr(r, "endpoint")]
+    assert campaign_routes, "campaigns router should have at least one route"
+    campaign_keys = [
+        cell.cell_contents
+        for d in campaign_routes[0].dependant.dependencies
+        if getattr(d.call, "__name__", "") == "_dependency" and getattr(d.call, "__closure__", None)
+        for cell in d.call.__closure__
+        if isinstance(cell.cell_contents, str)
+    ]
+    assert "campaigns" in campaign_keys, f"Expected 'campaigns' module gate, got: {campaign_keys}"
 
 
 async def test_referral_create_requires_required_fields():

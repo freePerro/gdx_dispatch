@@ -88,6 +88,16 @@ REMOVED_PATHS = [
     # ui_compat stubs (#459)
     ("GET", "/api/customers/{customer_id}/communications"),
     ("POST", "/api/customers/{customer_id}/communications"),
+    # routers/mobile.py orphans found by re-running #480's shape (2026-09-07 follow-up)
+    ("POST", "/api/mobile/jobs/{job_id}/status"),
+    ("POST", "/api/mobile/job/{job_id}/status"),
+    ("POST", "/api/mobile/clock-in"),
+    ("POST", "/api/mobile/clock-out"),
+    ("POST", "/api/mobile/job/{job_id}/clock-in"),
+    ("POST", "/api/mobile/job/{job_id}/clock-out"),
+    ("POST", "/api/mobile/job/{job_id}/notes"),
+    # modules/campaigns/router.py, the module's last route (2026-09-07 follow-up)
+    ("GET", "/api/campaigns/{campaign_id}/stats"),
     # routers/mobile.py orphans (#480)
     ("GET", "/api/mobile/clock-status"),
     ("GET", "/api/mobile/schedule"),

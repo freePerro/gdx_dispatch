@@ -336,7 +336,7 @@ there are no ESP webhooks (SendGrid/Postmark-style) to subscribe to. Open
 tracking has to be built here.
 
 `campaign_sends.opened_at` exists in the schema
-([modules/campaigns/router.py:73](../../../gdx_dispatch/modules/campaigns/router.py#L73))
+([modules/campaigns/router.py:73](../../../gdx_dispatch/modules/campaigns/router.py#L73)) <!-- link-ok: deleted 2026-09-07 -->
 and is aggregated in the campaign stats query — but **nothing in production
 code ever writes it**. Only `tests/test_marketing.py` sets it. It is a dead
 column, and the campaign "open rate" it feeds is therefore structurally 0%.

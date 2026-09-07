@@ -349,40 +349,6 @@ def test_get_job_detail_404_for_missing_job(session_factory):
         db.close()
 
 
-def test_post_job_status_updates_dispatch_status(session_factory):
-    seed = _seed_job_bundle(session_factory)
-    db = session_factory()
-    try:
-        r = mobile_router.update_mobile_job_status(
-            job_id=seed["job_id"],
-            payload=mobile_router.JobStatusUpdate(status="en_route"),
-            request=_request(),
-            current_user=_TEST_USER,
-            db=db,
-        )
-        assert r.status_code == 200
-        assert _as_json(r)["dispatch_status"] == "en_route"
-    finally:
-        db.close()
-
-
-def test_post_job_status_rejects_invalid_status(session_factory):
-    seed = _seed_job_bundle(session_factory)
-    db = session_factory()
-    try:
-        r = mobile_router.update_mobile_job_status(
-            job_id=seed["job_id"],
-            payload=mobile_router.JobStatusUpdate(status="assigned"),
-            request=_request(),
-            current_user=_TEST_USER,
-            db=db,
-        )
-        assert r.status_code == 400
-        assert "Invalid status" in _as_json(r)["detail"]
-    finally:
-        db.close()
-
-
 def test_clock_in_creates_time_entry(session_factory):
     seed = _seed_job_bundle(session_factory)
     db = session_factory()
