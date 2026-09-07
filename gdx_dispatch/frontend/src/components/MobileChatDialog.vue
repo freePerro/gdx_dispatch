@@ -15,11 +15,20 @@ import { isTechnician } from '../constants/roles'
 const props = defineProps({
   visible: { type: Boolean, default: false },
   job: { type: Object, default: null },
+  // Stamp read receipts for the tech messages shown here. Only the dispatch
+  // board sets it, and only because the server already accepted that caller as
+  // a dispatcher when it served the thread list — a better signal than
+  // re-deriving the role here, which would duplicate the backend's own
+  // (non-aliasing) role check and get out of step with it.
+  markRead: { type: Boolean, default: false },
 })
-const emit = defineEmits(['update:visible'])
+const emit = defineEmits(['update:visible', 'read'])
 
 const api = useApi()
 const toast = useToast()
+
+// Message ids we have already POSTed, so the 5s poll doesn't re-stamp them.
+const stamped = new Set()
 
 const open = computed({
   get: () => props.visible,
@@ -60,11 +69,55 @@ async function fetchMessages(initial = false) {
       lastFetchedAt.value = new Date().toISOString()
     }
     nextTick(scrollToBottom)
+    stampReadReceipts()
   } catch (e) {
     if (initial) toast.add({ severity: 'error', summary: 'Could not load chat', detail: e.message, life: 4000 })
   } finally {
     loading.value = false
   }
+}
+
+/**
+ * Stamp read receipts for the tech messages this dispatcher is now looking at.
+ *
+ * `GET /api/mobile/dispatch/threads` counts a thread's unread as the tech-sent
+ * messages with `read_at IS NULL`, and `MobileDispatchView` renders that as the
+ * "N new" badge and sorts unread-first. The only writer of `read_at` is
+ * `POST /api/mobile/chat/{id}/read` — and nothing called it, so once a tech
+ * wrote to a thread its badge stayed lit forever (#641).
+ *
+ * Failures are deliberately silent: a read receipt is not worth a toast, and
+ * dropping the id from `stamped` lets the next poll retry it.
+ */
+async function stampReadReceipts() {
+  if (!props.markRead) return
+  // The 5s poll also lands here. Only stamp while someone is actually looking:
+  // a dialog left open in a background tab must not mark a tech's new message
+  // read on their behalf.
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+  const pending = messages.value.filter(
+    (m) => m.id && !m.read_at && isTechnician(m.sender_role) && !stamped.has(m.id),
+  )
+  if (!pending.length) return
+  const results = await Promise.allSettled(
+    pending.map(async (m) => {
+      stamped.add(m.id)
+      try {
+        const updated = await api.post(
+          `/api/mobile/chat/${m.id}/read`,
+          {},
+          { suppressErrorToast: true },
+        )
+        m.read_at = updated?.read_at || new Date().toISOString()
+      } catch (e) {
+        stamped.delete(m.id)
+        throw e
+      }
+    }),
+  )
+  // Only tell the parent when something actually changed server-side — an
+  // all-failed round must not trigger a thread-list refetch every 5s.
+  if (results.some((r) => r.status === 'fulfilled')) emit('read')
 }
 
 function scrollToBottom() {
@@ -130,6 +183,9 @@ watch(() => props.visible, (v) => {
   if (v) {
     messages.value = []
     lastFetchedAt.value = null
+    // The board reuses one dialog instance across every thread of a shift;
+    // without this the set grows all day and carries ids across jobs.
+    stamped.clear()
     fetchMessages(true)
     startPolling()
   } else {

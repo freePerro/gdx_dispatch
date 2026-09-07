@@ -770,7 +770,7 @@ onUnmounted(() => {
         </template>
       </Dialog>
     </section>
-    <MobileChatDialog v-model:visible="chatOpen" :job="chatJob" />
+    <MobileChatDialog v-model:visible="chatOpen" :job="chatJob" mark-read @read="loadThreads" />
 </template>
 
 <style scoped>
