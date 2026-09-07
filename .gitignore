@@ -68,9 +68,9 @@ build/
 .DS_Store
 Thumbs.db
 
-# Claude Code local session files — ignore everything under .claude/ EXCEPT the
-# tracked project isolation policy (loaded by scripts/claude-clean.sh via
-# --setting-sources project). settings.local.json + session scratch stay ignored.
+# Claude Code per-machine state — ignore everything under .claude/ except
+# project settings (.claude/settings.json; none committed today).
+# settings.local.json and session scratch stay ignored.
 .claude/*
 !.claude/settings.json
 
