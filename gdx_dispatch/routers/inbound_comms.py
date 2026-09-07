@@ -1,18 +1,18 @@
 """
-Inbound communications router — webhook receivers for inbound SMS and email.
+Inbound communications router — the inbound-email webhook and its admin routes.
 
-Two flows:
-- Twilio inbound SMS: customer replies to an outbound SMS. Twilio POSTs a
-  form-encoded payload to our webhook. We store it and return an empty 200 so
-  Twilio treats the delivery as successful.
-- Inbound email: mail provider (M365, Mailgun, SendGrid) POSTs a parsed JSON
-  payload. We store it and route to the staff inbox.
+Inbound email: the mail provider (M365 today) POSTs a parsed JSON payload to
+`/api/inbound-email/webhook`. We store it and route it to the staff inbox.
 
 Admin endpoints (list/retrieve/mark-read/link) are auth + module gated behind
-`communications`. The webhook endpoints are unauthenticated by URL but each
-carries its own caller check: Twilio's request signature for SMS, a shared
-secret header for email. Neither takes the company from the request any more —
-this install serves exactly one company and reads it from `company_id()`.
+`communications`. The webhook is unauthenticated by URL but carries its own
+caller check, a shared-secret header (`core/inbound_email_auth.py`). It does not
+take the company from the request — this install serves exactly one company
+and reads it from `company_id()`.
+
+Until 2026-09-06 this file also held the Twilio inbound-SMS webhook and three
+admin routes over `inbound_sms`. Twilio was never configured on this install
+(0 rows ever), so the SMS half went with the provider. Phone.com owns SMS.
 """
 from __future__ import annotations
 
@@ -20,10 +20,9 @@ import logging
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from gdx_dispatch.core.inbound_email_auth import verify_inbound_email_secret
-from gdx_dispatch.core.twilio_signature import verify_twilio_signature
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -55,7 +54,7 @@ public_router = APIRouter(tags=["inbound_comms_public"])
 # ---------------------------------------------------------------------------
 
 
-from gdx_dispatch.models.tenant_models import InboundEmail, InboundSMS  # noqa: E402
+from gdx_dispatch.models.tenant_models import InboundEmail  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Pydantic schemas
@@ -104,23 +103,6 @@ def _parse_uuid_or_none(value: str | None) -> UUID | None:
         return UUID(str(value))
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=422, detail=f"Invalid UUID: {value}") from exc
-
-
-def _serialize_sms(row: InboundSMS) -> dict[str, Any]:
-    return {
-        "id": str(row.id),
-        "company_id": row.company_id,
-        "from_number": row.from_number,
-        "to_number": row.to_number,
-        "body": row.body,
-        "provider": row.provider,
-        "provider_message_id": row.provider_message_id,
-        "customer_id": str(row.customer_id) if row.customer_id else None,
-        "job_id": str(row.job_id) if row.job_id else None,
-        "processed_at": row.processed_at.isoformat() if row.processed_at else None,
-        "received_at": row.received_at.isoformat() if row.received_at else None,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-    }
 
 
 def _serialize_email(row: InboundEmail) -> dict[str, Any]:
@@ -172,86 +154,6 @@ def _audit(
             "inbound_comms_audit_failed action=%s entity_id=%s", action, entity_id
         )
         db.rollback()
-
-
-# ---------------------------------------------------------------------------
-# Admin endpoints — SMS
-# ---------------------------------------------------------------------------
-
-
-@admin_router.get("/api/inbound-sms", response_model=None)
-def list_inbound_sms(
-    request: Request,
-    from_number: str | None = Query(default=None, max_length=30),
-    limit: int = Query(default=50, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
-    _: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> list[dict[str, Any]]:
-    _tenant_id(request)
-    stmt = select(InboundSMS)
-    if from_number:
-        stmt = stmt.where(InboundSMS.from_number == from_number)
-    stmt = stmt.order_by(InboundSMS.received_at.desc()).limit(limit).offset(offset)
-    rows = db.execute(stmt).scalars().all()
-    return [_serialize_sms(r) for r in rows]
-
-
-@admin_router.get("/api/inbound-sms/{sms_id}", response_model=None)
-def get_inbound_sms(
-    sms_id: UUID,
-    request: Request,
-    _: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    _tenant_id(request)
-    row = db.execute(
-        select(InboundSMS).where(InboundSMS.id == sms_id)
-    ).scalar_one_or_none()
-    if not row:
-        raise HTTPException(status_code=404, detail="Inbound SMS not found")
-    return _serialize_sms(row)
-
-
-@admin_router.post("/api/inbound-sms/{sms_id}/link", response_model=None)
-def link_inbound_sms(
-    sms_id: UUID,
-    payload: LinkEntityIn,
-    request: Request,
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    tenant_id = _tenant_id(request)
-    row = db.execute(
-        select(InboundSMS).where(InboundSMS.id == sms_id)
-    ).scalar_one_or_none()
-    if not row:
-        raise HTTPException(status_code=404, detail="Inbound SMS not found")
-
-    customer_uuid = _parse_uuid_or_none(payload.customer_id)
-    job_uuid = _parse_uuid_or_none(payload.job_id)
-    if customer_uuid is not None:
-        row.customer_id = customer_uuid
-    if job_uuid is not None:
-        row.job_id = job_uuid
-    row.processed_at = utcnow()
-    db.commit()
-    db.refresh(row)
-
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="inbound_sms_linked",
-        entity_type="inbound_sms",
-        entity_id=str(row.id),
-        details={
-            "customer_id": str(row.customer_id) if row.customer_id else None,
-            "job_id": str(row.job_id) if row.job_id else None,
-        },
-        request=request,
-    )
-    return _serialize_sms(row)
 
 
 # ---------------------------------------------------------------------------
@@ -368,59 +270,14 @@ def link_inbound_email(
 
 
 # ---------------------------------------------------------------------------
-# Webhooks — caller-authenticated, company from the server not the URL
+# Webhook — caller-authenticated, company from the server not the URL
 #
-# Both routes used to stamp `company_id` from a `?tenant=` query param, so the
+# This route (and the SMS webhook that sat beside it until 2026-09-06) used to
+# stamp `company_id` from a `?tenant=` query param, so the
 # caller chose which company owned the row it was creating. Single-tenant: the
 # company is `company_id()`, and the query param is gone rather than accepted
 # and ignored, so a caller cannot believe it still steers anything.
 # ---------------------------------------------------------------------------
-
-
-@public_router.post("/api/inbound-sms/webhook", response_model=None)
-def twilio_inbound_sms_webhook(
-    request: Request,
-    _sig: None = Depends(verify_twilio_signature),
-    From: str = Form(..., min_length=1, max_length=30),
-    To: str = Form(..., min_length=1, max_length=30),
-    Body: str = Form(..., max_length=10000),
-    MessageSid: str | None = Form(default=None, max_length=100),
-    tenant_id: str = Depends(get_company_id),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    now = utcnow()
-    row = InboundSMS(
-        id=uuid4(),
-        company_id=tenant_id,
-        from_number=From,
-        to_number=To,
-        body=Body,
-        provider="twilio",
-        provider_message_id=MessageSid,
-        received_at=now,
-        created_at=now,
-    )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user={"sub": "twilio-webhook"},
-        action="inbound_sms_received",
-        entity_type="inbound_sms",
-        entity_id=str(row.id),
-        details={
-            "from_number": From,
-            "to_number": To,
-            "provider": "twilio",
-            "provider_message_id": MessageSid,
-        },
-        request=request,
-    )
-    # Twilio requires a 2xx — empty body is fine (TwiML-compatible).
-    return {}
 
 
 @public_router.post("/api/inbound-email/webhook", response_model=None)

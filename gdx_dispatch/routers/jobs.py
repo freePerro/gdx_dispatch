@@ -1453,7 +1453,8 @@ def start_job(
                 db.rollback()
 
         # Optional: SMS arrival notify — gated on phone.com integration. We
-        # log the intent today; the wire-up to PhoneCom send_sms is a follow-up.
+        # log the intent today; wiring it to Phone.com's send_message
+        # (modules/phone_com/client.py) is a follow-up, filed 2026-09-06.
         if flags["sms_arrival_notify"]:
             log.info("workflow_sms_arrival_intent", extra={"tenant_id": tenant_id, "job_id": job_id})
 

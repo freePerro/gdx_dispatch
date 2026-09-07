@@ -48,7 +48,6 @@ from gdx_dispatch.models.tenant_models import (  # noqa: F401
     FollowUp,
     HoldingArea,
     InboundEmail,
-    InboundSMS,
     InternalTask,
     InventoryItem,
     Invoice,

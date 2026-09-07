@@ -68,7 +68,7 @@ def test_get_settings_defaults(db_session: Session):
     assert data["enabled_modules"] == []
     assert data["notification_preferences"] == {}
     assert data["integrations"] == {
-        "quickbooks": False, "stripe": False, "twilio": False,
+        "quickbooks": False, "stripe": False,
         "quickbooks_catalog_sync": False,  # #57
     }
 
@@ -184,16 +184,16 @@ def test_patch_notifications_updates_preferences(db_session: Session):
 
 def test_get_integrations_returns_only_active(db_session: Session):
     settings_router.patch_settings(
-        payload=SettingsPatchIn(integrations={"quickbooks": True, "stripe": False, "twilio": True}),
+        payload=SettingsPatchIn(integrations={"quickbooks": True, "stripe": False}),
         current_user=_admin(),
         db=db_session,
     )
     data = settings_router.list_integrations(current_user=_admin(), db=db_session)
     assert data["integrations"] == {
-        "quickbooks": True, "stripe": False, "twilio": True,
+        "quickbooks": True, "stripe": False,
         "quickbooks_catalog_sync": False,  # #57 — absent from patch → defaults off
     }
-    assert set(data["active_integrations"]) == {"quickbooks", "twilio"}
+    assert set(data["active_integrations"]) == {"quickbooks"}
 
 
 @pytest.mark.anyio

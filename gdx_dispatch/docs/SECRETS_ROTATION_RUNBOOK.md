@@ -18,7 +18,6 @@ All secrets must be rotated on a regular schedule or immediately after suspected
 | Stripe API keys | STRIPE_SECRET_KEY in .env | On compromise only | Billing disrupted |
 | Stripe webhook secret | STRIPE_WEBHOOK_SECRET | On key rotation | Webhook verification fails |
 | Sentry DSN | SENTRY_DSN in .env | On compromise only | Error reporting |
-| Twilio credentials | TWILIO_* in .env | On compromise only | SMS/voice disrupted |
 | Google Maps API key | GOOGLE_MAPS_API_KEY | On compromise only | Maps/routing |
 | AWS credentials | AWS_ACCESS_KEY_ID/SECRET | 90 days | Backups, SES, S3 |
 | Redis password | REDIS_URL in .env | 90 days | Cache, Celery |
@@ -108,6 +107,6 @@ After any rotation:
 - [ ] `curl -sk https://gdx.example.com/health` returns 200
 - [ ] Login works for at least one admin account
 - [ ] Stripe webhook test event succeeds
-- [ ] SMS sending works — send a text from Phone → SMS (`POST /api/phone-com/messages`, modules/phone_com/router.py; Phone.com is the live SMS line). Not the job "on-my-way" text: that path is Twilio-only and reports `not configured` on prod. (`/api/sms/send` was a fake-success stub, removed in #350.)
+- [ ] SMS sending works — send a text from Phone → SMS (`POST /api/phone-com/messages`, modules/phone_com/router.py; Phone.com is the live SMS line). The job "on-my-way" text and the Twilio sender behind it were removed 2026-09-06 (Twilio was never configured here); the Settings toggle "Text customer 'Tech is on the way'" still only logs an intent. (`/api/sms/send` was a fake-success stub, removed in #350.)
 - [ ] Backup script runs without error
 - [ ] Celery Beat is scheduling tasks (check logs)

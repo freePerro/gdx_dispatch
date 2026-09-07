@@ -37,7 +37,7 @@ router = APIRouter(
     dependencies=[Depends(require_role("admin", "owner"))],
 )
 
-_ALLOWED_INTEGRATIONS = ("quickbooks", "stripe", "twilio", "quickbooks_catalog_sync")
+_ALLOWED_INTEGRATIONS = ("quickbooks", "stripe", "quickbooks_catalog_sync")
 _MODULE_KEY_RE = re.compile(r"^[a-z0-9_-]+$")
 
 

@@ -1,8 +1,7 @@
-"""Dispatch scheduling endpoints — traffic-aware scheduling, on-my-way, capacity.
+"""Dispatch scheduling endpoints — traffic-aware scheduling, capacity.
 
 Routes:
   GET  /api/dispatch/schedule-with-traffic — optimized schedule with drive times
-  POST /api/jobs/{job_id}/on-my-way — send ETA to customer
   GET  /api/dispatch/check-capacity — overbooking prevention
 """
 from __future__ import annotations
@@ -13,10 +12,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.routers.auth import get_current_user
@@ -100,133 +97,6 @@ def schedule_with_traffic(
     except Exception:
         log.exception("schedule_with_traffic_failed")
         raise HTTPException(status_code=500, detail="Failed to get schedule") from None
-
-
-# ---------------------------------------------------------------------------
-# On My Way (#177)
-# ---------------------------------------------------------------------------
-
-class OnMyWayIn(BaseModel):
-    tech_lat: float | None = None
-    tech_lng: float | None = None
-
-
-@router.post("/api/jobs/{job_id}/on-my-way")
-def on_my_way(
-    job_id: str,
-    payload: OnMyWayIn | None = None,
-    request: Request = None,
-    db: Session = Depends(get_db),
-    user: dict = Depends(get_current_user),
-) -> dict[str, Any]:
-    """Notify customer that tech is on the way with ETA."""
-    tenant_id = _tenant_id(request)
-    try:
-        from sqlalchemy import select as _select
-
-        from gdx_dispatch.models.tenant_models import Customer, Job
-        row = db.execute(
-            _select(Job, Customer.name.label("customer_name"), Customer.phone.label("customer_phone"),
-                    Customer.address.label("customer_address"))
-            .outerjoin(Customer, Job.customer_id == Customer.id)
-            .where(Job.id == job_id, Job.company_id == tenant_id)
-        ).first()
-
-        if not row:
-            raise HTTPException(status_code=404, detail="Job not found")
-        j, cname, cphone, caddr = row
-        job = {"id": str(j.id), "title": j.title, "customer_name": cname, "customer_phone": cphone, "customer_address": caddr}
-
-        eta_minutes = None
-        map_link = None
-
-        # Calculate ETA via Google Maps if coordinates provided
-        if payload and payload.tech_lat and payload.tech_lng and job["customer_address"]:
-            try:
-                import googlemaps
-                gmaps = googlemaps.Client(key=os.getenv("GOOGLE_MAPS_API_KEY", ""))
-                result = gmaps.distance_matrix(
-                    origins=[f"{payload.tech_lat},{payload.tech_lng}"],
-                    destinations=[job["customer_address"]],
-                    mode="driving",
-                    departure_time=datetime.now(timezone.utc),
-                )
-                if result["rows"][0]["elements"][0]["status"] == "OK":
-                    eta_minutes = result["rows"][0]["elements"][0]["duration"]["value"] // 60
-                    map_link = f"https://www.google.com/maps/dir/{payload.tech_lat},{payload.tech_lng}/{job['customer_address'].replace(' ', '+')}"
-            except Exception:
-                log.exception("on_my_way_maps_failed")
-
-        # Send SMS to customer
-        sms_sent = False
-        # Every not-sent path must name itself. Recording only the provider's
-        # reason left the two cases a human would actually investigate — no
-        # phone on file, and an exception mid-send — both writing a blank.
-        sms_reason: str | None = "no_customer_phone"
-        if job["customer_phone"]:
-            sms_reason = None
-            try:
-                from gdx_dispatch.core import sms as sms_service
-                eta_text = f" ETA: ~{eta_minutes} minutes." if eta_minutes else ""
-                msg = f"Your technician is on the way!{eta_text}"
-                if map_link:
-                    msg += f" Track: {map_link}"
-                import os as _os
-                from_phone = _os.getenv("TWILIO_PHONE_NUMBER", "").strip()
-                # send_sms returns {"sent": False, "reason": "not configured"}
-                # when Twilio credentials are absent — which is the case on
-                # prod today, where no SMS env var is set at all. This used to
-                # discard the result and mark the send successful regardless,
-                # writing a delivery that never happened into the audit log.
-                # Never fired (on_my_way_sent has zero prod rows), but "an
-                # action that fakes a success response without doing the work"
-                # is the defect class this repo treats as highest.
-                result = sms_service.send_sms(
-                    to_phone=job["customer_phone"],
-                    body=msg,
-                    from_phone=from_phone,
-                    tenant_id=tenant_id,
-                ) or {}
-                sms_sent = bool(result.get("sent"))
-                sms_reason = result.get("reason")
-                if not sms_sent:
-                    log.warning(
-                        "on_my_way_sms_not_sent reason=%s job_id=%s",
-                        sms_reason or "unknown", job_id,
-                    )
-            except Exception as exc:
-                sms_reason = f"exception: {type(exc).__name__}"
-                log.exception("on_my_way_sms_failed")
-
-        log_audit_event_sync(
-            db=db, tenant_id=tenant_id,
-            user_id=str(user.get("sub") or user.get("user_id") or "system"),
-            action="on_my_way_sent", entity_type="job", entity_id=job_id,
-            details={
-                "eta_minutes": eta_minutes,
-                "sms_sent": sms_sent,
-                # Why it did not go, when it did not go — otherwise the trail
-                # says "no SMS" and cannot say whether that was a missing
-                # phone number, a provider error, or unconfigured credentials.
-                **({"sms_not_sent_reason": sms_reason} if not sms_sent else {}),
-            },
-            request=request,
-        )
-        db.commit()
-
-        return {
-            "job_id": job_id,
-            "eta_minutes": eta_minutes,
-            "map_link": map_link,
-            "sms_sent": sms_sent,
-            "customer_name": job["customer_name"],
-        }
-
-    except HTTPException:
-        raise
-    except Exception:
-        log.exception("on_my_way_failed")
-        raise HTTPException(status_code=500, detail="Failed to send on-my-way notification") from None
 
 
 # ---------------------------------------------------------------------------

@@ -100,7 +100,7 @@ PDF generation, file uploads.
 | Performance | Playwright + Lighthouse | Core Web Vitals (LCP, CLS, INP) |
 | Security | pytest + OWASP ZAP | Injection, auth bypass, IDOR, tenant leak |
 | Load | Locust or k6 | Concurrent users, WebSocket scale |
-| Chaos | pytest + fault injection | External service failures (Stripe, Twilio, Maps) |
+| Chaos | pytest + fault injection | External service failures (Stripe, Phone.com, Maps) |
 
 ---
 
@@ -423,7 +423,7 @@ Equipment is tracked per customer with service history, warranty info, and predi
 
 ### What "works" means
 
-SMS and email can be sent to customers, conversations are threaded and viewable, webhook from Twilio records incoming messages.
+SMS and email can be sent to customers, conversations are threaded and viewable, the Phone.com sync records incoming messages.
 
 **2026-08-31 (#350):** the `/communications` screen and `routers/communications.py`
 were removed — a process-memory messaging shell that reported "sent" without
@@ -440,7 +440,7 @@ channels are `/inbox` (Outlook, `/api/outlook/*`) and `/phone-com/messages`
 | ~~COMM-02~~ | ~~Send SMS~~ | Retired (#350) — `POST /api/sms/send` removed; SMS is Phone.com |
 | ~~COMM-03~~ | ~~SMS conversations list~~ | Retired (#350) — `GET /api/sms/conversations` removed |
 | ~~COMM-04~~ | ~~Conversation detail~~ | Retired (#350) — `GET /api/sms/conversations/{phone}` removed |
-| ~~COMM-05~~ | ~~Incoming SMS webhook~~ | Retired (#350) — `POST /api/sms/webhook` removed; inbound SMS is `POST /api/inbound-sms/webhook` (routers/inbound_comms.py) |
+| ~~COMM-05~~ | ~~Incoming SMS webhook~~ | Retired (#350) — `POST /api/sms/webhook` removed; the Twilio inbound webhook that replaced it went 2026-09-06 (never configured); inbound SMS is the Phone.com sync (modules/phone_com/sync.py) |
 | ~~COMM-06~~ | ~~Communication timeline~~ | Retired (#350) — the customer tab reads `GET /api/customers/{id}/communications` |
 | ~~COMM-07~~ | ~~Do Not Contact~~ | Retired (#350) — the DNC routes never stored anything durably; see contact-opt-out-suppression-plan.md |
 | COMM-08 | Email send | System sends email (estimate, invoice, receipt), delivered to inbox |
@@ -451,7 +451,7 @@ channels are `/inbox` (Outlook, `/api/outlook/*`) and `/phone-com/messages`
 - SMS to invalid phone number
 - SMS with unicode/emoji
 - Very long SMS (multi-segment)
-- Twilio API down (graceful degradation)
+- Phone.com API down (graceful degradation)
 - DNC customer receives no messages
 
 ---
@@ -927,7 +927,7 @@ their place:
 | ID | Test Case | Verification |
 |----|-----------|-------------|
 | EDGE-14 | Stripe API down | Payment operations return clear error, app doesn't crash |
-| EDGE-15 | Twilio API down | SMS send returns error, message queued or user notified |
+| EDGE-15 | Phone.com API down | SMS send returns error, message queued or user notified |
 | EDGE-16 | Google Maps API down | Geocoding returns error, job creation still works without coordinates |
 | EDGE-17 | QBO API down | Sync returns error, local data unaffected |
 | EDGE-18 | Database connection lost | Returns 500 with generic error, no stack trace exposed |
@@ -974,7 +974,7 @@ their place:
 | SEC-15 | Tenant context from token | Tenant ID derived from JWT claims, not just request header |
 | SEC-16 | Per-tenant rate limiting | Tenant A's rate limit does not affect Tenant B |
 | SEC-17 | API key scoping | API key only accesses authorized endpoints |
-| SEC-18 | Webhook signature validation | Invalid Stripe/Twilio signatures rejected |
+| SEC-18 | Webhook signature validation | Invalid Stripe signatures and inbound-email secrets rejected |
 | SEC-19 | File upload scanning | Uploaded files checked for malicious content |
 | SEC-20 | Sensitive data in logs | No passwords, tokens, or PII in application logs |
 
@@ -1048,7 +1048,7 @@ their place:
 | CHAOS-01 | Redis down | App starts, non-cached features work, cache features degrade gracefully |
 | CHAOS-02 | Celery down | Background tasks queued, not lost, sync operations still work |
 | CHAOS-03 | Stripe down | Payment pages show "temporarily unavailable", app doesn't crash |
-| CHAOS-04 | Twilio down | SMS operations fail gracefully, notification queued |
+| CHAOS-04 | Phone.com down | SMS operations fail gracefully, notification queued |
 | CHAOS-05 | Google Maps down | Map features disabled, job creation still works |
 | CHAOS-06 | Database slow (1s latency) | App responds slowly but doesn't timeout, no data corruption |
 | CHAOS-07 | Disk full | File upload returns 500 with clear error, doesn't corrupt existing files |

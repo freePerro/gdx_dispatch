@@ -39,11 +39,11 @@ REMOVED_PATHS = {
     "/api/communications/dnc/{customer_id}",
 }
 
-#: ``routers/voice.py`` owns ``POST /api/communications/missed-call`` — a
-#: Twilio voice webhook (#187) that auto-texts a missed caller through
-#: ``core/sms.py``. It shares the URL prefix but was never part of the removed
-#: router, and ``core/sms.py`` stays for it and for dispatch on-my-way.
-SURVIVING_PREFIX_PATHS = {"/api/communications/missed-call"}
+#: Nothing survives under the prefix. ``POST /api/communications/missed-call``
+#: (the Twilio voice webhook, #187) outlived the #350 removal because it had a
+#: working sender; that sender was Twilio, never configured on prod, and both
+#: went on 2026-09-06 (see test_twilio_retired.py).
+SURVIVING_PREFIX_PATHS: set[str] = set()
 
 
 @pytest.fixture(scope="module")
@@ -65,15 +65,8 @@ def test_nothing_new_under_the_communications_prefix(route_paths):
     under_prefix = {p for p in route_paths if p.startswith("/api/communications")}
     unexpected = sorted(under_prefix - SURVIVING_PREFIX_PATHS)
     assert not unexpected, (
-        "New /api/communications/* routes appeared. The only survivor is "
-        f"voice.py's missed-call webhook; found: {unexpected}"
+        f"New /api/communications/* routes appeared; nothing is allowlisted: {unexpected}"
     )
-
-
-def test_missed_call_webhook_survived(route_paths):
-    """Guards the allowlist above: if voice.py moves its route, update both."""
-    missing = sorted(SURVIVING_PREFIX_PATHS - route_paths)
-    assert not missing, f"allowlisted survivor route(s) no longer registered: {missing}"
 
 
 @pytest.mark.parametrize(
@@ -85,7 +78,3 @@ def test_deleted_modules_do_not_exist(module_name):
         f"{module_name} is importable again — it was deleted in #350"
     )
 
-
-def test_core_sms_still_exists():
-    """The plan's trap: core/sms.py has two working consumers and must stay."""
-    assert importlib.util.find_spec("gdx_dispatch.core.sms") is not None

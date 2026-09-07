@@ -57,14 +57,14 @@ def fresh_db():
 # ---------------------------------------------------------------------------
 
 def test_list_available_integrations_returns_all_types():
-    """list_available_integrations returns all 7 types with required fields."""
+    """list_available_integrations returns all 6 types with required fields."""
     from gdx_dispatch.core.integrations import list_available_integrations
 
     result = list_available_integrations()
     types = {d["type"] for d in result}
 
-    assert len(result) == 7
-    assert types == {"quickbooks", "stripe", "google_calendar", "zapier", "mailchimp", "twilio", "google_maps"}
+    assert len(result) == 6
+    assert types == {"quickbooks", "stripe", "google_calendar", "zapier", "mailchimp", "google_maps"}
 
     for item in result:
         assert "name" in item and item["name"]
@@ -208,11 +208,11 @@ def test_get_integration_status_connected(fresh_db):
     """get_integration_status returns 'connected' for an active config."""
     from gdx_dispatch.core.integrations import connect_integration, get_integration_status
 
-    connect_integration("t-status-001", "twilio", {"api_key": "ACtest"}, fresh_db)
-    status = get_integration_status("t-status-001", "twilio", fresh_db)
+    connect_integration("t-status-001", "zapier", {"api_key": "zap-test"}, fresh_db)
+    status = get_integration_status("t-status-001", "zapier", fresh_db)
 
     assert status["status"] == "connected"
-    assert status["integration_type"] == "twilio"
+    assert status["integration_type"] == "zapier"
     assert "id" in status
 
 
@@ -310,7 +310,7 @@ def test_list_integrations_with_auth():
 
     result = list_available_integrations()
     assert isinstance(result, list)
-    assert len(result) >= 7
+    assert len(result) >= 6
     for item in result:
         assert "type" in item and item["type"]
         assert "name" in item and item["name"]
@@ -396,12 +396,12 @@ def test_test_connection_connected(fresh_db):
 
     from gdx_dispatch.core.integrations import IntegrationConfig, connect_integration, test_connection
 
-    connect_integration("t-tc-002", "twilio", {"api_key": "ACtest"}, fresh_db)
+    connect_integration("t-tc-002", "zapier", {"api_key": "zap-test"}, fresh_db)
 
-    result = test_connection("t-tc-002", "twilio", fresh_db)
+    result = test_connection("t-tc-002", "zapier", fresh_db)
 
     assert result["ok"] is True
-    assert result["type"] == "twilio"
+    assert result["type"] == "zapier"
     assert result["message"] == "connection OK"
 
     row = fresh_db.execute(

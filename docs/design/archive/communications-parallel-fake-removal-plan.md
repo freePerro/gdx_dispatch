@@ -56,7 +56,7 @@ nothing leaves the building. That is invariant-level: *"an action that fakes a
 success response without doing the work."*
 
 **The contrast is the proof this is fixable-by-deletion, not by care.** The same
-`core/sms.py` is consumed by three places. `routers/voice.py:74` and
+`core/sms.py` is consumed by three places. `routers/voice.py:74` and <!-- link-ok: the Twilio sender was deleted 2026-09-06 -->
 `routers/dispatch_scheduling.py:169` both handle the unconfigured case
 honestly — *"Twilio credentials are absent — prod's actual state"*, *"every
 not-sent path must name itself"* — and record the reason. Only the fake screen
@@ -82,7 +82,7 @@ claims success. The problem is not the sender; it is this screen.
 | QA probe | `tools/qa_tier1.py:32` | drop `/api/communications/threads` from the sweep list |
 | The `communications` tenant module flag | | must be retired, not left dangling |
 
-**What does NOT go: `core/sms.py`.** It has two other consumers
+**What does NOT go: `core/sms.py`.** It has two other consumers <!-- link-ok: the Twilio sender was deleted 2026-09-06 -->
 (`routers/voice.py:74`, `routers/dispatch_scheduling.py:169`) which use it
 correctly. Deleting it with this feature would break two working paths.
 
@@ -105,7 +105,7 @@ anyone deciding to remove it.** So it is stated here on its own line:
 
 ## 5. Traps
 
-* **Do not delete `core/sms.py`** (§3). Two working consumers.
+* **Do not delete `core/sms.py`** (§3). Two working consumers. <!-- link-ok: the Twilio sender was deleted 2026-09-06 -->
 * **The `communications` module flag** is checked by `AppTopbar.vue:234`. A
   tenant with it enabled must not be left pointing at a route that no longer
   exists — retire the flag in the same change.
@@ -119,7 +119,7 @@ anyone deciding to remove it.** So it is stated here on its own line:
   entry, which is gone.
 * **`routers/voice.py` owns `POST /api/communications/missed-call`** — a
   Twilio voice webhook (#187) on the same URL prefix that was never part of
-  this router and consumes `core/sms.py` correctly. It stays; the route-table
+  this router and consumes `core/sms.py` correctly. It stays; the route-table <!-- link-ok: the Twilio sender was deleted 2026-09-06 -->
   guard allowlists it by name.
 * **`/messages` and `/inbound-comms` are bookmark redirects** added 2026-04-29.
   Removing the target turns two live URLs into dead ones. Decide: drop them, or

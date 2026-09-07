@@ -8,9 +8,9 @@ since #549 — but the write is real and the table is real.) Confirmed on produc
 2026-09-04 — an empty POST reached pydantic validation (422), proving no gate
 ran in front of the handler.
 
-Policy follows ``core/twilio_signature.py`` (which in turn matches the
-encryption boot-gate) but inverts its environment test: that module enforces
-only for an allowlist of prod-like names, so ``GDX_ENV=prod-eu`` turns it off.
+Policy matches the encryption boot-gate's environment test, inverted. The
+Twilio signature gate this repo carried until 2026-09-06 enforced only for an
+allowlist of prod-like names, so ``GDX_ENV=prod-eu`` turned it off.
 Here the gate is off only for known dev/test names, and on for anything else.
 With the gate on and no secret configured, requests are rejected — fail closed.
 
@@ -35,7 +35,7 @@ SECRET_ENV = "INBOUND_EMAIL_WEBHOOK_SECRET"  # noqa: S105
 # Environments where the gate is deliberately off, so a fresh clone and the
 # test suite work with no secret set. Everything else — including an
 # unrecognised value like "prod-eu" — enforces. An allowlist of prod-like
-# names (the shape core/twilio_signature.py uses) silently disables the check
+# names (the shape the retired Twilio gate used) silently disables the check
 # for any value nobody thought to list, which is the same fail-open bug this
 # module exists to close.
 _NON_ENFORCING_ENVS = frozenset({"", "dev", "development", "test", "testing", "local", "ci"})

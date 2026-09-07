@@ -13,7 +13,7 @@ authorization hole, the dead `AdminSettingsView`, and the mobile invoice email.
 appointment-reminder task was three stubs wired to celery beat, firing hourly on
 prod and logging `scheduled_count: 0` forever. Removed — module, beat entry and
 all — because the blocker is transport, not the finder. The stub's own
-`_send_sms` was a no-op, and the shared `core/sms.py` is Twilio, whose
+`_send_sms` was a no-op, and the shared `core/sms.py` is Twilio, whose <!-- link-ok: the Twilio sender was deleted 2026-09-06 -->
 credentials are unset on prod. **Correction to an earlier draft of this line:**
 that draft said "no outbound SMS transport exists", which is false — Phone.com
 can send (`modules/phone_com/client.py::send_message`, called from that module's
@@ -480,7 +480,7 @@ next-actions renderer absence, ItemRef absence).
   `scheduled_count: 0` forever; its only test monkeypatched all three. Module,
   beat entry, celery registration and test removed. Reviving it needs a product
   go/no-go on automated customer SMS **and** wiring to the Phone.com sender
-  (`modules/phone_com/client.py::send_message`) — `core/sms.py` is Twilio and
+  (`modules/phone_com/client.py::send_message`) — `core/sms.py` is Twilio and <!-- link-ok: the Twilio sender was deleted 2026-09-06 -->
   has no credentials on prod, which is what the stub would have reached for.
 - **estimate_followup**: registered, unscheduled, and would stamp
   `reminder_sent_at` without sending if ever run

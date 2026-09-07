@@ -577,15 +577,6 @@ _INTEGRATION_CATALOGUE: list[dict] = [
         "color": "yellow",
     },
     {
-        "type": "twilio",
-        "name": "Twilio",
-        "description": "Send SMS notifications and make automated calls via Twilio.",
-        "category": "Communications",
-        "is_oauth": False,
-        "logo_icon": "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15v-4H7l5-8v4h4l-5 8z",
-        "color": "red",
-    },
-    {
         "type": "google_maps",
         "name": "Google Maps",
         "description": "Verify service addresses and calculate routing distances with Google Maps.",
@@ -604,7 +595,7 @@ INTEGRATION_METADATA: dict[str, dict] = {d["type"]: d for d in _INTEGRATION_CATA
 
 # Which types require credentials["api_key"] vs OAuth credentials
 _OAUTH_TYPES = {"quickbooks", "google_calendar"}
-_API_KEY_TYPES = {"stripe", "mailchimp", "twilio", "google_maps", "zapier"}
+_API_KEY_TYPES = {"stripe", "mailchimp", "google_maps", "zapier"}
 
 
 def list_available_integrations() -> list[dict]:
@@ -622,7 +613,7 @@ def connect_integration(
     Store connection credentials for an integration type.
 
     For OAuth types (quickbooks, google_calendar): expects credentials["access_token"].
-    For API key types (stripe, mailchimp, twilio, google_maps, zapier): expects credentials["api_key"].
+    For API key types (stripe, mailchimp, google_maps, zapier): expects credentials["api_key"].
 
     Returns {"status": "connected", "integration_type": ..., "id": ...}
     Raises ValueError on invalid type or missing credentials.

@@ -1933,22 +1933,6 @@ class PlanEnrollment(Base):
 # Nothing was migrated — the table held 0 rows in production.
 
 
-class InboundSMS(Base):
-    __tablename__ = "inbound_sms"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    company_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    from_number: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
-    to_number: Mapped[str] = mapped_column(String(30), nullable=False)
-    body: Mapped[str] = mapped_column(Text, nullable=False)
-    provider: Mapped[str] = mapped_column(String(30), nullable=False, default="twilio")
-    provider_message_id: Mapped[str] = mapped_column(String(100), nullable=True, index=True)
-    customer_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
-    job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=True)
-    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-
-
 class InboundEmail(Base):
     __tablename__ = "inbound_emails"
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)

@@ -32,7 +32,7 @@ def test_appointment_reminders_stub_removed():
 
     Removed 2026-08-22, following the qb_sync and late_fees precedent. The
     blocker is transport, not the finder: every SMS path funnels through
-    core/sms.py (Twilio) and no SMS credentials are set on prod at all, so
+    the Twilio sender (deleted 2026-09-06) and no SMS credentials are set on prod at all, so
     wiring it would have sent zero messages while logging success. Re-add with
     the task when an outbound transport exists.
     """
