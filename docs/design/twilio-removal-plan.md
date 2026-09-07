@@ -1,6 +1,6 @@
 # Twilio removal — the SMS provider that was never configured
 
-Status: PLAN 2026-09-06, audited twice and built the same day; PR #630 OPEN, not merged. Owner decision "twilio can be removed" (2026-09-06). Update to MERGED #630 when it lands, then RELEASED vX.Y.Z after the prod walk.
+Status: RELEASED v1.118.0 — MERGED #630 2026-09-07 (squash 651aadf); prod and demo rolled to 1.118.0 on 2026-09-07 ~02:36Z, migration 091 ran on both (`inbound_sms` gone, alembic head 092), prod walked. Owner decision "twilio can be removed" (2026-09-06). Shipped alongside the dead-duplicates removal (#633) in the same release.
 
 ## What already exists (do not rebuild)
 
