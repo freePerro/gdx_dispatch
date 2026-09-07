@@ -890,3 +890,80 @@ def test_an_operator_visible_audit_row_is_written(db_session):
     )
     assert rows, "money on a dead invoice must leave a searchable trail, not just a log line"
     assert str(invoice.id) in str(rows[0].entity_id)
+
+
+# ---------------------------------------------------------------------------
+# #661 — the overcharge audit row had never once been written
+#
+# _audit_overcharge wrapped log_audit_event_sync in db.begin_nested(). But
+# _log_audit_event_impl calls ensure_audit_table on the way in, and THAT
+# commits (SQLite) the first time it runs for an engine. The commit closed the
+# savepoint's transaction, exiting the context manager raised
+# InvalidRequestError, and the blanket except swallowed the row.
+#
+# The old guard test only asserted the PAYMENT survived a failing audit, which
+# is true whether or not the row lands — so it stayed green for the whole life
+# of the defect. These assert the row EXISTS.
+# ---------------------------------------------------------------------------
+
+
+def _overcharge(db, ref):
+    """$500 charged against a $162 invoice."""
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    inv = _mk_invoice(db, token=f"tok_{ref}", number=f"INV-{ref.upper()}")
+    handle_payment_webhook(
+        {
+            "type": "payment_intent.succeeded",
+            "data": {"object": {"id": ref, "metadata": {"invoice_id": str(inv.id)},
+                                "amount_received": 50000}},
+        },
+        db,
+    )
+    return inv
+
+
+def test_the_overcharge_audit_row_actually_lands(db_session):
+    from gdx_dispatch.core.audit import AuditLog
+
+    inv = _overcharge(db_session, "pi_over_lands")
+    rows = (
+        db_session.query(AuditLog)
+        .filter(AuditLog.action == "payment_exceeds_receivable")
+        .all()
+    )
+    assert rows, (
+        "the overcharge alert M12 built has to be searchable — a log line and a "
+        "banner someone has to already be looking at is what it replaced"
+    )
+    assert str(inv.id) in str(rows[0].entity_id)
+
+
+def test_the_row_lands_on_the_FIRST_audit_write_for_an_engine(db_session):
+    """The exact condition that hid the bug.
+
+    ensure_audit_table commits only once per engine. Every test here gets a
+    fresh in-memory engine, so this write is always the first one — which is
+    precisely when the savepoint used to be closed out from under the row.
+    """
+    from gdx_dispatch.core.audit import AuditLog
+
+    assert db_session.query(AuditLog).count() == 0, "must be the first audit write"
+    _overcharge(db_session, "pi_over_first")
+    assert db_session.query(AuditLog).filter(
+        AuditLog.action == "payment_exceeds_receivable"
+    ).count() == 1
+
+
+def test_the_overcharge_detail_survives_intact(db_session):
+    from gdx_dispatch.core.audit import AuditLog
+
+    _overcharge(db_session, "pi_over_detail")
+    row = (
+        db_session.query(AuditLog)
+        .filter(AuditLog.action == "payment_exceeds_receivable")
+        .one()
+    )
+    assert float(row.details["charged"]) == pytest.approx(500.00)
+    assert float(row.details["excess"]) == pytest.approx(338.00)
+    assert row.user_id == "stripe-webhook"

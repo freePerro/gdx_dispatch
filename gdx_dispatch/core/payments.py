@@ -630,82 +630,86 @@ def cancel_open_intents_for_invoice(
     return results
 
 
-def _audit_overcharge(db: Session, *, invoice, payment, source: str, detail: dict) -> None:
-    """Record that a charge exceeded what the invoice owed. Never raises.
+def _audit_money_event(
+    db: Session, *, invoice, payment, source: str, action: str, detail: dict,
+    consequence: str,
+) -> None:
+    """Record a money event an operator must see. Never raises.
 
     Filed against the INVOICE so it lands on the trail an operator actually
     reads when reconstructing a bill, and attributed to the surface that
     recorded it rather than a blanket system identity — `/confirm` and the
     signed webhook are different actors and a money event may not pretend
     otherwise.
+
+    Two things have to be true at once, and getting one of them broke the
+    other for a while (#661):
+
+    1. **The row must land.** `payment_exceeds_receivable` never once did.
+       `ensure_audit_table` COMMITS (SQLite) or ROLLS BACK (Postgres missing
+       the bootstrap guard function) the first time it runs for an engine, and
+       `_log_audit_event_impl` calls it on the way in. Inside a SAVEPOINT that
+       commit closes the savepoint's transaction, so exiting the context
+       manager raised `InvalidRequestError` and the blanket `except` below
+       swallowed the row. `core/audit.py::audit_ready_db` documents exactly
+       this hazard and solves it for request handlers by running the
+       initialization as a dependency; the Stripe webhook and `/confirm` are
+       not request handlers with dependencies, so they have to do it here.
+
+    2. **The payment must survive a failed alert.** `log_audit_event_sync`
+       ends in a flush; on Postgres a failed flush poisons the whole session,
+       so a bare try/except would leave the very next `db.commit()` — the one
+       saving the PAYMENT — unable to run. Losing the alert is survivable;
+       losing the money record is the defect class this repo ranks highest.
+
+    So: initialize the guard OUTSIDE the savepoint, where committing has
+    nothing of ours staged to disturb, then keep the savepoint around the
+    add+flush that actually needs containing.
+
+    ⚠ Still not proven on Postgres. What is proven on SQLite is that the row
+    lands and that a failing audit does not take the payment with it.
     """
-    # SAVEPOINT, not a bare try. `log_audit_event_sync` ends in a flush; on
-    # Postgres a failed flush poisons the whole session, so swallowing the
-    # exception would leave the very next `db.commit()` unable to save the
-    # PAYMENT. Losing the alert is survivable; losing the money record is not.
-    #
-    # ⚠ NOT PROVEN BY A TEST. `test_a_failing_overcharge_audit_does_not_lose_the
-    # _payment` passes with this savepoint REVERTED, because SQLite does not
-    # poison a session on a failed flush the way Postgres does — so on SQLite
-    # that test is a green light that means nothing. A structural test that
-    # spied on `begin_nested` was also vacuous (something else on this path
-    # calls it). A real Postgres proof needs a full FK-valid object graph and
-    # was not built. Treat this guard as correct-by-construction from
-    # SQLAlchemy's SAVEPOINT semantics, not as verified.
     try:
-        from gdx_dispatch.core.audit import log_audit_event_sync
+        from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
+
+        # Outside the savepoint on purpose — see (1) above. Idempotent: every
+        # call after the first for an engine is a no-op.
+        ensure_audit_table(db)
 
         with db.begin_nested():
             log_audit_event_sync(
                 db=db,
                 tenant_id=None,
                 user_id=source,
-                action="payment_exceeds_receivable",
+                action=action,
                 entity_type="invoice",
                 entity_id=str(invoice.id),
                 details={**detail, "payment_id": str(getattr(payment, "id", "") or "")},
             )
     except Exception:
         logger.exception(
-            "payment_exceeds_receivable_audit_failed invoice=%s — the overcharge is real and "
-            "is NOT in the audit trail; the ERROR log above is the only record.",
-            invoice.id,
+            "%s_audit_failed invoice=%s — %s and it is NOT in the audit trail; "
+            "the ERROR log above is the only record.",
+            action, invoice.id, consequence,
         )
+
+
+def _audit_overcharge(db: Session, *, invoice, payment, source: str, detail: dict) -> None:
+    """A charge exceeded what the invoice owed."""
+    _audit_money_event(
+        db, invoice=invoice, payment=payment, source=source,
+        action="payment_exceeds_receivable", detail=detail,
+        consequence="the overcharge is real",
+    )
 
 
 def _audit_payment_on_void(db: Session, *, invoice, payment, source: str, detail: dict) -> None:
-    """#422: money landed on a voided invoice. Never raises.
-
-    Deliberately a PLAIN ``log_audit_event_sync`` call, not the SAVEPOINT that
-    ``_audit_overcharge`` uses. ``_log_audit_event_impl`` manages its own
-    transaction (it commits internally), so opening ``begin_nested`` around it
-    leaves the savepoint's transaction closed and exiting the context manager
-    raises ``InvalidRequestError`` — the audit row is then swallowed by the
-    very guard meant to protect it. The one audit write in this module that is
-    known to land (``stripe_partial_refund_received``) is a plain call, so this
-    follows it. The try/except still keeps a failed alert from taking the
-    Payment row down with it: losing the alert is survivable, losing the money
-    record is not.
-    """
-    try:
-        from gdx_dispatch.core.audit import log_audit_event_sync
-
-        log_audit_event_sync(
-            db=db,
-            tenant_id=None,
-            user_id=source,
-            action="payment_on_voided_invoice",
-            entity_type="invoice",
-            entity_id=str(invoice.id),
-            details={**detail, "payment_id": str(getattr(payment, "id", "") or "")},
-        )
-    except Exception:
-        logger.exception(
-            "payment_on_voided_invoice_audit_failed invoice=%s — money is on a "
-            "dead invoice and it is NOT in the audit trail; the ERROR log above "
-            "is the only record.",
-            invoice.id,
-        )
+    """#422: money landed on a voided invoice."""
+    _audit_money_event(
+        db, invoice=invoice, payment=payment, source=source,
+        action="payment_on_voided_invoice", detail=detail,
+        consequence="money is on a dead invoice",
+    )
 
 
 def _mark_invoice_paid(
