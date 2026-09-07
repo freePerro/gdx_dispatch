@@ -126,7 +126,7 @@ One "Vendor Bills" surface: PDF rendered beside extracted lines. Per invoice:
 
 ## 6. Inventory-system facts (settled by code, decision noted)
 
-- `routers/inventory.py` (backed by `InventoryItem`) registers before `modules/inventory/router.py` (backed by `Part`) — FastAPI first-match means the office InventoryView reads/writes **`InventoryItem`** (`app.py` comment documents newer-first deliberately).
+- `routers/inventory.py` (backed by `InventoryItem`) is now the only inventory router: `modules/inventory/router.py` (backed by `Part`) was deleted 2026-09-07 — its four routes were unauthenticated and none of them worked. Until then it registered second, so — FastAPI first-match means the office InventoryView reads/writes **`InventoryItem`** (`app.py` comment documents newer-first deliberately).
 - The office PO receive flow (`routers/purchase_orders.py` `receive_po`) already increments `InventoryItem` + logs `StockAdjustment`.
 - `Part` remains what mobile parts-used decrements and job costing snapshots — the pre-existing two-ledger split. This plan receives where the office looks and leaves `Part` untouched; **Part↔InventoryItem convergence is its own future cleanup** (twin of the billing_status pattern). Open question 3 asks Doug which data set is real to pick the convergence direction — it no longer blocks this plan.
 

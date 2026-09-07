@@ -36,7 +36,6 @@ GET /api/bank-feeds/oauth/callback
 GET /api/diagnosis/schemas
 GET /api/integrations/available
 GET /api/integrations/zapier/triggers
-GET /api/inventory/parts/{part_id}/stock
 GET /api/meta/deprecations
 GET /api/meta/versions
 GET /api/oauth/outlook/callback
@@ -67,8 +66,6 @@ GET /{full_path:path}
 POST /api/ai/pricing/suggest
 POST /api/ai/quote
 POST /api/feedback/client-error
-POST /api/inventory/parts/{part_id}/adjust
-POST /api/jobs/{job_id}/parts
 POST /api/payments/ach/charge
 POST /api/payments/ach/setup
 POST /api/payments/confirm
@@ -103,4 +100,3 @@ POST /payments/connect/webhook
 POST /portal/login
 POST /portal/login/password
 POST /stripe/webhook
-PUT /api/inventory/parts/{part_id}
