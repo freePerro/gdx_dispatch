@@ -259,3 +259,49 @@ def test_other_company_flag_does_not_leak(db, monkeypatch):
     other.status = "sent"  # raw write, but that company never enabled posting
     db.commit()
     assert db.get(Invoice, other.id).status == "sent"
+
+
+# ── #422: a void is terminal ────────────────────────────────────────
+#
+# void_invoice releases the invoice's parts and change orders back to the
+# unbilled checklist. Nothing on the Stripe payment path refused a voided
+# invoice, so a PaymentIntent that succeeded just before the void — or a
+# webhook redelivered after it — booked its money and flipped void -> paid.
+# The books then showed a paid invoice whose work was simultaneously unbilled.
+
+
+def test_void_is_terminal_chokepoint_refuses_to_leave_it(db):
+    inv = _invoice(db, status="void")
+    previous = transition_invoice_status(db, inv, "paid")
+    assert inv.status == "void", "a voided invoice must not be resurrected to paid"
+    assert previous == "void"
+
+
+def test_void_refusal_never_raises_so_the_payment_row_survives(db):
+    """The money moved. Raising here would roll back the Payment being
+    recorded and strand cash at the processor with nothing to refund."""
+    inv = _invoice(db, status="void")
+    transition_invoice_status(db, inv, "paid")  # must not raise
+    db.flush()  # and must leave the session usable for the payment write
+
+
+@pytest.mark.parametrize("target", ["paid", "sent", "draft"])
+def test_no_status_escapes_a_void(db, target):
+    inv = _invoice(db, status="void")
+    assert transition_invoice_status(db, inv, target) == "void"
+    assert inv.status == "void"
+
+
+def test_entering_a_void_still_works(db):
+    """The guard blocks leaving a void, not reaching one."""
+    inv = _invoice(db, status="sent")
+    assert transition_invoice_status(db, inv, "void") == "sent"
+    assert inv.status == "void"
+
+
+def test_ordinary_transitions_are_untouched(db):
+    inv = _invoice(db, status="draft")
+    assert transition_invoice_status(db, inv, "sent") == "draft"
+    assert inv.status == "sent"
+    assert transition_invoice_status(db, inv, "paid") == "sent"
+    assert inv.status == "paid"

@@ -673,6 +673,41 @@ def _audit_overcharge(db: Session, *, invoice, payment, source: str, detail: dic
         )
 
 
+def _audit_payment_on_void(db: Session, *, invoice, payment, source: str, detail: dict) -> None:
+    """#422: money landed on a voided invoice. Never raises.
+
+    Deliberately a PLAIN ``log_audit_event_sync`` call, not the SAVEPOINT that
+    ``_audit_overcharge`` uses. ``_log_audit_event_impl`` manages its own
+    transaction (it commits internally), so opening ``begin_nested`` around it
+    leaves the savepoint's transaction closed and exiting the context manager
+    raises ``InvalidRequestError`` — the audit row is then swallowed by the
+    very guard meant to protect it. The one audit write in this module that is
+    known to land (``stripe_partial_refund_received``) is a plain call, so this
+    follows it. The try/except still keeps a failed alert from taking the
+    Payment row down with it: losing the alert is survivable, losing the money
+    record is not.
+    """
+    try:
+        from gdx_dispatch.core.audit import log_audit_event_sync
+
+        log_audit_event_sync(
+            db=db,
+            tenant_id=None,
+            user_id=source,
+            action="payment_on_voided_invoice",
+            entity_type="invoice",
+            entity_id=str(invoice.id),
+            details={**detail, "payment_id": str(getattr(payment, "id", "") or "")},
+        )
+    except Exception:
+        logger.exception(
+            "payment_on_voided_invoice_audit_failed invoice=%s — money is on a "
+            "dead invoice and it is NOT in the audit trail; the ERROR log above "
+            "is the only record.",
+            invoice.id,
+        )
+
+
 def _mark_invoice_paid(
     invoice: Invoice,
     db: Session,
@@ -718,6 +753,11 @@ def _mark_invoice_paid(
         ).first()
         if existing is not None:
             return  # already recorded (idempotent across confirm + webhook)
+
+    # #422: read the status BEFORE recording. The chokepoint now refuses to
+    # leave a void, so the invoice will still be void afterwards — but the
+    # decision to alert belongs to the moment the money arrived.
+    paid_onto_void = str(getattr(invoice, "status", "") or "").lower() == "void"
 
     from sqlalchemy import func as _func
 
@@ -780,6 +820,43 @@ def _mark_invoice_paid(
             invoice.id, external_ref,
         )
         return
+
+    # #422. Written HERE, not after the recalc/posting calls below: those leave
+    # the session's transaction closed for `begin_nested`, so an audit attempt
+    # after them silently lost the row (the SAVEPOINT swallows failures by
+    # design — "losing the alert is survivable; losing the money record is
+    # not"). The Payment row is already flushed, so this is the earliest point
+    # at which the alert is about something real.
+    if paid_onto_void:
+        # #422. void_invoice released this invoice's parts and change orders
+        # back to the unbilled checklist. Money has now landed on it anyway —
+        # an intent that succeeded just before the void, or a redelivered
+        # webhook. The payment is recorded (the money moved and must stay
+        # refundable) and the invoice stays void, so nobody can read it as
+        # settled work. A human owes a refund-or-reapply decision.
+        logger.error(
+            "payment_on_voided_invoice invoice=%s reference=%s amount=%.2f "
+            "source=%s — recorded in full; the invoice REMAINS void and its "
+            "parts are on the unbilled checklist. Refund the payer or move the "
+            "money to the replacement invoice.",
+            invoice.id, external_ref, float(pay_amount), source,
+        )
+        _audit_payment_on_void(
+            db,
+            invoice=invoice,
+            payment=payment,
+            source=source,
+            detail={
+                "amount": float(pay_amount),
+                "reference": external_ref or "",
+                "invoice_status": "void",
+                "why": (
+                    "a PaymentIntent that succeeded before the void, or a webhook "
+                    "redelivered after it, books money onto an invoice whose work "
+                    "has already been released back to the unbilled checklist"
+                ),
+            },
+        )
     _recalculate_invoice(invoice, db)
     post_payment_received(db, payment, invoice)
     if overpay > 0.009:
