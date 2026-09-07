@@ -1,6 +1,6 @@
 # Dead duplicates removal — 2026-09-06
 
-Status: RELEASED v1.118.0 — MERGED #633 2026-09-07 (squash 3c0e7b9, stacked on #630); prod and demo rolled to 1.118.0 on 2026-09-07 ~02:36Z with the six-table recount at 0 rows on both immediately before; migrations 091+092 ran, alembic head 092 on both; walked on prod and demo (API, desktop and mobile customer pages, light and dark). Closes #458 #459 #480 #568 #569 #571 #572 #574 #595 #599. Migration 092. — **Follow-up (mobile status/clock/contact orphans + campaigns module router) PR #642 OPEN 2026-09-07 from `chore/mobile-campaign-orphans`, NOT on prod; see the last section.**
+Status: RELEASED v1.118.0 — MERGED #633 2026-09-07 (squash 3c0e7b9, stacked on #630); prod and demo rolled to 1.118.0 on 2026-09-07 ~02:36Z with the six-table recount at 0 rows on both immediately before; migrations 091+092 ran, alembic head 092 on both; walked on prod and demo (API, desktop and mobile customer pages, light and dark). Closes #458 #459 #480 #568 #569 #571 #572 #574 #595 #599. Migration 092. — **Follow-up (mobile status/clock orphans + campaigns module router) MERGED #642 2026-09-07 (squash e2fab15) — NOT yet released, NOT on prod; see the last section.**
 
 ## What already exists (do not rebuild)
 
@@ -140,7 +140,7 @@ belongs to the QB retirement. Filed as #632.
 The 2026-09-07 code review of this range re-ran #480's stated shape — every
 `@router` path in `routers/mobile.py` against every `/api/mobile` call string in
 `frontend/src` — instead of its 13-item candidate list, and the shape was still
-alive. Removed in PR #642 (`chore/mobile-campaign-orphans`):
+alive. Removed in PR #642 (MERGED 2026-09-07, squash e2fab15; not yet released):
 
 | Removed | Why |
 |---|---|
