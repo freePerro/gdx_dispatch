@@ -32,6 +32,7 @@ from gdx_dispatch.models import tenant_models  # noqa: F401  (register models)
 from gdx_dispatch.routers import gps as _gps  # noqa: F401  (registers TechnicianLocation)
 from gdx_dispatch.routers import mobile as mobile_router
 from gdx_dispatch.routers import payroll as payroll_router
+from gdx_dispatch.routers import timeclock as timeclock_router
 
 _TEST_USER = {"user_id": "user-1", "role": "technician", "tenant_id": "tenant-a"}
 
@@ -255,6 +256,88 @@ def test_job_detail_exposes_both_clocks(session_factory):
         assert job_clock["running"] is True
         assert job_clock["entry_id"]
         assert job_clock["elapsed_minutes"] == 42
+    finally:
+        db.close()
+
+
+def test_day_clock_shows_on_job_detail_after_a_real_clock_in(session_factory):
+    """#639: the job page's day clock must reflect the day clock the tech actually uses.
+
+    The seed gives user-1 a Technician row ('tech-1'), which is the case that was
+    broken: `POST /api/timeclock/clock-in` writes `technician_id = <user id>`
+    (`_resolve_tech_id`), while the job page resolved a `Technician.id` first, so
+    it read a key nothing writes and always said "Not clocked in". Both halves are
+    asserted here so the test cannot pass by always answering the same way.
+    """
+    db = session_factory()
+    try:
+        # Another tech in the same shop is already on the clock. Single-tenant
+        # means their row shares our tenant_id, so a reader that loses its
+        # per-tech filter would show THEIR shift on OUR job page — this is the
+        # assertion that fails if the filter is dropped rather than re-keyed.
+        db.execute(
+            text(
+                "INSERT INTO timeclock_entries_router"
+                " (id, tenant_id, technician_id, entry_type, clock_in_at,"
+                "  created_at, updated_at)"
+                " VALUES (:id, 'tenant-a', 'user-2', 'clock', :t, :t, :t)"
+            ),
+            {"id": uuid4().hex, "t": datetime.now(UTC) - timedelta(hours=3)},
+        )
+        db.commit()
+
+        before = _as_json(
+            mobile_router.get_mobile_job_detail(
+                job_id=_JOB_ID, request=_request(), current_user=_TEST_USER, db=db
+            )
+        )["clocks"]["day"]
+        assert before["running"] is False, (
+            "another tech's open shift must not render as this tech's day clock"
+        )
+
+        timeclock_router.post_clock_in(
+            payload=timeclock_router.ClockActionRequest(),
+            request=_request(),
+            current_user=_TEST_USER,
+            db=db,
+        )
+
+        during = _as_json(
+            mobile_router.get_mobile_job_detail(
+                job_id=_JOB_ID, request=_request(), current_user=_TEST_USER, db=db
+            )
+        )["clocks"]["day"]
+        assert during["running"] is True, (
+            "the day clock the tech started on /mobile/timeclock must show on the job page"
+        )
+        assert during["pays"] is True
+        # Pin `since` to OUR row, not merely to something truthy: `since` is
+        # str(clock_in_at) and is entailed by running, so comparing it to the
+        # row this user just created is what makes it falsifiable.
+        mine = db.execute(
+            text(
+                "SELECT clock_in_at FROM timeclock_entries_router"
+                " WHERE tenant_id='tenant-a' AND technician_id='user-1'"
+                "   AND clock_out_at IS NULL AND deleted_at IS NULL"
+            )
+        ).scalar_one()
+        assert during["since"] == str(mine), (
+            f"day clock shows {during['since']!r}, this tech's shift started {mine!r}"
+        )
+
+        timeclock_router.post_clock_out(
+            payload=timeclock_router.ClockActionRequest(),
+            request=_request(),
+            current_user=_TEST_USER,
+            db=db,
+        )
+
+        after = _as_json(
+            mobile_router.get_mobile_job_detail(
+                job_id=_JOB_ID, request=_request(), current_user=_TEST_USER, db=db
+            )
+        )["clocks"]["day"]
+        assert after["running"] is False, "clocking out must clear it again"
     finally:
         db.close()
 

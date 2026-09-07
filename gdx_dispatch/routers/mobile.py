@@ -735,12 +735,20 @@ def _clock_states(
         "pays": False,
     }
 
-    technician_id = _get_technician_id(db, tenant_id, user_id) or user_id
+    # `timeclock_entries_router.technician_id` holds a USER id despite the
+    # column name. Measured on prod 2026-09-07: 60 rows, 50 match `users.id`,
+    # 0 match `technicians.id`, 10 match neither (pre-release rows, left alone
+    # deliberately — see `_tech_names` in routers/timeclock.py). The writers
+    # the SPA calls all key it that way via `_resolve_tech_id`, which also
+    # accepts a caller-supplied id, so this is a convention, not a constraint.
+    # This branch used to resolve a `Technician.id` first, so the day clock on
+    # the job page read a key nothing writes and always rendered "Not clocked
+    # in" for any tech who has a Technician row. Fixed 2026-09-07 (#639).
     shift = db.execute(
         select(TimeclockEntry)
         .where(
             TimeclockEntry.tenant_id == tenant_id,
-            TimeclockEntry.technician_id == technician_id,
+            TimeclockEntry.technician_id == user_id,
             TimeclockEntry.deleted_at.is_(None),
             TimeclockEntry.clock_out_at.is_(None),
         )
@@ -2314,6 +2322,12 @@ def mobile_job_complete(
     ):
         from gdx_dispatch.routers.job_assignments import has_any_lead, is_lead_for_job
 
+        # A caller with no active Technician row hands a users.id into a
+        # technicians.id lookup here, never matches, and is 403'd out of
+        # completing the job (#644). Left as-is on purpose: dropping the
+        # fallback would SKIP the lead gate for them, which grants permission
+        # rather than fixing the lookup, and that is a decision for #644 with
+        # its own test — not a ride-along in a clock-display fix.
         _technician_id_complete = _get_technician_id(db, tenant_id, user_id) or user_id
         if _technician_id_complete and has_any_lead(db, job_id=job_id):
             if not is_lead_for_job(db, job_id=job_id, tech_id=_technician_id_complete):
