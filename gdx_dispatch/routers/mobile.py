@@ -705,7 +705,11 @@ def _clock_states(
     The two clocks are different tables and mean different things:
 
     - ``day``  -> ``timeclock_entries_router`` (TimeclockEntry). The shift.
-      **This is the tech's paid time.**
+      **This is the tech's paid time**, so ``elapsed_minutes`` is NET of ended
+      breaks (#645) — the gross span is carried separately as
+      ``gross_elapsed_minutes`` for anyone who needs the wall clock. An open
+      break sets ``on_break`` rather than being guessed at a length, and a
+      shift past ``WARNING_AFTER_HOURS`` sets ``stale``.
     - ``job``  -> ``time_entries`` (entry_type='job'). Costing/attribution.
       Does not pay: a manual stop banks zero minutes (see
       _close_open_time_entry), and only closeout-attested hours are payable.
@@ -751,16 +755,91 @@ def _clock_states(
             TimeclockEntry.technician_id == user_id,
             TimeclockEntry.deleted_at.is_(None),
             TimeclockEntry.clock_out_at.is_(None),
+            # Deliberately NOT filtered on entry_type. A 'manual' row CAN be
+            # open: PATCH /api/timeclock/entries/{id} with clock_out_at=null
+            # survives exclude_unset and reopens one. Filtering here while
+            # POST /clock-in's duplicate guard does not would make this
+            # endpoint answer "not clocked in" for a row that makes
+            # clock-in reply 400 "already clocked in" — a dead end on the
+            # surface that decides whether someone is being paid. One rule
+            # for what counts as open, shared with the writers.
         )
         .order_by(TimeclockEntry.clock_in_at.desc())
         .limit(1)
     ).scalars().first()
+
+    # #645 — gross elapsed is not paid time. `TimeclockEntry.minutes` and the
+    # wall-clock span both ignore breaks, which live in their own table; a card
+    # labelled "your paid time" that shows gross pays out every lunch on screen.
+    # The rule lives in core/timesheet_hours — ONE implementation, shared with
+    # /api/timeclock/status and with the timesheet the office pays from. It
+    # bounds the open-break lookup to this shift (prod carries a never-ended
+    # break from 2026-04-08; an unbounded lookup would report zero paid time)
+    # and stops worked time at the break's start rather than guessing a length.
+    paid = 0
+    gross = 0
+    ended_breaks = 0
+    on_break = None
+    breaks_unavailable = False
+    if shift is not None:
+        from gdx_dispatch.core.timesheet_hours import open_shift_worked_minutes
+
+        try:
+            paid, gross, ended_breaks, on_break = open_shift_worked_minutes(
+                db, tenant_id, shift
+            )
+        except Exception:
+            # Never 5xx the job screen over the clock card. Degrading to gross
+            # is the pre-#645 answer: wrong, but serving. It is FLAGGED rather
+            # than silent — an unmarked fallback here restores the exact
+            # overstatement #645 is about, on a payload labelled "your paid
+            # time", and nobody would know.
+            log.exception("day_clock_worked_minutes_failed user_id=%s", user_id)
+            paid = gross = _elapsed(shift.clock_in_at)
+            ended_breaks = 0
+            on_break = None
+            breaks_unavailable = True
+
     day_state: dict[str, Any] = {
         "running": shift is not None,
         "since": str(shift.clock_in_at) if shift is not None else None,
-        "elapsed_minutes": _elapsed(shift.clock_in_at) if shift is not None else 0,
+        # Net of ended breaks, and frozen at the start of an open one.
+        "elapsed_minutes": paid,
+        "gross_elapsed_minutes": gross,
+        "break_minutes": ended_breaks,
+        "on_break": on_break is not None,
+        "on_break_since": str(on_break.started_at) if on_break is not None else None,
+        # True when the break lookup failed and `elapsed_minutes` is therefore
+        # gross. The card says so rather than presenting it as paid time.
+        "breaks_unavailable": breaks_unavailable,
         "pays": True,
     }
+
+    # A forgotten shift renders as "Running 16h 40m" with nothing marking it
+    # stale. /api/timeclock/status already returns both of these so its screen
+    # can flag one; the job card had neither, so the tech most likely to be
+    # looking at it got no signal at all.
+    if shift is not None:
+        from datetime import timedelta as _timedelta
+
+        from gdx_dispatch.core.timesheet_hours import MAX_SHIFT_HOURS
+
+        day_state["max_shift_hours"] = MAX_SHIFT_HOURS
+        # MAX_SHIFT_HOURS (16h), NOT the 8h warning. On the timeclock screens
+        # 8h is a dismissible "still working?" prompt with a snooze; 16h is the
+        # hard banner and the auto-close trigger. This card has no snooze, so
+        # firing it at 8h would light up red on every normal working day and
+        # the office would learn to ignore it — the exact failure
+        # core/timesheet_hours.py names. Measured on gross wall clock on
+        # purpose: the auto-close it warns about is triggered on gross too.
+        day_state["stale"] = gross >= int(MAX_SHIFT_HOURS * 60)
+        started = _parse_datetime(str(shift.clock_in_at))
+        if started is not None:
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=UTC)
+            day_state["auto_clockout_at"] = (
+                started + _timedelta(hours=MAX_SHIFT_HOURS)
+            ).isoformat()
 
     return {"day": day_state, "job": job_state}
 

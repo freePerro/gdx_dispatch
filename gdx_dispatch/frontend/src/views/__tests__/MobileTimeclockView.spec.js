@@ -55,6 +55,74 @@ describe('MobileTimeclockView', () => {
     });
   });
 
+  it('#645 — the elapsed ticker shows WORKED time, not gross, and agrees with Today', async () => {
+    // The ticker sat directly above "Today: X h" and computed gross wall clock
+    // off clock_in_at, so after a 30-minute lunch the same card read 8:00:00
+    // over Today 7.50h. Two numbers on one card that do not add up.
+    apiGet.mockImplementation((url) => {
+      if (url === '/api/timeclock/status') {
+        return Promise.resolve({
+          clocked_in: true,
+          on_break: false,
+          // Clocked in 8h ago, 30m lunch already taken.
+          active_entry: {
+            entry_type: 'work',
+            clock_in_at: new Date(Date.now() - 8 * 3600 * 1000).toISOString(),
+          },
+          today_hours: 7.5,
+          open_shift_elapsed_hours: 7.5,
+        });
+      }
+      if (url === '/api/timeclock/entries') return Promise.resolve([]);
+      if (url === '/api/jobs') return Promise.resolve([]);
+      return Promise.resolve([]);
+    });
+
+    const wrapper = mount(MobileTimeclockView, { global: { stubs } });
+    await flushPromises();
+
+    const elapsed = wrapper.find('[data-test="mt-elapsed"]').text();
+    // 7.5h worked -> 07:30:xx. The gross figure would render 08:00:xx.
+    expect(elapsed.startsWith('07:30')).toBe(true);
+    expect(elapsed.startsWith('08:00')).toBe(false);
+    expect(wrapper.find('[data-test="mt-today-total"]').text()).toContain('7.50');
+  });
+
+  it('#645 — the ticker stops while on break', async () => {
+    // The paid clock is not running during a break, so neither is its display.
+    vi.useFakeTimers();
+    try {
+      apiGet.mockImplementation((url) => {
+        if (url === '/api/timeclock/status') {
+          return Promise.resolve({
+            clocked_in: true,
+            on_break: true,
+            active_entry: {
+              entry_type: 'work',
+              clock_in_at: new Date(Date.now() - 4 * 3600 * 1000).toISOString(),
+            },
+            today_hours: 3.0,
+            open_shift_elapsed_hours: 3.0,
+          });
+        }
+        if (url === '/api/timeclock/entries') return Promise.resolve([]);
+        if (url === '/api/jobs') return Promise.resolve([]);
+        return Promise.resolve([]);
+      });
+
+      const wrapper = mount(MobileTimeclockView, { global: { stubs } });
+      await flushPromises();
+      const before = wrapper.find('[data-test="mt-elapsed"]').text();
+      expect(before.startsWith('03:00')).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(5000);
+      await flushPromises();
+      expect(wrapper.find('[data-test="mt-elapsed"]').text()).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('renders Clock In when not clocked in', async () => {
     apiGet.mockImplementation((url) => {
       if (url === '/api/timeclock/status') return Promise.resolve({ clocked_in: false });

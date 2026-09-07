@@ -325,6 +325,10 @@ const onBreak = ref(false)
 const clockInTime = ref(null)
 const todayTotalHours = ref(null)
 const elapsedSeconds = ref(0)
+// Worked hours on the open shift as the SERVER computed them — net of ended
+// breaks. Null when the backend does not send it, which is the only case the
+// gross wall-clock fallback below is for.
+const openShiftWorkedHours = ref(null)
 let elapsedTimer = null
 
 // MH-7 (audit P1 #9): max-shift guard metadata from the status response.
@@ -363,15 +367,30 @@ const elapsedFormatted = computed(() => {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 })
 
+// #645 — this ticker sat directly above "Today: X h" and computed GROSS wall
+// clock off clock_in_at, so after a 30-minute lunch the same card read 8:00:00
+// over Today 7.50h. The server already returns the worked figure
+// (`open_shift_elapsed_hours`, net of ended breaks and frozen at an open
+// break's start), so seed from that and only fall back to wall clock when an
+// older backend omits it. The ticker also stops while on break — the paid
+// clock is not running, so neither is its display.
 function startElapsedTimer() {
   if (elapsedTimer) return
-  if (clockInTime.value) {
+  if (typeof openShiftWorkedHours.value === 'number') {
+    elapsedSeconds.value = Math.max(0, Math.round(openShiftWorkedHours.value * 3600))
+  } else if (clockInTime.value) {
     elapsedSeconds.value = Math.max(0, Math.floor((Date.now() - new Date(clockInTime.value).getTime()) / 1000))
   } else {
     elapsedSeconds.value = 0
   }
+  if (onBreak.value) return
+  // Monotonic against the wall clock, not `+= 1`. A phone throttles and freezes
+  // background intervals, so an incrementing counter drifts low without bound
+  // and nothing re-seeds it — fetchStatus runs on mount and after actions only.
+  const base = elapsedSeconds.value
+  const from = Date.now()
   elapsedTimer = setInterval(() => {
-    elapsedSeconds.value += 1
+    elapsedSeconds.value = base + Math.floor((Date.now() - from) / 1000)
   }, 1000)
 }
 
@@ -468,6 +487,10 @@ async function fetchStatus() {
     onBreak.value = !!status?.on_break || entry?.entry_type === 'break'
     clockInTime.value = entry?.clock_in_at || status?.clock_in_time || null
     todayTotalHours.value = status?.today_hours ?? null
+    openShiftWorkedHours.value =
+      typeof status?.open_shift_elapsed_hours === 'number'
+        ? status.open_shift_elapsed_hours
+        : null
     // MH-7 guard metadata. Older backends without these fields fall
     // through to the defaults set on the ref (8h / 16h) — matches the
     // backend literal.
@@ -477,6 +500,9 @@ async function fetchStatus() {
     if (typeof status?.max_shift_hours === 'number') {
       maxShiftHours.value = status.max_shift_hours
     }
+    // Re-seed from the server on every poll, so the ticker cannot drift away
+    // from Today and so ending a break restarts it.
+    stopElapsedTimer()
     if (clockedIn.value) {
       startElapsedTimer()
     } else {
