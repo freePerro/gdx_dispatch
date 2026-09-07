@@ -599,7 +599,11 @@ def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
         # GL S5: the auto-flip routes through the chokepoint; a draft paid in
         # full posts P1 on this transition (before P3, which lands in S6).
         transition_invoice_status(db, invoice, "paid")
-        if not invoice.paid_at:
+        # #422: the chokepoint REFUSES to leave a void, so read back what
+        # actually happened instead of assuming the flip took. Stamping
+        # paid_at off the attempt would date a "payment" on an invoice that
+        # is still, correctly, void.
+        if invoice.status == "paid" and not invoice.paid_at:
             invoice.paid_at = datetime.now(UTC)
 
 

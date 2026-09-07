@@ -803,3 +803,90 @@ def test_a_dispute_still_voids_in_full_even_with_amounts_present(db_session):
     assert out["status"] == "reversed"
     pay = db_session.query(Payment).filter(Payment.reference == "pi_disp").one()
     assert pay.voided_at is not None
+
+
+# ---------------------------------------------------------------------------
+# #422 — a payment landing after a void must not resurrect the invoice
+#
+# void_invoice releases the invoice's parts and change orders back to the
+# unbilled checklist. A PaymentIntent that succeeded moments before the void,
+# or a webhook redelivered after it, used to book its money and flip the
+# invoice void -> paid: the books showed a PAID invoice whose work was
+# simultaneously sitting unbilled. The office endpoint already 409'd this;
+# the Stripe path had no guard at all.
+# ---------------------------------------------------------------------------
+
+
+def _voided_invoice(db):
+    return _mk_invoice(
+        db, token="tok_void_422", number="INV-VOID-422", status="void",
+    )
+
+
+def test_webhook_payment_on_a_voided_invoice_leaves_it_void(db_session):
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    invoice = _voided_invoice(db_session)
+    handle_payment_webhook(
+        {
+            "type": "payment_intent.succeeded",
+            "data": {"object": {
+                "id": "pi_void_422",
+                "metadata": {"invoice_id": str(invoice.id)},
+                "amount_received": 16200,
+            }},
+        },
+        db_session,
+    )
+    db_session.refresh(invoice)
+    assert invoice.status == "void", "a void is terminal — the payment must not resurrect it"
+    assert not invoice.paid_at, "paid_at must not be stamped on an invoice that stayed void"
+
+
+def test_the_money_is_still_recorded_so_it_can_be_refunded(db_session):
+    """Refusing to record would strand cash at the processor with no local
+    row to refund against — the same reasoning that makes an overcharge
+    record in full rather than be discarded."""
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    invoice = _voided_invoice(db_session)
+    handle_payment_webhook(
+        {
+            "type": "payment_intent.succeeded",
+            "data": {"object": {
+                "id": "pi_void_422b",
+                "metadata": {"invoice_id": str(invoice.id)},
+                "amount_received": 16200,
+            }},
+        },
+        db_session,
+    )
+    rows = db_session.query(Payment).filter(Payment.invoice_id == invoice.id).all()
+    assert len(rows) == 1, "the money moved; it must exist locally"
+    assert float(rows[0].amount) == pytest.approx(162.00)
+    assert rows[0].voided_at is None
+
+
+def test_an_operator_visible_audit_row_is_written(db_session):
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    invoice = _voided_invoice(db_session)
+    handle_payment_webhook(
+        {
+            "type": "payment_intent.succeeded",
+            "data": {"object": {
+                "id": "pi_void_422c",
+                "metadata": {"invoice_id": str(invoice.id)},
+                "amount_received": 16200,
+            }},
+        },
+        db_session,
+    )
+    rows = (
+        db_session.query(AuditLog)
+        .filter(AuditLog.action == "payment_on_voided_invoice")
+        .all()
+    )
+    assert rows, "money on a dead invoice must leave a searchable trail, not just a log line"
+    assert str(invoice.id) in str(rows[0].entity_id)

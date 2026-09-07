@@ -9,6 +9,8 @@ Nothing in this module commits — callers own the transaction.
 """
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -26,6 +28,8 @@ from gdx_dispatch.modules.ledger.models import (
     GlAccount,
     GlSettings,
 )
+
+logger = logging.getLogger(__name__)
 
 # payment method (normalized) → role. Cash/check/card sit in Undeposited
 # Funds until Phase 2 statement matching clears them into the bank; Zelle/
@@ -247,6 +251,30 @@ def transition_invoice_status(session, invoice, new_status: str, *, actor: str |
     """
     old_status = invoice.status
     if new_status == old_status:
+        return old_status
+
+    # #422: a void is TERMINAL — "A void is terminal and there is no un-void"
+    # (routers/invoices.py). The office payment endpoint enforced that with a
+    # 409; nothing on the Stripe path did. A PaymentIntent that succeeded
+    # moments before a void, or a webhook redelivered after one, recorded its
+    # money and flipped the invoice void -> paid — while `void_invoice` had
+    # already released its parts and change orders back to the unbilled
+    # checklist (#413). The books then showed a PAID invoice whose work was
+    # simultaneously sitting unbilled.
+    #
+    # Refused, never raised. The money genuinely moved: raising here would roll
+    # back the very Payment row being recorded and leave cash at the processor
+    # with nothing local to refund against — the same reasoning that makes
+    # _mark_invoice_paid record overcharges in full rather than discard them.
+    # The payment still books; the invoice simply stays void, and the caller
+    # writes the operator-visible audit event.
+    if old_status == "void":
+        logger.warning(
+            "invoice_transition_refused_void_is_terminal invoice=%s attempted=%s "
+            "— the invoice stays void; any payment recorded against it is real "
+            "money that needs a refund or an application decision.",
+            getattr(invoice, "id", "?"), new_status,
+        )
         return old_status
 
     setattr(invoice, SANCTION_ATTR, new_status)
