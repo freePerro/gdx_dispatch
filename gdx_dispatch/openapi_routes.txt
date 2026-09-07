@@ -319,7 +319,6 @@ GET /api/inventory/items
 GET /api/inventory/low-stock
 GET /api/inventory/parts
 GET /api/inventory/parts/{item_id}
-GET /api/inventory/parts/{part_id}/stock
 GET /api/invoice-reminders/auto-send-preview
 GET /api/invoice-reminders/settings
 GET /api/invoices
@@ -967,7 +966,6 @@ POST /api/integrations/{integration_id}/test
 POST /api/integrations/{integration_type}/connect
 POST /api/inventory/items/{item_id}/adjust
 POST /api/inventory/parts
-POST /api/inventory/parts/{part_id}/adjust
 POST /api/invoice-reminders/preview
 POST /api/invoice-reminders/settings
 POST /api/invoices
@@ -1003,7 +1001,6 @@ POST /api/jobs/{job_id}/hazards
 POST /api/jobs/{job_id}/line-items
 POST /api/jobs/{job_id}/not-billable
 POST /api/jobs/{job_id}/notes
-POST /api/jobs/{job_id}/parts
 POST /api/jobs/{job_id}/parts-needed
 POST /api/jobs/{job_id}/photos
 POST /api/jobs/{job_id}/reactivate
@@ -1272,7 +1269,6 @@ PUT /api/fleet/vehicles/{vehicle_id}
 PUT /api/forecast/settings
 PUT /api/holding-areas/{area_id}
 PUT /api/integrations/{integration_id}
-PUT /api/inventory/parts/{part_id}
 PUT /api/jobs/{job_id}/custom-fields
 PUT /api/jobs/{job_id}/lead
 PUT /api/labor-pricing/items/{item_id}

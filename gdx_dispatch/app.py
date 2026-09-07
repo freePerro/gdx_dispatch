@@ -568,12 +568,6 @@ except Exception:
     quickbooks = APIRouter(tags=["quickbooks"])
 
 try:
-    from gdx_dispatch.modules.inventory import router as inventory
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: inventory")
-    inventory = APIRouter(tags=["inventory"])
-
-try:
     from gdx_dispatch.modules.equipment import router as equipment
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: equipment")
@@ -1599,13 +1593,15 @@ def create_app() -> FastAPI:
     # NOTE: gdx_dispatch/modules/*/router.py (legacy) and gdx_dispatch/routers/*.py (newer) both
     # register some overlapping paths with the same function names. The newer
     # versions are richer and tenant-scoped; the legacy modules have some
-    # unique endpoints (e.g. /inventory/parts/{id}/stock, /timeclock/report,
-    # /jobs/{id}/parts). Both stay mounted for those. The paths the modules
+    # unique endpoints. Both stay mounted for those — though the last one worth
+    # naming, /timeclock/report, has no frontend caller either, so this note is
+    # thinner than it reads. The modules/inventory router left entirely
+    # 2026-09-07: all four of its routes were unauthenticated and none of them
+    # worked (the `parts` catalog has no writer). The paths the modules
     # duplicated (inventory parts list/create + low-stock, fleet vehicles
     # list/create, campaigns list/create/send, timeclock clock-in/status,
     # dispatch locations) were deleted from the module routers 2026-09-06
     # (#569): FastAPI serves the first registration, so they never ran.
-    app.include_router(inventory.router if hasattr(inventory, "router") else inventory)
     app.include_router(equipment.router if hasattr(equipment, "router") else equipment)
     app.include_router(timeclock.router if hasattr(timeclock, "router") else timeclock)
     app.include_router(workflows.router if hasattr(workflows, "router") else workflows)
