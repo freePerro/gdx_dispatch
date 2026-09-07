@@ -200,7 +200,6 @@ GET /api/campaigns
 GET /api/campaigns/{campaign_id}
 GET /api/campaigns/{campaign_id}/preview
 GET /api/campaigns/{campaign_id}/sends
-GET /api/campaigns/{campaign_id}/stats
 GET /api/catalog-policy
 GET /api/catalog/doors
 GET /api/catalog/doors/filters
@@ -1043,14 +1042,8 @@ POST /api/me/tours/{tour_id}/step
 POST /api/messages
 POST /api/messages/mark-all-read
 POST /api/mobile/chat/{message_id}/read
-POST /api/mobile/clock-in
-POST /api/mobile/clock-out
 POST /api/mobile/invoices/{invoice_id}/send
 POST /api/mobile/invoices/{invoice_id}/send-receipt
-POST /api/mobile/job/{job_id}/clock-in
-POST /api/mobile/job/{job_id}/clock-out
-POST /api/mobile/job/{job_id}/notes
-POST /api/mobile/job/{job_id}/status
 POST /api/mobile/jobs/{job_id}/arrived
 POST /api/mobile/jobs/{job_id}/chat
 POST /api/mobile/jobs/{job_id}/claim
@@ -1063,7 +1056,6 @@ POST /api/mobile/jobs/{job_id}/invoice
 POST /api/mobile/jobs/{job_id}/notes
 POST /api/mobile/jobs/{job_id}/parts-used
 POST /api/mobile/jobs/{job_id}/quote
-POST /api/mobile/jobs/{job_id}/status
 POST /api/mobile/location
 POST /api/mobile/quotes/{estimate_id}/accept
 POST /api/mobile/quotes/{estimate_id}/decline

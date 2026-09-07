@@ -115,23 +115,22 @@ class TestMobileClockInOut:
     """Mobile daily clock in/out."""
 
     def test_mob_06_clock_in(self, api, console_tracker):
-        """MOB-06: POST /api/mobile/clock-in or /api/timeclock/clock-in works."""
-        resp = api.post("/api/mobile/clock-in", json_data={"gps_lat": 33.45, "gps_lng": -112.07})
-        if resp.status_code == 404:
-            resp = api.post("/api/timeclock/clock-in", json_data={"gps_lat": 33.45, "gps_lng": -112.07})
-        # 201 = created, 200 = ok, 409 = already clocked in — all acceptable
-        assert resp.status_code in (200, 201, 409), (
+        """MOB-06: POST /api/timeclock/clock-in works (the mobile SPA calls this
+        route directly; the /api/mobile/clock-in duplicate was removed 2026-09-07)."""
+        resp = api.post("/api/timeclock/clock-in", json_data={"gps_lat": 33.45, "gps_lng": -112.07})
+        # 201 = created; the timeclock router answers an open shift with 400
+        # "Technician already clocked in" (the removed mobile duplicate said 409)
+        already = resp.status_code == 400 and "already clocked in" in resp.text.lower()
+        assert resp.status_code == 201 or already, (
             f"Clock in failed: {resp.status_code} {resp.text[:200]}"
         )
         console_tracker.assert_no_errors("MOB-06")
 
     def test_mob_06b_clock_out(self, api, console_tracker):
-        """MOB-06: POST /api/mobile/clock-out or /api/timeclock/clock-out works."""
-        resp = api.post("/api/mobile/clock-out", json_data={"gps_lat": 33.45, "gps_lng": -112.07})
-        if resp.status_code == 404:
-            resp = api.post("/api/timeclock/clock-out", json_data={"gps_lat": 33.45, "gps_lng": -112.07})
-        # 200 = ok, 409 = not clocked in, 404 = no open entry — all acceptable (not 500)
-        assert resp.status_code in (200, 404, 409), (
+        """MOB-06: POST /api/timeclock/clock-out works (see test_mob_06_clock_in)."""
+        resp = api.post("/api/timeclock/clock-out", json_data={"gps_lat": 33.45, "gps_lng": -112.07})
+        # 200 = closed; 404 = "No active clock-in found" is the router's only other answer
+        assert resp.status_code in (200, 404), (
             f"Clock out failed: {resp.status_code} {resp.text[:200]}"
         )
         console_tracker.assert_no_errors("MOB-06b")
@@ -200,11 +199,12 @@ class TestMobileUploads:
         job_id = _get_first_job_id(api)
         # /api/mobile/jobs/{id}/signature was removed 2026-09-06 (#480); the
         # signature pad posts to the jobs router.
-        resp = api.post(f"/api/jobs/{job_id}/signature", json_data={
-            "signature_data": SIGNATURE_DATA,
-            "signer_name": "E2E Test Signer",
-        })
-        assert resp.status_code < 500, f"Signature capture failed: {resp.status_code} {resp.text[:200]}"
+        # Same body the SPA sends (JobDetailView: `{ signature: dataUrl }`); the
+        # handler's model has exactly one required field, so any other key is a
+        # 422 that never reaches the save — which is what this test used to accept.
+        resp = api.post(f"/api/jobs/{job_id}/signature", json_data={"signature": SIGNATURE_DATA})
+        assert resp.status_code == 201, f"Signature capture failed: {resp.status_code} {resp.text[:200]}"
+        assert resp.json().get("id"), f"no document row returned: {resp.text[:200]}"
         console_tracker.assert_no_errors("MOB-09")
 
 

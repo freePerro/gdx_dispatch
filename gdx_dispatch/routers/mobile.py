@@ -62,12 +62,6 @@ except Exception:
 
 
 router = APIRouter(prefix="/api/mobile", tags=["mobile"], dependencies=[Depends(require_module("mobile"))])
-_VALID_JOB_STATUSES = {"en_route", "on_site", "completed"}
-_MOBILE_JOB_STATUS_VALUES = {"en_route", "on_site", "completed", "cancelled"}
-
-
-class JobStatusUpdate(BaseModel):
-    status: str | None = Field(default=None, max_length=50)
 
 
 class NoteBody(BaseModel):
@@ -1647,90 +1641,6 @@ def mobile_all_my_jobs(
     })
 
 
-@router.post("/jobs/{job_id}/status", response_model=None)
-def mobile_job_status_update(
-    job_id: str,
-    payload: JobStatusUpdate,
-    request: Request,
-    current_user: Any = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    new_status = (payload.status or "").strip().lower()
-    if new_status not in _MOBILE_JOB_STATUS_VALUES:
-        return jsonable_response(
-            {"detail": f"Invalid status. Must be one of: {', '.join(sorted(_MOBILE_JOB_STATUS_VALUES))}"},
-            400,
-        )
-
-    tenant_id = _tenant_id(request)
-    user = current_user or {}
-    user_id = _user_id(user)
-    if not user_id:
-        return jsonable_response({"detail": "unauthorized"}, 401)
-
-    technician_id = _get_technician_id(db, tenant_id, user_id)
-    if not _job_belongs_to_user(db, tenant_id, job_id, user_id, technician_id):
-        return jsonable_response({"detail": "job not found"}, 404)
-
-    _assert_job_access(db, request, current_user, job_id)
-    job = _get_job(db, tenant_id, job_id)
-    if not job:
-        return jsonable_response({"detail": "job not found"}, 404)
-
-    old_status = job.get("status")
-    now = datetime.now(UTC)
-    try:
-        _jid = _UUID(job_id)
-    except (ValueError, AttributeError):
-        logging.getLogger(__name__).exception("mobile_job_status_update caught exception")
-        _jid = None
-    if _jid is not None:
-        # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
-        _job_obj = db.execute(
-            select(Job).where(
-                Job.id == _jid,
-                Job.deleted_at.is_(None),
-            )
-        ).scalar_one_or_none()
-        if _job_obj is not None:
-            _job_obj.status = new_status
-            _job_obj.updated_at = now
-    _audit_state_change(
-        db,
-        event_type="mobile_job_status_changed",
-        actor_id=user_id,
-        entity_type="job",
-        entity_id=job_id,
-        payload={"from": old_status, "to": new_status},
-        request=request,
-        actor_role=user.get("role"),
-    )
-    db.commit()
-
-    try:
-        log_audit_event_sync(
-            db,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            action="mobile_job_status_changed",
-            entity_type="job",
-            entity_id=job_id,
-            details={"from": old_status, "to": new_status},
-            request=request,
-        )
-        db.commit()
-    except Exception:
-        log.exception("mobile_job_status_change_audit_failed")
-
-    return jsonable_response(
-        {
-            "ok": True,
-            "job_id": job_id,
-            "status": new_status,
-        }
-    )
-
-
 @router.get("/job/{job_id}", response_model=None)
 def get_mobile_job_detail(
     job_id: str,
@@ -2569,248 +2479,16 @@ def mobile_job_complete(
     )
 
 
-@router.post("/job/{job_id}/status", response_model=None)
-def update_mobile_job_status(
-    job_id: str,
-    payload: JobStatusUpdate,
-    request: Request,
-    current_user: Any = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    new_status = (payload.status or "").strip().lower()
-    if new_status not in _VALID_JOB_STATUSES:
-        return jsonable_response(
-            {"detail": "Invalid status. Must be one of: completed, en_route, on_site"},
-            400,
-        )
-    if new_status == "en_route":
-        return mobile_job_en_route(
-            job_id=job_id,
-            payload=EnRouteBody(eta_minutes=None),
-            request=request,
-            current_user=current_user,
-            db=db,
-        )
-    if new_status == "on_site":
-        return mobile_job_arrived(job_id=job_id, request=request, current_user=current_user, db=db)
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="update_mobile_job_status",
-                entity_type="mobile_job_status",
-                entity_id=str(job_id),
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('update_mobile_job_status_audit_failed')
-    return mobile_job_complete(
-        job_id=job_id,
-        payload=CompleteBody(completion_notes=None),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-
-
-@router.post("/clock-in", response_model=None)
-def mobile_day_clock_in(
-    request: Request,
-    current_user: Any = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Day-level clock-in. Writes to ``timeclock_entries_router`` (canonical)
-    so mobile and desktop ``/timeclock`` write the same row. See
-    ``mobile_clock_status`` docstring for the S3 reconciliation context.
-    """
-    tenant_id = _tenant_id(request)
-    user = current_user or {}
-    user_id = _user_id(user)
-    if not user_id:
-        return jsonable_response({"detail": "unauthorized"}, 401)
-
-    technician_id = _get_technician_id(db, tenant_id, user_id) or user_id
-
-    existing = db.execute(
-        select(TimeclockEntry)
-        .where(
-            TimeclockEntry.tenant_id == tenant_id,
-            TimeclockEntry.technician_id == technician_id,
-            TimeclockEntry.deleted_at.is_(None),
-            TimeclockEntry.clock_out_at.is_(None),
-        )
-        .order_by(TimeclockEntry.clock_in_at.desc())
-        .limit(1)
-    ).scalars().first()
-    if existing:
-        return jsonable_response(
-            {
-                "detail": "Already clocked in for day",
-                "entry_id": str(existing.id),
-                "clock_in": str(existing.clock_in_at),
-            },
-            409,
-        )
-
-    now_iso = datetime.now(UTC).isoformat()
-    entry_id = str(uuid.uuid4())
-    entry = TimeclockEntry(
-        id=entry_id,
-        tenant_id=tenant_id,
-        technician_id=technician_id,
-        clock_in_at=now_iso,
-        clock_out_at=None,
-        minutes=None,
-        notes=None,
-        entry_type="clock",
-        created_at=now_iso,
-        updated_at=now_iso,
-    )
-    db.add(entry)
-    _audit_state_change(
-        db,
-        event_type="clock_in",
-        actor_id=user_id,
-        entity_type="time_entry",
-        entity_id=entry_id,
-        payload={"entry_type": "day", "table": "timeclock_entries_router"},
-        request=request,
-        actor_role=user.get("role"),
-    )
-    db.commit()
-
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="mobile_day_clock_in",
-                entity_type="mobile_day_clock_in",
-                entity_id="",
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('mobile_day_clock_in_audit_failed')
-    return jsonable_response(
-        {"ok": True, "entry_id": entry_id, "clock_in": now_iso, "entry_type": "day"},
-        201,
-    )
-
-
-@router.post("/clock-out", response_model=None)
-def mobile_day_clock_out(
-    request: Request,
-    current_user: Any = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Day-level clock-out. Closes the open ``timeclock_entries_router`` row
-    so the desktop ``/timeclock`` view reflects the same state. See
-    ``mobile_clock_status`` docstring for the S3 reconciliation context.
-    """
-    tenant_id = _tenant_id(request)
-    user = current_user or {}
-    user_id = _user_id(user)
-    if not user_id:
-        return jsonable_response({"detail": "unauthorized"}, 401)
-
-    technician_id = _get_technician_id(db, tenant_id, user_id) or user_id
-
-    entry = db.execute(
-        select(TimeclockEntry)
-        .where(
-            TimeclockEntry.tenant_id == tenant_id,
-            TimeclockEntry.technician_id == technician_id,
-            TimeclockEntry.deleted_at.is_(None),
-            TimeclockEntry.clock_out_at.is_(None),
-        )
-        .order_by(TimeclockEntry.clock_in_at.desc())
-        .limit(1)
-    ).scalars().first()
-    if not entry:
-        return jsonable_response({"detail": "No open day time entry found"}, 404)
-
-    now_iso = datetime.now(UTC).isoformat()
-    duration_minutes: int | None = None
-    try:
-        clock_in_dt = _parse_datetime(str(entry.clock_in_at))
-        if clock_in_dt is not None:
-            delta = datetime.now(UTC) - clock_in_dt
-            duration_minutes = int(delta.total_seconds() // 60)
-    except (TypeError, ValueError):
-        duration_minutes = None
-
-    entry.clock_out_at = now_iso
-    entry.minutes = duration_minutes
-    entry.updated_at = now_iso
-
-    _audit_state_change(
-        db,
-        event_type="clock_out",
-        actor_id=user_id,
-        entity_type="time_entry",
-        entity_id=str(entry.id),
-        payload={"entry_type": "day", "duration_minutes": duration_minutes, "table": "timeclock_entries_router"},
-        request=request,
-        actor_role=user.get("role"),
-    )
-    db.commit()
-
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="mobile_day_clock_out",
-                entity_type="mobile_day_clock_out",
-                entity_id="",
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('mobile_day_clock_out_audit_failed')
-    return jsonable_response(
-        {
-            "ok": True,
-            "entry_id": str(entry.id),
-            "clock_out": now_iso,
-            "duration_minutes": duration_minutes,
-            "entry_type": "day",
-        }
-    )
+# Removed 2026-09-07 (follow-up to #480, which was swept from a candidate list
+# rather than the full router): four handlers with no SPA caller — POST
+# /jobs/{id}/status, POST /job/{id}/status, POST /clock-in, POST /clock-out —
+# and the three singular "/job/{id}/..." alias paths on clock-in, clock-out and
+# notes. The SPA drives /jobs/{id}/en-route and /arrived here, completes a job
+# through the closeout sheet (never /jobs/{id}/complete — guarded by
+# MobileCloseoutOwnership.spec.js), and clocks the day through /api/timeclock/*.
 
 
 @router.post("/jobs/{job_id}/clock-in", response_model=None)
-@router.post("/job/{job_id}/clock-in", response_model=None)
 def mobile_clock_in(
     job_id: str,
     request: Request,
@@ -2887,7 +2565,6 @@ def mobile_clock_in(
 
 
 @router.post("/jobs/{job_id}/clock-out", response_model=None)
-@router.post("/job/{job_id}/clock-out", response_model=None)
 def mobile_clock_out(
     job_id: str,
     request: Request,
@@ -2970,7 +2647,6 @@ def mobile_clock_out(
 
 
 @router.post("/jobs/{job_id}/notes", response_model=None)
-@router.post("/job/{job_id}/notes", response_model=None)
 def add_mobile_job_note(
     job_id: str,
     payload: NoteBody,

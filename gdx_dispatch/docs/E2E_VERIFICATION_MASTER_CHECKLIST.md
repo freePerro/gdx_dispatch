@@ -562,10 +562,10 @@ Technicians on mobile devices can view their schedule, update job status, clock 
 | MOB-03 | En-route | POST /api/mobile/jobs/{id}/en-route updates status |
 | MOB-04 | Arrived | POST /api/mobile/jobs/{id}/arrived updates status |
 | MOB-05 | Complete job | POST /api/mobile/jobs/{id}/complete, job marked complete |
-| MOB-06 | Mobile clock in/out | POST /api/mobile/clock-in and /clock-out work |
+| MOB-06 | Mobile clock in/out | POST /api/timeclock/clock-in and /clock-out work (the `/api/mobile/clock-in|out` duplicates removed 2026-09-07) |
 | MOB-07 | Job clock in/out | POST /api/mobile/jobs/{id}/clock-in and /clock-out work |
 | MOB-08 | Photo upload (mobile) | POST /api/mobile/jobs/{id}/photos, photo saved |
-| MOB-09 | Signature capture (mobile) | POST /api/jobs/{id}/signature, signature saved (the `/api/mobile/...` alias removed 2026-09-06, #480) |
+| MOB-09 | Signature capture (mobile) | POST /api/jobs/{id}/signature with `{signature}` returns 201 and a document row (the `/api/mobile/...` alias removed 2026-09-06, #480; the test sent the wrong key until 2026-09-07) |
 | MOB-10 | Add note | POST /api/mobile/jobs/{id}/notes, note appears on job |
 | MOB-11 | Parts used | POST /api/mobile/jobs/{id}/parts-used records parts |
 | MOB-12 | Location tracking | POST /api/mobile/location records GPS coordinates |

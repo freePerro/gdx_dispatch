@@ -1,6 +1,6 @@
 # Dead duplicates removal — 2026-09-06
 
-Status: RELEASED v1.118.0 — MERGED #633 2026-09-07 (squash 3c0e7b9, stacked on #630); prod and demo rolled to 1.118.0 on 2026-09-07 ~02:36Z with the six-table recount at 0 rows on both immediately before; migrations 091+092 ran, alembic head 092 on both; walked on prod and demo (API, desktop and mobile customer pages, light and dark). Closes #458 #459 #480 #568 #569 #571 #572 #574 #595 #599. Migration 092.
+Status: RELEASED v1.118.0 — MERGED #633 2026-09-07 (squash 3c0e7b9, stacked on #630); prod and demo rolled to 1.118.0 on 2026-09-07 ~02:36Z with the six-table recount at 0 rows on both immediately before; migrations 091+092 ran, alembic head 092 on both; walked on prod and demo (API, desktop and mobile customer pages, light and dark). Closes #458 #459 #480 #568 #569 #571 #572 #574 #595 #599. Migration 092. — **Follow-up (mobile status/clock/contact orphans + campaigns module router) PR #642 OPEN 2026-09-07 from `chore/mobile-campaign-orphans`, NOT on prod; see the last section.**
 
 ## What already exists (do not rebuild)
 
@@ -15,7 +15,7 @@ the copies deleted below were included later and never ran:
 | `POST /api/mobile/location` | `routers/tech_locations.py` | `routers/mobile.py::report_mobile_location` |
 | `GET /api/ai/usage` | `core/ai_usage_logger.py` (durable table) — **now session-gated**, with `/usage/export`. **Two behaviour changes here, not one:** auth (ungated → session) *and* response shape (`requests/input_tokens/output_tokens/total_tokens/cost` → `totals/by_model/by_day` with `cost_usd`). No in-repo caller; prod nginx logs checked for external pollers before merge (see PR) | `core/ai_router.py::ai_usage` (in-process list, emptied on restart) |
 | `GET/POST /api/purchase-orders`, `PATCH …/{id}`, `POST …/{id}/receive` | `routers/purchase_orders.py` | `routers/po_workflow.py` — whole router (all four routes shadowed) | <!-- link-ok: deleted 2026-09-06 -->
-| `GET/POST /api/campaigns`, `POST …/{id}/send` | `routers/campaigns.py` | `modules/campaigns/router.py` (3 of 4 routes; `/stats` stays) |
+| `GET/POST /api/campaigns`, `POST …/{id}/send` | `routers/campaigns.py` | `modules/campaigns/router.py` (3 of 4 routes; `/stats` stayed until the 2026-09-07 follow-up removed it too — see the last section) |
 | `GET /api/dispatch/locations` | `routers/tech_locations.py` | `modules/gps_dispatch/router.py::list_locations` |
 | `GET/POST /api/fleet/vehicles` | `routers/fleet.py` | `modules/fleet/router.py` |
 | `GET/POST /api/inventory/parts`, `GET …/low-stock` | `routers/inventory.py` | `modules/inventory/router.py` |
@@ -134,3 +134,85 @@ belongs to the QB retirement. Filed as #632.
 - **Prod (`gdx`):** recount immediately before `update.sh` — `po_requests`, `po_request_lines`, `portal_booking_requests`, `booking_requests_router`, `booking_jobs_router`, `inbound_sms` all 0. `update.sh` snapshot taken, 091 and 092 ran at boot, alembic head `092_drop_dead_duplicate_tables`, the six tables gone, `technician_locations` still present, all containers on 1.118.0 and healthy. Rollback target 1.117.1.
 - **Demo (`gdx-demo`):** same recount, all 0; pin bumped, recreated, healthy in seconds, alembic head 092.
 - **Walk:** as the auditor (prod) and demo owner (demo): `/api/admin/permissions` → 200 list from admin_ops; `/api/ai/usage` → 401 without a session, 200 with one; `/api/mobile/schedule`, `/api/mobile/my-jobs`, `/api/mobile/timecard`, `/api/booking/requests`, `/api/customers/{id}/communications` → 404; `/api/mobile/today` and `/api/purchase-orders` → 200. In the browser, the customer detail page shows ten tabs ending `Email, Portal` and the mobile customer page eight ending `Recurring, Portal`, in light and dark, on prod and demo. The running images contain no `booking.py`, `po_workflow.py` or `twilio_signature.py` <!-- link-ok: deleted 2026-09-06 -->, and the built bundle no longer contains the Communications tab.
+
+## Follow-up (2026-09-07) — the #480 sweep was list-driven
+
+The 2026-09-07 code review of this range re-ran #480's stated shape — every
+`@router` path in `routers/mobile.py` against every `/api/mobile` call string in
+`frontend/src` — instead of its 13-item candidate list, and the shape was still
+alive. Removed in PR #642 (`chore/mobile-campaign-orphans`):
+
+| Removed | Why |
+|---|---|
+| `POST /api/mobile/jobs/{id}/status`, `POST /api/mobile/job/{id}/status` | No SPA caller. The plural one wrote dispatch vocabulary straight into `Job.status` with no transition check — a corrupting write. The singular one only dispatched into `mobile_job_en_route` / `mobile_job_arrived` / `mobile_job_complete`, which the SPA calls directly and which all run `_validate_forward_transition`; the guard lives on there. The generic `/jobs/{id}/transition/{status}` route deleted above was a fourth guarded path. |
+| `POST /api/mobile/clock-in`, `POST /api/mobile/clock-out` | Day-level clock duplicates; the mobile timeclock view calls `/api/timeclock/clock-in|out` directly. |
+| `POST /api/mobile/job/{id}/clock-in`, `/clock-out`, `/notes` (singular aliases) | Stacked second paths on live handlers; the SPA uses the plural form only. |
+| `GET /api/campaigns/{id}/stats` (the whole `modules/campaigns/router.py`) | Read `segment_id`, `template_id`, `channel`, `campaign_type` from `marketing_campaigns`, columns the real table (`MarketingCampaign`, `create_all`) does not have; its `CREATE TABLE IF NOT EXISTS` was a no-op on any real install, so the route 500'd; `marketing_campaign_sends` had no writer left and does not exist on prod or demo (`to_regclass` on both databases, 2026-09-07). No SPA caller. Its test seeded the module's own DDL into a bare SQLite and was deleted with it. |
+
+Left in place, with the reason:
+
+- `POST /api/mobile/jobs/{id}/complete` has no SPA caller, but that is a
+  recorded decision — `MobileCloseoutOwnership.spec.js` guards it as
+  deliberately unreachable, and `test_mobile_signature_gate.py` /
+  `test_mobile_state_machine.py` still cover it.
+- `DELETE /api/mobile/jobs/{id}/customer/contacts/{contact_id}` has no SPA
+  caller either (found by the audit; its decorator spans lines, which the
+  first sweep's regex missed). It is not a duplicate: it was built to a stated
+  ask ("a wrong number a tech typed should be removable") and only the remove
+  button never shipped. Whether to build the button or delete the endpoint is a
+  product call — **decision owed**, not made here.
+
+Evidence that the removed handlers were never called, not just never wired
+(read-only prod query from the sixth audit pass, 2026-09-07): `audit_logs` is
+delete-protected (`audit_logs_no_delete` trigger) and holds 29,779 rows from
+2026-06-22 to today; rows whose action names any of the deleted handlers
+(`mobile_day_clock_in`, `mobile_day_clock_out`, `mobile_job_status_changed`,
+`update_mobile_job_status`): **0**. All 19 `clock_in` rows are `entity_type=job`
+(the kept per-job clock); the day clock is fully accounted for by the surviving
+router (`timeclock_clock_in` 22, `timeclock_clock_out` 21). `timeclock_entries_router`
+holds 60 rows, 0 keyed by a `technicians.id` — the key only the deleted day
+handler wrote. `/stats` leaves no audit row, so for it the proof is that it
+could not have succeeded: `marketing_campaigns` on prod and demo has none of the
+four columns it selected.
+
+The sweep's declared surface was `routers/mobile.py`; the audit re-ran the
+shape from the checked-in route table (`gdx_dispatch/openapi_routes.txt`) and
+found two more `/api/mobile` routes mounted from other files with no SPA
+caller — `POST /api/mobile/voice-note` (`routers/voice.py`) and
+`POST /api/mobile/chat/{message_id}/read` (`routers/mobile_chat.py`) → #641,
+not adjudicated here. Lesson recorded there: sweep from the route table, not
+from decorator regexes over one file. The surviving `routers/campaigns.py`
+serves four of its eleven routes to the SPA; the other seven are noted on #638.
+The MOB-05 checklist row that still names `/complete` as the completion path is
+part of #640.
+
+The sweep also checked the paths a literal grep cannot see: the one dynamic
+template in `MobileJobDetailView.vue` (`advance(path)`, only `en-route` and
+`arrived`), the offline outbox (`postQueued` never queues a removed URL), and
+the generated `types/api.d.ts` <!-- link-ok: deleted in #544 --> (deleted in #544). `openapi_snapshot --check` is
+the proof the routes are gone, not a route count from a bare `create_app()`.
+
+Filed, not done here: the orphaned `mobile_sync_actions` table (0 rows on prod
+and demo 2026-09-07) needs migration 093 → #636; the same sweep across every
+`modules/*/router.py` found 29 routes with no SPA call string that need an
+external-consumer / give-it-a-UI / delete verdict each → #637; with its router
+gone, the rest of `modules/campaigns` (service, tasks, models, and the empty
+`campaigns` / `campaign_sends` tables) is headless → #638.
+
+The removed paths are pinned in `test_dead_duplicates_retired.py::REMOVED_PATHS`
+so they stay gone.
+
+Found by the audit, not fixed here: the mobile job page's day clock
+(`_clock_states`, day branch) reads `timeclock_entries_router` by `Technician.id`,
+while the surviving writer `/api/timeclock/clock-in` keys rows by user id — so
+the page shows "Not clocked in" for every tech who has a Technician row. The
+deleted `mobile_day_clock_in` was the only writer that used the reader's key and
+nothing ever called it → #639.
+
+Also fixed on the way, and run against a throwaway container from this branch
+(14 API-level e2e tests passed; MOB-06 twice back to back so the second run
+took the router's 400 "already clocked in" branch): e2e MOB-09 sent
+`signature_data` to `POST /api/jobs/{id}/signature`, whose model requires
+`signature`, so it passed on a 422 without reaching the handler; it now sends
+the SPA's body and asserts 201. MOB-06 targets `/api/timeclock/*` directly. The
+sibling tolerances in MOB-03/04/05 are #640.

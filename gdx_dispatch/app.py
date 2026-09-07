@@ -592,12 +592,6 @@ except Exception:
     workflows = APIRouter(tags=["workflows"])
 
 try:
-    from gdx_dispatch.modules.campaigns import router as campaigns
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: campaigns")
-    campaigns = APIRouter(tags=["campaigns"])
-
-try:
     from gdx_dispatch.modules.proposals import router as proposals
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: proposals")
@@ -1615,7 +1609,6 @@ def create_app() -> FastAPI:
     app.include_router(equipment.router if hasattr(equipment, "router") else equipment)
     app.include_router(timeclock.router if hasattr(timeclock, "router") else timeclock)
     app.include_router(workflows.router if hasattr(workflows, "router") else workflows)
-    app.include_router(campaigns.router if hasattr(campaigns, "router") else campaigns)
     app.include_router(proposals.router if hasattr(proposals, "router") else proposals)
     app.include_router(fleet.router if hasattr(fleet, "router") else fleet)
     app.include_router(gps_dispatch.router if hasattr(gps_dispatch, "router") else gps_dispatch)

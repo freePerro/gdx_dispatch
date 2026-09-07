@@ -232,45 +232,6 @@ def test_parts_used_deducts_inventory(session_factory):
         db.close()
 
 
-def test_clock_in_creates_time_entry(session_factory):
-    """Day-level clock-in writes the canonical timeclock_entries_router row.
-
-    Post-S3 reconciliation (commit 9cd67f7d, 2026-04-29) the day clock
-    surface writes ``timeclock_entries_router`` rather than the legacy
-    ``time_entries`` table (the /timecard reader that documented this was
-    removed 2026-09-06, #480). Per-job
-    clock endpoints still use time_entries for payroll.
-    """
-    db = session_factory()
-    try:
-        r = mobile_router.mobile_day_clock_in(
-            request=_request(),
-            current_user=_TEST_USER,
-            db=db,
-        )
-        assert r.status_code == 201
-
-        # _get_technician_id resolves user-1 → tech-1 via the seeded
-        # Technician row (see _seed_job_bundle); the handler stamps
-        # technician_id='tech-1' on the timeclock row.
-        row = db.execute(
-            text(
-                """
-                SELECT id
-                FROM timeclock_entries_router
-                WHERE tenant_id='tenant-a'
-                  AND technician_id='tech-1'
-                  AND entry_type='clock'
-                  AND clock_out_at IS NULL
-                  AND deleted_at IS NULL
-                """
-            )
-        ).mappings().first()
-        assert row is not None
-    finally:
-        db.close()
-
-
 def test_audit_logged(session_factory):
     db = session_factory()
     try:
