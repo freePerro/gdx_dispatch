@@ -1,6 +1,6 @@
 # Dead duplicates removal — 2026-09-06
 
-Status: PLAN 2026-09-06 (the ten issues below were the plan), built and adversarially audited the same day; PR #633 OPEN, not merged, stacked on #630. Update to MERGED #633 when it lands, then RELEASED vX.Y.Z after the prod walk. Closes #458 #459 #480 #568 #569 #571 #572 #574 #595 #599. Migration 092.
+Status: RELEASED v1.118.0 — MERGED #633 2026-09-07 (squash 3c0e7b9, stacked on #630); prod and demo rolled to 1.118.0 on 2026-09-07 ~02:36Z with the six-table recount at 0 rows on both immediately before; migrations 091+092 ran, alembic head 092 on both; walked on prod and demo (API, desktop and mobile customer pages, light and dark). Closes #458 #459 #480 #568 #569 #571 #572 #574 #595 #599. Migration 092.
 
 ## What already exists (do not rebuild)
 
@@ -126,3 +126,11 @@ names from a table would not show up in this grep):**
 
 None is removed here: each needs a read, not a grep, and the QuickBooks set
 belongs to the QB retirement. Filed as #632.
+
+## Shipped (2026-09-07)
+
+- **Merged:** #630 → 651aadf, then #633 rebased onto it with `--onto` and merged → 3c0e7b9. 16 of 16 PR checks green on each.
+- **Released:** v1.118.0 tagged on 3c0e7b9 after all three main-tip runs went green; Release workflow succeeded; both images present in GHCR.
+- **Prod (`gdx`):** recount immediately before `update.sh` — `po_requests`, `po_request_lines`, `portal_booking_requests`, `booking_requests_router`, `booking_jobs_router`, `inbound_sms` all 0. `update.sh` snapshot taken, 091 and 092 ran at boot, alembic head `092_drop_dead_duplicate_tables`, the six tables gone, `technician_locations` still present, all containers on 1.118.0 and healthy. Rollback target 1.117.1.
+- **Demo (`gdx-demo`):** same recount, all 0; pin bumped, recreated, healthy in seconds, alembic head 092.
+- **Walk:** as the auditor (prod) and demo owner (demo): `/api/admin/permissions` → 200 list from admin_ops; `/api/ai/usage` → 401 without a session, 200 with one; `/api/mobile/schedule`, `/api/mobile/my-jobs`, `/api/mobile/timecard`, `/api/booking/requests`, `/api/customers/{id}/communications` → 404; `/api/mobile/today` and `/api/purchase-orders` → 200. In the browser, the customer detail page shows ten tabs ending `Email, Portal` and the mobile customer page eight ending `Recurring, Portal`, in light and dark, on prod and demo. The running images contain no `booking.py`, `po_workflow.py` or `twilio_signature.py` <!-- link-ok: deleted 2026-09-06 -->, and the built bundle no longer contains the Communications tab.
