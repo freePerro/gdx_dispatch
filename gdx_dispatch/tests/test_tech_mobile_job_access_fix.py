@@ -7,7 +7,8 @@ defects, each pinned here:
    address should be (raw SQL bypassed EncryptedString decryption).
 2. ``/api/mobile/my-jobs/{id}`` 500'd on prod — its raw SQL selected
    ``job_photos.photo_type``, a column that has never existed
-   (``kind`` is the real name).
+   (``kind`` is the real name). That route was removed 2026-09-06 (#480:
+   no caller); its regression test went with it.
 3. ``GET /api/settings/integrations/google-maps`` 403'd technicians (the
    settings router's router-level admin gate overrode the endpoint's
    documented any-authenticated-user intent), blanking the mobile map.
@@ -168,23 +169,6 @@ def test_technician_can_read_all_public_settings_surfaces(db):
 # matches the undashed form, while prod PG accepts the dashed form the SPA
 # sends (verified live 2026-07-16). The bug under test (photo_type →
 # UndefinedColumn 500) is independent of the id format.
-
-
-def test_my_job_detail_with_photo_no_longer_500s(db):
-    j = _seed_tech_job(db)
-    db.add(JobPhoto(
-        id=uuid4(), company_id=TENANT, job_id=j.id, kind="before",
-        url="/uploads/p1.jpg", filename="p1.jpg", caption="before shot",
-        created_at=datetime.now(UTC),
-    ))
-    db.commit()
-    client = _build_app(db)
-    r = client.get(f"/api/mobile/my-jobs/{j.id.hex}")
-    assert r.status_code == 200, r.text
-    photos = r.json()["photos"]
-    assert len(photos) == 1
-    # Response shape keeps the documented photo_type key, served from `kind`.
-    assert photos[0]["photo_type"] == "before"
 
 
 def test_job_detail_photos_include_url_for_rendering(db):

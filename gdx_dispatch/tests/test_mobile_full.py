@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -133,25 +133,6 @@ def _seed_job_bundle(db: Session, scheduled_dt: datetime | None = None) -> dict[
     return {"job_id": _JOB_ID, "today": now.date().isoformat()}
 
 
-def test_schedule_returns_todays_jobs(session_factory):
-    db = session_factory()
-    try:
-        r = mobile_router.get_mobile_schedule(
-            request=_request(),
-            date=date(2026, 4, 3),
-            current_user=_TEST_USER,
-            db=db,
-        )
-        assert r.status_code == 200
-        body = _as_json(r)
-        assert body["count"] == 1
-        assert body["jobs"][0]["customer"]["name"] == "Acme Customer"
-        assert body["jobs"][0]["navigation_link"].startswith("https://")
-        assert body["jobs"][0]["time_window"]["start"]
-    finally:
-        db.close()
-
-
 def test_en_route_updates_status_and_notifies(session_factory):
     db = session_factory()
     try:
@@ -256,7 +237,8 @@ def test_clock_in_creates_time_entry(session_factory):
 
     Post-S3 reconciliation (commit 9cd67f7d, 2026-04-29) the day clock
     surface writes ``timeclock_entries_router`` rather than the legacy
-    ``time_entries`` table — see mobile_timecard's docstring. Per-job
+    ``time_entries`` table (the /timecard reader that documented this was
+    removed 2026-09-06, #480). Per-job
     clock endpoints still use time_entries for payroll.
     """
     db = session_factory()
@@ -289,72 +271,6 @@ def test_clock_in_creates_time_entry(session_factory):
         db.close()
 
 
-def test_location_stored(session_factory):
-    db = session_factory()
-    try:
-        r = mobile_router.report_mobile_location(
-            payload=mobile_router.LocationBody(lat=30.2672, lng=-97.7431, timestamp="2026-04-03T13:00:00Z"),
-            request=_request(),
-            current_user=_TEST_USER,
-            db=db,
-        )
-        assert r.status_code == 200
-
-        row = db.execute(
-            text(
-                """
-                SELECT lat, lng
-                FROM technician_locations
-                WHERE company_id='tenant-a' AND tech_id='tech-1'
-                ORDER BY created_at DESC
-                LIMIT 1
-                """
-            )
-        ).mappings().first()
-        assert row is not None
-        assert row["lat"] == pytest.approx(30.2672)
-    finally:
-        db.close()
-
-
-def test_offline_sync_processes_batch(session_factory):
-    db = session_factory()
-    try:
-        r = mobile_router.mobile_sync(
-            payload=mobile_router.SyncBatchBody(
-                actions=[
-                    mobile_router.SyncAction(
-                        type="job_note",
-                        entity_id=_JOB_ID,
-                        data={"note": "First"},
-                        queued_at="2026-04-03T15:00:00Z",
-                    ),
-                    mobile_router.SyncAction(
-                        type="job_note",
-                        entity_id=_JOB_ID,
-                        data={"note": "First"},
-                        queued_at="2026-04-03T15:00:00Z",
-                    ),
-                    mobile_router.SyncAction(
-                        type="location",
-                        entity_id="tech-1",
-                        data={"lat": 30.3, "lng": -97.7, "timestamp": "2026-04-03T15:02:00Z"},
-                        queued_at="2026-04-03T15:02:00Z",
-                    ),
-                ]
-            ),
-            request=_request(),
-            current_user=_TEST_USER,
-            db=db,
-        )
-        assert r.status_code == 200
-        body = _as_json(r)
-        assert body["processed"] == 2
-        assert body["skipped_duplicates"] == 1
-    finally:
-        db.close()
-
-
 def test_audit_logged(session_factory):
     db = session_factory()
     try:
@@ -377,28 +293,6 @@ def test_audit_logged(session_factory):
             {"jid": _JOB_ID},
         )
         assert row.scalar_one() == 1
-    finally:
-        db.close()
-
-
-def test_timecard_returns_todays_entries(session_factory):
-    db = session_factory()
-    try:
-        in_r = mobile_router.mobile_day_clock_in(
-            request=_request(),
-            current_user=_TEST_USER,
-            db=db,
-        )
-        assert in_r.status_code == 201
-
-        r = mobile_router.mobile_timecard(
-            request=_request(),
-            date=datetime.now(UTC).date(),
-            current_user=_TEST_USER,
-            db=db,
-        )
-        assert r.status_code == 200
-        assert _as_json(r)["count"] >= 1
     finally:
         db.close()
 

@@ -192,21 +192,3 @@ def test_fractional_job_disposition_still_takes_fractional_coverage(db):
                  actor_id="tester", job_id=job.id)
     db.commit()
     assert line.status == "confirmed"
-
-
-def test_po_workflow_double_receive_409s(db):
-    """The third (mounted) PO system duplicated van-inventory rows on a
-    repeat receive — now the sibling 409 guard refuses."""
-    from starlette.requests import Request
-
-    from gdx_dispatch.routers.po_workflow import PORequest, receive_po
-
-    po = PORequest(id=uuid.uuid4(), status="pending", company_id=TENANT, requested_by="tester")
-    db.add(po)
-    db.commit()
-    req = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
-    req.state.tenant = {"id": TENANT}
-    receive_po(po.id, request=req, user={"sub": "u"}, db=db, truck_id=None)
-    with pytest.raises(HTTPException) as exc:
-        receive_po(po.id, request=req, user={"sub": "u"}, db=db, truck_id=None)
-    assert exc.value.status_code == 409

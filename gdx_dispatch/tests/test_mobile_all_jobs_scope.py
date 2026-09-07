@@ -155,7 +155,7 @@ def test_invalid_scope_is_400(session_factory):
 
 def test_setting_grants_detail_read_but_never_write(session_factory):
     """THE contract: company-wide visibility is read-only. With the option
-    ON, tech A can open tech B's job detail — but /start still 404s."""
+    ON, tech A can open tech B's job detail — but a write (notes) still 404s."""
     seed = _seed(session_factory)
     _enable_setting(session_factory)
 
@@ -166,12 +166,20 @@ def test_setting_grants_detail_read_but_never_write(session_factory):
         )
         assert detail.status_code == 200
 
-        start = mobile_router.mobile_job_start(
-            job_id=seed["job_id"], request=_request(), current_user=TECH_A, db=db
-        )
-        assert start.status_code == 404, (
+        # A live write route (notes) — /jobs/{id}/start, which this test
+        # used to call, was removed 2026-09-06 (#480). _assert_job_access
+        # raises the 404.
+        with pytest.raises(HTTPException) as exc:
+            mobile_router.add_mobile_job_note(
+                job_id=seed["job_id"],
+                payload=mobile_router.NoteBody(note="tech A note"),
+                request=_request(),
+                current_user=TECH_A,
+                db=db,
+            )
+        assert exc.value.status_code == 404, (
             "techs_see_all_jobs must NOT grant write access — "
-            f"got {start.status_code} from /start"
+            f"got {exc.value.status_code} from the notes write"
         )
     finally:
         db.close()

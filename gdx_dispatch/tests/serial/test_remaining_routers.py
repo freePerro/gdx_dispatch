@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.routers import booking, checklists, equipment_tracking, fleet, notifications, timeclock
+from gdx_dispatch.routers import checklists, equipment_tracking, fleet, notifications, timeclock
 
 
 class DummyRequest:
@@ -49,7 +49,6 @@ def test_routers_include_module_dependencies() -> None:
     assert require_module("equipment_tracking") in [dep.dependency for dep in equipment_tracking.router.dependencies]
     assert require_module("timeclock") in [dep.dependency for dep in timeclock.router.dependencies]
     assert require_module("jobs") in [dep.dependency for dep in checklists.router.dependencies]
-    assert require_module("customer_portal") in [dep.dependency for dep in booking.router.dependencies]
     assert require_module("fleet") in [dep.dependency for dep in fleet.router.dependencies]
 
 
@@ -374,86 +373,6 @@ def test_checklists_mark_item_complete(app_ctx: tuple[Session, DummyRequest, dic
     )
     assert updated.completed is True
     assert _audit_count(SessionLocal) == before + 3
-
-
-# Booking (3)
-
-def test_booking_available_slots_excludes_pending(app_ctx: tuple[Session, DummyRequest, dict[str, str], sessionmaker]) -> None:
-    db, request, current_user, _ = app_ctx
-    target_date = date.today() + timedelta(days=1)
-    booking.create_booking_request(
-        payload=booking.BookingRequestCreate(
-            name="Pat",
-            phone="5551112222",
-            service="opener repair",
-            preferred_date=target_date,
-            preferred_slot="09:00",
-        ),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-    available = booking.get_available_slots(date=target_date, request=request, current_user=current_user, db=db)
-    assert "09:00" not in available.slots
-
-
-def test_booking_request_create_and_list_pending(app_ctx: tuple[Session, DummyRequest, dict[str, str], sessionmaker]) -> None:
-    db, request, current_user, SessionLocal = app_ctx
-    before = _audit_count(SessionLocal)
-    booking.create_booking_request(
-        payload=booking.BookingRequestCreate(
-            name="Jordan",
-            phone="5553334444",
-            service="spring replacement",
-            preferred_date=date.today() + timedelta(days=2),
-        ),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-    rows = booking.list_booking_requests(request=request, status="pending", current_user=current_user, db=db)
-    assert any(row.name == "Jordan" for row in rows)
-    assert _audit_count(SessionLocal) == before + 1
-
-
-def test_booking_approve_and_decline(app_ctx: tuple[Session, DummyRequest, dict[str, str], sessionmaker]) -> None:
-    db, request, current_user, SessionLocal = app_ctx
-    before = _audit_count(SessionLocal)
-    req1 = booking.create_booking_request(
-        payload=booking.BookingRequestCreate(
-            name="Alex",
-            phone="5550001111",
-            service="new opener",
-            preferred_date=date.today() + timedelta(days=3),
-        ),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-    req2 = booking.create_booking_request(
-        payload=booking.BookingRequestCreate(
-            name="Casey",
-            phone="5550002222",
-            service="door tune-up",
-            preferred_date=date.today() + timedelta(days=4),
-        ),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-
-    approved = booking.approve_booking_request(request_id=req1.id, request=request, current_user=current_user, db=db)
-    declined = booking.decline_booking_request(
-        request_id=req2.id,
-        payload=booking.BookingDeclineRequest(reason="Outside service area"),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-
-    assert approved.status == "approved"
-    assert declined.status == "declined"
-    assert _audit_count(SessionLocal) == before + 4
 
 
 # Fleet (3)

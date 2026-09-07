@@ -19,7 +19,7 @@ from gdx_dispatch.core.auth_capabilities import derive_ai_worker_caps
 from gdx_dispatch.core.auth_capabilities import caps_for_role
 from gdx_dispatch.core.auth_dispatcher import get_current_principal
 from gdx_dispatch.routers.auth import get_current_user
-from gdx_dispatch.core.database import get_db, get_db
+from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.llm.anthropic_client import get_client
 from gdx_dispatch.core.llm.key_storage import get_key
 from gdx_dispatch.core.mcp_invoke import invoke_tool
@@ -100,23 +100,15 @@ def get_current_principal_for_ai(
 
 
 def get_db_for_ai(db: Session = Depends(get_db)) -> Session:
-    """Wrapper around get_db so tests can override this dep
-    via app.dependency_overrides without touching the database path.
+    """Wrapper around get_db so tests can override this one dependency via
+    ``app.dependency_overrides`` without touching the database path.
 
-    Used for: TenantSettings reads (the LLM key + last_validated_at),
-    audit log writes.
-    """
-    return db
-
-
-def get_db_for_ai(db: Session = Depends(get_db)) -> Session:
-    """DB session for AI tool invocations.
-
-    Same database as the settings session above; kept as a separate
-    dependency so tests can override the tool session independently of the
-    settings session. Tools registered in ``gdx_dispatch/core/mcp_tools/``
-    query the business tables (customers, jobs, invoices, …), so
-    ``invoke_tool`` must receive THIS session.
+    One session serves everything the AI routes touch: the TenantSettings
+    reads (LLM key, last_validated_at), the audit-log writes, and the MCP
+    tool invocations that query the business tables. This file used to
+    define the function twice, with docstrings describing a control-plane /
+    tenant-plane split that never existed; Python kept the second copy
+    (#595, removed 2026-09-06).
     """
     return db
 

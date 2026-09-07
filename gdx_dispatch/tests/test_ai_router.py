@@ -193,57 +193,6 @@ def test_fallback(monkeypatch, ai_module):
     assert calls[1].startswith("https://")
 
 
-# 8
-
-def test_usage_endpoint(ai_module):
-    logger = ai_module.get_ai_logger()
-    asyncio.run(
-        logger.log(
-            tenant_id="tenant-usage",
-            task="general",
-            model="m",
-            input_tokens=10,
-            output_tokens=5,
-            cost=0.12,
-            latency_ms=12,
-        )
-    )
-    asyncio.run(
-        logger.log(
-            tenant_id="tenant-usage",
-            task="general",
-            model="m",
-            input_tokens=4,
-            output_tokens=6,
-            cost=0.08,
-            latency_ms=10,
-        )
-    )
-
-    from starlette.requests import Request
-
-    body = asyncio.run(
-        ai_module.ai_usage(
-            Request(
-                {
-                    "type": "http",
-                    "method": "GET",
-                    "path": "/api/ai/usage",
-                    "headers": [],
-                    "state": {"tenant": {"id": "tenant-usage"}},
-                }
-            )
-        )
-    )
-
-    assert body["tenant_id"] == "tenant-usage"
-    assert body["requests"] == 2
-    assert body["input_tokens"] == 14
-    assert body["output_tokens"] == 11
-    assert body["total_tokens"] == 25
-    assert body["cost"] == pytest.approx(0.20)
-
-
 # 9
 
 def test_generate_with_tools(monkeypatch, ai_module):

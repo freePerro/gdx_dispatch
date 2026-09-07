@@ -95,7 +95,7 @@ def test_activity_recent_respects_tenant_scope(session_factory):
         db.close()
 
 
-def test_activity_by_job_filters_correctly(session_factory):
+def test_activity_by_customer_filters_correctly(session_factory):
     db = session_factory()
     try:
         _seed_audit(db, tenant_id="tenant-a", action="create_job", entity_type="job", entity_id="job-X")
@@ -103,20 +103,9 @@ def test_activity_by_job_filters_correctly(session_factory):
         # Ensure a non-job row is not returned
         _seed_audit(db, tenant_id="tenant-a", action="create_customer", entity_type="customer", entity_id="cust-1")
 
-        result = activity_router.list_job_activity(
-            job_id="job-X",
-            request=_request("tenant-a"),
-            _=_TEST_USER,
-            db=db,
-            limit=50,
-            offset=0,
-        )
-        assert result["total"] == 1
-        assert len(result["items"]) == 1
-        assert result["items"][0]["entity_id"] == "job-X"
-        assert result["items"][0]["entity_type"] == "job"
-
-
+        # The per-job feed lived in this router too until 2026-09-06 (#571):
+        # routers/jobs.py registered GET /api/jobs/{id}/activity first, so
+        # this file's copy never served and was deleted.
         # Customer feed returns only customer rows
         cust_result = activity_router.list_customer_activity(
             customer_id="cust-1",

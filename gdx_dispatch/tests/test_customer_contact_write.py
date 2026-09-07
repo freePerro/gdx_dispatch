@@ -4,9 +4,9 @@ Two contracts the mobile contact endpoints stand on:
 
 1. **Writes go through the ORM so the *_hash sidecars stay true.** Customer's
    name/email/phone are @validates-hooked to recompute name_hash/email_hash/
-   phone_hash. Those hashes are not decoration: tasks/email_poller.py finds a
-   customer by email_hash and modules/phone_com/customer_resolver.py matches an
-   inbound call by phone_hash (E.164-normalized). A raw UPDATE would store the
+   phone_hash. Those hashes are not decoration: modules/outlook/tagger.py matches
+   inbound mail to a customer by email_hash and modules/phone_com/customer_resolver.py
+   matches an inbound call by phone_hash (E.164-normalized). A raw UPDATE would store the
    value, skip the hash, and that customer's own replies and calls would stop
    matching them — silently, forever, with the data looking perfectly fine.
 
@@ -53,16 +53,16 @@ def _customer(db: Session, **kw) -> Customer:
 # ── Contract 1: the hash follows the value ──────────────────────────────────
 
 
-def test_adding_an_email_makes_the_customer_findable_by_the_email_poller(db: Session) -> None:
+def test_adding_an_email_makes_the_customer_findable_by_inbound_mail(db: Session) -> None:
     """219 of 382 customers here have no email. When a tech finally gets one,
-    the poller has to be able to match the reply that comes back."""
+    the Outlook tagger has to be able to match the reply that comes back."""
     cust = _customer(db, email=None)
     assert cust.email_hash is None
 
     cust.email = "paul@example.com"
     db.commit()
 
-    # Exactly what tasks/email_poller.py computes for an inbound sender.
+    # Exactly what the inbound-mail matcher computes for a sender address.
     assert cust.email_hash == HashColumn.hash_for_search("paul@example.com")
 
 

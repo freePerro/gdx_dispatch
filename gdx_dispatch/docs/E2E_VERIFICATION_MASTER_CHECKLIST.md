@@ -224,7 +224,7 @@ Customers can be created, viewed, edited, searched, and have full history (jobs,
 | CUST-06 | Customer detail page | Shows customer info, job history, invoice history, communication log, documents |
 | CUST-07 | Customer detail - jobs tab | Lists all jobs for this customer with status and date |
 | CUST-08 | Customer detail - invoices tab | Lists all invoices with amount, status, date |
-| CUST-09 | Customer detail - communications tab | Shows SMS/email history |
+| ~~CUST-09~~ | ~~Customer detail - communications tab~~ | Retired 2026-09-06 (#459) — the tab read a ui_compat stub that always returned an empty list; no communications table ever existed. Tab and stub are both gone |
 | CUST-10 | Edit customer | Change name/phone, save, reflected in detail and list |
 | CUST-11 | Delete customer (soft) | Soft delete, disappears from list, jobs still reference it |
 | CUST-12 | Customer import | POST /import/customers with CSV data, customers created |
@@ -441,7 +441,7 @@ channels are `/inbox` (Outlook, `/api/outlook/*`) and `/phone-com/messages`
 | ~~COMM-03~~ | ~~SMS conversations list~~ | Retired (#350) — `GET /api/sms/conversations` removed |
 | ~~COMM-04~~ | ~~Conversation detail~~ | Retired (#350) — `GET /api/sms/conversations/{phone}` removed |
 | ~~COMM-05~~ | ~~Incoming SMS webhook~~ | Retired (#350) — `POST /api/sms/webhook` removed; the Twilio inbound webhook that replaced it went 2026-09-06 (never configured); inbound SMS is the Phone.com sync (modules/phone_com/sync.py) |
-| ~~COMM-06~~ | ~~Communication timeline~~ | Retired (#350) — the customer tab reads `GET /api/customers/{id}/communications` |
+| ~~COMM-06~~ | ~~Communication timeline~~ | Retired (#350); the customer-tab stub it pointed at, `GET /api/customers/{id}/communications`, went 2026-09-06 (#459) |
 | ~~COMM-07~~ | ~~Do Not Contact~~ | Retired (#350) — the DNC routes never stored anything durably; see contact-opt-out-suppression-plan.md |
 | COMM-08 | Email send | System sends email (estimate, invoice, receipt), delivered to inbox |
 | ~~COMM-09~~ | ~~Inbox view~~ | Retired (#350) — `/api/inbox/*` removed; the mailbox is `/api/outlook/*` |
@@ -557,7 +557,7 @@ Technicians on mobile devices can view their schedule, update job status, clock 
 
 | ID | Test Case | Verification |
 |----|-----------|-------------|
-| MOB-01 | Mobile schedule | GET /api/mobile/schedule returns today's jobs for logged-in tech |
+| MOB-01 | Mobile schedule | GET /api/mobile/today returns today's jobs for logged-in tech (`/api/mobile/schedule` removed 2026-09-06, #480) |
 | MOB-02 | Job detail | GET /api/mobile/job/{id} returns full job info |
 | MOB-03 | En-route | POST /api/mobile/jobs/{id}/en-route updates status |
 | MOB-04 | Arrived | POST /api/mobile/jobs/{id}/arrived updates status |
@@ -565,11 +565,11 @@ Technicians on mobile devices can view their schedule, update job status, clock 
 | MOB-06 | Mobile clock in/out | POST /api/mobile/clock-in and /clock-out work |
 | MOB-07 | Job clock in/out | POST /api/mobile/jobs/{id}/clock-in and /clock-out work |
 | MOB-08 | Photo upload (mobile) | POST /api/mobile/jobs/{id}/photos, photo saved |
-| MOB-09 | Signature capture (mobile) | POST /api/mobile/jobs/{id}/signature, signature saved |
+| MOB-09 | Signature capture (mobile) | POST /api/jobs/{id}/signature, signature saved (the `/api/mobile/...` alias removed 2026-09-06, #480) |
 | MOB-10 | Add note | POST /api/mobile/jobs/{id}/notes, note appears on job |
 | MOB-11 | Parts used | POST /api/mobile/jobs/{id}/parts-used records parts |
 | MOB-12 | Location tracking | POST /api/mobile/location records GPS coordinates |
-| MOB-13 | Offline sync | POST /api/mobile/sync reconciles offline data |
+| ~~MOB-13~~ | ~~Offline sync~~ | Retired 2026-09-06 (#480) — `POST /api/mobile/sync` had no caller; the PWA queue (useOfflineSync) replays each write to its own route |
 | MOB-14 | Mobile viewport | Mobile schedule page renders correctly at 375px width |
 | MOB-15 | Touch targets | All buttons/links at least 44x44px (mobile accessibility) |
 
@@ -773,9 +773,9 @@ their place:
 
 | ID | Test Case | Verification |
 |----|-----------|-------------|
-| BOOK-01 | Available slots | GET /api/booking/available-slots returns bookable time slots |
-| BOOK-02 | Book appointment | POST /api/booking/booking creates appointment request |
-| BOOK-03 | Booking requests | GET /api/booking/requests lists pending bookings for admin |
+| ~~BOOK-01~~ | ~~Available slots~~ | Retired 2026-09-06 (#458) — `routers/booking.py` had no UI caller and 0 requests ever; router, models and tables removed | <!-- link-ok: deleted 2026-09-06 -->
+| ~~BOOK-02~~ | ~~Book appointment~~ | Retired 2026-09-06 (#458) — same; the portal-side `POST /api/portal/booking` had no caller either |
+| ~~BOOK-03~~ | ~~Booking requests~~ | Retired 2026-09-06 (#458) |
 | BOOK-04 | Customer portal login | POST /api/portal/login returns customer session |
 | BOOK-05 | Portal invoice payment | POST /api/portal/invoices/{id}/pay processes payment |
 | BOOK-06 | Portal branding | GET /api/portal/branding returns tenant-specific branding |

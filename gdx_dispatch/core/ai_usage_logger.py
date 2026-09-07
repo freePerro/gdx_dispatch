@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
 
+from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.log_format import build_log_entry
 
@@ -218,13 +219,24 @@ def _usage_stats(db: Session, tenant_id: str) -> dict[str, Any]:
 
 
 @router.get("/usage")
-def get_ai_usage(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+def get_ai_usage(
+    request: Request,
+    db: Session = Depends(get_db),
+    _: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Durable per-tenant usage (ai_usage_logs). Until 2026-09-06 a second
+    GET /api/ai/usage in core/ai_router.py, backed by an in-process list that
+    emptied on restart, was registered first and served instead (#574)."""
     tenant_id = _tenant_id_from_request(request)
     return _usage_stats(db, tenant_id)
 
 
 @router.get("/usage/export")
-def export_ai_usage_csv(request: Request, db: Session = Depends(get_db)):
+def export_ai_usage_csv(
+    request: Request,
+    db: Session = Depends(get_db),
+    _: dict[str, Any] = Depends(get_current_user),
+):
     tenant_id = _tenant_id_from_request(request)
     ensure_ai_usage_table(db)
     rows = db.execute(

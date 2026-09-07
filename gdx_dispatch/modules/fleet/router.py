@@ -15,19 +15,14 @@ from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.modules.fleet.models import Vehicle, VehicleServiceRecord
 from gdx_dispatch.modules.fleet.service import get_due_maintenance, log_service, update_odometer
 
+# GET/POST /fleet/vehicles left this module 2026-09-06 (#569): routers/fleet.py registers
+# them first, so FastAPI never dispatched here. The four routes below are unique to
+# this module.
 router = APIRouter(prefix="/api", tags=["fleet"], dependencies=[Depends(require_module("fleet")), Depends(get_current_user)])
 
-class VehicleIn(BaseModel): vin: str | None = None; make: str; model: str; year: int; license_plate: str | None = None; assigned_technician_id: str | None = None; status: str = "available"; odometer: int = 0; last_service_odometer: int | None = None; last_service_at: datetime | None = None; service_interval_miles: int = 3000  # noqa: E701,E702
 class VehiclePatch(BaseModel): vin: str | None = None; make: str | None = None; model: str | None = None; year: int | None = None; license_plate: str | None = None; assigned_technician_id: str | None = None; status: str | None = None; odometer: int | None = None; last_service_odometer: int | None = None; last_service_at: datetime | None = None; service_interval_miles: int | None = None  # noqa: E701,E702
 class ServiceIn(BaseModel): service_type: str; mileage: int; service_date: datetime; cost: float | None = None; notes: str | None = None  # noqa: E701,E702
 
-@router.get("/fleet/vehicles", response_model=None)
-def list_vehicles(db: Session = Depends(get_db)) -> list[Vehicle]:
-    return list(db.execute(select(Vehicle).where(Vehicle.deleted_at.is_(None)).order_by(Vehicle.created_at.desc())).scalars().all())
-
-@router.post("/fleet/vehicles", response_model=None)
-def create_vehicle(payload: VehicleIn, db: Session = Depends(get_db)) -> Vehicle:
-    row = Vehicle(**payload.model_dump()); db.add(row); db.commit(); db.refresh(row); return row  # noqa: E701,E702
 
 @router.put("/fleet/vehicles/{vehicle_id}", response_model=None)
 def put_vehicle(vehicle_id: UUID, payload: VehiclePatch, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> Vehicle:

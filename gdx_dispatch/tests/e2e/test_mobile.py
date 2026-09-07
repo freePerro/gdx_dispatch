@@ -49,8 +49,9 @@ class TestMobileSchedule:
     """Mobile schedule and daily workflow tests."""
 
     def test_mob_01_mobile_schedule_loads(self, api, console_tracker):
-        """MOB-01: GET /api/mobile/schedule returns today's jobs."""
-        resp = api.get("/api/mobile/schedule")
+        """MOB-01: GET /api/mobile/today returns today's jobs (the legacy
+        /schedule route was removed 2026-09-06, #480)."""
+        resp = api.get("/api/mobile/today")
         # Accept 200 (data) or 404 (module not enabled)
         if resp.status_code == 404:
             pytest.skip("Mobile schedule module not enabled")
@@ -197,15 +198,12 @@ class TestMobileUploads:
     def test_mob_09_signature_capture(self, api, console_tracker):
         """MOB-09: POST signature to job, signature saved."""
         job_id = _get_first_job_id(api)
-        resp = api.post(f"/api/mobile/jobs/{job_id}/signature", json_data={
+        # /api/mobile/jobs/{id}/signature was removed 2026-09-06 (#480); the
+        # signature pad posts to the jobs router.
+        resp = api.post(f"/api/jobs/{job_id}/signature", json_data={
             "signature_data": SIGNATURE_DATA,
             "signer_name": "E2E Test Signer",
         })
-        if resp.status_code == 404:
-            resp = api.post(f"/api/jobs/{job_id}/signature", json_data={
-                "signature_data": SIGNATURE_DATA,
-                "signer_name": "E2E Test Signer",
-            })
         assert resp.status_code < 500, f"Signature capture failed: {resp.status_code} {resp.text[:200]}"
         console_tracker.assert_no_errors("MOB-09")
 
@@ -257,16 +255,6 @@ class TestMobilePartsAndLocation:
             })
         assert resp.status_code < 500, f"Location tracking failed: {resp.status_code} {resp.text[:200]}"
         console_tracker.assert_no_errors("MOB-12")
-
-    def test_mob_13_offline_sync(self, api, console_tracker):
-        """MOB-13: POST /api/mobile/sync reconciles offline data."""
-        resp = api.post("/api/mobile/sync", json_data={
-            "actions": [],  # empty sync — should still succeed
-        })
-        if resp.status_code == 404:
-            pytest.skip("Offline sync endpoint not available")
-        assert resp.status_code < 500, f"Offline sync failed: {resp.status_code} {resp.text[:200]}"
-        console_tracker.assert_no_errors("MOB-13")
 
 
 class TestMobileViewport:

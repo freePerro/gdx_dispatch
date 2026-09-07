@@ -38,6 +38,27 @@ RESOLVED_SAFE_SHADOWS = {
     ("GET", "/api/settings/branding"),
     ("GET", "/api/settings/integrations/google-maps"),
     ("GET", "/api/settings/modules"),
+    # Resolved 2026-09-06 (#568–#574): each losing handler was deleted, so
+    # exactly one registration remains — the one that always served.
+    ("GET", "/api/admin/permissions"),
+    ("GET", "/api/ai/usage"),
+    ("GET", "/api/campaigns"),
+    ("POST", "/api/campaigns"),
+    ("POST", "/api/campaigns/{campaign_id}/send"),
+    ("GET", "/api/dispatch/locations"),
+    ("GET", "/api/fleet/vehicles"),
+    ("POST", "/api/fleet/vehicles"),
+    ("GET", "/api/inventory/low-stock"),
+    ("GET", "/api/inventory/parts"),
+    ("POST", "/api/inventory/parts"),
+    ("GET", "/api/jobs/{job_id}/activity"),
+    ("POST", "/api/mobile/location"),
+    ("GET", "/api/purchase-orders"),
+    ("POST", "/api/purchase-orders"),
+    ("PATCH", "/api/purchase-orders/{po_id}"),
+    ("POST", "/api/purchase-orders/{po_id}/receive"),
+    ("GET", "/api/timeclock/status"),
+    ("POST", "/api/timeclock/clock-in"),
 }
 
 

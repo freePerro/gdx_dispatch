@@ -13,18 +13,22 @@ This router exposes thin GET/POST/PATCH handlers that:
   - Raise 501 for write endpoints with no backing store (see below)
   - Are tenant-scoped via request.state.tenant
 
-What this file actually is — MEASURED 2026-08-24, not assumed. The previous
-version of this paragraph said "For many paths it WINS route arbitration over
-the real router, so it is the live implementation the browser actually reaches."
-That is **false**, and backwards. Of the 19 `(method, path)` pairs where a
-ui_compat handler collides with a real router, ui_compat is registered FIRST —
-and therefore serves — for exactly **one**: `GET /api/admin/permissions`
-(admin_ops is included at app.py:1729, after ui_compat at :1682). For the other
-**18 the real router wins and the handler here is unreachable dead code**:
-technicians (:1532), onboarding (:1582), campaigns (:1649) and sub_resources
-(:1677) all precede ui_compat.
+What this file actually is — MEASURED 2026-08-24, re-measured 2026-09-06. The
+previous version of this paragraph said "For many paths it WINS route
+arbitration over the real router, so it is the live implementation the browser
+actually reaches." That is **false**, and backwards. On 2026-08-24, of the 19
+`(method, path)` pairs where a ui_compat handler collided with a real router,
+ui_compat was registered first — and therefore served — for exactly one,
+`GET /api/admin/permissions`; for the other 18 the real router won and the
+handler here was unreachable dead code. Since then #576 deleted 17 of those
+dead copies, and the dead-duplicates removal of 2026-09-06 deleted the one shim
+that won (#571 — admin_ops serves that path now) and the communications pair
+(#459). Today ui_compat collides on exactly **two** paths and LOSES both:
+`POST /api/customers/bulk-tag` and `POST /api/jobs/{job_id}/line-items`
+(sub_resources is included first). Those two are #570's; the handlers here
+for them never execute.
 
-So of this router's registrations, roughly 18 never execute. Reading a handler
+So two of this router's registrations never execute. Reading a handler
 here tells you nothing about what the browser receives — check
 `gdx_dispatch/tools/route_shadow_scan.py` output first. That scanner was itself
 blind until 2026-08-24 (it walked `app.routes` flat and saw 10 of 1442 routes,
@@ -225,22 +229,6 @@ def run_admin_op(
 # whole time — portal.py's staff_router: GET /api/portal/{customer_id},
 # PATCH /api/portal/{customer_id}, POST /api/portal/invite — and the customer
 # page now calls it.
-
-@router.get("/api/customers/{customer_id}/communications", response_model=None)
-def list_customer_communications(customer_id: str, _: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-@router.post("/api/customers/{customer_id}/communications", response_model=None, status_code=201)
-def log_customer_communication(
-    customer_id: str,
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Logging a customer communication", request, user)
-
-
 
 
 # ── Dispatch utilities (map, optimizer, geocoder) ─────────────────────────
@@ -610,11 +598,12 @@ def list_labor_time_entries(
 # where the reviews and the replies actually live. See #473.
 
 # ── Admin Permissions ────────────────────────────────────────────────────
-# Vue expects /api/admin/permissions to list users + roles.
-# The Flask app served this at /admin/permissions. This is a compat shim
-# that returns the expected shape so the UI doesn't crash.
-
-@router.get("/api/admin/permissions", response_model=None)
-def list_admin_permissions(user: dict = Depends(get_current_user)) -> dict:
-    """Return the list of users and their permission/role assignments."""
-    return {"items": [], "total": 0}
+# REMOVED 2026-09-06 (#571). GET /api/admin/permissions had a compat shim here
+# that returned {"items": [], "total": 0} — and because ui_compat is included
+# before admin_ops, the shim WON, hiding routers/admin_ops.py::
+# list_role_permissions (admin-gated, real rows) behind an always-empty read
+# while its POST sibling served alone. No SPA caller (RolePermissionsView
+# uses /api/role-permissions/*). admin_ops serves the path now.
+# The GET/POST /api/customers/{id}/communications pair left the same day
+# (#459): no communications table ever existed, the GET returned a hardcoded
+# empty list and the POST 501'd; the customer tabs that read them are gone.

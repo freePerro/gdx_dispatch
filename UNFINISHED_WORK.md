@@ -78,7 +78,7 @@ prod and demo and walked on prod in light and dark.
       corpus audit itself already recorded them closed — two docs in one repo
       disagreeing, with the wrong one on the short list. _(the row was carried
       forward instead of re-derived; that is the failure, not the defects)_
-- [ ] **PO receive route collision** — 3 systems, `po_workflow.py` shadowed/dead on the
+- [x] **PO receive route collision** — RESOLVED 2026-09-06 (#568): `routers/po_workflow.py` deleted, all four of its routes had been shadowed by `routers/purchase_orders.py`. Original note: — 3 systems, `po_workflow.py` shadowed/dead on the <!-- link-ok: deleted 2026-09-06 -->
       same prefix, `modules/purchase_orders/` unmounted. _(carried from July; not re-checked)_
 
 ---

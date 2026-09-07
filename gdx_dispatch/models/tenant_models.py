@@ -2538,30 +2538,6 @@ class ServiceTrigger(Base):
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class BookingRequest(Base):
-    __tablename__ = "booking_requests_router"
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    phone: Mapped[str] = mapped_column(Text, nullable=False)
-    service: Mapped[str] = mapped_column(Text, nullable=False)
-    preferred_date: Mapped[str] = mapped_column(Text, nullable=False)
-    preferred_slot: Mapped[str] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    decline_reason: Mapped[str] = mapped_column(Text, nullable=True)
-    approved_job_id: Mapped[str] = mapped_column(Text, nullable=True)
-    created_at: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[str] = mapped_column(Text, nullable=False)
-
-
-class BookingJob(Base):
-    __tablename__ = "booking_jobs_router"
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
-    booking_request_id: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[str] = mapped_column(Text, nullable=False)
-
-
 class MarketingCampaign(Base):
     __tablename__ = "marketing_campaigns"
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -2759,32 +2735,6 @@ class Notification(Base):
     deleted_at: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-class PORequest(Base):
-    __tablename__ = "po_requests"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    requested_by: Mapped[str] = mapped_column(String(36), nullable=False)
-    job_id: Mapped[str] = mapped_column(String(36), nullable=True)
-    customer_id: Mapped[str] = mapped_column(String(36), nullable=True)
-    supplier_name: Mapped[str] = mapped_column(String(300), nullable=True)
-    status: Mapped[str] = mapped_column(String(30), nullable=False, default="requested")
-    notes: Mapped[str] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class PORequestLine(Base):
-    __tablename__ = "po_request_lines"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    po_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
-    sku: Mapped[str] = mapped_column(String(100), nullable=True)
-    name: Mapped[str] = mapped_column(String(300), nullable=False)
-    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
-
-
 class TimeclockEntry(Base):
     __tablename__ = "timeclock_entries_router"
     id: Mapped[str] = mapped_column(Text, primary_key=True)
@@ -2911,17 +2861,6 @@ class MobileSyncAction(Base):
     entity_id: Mapped[str] = mapped_column(Text, nullable=True)
     queued_at: Mapped[str] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(Text, nullable=True)
-
-
-class PortalBookingRequest(Base):
-    __tablename__ = "portal_booking_requests"
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
-    customer_id: Mapped[str] = mapped_column(Text, nullable=False)
-    requested_date: Mapped[str] = mapped_column(Text, nullable=False)
-    service_type: Mapped[str] = mapped_column(Text, nullable=False)
-    notes: Mapped[str] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class PortalMessage(Base):

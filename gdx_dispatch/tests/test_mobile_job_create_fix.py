@@ -290,21 +290,28 @@ def test_creator_loses_detail_access_after_assignment(session_factory):
         db.close()
 
 
-def test_creator_cannot_write_start_on_unassigned_job(session_factory):
+def test_creator_cannot_write_to_unassigned_job(session_factory):
     """THE /audit finding: creator visibility must be read-only. The write
     gate (_assert_job_access → job_belongs_to_user) must still 404 the
-    creator on mutating endpoints like /start, even while unassigned."""
+    creator on mutating endpoints like the notes write, even while unassigned."""
     job_id = _seed(session_factory)
     db = session_factory()
     try:
-        # mobile_job_start gates via _job_belongs_to_user and RETURNS a 404
-        # response (it doesn't raise) — assert on the response object.
-        r = mobile_router.mobile_job_start(
-            job_id=job_id, request=_request(), current_user=CREATOR, db=db
-        )
-        assert r.status_code == 404, (
-            "creator must NOT be able to start their unassigned job — "
-            f"got {r.status_code}"
+        # add_mobile_job_note is a live write route (the mobile job page's
+        # notes card); it gates via _assert_job_access, which raises 404.
+        # (/jobs/{id}/start, which this test used to call, was removed
+        # 2026-09-06 — #480 — nothing on the phone ever called it.)
+        with pytest.raises(HTTPException) as exc:
+            mobile_router.add_mobile_job_note(
+                job_id=job_id,
+                payload=mobile_router.NoteBody(note="creator note"),
+                request=_request(),
+                current_user=CREATOR,
+                db=db,
+            )
+        assert exc.value.status_code == 404, (
+            "creator must NOT be able to write to their unassigned job — "
+            f"got {exc.value.status_code}"
         )
     finally:
         db.close()

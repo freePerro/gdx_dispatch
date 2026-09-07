@@ -1965,7 +1965,7 @@ would have been a dead end with no way through.
 > `_parse_statement_lines` so the contract is honestly testable — the first
 > structure test simulated its own raise); the whole-units 409 is scoped to the
 > STOCK disposition only (the first cut raised on the job path its own remedy
-> text recommended, and mid-void); and `po_workflow.py`'s receive — the third,
+> text recommended, and mid-void); and `po_workflow.py`'s receive — the third, <!-- link-ok: deleted 2026-09-06 -->
 > also-mounted PO system — gains the missing double-receive guard that was
 > duplicating van-inventory rows.
 

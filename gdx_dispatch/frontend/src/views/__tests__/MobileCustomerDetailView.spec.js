@@ -1,6 +1,7 @@
 /**
  * MobileCustomerDetailView — pins the contract:
- *  - Renders 9 tabs (Jobs/Estimates/Invoices/Locations/Notes/Equipment/Recurring/Communications/Portal).
+ *  - Renders 8 tabs (Jobs/Estimates/Invoices/Locations/Notes/Equipment/Recurring/Portal).
+ *    (Communications left 2026-09-06, #459: it read a stub that always returned [].)
  *  - Loads the customer on mount and lazy-fetches each tab on selection.
  *  - Quick-action strip (Call/Text/Email/Map) honors the customer's contact info.
  *  - Back button navigates to /mobile/customers when no history.
@@ -109,7 +110,6 @@ describe('MobileCustomerDetailView', () => {
       'Notes',
       'Equipment',
       'Recurring',
-      'Communications',
       'Portal',
     ]);
   });

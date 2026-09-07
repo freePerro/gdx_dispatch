@@ -517,12 +517,6 @@ async def suggest_dispatch(
     return result
 
 
-@router.get("/usage")
-async def ai_usage(request: Request) -> dict[str, Any]:
-    tenant_id = _tenant_id(request)
-    return get_ai_logger().usage_for_tenant(tenant_id)
-
-
 # ---------------------------------------------------------------------------
 # Smart Estimate (#266) — suggest price from historical data
 # ---------------------------------------------------------------------------
