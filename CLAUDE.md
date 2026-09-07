@@ -12,7 +12,7 @@ plainly.
 `PHASE.md` answers it, and it is the only file that does. It names the current
 phase, the **exit condition** that ends it, and whether the **sweep budget** is
 open. Read it at session start; `/start` opens with it and
-`session_checklist.py` prints the live count.
+`session_checklist.py` prints the live count. <!-- session_checklist.py lives in ~/.claude/hooks, outside this repo; link-ok -->
 
 Doug declares the phase. Claude does not switch it, and does not call the exit
 condition met without naming the evidence. Our own audits generate most of the

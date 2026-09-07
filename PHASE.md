@@ -10,7 +10,7 @@
 > changes with it — there is no second copy to keep in sync.
 
 This file answers one question: *what kind of work are we doing right now, and
-what ends it?* It replaces `NORTH_STAR.md` (archived 2026-09-07 to
+what ends it?* It replaces `NORTH_STAR.md` <!-- archived outside this repo 2026-09-07; never tracked here; link-ok --> (archived 2026-09-07 to
 `~/.claude/archive/NORTH_STAR-2026-04-09.md`; its multi-tenant bet was
 countermanded by the single-tenant decision in `CLAUDE.md`).
 
