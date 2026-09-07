@@ -254,7 +254,9 @@ def build_timesheet(
     # Gross `minutes` never has break time subtracted — that lives in its own
     # table — so any surface reporting worked hours must net it or it pays out
     # every lunch.
-    breaks = break_minutes_by_entry(db, tenant_id, list(rows))
+    # Clamp the break window to the period this timesheet covers, so an open
+    # shift cannot drag in breaks taken after the period ended.
+    breaks = break_minutes_by_entry(db, tenant_id, list(rows), window_hi=hi_text)
 
     cards: dict[str, Timecard] = {}
     for row in rows:
@@ -300,8 +302,151 @@ def _short_id(tech_id: str) -> str:
     return f"Unknown ({tech_id[:8]}…)"
 
 
+def break_minutes_started_on(
+    db: Session,
+    tenant_id: str,
+    user_id: str,
+    entries: list[TimeclockEntry],
+    day_iso: str,
+) -> int:
+    """Ended-break minutes for `user_id` that STARTED on `day_iso`.
+
+    `break_minutes_by_entry` attributes a break to the shift it happened during,
+    which is the right rule for a timesheet. A "hours today" figure needs the
+    other cut: an open overnight shift contributes only its post-midnight
+    portion, so charging it the whole shift's breaks would take a 19:00 lunch
+    off today *and* off yesterday's own timesheet — the same 30 minutes twice,
+    in opposite days.
+    """
+    if not entries:
+        return 0
+    by_entry = break_minutes_by_entry(db, tenant_id, entries)
+    if not by_entry:
+        return 0
+    try:
+        rows = db.execute(
+            select(TimeclockBreak.id, TimeclockBreak.duration_minutes).where(
+                # No tenant_id filter — see open_break_in_shift.
+                TimeclockBreak.user_id == str(user_id),
+                TimeclockBreak.duration_minutes.isnot(None),
+                func.date(TimeclockBreak.started_at) == day_iso,
+            )
+        ).all()
+    except SQLAlchemyError:
+        log.exception("break_minutes_started_on_failed", extra={"tenant_id": tenant_id})
+        return 0
+    # Cap at what the shift-attribution already counted, so a break belonging to
+    # nobody's shift cannot subtract from the day.
+    attributable = sum(int(v or 0) for v in by_entry.values())
+    return min(sum(int(m or 0) for _id, m in rows), attributable)
+
+
+def open_break_in_shift(
+    db: Session,
+    tenant_id: str,  # noqa: ARG001 — kept for symmetry with the sibling helpers
+    entry: TimeclockEntry,
+) -> TimeclockBreak | None:
+    """The break running INSIDE this shift, or None.
+
+    Bounded to the shift on purpose. Nothing closes a break AUTOMATICALLY:
+    `POST /api/timeclock/break/end` exists and both timeclock screens call it,
+    but `post_clock_out` does not touch breaks, the clock-in auto-close closes
+    only the shift, and there is no sweep — so a break the tech never ends
+    stays open forever. Prod carries an open `lunch` row started 2026-04-08
+    (measured 2026-09-07). An unbounded "is there an open break for this user"
+    lookup therefore reports *permanently on break*, which on a worked-hours
+    surface reads as zero paid time — #645 pointed the other way, and
+    under-reporting someone's pay is the worse direction.
+
+    This bound covers the ABANDONED break. A break forgotten *inside* the
+    current shift still freezes worked time until it is ended — which is the
+    honest reading of the record, and why the card that shows it must offer a
+    way to end it rather than leaving the tech at a dead end.
+
+    A break that started before this shift did is not this shift's break.
+    """
+    started = _as_aware(entry.clock_in_at)
+    if started is None:
+        return None
+    try:
+        rows = db.execute(
+            select(TimeclockBreak)
+            .where(
+                # No tenant_id filter: the tenant plane is a per-tenant database
+                # and isolation is the connection, so the predicate is redundant
+                # — and actively harmful on a row whose tenant_id is NULL, which
+                # is how the 2026-04-22 documents bug hid every legacy row.
+                # user_id is the isolation that matters here.
+                TimeclockBreak.user_id == str(entry.technician_id or ""),
+                TimeclockBreak.ended_at.is_(None),
+            )
+            .order_by(TimeclockBreak.started_at.desc())
+            .limit(10)
+        ).scalars().all()
+    except SQLAlchemyError:
+        log.exception("open_break_lookup_failed", extra={"tenant_id": tenant_id})
+        return None
+    for row in rows:
+        when = _as_aware(row.started_at)
+        # `>=` not `>`: a break stamped in the same instant as the clock-in is
+        # this shift's. Compared in aware UTC, never as text — the stamps are
+        # TEXT and a naive string compare would order "+00:00" against a naive
+        # one wrongly.
+        if when is not None and when >= started:
+            return row
+    return None
+
+
+def open_shift_worked_minutes(
+    db: Session,
+    tenant_id: str,
+    entry: TimeclockEntry,
+    *,
+    now: datetime | None = None,
+) -> tuple[int, int, int, TimeclockBreak | None]:
+    """``(worked, gross, ended_break_minutes, open_break)`` for an OPEN shift.
+
+    ONE implementation of the rule, called by both the mobile job card and
+    `/api/timeclock/status`. An earlier revision computed the same thing two
+    different ways in two files, which is the exact drift this module's
+    docstring warns about.
+
+    Worked time stops at an open break's START — a known stamp, so nothing is
+    guessed — and ended breaks come off as usual. Gross is the wall clock and
+    keeps running, so a caller can show both without them contradicting.
+    """
+    moment = now or datetime.now(UTC)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    started = _as_aware(entry.clock_in_at)
+    if started is None:
+        # FOUR values on every path. An earlier revision returned three here
+        # and four below; both callers unpack four, and /status's handler
+        # catches only SQLAlchemyError, so the ValueError became a 500 on the
+        # endpoint every client polls on load.
+        return 0, 0, 0, None
+    gross = int(max((moment - started).total_seconds(), 0) // 60)
+    ended = int(break_minutes_by_entry(db, tenant_id, [entry]).get(str(entry.id), 0) or 0)
+    on_break = open_break_in_shift(db, tenant_id, entry)
+    stop = moment
+    if on_break is not None:
+        when = _as_aware(on_break.started_at)
+        if when is not None:
+            stop = when
+    worked = int(max((stop - started).total_seconds(), 0) // 60) - ended
+    # `ended` is returned separately rather than left for the caller to derive
+    # as gross-minus-worked: during an open break that difference also contains
+    # the running break, so a caller printing it as "less Xm on break" would
+    # state a number no break record supports.
+    return max(worked, 0), gross, ended, on_break
+
+
 def break_minutes_by_entry(
-    db: Session, tenant_id: str, entries: list[TimeclockEntry]
+    db: Session,
+    tenant_id: str,
+    entries: list[TimeclockEntry],
+    *,
+    window_hi: str | None = None,
 ) -> dict[str, int]:
     """{entry_id: total ended-break minutes} for the given entries.
 
@@ -331,8 +476,28 @@ def break_minutes_by_entry(
     # pulls every break the whole crew has ever taken on every page load, to
     # then discard all but the overlapping ones.
     span_lo = min((str(e.clock_in_at) for e in entries if e.clock_in_at), default=None)
+    # An OPEN entry runs until `window_hi` (the caller's ceiling) or now — not
+    # to its clock-in. Using clock_in_at as the upper bound truncated the SQL
+    # filter to the day the shift STARTED, so every break an open overnight
+    # shift took after midnight was discarded here, before the per-row overlap
+    # logic below (which already ends an open window at `now`) could match it.
+    # That path is live: `build_timesheet` selects by clock_in_at range with no
+    # clock_out filter, so a payroll timesheet containing an open shift silently
+    # paid out its next-day lunches.
+    #
+    # `window_hi` is why this is not simply `now`: over a PAST pay period
+    # containing an open shift, an unclamped ceiling sweeps in every break the
+    # tech has taken since, and the per-row matcher attributes them all to that
+    # open entry — putting break minutes from after the period into the
+    # period's CSV and PDF (`core/timesheet_export.py` renders `break_minutes`
+    # per shift and per timecard). `build_timesheet` passes its own `hi_text`.
+    # Found by the #645 sibling sweep, 2026-09-07.
     span_hi = max(
-        (str(e.clock_out_at or e.clock_in_at) for e in entries if e.clock_in_at),
+        (
+            str(e.clock_out_at) if e.clock_out_at else (window_hi or datetime.now(UTC).isoformat())
+            for e in entries
+            if e.clock_in_at
+        ),
         default=None,
     )
     try:

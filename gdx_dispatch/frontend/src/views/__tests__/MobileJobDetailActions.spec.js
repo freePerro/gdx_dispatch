@@ -46,8 +46,9 @@ const getMock = vi.fn();
 const postQueuedMock = vi.fn();
 const toastAdd = vi.fn();
 
+const routerPush = vi.fn();
 vi.mock("vue-router", () => ({
-  useRouter: () => ({ push: vi.fn(), back: vi.fn(), replace: vi.fn() }),
+  useRouter: () => ({ push: routerPush, back: vi.fn(), replace: vi.fn() }),
   useRoute: () => ({ params: { id: "job-123" }, query: {}, path: "/mobile/jobs/job-123" }),
 }));
 vi.mock("primevue/usetoast", () => ({ useToast: () => ({ add: toastAdd }) }));
@@ -103,7 +104,14 @@ function jobPayload(overrides = {}) {
 /** Server shape of the two clocks. Defaults to "nothing running". */
 function clocksPayload(job = {}, day = {}) {
   return {
-    day: { running: false, since: null, elapsed_minutes: 0, pays: true, ...day },
+    // #645 keys default to the "nothing unusual" shape so a test that
+    // cares about breaks or a forgotten shift states only what it changes.
+    day: {
+      running: false, since: null, elapsed_minutes: 0, gross_elapsed_minutes: 0,
+      break_minutes: 0, on_break: false, on_break_since: null, stale: false,
+      max_shift_hours: 16, auto_clockout_at: null, breaks_unavailable: false,
+      pays: true, ...day,
+    },
     job: { running: false, entry_id: null, since: null, elapsed_minutes: 0, pays: false, ...job },
   };
 }
@@ -586,5 +594,155 @@ describe("both clocks — the tech must never guess which one pays", () => {
     expect(w.find('[data-testid="mobile-closeout-summary"]').exists()).toBe(true);
     expect(w.find('[data-testid="mobile-closeout-summary"]').text()).toContain("1.50");
     expect(w.find('[data-testid="mobile-closeout-notes"]').text()).toContain("spring swapped");
+  });
+});
+
+describe("#645 — the day clock tells the truth about breaks and forgotten shifts", () => {
+  it("says On break instead of Running while a break is open", async () => {
+    // The card is labelled "your paid time". A tech at lunch seeing "Running"
+    // on it is the defect: the clock that pays them appears to be paying.
+    const w = await mountWith(
+      { dispatch_status: "on_site" },
+      {
+        clocks: clocksPayload(
+          {},
+          { running: true, on_break: true, elapsed_minutes: 180, gross_elapsed_minutes: 210, break_minutes: 30 },
+        ),
+      },
+    );
+    const day = w.find('[data-testid="mjd-day-clock"]');
+    expect(w.find('[data-testid="mjd-day-clock-on-break"]').exists()).toBe(true);
+    expect(day.text()).toContain("On break");
+    // Falsifiable both ways: the break state must REPLACE the running state,
+    // not sit beside it.
+    expect(day.text()).not.toContain("Running");
+  });
+
+  it("shows paid time net of breaks, and says what was deducted", async () => {
+    const w = await mountWith(
+      { dispatch_status: "on_site" },
+      {
+        clocks: clocksPayload(
+          {},
+          { running: true, elapsed_minutes: 180, gross_elapsed_minutes: 210, break_minutes: 30 },
+        ),
+      },
+    );
+    const day = w.find('[data-testid="mjd-day-clock"]');
+    // 180 min = the NET figure. If the card ever renders gross here it reads
+    // 3h 30m and pays the lunch on screen.
+    expect(day.text()).toContain("3h 0m");
+    expect(day.text()).not.toContain("3h 30m");
+    const note = w.find('[data-testid="mjd-day-clock-break-note"]');
+    expect(note.exists()).toBe(true);
+    expect(note.text()).toContain("30m on break");
+  });
+
+  it("does not print the gross-less-breaks sum while a break is running", async () => {
+    // The paid figure freezes at the break start, so "gross less ended breaks"
+    // would not reconcile with it: 4h05 less 30m is 3h35, but the card reads
+    // 3h10. Two numbers on one card that do not add up is its own defect.
+    const w = await mountWith(
+      { dispatch_status: "on_site" },
+      {
+        clocks: clocksPayload(
+          {},
+          { running: true, on_break: true, elapsed_minutes: 190, gross_elapsed_minutes: 245, break_minutes: 30 },
+        ),
+      },
+    );
+    expect(w.find('[data-testid="mjd-day-clock-break-note"]').exists()).toBe(false);
+    const paused = w.find('[data-testid="mjd-day-clock-break-paused-note"]');
+    expect(paused.exists()).toBe(true);
+    expect(paused.text()).toContain("paused");
+  });
+
+  it("says so when break records could not be read, instead of calling gross time paid", async () => {
+    // The degrade path sets break_minutes to 0, so an earlier version that
+    // nested this warning under "break_minutes > 0" could never render it —
+    // the card would show gross under "your paid time" silently, which is the
+    // exact overstatement #645 is about.
+    const w = await mountWith(
+      { dispatch_status: "on_site" },
+      {
+        clocks: clocksPayload(
+          {},
+          {
+            running: true,
+            elapsed_minutes: 480,
+            gross_elapsed_minutes: 480,
+            break_minutes: 0,
+            breaks_unavailable: true,
+          },
+        ),
+      },
+    );
+    const warn = w.find('[data-testid="mjd-day-clock-breaks-unavailable"]');
+    expect(warn.exists()).toBe(true);
+    expect(warn.text()).toContain("gross time");
+  });
+
+  it("offers a way out of the break state instead of a dead end", async () => {
+    // Nothing ends a break automatically, so a frozen paid figure with no
+    // control on the screen the tech is actually looking at would leave them
+    // stuck for the rest of the shift. The controls live on the timeclock
+    // screen; this card must take them there.
+    const w = await mountWith(
+      { dispatch_status: "on_site" },
+      { clocks: clocksPayload({}, { running: true, on_break: true, elapsed_minutes: 150 }) },
+    );
+    const link = w.find('[data-testid="mjd-day-clock-end-break-link"]');
+    expect(link.exists()).toBe(true);
+    await link.trigger("click");
+    expect(routerPush).toHaveBeenCalledWith("/mobile/timeclock");
+  });
+
+  it("marks a shift nobody closed, instead of a plain Running figure", async () => {
+    const w = await mountWith(
+      { dispatch_status: "on_site" },
+      {
+        clocks: clocksPayload(
+          {},
+          { running: true, elapsed_minutes: 1000, gross_elapsed_minutes: 1000, stale: true, max_shift_hours: 16 },
+        ),
+      },
+    );
+    expect(w.find('[data-testid="mjd-day-clock-stale"]').exists()).toBe(true);
+    const note = w.find('[data-testid="mjd-day-clock-stale-note"]');
+    expect(note.exists()).toBe(true);
+    expect(note.text()).toContain("past the 16h limit");
+  });
+
+  it("holds the paid figure still during an open break", async () => {
+    // The server freezes elapsed_minutes at the break's start, so this number
+    // must NOT be the gross one beside it — otherwise "paid so far" climbs
+    // through lunch and then jumps backwards when the break ends.
+    const w = await mountWith(
+      { dispatch_status: "on_site" },
+      {
+        clocks: clocksPayload(
+          {},
+          { running: true, on_break: true, elapsed_minutes: 150, gross_elapsed_minutes: 240 },
+        ),
+      },
+    );
+    const day = w.find('[data-testid="mjd-day-clock"]');
+    expect(day.text()).toContain("2h 30m");
+    expect(day.text()).not.toContain("4h 0m");
+  });
+
+  it("a normal running shift carries neither marker", async () => {
+    // The counterfactual for the three above: without this, a card that
+    // ALWAYS rendered the break/stale branches would pass all of them.
+    const w = await mountWith(
+      { dispatch_status: "on_site" },
+      { clocks: clocksPayload({}, { running: true, elapsed_minutes: 95, gross_elapsed_minutes: 95 }) },
+    );
+    const day = w.find('[data-testid="mjd-day-clock"]');
+    expect(day.text()).toContain("Running 1h 35m");
+    expect(w.find('[data-testid="mjd-day-clock-on-break"]').exists()).toBe(false);
+    expect(w.find('[data-testid="mjd-day-clock-stale"]').exists()).toBe(false);
+    expect(w.find('[data-testid="mjd-day-clock-break-note"]').exists()).toBe(false);
+    expect(w.find('[data-testid="mjd-day-clock-stale-note"]').exists()).toBe(false);
   });
 });

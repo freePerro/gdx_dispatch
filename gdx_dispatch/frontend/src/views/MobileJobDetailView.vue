@@ -692,11 +692,94 @@
             <i class="pi pi-briefcase" />
             <span class="clock-name">Day — your paid time</span>
           </div>
-          <span v-if="clocks.day.running" class="clock-state clock-state-on">
+          <!-- #645: three states, not two. An open break must not read as
+               "Running" on the clock that pays you, and a shift nobody closed
+               must not read as a normal one. `elapsed_minutes` is net of ended
+               breaks AND frozen at the start of an open one, so the figure
+               beside "On break" holds still instead of climbing and then
+               jumping backwards when the break ends. Stale fires at
+               max_shift_hours (16h), not the 8h warning: this card has no
+               snooze, and a marker that lights on every normal day is one the
+               office learns to ignore. -->
+          <span
+            v-if="clocks.day.running && clocks.day.on_break"
+            class="clock-state clock-state-break"
+            data-testid="mjd-day-clock-on-break"
+          >
+            On break · {{ formatElapsed(clocks.day.elapsed_minutes) }} paid so far
+          </span>
+          <span
+            v-else-if="clocks.day.running"
+            class="clock-state clock-state-on"
+            :class="{ 'clock-state-stale': clocks.day.stale }"
+            :data-testid="clocks.day.stale ? 'mjd-day-clock-stale' : undefined"
+          >
             Running {{ formatElapsed(clocks.day.elapsed_minutes) }}
           </span>
           <span v-else class="clock-state">Not clocked in</span>
         </div>
+        <!-- Only the office can fix a forgotten shift from here, so this says
+             what will happen rather than offering a control that would close
+             someone's day by accident from a job screen. -->
+        <!-- Independent of the break note, not chained after it. A shift past
+             16h that is ALSO on a forgotten break is exactly the population
+             `open_break_in_shift` exists for — chaining these hid the "End your
+             break" link from the only people who need it. -->
+        <p
+          v-if="clocks.day.running && clocks.day.stale"
+          class="clock-stale-note"
+          data-testid="mjd-day-clock-stale-note"
+        >
+          Open {{ formatElapsed(clocks.day.gross_elapsed_minutes) }} — past the
+          {{ clocks.day.max_shift_hours }}h limit, so it will be auto-closed.
+          Close it on the timeclock screen if you forgot.
+        </p>
+        <!-- During an OPEN break the paid figure is frozen at the break's
+             start, so the "gross less ended breaks" arithmetic below would not
+             reconcile with it — 4h05 less 30m is 3h35, but the frozen figure
+             reads 3h10. Two numbers on one card that do not add up is its own
+             defect, so the open-break case gets its own sentence (caught in the
+             browser walk, 2026-09-07). -->
+        <!-- A state with no way out is a dead end, and this card is the one a
+             tech is looking at mid-job. The break controls live on the
+             timeclock screen; say so and take them there, rather than showing a
+             frozen figure and no next step. Nothing ends a break automatically,
+             so without this a forgotten break freezes their paid time for the
+             rest of the shift with nothing on screen to act on. -->
+        <p
+          v-if="clocks.day.running && clocks.day.on_break"
+          class="clock-break-note"
+          data-testid="mjd-day-clock-break-paused-note"
+        >
+          Paid time is paused while you're on break.
+          <a
+            href="#"
+            class="clock-break-link"
+            data-testid="mjd-day-clock-end-break-link"
+            @click.prevent="goToTimeclock"
+          >End your break</a>
+          to start it again.
+        </p>
+        <!-- Its own v-if, NOT nested under the break note: the degrade path
+             sets break_minutes to 0, so hanging this off "> 0" made the only
+             warning that the figure is gross unreachable — the exact silent
+             overstatement #645 is about. -->
+        <p
+          v-if="clocks.day.running && clocks.day.breaks_unavailable"
+          class="clock-stale-note"
+          data-testid="mjd-day-clock-breaks-unavailable"
+        >
+          Break records could not be read, so this may be gross time, not paid
+          time. Check the timeclock screen.
+        </p>
+        <p
+          v-else-if="clocks.day.running && !clocks.day.on_break && clocks.day.break_minutes > 0"
+          class="clock-break-note"
+          data-testid="mjd-day-clock-break-note"
+        >
+          {{ formatElapsed(clocks.day.gross_elapsed_minutes) }} on the clock,
+          less {{ formatElapsed(clocks.day.break_minutes) }} on break.
+        </p>
 
         <!-- Job clock: costing/attribution only. Muted on purpose. -->
         <div class="clock-row clock-row-job" data-testid="mjd-job-clock">
@@ -1009,7 +1092,21 @@ const closeoutOpen = ref(false)
 // mutate the default for the next.
 function emptyClocks() {
   return {
-    day: { running: false, since: null, elapsed_minutes: 0, pays: true },
+    // #645 keys ride along so the card's break/stale branches read `false`
+    // and `0` before the first response rather than `undefined`.
+    day: {
+      running: false,
+      since: null,
+      elapsed_minutes: 0,
+      gross_elapsed_minutes: 0,
+      break_minutes: 0,
+      on_break: false,
+      on_break_since: null,
+      stale: false,
+      max_shift_hours: null,
+      auto_clockout_at: null,
+      pays: true,
+    },
     job: { running: false, entry_id: null, since: null, elapsed_minutes: 0, pays: false },
   }
 }
@@ -1524,6 +1621,14 @@ function currentPosition() {
 }
 
 /** "3h 12m" / "47m" — never a bare decimal that reads like billable hours. */
+function goToTimeclock() {
+  // The break start/end controls live on the timeclock screen and are
+  // deliberately not duplicated here — the same reason the day clock is
+  // read-only on this card: a tech must not end their shift by accident from a
+  // job page. Navigating is the way out that keeps one owner for the control.
+  router.push('/mobile/timeclock')
+}
+
 function formatElapsed(minutes) {
   const m = Math.max(0, Math.round(Number(minutes) || 0))
   const h = Math.floor(m / 60)
@@ -2021,6 +2126,38 @@ onMounted(() => {
 .clock-row-job .clock-name { font-size: 0.85rem; color: var(--p-text-muted-color, #6b7280); }
 .clock-state { font-size: 0.85rem; color: var(--p-text-muted-color, #6b7280); font-variant-numeric: tabular-nums; }
 .clock-state-on { color: var(--p-primary-color, #2563eb); font-weight: 600; }
+/* #645 — break and stale read as NOT-running-normally at a glance.
+   --p-orange-500 / --p-red-500 are PRIMITIVE palette tokens: they do not swap
+   with the theme, so both modes get the same hue and the hex fallback only
+   covers a theme that ships no palette at all. Contrast was checked in a real
+   browser in light and dark (jsdom applies no media queries, so the unit tests
+   cannot see this). Weight carries the signal too, not colour alone. */
+.clock-state-break { color: var(--p-orange-500, #d97706); font-weight: 600; }
+.clock-state-stale { color: var(--p-red-500, #dc2626); font-weight: 600; }
+.clock-break-note,
+.clock-stale-note {
+  margin: 0.15rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: var(--p-text-muted-color, #6b7280);
+}
+.clock-stale-note { color: var(--p-red-500, #dc2626); }
+/* Underlined, not colour-only: the note already sits in a muted grey and a
+   link distinguished by hue alone fails for anyone who cannot separate the
+   two. 44px is the tap target the rest of this screen holds to, and this is a
+   link inside a sentence — so the height comes from padding rather than from
+   min-height, which an inline-block would not honour against the text box. */
+.clock-break-link {
+  color: var(--p-primary-color, #2563eb);
+  font-weight: 600;
+  text-decoration: underline;
+  display: inline-block;
+  padding: 0.65rem 0.25rem;
+  margin: -0.5rem 0;
+  min-height: 44px;
+  line-height: 1.4;
+  box-sizing: border-box;
+}
 /* 44px is the tap target the rest of this screen holds to; a Stop button the
    tech misses with a glove is a timer that keeps running. */
 .clock-row :deep(.p-button) { min-height: 44px; }

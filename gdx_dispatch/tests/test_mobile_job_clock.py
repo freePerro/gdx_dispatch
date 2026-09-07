@@ -396,3 +396,311 @@ def test_soft_deleted_timer_is_not_open(session_factory):
         assert found is None
     finally:
         db.close()
+
+
+def _day_clock(db) -> dict:
+    return _as_json(
+        mobile_router.get_mobile_job_detail(
+            job_id=_JOB_ID, request=_request(), current_user=_TEST_USER, db=db
+        )
+    )["clocks"]["day"]
+
+
+def test_day_clock_subtracts_ended_breaks_from_paid_time(session_factory):
+    """#645: the card says "your paid time" — it may not pay out lunch.
+
+    Reachable only since #647 made the day clock render at all; before that it
+    always said "Not clocked in" and this was invisible.
+
+    The assertion is the DIFFERENCE, not a fixed number: gross has to keep
+    counting while the net figure drops by the break. A version that subtracted
+    nothing leaves them equal, and a version that subtracted from the wrong
+    clock leaves gross short — both fail here.
+    """
+    db = session_factory()
+    try:
+        timeclock_router.post_clock_in(
+            payload=timeclock_router.ClockActionRequest(),
+            request=_request(),
+            current_user=_TEST_USER,
+            db=db,
+        )
+        # Back-date the shift so there is real elapsed time to subtract from.
+        db.execute(
+            text(
+                "UPDATE timeclock_entries_router SET clock_in_at = :t"
+                " WHERE tenant_id='tenant-a' AND technician_id='user-1'"
+                "   AND clock_out_at IS NULL"
+            ),
+            {"t": (datetime.now(UTC) - timedelta(hours=4)).isoformat()},
+        )
+        db.commit()
+
+        before = _day_clock(db)
+        assert before["running"] is True
+        assert before["on_break"] is False
+        assert before["elapsed_minutes"] == before["gross_elapsed_minutes"], (
+            "with no breaks taken, paid time and wall clock must agree"
+        )
+
+        entry_id = db.execute(
+            text(
+                "SELECT id FROM timeclock_entries_router"
+                " WHERE tenant_id='tenant-a' AND technician_id='user-1'"
+                "   AND clock_out_at IS NULL"
+            )
+        ).scalar_one()
+        now_iso = datetime.now(UTC).isoformat()
+        db.execute(
+            text(
+                "INSERT INTO timeclock_breaks_router"
+                " (id, tenant_id, user_id, time_entry_id, type, started_at,"
+                "  ended_at, duration_minutes, created_at)"
+                " VALUES (:id, 'tenant-a', 'user-1', :eid, 'lunch', :s, :e, 30, :c)"
+            ),
+            {
+                "id": uuid4().hex,
+                "eid": entry_id,
+                "s": (datetime.now(UTC) - timedelta(hours=2)).isoformat(),
+                "e": (datetime.now(UTC) - timedelta(hours=1, minutes=30)).isoformat(),
+                "c": now_iso,
+            },
+        )
+        db.commit()
+
+        after = _day_clock(db)
+        assert after["break_minutes"] == 30
+        assert after["gross_elapsed_minutes"] >= before["gross_elapsed_minutes"], (
+            "the wall clock does not stop for a break"
+        )
+        assert after["elapsed_minutes"] == after["gross_elapsed_minutes"] - 30, (
+            "a 30-minute lunch must come off the clock that pays the tech; "
+            f"got paid={after['elapsed_minutes']} gross={after['gross_elapsed_minutes']}"
+        )
+    finally:
+        db.close()
+
+
+def test_day_clock_says_on_break_rather_than_running(session_factory):
+    """An OPEN break must not render as "Running" on the paying clock.
+
+    We deliberately do not guess an open break's length — `break_minutes_by_entry`
+    counts ended breaks only, and inventing a duration would fabricate hours.
+    So the honest answer is the state, and that is what this pins.
+    """
+    db = session_factory()
+    try:
+        timeclock_router.post_clock_in(
+            payload=timeclock_router.ClockActionRequest(),
+            request=_request(),
+            current_user=_TEST_USER,
+            db=db,
+        )
+        db.commit()
+        assert _day_clock(db)["on_break"] is False
+
+        started = datetime.now(UTC).isoformat()
+        db.execute(
+            text(
+                "INSERT INTO timeclock_breaks_router"
+                " (id, tenant_id, user_id, type, started_at, created_at)"
+                " VALUES (:id, 'tenant-a', 'user-1', 'lunch', :s, :s)"
+            ),
+            {"id": uuid4().hex, "s": started},
+        )
+        db.commit()
+
+        during = _day_clock(db)
+        assert during["running"] is True, "the shift is still open during a break"
+        assert during["on_break"] is True, (
+            "a tech on lunch must not see a plain Running day clock"
+        )
+        assert during["on_break_since"] == started
+
+        # The paid figure FREEZES at the break's start — a known stamp, so
+        # nothing is guessed. Letting it tick on is #645's own defect (gross
+        # under a "paid" label) inside the break window, and it would make the
+        # number jump backwards when the break ended. Assert against the frozen
+        # value rather than against gross, which keeps climbing.
+        frozen = during["elapsed_minutes"]
+        assert during["gross_elapsed_minutes"] >= frozen
+        db.execute(
+            text(
+                "UPDATE timeclock_breaks_router SET started_at = :s"
+                " WHERE tenant_id='tenant-a' AND user_id='user-1'"
+                "   AND ended_at IS NULL"
+            ),
+            {"s": (datetime.now(UTC) - timedelta(minutes=90)).isoformat()},
+        )
+        db.execute(
+            text(
+                "UPDATE timeclock_entries_router SET clock_in_at = :t"
+                " WHERE tenant_id='tenant-a' AND technician_id='user-1'"
+                "   AND clock_out_at IS NULL"
+            ),
+            {"t": (datetime.now(UTC) - timedelta(hours=4)).isoformat()},
+        )
+        db.commit()
+        later = _day_clock(db)
+        # Clocked in 4h ago, break started 90m ago -> 150m paid, and it must
+        # NOT be the ~240m of gross wall clock.
+        assert later["elapsed_minutes"] == pytest.approx(150, abs=1), (
+            f"paid time must stop at the break start; got {later['elapsed_minutes']}"
+        )
+        assert later["gross_elapsed_minutes"] == pytest.approx(240, abs=1)
+    finally:
+        db.close()
+
+
+def test_another_techs_break_does_not_touch_this_clock(session_factory):
+    """Single-tenant means user-2's break shares our tenant_id.
+
+    Without the per-user filter their lunch would be deducted from OUR paid
+    time. This is the assertion that fails if the break query is keyed on
+    tenant alone.
+    """
+    db = session_factory()
+    try:
+        timeclock_router.post_clock_in(
+            payload=timeclock_router.ClockActionRequest(),
+            request=_request(),
+            current_user=_TEST_USER,
+            db=db,
+        )
+        db.execute(
+            text(
+                "UPDATE timeclock_entries_router SET clock_in_at = :t"
+                " WHERE tenant_id='tenant-a' AND technician_id='user-1'"
+                "   AND clock_out_at IS NULL"
+            ),
+            {"t": (datetime.now(UTC) - timedelta(hours=4)).isoformat()},
+        )
+        now_iso = datetime.now(UTC).isoformat()
+        db.execute(
+            text(
+                "INSERT INTO timeclock_breaks_router"
+                " (id, tenant_id, user_id, type, started_at, ended_at,"
+                "  duration_minutes, created_at)"
+                " VALUES (:id, 'tenant-a', 'user-2', 'lunch', :s, :e, 45, :c)"
+            ),
+            {
+                "id": uuid4().hex,
+                "s": (datetime.now(UTC) - timedelta(hours=2)).isoformat(),
+                "e": (datetime.now(UTC) - timedelta(hours=1, minutes=15)).isoformat(),
+                "c": now_iso,
+            },
+        )
+        db.commit()
+
+        day = _day_clock(db)
+        assert day["break_minutes"] == 0, (
+            "another tech's lunch must not come off this tech's paid time"
+        )
+        assert day["on_break"] is False
+        assert day["elapsed_minutes"] == day["gross_elapsed_minutes"]
+    finally:
+        db.close()
+
+
+def test_day_clock_flags_a_forgotten_shift(session_factory):
+    """A shift nobody closed renders as "Running 16h" with no marker (#645).
+
+    /api/timeclock/status already returns max_shift_hours + auto_clockout_at so
+    its screen can flag one; the job card carried neither, so the tech most
+    likely to be looking at it got no signal.
+    """
+    db = session_factory()
+    try:
+        timeclock_router.post_clock_in(
+            payload=timeclock_router.ClockActionRequest(),
+            request=_request(),
+            current_user=_TEST_USER,
+            db=db,
+        )
+        db.commit()
+        fresh = _day_clock(db)
+        assert fresh["stale"] is False, "a shift that just started is not stale"
+        assert fresh["auto_clockout_at"], "the card needs the auto-close time"
+
+        # An ordinary long day must NOT trip it. This card has no snooze, so
+        # firing at the 8h warning would light up on every normal working day
+        # and the office would learn to ignore it.
+        db.execute(
+            text(
+                "UPDATE timeclock_entries_router SET clock_in_at = :t"
+                " WHERE tenant_id='tenant-a' AND technician_id='user-1'"
+                "   AND clock_out_at IS NULL"
+            ),
+            {
+                "t": (
+                    datetime.now(UTC)
+                    - timedelta(hours=timeclock_router.WARNING_AFTER_HOURS + 1)
+                ).isoformat()
+            },
+        )
+        db.commit()
+        assert _day_clock(db)["stale"] is False, (
+            "a 9-hour day is a long day, not a forgotten shift"
+        )
+
+        db.execute(
+            text(
+                "UPDATE timeclock_entries_router SET clock_in_at = :t"
+                " WHERE tenant_id='tenant-a' AND technician_id='user-1'"
+                "   AND clock_out_at IS NULL"
+            ),
+            {
+                "t": (
+                    datetime.now(UTC)
+                    - timedelta(hours=timeclock_router.MAX_SHIFT_HOURS + 1)
+                ).isoformat()
+            },
+        )
+        db.commit()
+        assert _day_clock(db)["stale"] is True, (
+            "past the auto-close ceiling the card must say so"
+        )
+    finally:
+        db.close()
+def test_job_card_ignores_a_break_older_than_the_shift(session_factory):
+    """The abandoned-break trap, on the job card (see the /status sibling).
+
+    Nothing in this app closes a break, and prod carries one open since
+    2026-04-08. An unbounded lookup would render "On break · 0m paid so far" on
+    the card labelled "your paid time" for a tech who has worked all day.
+    """
+    db = session_factory()
+    try:
+        timeclock_router.post_clock_in(
+            payload=timeclock_router.ClockActionRequest(),
+            request=_request(),
+            current_user=_TEST_USER,
+            db=db,
+        )
+        db.execute(
+            text(
+                "UPDATE timeclock_entries_router SET clock_in_at = :t"
+                " WHERE tenant_id='tenant-a' AND technician_id='user-1'"
+                "   AND clock_out_at IS NULL"
+            ),
+            {"t": (datetime.now(UTC) - timedelta(hours=4)).isoformat()},
+        )
+        db.execute(
+            text(
+                "INSERT INTO timeclock_breaks_router"
+                " (id, tenant_id, user_id, type, started_at, created_at)"
+                " VALUES (:id, 'tenant-a', 'user-1', 'lunch', :s, :s)"
+            ),
+            {"id": uuid4().hex, "s": (datetime.now(UTC) - timedelta(days=150)).isoformat()},
+        )
+        db.commit()
+
+        day = _day_clock(db)
+        assert day["on_break"] is False, (
+            "a break from before the shift is not this shift's break"
+        )
+        assert day["elapsed_minutes"] == pytest.approx(240, abs=1), (
+            f"paid time must not collapse to zero; got {day['elapsed_minutes']}"
+        )
+    finally:
+        db.close()

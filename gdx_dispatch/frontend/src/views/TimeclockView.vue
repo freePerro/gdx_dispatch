@@ -473,6 +473,10 @@ const availableJobs = ref([]);
 const gpsAvailable = ref(false);
 const gpsCoords = ref(null);
 const elapsedSeconds = ref(0);
+// Worked hours on the open shift as the SERVER computed them — net of ended
+// breaks. Null when the backend does not send it, which is the only case the
+// gross wall-clock fallback is for.
+const openShiftWorkedHours = ref(null);
 const showGpsDialog = ref(false);
 const gpsDialogData = ref(null);
 // S6-A4 end-of-day review state
@@ -569,11 +573,30 @@ const elapsedFormatted = computed(() => {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 });
 
+// #645 — this ticker sat directly above "Today: X h" and computed GROSS wall
+// clock off clock_in_at, so after a 30-minute lunch the same card read 8:00:00
+// over Today 7.50h. The server already returns the worked figure
+// (`open_shift_elapsed_hours`, net of ended breaks and frozen at an open
+// break's start); seed from it and fall back to wall clock only when an older
+// backend omits it. The ticker also stops while on break — the paid clock is
+// not running, so neither is its display.
 function startElapsedTimer() {
   stopElapsedTimer();
+  const worked = openShiftWorkedHours.value;
+  if (typeof worked === 'number') {
+    const base = Math.max(0, Math.round(worked * 3600));
+    const from = Date.now();
+    elapsedSeconds.value = base;
+    if (onBreak.value) return;
+    elapsedTimer = setInterval(() => {
+      elapsedSeconds.value = base + Math.floor((Date.now() - from) / 1000);
+    }, 1000);
+    return;
+  }
   if (clockInTime.value) {
     const start = new Date(clockInTime.value).getTime();
     elapsedSeconds.value = Math.floor((Date.now() - start) / 1000);
+    if (onBreak.value) return;
     elapsedTimer = setInterval(() => {
       elapsedSeconds.value = Math.floor((Date.now() - start) / 1000);
     }, 1000);
@@ -747,6 +770,10 @@ async function fetchStatus() {
     onBreak.value = !!status?.on_break || entry?.entry_type === 'break';
     clockInTime.value = entry?.clock_in_at || status?.clock_in_time || null;
     todayTotalHours.value = status?.today_hours ?? null;
+    openShiftWorkedHours.value =
+      typeof status?.open_shift_elapsed_hours === 'number'
+        ? status.open_shift_elapsed_hours
+        : null;
     if (clockedIn.value) {
       startElapsedTimer();
     } else {

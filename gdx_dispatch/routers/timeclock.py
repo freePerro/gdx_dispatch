@@ -40,7 +40,10 @@ from gdx_dispatch.core.timesheet_hours import (
     MAX_SHIFT_HOURS,
     WARNING_AFTER_HOURS,
     break_minutes_by_entry,
+    break_minutes_started_on,
     build_timesheet,
+    open_break_in_shift,
+    open_shift_worked_minutes,
 )
 from gdx_dispatch.models.tenant_models import AppSettings, TimeclockBreak, TimeclockEntry
 from gdx_dispatch.routers.auth import get_current_user
@@ -129,6 +132,13 @@ class TimeClockStatusResponse(BaseModel):
     warning_after_hours: float | None = None
     open_shift_elapsed_hours: float | None = None
     auto_clockout_at: str | None = None  # ISO-8601; deferred (no celery yet)
+    # #645 — `today_hours` and `open_shift_elapsed_hours` are NET of ended
+    # breaks, and `open_shift_elapsed_hours` FREEZES at `on_break_since` while a
+    # break is running. A client computing its own live ticker from
+    # `active_entry.clock_in_at` must stop it at `on_break_since` too, or it
+    # will show gross under a "worked" label — the defect #645 is about.
+    on_break: bool = False
+    on_break_since: str | None = None
 
 
 class PayrollSummaryItem(BaseModel):
@@ -531,6 +541,14 @@ def get_timeclock_status(
                 TimeclockEntry.technician_id == tech_id,
                 TimeclockEntry.deleted_at.is_(None),
                 TimeclockEntry.clock_out_at.is_(None),
+                # Deliberately NOT filtered on entry_type. A 'manual' row CAN be
+                # open: PATCH /api/timeclock/entries/{id} with clock_out_at=null
+                # survives exclude_unset and reopens one. Filtering here while
+                # POST /clock-in's duplicate guard does not would make this
+                # endpoint answer "not clocked in" for a row that makes
+                # clock-in reply 400 "already clocked in" — a dead end on the
+                # surface that decides whether someone is being paid. One rule
+                # for what counts as open, shared with the writers.
             ).order_by(TimeclockEntry.clock_in_at.desc()).limit(1)
         ).scalars().first()
 
@@ -604,6 +622,71 @@ def get_timeclock_status(
             except Exception:
                 pass
 
+        # #645 sibling — this endpoint reported the same gross figure as the
+        # job card. `today_hours` and `open_shift_elapsed_hours` are WORKED
+        # hours, and worked hours are net of breaks. The rule is
+        # `core.timesheet_hours` — the same module the timesheet and the payroll
+        # export already use — so this screen agrees with the file the office
+        # pays from instead of disagreeing with it by one lunch.
+        on_break_row = None
+        open_break_started_at: str | None = None
+        try:
+            # Only breaks that STARTED TODAY come off today_hours. An open
+            # overnight shift contributes just its post-midnight portion above,
+            # so netting the whole shift's breaks would subtract a 19:00 lunch
+            # from today AND from yesterday's own timesheet — the same 30
+            # minutes taken twice, in opposite days.
+            todays_entries = db.execute(
+                select(TimeclockEntry).where(
+                    # No tenant_id filter: isolation is the connection, and the
+                    # predicate hides any row whose tenant_id is NULL. The
+                    # per-tech filter is the one that matters.
+                    TimeclockEntry.technician_id == tech_id,
+                    TimeclockEntry.deleted_at.is_(None),
+                    func.date(TimeclockEntry.clock_in_at) == today_iso,
+                )
+            ).scalars().all()
+            scope = list(todays_entries)
+            if entry is not None and not any(str(e.id) == str(entry.id) for e in scope):
+                scope.append(entry)
+            today_break_minutes = break_minutes_started_on(
+                db, tenant_id, tech_id, scope, today_iso
+            )
+            if today_break_minutes:
+                today_hours = round(max(today_hours - today_break_minutes / 60.0, 0.0), 2)
+
+            if entry is not None:
+                worked, _gross, _ended, on_break_row = open_shift_worked_minutes(
+                    db, tenant_id, entry
+                )
+                open_elapsed_hours = worked / 60.0
+                if on_break_row is not None:
+                    open_break_started_at = str(on_break_row.started_at)
+                    # Hold today_hours still too. This screen shows both, and an
+                    # earlier revision froze only one — leaving two numbers on
+                    # one card drifting apart by the length of the running break
+                    # (caught on the throwaway, 2026-09-07).
+                    running = max(
+                        (
+                            datetime.now(UTC) - _as_aware(open_break_started_at)
+                        ).total_seconds()
+                        / 3600.0,
+                        0.0,
+                    )
+                    today_hours = round(max(today_hours - running, 0.0), 2)
+        except (SQLAlchemyError, ValueError, TypeError):
+            # Degrade to the pre-#645 gross figure rather than 500 the screen
+            # every client polls on load. SQLAlchemyError alone did NOT deliver
+            # that: `_as_aware` raises ValueError on a malformed stamp (the
+            # break/entry columns are TEXT, so one is representable), and an
+            # arity slip in the shared helper raised ValueError too. A handler
+            # whose comment promises "never 500" has to catch what the block it
+            # guards can actually throw.
+            log.exception(
+                "timeclock_status_break_adjust_failed",
+                extra={"tenant_id": tenant_id, "technician_id": tech_id},
+            )
+
         return TimeClockStatusResponse(
             clocked_in=bool(entry),
             active_entry=_entry_to_response(entry) if entry else None,
@@ -612,6 +695,8 @@ def get_timeclock_status(
             warning_after_hours=WARNING_AFTER_HOURS,
             open_shift_elapsed_hours=round(open_elapsed_hours, 2) if entry else None,
             auto_clockout_at=auto_clockout_at_iso,
+            on_break=on_break_row is not None,
+            on_break_since=open_break_started_at,
         )
     except SQLAlchemyError:
         log.exception("timeclock_status_failed", extra={"tenant_id": tenant_id, "technician_id": tech_id})
@@ -1157,6 +1242,15 @@ def send_pay_period(
     return outcome.as_dict()
 
 
+# NOT rewritten to net breaks, deliberately. `GET /api/timeclock/payroll` sums
+# gross `minutes` and so belongs to the #645 class — but it has ZERO frontend
+# callers (only openapi_routes.txt, two tests, and an aspirational comment in
+# TimeclockView.vue), and a correct fix has to materialise rows to attribute
+# each break to its shift. A first attempt did exactly that and introduced two
+# new faults on a payroll surface nobody can reach: a row cap that silently
+# drops whole technicians past it, and open rows whose `minutes` is NULL
+# netting to zero so their lunches get paid. Filed instead of half-fixed — see
+# the sweep accounting on the #645 PR. Fix it WITH its caller, or delete it.
 @router.get("/payroll", response_model=list[PayrollSummaryItem])
 def payroll_summary(
     request: Request,
@@ -1272,15 +1366,42 @@ async def start_break(
             detail=f"type must be one of {sorted(_VALID_BREAK_TYPES)}",
         )
     try:
-        # Reject if there's already an active break for this user + tenant
-        active = db.execute(
-            select(TimeclockBreak.id).where(
-                TimeclockBreak.tenant_id == tenant_id,
-                TimeclockBreak.user_id == user_id,
-                TimeclockBreak.ended_at.is_(None),
-            ).limit(1)
+        # Reject only if a break is already running INSIDE the current shift —
+        # the same bound the readers use (`open_break_in_shift`). Guarding on
+        # "any open break for this user" made this endpoint disagree with
+        # /status and the job card: prod carries an open `lunch` started
+        # 2026-04-08 that nothing ever closes, so for that technician the
+        # readers correctly said "not on break" (hiding End Break) while this
+        # guard said 409 "end it first" — the tech could neither start nor end
+        # a break, so their lunches went unrecorded and the office overpaid
+        # them. One rule for "is a break running", shared by reader and writer.
+        open_shift = db.execute(
+            select(TimeclockEntry).where(
+                # No tenant_id filter — isolation is the connection.
+                # `technician_id` on this table holds a USER id (see _clock_states
+                # in routers/mobile.py, measured on prod), the same key
+                # `TimeclockBreak.user_id` uses.
+                TimeclockEntry.technician_id == user_id,
+                TimeclockEntry.deleted_at.is_(None),
+                TimeclockEntry.clock_out_at.is_(None),
+            ).order_by(TimeclockEntry.clock_in_at.desc()).limit(1)
         ).scalars().first()
-        if active:
+        if open_shift is not None:
+            active = open_break_in_shift(db, tenant_id, open_shift)
+        else:
+            # NOT clocked in: fall back to the original unbounded guard. Leaving
+            # `active = None` here made this endpoint a no-op for anyone off the
+            # clock — every retry, double-tap or offline replay would mint
+            # another `ended_at IS NULL` row that nothing can close, which is
+            # the very row class this change exists to stop accumulating.
+            active = db.execute(
+                select(TimeclockBreak).where(
+                    # No tenant_id filter — isolation is the connection.
+                    TimeclockBreak.user_id == user_id,
+                    TimeclockBreak.ended_at.is_(None),
+                ).limit(1)
+            ).scalars().first()
+        if active is not None:
             raise HTTPException(
                 status_code=409,
                 detail="an active break already exists; end it before starting a new one",
