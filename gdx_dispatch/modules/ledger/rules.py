@@ -736,10 +736,55 @@ def post_credit_memo(session: Session, adjustment, invoice, actor: str | None = 
     )
 
 
+def _refund_overpayment_cents(session: Session, invoice) -> int:
+    """How much of this invoice's money is overpayment, in cents.
+
+    Live payments minus what the invoice actually asks for. This is the part
+    of a refund that returns the customer's OWN money rather than reversing a
+    sale. Credits come from ``invoice_credited_cents`` — the same arithmetic
+    ``build_payment_lines`` uses to decide what becomes a 2300 credit, so the
+    two halves of an overpayment cannot disagree.
+    """
+    from sqlalchemy import func
+
+    from gdx_dispatch.models.tenant_models import Payment
+
+    paid = session.execute(
+        select(func.sum(Payment.amount)).where(
+            Payment.invoice_id == invoice.id,
+            Payment.voided_at.is_(None),
+        )
+    ).scalar_one_or_none() or 0
+    over = (
+        to_cents(_dec(paid))
+        - to_cents(_dec(invoice.total or 0))
+        - invoice_credited_cents(session, invoice)
+    )
+    return max(over, 0)
+
+
 def post_refund(session: Session, adjustment, invoice, actor: str | None = None):
-    """Refund: debit 4910 (contra-revenue per reason), credit the cash
-    account the money leaves through (refund_method via the payment map).
-    AR untouched — a refund is money back for money paid, not forgiveness."""
+    """Refund: return the customer's overpayment FIRST (debit 2300 Customer
+    Credits), then reverse the sale for anything beyond it (debit 4910
+    contra-revenue per reason); credit the cash account the money leaves
+    through. AR untouched — a refund is money back for money paid, not
+    forgiveness.
+
+    #445: this used to debit contra-revenue for the WHOLE refund and never
+    touch 2300. Refunding a $150 payment on a $100 invoice booked -$50 of
+    revenue AND left the customer holding a $50 spendable credit — $50 of real
+    money out the door on the first such refund. The GL flag has been on since
+    the 2026-07 cutover, so it was live, not latent; it had simply never fired
+    because no refund had ever been issued.
+
+    Credit-first, not proportional (Doug 2026-09-07): a refund hands back the
+    customer's own money before it unwinds a sale, and it retires the 2300
+    liability fastest — which is the whole point.
+
+    The credit portion is capped by THIS invoice's overpayment, not by the
+    customer's global 2300 balance. A customer can hold credit from another
+    invoice entirely; a refund here must not quietly consume it.
+    """
     if not ledger_service.ledger_posting_enabled(session, invoice.company_id):
         return None
     amount_cents = to_cents(_dec(adjustment.amount))
@@ -749,6 +794,49 @@ def post_refund(session: Session, adjustment, invoice, actor: str | None = None)
     if settings is None:
         raise LedgerConfigError("gl_settings missing — accounting not initialized")
     cash_role = ledger_service.resolve_payment_method_role(settings, adjustment.refund_method)
+
+    # Never debit 2300 for more credit than actually exists on the ledger:
+    # the overpayment is the intent, the posted balance is the truth.
+    on_ledger = customer_credit_balance_cents(
+        session, invoice.company_id, invoice.customer_id
+    )
+    from_credit = max(min(amount_cents, _refund_overpayment_cents(session, invoice),
+                          max(on_ledger, 0)), 0)
+    from_revenue = amount_cents - from_credit
+
+    lines = []
+    if from_credit:
+        lines.append(
+            PostingLine(
+                amount_cents=from_credit,
+                role=ROLE_CUSTOMER_CREDITS,
+                job_id=invoice.job_id,
+                customer_id=invoice.customer_id,
+                memo=f"overpayment returned on {invoice.invoice_number}",
+            )
+        )
+    if from_revenue:
+        lines.append(
+            PostingLine(
+                amount_cents=from_revenue,
+                role=_reason_role(settings, adjustment.reason),
+                job_id=invoice.job_id,
+                customer_id=invoice.customer_id,
+                memo=(
+                    f"refund on {invoice.invoice_number}: "
+                    f"{adjustment.reason or 'unspecified'}"
+                ),
+            )
+        )
+    lines.append(
+        PostingLine(
+            amount_cents=-amount_cents,
+            role=cash_role,
+            job_id=invoice.job_id,
+            customer_id=invoice.customer_id,
+            memo=f"refund paid out via {adjustment.refund_method}",
+        )
+    )
     return post_for_event(
         session,
         PostingEvent(
@@ -757,22 +845,7 @@ def post_refund(session: Session, adjustment, invoice, actor: str | None = None)
             source_id=str(adjustment.id),
             event="refund",
             effective_at=adjustment.created_at.date() if adjustment.created_at else date.today(),
-            lines=(
-                PostingLine(
-                    amount_cents=amount_cents,
-                    role=_reason_role(settings, adjustment.reason),
-                    job_id=invoice.job_id,
-                    customer_id=invoice.customer_id,
-                    memo=f"refund on {invoice.invoice_number}: {adjustment.reason or 'unspecified'}",
-                ),
-                PostingLine(
-                    amount_cents=-amount_cents,
-                    role=cash_role,
-                    job_id=invoice.job_id,
-                    customer_id=invoice.customer_id,
-                    memo=f"refund paid out via {adjustment.refund_method}",
-                ),
-            ),
+            lines=tuple(lines),
             created_by=actor,
         ),
     )

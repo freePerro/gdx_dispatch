@@ -411,3 +411,112 @@ def test_flag_off_adjustments_still_fix_bug4(db):
     assert inv.status == "paid"
     assert float(inv.balance_due) == 0.0
     assert _entries(db) == []  # no ledger writes with the flag off
+
+# ---------------------------------------------------------------------------
+# #445 — refunding an overpayment used to pay the customer twice
+#
+# post_refund debited contra-revenue for the WHOLE refund and never touched
+# 2300. Refunding a $150 payment on a $100 invoice booked -$50 of revenue AND
+# left the customer holding a $50 spendable credit: $50 of real money out the
+# door on the first such refund. ledger_posting_enabled has been ON since the
+# 2026-07 cutover, so this was live, not latent — it had simply never fired
+# because no refund had ever been issued.
+#
+# Credit-first (Doug 2026-09-07): a refund hands back the customer's own money
+# before it unwinds a sale.
+# ---------------------------------------------------------------------------
+
+
+def _overpaid(db, invoice_total="100.00", paid=150.0):
+    """An invoice paid beyond its total — the excess mints a 2300 credit."""
+    inv = _invoice(db, total=invoice_total)
+    transition_invoice_status(db, inv, "sent")
+    db.commit()
+    _pay(db, inv, paid, allow_overpayment=True)
+    return inv
+
+
+def test_the_overpayment_really_does_mint_a_credit_first(db):
+    """Guard the premise: without a 2300 balance the rest proves nothing."""
+    _enable(db)
+    inv = _overpaid(db)
+    assert customer_credit_balance_cents(db, COMPANY, inv.customer_id) == 5_000
+
+
+def test_full_refund_returns_the_credit_before_reversing_the_sale(db):
+    _enable(db)
+    inv = _overpaid(db)                      # $100 invoice, $150 paid
+    _refund(db, inv, 150.0)
+
+    refunds = [e for e in _entries(db) if e.idempotency_key and ":refund:" in e.idempotency_key]
+    by_code = _lines_by_code(db, refunds[0])
+    assert by_code["2300"] == 5_000, "the $50 overpayment must come back out of the liability"
+    assert by_code["4910"] == 10_000, "only the $100 actually earned reverses revenue"
+    assert by_code["1050"] == -15_000, "the customer still receives the full $150"
+
+
+def test_the_double_dip_is_gone(db):
+    """The whole point: after refunding it, the credit must not still be spendable."""
+    _enable(db)
+    inv = _overpaid(db)
+    _refund(db, inv, 150.0)
+    assert customer_credit_balance_cents(db, COMPANY, inv.customer_id) == 0
+
+
+def test_partial_refund_takes_the_credit_first(db):
+    """Doug's case: $60 refund on a $100 invoice paid $150."""
+    _enable(db)
+    inv = _overpaid(db)
+    _refund(db, inv, 60.0)
+
+    refunds = [e for e in _entries(db) if e.idempotency_key and ":refund:" in e.idempotency_key]
+    by_code = _lines_by_code(db, refunds[0])
+    assert by_code["2300"] == 5_000       # the whole overpayment, returned first
+    assert by_code["4910"] == 1_000       # then $10 of revenue
+    assert by_code["1050"] == -6_000
+    assert customer_credit_balance_cents(db, COMPANY, inv.customer_id) == 0
+
+
+def test_a_refund_smaller_than_the_credit_touches_no_revenue(db):
+    _enable(db)
+    inv = _overpaid(db)
+    _refund(db, inv, 20.0)
+
+    refunds = [e for e in _entries(db) if e.idempotency_key and ":refund:" in e.idempotency_key]
+    by_code = _lines_by_code(db, refunds[0])
+    assert by_code["2300"] == 2_000
+    assert "4910" not in by_code, "no sale is being reversed — this is the customer's own money"
+    assert customer_credit_balance_cents(db, COMPANY, inv.customer_id) == 3_000
+
+
+def test_no_overpayment_still_posts_pure_contra_revenue(db):
+    """Regression: the ordinary refund path must be untouched."""
+    _enable(db)
+    inv = _invoice(db, total="100.00")
+    transition_invoice_status(db, inv, "sent")
+    db.commit()
+    _pay(db, inv, 100.0)
+    _refund(db, inv, 30.0)
+
+    refunds = [e for e in _entries(db) if e.idempotency_key and ":refund:" in e.idempotency_key]
+    by_code = _lines_by_code(db, refunds[0])
+    assert "2300" not in by_code, "there is no overpayment to return"
+    assert by_code["4910"] == 3_000
+
+
+def test_a_refund_never_raids_another_invoices_credit(db):
+    """The 2300 balance is per CUSTOMER. A refund on an invoice that was not
+    overpaid must not quietly consume credit earned somewhere else."""
+    _enable(db)
+    over = _overpaid(db)                                   # mints $50 of credit
+    other = _invoice(db, total="100.00", customer_id=over.customer_id)
+    transition_invoice_status(db, other, "sent")
+    db.commit()
+    _pay(db, other, 100.0)                                 # exact, no overpayment
+    _refund(db, other, 30.0)
+
+    refunds = [e for e in _entries(db) if e.idempotency_key and ":refund:" in e.idempotency_key]
+    by_code = _lines_by_code(db, refunds[-1])
+    assert "2300" not in by_code
+    assert by_code["4910"] == 3_000
+    assert customer_credit_balance_cents(db, COMPANY, over.customer_id) == 5_000
