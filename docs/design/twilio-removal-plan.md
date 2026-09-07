@@ -1,6 +1,6 @@
 # Twilio removal — the SMS provider that was never configured
 
-Status: PLAN 2026-09-06, audited and built the same day on `chore/remove-twilio`; not merged. Owner decision "twilio can be removed" (2026-09-06). Update to MERGED #N when the PR lands.
+Status: PLAN 2026-09-06, audited twice and built the same day; PR #630 OPEN, not merged. Owner decision "twilio can be removed" (2026-09-06). Update to MERGED #630 when it lands, then RELEASED vX.Y.Z after the prod walk.
 
 ## What already exists (do not rebuild)
 
