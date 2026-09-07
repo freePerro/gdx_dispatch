@@ -32,7 +32,7 @@ MODULE_ENDPOINTS = {
     "communications":      ("/api/notifications",     200),
     "equipment_tracking":  ("/api/equipment",         200),
     "documents":           ("/api/documents",         200),
-    "mobile":              ("/api/mobile/sync",       200),
+    "mobile":              ("/api/mobile/today",      200),
     "timeclock":           ("/api/timeclock/status",   200),
     "customers":           ("/api/customers",         200),
     "quickbooks":          ("/api/qb/status",         200),

@@ -32,8 +32,6 @@ GET /.well-known/openid-configuration
 GET /.well-known/security.txt
 GET /api/.well-known/jwks.json
 GET /api/ai/pricing/health
-GET /api/ai/usage
-GET /api/ai/usage/export
 GET /api/bank-feeds/oauth/callback
 GET /api/diagnosis/schemas
 GET /api/integrations/available

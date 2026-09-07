@@ -322,38 +322,6 @@
         </Card>
       </div>
 
-      <!-- Communications tab -->
-      <div v-if="activeTab === 'Communications'" class="tab-content" data-testid="tab-communications-content">
-        <div class="panel-header">
-          <h3>Communication Log</h3>
-          <Button
-            label="+ Log Communication"
-            icon="pi pi-comment"
-            size="small"
-            outlined
-            data-testid="add-communication-btn"
-            @click="openCommunicationDialog"
-          />
-        </div>
-        <Card class="section-card" data-testid="communications-card">
-          <template #content>
-            <DataTable
-      responsiveLayout="scroll" :value="communications" responsive-layout="scroll" stripedRows data-testid="customer-communications-table">
-              <template #empty><div class="empty-message">No communications logged yet.</div></template>
-              <Column header="Date">
-                <template #body="{ data }">{{ formatDateTime(data.created_at || data.date) }}</template>
-              </Column>
-              <Column field="type" header="Type" />
-              <Column field="direction" header="Direction" />
-              <Column field="subject" header="Subject" />
-              <Column header="Body">
-                <template #body="{ data }">{{ (data.body || '').slice(0, 80) }}</template>
-              </Column>
-            </DataTable>
-          </template>
-        </Card>
-      </div>
-
       <!-- Portal tab -->
       <div v-if="activeTab === 'Portal'" class="tab-content" data-testid="tab-portal-content">
         <Card class="section-card portal-card" data-testid="portal-card">
@@ -700,40 +668,6 @@
       </Dialog>
 
       <Dialog
-        v-model:visible="showCommunicationDialog"
-        header="Log Communication"
-        :style="{ width: '520px' }"
-        modal
-        data-testid="communication-dialog"
-      >
-        <form class="dialog-form" @submit.prevent="saveCommunication">
-          <div class="form-row">
-            <div class="form-field">
-              <label for="communication-type">Type *</label>
-              <Select id="communication-type" name="lcType" v-model="communicationForm.type" :options="communicationTypes" data-testid="communication-type-input" class="w-full" />
-            </div>
-            <div class="form-field">
-              <label for="communication-direction">Direction</label>
-              <Select id="communication-direction" name="lcDir" v-model="communicationForm.direction" :options="communicationDirections" data-testid="communication-direction-input" class="w-full" />
-            </div>
-          </div>
-          <div class="form-field">
-            <label for="communication-subject">Subject</label>
-            <InputText id="communication-subject" name="lcSubject" v-model="communicationForm.subject" data-testid="communication-subject-input" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label for="communication-body">Body / Notes *</label>
-            <Textarea id="communication-body" name="lcBody" v-model="communicationForm.body" rows="3" data-testid="communication-body-input" class="w-full" />
-          </div>
-          <div v-if="communicationError" class="inline-error">{{ communicationError }}</div>
-          <div class="form-actions">
-            <Button type="button" label="Cancel" text @click="showCommunicationDialog = false" />
-            <Button type="submit" label="Save" :loading="isSavingCommunication" data-testid="save-communication-btn" />
-          </div>
-        </form>
-      </Dialog>
-
-      <Dialog
         v-model:visible="showPortalDialog"
         header="Customer Portal Account"
         :style="{ width: '420px' }"
@@ -920,7 +854,7 @@ const activeTab = ref("Jobs");
 // People before places: a second person at an account had nowhere to live
 // before this tab, which is how QuickBooks sub-customers became the
 // dumping ground for names. See qb-subcustomer-flattening-plan.md.
-const tabs = ["Jobs", "Estimates", "Invoices", "Contacts", "Locations", "Notes", "Equipment", "Recurring Jobs", "Email", "Communications", "Portal"];
+const tabs = ["Jobs", "Estimates", "Invoices", "Contacts", "Locations", "Notes", "Equipment", "Recurring Jobs", "Email", "Portal"];
 // Route param, not the loaded customer object — the tab must work while the
 // customer record is still in flight.
 const customerId = computed(() => route.params.id);
@@ -948,13 +882,6 @@ const recurringFrequencies = [
 const jobTypeOptions = [...JOB_TYPE_OPTIONS];
 const recurringError = ref("");
 const isSavingRecurring = ref(false);
-const communications = ref([]);
-const showCommunicationDialog = ref(false);
-const communicationForm = ref({ type: "email", direction: "outbound", subject: "", body: "" });
-const communicationTypes = ["email", "sms", "call", "note"];
-const communicationDirections = ["inbound", "outbound"];
-const communicationError = ref("");
-const isSavingCommunication = ref(false);
 const portalStatus = ref(null);
 const showPortalDialog = ref(false);
 const portalForm = ref({ email: '' });
@@ -1078,12 +1005,6 @@ function openRecurringDialog() {
   showRecurringDialog.value = true;
 }
 
-function openCommunicationDialog() {
-  communicationError.value = "";
-  communicationForm.value = { type: "email", direction: "outbound", subject: "", body: "" };
-  showCommunicationDialog.value = true;
-}
-
 async function fetchEquipment() {
   try {
     const data = await api.get(`/api/customers/${route.params.id}/equipment`);
@@ -1173,46 +1094,6 @@ async function saveRecurringJob() {
     // errors surfaced by useApiWithToast
   } finally {
     isSavingRecurring.value = false;
-  }
-}
-
-async function fetchCommunications() {
-  try {
-    const data = await api.get(`/api/customers/${route.params.id}/communications`);
-    if (Array.isArray(data)) {
-      communications.value = data;
-    } else if (data?.communications) {
-      communications.value = data.communications;
-    } else {
-      communications.value = data?.data || data?.items || [];
-    }
-  } catch {
-    communications.value = [];
-  }
-}
-
-async function saveCommunication() {
-  communicationError.value = "";
-  if (!communicationForm.value.body.trim()) {
-    communicationError.value = "Body is required.";
-    return;
-  }
-
-  isSavingCommunication.value = true;
-  try {
-    await api.post(`/api/customers/${route.params.id}/communications`, {
-      type: communicationForm.value.type,
-      direction: communicationForm.value.direction,
-      subject: communicationForm.value.subject?.trim() || null,
-      body: communicationForm.value.body.trim(),
-    });
-    toast.add({ severity: "success", summary: "Saved", detail: "Communication logged.", life: 3000 });
-    showCommunicationDialog.value = false;
-    await fetchCommunications();
-  } catch {
-    // errors surfaced by useApiWithToast
-  } finally {
-    isSavingCommunication.value = false;
   }
 }
 
@@ -1584,7 +1465,6 @@ onMounted(async () => {
     loadCustomerInvoices(),
     fetchEquipment(),
     fetchRecurringJobs(),
-    fetchCommunications(),
     loadPricingSettings(),
   ]);
 });

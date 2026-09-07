@@ -147,10 +147,6 @@ def get_db_for_admin(db: Session = Depends(get_db)) -> Session:
     return db
 
 
-def get_db_for_admin(db: Session = Depends(get_db)) -> Session:
-    return db
-
-
 def _coerce_tenant_uuid(user: dict[str, Any]) -> UUID:
     tid = user.get("tenant_id")
     if not tid:

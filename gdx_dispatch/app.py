@@ -482,12 +482,6 @@ except Exception:
     checklists_router = APIRouter(tags=["checklists"])
 
 try:
-    from gdx_dispatch.routers import booking as booking_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: booking_router")
-    booking_router = APIRouter(tags=["booking"])
-
-try:
     from gdx_dispatch.routers import fleet as fleet_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: fleet_router")
@@ -857,12 +851,6 @@ try:
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: van_inventory_router")
     van_inventory_router = APIRouter(prefix="/api/van-inventory", tags=["van-inventory"])
-
-try:
-    from gdx_dispatch.routers import po_workflow as po_workflow_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: po_workflow_router")
-    po_workflow_router = APIRouter(prefix="/api/purchase-orders", tags=["po-workflow"])
 
 try:
     from gdx_dispatch.routers import commission as commission_router
@@ -1588,7 +1576,6 @@ def create_app() -> FastAPI:
     # in gdx_dispatch/tools/migrate_equipment_consolidation.py.
     app.include_router(timeclock_router.router if hasattr(timeclock_router, "router") else timeclock_router)
     app.include_router(checklists_router.router if hasattr(checklists_router, "router") else checklists_router)
-    app.include_router(booking_router.router if hasattr(booking_router, "router") else booking_router)
     app.include_router(fleet_router.router if hasattr(fleet_router, "router") else fleet_router)
     app.include_router(
         recurring_jobs_router.router if hasattr(recurring_jobs_router, "router") else recurring_jobs_router
@@ -1619,11 +1606,11 @@ def create_app() -> FastAPI:
     # register some overlapping paths with the same function names. The newer
     # versions are richer and tenant-scoped; the legacy modules have some
     # unique endpoints (e.g. /inventory/parts/{id}/stock, /timeclock/report,
-    # /jobs/{id}/parts). We keep BOTH mounted so no path coverage is lost.
-    # FastAPI routes by first-match order (newer routers are registered
-    # first, above); the legacy modules only serve paths the new ones don't.
-    # This does produce "Duplicate Operation ID" warnings during openapi()
-    # generation — those are noise, tracked for follow-up merge.
+    # /jobs/{id}/parts). Both stay mounted for those. The paths the modules
+    # duplicated (inventory parts list/create + low-stock, fleet vehicles
+    # list/create, campaigns list/create/send, timeclock clock-in/status,
+    # dispatch locations) were deleted from the module routers 2026-09-06
+    # (#569): FastAPI serves the first registration, so they never ran.
     app.include_router(inventory.router if hasattr(inventory, "router") else inventory)
     app.include_router(equipment.router if hasattr(equipment, "router") else equipment)
     app.include_router(timeclock.router if hasattr(timeclock, "router") else timeclock)
@@ -1705,7 +1692,6 @@ def create_app() -> FastAPI:
 
     app.include_router(integrations_router)
     app.include_router(van_inventory_router.router if hasattr(van_inventory_router, "router") else van_inventory_router)
-    app.include_router(po_workflow_router.router if hasattr(po_workflow_router, "router") else po_workflow_router)
     app.include_router(commission_router.router if hasattr(commission_router, "router") else commission_router)
     app.include_router(service_triggers_router.router if hasattr(service_triggers_router, "router") else service_triggers_router)
     app.include_router(variance_report_router.router if hasattr(variance_report_router, "router") else variance_report_router)

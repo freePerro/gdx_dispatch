@@ -31,7 +31,7 @@ that render but say "open in Outlook", and a mobile view with no folders, link, 
 - `automations.py::dispatch_trigger` — zero callers; the Auto-Email settings tab says so itself. **[DECIDED 2026-08-31: deleted — `dispatch_trigger`, its tests and the Outlook Auto-Email tab are removed; Event Rules (`modules/workflows`) is the event-email path. See docs/design/archive/unimplemented-endpoints-decision-list.md § 2026-08-31.]**
 - `OutlookAttachment` table, `body_r2_key`, `in_reply_to`, `OutlookAccount.delta_token` — columns/tables nothing writes.
 - `graph_client.copy_message`, `move_folder`, `get_mailbox_settings` — no callers.
-- `tasks/email_poller.py` (IMAP) — registered, no beat entry, parallel `inbound_emails` schema.
+- `tasks/email_poller.py` (IMAP) — registered, no beat entry, parallel `inbound_emails` schema. **[DECIDED 2026-09-06: deleted (#599) — it never ran (no beat entry, no caller) and its INSERT named columns the table does not have.]** <!-- link-ok: deleted 2026-09-06 -->
 - `email.draft` MCP tool — local-only draft that Graph never sees; refers to an `email.send` tool that doesn't exist.
 - `EmailTimeline` "Open in Inbox →" goes to `/inbox`, not the message (no deep-link route).
 - Stale docstrings: fallback poller "15 min" (it is 30), models header "5 tables" (7).

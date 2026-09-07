@@ -11,8 +11,6 @@ from gdx_dispatch.models.tenant_models import (  # noqa: F401
     AutomationSequence,
     AutomationStep,
     # Phase 3: DDL replacement models (all _ensure_tables DDL now has ORM equivalents)
-    BookingJob,
-    BookingRequest,
     ChangeOrderLine,
     Checklist,
     ChecklistItem,
@@ -87,9 +85,6 @@ from gdx_dispatch.models.tenant_models import (  # noqa: F401
     PlanEnrollment,
     PlannerTask,
     PlanStep,
-    PORequest,
-    PORequestLine,
-    PortalBookingRequest,
     PortalMessage,
     RecurringJobSchedule,
     ReminderSettings,

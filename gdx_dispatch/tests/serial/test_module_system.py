@@ -9,7 +9,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from conftest import make_fresh_db
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.modules.inventory.router import router as inventory_router
+# The canonical inventory router — the one that serves GET /api/inventory/parts
+# in the real app. Until 2026-09-06 this test mounted modules/inventory/router.py,
+# whose copy of that path was shadowed and deleted (#569).
+from gdx_dispatch.routers.inventory import router as inventory_router
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.settings import router as settings_router
 

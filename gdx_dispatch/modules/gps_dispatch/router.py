@@ -9,8 +9,11 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.routers.auth import get_current_user
-from gdx_dispatch.modules.gps_dispatch.service import assign_route, get_technician_locations, update_technician_location
+from gdx_dispatch.modules.gps_dispatch.service import assign_route, update_technician_location
 
+# GET /dispatch/locations left this module 2026-09-06 (#569): routers/tech_locations.py
+# registers it first, so FastAPI never dispatched here. The two routes below are
+# unique to this module.
 router = APIRouter(prefix="/api", tags=["gps_dispatch"], dependencies=[Depends(require_module("gps_dispatch")), Depends(get_current_user)])
 
 
@@ -34,22 +37,6 @@ def post_location(
         "recorded_at": location.recorded_at.isoformat(),
         "accuracy_meters": float(location.accuracy_meters) if location.accuracy_meters is not None else None,
     }
-
-
-@router.get("/dispatch/locations", response_model=None)
-def list_locations(db: Session = Depends(get_db)) -> Any:
-    locations = get_technician_locations(db)
-    return [
-        {
-            "id": str(loc.id),
-            "technician_id": loc.technician_id,
-            "lat": float(loc.lat),
-            "lng": float(loc.lng),
-            "recorded_at": loc.recorded_at.isoformat(),
-            "accuracy_meters": float(loc.accuracy_meters) if loc.accuracy_meters is not None else None,
-        }
-        for loc in locations
-    ]
 
 
 @router.post("/dispatch/routes", response_model=None)

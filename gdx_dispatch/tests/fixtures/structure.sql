@@ -458,38 +458,6 @@ CREATE TABLE public.automation_steps (
 
 
 --
--- Name: booking_jobs_router; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.booking_jobs_router (
-    id text NOT NULL,
-    tenant_id text NOT NULL,
-    booking_request_id text NOT NULL,
-    created_at text NOT NULL
-);
-
-
---
--- Name: booking_requests_router; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.booking_requests_router (
-    id text NOT NULL,
-    tenant_id text NOT NULL,
-    name text NOT NULL,
-    phone text NOT NULL,
-    service text NOT NULL,
-    preferred_date text NOT NULL,
-    preferred_slot text,
-    status text NOT NULL,
-    decline_reason text,
-    approved_job_id text,
-    created_at text NOT NULL,
-    updated_at text NOT NULL
-);
-
-
---
 -- Name: campaign_sends; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2271,55 +2239,6 @@ CREATE TABLE public.plans (
 
 
 --
--- Name: po_request_lines; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.po_request_lines (
-    id uuid NOT NULL,
-    po_id uuid NOT NULL,
-    sku character varying(100),
-    name character varying(300) NOT NULL,
-    quantity integer NOT NULL,
-    unit_price numeric(12,2) NOT NULL
-);
-
-
---
--- Name: po_requests; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.po_requests (
-    id uuid NOT NULL,
-    company_id character varying(36) NOT NULL,
-    requested_by character varying(36) NOT NULL,
-    job_id character varying(36),
-    customer_id character varying(36),
-    supplier_name character varying(300),
-    status character varying(30) NOT NULL,
-    notes text,
-    created_at timestamp with time zone,
-    approved_at timestamp with time zone,
-    received_at timestamp with time zone,
-    deleted_at timestamp with time zone
-);
-
-
---
--- Name: portal_booking_requests; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.portal_booking_requests (
-    id text NOT NULL,
-    customer_id text NOT NULL,
-    requested_date text NOT NULL,
-    service_type text NOT NULL,
-    notes text,
-    status text NOT NULL,
-    created_at text NOT NULL
-);
-
-
---
 -- Name: portal_messages; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3601,22 +3520,6 @@ ALTER TABLE ONLY public.automation_steps
 
 
 --
--- Name: booking_jobs_router booking_jobs_router_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.booking_jobs_router
-    ADD CONSTRAINT booking_jobs_router_pkey PRIMARY KEY (id);
-
-
---
--- Name: booking_requests_router booking_requests_router_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.booking_requests_router
-    ADD CONSTRAINT booking_requests_router_pkey PRIMARY KEY (id);
-
-
---
 -- Name: campaign_sends campaign_sends_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4422,30 +4325,6 @@ ALTER TABLE ONLY public.planner_tasks
 
 ALTER TABLE ONLY public.plans
     ADD CONSTRAINT plans_pkey PRIMARY KEY (id);
-
-
---
--- Name: po_request_lines po_request_lines_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.po_request_lines
-    ADD CONSTRAINT po_request_lines_pkey PRIMARY KEY (id);
-
-
---
--- Name: po_requests po_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.po_requests
-    ADD CONSTRAINT po_requests_pkey PRIMARY KEY (id);
-
-
---
--- Name: portal_booking_requests portal_booking_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.portal_booking_requests
-    ADD CONSTRAINT portal_booking_requests_pkey PRIMARY KEY (id);
 
 
 --

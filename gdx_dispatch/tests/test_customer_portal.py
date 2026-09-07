@@ -260,27 +260,6 @@ def test_equipment_endpoint_filters_to_customer(tenant_db_session):
     assert rows[0]["customer_id"] == str(seeded["customer_a_id"])
 
 
-def test_booking_creates_request(tenant_db_session):
-    seeded = _seed_customer_data(tenant_db_session)
-    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
-
-    payload = portal_router.BookingIn(
-        requested_date=datetime.fromisoformat("2030-04-01T10:00:00+00:00"),
-        service_type="maintenance",
-        notes="Need tune-up",
-    )
-    out = portal_router.portal_booking(payload=payload, request=_mock_request(), principal=principal, db=tenant_db_session)
-    assert out["status"] == "requested"
-
-    row = tenant_db_session.execute(
-        text("SELECT customer_id, service_type, notes FROM portal_booking_requests WHERE id = :id"),
-        {"id": out["id"]},
-    ).mappings().first()
-    assert row is not None
-    assert row["customer_id"] == str(seeded["customer_a_id"])
-    assert row["service_type"] == "maintenance"
-
-
 def test_pay_invoice_creates_payment_intent(tenant_db_session, monkeypatch):
     seeded = _seed_customer_data(tenant_db_session)
     principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])

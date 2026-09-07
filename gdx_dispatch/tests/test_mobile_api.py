@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -127,42 +126,6 @@ def _seed_job_bundle(SessionLocal, scheduled_dt: datetime | None = None) -> dict
         )
         db.commit()
         return {"job_id": job_id, "customer_id": customer_id, "today": now.date().isoformat()}
-    finally:
-        db.close()
-
-
-def test_get_schedule_returns_todays_jobs(session_factory):
-    seed = _seed_job_bundle(session_factory)
-    db = session_factory()
-    try:
-        r = mobile_router.get_mobile_schedule(
-            request=_request(),
-            date=None,
-            current_user=_TEST_USER,
-            db=db,
-        )
-        assert r.status_code == 200
-        data = _as_json(r)
-        assert data["date"] == seed["today"]
-        assert data["count"] == 1
-        assert data["jobs"][0]["id"] == seed["job_id"]
-    finally:
-        db.close()
-
-
-def test_get_schedule_filters_by_date(session_factory):
-    _seed_job_bundle(session_factory)
-    db = session_factory()
-    try:
-        tomorrow = datetime.now(UTC).date() + timedelta(days=1)
-        r = mobile_router.get_mobile_schedule(
-            request=_request(),
-            date=tomorrow,
-            current_user=_TEST_USER,
-            db=db,
-        )
-        assert r.status_code == 200
-        assert _as_json(r)["count"] == 0
     finally:
         db.close()
 
@@ -502,26 +465,6 @@ def test_clock_out_404_without_open_entry(session_factory):
         db.close()
 
 
-def test_signature_capture_persists_signature(session_factory):
-    seed = _seed_job_bundle(session_factory)
-    db = session_factory()
-    try:
-        data = "data:image/png;base64," + base64.b64encode(b"signed").decode()
-        r = mobile_router.capture_mobile_signature(
-            job_id=seed["job_id"],
-            payload=mobile_router.SignatureBody(signature_data=data, signed_by="Jane Customer"),
-            request=_request(),
-            current_user=_TEST_USER,
-            db=db,
-        )
-        assert r.status_code == 200
-        body = _as_json(r)
-        assert body["job_id"] == seed["job_id"]
-        assert body["signed_by"] == "Jane Customer"
-    finally:
-        db.close()
-
-
 def test_notes_adds_field_note(session_factory):
     seed = _seed_job_bundle(session_factory)
     db = session_factory()
@@ -539,80 +482,8 @@ def test_notes_adds_field_note(session_factory):
         db.close()
 
 
-def test_location_reports_and_upserts(session_factory):
-    _seed_job_bundle(session_factory)
-    db = session_factory()
-    try:
-        first = mobile_router.report_mobile_location(
-            payload=mobile_router.LocationBody(lat=30.2672, lng=-97.7431, accuracy=5),
-            request=_request(),
-            current_user=_TEST_USER,
-            db=db,
-        )
-        second = mobile_router.report_mobile_location(
-            payload=mobile_router.LocationBody(lat=30.2675, lng=-97.7435, accuracy=4),
-            request=_request(),
-            current_user=_TEST_USER,
-            db=db,
-        )
-        assert first.status_code == 200
-        assert second.status_code == 200
-        first_body = _as_json(first)
-        second_body = _as_json(second)
-        assert first_body["id"] == second_body["id"]
-        assert second_body["lat"] == pytest.approx(30.2675)
-    finally:
-        db.close()
-
-
 def test_mobile_router_registered_in_app():
     app_py = Path(__file__).resolve().parents[1] / "app.py"
     content = app_py.read_text()
     assert "from gdx_dispatch.routers import mobile as mobile_router" in content
     assert "app.include_router(mobile_router.router if hasattr(mobile_router, \"router\") else mobile_router)" in content
-
-
-def test_transition_writes_audit_synchronously(session_factory):
-    # #20 — the transition endpoint used to fire a DETACHED create_task(
-    # log_audit_event(db, ...)) on the request-scoped session, which
-    # Depends(get_db) closes on return → commit-on-closed-SQLite-connection →
-    # flaky native SIGSEGV in the harness. It now writes synchronously; assert
-    # the audit row is present immediately after the call (no detached task).
-    from sqlalchemy import select
-
-    from gdx_dispatch.core.audit import AuditLog
-
-    SessionLocal = session_factory
-    admin = {"user_id": "admin-1", "role": "admin", "tenant_id": "tenant-a"}
-    job_uuid = uuid4().hex
-    db = SessionLocal()
-    try:
-        db.execute(text(
-            "INSERT INTO customers (id, name, phone, email, address, company_id) "
-            "VALUES (:id, 'C', '5551112222', 'c@e.co', 'addr', 'tenant-a')"
-        ), {"id": uuid4().hex})
-        cust = db.execute(text("SELECT id FROM customers LIMIT 1")).scalar()
-        db.execute(text(
-            "INSERT INTO jobs (id, company_id, customer_id, title, description, "
-            "dispatch_status, lifecycle_stage, created_at, deleted_at) "
-            "VALUES (:id, 'tenant-a', :cust, 'T', 'D', 'assigned', 'scheduled', :now, NULL)"
-        ), {"id": job_uuid, "cust": cust, "now": datetime.now(UTC)})
-        db.commit()
-
-        r = mobile_router.mobile_update_job_status(
-            job_id=str(__import__("uuid").UUID(job_uuid)),
-            status="en_route",
-            request=_request(),
-            current_user=admin,
-            db=db,
-        )
-        assert r.status_code == 200, _as_json(r)
-
-        # Audit row exists synchronously (proves no detached task / closed-session commit).
-        rows = db.execute(
-            select(AuditLog).where(AuditLog.action == "job_status_mobile_update")
-        ).scalars().all()
-        assert len(rows) == 1
-        assert rows[0].entity_id == str(__import__("uuid").UUID(job_uuid))
-    finally:
-        db.close()

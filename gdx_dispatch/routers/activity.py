@@ -109,38 +109,6 @@ def list_recent_activity(
     return {"items": items, "total": total}
 
 
-@router.get("/api/jobs/{job_id}/activity", response_model=None)
-def list_job_activity(
-    job_id: str,
-    request: Request,
-    _: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
-) -> dict[str, Any]:
-    """Audit events for a single job, tenant-scoped."""
-    ensure_audit_table(db)
-    tenant_id = _tenant_id(request)
-
-    stmt = (
-        _base_stmt(tenant_id)
-        .where(AuditLog.entity_type == "job")
-        .where(AuditLog.entity_id == str(job_id))
-        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
-        .limit(limit)
-        .offset(offset)
-    )
-    count_stmt = (
-        _count_stmt(tenant_id)
-        .where(AuditLog.entity_type == "job")
-        .where(AuditLog.entity_id == str(job_id))
-    )
-
-    rows = db.execute(stmt).scalars().all()
-    total = int(db.execute(count_stmt).scalar() or 0)
-    return {"items": decorate_rows(db, [_serialize(r) for r in rows]), "total": total}
-
-
 @router.get("/api/customers/{customer_id}/activity", response_model=None)
 def list_customer_activity(
     customer_id: str,

@@ -25,7 +25,6 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
             # beat fired on schedule producing zero work. Removed. Real periodic QB
             # sync arrives in Phase 2 via CDC poller (S122-18); webhooks
             # (CloudEvents-aware per S122-CE) carry the active path meanwhile.
-            "gdx_dispatch.tasks.email_poller",
             "gdx_dispatch.tasks.customer_volume_refresh",
             "gdx_dispatch.tasks.estimate_archive",
             "gdx_dispatch.core.webhooks.tasks",
@@ -77,7 +76,6 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
         task_default_queue="priority:low",
         task_routes={
             "gdx_dispatch.tasks.recurring.*": {"queue": "priority:low"},
-            "gdx_dispatch.tasks.email_poller.*": {"queue": "priority:low"},
             "gdx_dispatch.core.webhooks.tasks.*": {"queue": "priority:high"},
             "gdx_dispatch.core.plugin_events.*": {"queue": "priority:high"},
             "gdx_dispatch.modules.campaigns.tasks.*": {"queue": "priority:high"},
@@ -120,7 +118,6 @@ from gdx_dispatch.modules.phone_com import tasks as _phone_com_tasks  # noqa: E4
 from gdx_dispatch.modules.quickbooks import tasks as _quickbooks_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import audit_chain_verify as _audit_chain_verify_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import customer_volume_refresh as _customer_volume_refresh_tasks  # noqa: E402,F401
-from gdx_dispatch.tasks import email_poller as _email_poller_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import estimate_archive as _estimate_archive_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import estimate_expiry as _estimate_expiry_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import estimate_followup as _estimate_followup_tasks  # noqa: E402,F401

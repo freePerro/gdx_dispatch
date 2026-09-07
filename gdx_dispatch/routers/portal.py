@@ -83,12 +83,6 @@ class PortalSetPasswordIn(BaseModel):
     new_password: str = Field(min_length=8, max_length=128)
 
 
-class BookingIn(BaseModel):
-    requested_date: datetime
-    service_type: str = Field(min_length=1, max_length=100)
-    notes: str | None = Field(default=None, max_length=5000)
-
-
 class MessageIn(BaseModel):
     subject: str = Field(min_length=1, max_length=200)
     message: str = Field(min_length=1, max_length=10000)
@@ -753,41 +747,6 @@ def portal_documents(
         }
         for row in rows
     ]
-
-
-@router.post("/booking", response_model=None)
-def portal_booking(
-    payload: BookingIn,
-    request: Request,
-    principal: PortalPrincipal = Depends(get_current_portal_customer),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    from gdx_dispatch.models.tenant_models import PortalBookingRequest
-    booking_id = str(uuid4())
-    created_at = _now_utc().isoformat()
-    db.add(PortalBookingRequest(
-        id=booking_id,
-        customer_id=str(principal.customer_id),
-        requested_date=payload.requested_date.astimezone(UTC).isoformat(),
-        service_type=payload.service_type.strip(),
-        notes=payload.notes.strip() if payload.notes else None,
-        status="requested",
-        created_at=created_at,
-    ))
-    db.commit()
-
-    tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
-    log_audit_event_sync(
-        db=db,
-        tenant_id=tenant_id,
-        user_id=str(principal.user_id),
-        action="portal_booking_created",
-        entity_type="booking_request",
-        entity_id=booking_id,
-        details={"customer_id": str(principal.customer_id), "service_type": payload.service_type.strip()},
-    )
-    db.commit()
-    return {"id": booking_id, "status": "requested"}
 
 
 @router.post("/message", response_model=None)

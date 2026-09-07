@@ -14,19 +14,13 @@ def _mock_request(tenant_id="test-tenant"):
     r.client.host = "127.0.0.1"
     return r
 
-from fastapi import HTTPException
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.modules.campaigns import router as campaigns_router
-from gdx_dispatch.modules.campaigns.router import (
-    CampaignCreateIn,
-    create_campaign,
-    get_campaign_stats,
-    send_campaign,
-)
+from gdx_dispatch.modules.campaigns.router import _ensure_campaign_tables, get_campaign_stats
 from gdx_dispatch.routers import segments as segments_router
 from gdx_dispatch.routers.marketing import ReferralCreateIn
 from gdx_dispatch.routers.segments import (
@@ -331,34 +325,6 @@ async def test_segment_count_endpoint(db_sessionmaker):
     assert count["count"] >= 1
 
 
-async def test_campaign_send_to_segment(db_sessionmaker):
-    Session = db_sessionmaker
-    c1 = _seed_customer(Session, name="HV One", created_days_ago=100)
-    c2 = _seed_customer(Session, name="HV Two", created_days_ago=100)
-
-    j1 = _seed_job(Session, customer_id=c1, created_days_ago=30, completed=True)
-    j2 = _seed_job(Session, customer_id=c2, created_days_ago=20, completed=True)
-    _seed_invoice(Session, job_id=j1, total=7000)
-    _seed_invoice(Session, job_id=j2, total=8000)
-
-    db = Session()
-    campaign = await create_campaign(
-        payload=CampaignCreateIn(
-            name="VIP Blast",
-            segment_id="high-value",
-            template_id="tpl-1",
-            channel="email",
-            campaign_type="one-time blast",
-        ),
-        current_user={},
-        db=db,
-    )
-    sent = await send_campaign(campaign_id=campaign["id"], current_user={}, db=db)
-    db.close()
-
-    assert sent["sent"] == 2
-
-
 async def test_campaign_stats_tracking(db_sessionmaker):
     Session = db_sessionmaker
     c1 = _seed_customer(Session, name="HV A", created_days_ago=100)
@@ -369,20 +335,29 @@ async def test_campaign_stats_tracking(db_sessionmaker):
     _seed_invoice(Session, job_id=j2, total=8000)
 
     db = Session()
-    campaign = await create_campaign(
-        payload=CampaignCreateIn(
-            name="Stats Blast",
-            segment_id="high-value",
-            template_id="tpl-2",
-            channel="sms",
-            campaign_type="drip sequence",
-        ),
-        current_user={},
-        db=db,
-    )
-    await send_campaign(campaign_id=campaign["id"], current_user={}, db=db)
-
+    # The module's create/send handlers were deleted 2026-09-06 (#569) —
+    # routers/campaigns.py owns those paths — so seed the module's own
+    # tables directly: one campaign, one send per customer.
+    _ensure_campaign_tables(db)
+    campaign = {"id": str(uuid.uuid4())}
     now = datetime.now(UTC).isoformat()
+    db.execute(
+        text(
+            "INSERT INTO marketing_campaigns (id, name, segment_id, template_id, channel, campaign_type, created_at, updated_at) "
+            "VALUES (:id, 'Stats Blast', 'high-value', 'tpl-2', 'sms', 'drip sequence', :now, :now)"
+        ),
+        {"id": campaign["id"], "now": now},
+    )
+    for customer_id in (c1, c2):
+        db.execute(
+            text(
+                "INSERT INTO marketing_campaign_sends (id, campaign_id, customer_id, channel, status, sent_at, created_at) "
+                "VALUES (:id, :campaign_id, :customer_id, 'sms', 'sent', :now, :now)"
+            ),
+            {"id": str(uuid.uuid4()), "campaign_id": campaign["id"], "customer_id": str(customer_id), "now": now},
+        )
+    db.commit()
+
     db.execute(
         text(
             """
@@ -405,35 +380,6 @@ async def test_campaign_stats_tracking(db_sessionmaker):
     assert stats["converted"] == 1
 
 
-async def test_audit_logged_on_send(db_sessionmaker):
-    Session = db_sessionmaker
-    c1 = _seed_customer(Session, name="Audit HV", created_days_ago=100)
-    j1 = _seed_job(Session, customer_id=c1, created_days_ago=10, completed=True)
-    _seed_invoice(Session, job_id=j1, total=7000)
-
-    db = Session()
-    campaign = await create_campaign(
-        payload=CampaignCreateIn(
-            name="Audit Campaign",
-            segment_id="high-value",
-            template_id="tpl-audit",
-            channel="email",
-            campaign_type="win-back",
-        ),
-        current_user={},
-        db=db,
-    )
-    await send_campaign(campaign_id=campaign["id"], current_user={}, db=db)
-
-    events = db.execute(
-        text("SELECT event_type FROM audit_logs WHERE entity_type = 'campaign' AND entity_id = :campaign_id"),
-        {"campaign_id": campaign["id"]},
-    ).mappings().all()
-    db.close()
-
-    assert any(row["event_type"] == "campaign_send" for row in events)
-
-
 def test_module_requirements_wired_for_segments_campaigns_loyalty():
     from gdx_dispatch.routers import referrals as referrals_router
 
@@ -441,7 +387,7 @@ def test_module_requirements_wired_for_segments_campaigns_loyalty():
     camp_dep = require_module("campaigns")
 
     segment_route = next(r for r in segments_router.router.routes if getattr(r, "path", "") == "/api/segments/{segment_id}/count")
-    campaign_route = next(r for r in campaigns_router.router.routes if getattr(r, "path", "") == "/api/campaigns/{campaign_id}/send")
+    campaign_route = next(r for r in campaigns_router.router.routes if getattr(r, "path", "") == "/api/campaigns/{campaign_id}/stats")
 
     assert any(dep.call is seg_dep for dep in segment_route.dependant.dependencies)
     assert any(dep.call is camp_dep for dep in campaign_route.dependant.dependencies)
@@ -473,11 +419,3 @@ def test_module_requirements_wired_for_segments_campaigns_loyalty():
 async def test_referral_create_requires_required_fields():
     with pytest.raises(Exception):
         ReferralCreateIn(referrer_customer_id="", referee_name="", referee_phone="")
-
-
-async def test_campaign_send_404_for_unknown_campaign(db_sessionmaker):
-    db = db_sessionmaker()
-    with pytest.raises(HTTPException) as exc:
-        await send_campaign(campaign_id=str(uuid.uuid4()), current_user={}, db=db)
-    db.close()
-    assert exc.value.status_code == 404
