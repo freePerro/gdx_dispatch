@@ -7,6 +7,19 @@ ships with the artifact that proves it — pasted output, a screenshot, or a
 browser walk. No evidence in hand means the claim is "not yet verified", said
 plainly.
 
+## What phase are we in
+
+`PHASE.md` answers it, and it is the only file that does. It names the current
+phase, the **exit condition** that ends it, and whether the **sweep budget** is
+open. Read it at session start; `/start` opens with it and
+`session_checklist.py` prints the live count.
+
+Doug declares the phase. Claude does not switch it, and does not call the exit
+condition met without naming the evidence. Our own audits generate most of the
+backlog — in the 30 days to 2026-09-07 we closed 47 issues and opened 48 — so
+starting a sweep while the budget is CLOSED is choosing more backlog, not less.
+`live-defect` work is never rate-limited by any of this.
+
 ## Project map
 
 - **Backend:** FastAPI + SQLAlchemy in `gdx_dispatch/` — `routers/` (HTTP),
@@ -77,7 +90,18 @@ plainly.
    shape — **before** you start. Report three things: the pattern, the files
    searched, the instances found. A sweep scoped to the file you were already
    editing is not a sweep. If the shape could exist in a router you have never
-   opened, that router is in scope.
+   opened, that router is in scope. Put the accounting in the PR body —
+   `~/.claude/hooks/github_merge_gate.py` blocks a sweep PR without it:
+
+   ```
+   Class:     <the shape the code gets wrong, not a finding number>
+   Searched:  <every file/glob that could hold that shape>
+   Instances: <N> found / <N> fixed / <N> deferred → #NNN (reason)
+   ```
+
+   Deferring is allowed; it just has to be counted, and each deferred instance
+   is filed `sweep-finding`, which spends sweep budget. Deferral used to be
+   free — that is why #558, #560 and #637 are all sweeps spawned by sweeps.
 5. **After deploy, walk it on prod** before calling it shipped. The walk is
    the finish line, not the release.
 
