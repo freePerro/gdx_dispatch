@@ -1444,26 +1444,6 @@ CREATE TABLE public.inbound_emails (
 
 
 --
--- Name: inbound_sms; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.inbound_sms (
-    id uuid NOT NULL,
-    company_id character varying(64) NOT NULL,
-    from_number character varying(30) NOT NULL,
-    to_number character varying(30) NOT NULL,
-    body text NOT NULL,
-    provider character varying(30) NOT NULL,
-    provider_message_id character varying(100),
-    customer_id uuid,
-    job_id uuid,
-    processed_at timestamp with time zone,
-    received_at timestamp with time zone NOT NULL,
-    created_at timestamp with time zone NOT NULL
-);
-
-
---
 -- Name: integration_configs; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4085,14 +4065,6 @@ ALTER TABLE ONLY public.inbound_emails
 
 
 --
--- Name: inbound_sms inbound_sms_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.inbound_sms
-    ADD CONSTRAINT inbound_sms_pkey PRIMARY KEY (id);
-
-
---
 -- Name: integration_configs integration_configs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5467,34 +5439,6 @@ CREATE INDEX ix_inbound_emails_from_email ON public.inbound_emails USING btree (
 --
 
 CREATE INDEX ix_inbound_emails_provider_message_id ON public.inbound_emails USING btree (provider_message_id);
-
-
---
--- Name: ix_inbound_sms_company_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX ix_inbound_sms_company_id ON public.inbound_sms USING btree (company_id);
-
-
---
--- Name: ix_inbound_sms_customer_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX ix_inbound_sms_customer_id ON public.inbound_sms USING btree (customer_id);
-
-
---
--- Name: ix_inbound_sms_from_number; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX ix_inbound_sms_from_number ON public.inbound_sms USING btree (from_number);
-
-
---
--- Name: ix_inbound_sms_provider_message_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX ix_inbound_sms_provider_message_id ON public.inbound_sms USING btree (provider_message_id);
 
 
 --

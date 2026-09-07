@@ -314,8 +314,6 @@ GET /api/gps/technicians/{tech_id}/history
 GET /api/holding-areas
 GET /api/inbound-email
 GET /api/inbound-email/{email_id}
-GET /api/inbound-sms
-GET /api/inbound-sms/{sms_id}
 GET /api/integrations
 GET /api/integrations/available
 GET /api/integrations/zapier/triggers
@@ -896,7 +894,6 @@ POST /api/collections/reminders
 POST /api/collections/send-reminders
 POST /api/commissions/calculate
 POST /api/commissions/rules
-POST /api/communications/missed-call
 POST /api/costing/calculate-price
 POST /api/costing/markup-rules
 POST /api/custom-fields
@@ -978,8 +975,6 @@ POST /api/holding-areas
 POST /api/holding-areas/seed-defaults
 POST /api/inbound-email/webhook
 POST /api/inbound-email/{email_id}/link
-POST /api/inbound-sms/webhook
-POST /api/inbound-sms/{sms_id}/link
 POST /api/integrations
 POST /api/integrations/zapier/subscribe
 POST /api/integrations/{integration_id}/test
@@ -1022,7 +1017,6 @@ POST /api/jobs/{job_id}/hazards
 POST /api/jobs/{job_id}/line-items
 POST /api/jobs/{job_id}/not-billable
 POST /api/jobs/{job_id}/notes
-POST /api/jobs/{job_id}/on-my-way
 POST /api/jobs/{job_id}/parts
 POST /api/jobs/{job_id}/parts-needed
 POST /api/jobs/{job_id}/photos

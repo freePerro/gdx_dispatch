@@ -59,7 +59,6 @@ AUTH_DEPENDENCIES = frozenset(
         "scope_required",
         "_check_scope",
         # Signature- / secret-verified webhook callers
-        "verify_twilio_signature",
         "verify_inbound_email_secret",
     }
 )

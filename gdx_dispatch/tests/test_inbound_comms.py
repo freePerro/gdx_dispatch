@@ -1,4 +1,4 @@
-"""Tests for the inbound_comms router (Twilio SMS + email webhooks + admin)."""
+"""Tests for the inbound_comms router (inbound-email webhook + admin)."""
 from __future__ import annotations
 
 from uuid import uuid4
@@ -92,41 +92,6 @@ def client():
 # ---------------------------------------------------------------------------
 
 
-def test_sms_webhook_creates_row(client: TestClient):
-    r = client.post(
-        "/api/inbound-sms/webhook",
-        data={
-            "From": "+15551234567",
-            "To": "+15557654321",
-            "Body": "Yes please",
-            "MessageSid": "SM_abc123",
-        },
-    )
-    assert r.status_code == 200, r.text
-
-    rows = client.get("/api/inbound-sms").json()
-    assert len(rows) == 1
-    assert rows[0]["from_number"] == "+15551234567"
-    assert rows[0]["body"] == "Yes please"
-    assert rows[0]["provider"] == "twilio"
-    assert rows[0]["provider_message_id"] == "SM_abc123"
-    assert rows[0]["company_id"] == "tenant-test"
-
-
-def test_sms_webhook_needs_no_tenant_param(client: TestClient):
-    """The company comes from the server, so no query param is required."""
-    r = client.post(
-        "/api/inbound-sms/webhook",
-        data={
-            "From": "+15551234567",
-            "To": "+15557654321",
-            "Body": "Hello",
-        },
-    )
-    assert r.status_code == 200, r.text
-    assert client.get("/api/inbound-sms").json()[0]["company_id"] == "tenant-test"
-
-
 def test_webhook_query_param_cannot_choose_the_company(client: TestClient):
     """A caller-supplied ?tenant= must not land in company_id.
 
@@ -135,18 +100,12 @@ def test_webhook_query_param_cannot_choose_the_company(client: TestClient):
     row they were creating.
     """
     client.post(
-        "/api/inbound-sms/webhook?tenant=attacker-chosen",
-        data={"From": "+1", "To": "+2", "Body": "hi"},
-    )
-    client.post(
         "/api/inbound-email/webhook?tenant=attacker-chosen",
         json={"from_email": "a@b.com", "to_email": "c@d.com"},
     )
-    sms = client.get("/api/inbound-sms").json()
     email = client.get("/api/inbound-email").json()
-    assert [r["company_id"] for r in sms] == ["tenant-test"]
-    assert len(email) == 1
-    assert "attacker-chosen" not in str(sms) + str(email)
+    assert [r["company_id"] for r in email] == ["tenant-test"]
+    assert "attacker-chosen" not in str(email)
 
 
 def test_email_webhook_creates_row(client: TestClient):
@@ -175,20 +134,14 @@ def test_email_webhook_creates_row(client: TestClient):
 def test_public_endpoints_no_logged_in_user():
     """Webhooks need no *logged-in user* — they authenticate the caller instead.
 
-    Outside a production env the Twilio signature and the email shared secret
-    are both no-ops (see core/twilio_signature.py), which is what lets this
-    test post without either.
+    Outside a production env the email shared secret is a no-op (see
+    core/inbound_email_auth.py), which is what lets this test post without it.
     """
     tc = _make_client()
     # Remove the auth override to simulate absent credentials. The public
     # router doesn't depend on get_current_user so it should still work.
     tc.app.dependency_overrides.pop(get_current_user, None)
     try:
-        r1 = tc.post(
-            "/api/inbound-sms/webhook",
-            data={"From": "+1", "To": "+2", "Body": "hi"},
-        )
-        assert r1.status_code == 200, r1.text
 
         r2 = tc.post(
             "/api/inbound-email/webhook",
@@ -206,30 +159,6 @@ def test_public_endpoints_no_logged_in_user():
 # ---------------------------------------------------------------------------
 # Admin — list/retrieve with tenant scoping
 # ---------------------------------------------------------------------------
-
-
-def test_admin_list_sms_tenant_scoped():
-    c1 = _make_client(tenant_id="tenant-a", user_sub="ua")
-    c2 = _make_client(tenant_id="tenant-b", user_sub="ub")
-    try:
-        c1.post(
-            "/api/inbound-sms/webhook",
-            data={"From": "+1A", "To": "+2A", "Body": "A"},
-        )
-        c2.post(
-            "/api/inbound-sms/webhook",
-            data={"From": "+1B", "To": "+2B", "Body": "B"},
-        )
-
-        list_a = c1.get("/api/inbound-sms").json()
-        list_b = c2.get("/api/inbound-sms").json()
-        assert len(list_a) == 1 and list_a[0]["body"] == "A"
-        assert len(list_b) == 1 and list_b[0]["body"] == "B"
-    finally:
-        c1.app.dependency_overrides.clear()
-        c2.app.dependency_overrides.clear()
-        c1._engine.dispose()  # type: ignore[attr-defined]
-        c2._engine.dispose()  # type: ignore[attr-defined]
 
 
 def test_admin_list_email_tenant_scoped():
@@ -274,23 +203,6 @@ def test_mark_email_read(client: TestClient):
     # After — unread_only should NOT include it
     unread2 = client.get("/api/inbound-email?unread_only=true").json()
     assert all(e["id"] != email_id for e in unread2)
-
-
-def test_link_sms_to_customer(client: TestClient):
-    client.post(
-        "/api/inbound-sms/webhook",
-        data={"From": "+1", "To": "+2", "Body": "Link me"},
-    )
-    sms_id = client.get("/api/inbound-sms").json()[0]["id"]
-
-    customer_uuid = str(uuid4())
-    r = client.post(
-        f"/api/inbound-sms/{sms_id}/link",
-        json={"customer_id": customer_uuid},
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["customer_id"] == customer_uuid
-    assert r.json()["processed_at"] is not None
 
 
 def test_link_email_to_job(client: TestClient):
@@ -381,8 +293,8 @@ def test_email_secret_non_ascii_header_is_403_not_500(monkeypatch):
 def test_email_webhook_enforced_under_unrecognised_env(client: TestClient, monkeypatch):
     """An env name nobody listed must still enforce.
 
-    core/twilio_signature.py checks membership in ("production","prod",
-    "staging"), so GDX_ENV=prod-eu silently turns that gate off. This gate
+    The retired Twilio signature gate checked membership in ("production",
+    "prod", "staging"), so GDX_ENV=prod-eu silently turned it off. This gate
     inverts the test — off only for known dev/test names — so an unrecognised
     value enforces instead of failing open.
     """

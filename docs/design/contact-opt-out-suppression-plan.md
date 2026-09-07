@@ -5,6 +5,10 @@ decision). Nothing built. No rival plan — every other "suppress" in
 `docs/design/` is about reminder idempotency, pay-link hiding, or GL match
 candidacy.
 
+Amended 2026-09-06: the SMS chokepoint this plan named (`core/sms.py`, Twilio <!-- link-ok -->)
+was removed with the provider, which was never configured; the only live SMS
+sender is Phone.com. See `twilio-removal-plan.md`. Everything else here stands.
+
 > **DECISION (Doug, 2026-08-26): the customer should be able to choose.**
 > That is a bigger change than this plan was first written for, and rev1 said
 > so wrongly — see §3. Two booleans cannot express a choice; this now needs a
@@ -27,7 +31,7 @@ Most of this is done. The gap is one missing read.
 | One email chokepoint | `core/transactional_email.py:289` `send_transactional_email` | **Built** — 9 call sites, all real mail goes through it |
 | A skip channel | same function returns `(sent, provider, skip_reason)` | **Built** — a suppression already has somewhere to report itself |
 | A message-kind label | its `kind` parameter (`:301`) | **Built** — this is the lever for marketing-vs-transactional |
-| One SMS chokepoint | `core/sms.py` `send_sms` | **Built** |
+| One SMS chokepoint | ~~`core/sms.py` `send_sms`~~ removed 2026-09-06 (Twilio, never configured); the live sender is `modules/phone_com/client.py` `send_message` <!-- link-ok --> | **Superseded — the chokepoint has to be Phone.com** |
 
 **rev1 said "no migration, no new column, no new endpoint". That was true only
 for the blanket reading, and Doug chose customer choice — so it is now wrong.**
@@ -138,7 +142,7 @@ consequence in view rather than inherited from a general principle.
    `send_campaign` and `modules/campaigns/`), filtering recipients before the
    batch rather than per-send, and **count the suppressed** in the result so the
    number is visible rather than silent.
-4. **Read it in `core/sms.py::send_sms`**, same shape.
+4. **Read it in `modules/phone_com/client.py::send_message`** (was `core/sms.py::send_sms`, removed 2026-09-06 <!-- link-ok -->), same shape.
 5. **The customer-facing preferences page** — tokenised, reachable from a link
    in every email we send, same shape as the public estimate-approval and pay
    pages. A choice the customer cannot exercise is not a choice, and most

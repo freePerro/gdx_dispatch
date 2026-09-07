@@ -1,7 +1,6 @@
-"""Voice features — missed call detection, voice notes, voice-to-text.
+"""Voice features — voice notes, voice-to-text.
 
 Routes:
-  POST /api/communications/missed-call — Twilio webhook for missed calls
   POST /api/mobile/voice-note — upload audio, transcribe to text note
 """
 from __future__ import annotations
@@ -14,13 +13,10 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import PlainTextResponse
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.core.twilio_signature import verify_twilio_signature
 from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -36,82 +32,6 @@ def _tenant_id(request: Request) -> str:
 # ---------------------------------------------------------------------------
 # Missed Call Detection (#187)
 # ---------------------------------------------------------------------------
-
-@router.post("/api/communications/missed-call", response_class=PlainTextResponse)
-async def missed_call_webhook(request: Request, db: Session = Depends(get_db), _sig: None = Depends(verify_twilio_signature)) -> str:
-    """Twilio voice webhook — auto-SMS when call is missed."""
-    try:
-        form = await request.form()
-        call_status = form.get("CallStatus", "")
-        caller = form.get("From", "")
-        form.get("To", "")
-
-        if call_status not in ("no-answer", "busy", "failed"):
-            return '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
-
-        tenant_id = _tenant_id(request)
-
-        # Look up caller in customers
-        from gdx_dispatch.models.tenant_models import Customer
-        # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
-        _cust = db.execute(
-            select(Customer).where(Customer.phone == caller)
-        ).scalars().first()
-        customer = {"id": str(_cust.id), "name": _cust.name, "phone": _cust.phone} if _cust else None
-
-        # Auto-send SMS. Sibling of the same defect fixed in
-        # dispatch_scheduling.on_my_way: this discarded send_sms's result
-        # entirely and the audit event recorded nothing about it, so the trail
-        # could not answer whether the customer was ever told we missed them.
-        # core/sms.py returns {"sent": False, "reason": "not configured"} when
-        # Twilio credentials are absent — prod's actual state.
-        auto_sms_sent = False
-        auto_sms_reason: str | None = "no_caller_number"
-        if caller:
-            auto_sms_reason = None
-            try:
-                import os as _os
-
-                from gdx_dispatch.core import sms as sms_service
-                from_phone = _os.getenv("TWILIO_PHONE_NUMBER", "").strip()
-                _result = sms_service.send_sms(
-                    to_phone=caller,
-                    body="Sorry we missed your call! We'll get back to you as soon as possible. Reply to this message if you need immediate assistance.",
-                    from_phone=from_phone,
-                    tenant_id=tenant_id,
-                ) or {}
-                auto_sms_sent = bool(_result.get("sent"))
-                auto_sms_reason = _result.get("reason")
-                if not auto_sms_sent:
-                    log.warning(
-                        "missed_call_auto_sms_not_sent reason=%s",
-                        auto_sms_reason or "unknown",
-                    )
-            except Exception as exc:
-                auto_sms_reason = f"exception: {type(exc).__name__}"
-                log.exception("missed_call_auto_sms_failed")
-
-        log_audit_event_sync(
-            db=db, tenant_id=tenant_id, user_id="system",
-            action="missed_call_detected", entity_type="call",
-            entity_id=str(uuid4()),
-            details={
-                "caller": caller,
-                "status": call_status,
-                "customer_id": str(customer["id"]) if customer else None,
-                "auto_sms_sent": auto_sms_sent,
-                **({"auto_sms_not_sent_reason": auto_sms_reason} if not auto_sms_sent else {}),
-            },
-            request=request,
-        )
-        db.commit()
-
-        return '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
-
-    except Exception:
-        log.exception("missed_call_webhook_failed")
-        return '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
-
 
 # ---------------------------------------------------------------------------
 # Voice-to-Text Notes (#277)

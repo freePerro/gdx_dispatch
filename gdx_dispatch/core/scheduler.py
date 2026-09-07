@@ -47,8 +47,8 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
         # Not removed for being unused — the data is real (36 appointments,
         # 16 in the 90 days to 2026-08-22). Removed because the stub was wired
         # to nothing that can send: its private `_send_sms` was a no-op, and
-        # `core/sms.py` (the only shared sender) is Twilio, whose credentials
-        # are unset on prod. The account's working outbound path is Phone.com
+        # the only shared sender was the Twilio module (deleted 2026-09-06),
+        # whose credentials were never set on prod. The working outbound path is Phone.com
         # (`modules/phone_com/client.py::send_message`, called from that
         # module's router) — the stub never touched it. So implementing the
         # finder alone would still have sent zero messages while logging
