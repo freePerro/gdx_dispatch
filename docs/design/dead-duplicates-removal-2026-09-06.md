@@ -1,6 +1,6 @@
 # Dead duplicates removal — 2026-09-06
 
-Status: PLAN 2026-09-06 (the ten issues below were the plan), built and adversarially audited the same day; PR OPEN, not merged, stacked on #630 — the follow-up commit names the PR number. Update to MERGED #N when it lands, then RELEASED vX.Y.Z after the prod walk. Closes #458 #459 #480 #568 #569 #571 #572 #574 #595 #599. Migration 092.
+Status: PLAN 2026-09-06 (the ten issues below were the plan), built and adversarially audited the same day; PR #633 OPEN, not merged, stacked on #630. Update to MERGED #633 when it lands, then RELEASED vX.Y.Z after the prod walk. Closes #458 #459 #480 #568 #569 #571 #572 #574 #595 #599. Migration 092.
 
 ## What already exists (do not rebuild)
 
