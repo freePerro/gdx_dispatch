@@ -28,11 +28,19 @@ choice with an end condition — not a default we drifted into.
 ### Exit condition (both must hold)
 
 1. **`sweep-finding` backlog < 5.** See "The sweep budget" below.
-2. **Both live money defects closed:**
-   - **#422** — a payment landing after a void resurrects the invoice to paid,
-     with its parts already released.
-   - **#445** — GL §6 refund-on-overpayment double-dips; live on prod (the
-     audit's "latent, flag off" premise is stale).
+2. ~~**Both live money defects closed.**~~ ✅ **MET 2026-09-07.**
+   - **#422** — a payment landing after a void resurrected the invoice to paid,
+     with its parts already released. Closed by #662: a void is terminal at the
+     ledger chokepoint, the payment still records, and an operator gets a
+     `payment_on_voided_invoice` audit row.
+   - **#445** — GL §6 refund-on-overpayment double-dipped. Closed by #663:
+     refunds are credit-first, capped by this invoice's overpayment.
+   - **#661**, found while fixing #422 and closed by #664: the
+     `payment_exceeds_receivable` audit row had never once been written —
+     `begin_nested()` around a writer whose guard installer commits on first use
+     per engine.
+   - Merged, **not released**. Prod still runs the old image until the maintainer
+     cuts a release.
 
 ### Next phase, already queued
 
@@ -98,4 +106,4 @@ issue numbers with their closed state.
 
 | date | phase | ended by |
 |---|---|---|
-| 2026-09-07 | HARDENING | *(current)* |
+| 2026-09-07 | HARDENING | *(current — money half met; sweep backlog 22, needs <5)* |
