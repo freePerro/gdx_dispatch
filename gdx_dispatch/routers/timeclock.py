@@ -638,7 +638,9 @@ def get_timeclock_status(
             # minutes taken twice, in opposite days.
             todays_entries = db.execute(
                 select(TimeclockEntry).where(
-                    TimeclockEntry.tenant_id == tenant_id,
+                    # No tenant_id filter: isolation is the connection, and the
+                    # predicate hides any row whose tenant_id is NULL. The
+                    # per-tech filter is the one that matters.
                     TimeclockEntry.technician_id == tech_id,
                     TimeclockEntry.deleted_at.is_(None),
                     func.date(TimeclockEntry.clock_in_at) == today_iso,
@@ -1375,7 +1377,7 @@ async def start_break(
         # them. One rule for "is a break running", shared by reader and writer.
         open_shift = db.execute(
             select(TimeclockEntry).where(
-                TimeclockEntry.tenant_id == tenant_id,
+                # No tenant_id filter — isolation is the connection.
                 # `technician_id` on this table holds a USER id (see _clock_states
                 # in routers/mobile.py, measured on prod), the same key
                 # `TimeclockBreak.user_id` uses.
@@ -1394,7 +1396,7 @@ async def start_break(
             # the very row class this change exists to stop accumulating.
             active = db.execute(
                 select(TimeclockBreak).where(
-                    TimeclockBreak.tenant_id == tenant_id,
+                    # No tenant_id filter — isolation is the connection.
                     TimeclockBreak.user_id == user_id,
                     TimeclockBreak.ended_at.is_(None),
                 ).limit(1)

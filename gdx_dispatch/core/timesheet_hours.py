@@ -326,7 +326,7 @@ def break_minutes_started_on(
     try:
         rows = db.execute(
             select(TimeclockBreak.id, TimeclockBreak.duration_minutes).where(
-                TimeclockBreak.tenant_id == tenant_id,
+                # No tenant_id filter — see open_break_in_shift.
                 TimeclockBreak.user_id == str(user_id),
                 TimeclockBreak.duration_minutes.isnot(None),
                 func.date(TimeclockBreak.started_at) == day_iso,
@@ -342,7 +342,9 @@ def break_minutes_started_on(
 
 
 def open_break_in_shift(
-    db: Session, tenant_id: str, entry: TimeclockEntry
+    db: Session,
+    tenant_id: str,  # noqa: ARG001 — kept for symmetry with the sibling helpers
+    entry: TimeclockEntry,
 ) -> TimeclockBreak | None:
     """The break running INSIDE this shift, or None.
 
@@ -370,7 +372,11 @@ def open_break_in_shift(
         rows = db.execute(
             select(TimeclockBreak)
             .where(
-                TimeclockBreak.tenant_id == tenant_id,
+                # No tenant_id filter: the tenant plane is a per-tenant database
+                # and isolation is the connection, so the predicate is redundant
+                # — and actively harmful on a row whose tenant_id is NULL, which
+                # is how the 2026-04-22 documents bug hid every legacy row.
+                # user_id is the isolation that matters here.
                 TimeclockBreak.user_id == str(entry.technician_id or ""),
                 TimeclockBreak.ended_at.is_(None),
             )
