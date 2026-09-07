@@ -212,27 +212,26 @@
               <h3>Job {{ jobDetail.job_id || jobDetail.id }}</h3>
               <p class="job-detail-subtitle">Margin {{ formatPercent(jobDetail.margin_percent) }}</p>
             </div>
-            <div class="job-detail-min-margin">
-              <label for="minMargin">Min Margin %</label>
-              <InputNumber
-                id="minMargin"
-                v-model.number="minMarginThreshold"
-                suffix="%"
-                mode="decimal"
-                step="0.1"
-                :min="0"
-                :max="99"
-                class="w-full"
-                data-testid="min-margin-input"
-              />
-            </div>
+            <!-- Min Margin % removed. It filtered rows whose margin fell below
+                 a threshold, and it could never fire: the only rows it iterated
+                 came from GET /api/jobs/{id}/line-items, which returns
+                 description/quantity/unit_price/line_total and NO unit_cost. So
+                 computeMargin(0, price) returned 100 for every positive price,
+                 and the one input that produced a warning was a $0 line — which
+                 it then mislabelled as "margin below 15%". A control that cannot
+                 compute is the same defect as a button that cannot save. Job
+                 margin is on the card below, from the server. -->
           </header>
 
           <div class="job-detail-summary">
             <div class="summary-card" data-testid="your-cost-card">
               <span class="summary-label">Your Cost ($)</span>
               <strong class="summary-value">{{ formatCurrency(yourCost) }}</strong>
-              <small>Parts + items</small>
+              <!-- Names what the number IS. It used to say "Parts + items" over
+                   a client sum of a parts grid that never loaded plus invoice
+                   lines — so it was neither. This is the engine's total_cost:
+                   labour, parts and overhead. -->
+              <small data-testid="your-cost-basis">Labor + parts + overhead</small>
             </div>
             <div class="summary-card">
               <span class="summary-label">Invoice Margin</span>
@@ -251,150 +250,54 @@
             </div>
           </div>
 
-          <div v-if="minMarginWarningText" class="min-margin-warning" data-testid="min-margin-warning">
-            <span>{{ minMarginWarningText }}</span>
-          </div>
-
+          <!-- READ-ONLY, deliberately. Every write control that used to live in
+               this dialog was wired to an endpoint that does not exist: GET and
+               POST /api/jobs/{id}/parts 404, DELETE 405, PATCH 501, and
+               PATCH /api/jobs/{id}/costing 405. Nothing here has ever saved.
+               The rows below come from /api/costing/jobs/{id}, which resolves
+               each part against the confirmed vendor bill first and the
+               estimator's catalog second — better data than the editable grid
+               ever held, and the number this page exists to show. Parts are
+               edited on the job itself (parts-needed), which is where the
+               capture paths already write. -->
+          <!-- NO parts table here, deliberately. JobDetailView's "Parts Used"
+               card (shipped #477) already renders this same
+               /api/costing/jobs/{id} payload, and renders it BETTER: it handles
+               the ambiguous case, where unattributed supplier lines mean the
+               catalog estimates might be the same spend and the engine EXCLUDES
+               them from the total rather than double-counting. A second table
+               here was a weaker copy of a panel one click away — the parallel-fake
+               pattern this whole change is about. The dialog's job is the
+               profitability summary; parts detail and parts editing both live on
+               the job. -->
           <section class="job-detail-section">
             <div class="section-head">
               <h4>Parts</h4>
-              <div class="section-actions">
-                <div class="filter-group">
-                  <label>Filter by Category</label>
-                  <Select
-                    v-model="selectedCatalogCategory"
-                    :options="catalogCategoryOptions"
-                    optionLabel="label"
-                    optionValue="value"
-                    placeholder="All categories"
-                    filter
-                    showClear
-                    class="w-full"
-                    data-testid="parts-category-filter"
-                  />
-                </div>
-                <Button
-                  label="+ Add Part"
-                  icon="pi pi-plus"
-                  severity="primary"
-                  data-testid="add-part-btn"
-                  @click="showAddPartDialog = true"
-                />
-              </div>
+              <Button
+                label="Parts and costs on the job"
+                icon="pi pi-external-link"
+                severity="secondary"
+                text
+                size="small"
+                data-testid="jc-edit-parts-on-job"
+                @click="openJobPage"
+              />
             </div>
-            <DataTable
-      responsiveLayout="scroll"
-              :value="jobParts"
-              :loading="partsLoading"
-              dataKey="id"
-              striped-rows
-              data-testid="parts-table"
-              class="job-detail-table"
-            >
-              <Column header="Catalog Item" style="min-width:180px">
-                <template #body="{ data: part }">
-                  <Select
-                    v-model="part.catalog_item_id"
-                    :options="filteredCatalogOptions"
-                    optionLabel="label"
-                    optionValue="value"
-                    filter
-                    showClear
-                    class="w-full"
-                    placeholder="Select item"
-                    :disabled="!filteredCatalogOptions.length"
-                    @change="() => applyCatalogDefaults(part)"
-                    :data-testid="`part-catalog-${part.id || part.catalog_item_id}`"
-                  />
-                </template>
-              </Column>
-              <Column header="Description" style="min-width:200px">
-                <template #body="{ data: part }">
-                  <InputText
-                    v-model="part.description"
-                    placeholder="Description"
-                    class="w-full"
-                    :data-testid="`part-description-${part.id || part.catalog_item_id}`"
-                    @blur="persistPart(part)"
-                  />
-                </template>
-              </Column>
-              <Column header="Qty" style="width:110px">
-                <template #body="{ data: part }">
-                  <InputNumber
-                    v-model.number="part.qty"
-                    mode="decimal"
-                    step="0.001"
-                    :min="0"
-                    class="w-full"
-                    :data-testid="`part-qty-${part.id}`"
-                    @blur="persistPart(part)"
-                  />
-                </template>
-              </Column>
-              <Column header="Unit Cost" style="width:140px">
-                <template #body="{ data: part }">
-                  <InputNumber
-                    v-model.number="part.unit_cost"
-                    mode="currency"
-                    currency="USD"
-                    locale="en-US"
-                    :min="0"
-                    class="w-full"
-                    :data-testid="`part-unit-cost-${part.id}`"
-                    @blur="persistPart(part)"
-                  />
-                </template>
-              </Column>
-              <Column header="Unit Price" style="width:140px">
-                <template #body="{ data: part }">
-                  <InputNumber
-                    v-model.number="part.unit_price"
-                    mode="currency"
-                    currency="USD"
-                    locale="en-US"
-                    :min="0"
-                    class="w-full"
-                    :data-testid="`part-unit-price-${part.id}`"
-                    @blur="persistPart(part)"
-                  />
-                </template>
-              </Column>
-              <Column header="Line Total" style="width:140px">
-                <template #body="{ data: part }">
-                  <span>{{ formatCurrency(partLineTotal(part)) }}</span>
-                </template>
-              </Column>
-              <Column header="" style="width:100px">
-                <template #body="{ data: part }">
-                  <Button
-                    v-tooltip="'Delete part'"
-                    icon="pi pi-trash"
-                    severity="danger"
-                    text
-                    size="small"
-                    aria-label="Delete part"
-                    :data-testid="`delete-part-${part.id}`"
-                    @click="deletePart(part)"
-                  />
-                </template>
-              </Column>
-            </DataTable>
+            <p class="section-note" data-testid="jc-parts-pointer">
+              This job's parts, what each one cost and where that cost came from
+              are on the job's Parts Used card. Parts are captured there too.
+            </p>
           </section>
 
           <section class="job-detail-section">
             <div class="section-head">
-              <h4>Items</h4>
-              <Button
-                label="+ Add Item"
-                icon="pi pi-plus"
-                severity="primary"
-                data-testid="add-item-btn"
-                @click="showAddItemDialog = true"
-              />
+              <h4>Invoice lines</h4>
+              <span class="section-note">
+                Billed to the customer. Edited on the invoice.
+              </span>
             </div>
             <DataTable
-      responsiveLayout="scroll"
+              responsiveLayout="scroll"
               :value="jobLineItems"
               :loading="lineItemsLoading"
               dataKey="id"
@@ -402,54 +305,23 @@
               data-testid="items-table"
               class="job-detail-table"
             >
-              <Column header="Name" style="min-width:170px">
-                <template #body="{ data: item }">
-                  <InputText
-                    v-model="item.name"
-                    placeholder="Name"
-                    class="w-full"
-                    :data-testid="`item-name-${item.id}`"
-                  />
-                </template>
+              <template #empty>
+                <span class="muted" data-testid="jc-items-empty">
+                  Nothing invoiced on this job yet.
+                </span>
+              </template>
+              <Column field="description" header="Description" style="min-width:220px" />
+              <Column header="Qty" style="width:100px">
+                <template #body="{ data: item }">{{ item.quantity }}</template>
               </Column>
-              <Column header="Description" style="min-width:200px">
+              <Column header="Unit price" style="width:140px">
                 <template #body="{ data: item }">
-                  <InputText
-                    v-model="item.description"
-                    placeholder="Description"
-                    class="w-full"
-                    :data-testid="`item-description-${item.id}`"
-                  />
-                </template>
-              </Column>
-              <Column header="Qty" style="width:110px">
-                <template #body="{ data: item }">
-                  <InputNumber
-                    v-model.number="item.qty"
-                    mode="decimal"
-                    step="0.001"
-                    :min="0"
-                    class="w-full"
-                    :data-testid="`item-qty-${item.id}`"
-                  />
-                </template>
-              </Column>
-              <Column header="Unit Price" style="width:140px">
-                <template #body="{ data: item }">
-                  <InputNumber
-                    v-model.number="item.unit_price"
-                    mode="currency"
-                    currency="USD"
-                    locale="en-US"
-                    :min="0"
-                    class="w-full"
-                    :data-testid="`item-unit-price-${item.id}`"
-                  />
+                  {{ formatCurrency(item.unit_price) }}
                 </template>
               </Column>
               <Column header="Total" style="width:140px">
                 <template #body="{ data: item }">
-                  <span>{{ formatCurrency(itemLineTotal(item)) }}</span>
+                  {{ formatCurrency(item.line_total) }}
                 </template>
               </Column>
             </DataTable>
@@ -458,164 +330,24 @@
         <div v-else class="spinner-wrap">
           <p class="muted">Unable to load job details.</p>
         </div>
+        <!-- No Save. Nothing in this dialog is editable any more, and the
+             button that used to be here POSTed to PATCH /api/jobs/{id}/costing,
+             which is registered for GET only — it 405'd on every click since it
+             was written. A button that cannot save is worse than no button. -->
         <template #footer>
           <Button label="Close" severity="secondary" @click="closeJobDetail" />
-          <Button
-            label="Save Changes"
-            data-testid="save-costing-btn"
-            icon="pi pi-save"
-            severity="primary"
-            :loading="savingCosting"
-            @click="saveCosting"
-          />
         </template>
       </Dialog>
 
-      <Dialog
-        v-model:visible="showAddPartDialog"
-        header="Add Part"
-        modal
-        :style="{ width: '540px' }"
-      >
-        <div class="form-grid">
-          <div class="form-field">
-            <label>Catalog Item</label>
-            <Select
-              v-model="newPartForm.catalog_item_id"
-              :options="filteredCatalogOptions"
-              optionLabel="label"
-              optionValue="value"
-              placeholder="Select catalog item"
-              class="w-full"
-              data-testid="new-part-catalog"
-              showClear
-            />
-          </div>
-          <div class="form-field">
-            <label>Description *</label>
-            <InputText
-              v-model="newPartForm.description"
-              placeholder="Description"
-              class="w-full"
-              data-testid="new-part-description"
-            />
-          </div>
-          <div class="form-field">
-            <label>Qty</label>
-            <InputNumber
-              v-model.number="newPartForm.qty"
-              mode="decimal"
-              step="0.001"
-              :min="0"
-              class="w-full"
-              data-testid="new-part-qty"
-            />
-          </div>
-          <div class="form-field">
-            <label>Unit Cost ($)</label>
-            <InputNumber
-              v-model.number="newPartForm.unit_cost"
-              mode="currency"
-              currency="USD"
-              locale="en-US"
-              :min="0"
-              class="w-full"
-              data-testid="new-part-unit-cost"
-            />
-          </div>
-          <div class="form-field">
-            <label>Unit Price ($)</label>
-            <InputNumber
-              v-model.number="newPartForm.unit_price"
-              mode="currency"
-              currency="USD"
-              locale="en-US"
-              :min="0"
-              class="w-full"
-              data-testid="new-part-unit-price"
-            />
-          </div>
-        </div>
-        <template #footer>
-          <Button
-            label="Cancel"
-            severity="secondary"
-            @click="showAddPartDialog = false"
-          />
-          <Button
-            label="Add Part"
-            icon="pi pi-check"
-            data-testid="confirm-add-part"
-            :loading="addingPart"
-            @click="addPart"
-          />
-        </template>
-      </Dialog>
-
-      <Dialog
-        v-model:visible="showAddItemDialog"
-        header="Add Item"
-        modal
-        :style="{ width: '540px' }"
-      >
-        <div class="form-grid">
-          <div class="form-field">
-            <label>Name *</label>
-            <InputText
-              v-model="newItemForm.name"
-              placeholder="Name"
-              class="w-full"
-              data-testid="new-item-name"
-            />
-          </div>
-          <div class="form-field">
-            <label>Description</label>
-            <InputText
-              v-model="newItemForm.description"
-              placeholder="Description"
-              class="w-full"
-              data-testid="new-item-description"
-            />
-          </div>
-          <div class="form-field">
-            <label>Qty</label>
-            <InputNumber
-              v-model.number="newItemForm.qty"
-              mode="decimal"
-              step="0.001"
-              :min="0"
-              class="w-full"
-              data-testid="new-item-qty"
-            />
-          </div>
-          <div class="form-field">
-            <label>Unit Price ($)</label>
-            <InputNumber
-              v-model.number="newItemForm.unit_price"
-              mode="currency"
-              currency="USD"
-              locale="en-US"
-              :min="0"
-              class="w-full"
-              data-testid="new-item-unit-price"
-            />
-          </div>
-        </div>
-        <template #footer>
-          <Button
-            label="Cancel"
-            severity="secondary"
-            @click="showAddItemDialog = false"
-          />
-          <Button
-            label="Add Item"
-            icon="pi pi-check"
-            data-testid="confirm-add-item"
-            :loading="addingItem"
-            @click="addItem"
-          />
-        </template>
-      </Dialog>
+      <!-- The Add Part and Add Item dialogs were removed with the writes they
+           fed. Add Part POSTed to /api/jobs/{id}/parts, which no router has
+           served since the inventory module router was deleted (#655) — and
+           before that it took {part_id, qty_used} while this form sent
+           {description, catalog_item_id, qty, unit_cost, unit_price}, so it
+           422'd rather than saving. Add Item POSTed to
+           /api/jobs/{id}/line-items without the invoice_id that endpoint
+           requires, so it 400'd. Parts are captured on the job; invoice
+           lines are edited on the invoice. -->
 
       <Dialog
         v-model:visible="showRuleDialog"
@@ -662,6 +394,7 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { formatMoney as formatCurrency, formatPercent as fmtPercent } from '../composables/useFormatters';
 import Badge from 'primevue/badge';
@@ -711,120 +444,46 @@ const showJobDetail = ref(false);
 const jobLoading = ref(false);
 const jobDetail = ref(null);
 
-const defaultPartForm = () => ({
-  description: '',
-  catalog_item_id: null,
-  qty: 1,
-  unit_cost: 0,
-  unit_price: 0,
-});
 
-const defaultItemForm = () => ({
-  name: '',
-  description: '',
-  qty: 1,
-  unit_price: 0,
-});
 
-const jobParts = ref([]);
+// The editable parts grid is gone; `jobLineItems` stays because its GET is
+// real. Everything the Parts table shows now comes off `jobDetail`, which is
+// already fetched for the summary cards — no second request, and no client
+// arithmetic over rows that never loaded.
 const jobLineItems = ref([]);
-const partsLoading = ref(false);
 const lineItemsLoading = ref(false);
-const catalogItems = ref([]);
-const catalogLoading = ref(false);
-const selectedCatalogCategory = ref('');
-const minMarginThreshold = ref(15);
-const showAddPartDialog = ref(false);
-const showAddItemDialog = ref(false);
-const addingPart = ref(false);
-const addingItem = ref(false);
-const savingCosting = ref(false);
-const newPartForm = ref(defaultPartForm());
-const newItemForm = ref(defaultItemForm());
+const router = useRouter();
+
 const currentJobId = computed(() => jobDetail.value?.job_id || jobDetail.value?.id || null);
+
+// Parts are edited where the capture paths already write them — on the job.
+// The costing dialog reports; it does not own the data.
+function openJobPage() {
+  if (!currentJobId.value) return;
+  router.push(`/jobs/${currentJobId.value}`);
+}
 
 function toNumber(value) {
   return Number(value ?? 0);
 }
 
-function partLineTotal(part) {
-  return toNumber(part?.qty) * toNumber(part?.unit_price);
-}
 
-function itemLineTotal(item) {
-  return toNumber(item?.qty) * toNumber(item?.unit_price);
-}
 
-function computeMargin(cost, price) {
-  const costNum = toNumber(cost);
-  const priceNum = toNumber(price);
-  if (priceNum <= 0) return -100;
-  return ((priceNum - costNum) / priceNum) * 100;
-}
 
-const catalogById = computed(() =>
-  new Map((catalogItems.value || []).map((item) => [item.id, item]))
-);
 
-const catalogCategoryOptions = computed(() => {
-  const categories = new Set(
-    (catalogItems.value || [])
-      .map((item) => (item.category || '').trim())
-      .filter(Boolean)
-  );
-  const base = [{ label: 'All categories', value: '' }];
-  return base.concat(Array.from(categories).sort().map((category) => ({ label: category, value: category })));
-});
 
-const filteredCatalogOptions = computed(() => {
-  const categoryFilter = (selectedCatalogCategory.value || '').trim().toLowerCase();
-  return (catalogItems.value || [])
-    .filter((item) => {
-      if (!categoryFilter) return true;
-      return (item.category || '').trim().toLowerCase() === categoryFilter;
-    })
-    .map((item) => ({
-      label: item.part_name || item.name || item.sku || 'Catalog item',
-      value: item.id,
-    }));
-});
+// Parts rows as the costing engine resolved them. `rowKey` exists because the
+// engine returns a flat list with no ids — two lines can legitimately share a
+// name (the same part billed on two invoices), so the index is the only stable
+// key and DataTable needs one.
 
-const partsTotalCost = computed(() =>
-  jobParts.value.reduce((sum, part) => sum + partLineTotal(part), 0)
-);
+// The SERVER's total, not a client sum. "Your Cost" used to add a parts grid
+// that never loaded to a line-items grid, so it silently reported invoice lines
+// only — the one number this dialog exists to show, understated by every part
+// on the job.
+const yourCost = computed(() => toNumber(jobDetail.value?.total_cost));
 
-const itemsTotalCost = computed(() =>
-  jobLineItems.value.reduce((sum, item) => sum + itemLineTotal(item), 0)
-);
 
-const yourCost = computed(() => partsTotalCost.value + itemsTotalCost.value);
-
-const linesWithLowMargin = computed(() => {
-  const threshold = Number(minMarginThreshold.value || 0);
-  if (threshold <= 0) return [];
-  const rows = [];
-  jobParts.value.forEach((part) => {
-    const margin = computeMargin(part.unit_cost, part.unit_price);
-    if (margin < threshold) {
-      rows.push({ label: part.description || 'Part', margin });
-    }
-  });
-  jobLineItems.value.forEach((item) => {
-    const margin = computeMargin(item.unit_cost ?? 0, item.unit_price);
-    if (margin < threshold) {
-      rows.push({ label: item.name || item.description || 'Item', margin });
-    }
-  });
-  return rows;
-});
-
-const minMarginWarningText = computed(() => {
-  if (!linesWithLowMargin.value.length) return '';
-  const labels = linesWithLowMargin.value.map((line) => line.label);
-  const preview = labels.slice(0, 3).join(', ');
-  const more = labels.length > 3 ? ` and ${labels.length - 3} more` : '';
-  return `Margin below ${minMarginThreshold.value}% for ${preview}${more}.`;
-});
 
 const calculatorCategory = ref(null);
 const calculatorCost = ref(null);
@@ -950,34 +609,16 @@ function closeJobDetail() {
 
 watch(currentJobId, (jobId) => {
   if (!jobId) {
-    jobParts.value = [];
     jobLineItems.value = [];
     return;
   }
-  loadJobParts(jobId);
+  // No parts fetch: the Parts table renders from `jobDetail`, which the dialog
+  // already loaded. The old second request went to /api/jobs/{id}/parts, which
+  // no router serves — and its `|| []` fallback made a 404 look identical to
+  // "this job has no parts".
   loadJobLineItems(jobId);
 });
 
-watch(showJobDetail, (visible) => {
-  if (!visible) {
-    showAddPartDialog.value = false;
-    showAddItemDialog.value = false;
-  }
-});
-
-async function loadJobParts(jobId) {
-  if (!jobId) {
-    jobParts.value = [];
-    return;
-  }
-  partsLoading.value = true;
-  try {
-    const data = await api.get(`/api/jobs/${jobId}/parts`);
-    jobParts.value = Array.isArray(data) ? data : data?.items || [];
-  } finally {
-    partsLoading.value = false;
-  }
-}
 
 async function loadJobLineItems(jobId) {
   if (!jobId) {
@@ -993,145 +634,12 @@ async function loadJobLineItems(jobId) {
   }
 }
 
-async function loadCatalogItems() {
-  catalogLoading.value = true;
-  try {
-    const data = await api.get('/api/inventory/parts');
-    catalogItems.value = Array.isArray(data) ? data : data?.items || [];
-  } finally {
-    catalogLoading.value = false;
-  }
-}
 
-async function persistPart(part) {
-  if (!currentJobId.value || !part?.id) return;
-  try {
-    const payload = {
-      catalog_item_id: part.catalog_item_id || null,
-      description: part.description,
-      qty: part.qty,
-      unit_cost: part.unit_cost,
-      unit_price: part.unit_price,
-    };
-    const updated = await api.patch(`/api/jobs/${currentJobId.value}/parts/${part.id}`, payload);
-    const idx = jobParts.value.findIndex((p) => p.id === updated.id);
-    if (idx >= 0) {
-      jobParts.value[idx] = { ...jobParts.value[idx], ...updated };
-    }
-  } catch {
-    // errors surfaced by useApiWithToast
-  }
-}
 
-async function deletePart(part) {
-  if (!currentJobId.value || !part?.id) return;
-  try {
-    await api.del(`/api/jobs/${currentJobId.value}/parts/${part.id}`, {
-      successMessage: 'Part removed',
-    });
-    jobParts.value = jobParts.value.filter((p) => p.id !== part.id);
-  } catch {
-    // handled by hook
-  }
-}
 
-function applyCatalogDefaults(part) {
-  if (!part?.catalog_item_id) return;
-  const catalogItem = catalogById.value.get(part.catalog_item_id);
-  if (!catalogItem) return;
-  if (!part.description) {
-    part.description = catalogItem.part_name || catalogItem.name || '';
-  }
-  if (!part.unit_cost) {
-    part.unit_cost = catalogItem.unit_cost ?? 0;
-  }
-  if (!part.unit_price) {
-    part.unit_price = catalogItem.unit_price ?? catalogItem.price ?? catalogItem.cost ?? 0;
-  }
-  persistPart(part);
-}
 
-async function addPart() {
-  if (!currentJobId.value) return;
-  const description = (newPartForm.value.description || '').trim();
-  if (!description) return;
-  addingPart.value = true;
-  try {
-    const payload = {
-      description,
-      catalog_item_id: newPartForm.value.catalog_item_id || null,
-      qty: newPartForm.value.qty,
-      unit_cost: newPartForm.value.unit_cost,
-      unit_price: newPartForm.value.unit_price,
-    };
-    const created = await api.post(`/api/jobs/${currentJobId.value}/parts`, payload, {
-      successMessage: 'Part added',
-    });
-    jobParts.value = [...jobParts.value, created];
-    newPartForm.value = defaultPartForm();
-    showAddPartDialog.value = false;
-  } finally {
-    addingPart.value = false;
-  }
-}
 
-async function addItem() {
-  if (!currentJobId.value) return;
-  const name = (newItemForm.value.name || '').trim();
-  if (!name) return;
-  addingItem.value = true;
-  try {
-    const payload = {
-      name,
-      description: newItemForm.value.description,
-      qty: newItemForm.value.qty,
-      unit_price: newItemForm.value.unit_price,
-    };
-    const created = await api.post(`/api/jobs/${currentJobId.value}/line-items`, payload, {
-      successMessage: 'Item added',
-    });
-    jobLineItems.value = [...jobLineItems.value, created];
-    newItemForm.value = defaultItemForm();
-    showAddItemDialog.value = false;
-  } finally {
-    addingItem.value = false;
-  }
-}
 
-async function saveCosting() {
-  if (!currentJobId.value) return;
-  savingCosting.value = true;
-  try {
-    await api.patch(
-      `/api/jobs/${currentJobId.value}/costing`,
-      {
-        min_margin_percent: Number(minMarginThreshold.value || 0),
-        parts: jobParts.value.map((part) => ({
-          id: part.id,
-          catalog_item_id: part.catalog_item_id || null,
-          description: part.description,
-          qty: part.qty,
-          unit_cost: part.unit_cost,
-          unit_price: part.unit_price,
-        })),
-        line_items: jobLineItems.value.map((item) => ({
-          id: item.id,
-          name: item.name,
-          description: item.description,
-          qty: item.qty,
-          unit_price: item.unit_price,
-        })),
-      },
-      { successMessage: 'Job costing saved' }
-    );
-    if (currentJobId.value) {
-      await loadJobParts(currentJobId.value);
-      await loadJobLineItems(currentJobId.value);
-    }
-  } finally {
-    savingCosting.value = false;
-  }
-}
 
 async function calculatePrice() {
   if (!calculatorCategory.value || calculatorCost.value === null || calculatorCost.value === undefined) return;
@@ -1150,7 +658,6 @@ watch([startDate, endDate], loadProfitability, { immediate: true });
 
 onMounted(() => {
   loadMarkupRules();
-  loadCatalogItems();
 });
 </script>
 
@@ -1211,6 +718,16 @@ onMounted(() => {
   padding: 0.5rem 0.75rem;
   border-radius: 6px;
 }
+/* Secondary text that explains where something lives. Muted but not faint —
+   it is the only pointer to the parts detail, so it has to be readable, and it
+   carries the theme token rather than a hardcoded grey so dark mode follows. */
+.section-note {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--p-text-muted-color, #6b7280);
+}
+
 .job-detail-section {
   border-top: 1px solid var(--p-content-border-color);
   padding-top: 1rem;

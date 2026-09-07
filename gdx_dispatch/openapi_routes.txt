@@ -724,7 +724,6 @@ PATCH /api/invoices/{invoice_id}/lines/{line_id}
 PATCH /api/job-templates/{template_id}
 PATCH /api/jobs/{job_id}
 PATCH /api/jobs/{job_id}/notes/{note_id}
-PATCH /api/jobs/{job_id}/parts/{part_id}
 PATCH /api/jobs/{job_id}/photos/{photo_id}
 PATCH /api/landing-leads/{ll_id}/status
 PATCH /api/leads/{lead_id}

@@ -23,12 +23,13 @@ ui_compat was registered first — and therefore served — for exactly one,
 handler here was unreachable dead code. Since then #576 deleted 17 of those
 dead copies, and the dead-duplicates removal of 2026-09-06 deleted the one shim
 that won (#571 — admin_ops serves that path now) and the communications pair
-(#459). Today ui_compat collides on exactly **two** paths and LOSES both:
-`POST /api/customers/bulk-tag` and `POST /api/jobs/{job_id}/line-items`
-(sub_resources is included first). Those two are #570's; the handlers here
-for them never execute.
+(#459), and #653 deleted the `POST /api/jobs/{job_id}/line-items` copy —
+a `_ok_with_id()` fabricated success that would have written nothing had the
+include order ever changed. Today ui_compat collides on exactly **one** path
+and LOSES it: `POST /api/customers/bulk-tag` (sub_resources is included
+first). That one is #570's; the handler here for it never executes.
 
-So two of this router's registrations never execute. Reading a handler
+So one of this router's registrations never executes. Reading a handler
 here tells you nothing about what the browser receives — check
 `gdx_dispatch/tools/route_shadow_scan.py` output first. That scanner was itself
 blind until 2026-08-24 (it walked `app.routes` flat and saw 10 of 1442 routes,
@@ -506,21 +507,20 @@ def bulk_tag_customers(payload: _GenericPayload, _: dict = Depends(get_current_u
 
 
 # ── Job costing line items + parts ────────────────────────────────────────
-
-@router.post("/api/jobs/{job_id}/line-items", response_model=None, status_code=201)
-def create_job_line_item(job_id: str, payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok_with_id()
-
-
-@router.patch("/api/jobs/{job_id}/parts/{part_id}", response_model=None)
-def update_job_part(
-    job_id: str,
-    part_id: str,
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Editing a part on a job", request, user)
+# BOTH removed 2026-09-07 with the Job Costing dialog's fake editors (#653).
+#
+# `PATCH /api/jobs/{job_id}/parts/{part_id}` 501'd. Its only caller was the
+# costing dialog's parts grid, which saved on blur — and the grid it edited
+# never loaded, because `GET /api/jobs/{job_id}/parts` has never been served by
+# anything. With the grid gone the route has no caller in either direction.
+#
+# `POST /api/jobs/{job_id}/line-items` was worse and was already dead: it
+# returned `_ok_with_id()` — a fabricated success that wrote nothing. It never
+# ran, because routers/sub_resources.py registers the same path at app.py:1573,
+# ahead of ui_compat at :1578, and its copy does real work. That made this a
+# silent-write landmine one include-order change away from firing, against the
+# invariant that an action which fakes success without doing the work is a
+# defect of the highest class. Removed rather than left as dead code.
 
 
 # ── Labor time entries (via /api/labor/jobs/...) ──────────────────────────
