@@ -20,6 +20,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.auth import get_current_user
+from gdx_dispatch.models.tenant_models import Segment
 from gdx_dispatch.routers import segments as segments_router
 from gdx_dispatch.routers.segments import (
     SegmentCreateIn,
@@ -87,19 +88,14 @@ def tenant_db_session():
             """
         )
     )
-    setup_db.execute(
-        text(
-            """
-            CREATE TABLE segments (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                rules JSON NOT NULL,
-                created_at TEXT NOT NULL,
-                deleted_at TEXT
-            )
-            """
-        )
-    )
+    # `segments` is built from the ORM, NOT hand-written SQL. A hand-written
+    # table here declared `deleted_at TEXT` (nullable) while the model said
+    # NOT NULL and the real database — built by create_all — agreed with the
+    # model. So the fixture was kinder than production, and 31 tests stayed
+    # green over a feature that could not insert a single row (#455). Build
+    # the table the way the app builds it, so the schema under test is the
+    # schema that ships.
+    Segment.__table__.create(setup_db.get_bind(), checkfirst=True)
     setup_db.commit()
     setup_db.close()
 

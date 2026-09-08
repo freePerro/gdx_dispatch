@@ -242,7 +242,7 @@
         v-model:visible="showDialog"
         :header="editingSegment ? `Edit ${editingSegment.name}` : 'New segment'"
         modal
-        :style="{ width: '520px' }"
+        :style="{ width: 'min(680px, 94vw)' }"
       >
         <div class="form-grid">
           <div class="form-field full-width">
@@ -922,7 +922,11 @@ onMounted(() => {
 
 .rule-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1fr) auto;
+  /* Field and operator carry the long labels ("Last job date", "is within
+     the last"); the value is a short number. Sized off the widest label
+     rather than evenly, because at 520px/1.2fr both truncated to
+     "Last job ..." and "is older t..." — visible only in a browser. */
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.5fr) minmax(0, 1fr) auto;
   gap: 0.5rem;
   align-items: center;
   margin-bottom: 0.5rem;

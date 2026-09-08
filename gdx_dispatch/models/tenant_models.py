@@ -887,7 +887,15 @@ class Segment(Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     rules: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # `| None` + nullable=True are load-bearing, not style. A bare
+    # `Mapped[datetime]` makes SQLAlchemy 2.0 infer NOT NULL, and no migration
+    # ever created this table — create_all did — so prod really has
+    # `deleted_at NOT NULL`. create_segment never sets it, so every create
+    # raised IntegrityError, and `deleted_at IS NULL` could never match, so no
+    # custom segment could be listed either. Migration 093 relaxes it. The
+    # other 87 deleted_at columns in this repo were already declared
+    # correctly; this was the only one. (#455)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AutomationSequence(Base):
