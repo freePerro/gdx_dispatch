@@ -16,12 +16,12 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import audit_or_rollback, ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.routers.auth import get_current_user
@@ -304,6 +304,79 @@ def update_template(
         request=request,
     )
     return _serialize_template(row)
+
+
+@router.delete("/api/service-agreements/templates/{template_id}", status_code=204)
+def delete_template(
+    # UUID, not str: see update_template — a str path param blows up inside
+    # SQLAlchemy's Uuid bind processor rather than 404ing.
+    template_id: UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Soft-delete a service-agreement template.
+
+    Added 2026-09-07 (#455). The Vue has always had a trash button on every
+    template row that sent this DELETE; nothing served it, so the confirm
+    dialog was followed by a 405 (contract-gap class C2).
+
+    Existing agreements are untouched by design: create_agreement copies
+    price and services onto the agreement row and only reads template_id to
+    validate the template at create time, so a deleted template strands
+    nothing. It just stops being offered for new agreements. The count of
+    agreements still pointing at it is recorded on the audit row.
+    """
+    # Same 400-on-missing-tenant guard the rest of this router applies;
+    # audit_or_rollback re-derives the tenant from the request itself.
+    _tenant_id(request)
+
+    # #661/#664: ensure_audit_table commits the FIRST time it runs for an
+    # engine. Running it here — before anything is staged — keeps that commit
+    # away from the soft-delete below, so the delete and its audit row stay
+    # one transaction and audit_or_rollback's promise holds.
+    ensure_audit_table(db)
+
+    # Three-plane (2026-04-24 B1): tenant isolation is the connection; no
+    # company_id filter, matching list_templates and update_template.
+    row = db.execute(
+        select(ServiceAgreementTemplate).where(
+            ServiceAgreementTemplate.id == template_id,
+            ServiceAgreementTemplate.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    referencing = db.execute(
+        select(func.count())
+        .select_from(ServiceAgreement)
+        .where(
+            ServiceAgreement.template_id == template_id,
+            ServiceAgreement.deleted_at.is_(None),
+        )
+    ).scalar_one()
+
+    name = row.name
+    # Invariant #2: soft-delete on a table carrying deleted_at.
+    row.deleted_at = datetime.now(timezone.utc)
+
+    # audit_or_rollback, not this router's best-effort _audit: _audit runs
+    # AFTER db.commit() and swallows its own failure, which on a destructive
+    # route means the delete lands with no trail and the API still answers
+    # 204. Here the audit row is flushed into the same transaction — both
+    # land or neither does.
+    audit_or_rollback(
+        db,
+        action="service_agreement_template_deleted",
+        entity_type="service_agreement_template",
+        entity_id=str(template_id),
+        actor=user,
+        request=request,
+        details={"name": name, "agreements_referencing": int(referencing)},
+    )
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.post("/api/service-agreements/templates", response_model=None, status_code=201)

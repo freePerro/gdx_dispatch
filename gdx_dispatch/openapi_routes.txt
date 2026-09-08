@@ -88,6 +88,7 @@ DELETE /api/resources/{resource_id}
 DELETE /api/role-permissions/roles/{role_id}
 DELETE /api/role-permissions/users/{user_id}/roles/{role_id}
 DELETE /api/segments/{segment_id}
+DELETE /api/service-agreements/templates/{template_id}
 DELETE /api/settings/integrations/phone-com/token
 DELETE /api/surveys/templates/{template_id}
 DELETE /api/tags/{tag_id}

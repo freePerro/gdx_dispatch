@@ -1,19 +1,21 @@
 """Tests for the service_agreements router."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, select, text
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.models import tenant_models  # noqa: F401  (register models on TenantBase.metadata)
+from gdx_dispatch.models.tenant_models import ServiceAgreementTemplate
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.service_agreements import router
 
@@ -203,6 +205,140 @@ def test_patch_template_unknown_id_is_404(client: TestClient):
         f"/api/service-agreements/templates/{uuid4()}", json={"name": "Nope"}
     )
     assert r.status_code == 404, r.text
+
+
+# ── DELETE /templates/{id} ───────────────────────────────────────────────
+# Added 2026-09-07 (#455). The Vue's trash button on every template row has
+# always sent this DELETE; only PATCH was registered on the path, so the
+# confirm dialog was followed by a 405 (contract-gap class C2).
+
+
+def _audit_rows(client: TestClient, action: str) -> list[dict]:
+    with client._engine.connect() as conn:  # type: ignore[attr-defined]
+        rows = conn.execute(
+            text("SELECT entity_id, details FROM audit_logs WHERE action = :a"),
+            {"a": action},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def test_delete_template_soft_deletes_and_drops_it_from_the_list(client: TestClient):
+    tpl = _create_template(client)
+    assert len(client.get("/api/service-agreements/templates").json()) == 1
+
+    r = client.delete(f"/api/service-agreements/templates/{tpl['id']}")
+    assert r.status_code == 204, r.text
+    assert client.get("/api/service-agreements/templates").json() == []
+
+    # Invariant #2: the row is still there, stamped — not hard-deleted.
+    # Read it through the ORM: SQLAlchemy's Uuid type stores dash-less hex on
+    # SQLite, so a raw-SQL compare against the dashed API id finds nothing.
+    with Session(client._engine) as session:  # type: ignore[attr-defined]
+        row = session.execute(
+            select(ServiceAgreementTemplate).where(
+                ServiceAgreementTemplate.id == UUID(tpl["id"])
+            )
+        ).scalar_one()
+        assert row.name == "Gold Maintenance"
+        assert row.deleted_at is not None
+
+
+def test_delete_template_writes_an_audit_row(client: TestClient):
+    """Invariant #1. Only a read of the table proves the row actually landed."""
+    tpl = _create_template(client)
+    client.delete(f"/api/service-agreements/templates/{tpl['id']}")
+
+    rows = _audit_rows(client, "service_agreement_template_deleted")
+    assert len(rows) == 1, rows
+    assert rows[0]["entity_id"] == tpl["id"]
+    details = rows[0]["details"]
+    if isinstance(details, str):
+        details = json.loads(details)
+    assert details["name"] == "Gold Maintenance"
+    assert details["agreements_referencing"] == 0
+
+
+def test_delete_template_leaves_existing_agreements_alone(client: TestClient):
+    """Agreements copy price/services at create time; only new ones lose the template."""
+    tpl = _create_template(client)
+    agreement = client.post(
+        "/api/service-agreements",
+        json=_agreement_payload(template_id=tpl["id"], name="Gold for a customer"),
+    ).json()
+
+    assert client.delete(f"/api/service-agreements/templates/{tpl['id']}").status_code == 204
+
+    still = client.get(f"/api/service-agreements/{agreement['id']}").json()
+    assert still["template_id"] == tpl["id"]
+    assert still["price"] == 299.0
+    assert still["services_included"] == ["Spring inspection", "Lube service"]
+
+    # ...and the count of what pointed at it is on the audit row.
+    details = _audit_rows(client, "service_agreement_template_deleted")[0]["details"]
+    if isinstance(details, str):
+        details = json.loads(details)
+    assert details["agreements_referencing"] == 1
+
+
+def test_delete_template_then_new_agreement_cannot_use_it(client: TestClient):
+    tpl = _create_template(client)
+    client.delete(f"/api/service-agreements/templates/{tpl['id']}")
+    r = client.post(
+        "/api/service-agreements", json=_agreement_payload(template_id=tpl["id"])
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_delete_template_rolls_back_when_the_audit_row_cannot_be_written(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """An unaudited destructive change is worse than a failed one.
+
+    This router's own ``_audit`` helper runs after ``db.commit()`` and swallows
+    its exception — with it, a failing audit left the template deleted, no
+    trail, and a 204 on the wire. delete_template uses ``audit_or_rollback``
+    instead, so this test fails the moment anyone puts ``_audit`` back.
+    """
+    tpl = _create_template(client)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("audit table unavailable")
+
+    monkeypatch.setattr(
+        "gdx_dispatch.core.audit.log_audit_event_sync", _boom, raising=True
+    )
+
+    r = client.delete(f"/api/service-agreements/templates/{tpl['id']}")
+    assert r.status_code == 500, r.text
+
+    # The template must still be there, and still usable.
+    listed = client.get("/api/service-agreements/templates").json()
+    assert [t["id"] for t in listed] == [tpl["id"]]
+    with Session(client._engine) as session:  # type: ignore[attr-defined]
+        row = session.execute(
+            select(ServiceAgreementTemplate).where(
+                ServiceAgreementTemplate.id == UUID(tpl["id"])
+            )
+        ).scalar_one()
+        assert row.deleted_at is None
+
+
+def test_delete_template_unknown_id_is_404(client: TestClient):
+    r = client.delete(f"/api/service-agreements/templates/{uuid4()}")
+    assert r.status_code == 404, r.text
+
+
+def test_delete_template_twice_is_404_not_a_second_success(client: TestClient):
+    tpl = _create_template(client)
+    assert client.delete(f"/api/service-agreements/templates/{tpl['id']}").status_code == 204
+    assert client.delete(f"/api/service-agreements/templates/{tpl['id']}").status_code == 404
+    assert len(_audit_rows(client, "service_agreement_template_deleted")) == 1
+
+
+def test_delete_template_malformed_id_is_422_not_a_500(client: TestClient):
+    """A str path param would blow up inside SQLAlchemy's Uuid bind processor."""
+    r = client.delete("/api/service-agreements/templates/not-a-uuid")
+    assert r.status_code == 422, r.text
 
 
 def test_create_agreement_from_template(client: TestClient):
