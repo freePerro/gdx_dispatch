@@ -39,8 +39,9 @@ choice with an end condition — not a default we drifted into.
      `payment_exceeds_receivable` audit row had never once been written —
      `begin_nested()` around a writer whose guard installer commits on first use
      per engine.
-   - Merged, **not released**. Prod still runs the old image until the maintainer
-     cuts a release.
+   - **Released in `v1.118.1`** (tagged 2026-09-07 14:55; all three fix commits
+     verified as ancestors of the tag). Whether prod is *serving* it is a
+     separate check and has not been made here.
 
 ### Next phase, already queued
 
@@ -60,8 +61,10 @@ owed by Doug before PR A. Nothing starts until the exit condition above is met.
 ## The sweep budget
 
 Our own audits produce most of the backlog. Over the 30 days to 2026-09-07 we
-closed 47 issues and opened 48 — the queue is at parity, so running another
-sweep is choosing more backlog, not less.
+opened **99** issues and closed **54** (measured against the tracker
+2026-09-07; an earlier 48/47 "parity" reading was wrong). Intake runs at
+roughly 1.8x closure, so running another sweep is choosing more backlog, not
+less.
 
 Every open issue carries exactly one of:
 
