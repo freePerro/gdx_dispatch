@@ -16,7 +16,9 @@ open. Read it at session start; `/start` opens with it and
 
 Doug declares the phase. Claude does not switch it, and does not call the exit
 condition met without naming the evidence. Our own audits generate most of the
-backlog — in the 30 days to 2026-09-07 we closed 47 issues and opened 48 — so
+backlog — in the 30 days to 2026-09-07 we opened 99 issues and closed 54
+(measured against the tracker 2026-09-07; an earlier 48/47 "parity" reading was
+wrong — intake runs at roughly 1.8x closure) — so
 starting a sweep while the budget is CLOSED is choosing more backlog, not less.
 `live-defect` work is never rate-limited by any of this.
 
@@ -171,10 +173,14 @@ in this repo has ever overclaimed; the record only ever undersells what exists.
   superseded — in both docs. Two plans in this repo reached opposite decisions
   about the same money path without ever referencing each other.
 - **Keep the past; retire the present.** A shipped plan stays — its rejected
-  alternatives and audit findings are the part code cannot recover, and 56
-  source files cite design docs by filename, **8 of them immutable migrations**
-  whose only record of *why* a money column is locked is the doc they name.
-  Deleting one manufactures the dead references this repo audits for. A
+  alternatives and audit findings are the part code cannot recover. Measured
+  2026-09-07: **14** source files cite a design doc by filename, **11 of them
+  migrations** — and those migrations are self-documenting (056 carries the
+  whole money-rail argument inline and merely names the audit it came from),
+  so the doc is provenance, not the record. This page previously claimed 56
+  and 8, and claimed the doc was those migrations' *only* record of why a
+  money column is locked; both were wrong. Deleting one still manufactures the
+  dead references this repo audits for. A
   present-tense doc whose subject no longer exists is the opposite case: it
   carries no reasoning, only instructions for a system that isn't there. Give
   it a `HISTORICAL` status line saying what it described and that the thing was
