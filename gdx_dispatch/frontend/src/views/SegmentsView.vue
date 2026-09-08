@@ -15,39 +15,6 @@
         </template>
       </Toolbar>
 
-      <div class="filter-row">
-        <Select
-          v-model="tagFilter"
-          :options="tagOptions"
-          option-label="label"
-          option-value="value"
-          placeholder="Filter by tag"
-          class="w-full"
-          show-clear
-          data-testid="segments-tag-filter"
-        />
-        <DatePicker
-          v-model="updatedRange"
-          selection-mode="range"
-          date-format="yy-mm-dd"
-          placeholder="Updated range"
-          show-icon
-          class="w-full"
-          data-testid="segments-date-filter"
-        />
-        <div class="toggle-field">
-          <label class="toggle-label" for="recent-only">Recent updates</label>
-          <ToggleSwitch
-            id="recent-only"
-            v-model="recentOnly"
-            on-label="On"
-            off-label="Off"
-            class="toggle-control"
-            data-testid="segments-recent-toggle"
-          />
-        </div>
-      </div>
-
       <Tabs
         v-model:value="activeTab"
         class="view-tabs"
@@ -78,7 +45,7 @@
         :rows="15"
         striped-rows
         
-        @row-click="openSegmentDialog($event.data)"
+        @row-click="onRowClick($event)"
       >
         <template #empty>
           <EmptyState
@@ -90,28 +57,48 @@
           />
         </template>
         <Column field="name" header="Name" />
-        <Column field="criteria_summary" header="Criteria">
+        <Column header="Criteria">
+          <template #body="{ data }">{{ describeRules(data.rules) }}</template>
+        </Column>
+        <Column field="matching_customer_count" header="Customers" style="width: 110px">
           <template #body="{ data }">
-            {{ data.criteria_summary || truncateCriteria(data.criteria) }}
+            {{ data.matching_customer_count ?? '—' }}
           </template>
         </Column>
-        <Column field="customer_count" header="Customers" />
-        <Column field="updated_at" header="Updated">
-          <template #body="{ data }">{{ formatDate(data.updated_at) }}</template>
-        </Column>
-        <Column header="Tags">
-          <template #body="{ data }">{{ data.tags?.join(', ') || '—' }}</template>
-        </Column>
-        <Column header="Actions" style="width: 120px">
+        <Column header="Type" style="width: 110px">
           <template #body="{ data }">
-            <Button
-              icon="pi pi-pencil" aria-label="Edit"
-              text
-              size="small"
-              label="Edit"
-              @click.stop="openSegmentDialog(data)"
-              data-testid="segments-edit-row"
-            />
+            <span :class="data.is_builtin ? 'type-badge builtin' : 'type-badge custom'">
+              {{ data.is_builtin ? 'Built-in' : 'Custom' }}
+            </span>
+          </template>
+        </Column>
+        <Column field="created_at" header="Created" style="width: 120px">
+          <template #body="{ data }">{{ formatDate(data.created_at) }}</template>
+        </Column>
+        <Column header="Actions" style="width: 150px">
+          <template #body="{ data }">
+            <!-- Built-ins live in code, not the segments table: the API
+                 answers 400 to an edit or delete of one, so offer neither. -->
+            <span v-if="data.is_builtin" class="builtin-note">—</span>
+            <template v-else>
+              <Button
+                icon="pi pi-pencil" aria-label="Edit"
+                text
+                size="small"
+                label="Edit"
+                @click.stop="openSegmentDialog(data)"
+                data-testid="segments-edit-row"
+              />
+              <Button
+                icon="pi pi-trash" aria-label="Delete"
+                text
+                size="small"
+                severity="danger"
+                :loading="deletingId === data.id"
+                @click.stop="deleteSegment(data)"
+                data-testid="segments-delete-row"
+              />
+            </template>
           </template>
         </Column>
       </DataTable>
@@ -134,7 +121,7 @@
             @click="selectCustomerChip(chip)"
             :data-testid="`segment-chip-${chip.key}`"
           >
-            <span>{{ chip.label }} ({{ chip.count }})</span>
+            <span>{{ chip.count === null ? chip.label : `${chip.label} (${chip.count})` }}</span>
           </button>
         </div>
 
@@ -258,9 +245,10 @@
         :style="{ width: '520px' }"
       >
         <div class="form-grid">
-          <div class="form-field">
-            <label>Name</label>
+          <div class="form-field full-width">
+            <label for="segment-name">Name</label>
             <InputText
+              id="segment-name"
               v-model="segmentForm.name"
               placeholder="Segment name"
               class="w-full"
@@ -268,22 +256,74 @@
             />
           </div>
           <div class="form-field full-width">
-            <label>Criteria (JSON)</label>
-            <Textarea
-              v-model="segmentForm.criteria"
-              rows="4"
+            <label for="segment-match">Match</label>
+            <Select
+              id="segment-match"
+              v-model="segmentForm.match"
+              :options="MATCH_OPTIONS"
+              option-label="label"
+              option-value="value"
               class="w-full"
-              data-testid="segments-dialog-criteria"
+              data-testid="segments-dialog-match"
             />
           </div>
+
           <div class="form-field full-width">
-            <label>Tags</label>
-            <Chips
-              v-model="segmentForm.tags"
-              class="w-full"
-              placeholder="Add tags"
-              data-testid="segments-dialog-tags"
+            <label>Rules</label>
+            <div
+              v-for="(rule, index) in segmentForm.rules"
+              :key="index"
+              class="rule-row"
+              :data-testid="`segments-rule-${index}`"
+            >
+              <Select
+                v-model="rule.field"
+                :options="FIELD_OPTIONS"
+                option-label="label"
+                option-value="value"
+                class="rule-field"
+                aria-label="Field"
+                @change="onRuleFieldChange(rule)"
+                :data-testid="`segments-rule-field-${index}`"
+              />
+              <Select
+                v-model="rule.operator"
+                :options="operatorsFor(rule.field)"
+                option-label="label"
+                option-value="value"
+                class="rule-operator"
+                aria-label="Operator"
+                :data-testid="`segments-rule-operator-${index}`"
+              />
+              <InputText
+                v-model="rule.value"
+                :placeholder="valuePlaceholder(rule)"
+                class="rule-value"
+                aria-label="Value"
+                :data-testid="`segments-rule-value-${index}`"
+              />
+              <Button
+                icon="pi pi-times"
+                text
+                severity="danger"
+                aria-label="Remove rule"
+                :disabled="segmentForm.rules.length <= 1"
+                @click="removeRule(index)"
+                :data-testid="`segments-rule-remove-${index}`"
+              />
+            </div>
+            <Button
+              label="Add rule"
+              icon="pi pi-plus"
+              text
+              size="small"
+              @click="addRule"
+              data-testid="segments-rule-add"
             />
+            <p v-if="formInvalidReason" class="rule-hint invalid" data-testid="segments-dialog-invalid">
+              {{ formInvalidReason }}
+            </p>
+            <p v-else class="rule-hint">Matches customers where {{ describeRules(formRulesPayload) }}.</p>
           </div>
         </div>
         <template #footer>
@@ -297,6 +337,7 @@
             label="Save"
             icon="pi pi-check"
             class="primary"
+            :disabled="!!formInvalidReason"
             @click="saveSegment"
             :loading="savingSegment"
             data-testid="segments-dialog-save"
@@ -344,14 +385,13 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { useRouter } from 'vue-router';
 import EmptyState from '../components/EmptyState.vue';
 import Button from 'primevue/button';
 import Toolbar from 'primevue/toolbar';
-import Chips from 'primevue/chips';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
-import DatePicker from 'primevue/datepicker';
 import Dialog from 'primevue/dialog';
 import InputText from 'primevue/inputtext';
 import ProgressSpinner from 'primevue/progressspinner';
@@ -361,27 +401,60 @@ import TabList from 'primevue/tablist';
 import TabPanel from 'primevue/tabpanel';
 import TabPanels from 'primevue/tabpanels';
 import Tabs from 'primevue/tabs';
-import Textarea from 'primevue/textarea';
-import ToggleSwitch from 'primevue/toggleswitch';
 
 const api = useApiWithToast();
 const router = useRouter();
+const { confirmAsync } = useDestructiveConfirm();
 
 const segments = ref([]);
 const loading = ref(true);
 const loadError = ref(null);
 const activeTab = ref('all');
-const tagFilter = ref(null);
-const updatedRange = ref(null);
-const recentOnly = ref(false);
 const showDialog = ref(false);
 const editingSegment = ref(null);
 const savingSegment = ref(false);
+const deletingId = ref(null);
+
+// The rule vocabulary the API actually evaluates, mirroring _rule_match /
+// _validate_rules in routers/segments.py. Anything outside it is refused on
+// write, so the editor must not be able to build it.
+const MATCH_OPTIONS = [
+  { label: 'Match all rules', value: 'all' },
+  { label: 'Match any rule', value: 'any' },
+];
+
+const DATE_OPERATORS = [
+  { label: 'is older than', value: 'older_than' },
+  { label: 'is within the last', value: 'within_last' },
+];
+const NUMBER_OPERATORS = [
+  { label: 'is greater than', value: 'greater_than' },
+  { label: 'is less than', value: 'less_than' },
+  { label: 'equals', value: 'equals' },
+];
+// Only fields the API can evaluate reliably. `customer_type` was a
+// candidate and was left out on purpose: its values are tenant data and the
+// backend compares them exactly and case-sensitively, so a free text box
+// would silently build a segment matching nobody.
+const FIELD_OPTIONS = [
+  { label: 'Last job date', value: 'last_job_date', kind: 'date' },
+  { label: 'Customer created', value: 'created_at', kind: 'date' },
+  { label: 'Lifetime value', value: 'lifetime_value', kind: 'number' },
+];
+
+const OPERATORS_BY_KIND = {
+  date: DATE_OPERATORS,
+  number: NUMBER_OPERATORS,
+};
+
+function newRule() {
+  return { field: 'last_job_date', operator: 'older_than', value: '90' };
+}
 
 const segmentForm = ref({
   name: '',
-  criteria: '',
-  tags: [],
+  match: 'all',
+  rules: [newRule()],
 });
 
 const CUSTOMER_PAGE_SIZE = 25;
@@ -400,16 +473,20 @@ const showBulkTagDialog = ref(false);
 const bulkTagValue = ref('');
 const bulkTagging = ref(false);
 
+// The old tabs keyed on `updated_at` and `customer_count`. The segments
+// table is `id, name, rules, created_at, deleted_at` — neither column has
+// ever existed, so "Recently updated" and "Large audiences" always counted
+// zero. These three split on fields the API actually returns.
 const tabDefinitions = [
-  { key: 'all', label: 'All segments', note: 'Every saved segment in the library.' },
-  { key: 'recent', label: 'Recently updated', note: 'Touched in the last 14 days.' },
-  { key: 'large', label: 'Large audiences', note: 'Segments with 100+ customers.' },
+  { key: 'all', label: 'All segments', note: 'Every segment in the library.' },
+  { key: 'builtin', label: 'Built-in', note: 'Shipped with the app. Not editable.' },
+  { key: 'custom', label: 'Custom', note: 'Segments this shop created.' },
 ];
 
 const tabMatchers = {
   all: () => true,
-  recent: (segment) => isWithinDays(segment.updated_at, 14),
-  large: (segment) => (segment.customer_count || 0) >= 100,
+  builtin: (segment) => segment.is_builtin === true,
+  custom: (segment) => segment.is_builtin !== true,
 };
 
 const currentTabKey = computed(() => activeTab.value || 'all');
@@ -423,50 +500,13 @@ const tabCounts = computed(() =>
 );
 
 const filteredSegments = computed(() => {
-  let list = segments.value.slice().sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0));
-
-  if (tagFilter.value) {
-    list = list.filter((segment) => segment.tags?.includes(tagFilter.value));
-  }
-
-  if (recentOnly.value) {
-    list = list.filter((segment) => isWithinDays(segment.updated_at, 14));
-  }
-
-  if (updatedRange.value?.length) {
-    const [start, end] = updatedRange.value;
-    if (start) {
-      const startTime = new Date(start).setHours(0, 0, 0, 0);
-      list = list.filter((segment) => {
-        if (!segment.updated_at) return false;
-        const entryTime = new Date(segment.updated_at).getTime();
-        if (end) {
-          const endTime = new Date(end).setHours(23, 59, 59, 999);
-          return entryTime >= startTime && entryTime <= endTime;
-        }
-        return entryTime >= startTime;
-      });
-    }
-    if (end) {
-      const endTime = new Date(end).setHours(23, 59, 59, 999);
-      list = list.filter((segment) => {
-        if (!segment.updated_at) return false;
-        const entryTime = new Date(segment.updated_at).getTime();
-        return entryTime <= endTime;
-      });
-    }
-  }
-
+  // Built-ins first (they have no created_at), then newest custom first.
+  const list = segments.value.slice().sort((a, b) => {
+    if (a.is_builtin !== b.is_builtin) return a.is_builtin ? -1 : 1;
+    return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+  });
   const matcher = tabMatchers[currentTabKey.value] || tabMatchers.all;
   return list.filter(matcher);
-});
-
-const tagOptions = computed(() => {
-  const tags = new Set();
-  segments.value.forEach((segment) => {
-    (segment.tags || []).forEach((tag) => tags.add(tag));
-  });
-  return Array.from(tags).map((tag) => ({ label: tag, value: tag }));
 });
 
 const customerPageCount = computed(() => {
@@ -528,12 +568,12 @@ const customerSegmentChips = computed(() => {
   const segmentChips = segments.value.map((segment, index) => {
     const keySuffix = segment.id ?? segment.name ?? `segment-${index}`;
     const key = segment.id ? `segment-${segment.id}` : `segment-${keySuffix}`;
+    // matching_customer_count is what the API returns; `count` and
+    // `customer_count` never existed, so every chip used to read 0.
     const count =
-      typeof segment.count === 'number'
-        ? segment.count
-        : typeof segment.customer_count === 'number'
-        ? segment.customer_count
-        : 0;
+      typeof segment.matching_customer_count === 'number'
+        ? segment.matching_customer_count
+        : null;
     return {
       key,
       id: segment.id ?? null,
@@ -549,21 +589,80 @@ function buildTabHeader(tab) {
   return count ? `${tab.label} (${count})` : tab.label;
 }
 
-function truncateCriteria(value) {
-  if (!value) return '—';
-  return value.length > 60 ? `${value.slice(0, 57)}…` : value;
-}
-
 function formatDate(value) {
-  return value ? value.split('T')[0] : '—';
+  return value ? String(value).split('T')[0] : '—';
 }
 
-function isWithinDays(value, days) {
-  if (!value) return false;
-  const now = new Date();
-  const target = new Date(value);
-  const diffDays = (now.getTime() - target.getTime()) / (1000 * 60 * 60 * 24);
-  return diffDays <= days;
+function fieldMeta(field) {
+  return FIELD_OPTIONS.find((f) => f.value === field) || FIELD_OPTIONS[0];
+}
+
+function operatorsFor(field) {
+  return OPERATORS_BY_KIND[fieldMeta(field).kind] || NUMBER_OPERATORS;
+}
+
+function onRuleFieldChange(rule) {
+  // Keep the operator legal for the new field — the API refuses e.g.
+  // older_than on lifetime_value.
+  const allowed = operatorsFor(rule.field).map((o) => o.value);
+  if (!allowed.includes(rule.operator)) rule.operator = allowed[0];
+}
+
+function valuePlaceholder(rule) {
+  const kind = fieldMeta(rule.field).kind;
+  if (kind === 'date') return 'days, e.g. 90';
+  return 'amount, e.g. 5000';
+}
+
+function addRule() {
+  segmentForm.value.rules.push(newRule());
+}
+
+function removeRule(index) {
+  if (segmentForm.value.rules.length <= 1) return;
+  segmentForm.value.rules.splice(index, 1);
+}
+
+/** Render a rules object — either shape the API accepts — as a sentence. */
+function describeRules(rules) {
+  if (!rules || typeof rules !== 'object') return '—';
+  const list = Array.isArray(rules.rules) ? rules.rules : [rules];
+  const parts = list
+    .filter((r) => r && r.field)
+    .map((r) => {
+      const field = FIELD_OPTIONS.find((f) => f.value === r.field);
+      const label = field?.label || r.field;
+      const op = [...DATE_OPERATORS, ...NUMBER_OPERATORS].find(
+        (o) => o.value === r.operator
+      );
+      const opLabel = op?.label || r.operator;
+      const kind = field?.kind;
+      const value = kind === 'date' ? `${String(r.value).replace(/\D/g, '')} days` : r.value;
+      return `${label} ${opLabel} ${value}`;
+    });
+  if (!parts.length) return '—';
+  const joiner = String(rules.match || 'all').toLowerCase() === 'any' ? ' or ' : ' and ';
+  return parts.join(joiner);
+}
+
+/** Turn a stored rules object back into editor rows. */
+function rulesToForm(rules) {
+  const list = Array.isArray(rules?.rules) ? rules.rules : rules?.field ? [rules] : [];
+  const rows = list
+    .filter((r) => r && r.field)
+    .map((r) => ({
+      field: r.field,
+      operator: r.operator,
+      // Dates are stored as "180 days"; the editor edits the number.
+      value:
+        fieldMeta(r.field).kind === 'date'
+          ? String(r.value ?? '').replace(/\D/g, '')
+          : String(r.value ?? ''),
+    }));
+  return {
+    match: String(rules?.match || 'all').toLowerCase() === 'any' ? 'any' : 'all',
+    rules: rows.length ? rows : [newRule()],
+  };
 }
 
 function selectCustomerChip(chip) {
@@ -583,18 +682,23 @@ function goCustomerPage(delta) {
 async function loadCustomers(segmentId = null) {
   customerLoading.value = true;
   try {
-    const params = new URLSearchParams();
-    params.set('page_size', `${CUSTOMER_FETCH_LIMIT}`);
-    if (segmentId) {
-      params.set('segment_id', segmentId);
-    }
-    const query = params.toString();
-    const endpoint = query ? `/api/customers?${query}` : '/api/customers';
+    // Two dropped query params used to live here. A segment chip sent
+    // /api/customers?segment_id=... — nothing serves that, so FastAPI
+    // discarded it and the panel silently re-loaded every customer. And the
+    // page size was sent as `page_size`; the route's parameter is `per_page`
+    // (default 50), so the list was capped at 50 and `All customers` counted
+    // 50. With real segment counts beside it that reads as a subset larger
+    // than the whole.
+    const endpoint = segmentId
+      ? `/api/segments/${segmentId}/customers`
+      : `/api/customers?per_page=${CUSTOMER_FETCH_LIMIT}`;
     const data = await api.get(endpoint);
     const list = Array.isArray(data) ? data : data?.items || data?.data || [];
     customers.value = list;
     if (!segmentId) {
-      allCustomersCount.value = list.length;
+      // `total` is the table count; list.length is only this page of it.
+      allCustomersCount.value =
+        typeof data?.total === 'number' ? data.total : list.length;
     }
     const available = new Set(list.map((customer) => customer.id));
     selectedCustomers.value = selectedCustomers.value.filter((customer) =>
@@ -666,12 +770,19 @@ async function loadSegments() {
   }
 }
 
+function onRowClick(event) {
+  const segment = event?.data;
+  if (!segment || segment.is_builtin) return;
+  openSegmentDialog(segment);
+}
+
 function openSegmentDialog(segment = null) {
   editingSegment.value = segment;
+  const mapped = rulesToForm(segment?.rules);
   segmentForm.value = {
     name: segment?.name || '',
-    criteria: segment?.criteria || '',
-    tags: segment?.tags ? [...segment.tags] : [],
+    match: mapped.match,
+    rules: mapped.rules,
   };
   showDialog.value = true;
 }
@@ -681,14 +792,66 @@ function closeSegmentDialog() {
   editingSegment.value = null;
 }
 
+/**
+ * The `rules` object the API stores and evaluates.
+ *
+ * This used to send `{name, criteria, tags}`: `criteria` and `tags` are not
+ * columns on the segments table, and `rules` is required — so create was a
+ * 422 and edit a 405 (the PATCH did not exist). Both now speak `rules`. #455
+ */
+const formRulesPayload = computed(() => ({
+  match: segmentForm.value.match,
+  rules: segmentForm.value.rules
+    .filter((r) => r.field && r.operator)
+    .map((r) => ({
+      field: r.field,
+      operator: r.operator,
+      // Day-based operators are stored the way the built-ins store them.
+      value:
+        fieldMeta(r.field).kind === 'date'
+          ? `${ruleNumber(r)} days`
+          : ruleNumber(r),
+    })),
+}));
+
+/** The rule's value as a number, or null when it isn't one. */
+function ruleNumber(rule) {
+  const raw = String(rule.value ?? '').replace(/[\s,$]/g, '');
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Why the form cannot be saved, or null.
+ *
+ * A blank or unparseable value is the dangerous case, not merely an
+ * incomplete one: it used to become `0`, and `older_than 0 days` /
+ * `lifetime_value > 0` both select EVERY customer. The API refuses these
+ * too — this stops the user reaching that error at all.
+ */
+const formInvalidReason = computed(() => {
+  if (!segmentForm.value.name.trim()) return 'Give the segment a name.';
+  const rules = segmentForm.value.rules.filter((r) => r.field && r.operator);
+  if (!rules.length) return 'Add at least one rule.';
+  for (const rule of rules) {
+    const n = ruleNumber(rule);
+    if (n === null) return `Enter a number for ${fieldMeta(rule.field).label}.`;
+    if (fieldMeta(rule.field).kind === 'date' && n < 1) {
+      return `${fieldMeta(rule.field).label} needs a window of at least 1 day.`;
+    }
+    if (n < 0) return `${fieldMeta(rule.field).label} cannot be negative.`;
+  }
+  return null;
+});
+
 async function saveSegment() {
-  if (!segmentForm.value.name.trim()) return;
+  if (formInvalidReason.value) return;
   savingSegment.value = true;
   try {
     const payload = {
       name: segmentForm.value.name.trim(),
-      criteria: segmentForm.value.criteria,
-      tags: segmentForm.value.tags || [],
+      rules: formRulesPayload.value,
     };
     if (editingSegment.value?.id) {
       await api.patch(`/api/segments/${editingSegment.value.id}`, payload, { successMessage: 'Segment updated' });
@@ -699,6 +862,22 @@ async function saveSegment() {
     closeSegmentDialog();
   } finally {
     savingSegment.value = false;
+  }
+}
+
+async function deleteSegment(segment) {
+  if (!segment?.id || segment.is_builtin) return;
+  const ok = await confirmAsync({
+    header: 'Delete segment',
+    message: `Delete "${segment.name}"? Customers are not affected.`,
+  });
+  if (!ok) return;
+  deletingId.value = segment.id;
+  try {
+    await api.del(`/api/segments/${segment.id}`, { successMessage: 'Segment deleted' });
+    await loadSegments();
+  } finally {
+    deletingId.value = null;
   }
 }
 
@@ -713,23 +892,6 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-}
-
-.filter-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 0.75rem;
-}
-
-.toggle-field {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.toggle-label {
-  font-size: 0.85rem;
-  color: var(--p-text-muted-color);
 }
 
 .view-tabs {
@@ -756,6 +918,50 @@ onMounted(() => {
 
 .full-width {
   grid-column: 1 / -1;
+}
+
+.rule-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+/* One control per line once there is no room for four side by side —
+   jsdom applies no media queries, so this is only ever proven in a browser. */
+@media (max-width: 640px) {
+  .rule-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.rule-hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  color: var(--p-text-muted-color);
+}
+
+.rule-hint.invalid {
+  color: var(--p-red-500, #b91c1c);
+}
+
+.type-badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  border: 1px solid var(--border);
+  color: var(--p-text-muted-color);
+}
+
+.type-badge.custom {
+  border-color: var(--p-primary-color, var(--border));
+  color: var(--p-primary-color, inherit);
+}
+
+.builtin-note {
+  color: var(--p-text-muted-color);
 }
 
 .spinner-wrap {

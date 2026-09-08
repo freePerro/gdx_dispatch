@@ -759,6 +759,7 @@ PATCH /api/purchase-orders/{po_id}
 PATCH /api/recurring/{schedule_id}
 PATCH /api/referrals/{referral_id}
 PATCH /api/role-permissions/roles/{role_id}
+PATCH /api/segments/{segment_id}
 PATCH /api/service-agreements/templates/{template_id}
 PATCH /api/service-agreements/{agreement_id}
 PATCH /api/service-triggers/{trigger_id}
