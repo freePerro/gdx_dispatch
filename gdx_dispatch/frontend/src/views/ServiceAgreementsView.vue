@@ -112,8 +112,11 @@
             </div>
           </template>
           <Column field="name" header="Template" />
-          <Column field="price" header="Price" style="width:140px">
-            <template #body="{ data }">{{ formatCurrency(data.price) }}</template>
+          <Column field="default_price" header="Price" style="width:140px">
+            <!-- #672: the templates serializer emits `default_price` (the column
+                 name); only the AGREEMENTS serializer emits `price`. Reading
+                 `price` here rendered the formatCurrency placeholder forever. -->
+            <template #body="{ data }">{{ formatCurrency(data.default_price) }}</template>
           </Column>
           <Column header="Services">
             <template #body="{ data }">
@@ -220,7 +223,7 @@
           </div>
           <div class="form-field">
             <label>Price</label>
-            <input v-model.number="templateForm.price" type="number" min="0" step="0.01" class="p-inputtext w-full" />
+            <input v-model.number="templateForm.default_price" type="number" min="0" step="0.01" class="p-inputtext w-full" />
           </div>
           <div class="form-field full-width">
             <label>Services Included</label>
@@ -287,7 +290,10 @@ const emptyAgreement = () => ({
 
 const emptyTemplate = () => ({
   name: '',
-  price: null,
+  // #672: `default_price` end to end — the column, the serializer and the
+  // request models all use that name. The form used to call it `price`, which
+  // TemplateIn does not declare, so a typed price was dropped and 0 stored.
+  default_price: null,
   services_included: '',
 });
 
@@ -378,7 +384,7 @@ function mapAgreementToForm(data) {
 function mapTemplateToForm(template) {
   return {
     name: template.name ?? '',
-    price: template.price ?? null,
+    default_price: template.default_price ?? null,
     services_included: (template.services_included || []).join('\n'),
   };
 }
@@ -504,7 +510,10 @@ async function saveTemplate() {
   try {
     const payload = {
       name: templateForm.value.name,
-      price: templateForm.value.price !== null ? Number(templateForm.value.price) : null,
+      default_price:
+        templateForm.value.default_price !== null
+          ? Number(templateForm.value.default_price)
+          : null,
       services_included: parseServices(templateForm.value.services_included),
     };
 
