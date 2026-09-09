@@ -21,6 +21,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import freezegun
 import pytest
 from freezegun import freeze_time
 from sqlalchemy import create_engine, text
@@ -61,6 +62,17 @@ _FROZEN_NOW = "2026-01-15 09:30:00"
 # to the number instead of only in prose.
 _WIDEST_SAME_DAY_OFFSET_H = 4  # test_open_break_freezes... clocks in at `now - 4h`
 _NARROWEST_YESTERDAY_OFFSET_H = 13  # ...yesterdays_lunch_twice breaks at `now - 13h`
+
+
+# freezegun does not just patch `datetime`; it walks sys.modules and swaps every
+# reference it finds to the real time functions — including pytest's own
+# `_pytest.timing.perf_counter`. pytest then measures a phase as
+# (frozen end - real start) and reports ~56 years, so these tests crowd out the
+# whole `--durations=15` report CI prints for their shard (observed on PR #680,
+# 14 of 15 slots). Nothing under test reads the performance counters, so hand
+# them back. This call is process-global and idempotent; any future freezegun
+# user in this suite wants it too.
+freezegun.configure(extend_ignore_list=["_pytest"])
 
 
 @pytest.fixture(autouse=True)
