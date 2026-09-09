@@ -290,6 +290,59 @@ def _apply_rules(customers: list[dict[str, Any]], rules: dict[str, Any]) -> list
     return matched
 
 
+def _customer_stats_sql(has_customer_type: bool, has_metadata: bool) -> str:
+    """Build the per-customer rollup.
+
+    **GROUP BY names the primary key and nothing else** (#681). The previous
+    version listed every selected column, which put `c.metadata` in the GROUP BY
+    — and on PostgreSQL `customers.metadata` is `json`, a type with no equality
+    operator, so the whole statement raised:
+
+        psycopg2.errors.UndefinedFunction:
+        could not identify an equality operator for type json
+
+    That 500'd `GET /api/segments`, i.e. the entire Segments page, on every
+    Postgres deployment since the initial public release. It was invisible in
+    development because the throwaway test container is SQLite, which has no
+    `json` type — the column is TEXT there and grouping on it is legal.
+
+    Grouping by `customers.id` alone is correct, not a workaround: it is the
+    primary key, so every other `c.*` column is functionally dependent on it and
+    both engines allow selecting them. Postgres has implemented that since 9.1;
+    SQLite is permissive and each group holds exactly one row anyway.
+
+    Keep json/jsonb columns out of GROUP BY. `jsonb` would work, but the fix is
+    not to change the column type — it is to not group on a payload column.
+    """
+    customer_type_select = (
+        "c.customer_type AS customer_type," if has_customer_type else "NULL AS customer_type,"
+    )
+    metadata_select = "c.metadata AS metadata," if has_metadata else "NULL AS metadata,"
+    return f"""
+            SELECT
+                c.id,
+                c.name,
+                c.email,
+                c.phone,
+                c.address,
+                {customer_type_select}
+                {metadata_select}
+                c.created_at,
+                MAX(j.created_at) AS last_job_date,
+                COALESCE(SUM(i.total), 0) AS lifetime_value
+            FROM customers c
+            LEFT JOIN jobs j
+                ON j.customer_id = c.id
+               AND j.deleted_at IS NULL
+            LEFT JOIN invoices i
+               ON i.job_id = j.id
+               AND i.deleted_at IS NULL
+            WHERE c.deleted_at IS NULL
+            GROUP BY c.id
+            ORDER BY c.created_at DESC
+            """
+
+
 def _customer_stats(db: Session) -> list[dict[str, Any]]:
     # Detect optional columns portably (SQLite uses PRAGMA, PostgreSQL uses information_schema)
     try:
@@ -312,37 +365,8 @@ def _customer_stats(db: Session) -> list[dict[str, Any]]:
     has_customer_type = "customer_type" in customer_columns
     has_metadata = "metadata" in customer_columns
 
-    customer_type_select = "c.customer_type AS customer_type," if has_customer_type else "NULL AS customer_type,"
-    metadata_select = "c.metadata AS metadata," if has_metadata else "NULL AS metadata,"
-    customer_type_group = ", c.customer_type" if has_customer_type else ""
-    metadata_group = ", c.metadata" if has_metadata else ""
-
     rows = db.execute(
-        text(
-            f"""
-            SELECT
-                c.id,
-                c.name,
-                c.email,
-                c.phone,
-                c.address,
-                {customer_type_select}
-                {metadata_select}
-                c.created_at,
-                MAX(j.created_at) AS last_job_date,
-                COALESCE(SUM(i.total), 0) AS lifetime_value
-            FROM customers c
-            LEFT JOIN jobs j
-                ON j.customer_id = c.id
-               AND j.deleted_at IS NULL
-            LEFT JOIN invoices i
-               ON i.job_id = j.id
-               AND i.deleted_at IS NULL
-            WHERE c.deleted_at IS NULL
-            GROUP BY c.id, c.name, c.email, c.phone, c.address{customer_type_group}{metadata_group}, c.created_at
-            ORDER BY c.created_at DESC
-            """
-        )
+        text(_customer_stats_sql(has_customer_type, has_metadata))
     ).mappings().all()
     payload: list[dict[str, Any]] = []
     for row in rows:
