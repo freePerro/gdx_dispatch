@@ -21,7 +21,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import freezegun
 import pytest
+from freezegun import freeze_time
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from starlette.requests import Request
@@ -32,6 +34,87 @@ from gdx_dispatch.routers import timeclock as tc
 
 _TENANT = "tenant-a"
 _USER = {"user_id": "user-1", "role": "technician", "tenant_id": _TENANT}
+
+# #677 — the clock is pinned for every test in this module.
+#
+# These fixtures are built relative to "now" (`now - 4h` clocks in, `now - 1h`
+# opens a break) while the handler clamps `today_hours` to UTC midnight
+# (`shift_start_today = max(parsed, midnight)`). Before 04:00 UTC, "4 hours ago"
+# landed on the PREVIOUS day, so today_hours and open_shift_elapsed_hours
+# legitimately diverged and `test_open_break_freezes_the_worked_figure_at_its_start`
+# failed — on every branch, including a docs-only PR, every day from 00:00 to
+# 03:59 UTC. The product code was right the whole time; the test was reading the
+# wall clock. Same class as #547.
+#
+# The instant is NOT arbitrary. It has to leave room on both sides of the day:
+#
+#   >= 04:00 UTC   so `now - 4h` is still TODAY, for the same-day shift tests
+#                  (the widest same-day offset in this file is 4h)
+#   <  13:00 UTC   so `now - 13h` is YESTERDAY, for
+#                  test_overnight_shift_does_not_pay_yesterdays_lunch_twice
+#
+# Widen a fixture's offset past either edge and #677 comes back. The window is
+# asserted below by test_the_pinned_clock_leaves_room_on_both_sides, so a bad
+# edit fails loudly instead of only between midnight and 4am.
+_FROZEN_NOW = "2026-01-15 09:30:00"
+
+# The two offsets the window is derived from, named so the constraint sits next
+# to the number instead of only in prose.
+_WIDEST_SAME_DAY_OFFSET_H = 4  # test_open_break_freezes... clocks in at `now - 4h`
+_NARROWEST_YESTERDAY_OFFSET_H = 13  # ...yesterdays_lunch_twice breaks at `now - 13h`
+
+
+# freezegun does not just patch `datetime`; it walks sys.modules and swaps every
+# reference it finds to the real time functions — including pytest's own
+# `_pytest.timing.perf_counter`. pytest then measures a phase as
+# (frozen end - real start) and reports ~56 years, so these tests crowd out the
+# whole `--durations=15` report CI prints for their shard (observed on PR #680,
+# 14 of 15 slots). Nothing under test reads the performance counters, so hand
+# them back. This call is process-global and idempotent; any future freezegun
+# user in this suite wants it too.
+freezegun.configure(extend_ignore_list=["_pytest"])
+
+
+@pytest.fixture(autouse=True)
+def _pinned_clock():
+    """Freeze `now` for every test here. The subject is break accounting, not
+    the hour the suite happens to run."""
+    with freeze_time(_FROZEN_NOW):
+        yield
+
+
+def test_the_pinned_clock_leaves_room_on_both_sides():
+    """#677's guard — the pin itself has to stay inside its window.
+
+    A green pin proves nothing unless it can fail. This is the input that turns
+    it red: move `_FROZEN_NOW` to 02:00 and the same-day shift tests are back on
+    the previous UTC day — #677 exactly, except constant instead of nightly, and
+    with no clock left to blame.
+
+    Scope, stated plainly: this guard reads `_FROZEN_NOW` and the two offset
+    constants and NOTHING else. It cannot see the `hours_ago=` literals at the
+    call sites, so widening one past `_WIDEST_SAME_DAY_OFFSET_H` without moving
+    that constant will not turn THIS red. It will fail the widened test itself —
+    at every hour of the day, every run. That is the whole return on pinning:
+    the failure stops being a nightly coin-flip and becomes a fact.
+    """
+    now = datetime.now(UTC)
+    frozen = datetime.fromisoformat(_FROZEN_NOW).replace(tzinfo=UTC)
+    assert now == frozen, (
+        f"the autouse freeze is not in effect: now={now}, expected {frozen}. "
+        "Every assertion in this file about today_hours is clock-dependent "
+        "without it."
+    )
+    assert now.hour >= _WIDEST_SAME_DAY_OFFSET_H, (
+        f"_FROZEN_NOW={_FROZEN_NOW}: `now - {_WIDEST_SAME_DAY_OFFSET_H}h` must "
+        "stay on today's date, or the same-day shift tests re-acquire #677"
+    )
+    assert now.hour < _NARROWEST_YESTERDAY_OFFSET_H, (
+        f"_FROZEN_NOW={_FROZEN_NOW}: `now - {_NARROWEST_YESTERDAY_OFFSET_H}h` "
+        "must land on yesterday, or "
+        "test_overnight_shift_does_not_pay_yesterdays_lunch_twice stops testing "
+        "the double-count it exists to catch"
+    )
 
 
 def _request() -> Request:
@@ -194,6 +277,73 @@ def test_open_break_freezes_the_worked_figure_at_its_start(session_factory):
         ), (
             f"today={during.today_hours} and open={during.open_shift_elapsed_hours} "
             "must not drift apart during an open break"
+        )
+    finally:
+        db.close()
+
+
+def test_an_open_break_on_an_overnight_shift_makes_the_two_figures_diverge(
+    session_factory,
+):
+    """The other side of the coin the pin would otherwise hide (#677 audit).
+
+    `test_open_break_freezes_the_worked_figure_at_its_start` asserts the two
+    figures are EQUAL during an open break. That holds only for a shift that
+    started today, and pinning the clock is what makes it hold reliably — but
+    pinning also means nothing enters the overnight + open-break state any more.
+    Before the pin, the nightly failure was the only thing that ever executed
+    this path, and it executed it as a red assertion. So assert it on purpose.
+
+    The two figures MUST diverge here, by exactly the pre-midnight portion of
+    the shift, because they answer different questions:
+
+      open_shift_elapsed_hours -> worked since the real clock-in  (19:30 -> 08:30)
+      today_hours              -> worked since UTC midnight       (00:00 -> 08:30)
+
+    A change that "fixed" the divergence by dropping the midnight clamp would
+    pay yesterday's hours again today. That is the regression this pins.
+    """
+    db = session_factory()
+    try:
+        # Clock in 14h ago: with the pin at 09:30 UTC that is 19:30 YESTERDAY.
+        _open_shift(db, hours_ago=14)
+        clock_in = datetime.now(UTC) - timedelta(hours=14)
+        assert clock_in.date() < datetime.now(UTC).date(), "fixture must be overnight"
+
+        # An open break that started an hour ago, i.e. TODAY at 08:30.
+        db.execute(
+            text(
+                "INSERT INTO timeclock_breaks_router"
+                " (id, tenant_id, user_id, type, started_at, created_at)"
+                " VALUES (:id, :t, 'user-1', 'lunch', :s, :s)"
+            ),
+            {
+                "id": uuid4().hex,
+                "t": _TENANT,
+                "s": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+            },
+        )
+        db.commit()
+
+        st = _status(db)
+        assert st.on_break is True
+
+        # Worked since the real clock-in, frozen at the break start: 19:30->08:30.
+        assert st.open_shift_elapsed_hours == pytest.approx(13.0, abs=0.05), (
+            f"worked-since-clock-in should be 13h; got {st.open_shift_elapsed_hours}"
+        )
+        # Worked since UTC midnight, frozen at the same break start: 00:00->08:30.
+        assert st.today_hours == pytest.approx(8.5, abs=0.05), (
+            f"today should be 8.5h; got {st.today_hours}"
+        )
+        # And the gap is the part of the shift that belongs to yesterday.
+        midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        before_midnight = (midnight - clock_in).total_seconds() / 3600.0
+        assert st.open_shift_elapsed_hours - st.today_hours == pytest.approx(
+            before_midnight, abs=0.05
+        ), (
+            "the two figures must differ by exactly the pre-midnight portion of "
+            "the shift — collapsing them would pay yesterday's hours twice"
         )
     finally:
         db.close()
@@ -375,14 +525,17 @@ def test_overnight_shift_does_not_pay_yesterdays_lunch_twice(session_factory):
         db.commit()
         after = _status(db)
 
-        same_day = yesterday_break.date() == datetime.now(UTC).date()
-        if same_day:
-            # The clock happened to run inside one UTC day — then it DOES count.
-            assert after.today_hours == pytest.approx(before.today_hours - 0.5, abs=0.05)
-        else:
-            assert after.today_hours == pytest.approx(before.today_hours, abs=0.05), (
-                "a break taken yesterday must not come off today's hours"
-            )
+        # The pinned clock makes this unconditional. It used to branch on
+        # `yesterday_break.date() == now.date()` — an adaptive assertion that
+        # quietly tested the OPPOSITE thing for part of the day, which is how a
+        # clock-coupled test hides (#677).
+        assert yesterday_break.date() < datetime.now(UTC).date(), (
+            "fixture must land on the previous UTC day for this test to mean "
+            "anything — see _FROZEN_NOW's window"
+        )
+        assert after.today_hours == pytest.approx(before.today_hours, abs=0.05), (
+            "a break taken yesterday must not come off today's hours"
+        )
     finally:
         db.close()
 
