@@ -50,22 +50,62 @@ from gdx_dispatch.models.tenant_models import ServiceAgreement, ServiceAgreement
 
 
 class TemplateIn(BaseModel):
+    """Create a template.
+
+    ``price`` is a TRANSITIONAL alias for ``default_price`` (#672). It exists
+    only for a stale SPA bundle: an open tab keeps the old JS in memory across a
+    deploy, and the pre-#672 bundle sent ``price``. Pydantic ignores undeclared
+    keys, so ``default_price`` fell back to its ``0`` default and a template
+    created with a typed price of 249 was stored as ``0.00`` — measured on the
+    demo database 2026-09-09. A silent wrong-value write, which is the worst
+    class this repo recognises.
+
+    The SPA now sends ``default_price`` everywhere. **Retire this alias once no
+    bundle predating #672 can still be in a browser** — deliberately stated as a
+    commit boundary, not a version number, because the release this lands in is
+    not known while it is being written. It is the third accommodation for one
+    rename and the direction is settled: the column, the serializer and the form
+    all say ``default_price``.
+
+    Note the asymmetry, so nobody over-trusts this: a stale tab can now WRITE a
+    price, but it still cannot READ one — ``_serialize_template`` emits only
+    ``default_price``, so its Price column stays blank until reload. That is the
+    pre-existing behaviour, not a regression; the alias exists to stop a silent
+    wrong-value WRITE, which is the half that loses data.
+    """
+
     name: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=5000)
     default_duration_months: int = Field(default=12, ge=1, le=600)
-    default_price: float = Field(default=0, ge=0, le=1_000_000)
+    default_price: float | None = Field(default=None, ge=0, le=1_000_000)
+    price: float | None = Field(default=None, ge=0, le=1_000_000)
     services_included: list[str] = Field(default_factory=list, max_length=100)
+
+    @property
+    def resolved_price(self) -> float:
+        """Explicit ``default_price`` wins, then the legacy alias, then 0.
+
+        Mirrors ``update_template``'s precedence so create and patch cannot
+        disagree about which key means what.
+        """
+        if self.default_price is not None:
+            return self.default_price
+        if self.price is not None:
+            return self.price
+        return 0.0
 
 
 class TemplatePatch(BaseModel):
     """Partial update. Every field optional — only what's sent is written.
 
-    ``price`` is accepted alongside ``default_price`` because the Vue
-    (ServiceAgreementsView) has always sent ``price``. Renaming the frontend
-    field instead would break the create path, which has the same mismatch:
-    ``TemplateIn.default_price`` defaults to 0, so a create from the UI
-    silently stores 0. Accept both here, and prefer the explicit
-    ``default_price`` when a caller sends both.
+    ``price`` is a TRANSITIONAL alias for ``default_price``, kept for a stale
+    SPA bundle in an open tab. The create-path mismatch this docstring used to
+    describe as a reason NOT to rename the frontend was real — a create from the
+    UI silently stored 0 — and it is now fixed at the source (#672): the SPA
+    sends ``default_price`` everywhere, and ``TemplateIn`` accepts the same
+    alias. Prefer the explicit ``default_price`` when a caller sends both, and
+    retire both aliases together once no bundle predating #672 can be in a
+    browser.
     """
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
@@ -392,7 +432,7 @@ def create_template(
         name=payload.name.strip(),
         description=payload.description,
         default_duration_months=int(payload.default_duration_months),
-        default_price=Decimal(str(payload.default_price)),
+        default_price=Decimal(str(payload.resolved_price)),
         services_included=_dumps_services(payload.services_included),
     )
     db.add(t)
