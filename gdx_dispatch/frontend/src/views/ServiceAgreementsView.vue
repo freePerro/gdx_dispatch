@@ -59,7 +59,9 @@
             </div>
           </template>
           <Column field="name" header="Agreement" />
-          <Column field="customer_name" header="Customer" />
+          <Column field="customer_name" header="Customer">
+            <template #body="{ data }">{{ data.customer_name || '—' }}</template>
+          </Column>
           <Column field="start_date" header="Start">
             <template #body="{ data }">{{ formatDate(data.start_date) }}</template>
           </Column>
@@ -151,12 +153,34 @@
       >
         <div class="form-grid">
           <div class="form-field">
-            <label>Agreement Name *</label>
-            <input v-model="agreementForm.name" type="text" class="p-inputtext w-full" />
+            <label for="agreement-name">Agreement Name *</label>
+            <input
+              id="agreement-name"
+              v-model="agreementForm.name"
+              type="text"
+              class="p-inputtext w-full"
+              data-testid="agreement-name"
+            />
           </div>
           <div class="form-field">
-            <label>Customer Name *</label>
-            <input v-model="agreementForm.customer_name" type="text" class="p-inputtext w-full" />
+            <!-- #684: an agreement points at a real customer row. This was a
+                 free-text "Customer Name" the API never declared, while the
+                 customer_id it requires stayed null — every create was a 422.
+                 Same picker as the Jobs create dialog. -->
+            <label for="agreement-customer">Customer *</label>
+            <Select
+              v-model="agreementForm.customer_id"
+              inputId="agreement-customer"
+              :options="customerOptions"
+              optionLabel="label"
+              optionValue="value"
+              filter
+              showClear
+              :loading="customersLoading"
+              placeholder="Select a customer"
+              class="w-full"
+              data-testid="agreement-customer-dropdown"
+            />
           </div>
           <div class="form-field">
             <label>Template</label>
@@ -169,21 +193,52 @@
               class="w-full"
             />
           </div>
-          <div class="form-field">
+          <!-- Status is an edit-only field: a new agreement is always created
+               active (the create endpoint has no status field). -->
+          <div v-if="editingAgreement" class="form-field">
             <label>Status</label>
-            <Select v-model="agreementForm.status" :options="statusOptionList" class="w-full" />
+            <!-- optionValue: without it the model became the whole {label, value}
+                 object, which the PATCH's status pattern rejects. -->
+            <Select
+              v-model="agreementForm.status"
+              :options="statusOptionList"
+              optionLabel="label"
+              optionValue="value"
+              class="w-full"
+              data-testid="agreement-status"
+            />
           </div>
           <div class="form-field">
-            <label>Start Date</label>
-            <DatePicker v-model="agreementForm.start_date" dateFormat="yy-mm-dd" class="w-full" />
+            <label for="agreement-start">Start Date *</label>
+            <DatePicker
+              v-model="agreementForm.start_date"
+              inputId="agreement-start"
+              dateFormat="yy-mm-dd"
+              class="w-full"
+              data-testid="agreement-start-date"
+            />
           </div>
           <div class="form-field">
-            <label>End Date</label>
-            <DatePicker v-model="agreementForm.end_date" dateFormat="yy-mm-dd" class="w-full" />
+            <label for="agreement-end">End Date *</label>
+            <DatePicker
+              v-model="agreementForm.end_date"
+              inputId="agreement-end"
+              dateFormat="yy-mm-dd"
+              class="w-full"
+              data-testid="agreement-end-date"
+            />
           </div>
           <div class="form-field">
-            <label>Price</label>
-            <input v-model.number="agreementForm.price" type="number" min="0" step="0.01" class="p-inputtext w-full" />
+            <label for="agreement-price">Price *</label>
+            <input
+              id="agreement-price"
+              v-model.number="agreementForm.price"
+              type="number"
+              min="0"
+              step="0.01"
+              class="p-inputtext w-full"
+              data-testid="agreement-price"
+            />
           </div>
           <div class="form-field full-width">
             <label>Services Included</label>
@@ -199,12 +254,16 @@
             <textarea v-model="agreementForm.notes" class="p-inputtextarea w-full" rows="3"></textarea>
           </div>
         </div>
+        <p v-if="agreementFormError" class="form-error" role="alert" data-testid="agreement-form-error">
+          {{ agreementFormError }}
+        </p>
         <template #footer>
           <Button label="Cancel" severity="secondary" @click="showAgreementDialog = false" />
           <Button
             :label="editingAgreement ? 'Save' : 'Create'"
             icon="pi pi-check"
             :loading="savingAgreement"
+            data-testid="agreement-save"
             @click="saveAgreement"
           />
         </template>
@@ -249,7 +308,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { formatMoney as formatCurrency } from '../composables/useFormatters';
 import Badge from 'primevue/badge';
@@ -277,7 +336,6 @@ const statusOptionList = [
 
 const emptyAgreement = () => ({
   customer_id: null,
-  customer_name: '',
   template_id: null,
   name: '',
   status: 'active',
@@ -309,10 +367,80 @@ const showTemplateDialog = ref(false);
 const agreementForm = ref(emptyAgreement());
 const templateForm = ref(emptyTemplate());
 const editingAgreement = ref(null);
+// The edit form as it opened, in payload shape — the PATCH sends only what
+// differs from it.
+const editBaseline = ref(null);
 const editingTemplate = ref(null);
 const savingAgreement = ref(false);
 const savingTemplate = ref(false);
 const deletingTemplateId = ref(null);
+const agreementFormError = ref('');
+const customers = ref([]);
+const customersLoading = ref(false);
+// A "pick the customer" message must not outlive the fix: any edit clears it,
+// and the next Create re-checks.
+watch(agreementForm, () => { agreementFormError.value = ''; }, { deep: true });
+// Picking a template offers its price — visible and editable before Create,
+// never applied behind the user's back on the server. Only a price the dialog
+// itself filled follows a template switch (Gold $299 → Silver $149); a typed
+// price is the user's and stays. A $0 template offers nothing: default_price
+// is NOT NULL DEFAULT 0, and every template made before #672 stored 0.00, so 0
+// there means "never set", and filling it would slip a silent $0 past the
+// required-price check.
+let prefilledPrice = null;
+watch(
+  () => agreementForm.value.template_id,
+  (templateId) => {
+    const form = agreementForm.value;
+    const blank = form.price === null || form.price === '' || form.price === undefined;
+    const ours = prefilledPrice !== null && Number(form.price) === prefilledPrice;
+    if (!blank && !ours) return;
+    const tpl = templates.value.find((t) => String(t.id) === String(templateId));
+    const offered = tpl ? Number(tpl.default_price) : 0;
+    if (offered > 0) {
+      form.price = offered;
+      prefilledPrice = offered;
+    } else if (ours) {
+      form.price = null;
+      prefilledPrice = null;
+    }
+  },
+);
+
+// Same source and shape as the Jobs create dialog's picker: the whole list
+// (per_page=1000 is the endpoint's cap), ids as strings to match the API.
+// /api/customers lists LIVE customers only, so an agreement whose customer was
+// since deleted would show an empty picker on edit. Its customer rides along
+// as an option, and the server's customer_deleted flag — not absence from
+// this list, which can fail to load — decides whether it is marked deleted.
+const customerOptions = computed(() => {
+  // Two live customers with the same name would be two identical rows here —
+  // pick the wrong one and the agreement lands on the wrong customer with
+  // nothing on screen to say so. Duplicated names carry their email or phone.
+  // The hint is the first of email / phone that actually differs across the
+  // same-name group (duplicates often share an email), else the id prefix.
+  const groups = {};
+  customers.value.forEach((c) => { (groups[c.name] = groups[c.name] || []).push(c); });
+  const hintField = (group) =>
+    ['email', 'phone'].find((f) => {
+      const values = group.map((c) => c[f]);
+      return values.every(Boolean) && new Set(values).size === values.length;
+    });
+  const options = customers.value.map((c) => {
+    const group = groups[c.name];
+    if (group.length < 2) return { label: c.name, value: String(c.id) };
+    const field = hintField(group);
+    const hint = field ? c[field] : String(c.id).slice(0, 8);
+    return { label: `${c.name} — ${hint}`, value: String(c.id) };
+  });
+  const current = agreementForm.value.customer_id;
+  const editing = editingAgreement.value;
+  if (current && editing && !options.some((o) => o.value === current)) {
+    const name = editing.customer_name || 'Customer';
+    options.push({ label: editing.customer_deleted ? `${name} (deleted)` : name, value: current });
+  }
+  return options;
+});
 
 const templateOptions = computed(() =>
   templates.value.map((tpl) => ({
@@ -345,17 +473,29 @@ function statusSeverity(status) {
 }
 
 function formatDate(value) {
-  if (!value) return '—';
-  if (value instanceof Date) return value.toISOString().split('T')[0];
-  if (typeof value === 'string') return value.split('T')[0];
-  return '—';
+  return serializeDate(value) || '—';
 }
 
+// An agreement's dates are calendar dates. The DatePicker hands back a local
+// midnight, and toISOString() converts that to UTC — so an evening create in a
+// US timezone used to save the NEXT day. Read the local calendar parts instead.
 function serializeDate(value) {
   if (!value) return null;
-  if (value instanceof Date) return value.toISOString().split('T')[0];
+  if (value instanceof Date) {
+    const mm = String(value.getMonth() + 1).padStart(2, '0');
+    const dd = String(value.getDate()).padStart(2, '0');
+    return `${value.getFullYear()}-${mm}-${dd}`;
+  }
   if (typeof value === 'string') return value.split('T')[0];
   return null;
+}
+
+// The inverse: "2026-09-10T00:00:00+00:00" is the calendar date 2026-09-10,
+// not a UTC instant — new Date(iso) would show the day before in the picker.
+function parseDate(value) {
+  if (!value) return null;
+  const [y, m, d] = String(value).split('T')[0].split('-').map(Number);
+  return y && m && d ? new Date(y, m - 1, d) : null;
 }
 
 function parseServices(text) {
@@ -368,13 +508,12 @@ function parseServices(text) {
 
 function mapAgreementToForm(data) {
   return {
-    customer_id: data.customer_id ?? null,
-    customer_name: data.customer_name ?? '',
+    customer_id: data.customer_id ? String(data.customer_id) : null,
     template_id: data.template_id ?? null,
     name: data.name ?? '',
     status: data.status ?? 'active',
-    start_date: data.start_date ? new Date(data.start_date) : null,
-    end_date: data.end_date ? new Date(data.end_date) : null,
+    start_date: parseDate(data.start_date),
+    end_date: parseDate(data.end_date),
     price: data.price ?? null,
     services_included: (data.services_included || []).join('\n'),
     notes: data.notes ?? '',
@@ -416,10 +555,25 @@ async function loadTemplates() {
   }
 }
 
+async function loadCustomers() {
+  customersLoading.value = true;
+  try {
+    const data = await api.get('/api/customers?per_page=1000');
+    customers.value = Array.isArray(data) ? data : data?.items || [];
+  } catch (err) {
+    console.error('load_customers_failed', err?.message || err);
+    customers.value = [];
+  } finally {
+    customersLoading.value = false;
+  }
+}
+
 async function loadExpiringCount() {
   try {
     const data = await api.get('/api/service-agreements/expiring?days=30');
-    expiringCount.value = typeof data === 'number' ? data : data?.count || 0;
+    // The endpoint returns the expiring agreements themselves. Reading a
+    // number or {count} left this at 0 forever, so the banner never showed.
+    expiringCount.value = Array.isArray(data) ? data.length : 0;
   } catch {
     expiringCount.value = 0;
   }
@@ -435,35 +589,78 @@ function resetTemplateForm() {
 
 function openCreateAgreement() {
   editingAgreement.value = null;
+  prefilledPrice = null;
   resetAgreementForm();
+  agreementFormError.value = '';
   showAgreementDialog.value = true;
 }
 
 function openEditAgreement(item) {
   editingAgreement.value = item;
+  prefilledPrice = null;
   agreementForm.value = mapAgreementToForm(item);
+  editBaseline.value = { ...agreementPayload(agreementForm.value), status: agreementForm.value.status };
+  agreementFormError.value = '';
   showAgreementDialog.value = true;
 }
 
+// What's missing, in words — the old guard returned silently, so a Create
+// click with an empty field did nothing at all.
+function agreementFormProblem(form) {
+  if (!String(form.name || '').trim()) return 'Give the agreement a name.';
+  if (!form.customer_id) return 'Pick the customer this agreement is for.';
+  if (!form.start_date) return 'Pick a start date.';
+  if (!form.end_date) return 'Pick an end date.';
+  if (serializeDate(form.end_date) <= serializeDate(form.start_date)) {
+    return 'The end date must be after the start date.';
+  }
+  // Required, 0 allowed: a blank must never become a silent $0. (The API now
+  // refuses a missing price, and the template prefill never offers 0.)
+  if (form.price === null || form.price === '' || form.price === undefined || Number.isNaN(Number(form.price))) {
+    return 'Enter the price (0 if the agreement is free).';
+  }
+  if (Number(form.price) < 0) return 'The price cannot be negative.';
+  return '';
+}
+
+// The form as the API takes it — only keys the API declares (#684).
+function agreementPayload(form) {
+  return {
+    customer_id: form.customer_id,
+    template_id: form.template_id,
+    name: String(form.name || '').trim(),
+    start_date: serializeDate(form.start_date),
+    end_date: serializeDate(form.end_date),
+    price: Number(form.price),
+    services_included: parseServices(form.services_included),
+    notes: form.notes ?? '',
+  };
+}
+
 async function saveAgreement() {
-  if (!agreementForm.value.name.trim() || !agreementForm.value.customer_name.trim()) return;
+  const form = agreementForm.value;
+  agreementFormError.value = agreementFormProblem(form);
+  if (agreementFormError.value) return;
   savingAgreement.value = true;
   try {
-    const payload = {
-      customer_id: agreementForm.value.customer_id,
-      customer_name: agreementForm.value.customer_name,
-      template_id: agreementForm.value.template_id,
-      name: agreementForm.value.name,
-      status: agreementForm.value.status,
-      start_date: serializeDate(agreementForm.value.start_date),
-      end_date: serializeDate(agreementForm.value.end_date),
-      price: agreementForm.value.price !== null ? Number(agreementForm.value.price) : null,
-      services_included: parseServices(agreementForm.value.services_included),
-      notes: agreementForm.value.notes,
-    };
+    const payload = agreementPayload(form);
 
     if (editingAgreement.value?.id) {
-      await api.patch(`/api/service-agreements/${editingAgreement.value.id}`, payload, {
+      // Edit sends what the user CHANGED, nothing else (#684 audit). Sending
+      // every field rewrote values nobody touched — a stored time of day
+      // collapsed to midnight, an empty note became '' — and the audit row
+      // then reported those rewrites as the user's edits.
+      const full = { ...payload, status: form.status };
+      const changed = Object.fromEntries(
+        Object.entries(full).filter(
+          ([key, value]) => JSON.stringify(value) !== JSON.stringify(editBaseline.value?.[key]),
+        ),
+      );
+      if (Object.keys(changed).length === 0) {
+        showAgreementDialog.value = false;
+        return;
+      }
+      await api.patch(`/api/service-agreements/${editingAgreement.value.id}`, changed, {
         successMessage: 'Agreement updated',
       });
     } else {
@@ -474,6 +671,9 @@ async function saveAgreement() {
 
     await Promise.all([loadAgreements(), loadExpiringCount()]);
     showAgreementDialog.value = false;
+  } catch {
+    // useApiWithToast has already shown the server's reason; the dialog stays
+    // open with everything the user typed.
   } finally {
     savingAgreement.value = false;
   }
@@ -549,7 +749,7 @@ async function deleteTemplate(template) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadAgreements(), loadTemplates(), loadExpiringCount()]);
+  await Promise.all([loadAgreements(), loadTemplates(), loadExpiringCount(), loadCustomers()]);
 });
 </script>
 
@@ -557,6 +757,12 @@ onMounted(async () => {
 .service-agreements-view .toolbar-actions {
   display: flex;
   gap: 0.75rem;
+}
+
+.form-error {
+  margin: 0.75rem 0 0;
+  color: var(--p-red-500, #ef4444);
+  font-size: 0.9rem;
 }
 
 .alert-banner {

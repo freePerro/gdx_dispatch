@@ -42,7 +42,11 @@ AGREEMENT_STATUSES = ("active", "expired", "cancelled")
 # ---------------------------------------------------------------------------
 
 
-from gdx_dispatch.models.tenant_models import ServiceAgreement, ServiceAgreementTemplate  # noqa: E402
+from gdx_dispatch.models.tenant_models import (  # noqa: E402
+    Customer,
+    ServiceAgreement,
+    ServiceAgreementTemplate,
+)
 
 # ---------------------------------------------------------------------------
 # Pydantic schemas
@@ -122,7 +126,10 @@ class ServiceAgreementIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     start_date: datetime
     end_date: datetime
-    price: float = Field(default=0, ge=0, le=1_000_000)
+    # Required (#684 audit): a missing price used to default to 0, so any
+    # caller that left it out stored a silent $0 agreement. 0 is still a valid,
+    # explicit answer.
+    price: float = Field(ge=0, le=1_000_000)
     services_included: list[str] = Field(default_factory=list, max_length=100)
     notes: str | None = Field(default=None, max_length=5000)
 
@@ -194,11 +201,64 @@ def _serialize_template(t: ServiceAgreementTemplate) -> dict[str, Any]:
     }
 
 
-def _serialize(a: ServiceAgreement) -> dict[str, Any]:
+def _customers(db: Session, customer_ids) -> dict[str, tuple[str, bool]]:
+    """``{customer_id: (name, deleted)}`` in one query. #684: every agreement
+    response carried only ``customer_id``, so the Agreements list's Customer
+    column read blank on every row — the SPA rendered a ``customer_name`` nobody
+    sent. ``deleted`` comes from the row itself, so the edit dialog can say a
+    customer is gone without guessing from its own (live-only) list."""
+    ids = {cid for cid in customer_ids if cid is not None}
+    if not ids:
+        return {}
+    rows = db.execute(
+        select(Customer.id, Customer.name, Customer.deleted_at).where(Customer.id.in_(ids))
+    ).all()
+    return {str(cid): (name, deleted_at is not None) for cid, name, deleted_at in rows}
+
+
+def _require_customer(db: Session, customer_uuid: UUID) -> None:
+    """An agreement must point at a real customer (#684). ``customer_id`` has
+    no foreign key, so without this an unknown id stored an agreement for
+    nobody — the create path checked only that the id parsed as a UUID."""
+    found = db.execute(
+        select(Customer.id).where(Customer.id == customer_uuid, Customer.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    if found is None:
+        raise HTTPException(status_code=422, detail="Customer not found")
+
+
+def _aware(dt):
+    """SQLite hands back naive datetimes and a date-only payload parses naive;
+    Postgres hands back aware ones. Normalize before comparing."""
+    return dt if dt is None or dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+_EDITABLE_FIELDS = (
+    "name", "customer_id", "template_id", "status", "start_date", "end_date",
+    "price", "services_included", "notes",
+)
+
+
+def _audit_snapshot(a: ServiceAgreement) -> dict[str, Any]:
+    """The editable fields as JSON-safe values, for an old → new diff."""
+    s = _serialize(a)
+    return {k: s[k] for k in _EDITABLE_FIELDS}
+
+
+def _serialize_one(db: Session, a: ServiceAgreement) -> dict[str, Any]:
+    return _serialize(a, _customers(db, [a.customer_id]).get(str(a.customer_id)))
+
+
+def _serialize(
+    a: ServiceAgreement, customer: tuple[str, bool] | None = None
+) -> dict[str, Any]:
     return {
         "id": str(a.id),
         "company_id": a.company_id,
         "customer_id": str(a.customer_id) if a.customer_id else None,
+        "customer_name": customer[0] if customer else None,
+        # No customer row at all is as gone as a soft-deleted one.
+        "customer_deleted": customer is None or bool(customer[1]),
         "template_id": str(a.template_id) if a.template_id else None,
         "name": a.name,
         "status": a.status,
@@ -481,7 +541,8 @@ def list_agreements(
             raise HTTPException(status_code=400, detail="Invalid customer_id") from None
     stmt = stmt.order_by(ServiceAgreement.created_at.desc()).limit(limit).offset(offset)
     rows = db.execute(stmt).scalars().all()
-    return [_serialize(r) for r in rows]
+    customers = _customers(db, [r.customer_id for r in rows])
+    return [_serialize(r, customers.get(str(r.customer_id))) for r in rows]
 
 
 @router.post("/api/service-agreements", response_model=None, status_code=201)
@@ -492,7 +553,9 @@ def create_agreement(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
-    if payload.end_date <= payload.start_date:
+    # _aware on both sides: a caller mixing a date-only and an offset date
+    # was a naive-vs-aware TypeError (a 500), the same trap as the PATCH.
+    if _aware(payload.end_date) <= _aware(payload.start_date):
         raise HTTPException(
             status_code=422, detail="end_date must be after start_date"
         )
@@ -500,6 +563,7 @@ def create_agreement(
         customer_uuid = UUID(payload.customer_id)
     except ValueError:
         raise HTTPException(status_code=422, detail="Invalid customer_id") from None
+    _require_customer(db, customer_uuid)
     template_uuid: UUID | None = None
     if payload.template_id:
         try:
@@ -542,7 +606,7 @@ def create_agreement(
         details={"name": a.name, "customer_id": str(a.customer_id)},
         request=request,
     )
-    return _serialize(a)
+    return _serialize_one(db, a)
 
 
 @router.get("/api/service-agreements/expiring", response_model=None)
@@ -567,7 +631,8 @@ def list_expiring(
         .order_by(ServiceAgreement.end_date.asc())
     )
     rows = db.execute(stmt).scalars().all()
-    return [_serialize(r) for r in rows]
+    customers = _customers(db, [r.customer_id for r in rows])
+    return [_serialize(r, customers.get(str(r.customer_id))) for r in rows]
 
 
 @router.get("/api/service-agreements/{agreement_id}", response_model=None)
@@ -578,7 +643,7 @@ def get_agreement(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
-    return _serialize(_get_scoped(db, agreement_id, tenant_id))
+    return _serialize_one(db, _get_scoped(db, agreement_id, tenant_id))
 
 
 @router.patch("/api/service-agreements/{agreement_id}", response_model=None)
@@ -591,37 +656,55 @@ def update_agreement(
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
     a = _get_scoped(db, agreement_id, tenant_id)
+    before = _audit_snapshot(a)
     data = payload.model_dump(exclude_unset=True)
 
     if "start_date" in data and data["start_date"] is not None:
         # Guard both directions (audit catch: only the end_date branch
-        # validated, so re-dating start past end returned 200). SQLite hands
-        # back naive datetimes — normalize before comparing.
-        def _aware(dt):
-            from datetime import timezone as _tz
-            return dt if dt is None or dt.tzinfo else dt.replace(tzinfo=_tz.utc)
-
+        # validated, so re-dating start past end returned 200).
         effective_end = _aware(data.get("end_date") or a.end_date)
         if effective_end is not None and _aware(data["start_date"]) >= effective_end:
             raise HTTPException(status_code=422, detail="start_date must be before end_date")
         a.start_date = data["start_date"]
     if "end_date" in data and data["end_date"] is not None:
-        if data["end_date"] <= a.start_date:
+        # _aware on both sides (#684 audit): a date-only end_date parses naive
+        # while Postgres hands back an aware start_date, and comparing the two
+        # was a TypeError — a 500 for any PATCH that re-dated only the end.
+        if _aware(data["end_date"]) <= _aware(a.start_date):
             raise HTTPException(
                 status_code=422, detail="end_date must be after start_date"
             )
         a.end_date = data["end_date"]
     if "customer_id" in data and data["customer_id"]:
         try:
-            a.customer_id = UUID(str(data["customer_id"]))
+            relinked = UUID(str(data["customer_id"]))
         except ValueError:
             raise HTTPException(status_code=422, detail="customer_id must be a UUID") from None
+        # Only a real relink is checked: a caller may resend the current
+        # customer_id, and an agreement whose customer was since soft-deleted
+        # must stay editable (renew, re-price, expire) without being forced
+        # onto a different customer.
+        if relinked != a.customer_id:
+            _require_customer(db, relinked)
+        a.customer_id = relinked
     if "template_id" in data:
         if data["template_id"]:
             try:
-                a.template_id = UUID(str(data["template_id"]))
+                new_template = UUID(str(data["template_id"]))
             except ValueError:
                 raise HTTPException(status_code=422, detail="template_id must be a UUID") from None
+            # Same rule as create (#684 audit): a relink must point at a live
+            # template. Re-sending the current one is not a relink.
+            if new_template != a.template_id:
+                tpl = db.execute(
+                    select(ServiceAgreementTemplate.id).where(
+                        ServiceAgreementTemplate.id == new_template,
+                        ServiceAgreementTemplate.deleted_at.is_(None),
+                    )
+                ).scalar_one_or_none()
+                if tpl is None:
+                    raise HTTPException(status_code=404, detail="Template not found")
+            a.template_id = new_template
         else:
             a.template_id = None
     if "name" in data and data["name"] is not None:
@@ -637,6 +720,11 @@ def update_agreement(
 
     db.commit()
     db.refresh(a)
+    after = _audit_snapshot(a)
+    # What changed, old → new (#684 audit). The row used to list the SENT
+    # keys, so any caller that sent more than it changed wrote a row naming
+    # fields nobody touched, and a notes-only save looked like a re-price.
+    changes = {k: {"from": before[k], "to": after[k]} for k in before if before[k] != after[k]}
     _audit(
         db,
         tenant_id=tenant_id,
@@ -644,10 +732,10 @@ def update_agreement(
         action="service_agreement_updated",
         entity_type="service_agreement",
         entity_id=str(a.id),
-        details={"fields": list(data.keys())},
+        details={"fields": list(changes), "changes": changes},
         request=request,
     )
-    return _serialize(a)
+    return _serialize_one(db, a)
 
 
 @router.post("/api/service-agreements/{agreement_id}/cancel", response_model=None)
@@ -673,4 +761,4 @@ def cancel_agreement(
         entity_id=str(a.id),
         request=request,
     )
-    return _serialize(a)
+    return _serialize_one(db, a)
