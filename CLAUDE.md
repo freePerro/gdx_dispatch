@@ -104,6 +104,10 @@ starting a sweep while the budget is CLOSED is choosing more backlog, not less.
    Deferring is allowed; it just has to be counted, and each deferred instance
    is filed `sweep-finding`, which spends sweep budget. Deferral used to be
    free — that is why #558, #560 and #637 are all sweeps spawned by sweeps.
+   While the sweep budget is CLOSED, filing is **net-zero** (`PHASE.md`): a
+   deferred instance is counted here but filed only if the same PR closes a
+   `sweep-finding` or Doug approves — otherwise it goes on the close-out's
+   *found, not filed* list.
 5. **After deploy, walk it on prod** before calling it shipped. The walk is
    the finish line, not the release.
 
@@ -257,20 +261,30 @@ buttons wired to stubs. Before calling anything done:
 - QuickBooks is being phased out: never schedule new QB syncs; backfills go
   into this system, not QB.
 
+## One issue per session
+
+Name the issue and what "done" means before starting. Anything noticed on the
+way goes on a **found, not filed** list in the close-out — not fixed, not
+filed, not investigated mid-task — and Doug decides what becomes an issue
+(net-zero while the sweep budget is CLOSED; see `PHASE.md`). One exception:
+something a real user can hit on prod today is raised the moment it is seen.
+Doug can widen the scope of a session; Claude does not. Adopted 2026-09-10.
+
 ## Close every work turn with
 
 - Commit status: committed? pushed? PR number? Anything intentionally
   uncommitted, and why.
 - What was verified (with the evidence), and what was not.
 - Remaining open items as a list — "nothing left" requires having looked.
+- The session's *found, not filed* list, or "nothing found".
 
 ## Planning defaults (standing answers — don't re-ask)
 
 - **Scope:** build the full recommended rung. Ask only when the larger option
   adds a migration, changes money math, or alters customer-facing behavior.
 - **Packaging:** separate focused PRs; stacked PRs merge bottom-up; tech debt
-  discovered mid-feature gets filed as its own follow-up — never bundled,
-  never silently dropped.
+  discovered mid-feature goes on the close-out's *found, not filed* list for
+  Doug to rule on — never bundled, never silently dropped.
 - **Releases:** feature releases take a minor version bump. The maintainer
   triggers merge and release; "release and update everything" means the full
   chain — release, then production, then demo (and dev when stated).
