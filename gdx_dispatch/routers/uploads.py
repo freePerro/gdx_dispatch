@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.job_access import assert_can_attach_to_job
 from gdx_dispatch.core.job_photos import link_job_photo as _link_job_photo
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.upload_limits import assert_upload_within_limit
@@ -309,6 +310,15 @@ def upload_job_photo(
     user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> DocumentOut:
+    # Object-level authz on the job (#518 sweep). This is the PRIMARY job
+    # photo route — /api/documents?as_photo=true is the secondary one — and
+    # it carried no job check at all: `require_module("documents")` asks
+    # whether the feature is on for the tenant, never who the caller is.
+    # Outside the try below so an authz refusal is never reshaped by the
+    # catch-all into a 500.
+    assert_can_attach_to_job(
+        db, str(getattr(request.state, "tenant", {}).get("id", "")), user, job_id
+    )
     try:
         # Called directly (tests, other handlers) the Form(...) defaults arrive
         # as FastAPI marker objects rather than None, and would be bound
@@ -395,6 +405,12 @@ def upload_customer_signature(
     user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> DocumentOut:
+    # Object-level authz on the job (#518 sweep). A customer signature is the
+    # attestation the closeout rests on; minting one on somebody else's job is
+    # the same class as minting a photo there, and this route had no check.
+    assert_can_attach_to_job(
+        db, str(getattr(request.state, "tenant", {}).get("id", "")), user, job_id
+    )
     try:
         raw = payload.signature.strip()
         if raw.startswith("data:"):

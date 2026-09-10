@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.job_access import assert_can_attach_to_job
 from gdx_dispatch.core.job_photos import link_job_photo as _link_job_photo
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.upload_limits import MAX_UPLOAD_BYTES as _MAX_UPLOAD_BYTES
@@ -332,6 +333,25 @@ async def upload_document(
     if as_photo and not (file.content_type or "").lower().startswith("image/"):
         raise HTTPException(status_code=415, detail="as_photo requires an image file")
 
+    # Object-level authz on the CALLER-SUPPLIED job id (#518). This route was
+    # gated only by require_module("documents") + auth, and require_module asks
+    # whether the feature is on for the tenant — never who you are. So any
+    # authenticated technician could POST job_id=<someone else's job> with
+    # as_photo=true and mint a job_photos row on it: proven by execution, 201
+    # with uploaded_by set to them, while GET /api/mobile/my-jobs/{id} 404'd the
+    # same user on the same job. The write was more permissive than the read.
+    #
+    # Checked BEFORE the file is written, so a refused upload leaves no bytes on
+    # disk and no Document row. 404, not 403, matching the mobile read gates —
+    # a 403 would confirm the job id exists.
+    if job_id:
+        assert_can_attach_to_job(
+            db,
+            str(getattr(request.state, "tenant", {}).get("id", "")),
+            user,
+            job_id,
+        )
+
     ext = Path(file.filename or "").suffix
     stored_filename = f"{uuid4()}{ext.lower()}"
 
@@ -432,6 +452,19 @@ async def delete_document(
 ) -> dict[str, bool]:
     _validate_uuid(document_id, "Document")
     doc = _get_document_or_404(db, document_id)
+
+    # Object-level authz on the document's OWN job (#518 sweep). Gating the
+    # upload and leaving the delete open bolts the door in and leaves the door
+    # out open — an unrelated technician could still remove the photo that is
+    # the evidence this change exists to protect. Resolved from the stored row,
+    # never from anything the caller sent.
+    if doc.job_id:
+        assert_can_attach_to_job(
+            db,
+            str(getattr(request.state, "tenant", {}).get("id", "")),
+            user,
+            str(doc.job_id),
+        )
 
     doc.deleted_at = _utc_now()
     db.commit()

@@ -17,6 +17,17 @@ from starlette.requests import Request
 
 from gdx_dispatch.routers import uploads as uploads_router
 
+# These tests drive the upload handlers directly against a minimal fixture DB
+# that has no `jobs` table. Since #518 the job routes enforce object-level authz
+# on their job_id, so the actor needs a role that may attach to any job in the
+# tenant — `is_dispatch_manager` short-circuits before any query, which keeps
+# these tests about upload mechanics rather than about job ownership. Ownership
+# itself is covered in test_job_attachment_authz.py, against a DB that has jobs.
+OFFICE_ACTOR = {"tenant_id": "tenant-a", "user_id": "user-a", "sub": "user-a",
+                "role": "admin"}
+
+
+
 
 def _create_schema(db: Session) -> None:
     """Build `documents` from the ORM model, not a hand-written DDL.
@@ -78,7 +89,7 @@ def test_upload_photo_success(tenant_db_session):
         job_id=str(uuid.uuid4()),
         request=_request("tenant-a"),
         file=_file("kitchen.jpg", b"jpeg-bytes", "image/jpeg"),
-        user={"tenant_id": "tenant-a", "user_id": "user-a"},
+        user=OFFICE_ACTOR,
         db=tenant_db_session,
     )
 
@@ -120,7 +131,7 @@ def test_upload_photo_creates_the_photo_record(tenant_db_session):
         file=_file("door.jpg", b"jpeg-bytes", "image/jpeg"),
         kind="before",
         caption="Spring snapped",
-        user={"tenant_id": "tenant-a", "user_id": "user-a"},
+        user=OFFICE_ACTOR,
         db=tenant_db_session,
     )
 
@@ -153,7 +164,7 @@ def test_uploaded_photo_lands_where_the_download_route_reads(tenant_db_session, 
         job_id=str(uuid.uuid4()),
         request=_request("tenant-a"),
         file=_file("door.jpg", b"jpeg-bytes", "image/jpeg"),
-        user={"tenant_id": "tenant-a", "user_id": "user-a"},
+        user=OFFICE_ACTOR,
         db=tenant_db_session,
     )
     # Exactly where documents.py's download does `_upload_dir() / doc.filename`.
@@ -173,7 +184,7 @@ def test_upload_photo_rejects_a_junk_slot_rather_than_losing_the_photo(tenant_db
         request=_request("tenant-a"),
         file=_file("door.jpg", b"jpeg-bytes", "image/jpeg"),
         kind="definitely-not-a-real-slot-and-far-too-long",
-        user={"tenant_id": "tenant-a", "user_id": "user-a"},
+        user=OFFICE_ACTOR,
         db=tenant_db_session,
     )
     row = tenant_db_session.query(JobPhoto).filter(
@@ -190,7 +201,7 @@ def test_upload_photo_defaults_the_slot_when_the_tech_does_not_pick(tenant_db_se
         job_id=job_id,
         request=_request("tenant-a"),
         file=_file("door.jpg", b"jpeg-bytes", "image/jpeg"),
-        user={"tenant_id": "tenant-a", "user_id": "user-a"},
+        user=OFFICE_ACTOR,
         db=tenant_db_session,
     )
     from gdx_dispatch.models.tenant_models import JobPhoto
@@ -208,7 +219,7 @@ def test_upload_too_large_rejected(tenant_db_session):
             job_id=str(uuid.uuid4()),
             request=_request("tenant-a"),
             file=_file("big.jpg", b"x" * (10 * 1024 * 1024 + 1), "image/jpeg"),
-            user={"tenant_id": "tenant-a", "user_id": "user-a"},
+            user=OFFICE_ACTOR,
             db=tenant_db_session,
         )
     assert exc.value.status_code == 413
@@ -220,7 +231,7 @@ def test_upload_wrong_mime_rejected(tenant_db_session):
             job_id=str(uuid.uuid4()),
             request=_request("tenant-a"),
             file=_file("bad.gif", b"gif", "image/gif"),
-            user={"tenant_id": "tenant-a", "user_id": "user-a"},
+            user=OFFICE_ACTOR,
             db=tenant_db_session,
         )
     assert exc.value.status_code == 415
@@ -260,7 +271,7 @@ def test_signature_upload_success(tenant_db_session):
         job_id=str(uuid.uuid4()),
         payload=payload,
         request=_request("tenant-a"),
-        user={"tenant_id": "tenant-a", "user_id": "user-a"},
+        user=OFFICE_ACTOR,
         db=tenant_db_session,
     )
     assert out.content_type == "image/png"
@@ -282,7 +293,7 @@ def test_signature_invalid_rejected(tenant_db_session):
             job_id=str(uuid.uuid4()),
             payload=uploads_router.SignatureUploadIn(signature="not-base64"),
             request=_request("tenant-a"),
-            user={"tenant_id": "tenant-a", "user_id": "user-a"},
+            user=OFFICE_ACTOR,
             db=tenant_db_session,
         )
     assert exc.value.status_code == 400

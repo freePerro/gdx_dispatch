@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.job_access import assert_can_attach_to_job
 from gdx_dispatch.core.modules import MODULES, require_module
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -465,6 +466,11 @@ def assign_tag_to_job(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
+    # Object-level authz on the job this write attaches to (#518 sweep).
+    # `require_module` asks whether the feature is on for the tenant, never
+    # who the caller is, so this route accepted any job id from any
+    # authenticated technician. Same opaque 404 as the mobile read gates.
+    assert_can_attach_to_job(db, tenant_id, user, job_id)
     tag_uuid = _parse_tag_id(payload.tag_id)
     return _assign_tag(
         db,
@@ -486,6 +492,11 @@ def unassign_tag_from_job(
     db: Session = Depends(get_db),
 ):
     tenant_id = _tenant_id(request)
+    # Object-level authz on the job this write attaches to (#518 sweep).
+    # `require_module` asks whether the feature is on for the tenant, never
+    # who the caller is, so this route accepted any job id from any
+    # authenticated technician. Same opaque 404 as the mobile read gates.
+    assert_can_attach_to_job(db, tenant_id, user, job_id)
     _unassign_tag(
         db,
         tenant_id=tenant_id,

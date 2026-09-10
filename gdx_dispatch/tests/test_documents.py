@@ -436,6 +436,21 @@ async def test_delete_document_not_found(tenant_db_session):
     assert getattr(exc.value, "status_code", None) == 404
 
 
+
+# These tests call `upload_document` directly with a freshly-generated job_id —
+# a job that does not exist in the fixture DB. Since #518 the route enforces
+# object-level authz on a caller-supplied job_id, so the actor needs a role that
+# may attach to any job in the tenant; a bare {"user_id": ...} is treated as a
+# technician and correctly refused. That refusal is the fix working: before it,
+# any authenticated user could attach a document or photo to any job id at all.
+#
+# Attaching to a NONEXISTENT job id still succeeds for dispatch/admin, matching
+# core.job_access.assert_job_access's own early return. That is pre-existing and
+# out of #518's scope (which is about technicians reaching OTHER PEOPLE'S jobs),
+# but it is why these tests still pass with a random uuid.
+OFFICE_ACTOR = {"user_id": "user-1", "sub": "user-1", "role": "admin"}
+
+
 @pytest.mark.anyio
 async def test_upload_document_success(tenant_db_session, tmp_path, monkeypatch):
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
@@ -454,7 +469,7 @@ async def test_upload_document_success(tenant_db_session, tmp_path, monkeypatch)
         customer_id=str(uuid.uuid4()),
         folder_id=str(uuid.uuid4()),
         tags="signed,proposal",
-        user={"user_id": "user-1"},
+        user=OFFICE_ACTOR,
         db=tenant_db_session,
     )
 
@@ -495,7 +510,7 @@ async def test_upload_as_photo_non_image_is_refused_with_415(tenant_db_session, 
             tags=None,
             as_photo=True,
             kind=None,
-            user={"user_id": "user-1"},
+            user=OFFICE_ACTOR,
             db=tenant_db_session,
         )
     assert exc.value.status_code == 415
@@ -512,7 +527,7 @@ async def test_upload_document_non_image_without_as_photo_is_still_a_document(te
         request=_mock_request(),
         file=UploadFile(io.BytesIO(b"%PDF"), filename="p.pdf", headers=Headers({"content-type": "application/pdf"})),
         title="p", description=None, job_id=str(uuid.uuid4()), customer_id=None, folder_id=None, tags=None,
-        as_photo=False, kind=None, user={"user_id": "user-1"}, db=tenant_db_session,
+        as_photo=False, kind=None, user=OFFICE_ACTOR, db=tenant_db_session,
     )
     assert out.original_name == "p.pdf"
 
@@ -539,7 +554,7 @@ async def test_job_image_is_not_a_photo_unless_the_caller_says_so(tenant_db_sess
         ),
         title="Supplier receipt",
         job_id=job_id,
-        user={"user_id": "user-1"},
+        user=OFFICE_ACTOR,
         db=tenant_db_session,
     )
     assert tenant_db_session.query(JobPhoto).count() == 0, "a receipt landed in the photo strip"
@@ -565,7 +580,7 @@ async def test_job_photo_creates_the_photo_record(tenant_db_session, tmp_path, m
         job_id=job_id,
         as_photo=True,
         kind="before",
-        user={"user_id": "user-1"},
+        user=OFFICE_ACTOR,
         db=tenant_db_session,
     )
 
@@ -602,7 +617,7 @@ async def test_non_image_marked_as_photo_is_still_not_a_photo(tenant_db_session,
             ),
             job_id=str(uuid.uuid4()),
             as_photo=True,
-            user={"user_id": "user-1"},
+            user=OFFICE_ACTOR,
             db=tenant_db_session,
         )
     assert exc.value.status_code == 415
@@ -623,7 +638,7 @@ async def test_upload_document_defaults_content_type(tenant_db_session, tmp_path
         customer_id=None,
         folder_id=None,
         tags=None,
-        user={"user_id": "user-1"},
+        user=OFFICE_ACTOR,
         db=tenant_db_session,
     )
     assert out.content_type == "application/octet-stream"
@@ -711,7 +726,7 @@ async def test_delete_folder_cascades_documents(tenant_db_session):
     await documents_router.delete_document_folder(
         folder_id=folder_id,
         request=_mock_request(),
-        user={"user_id": "user-1"},
+        user=OFFICE_ACTOR,
         db=tenant_db_session,
     )
 
@@ -746,7 +761,7 @@ async def test_delete_folder_empty_succeeds(tenant_db_session):
     await documents_router.delete_document_folder(
         folder_id=folder_id,
         request=_mock_request(),
-        user={"user_id": "user-1"},
+        user=OFFICE_ACTOR,
         db=tenant_db_session,
     )
     folders = await documents_router.list_document_folders(_={}, db=tenant_db_session)
@@ -808,7 +823,7 @@ async def test_document_upload_refuses_a_body_over_the_cap(tenant_db_session, tm
         await documents_router.upload_document(
             request=_mock_request(),
             file=_sized_upload(b"\0" * (documents_router.MAX_UPLOAD_BYTES + 1024), "huge.bin"),
-            user={"user_id": "user-1"},
+            user=OFFICE_ACTOR,
             db=tenant_db_session,
         )
     assert exc.value.status_code == 413
@@ -827,7 +842,7 @@ async def test_document_upload_accepts_a_body_at_the_cap(tenant_db_session, tmp_
     out = await documents_router.upload_document(
         request=_mock_request(),
         file=_sized_upload(b"\0" * documents_router.MAX_UPLOAD_BYTES, "big.bin"),
-        user={"user_id": "user-1"},
+        user=OFFICE_ACTOR,
         db=tenant_db_session,
     )
     assert out.file_size == documents_router.MAX_UPLOAD_BYTES
