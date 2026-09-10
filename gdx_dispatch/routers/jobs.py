@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import SessionLocal, get_db
 from gdx_dispatch.core.invoice_paid import paid_amount_sq, paid_to_date_bulk
 from gdx_dispatch.core.job_display_state import derive_job_display_state
@@ -3045,6 +3045,11 @@ def mark_job_not_billable(
         return jsonable_response({"detail": "a reason is required"}, 422)
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
     try:
+        # Before anything is staged (#696): the invoice_voided rows below are
+        # staged into the commit that makes the void durable, and the first
+        # audit write on an engine initializes the guard — committing, or on a
+        # Postgres without CREATE rights rolling back, whatever is pending.
+        ensure_audit_table(db)
         job = db.execute(
             select(Job).where(Job.id == jid, Job.deleted_at.is_(None))
         ).scalar_one_or_none()
@@ -3089,8 +3094,33 @@ def mark_job_not_billable(
                 )
         for inv in live_invoices:
             if is_untouched_autodraft(inv, db):
-                void_untouched_autodraft(db, inv)
+                released_parts = void_untouched_autodraft(
+                    db, inv, actor=_user_id(current_user)
+                )
                 voided_autodrafts.append(inv.invoice_number)
+                # #696: the invoice gets its own row. The job's row below names
+                # it by number, but an invoice's history is read by invoice id,
+                # and without this the void had no who or when on the record it
+                # changed. Same action as the /void route writes, and staged
+                # into the same commit as the void.
+                log_audit_event_sync(
+                    db=db,
+                    tenant_id=tenant_id,
+                    user_id=_user_id(current_user),
+                    action="invoice_voided",
+                    entity_type="invoice",
+                    entity_id=str(inv.id),
+                    details={
+                        "invoice_number": inv.invoice_number,
+                        "total": float(inv.total or 0),
+                        "released_parts": released_parts,
+                        "via": "job_marked_not_billable",
+                        "job_id": str(job.id),
+                        "reason": reason,
+                    },
+                    ip_address=request.client.host if request.client else None,
+                    request=request,
+                )
         now = datetime.now(UTC)
         job.not_billable_at = now
         job.not_billable_reason = reason

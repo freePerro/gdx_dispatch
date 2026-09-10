@@ -416,6 +416,113 @@ def test_not_billable_voids_untouched_autodraft(db) -> None:
     ).first() is not None
 
 
+def test_not_billable_void_goes_through_the_ledger_chokepoint(db) -> None:
+    """#696. With ledger posting on — as it is on prod — the autodraft void
+    used to be a raw ``inv.status = "void"``. The flush guard logged
+    ``gl_chokepoint_bypass`` on prod whenever a not-billable mark voided an
+    autodraft; under pytest it raises, which is what makes this test able to
+    fail. The test above runs with the flag off, where the guard is a no-op.
+
+    The flag goes on BEFORE anything flushes: the guard caches it per session,
+    so flipping it mid-session would leave the guard reading False and pass
+    this test against the bypass."""
+    from gdx_dispatch.modules.ledger.guard import install_flush_guard
+    from gdx_dispatch.modules.ledger.service import ensure_gl_seed
+
+    # Idempotent. Importing core/celery_app already installs it, so this is not
+    # what arms the guard today — it keeps the test from depending on that.
+    install_flush_guard()
+    settings = ensure_gl_seed(db, TENANT)
+    settings.ledger_posting_enabled = True
+    db.commit()
+
+    job = _seed_job(db)
+    part = _seed_part(db)
+    _closeout(
+        db, job,
+        hours=1.0,
+        no_parts_used=False,
+        parts=[CloseoutPart(part_id=str(part.id), sku=part.sku, name=part.name, qty=1, unit_cost=0)],
+    )
+    inv = _invoices(db, job)[0]
+    assert inv.company_id == TENANT  # the guard looks the flag up by this
+
+    resp = _mark_not_billable(db, job)
+    assert resp.status_code == 200
+
+    db.refresh(inv)
+    assert inv.status == "void"
+    # The invoice carries its own row — the job's row naming it is not
+    # enough, because an invoice's history is read by invoice id.
+    rows = db.execute(
+        select(AuditLog).where(
+            AuditLog.entity_type == "invoice",
+            AuditLog.entity_id == str(inv.id),
+            AuditLog.action == "invoice_voided",
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].user_id == USER
+    assert rows[0].details["via"] == "job_marked_not_billable"
+    assert rows[0].details["reason"] == "warranty work"
+    assert rows[0].details["job_id"] == str(job.id)
+    assert rows[0].details["released_parts"] == 1
+
+
+def test_not_billable_void_rolls_back_with_its_row_on_a_fresh_engine(db, monkeypatch) -> None:
+    """#696 audit. The invoice_voided row is staged into the commit that makes
+    the void durable — but the FIRST audit write on an engine initializes the
+    guard, and on SQLite that commits whatever is pending. A worker whose first
+    audit write is this row would harden the void before the mark's own commit
+    ran. Fail that commit on a fresh engine: nothing may stick — not the void,
+    not the released part claim, not the row."""
+    from sqlalchemy.exc import OperationalError
+
+    import gdx_dispatch.core.audit as audit_mod
+
+    job = _seed_job(db)
+    part = _seed_part(db)
+    _closeout(
+        db, job,
+        hours=1.0,
+        no_parts_used=False,
+        parts=[CloseoutPart(part_id=str(part.id), sku=part.sku, name=part.name, qty=1, unit_cost=0)],
+    )
+    inv = _invoices(db, job)[0]
+    claimed = db.execute(
+        select(JobPartNeeded.id).where(JobPartNeeded.billed_invoice_id == inv.id)
+    ).scalars().all()
+    assert claimed  # the autodraft holds a part claim to release
+
+    # The closeout above was "another worker": this request's engine has never
+    # initialized the audit guard.
+    audit_mod._AUDIT_GUARD_INITIALIZED.discard(db.get_bind())
+
+    real_commit = db.commit
+
+    def commit_fails_on_the_mark():
+        if any(isinstance(o, Job) and o.not_billable_at is not None for o in db.dirty):
+            raise OperationalError("COMMIT", {}, Exception("connection lost"))
+        return real_commit()
+
+    monkeypatch.setattr(db, "commit", commit_fails_on_the_mark)
+    resp = _mark_not_billable(db, job)
+    assert resp.status_code == 500
+    monkeypatch.undo()
+
+    db.expire_all()
+    assert db.get(Invoice, inv.id).status == "draft"
+    assert db.execute(
+        select(JobPartNeeded.id).where(JobPartNeeded.billed_invoice_id == inv.id)
+    ).scalars().all() == claimed
+    assert db.get(Job, job.id).not_billable_at is None
+    assert db.execute(
+        select(AuditLog).where(
+            AuditLog.entity_id == str(inv.id), AuditLog.action == "invoice_voided"
+        )
+    ).scalars().all() == []
+
+
 def test_autodraft_taxes_parts_not_labor_with_resolved_rate(db) -> None:
     """2026-08-08 audit: the autodraft was the only creation path with
     tax_rate NULL (the legacy flat-tax branch) — its parts were structurally

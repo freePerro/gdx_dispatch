@@ -431,16 +431,29 @@ def release_untouched_autodraft(db: Session, *, job: Job) -> Invoice | None:
     return inv
 
 
-def void_untouched_autodraft(db: Session, inv: Invoice) -> None:
+def void_untouched_autodraft(db: Session, inv: Invoice, *, actor: str | None) -> int:
     """Void an untouched autodraft and release its part claims (Not-billable
-    path). Caller has already checked ``is_untouched_autodraft``."""
-    db.execute(
+    path). Caller has already checked ``is_untouched_autodraft``.
+
+    The status goes through the ledger chokepoint like every other void
+    (#696). This used to assign the status attribute directly, and with ledger
+    posting on, prod's flush guard logged ``gl_chokepoint_bypass`` whenever a
+    not-billable mark voided an autodraft. An untouched autodraft is a draft,
+    so nothing is posted and no rule runs — what changes is that the write is
+    sanctioned, and the guard stays a signal worth reading.
+
+    Returns how many part claims were released, for the caller's audit row.
+    """
+    from gdx_dispatch.modules.ledger.service import transition_invoice_status
+
+    released = db.execute(
         update(JobPartNeeded)
         .where(JobPartNeeded.billed_invoice_id == inv.id)
         .values(billed_invoice_id=None)
-    )
-    inv.status = "void"
+    ).rowcount
+    transition_invoice_status(db, inv, "void", actor=actor)
     inv.balance_due = _money(0)
+    return int(released or 0)
 
 
 def autodraft_invoice_for_closeout(

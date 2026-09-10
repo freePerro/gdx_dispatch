@@ -42,7 +42,7 @@ from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.invoice_paid import paid_to_date
 from gdx_dispatch.core.modules import require_module
@@ -417,6 +417,11 @@ def mobile_create_invoice(
     user = current_user or {}
     user_id = _user_id(user)
     tenant_id = _tenant_id(request)
+    # Before anything is staged (#696): deposit netting writes audit rows on
+    # the deposits it voids or credits, mid-create, and the first audit write
+    # on an engine initializes the guard — committing (or rolling back)
+    # whatever is pending. Same reason, same place, as the office create.
+    ensure_audit_table(db)
     if not _job_belongs_to_tech(db, request, job_id, user_id):
         return _jr({"detail": "job not found or not assigned to you"}, 404)
 

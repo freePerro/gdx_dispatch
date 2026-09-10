@@ -315,6 +315,107 @@ def test_partially_paid_deposit_nets_paid_and_credits_rest(db):
     assert "final invoice" in exc.value.detail
 
 
+def _audit_rows_on(db, invoice, action):
+    from gdx_dispatch.core.audit import AuditLog
+
+    return db.execute(
+        select(AuditLog).where(
+            AuditLog.entity_type == "invoice",
+            AuditLog.entity_id == str(invoice.id),
+            AuditLog.action == action,
+        )
+    ).scalars().all()
+
+
+def test_unpaid_deposit_void_is_audited_on_the_deposit(db):
+    """#696. Creating the final voids the abandoned deposit as a side effect.
+    The final's own invoice_created row never named it, so on prod a deposit
+    sat void with no record of who voided it or why. The deposit now carries
+    its own invoice_voided row, the same action the /void route writes."""
+    cust = _seed_customer(db)
+    job = _seed_job(db, cust)
+    est = _seed_estimate(db, cust, total=1000.0, job=job)
+    dep = _make_deposit(db, est, 250.0)
+
+    resp = _make_final(db, est, job)
+
+    rows = _audit_rows_on(db, dep, "invoice_voided")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.user_id == "user-1"
+    assert row.details["via"] == "deposit_superseded"
+    assert row.details["superseded_by"] == resp["invoice_number"]
+    assert row.details["final_invoice_id"] == resp["id"]
+    assert row.details["total"] == 250.0
+
+
+def test_partial_deposit_credit_is_audited_on_the_deposit(db):
+    """#696, the other branch: a partly-paid deposit keeps its payment
+    history, so its remainder is credit-memoed instead of voided. That memo
+    is money off the deposit's receivable and carried no audit row at all."""
+    cust = _seed_customer(db)
+    job = _seed_job(db, cust)
+    est = _seed_estimate(db, cust, total=1000.0, job=job)
+    dep = _make_deposit(db, est, 250.0)
+    _pay(db, dep, 100.0)
+
+    resp = _make_final(db, est, job)
+
+    adj = db.execute(
+        select(InvoiceAdjustment).where(InvoiceAdjustment.invoice_id == dep.id)
+    ).scalar_one()
+    rows = _audit_rows_on(db, dep, "credit_memo_issued")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.user_id == "user-1"
+    assert row.details["via"] == "deposit_superseded"
+    assert row.details["superseded_by"] == resp["invoice_number"]
+    assert row.details["adjustment_id"] == str(adj.id)
+    assert row.details["amount"] == 150.0
+    # Voided and credited are different events; only one happened here.
+    assert _audit_rows_on(db, dep, "invoice_voided") == []
+
+
+def test_failed_final_create_leaves_the_deposit_alone_on_a_fresh_engine(db, monkeypatch):
+    """#696 audit. The supersede row is written mid-create, and the FIRST audit
+    write on an engine initializes the guard — on SQLite that commits whatever
+    is pending, here a half-built final and a voided deposit. The create
+    handler primes the audit table before it stages anything, so a create
+    that fails after netting still leaves nothing behind, as it did before
+    these rows existed."""
+    import gdx_dispatch.core.audit as audit_mod
+    import gdx_dispatch.routers.invoices as inv_router
+
+    cust = _seed_customer(db)
+    job = _seed_job(db, cust)
+    est = _seed_estimate(db, cust, total=1000.0, job=job)
+    dep = _make_deposit(db, est, 250.0)
+    dep_id = dep.id
+    # The deposit was made by "another worker": this request's engine has
+    # never initialized the audit guard.
+    audit_mod._AUDIT_GUARD_INITIALIZED.discard(db.get_bind())
+
+    real = inv_router._recalculate_invoice
+
+    def final_recompute_fails(invoice, session):
+        if (invoice.billing_type or "") != "deposit":
+            raise RuntimeError("final recompute failed")
+        return real(invoice, session)
+
+    monkeypatch.setattr(inv_router, "_recalculate_invoice", final_recompute_fails)
+    with pytest.raises(RuntimeError):
+        _make_final(db, est, job)
+    monkeypatch.undo()
+    db.rollback()
+    db.expire_all()
+
+    assert db.get(Invoice, dep_id).status == "sent"
+    assert db.execute(
+        select(Invoice).where(Invoice.job_id == job.id, Invoice.billing_type != "deposit")
+    ).scalars().all() == []
+    assert _audit_rows_on(db, db.get(Invoice, dep_id), "invoice_voided") == []
+
+
 def test_second_final_requires_force_and_deposit_not_applied_twice(db):
     from fastapi import HTTPException
 

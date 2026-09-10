@@ -66,11 +66,48 @@ STATUS_WRITERS: dict[str, tuple[int, str]] = {
     # deliberately the SINGLE writer of 'paid'/'open' for A/P bills, still
     # nothing to do with the GL-governed core Invoice.
     "modules/vendor_invoices/payments.py": (1, "VendorInvoice.status derivation (A/P bill), not core Invoice.status"),
+    # NOT the core Invoice either: `inv` in the distributor onboarding module
+    # is a DealerInvitation (expired / accepted / cancelled).
+    "modules/distributor/onboarding.py": (3, "DealerInvitation.status, not core Invoice.status"),
 }
 
-# Matches `invoice.status = x` / `the_invoice.status = x` — NOT `inv.status`
-# (distributor invitations) or `invite.status`. Assignment only (excludes ==).
-_STATUS_WRITE_RX = r"(?:^|[^\w.])(?:\w+_)?invoice\.status\s*=[^=]"
+# Matches `invoice.status = x` / `the_invoice.status = x` / `inv.status = x`.
+# Assignment only (excludes ==). Not `invite.status`.
+#
+# `inv` used to be excluded to spare the distributor invitations above, and
+# that exclusion is how #696 got through: `core/closeout_billing.py` voided
+# the not-billable autodraft with a raw `inv.status = "void"` while this test
+# stayed green, and prod's flush guard logged `gl_chokepoint_bypass` whenever
+# a not-billable mark voided an autodraft. `inv` is this codebase's usual name
+# for a core Invoice,
+# so it is scanned and the invitation writer is inventoried by name instead.
+#
+# Still a name heuristic — `existing.status` in the QB pull (sync.py) writes a
+# core Invoice and this cannot see it; the S9 runtime gate covers that one.
+# The runtime net for ORM status writes is the flush guard, which raises under
+# pytest whenever a test runs a writer with ledger posting ON; it cannot see
+# raw Core UPDATEs, which is what test_no_raw_core_writes_to_money_tables is for.
+_STATUS_WRITE_RX = r"(?:^|[^\w.])(?:(?:\w+_)?invoice|inv)\.status\s*=[^=]"
+
+
+def test_status_write_scan_sees_the_696_shape():
+    """The inventory is only a net if it can fail for the defect it exists
+    for. These are the exact lines it must see — and the lookalikes it must
+    not count."""
+    rx = re.compile(_STATUS_WRITE_RX)
+    for line in (
+        '    inv.status = "void"',  # #696, core/closeout_billing.py
+        '    invoice.status = "paid"',
+        '        deposit_invoice.status = new_status',
+    ):
+        assert rx.search(line), line
+    for line in (
+        '    if inv.status == "void":',
+        '    invite.status = "sent"',
+        '    self.inv.status = "void"',  # an attribute chain, not a local
+        '    vendor_inv.status = "open"',
+    ):
+        assert not rx.search(line), line
 
 
 def test_invoice_status_writer_inventory_is_exact():
