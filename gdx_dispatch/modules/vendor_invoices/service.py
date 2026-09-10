@@ -20,6 +20,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.column_fit import column_limit as _column_limit
+from gdx_dispatch.core.column_fit import fit as _fit
+from gdx_dispatch.core.column_fit import fit_all as _fit_all
 from gdx_dispatch.models.tenant_models import Document, DocumentFolder
 from gdx_dispatch.modules.vendor_invoices.llm_extract import (
     LLM_EXTRACTION_MODEL,
@@ -66,6 +69,19 @@ INVARIANT_TOLERANCE = Decimal("0.02")
 
 class InvoiceParseError(MidwestInvoiceParseError):
     """Re-exported so callers import parse errors from the service."""
+
+
+class InvoiceFieldTooLong(InvoiceParseError):
+    """An extracted KEY field cannot fit its column, so the extraction is wrong.
+
+    Deliberately a parse error rather than a clamp. Non-key text gets shortened
+    to fit (#513); a dedup key must not be, because shortening a key merges
+    records instead of trimming a value — two different bills sharing a prefix
+    would silently become one, and the loser is returned as a "duplicate" that
+    was never stored. A subclass of InvoiceParseError so the existing ladder
+    (parser rung -> LLM rung -> manual queue) routes it the way it already
+    routes any other unusable parse.
+    """
 
 
 @dataclass
@@ -116,8 +132,8 @@ def build_lines_from_parsed(parsed: ParsedInvoice) -> list[VendorInvoiceLine]:
             VendorInvoiceLine(
                 line_no=pl.line_no,
                 kind=KIND_ITEM,
-                item_label=pl.item_label,
-                description=pl.description[:500],
+                item_label=_fit(VendorInvoiceLine, "item_label", pl.item_label)[0],
+                description=_fit(VendorInvoiceLine, "description", pl.description)[0] or "",
                 quantity=pl.quantity,
                 unit_cost=pl.unit_price,
                 line_total=pl.line_total,
@@ -272,6 +288,41 @@ def _persist_parsed_invoice(
 ) -> InvoiceUploadResult:
     """Layers 2+3 and persistence, shared verbatim by the parser and LLM rungs
     so dedup and review semantics can never drift between them."""
+    # Clamp extracted text to its columns BEFORE anything reads it. Above the
+    # dedup check on purpose: storing a truncated invoice_number while looking
+    # the duplicate up by the full one would mean the same bill never dedups
+    # against itself. One value, used by the lookup, the key and the row.
+    # invoice_number is the DEDUP KEY and is deliberately NOT clamped. Clamping
+    # a key does not shorten a value, it MERGES records: two genuinely
+    # different bills whose numbers share the first 60 characters would collapse
+    # to one, and the second would return created=False /
+    # duplicate_reason="vendor_invoice_number" — a success-shaped result for a
+    # payable that was never stored. Silently dropping a bill is far worse than
+    # the loud DataError this issue is about, and it is reachable exactly where
+    # the clamp is most needed: the LLM rung, whose output length nothing bounds.
+    #
+    # An over-length invoice number is a MISPARSE, not data. Refuse it, loudly,
+    # and let the caller fall through to the manual-entry queue.
+    _num_limit = _column_limit(VendorInvoice, "invoice_number")
+    if parsed.invoice_number and _num_limit and len(parsed.invoice_number) > _num_limit:
+        raise InvoiceFieldTooLong(
+            f"invoice_number is {len(parsed.invoice_number)} characters "
+            f"(max {_num_limit}) — the extraction is wrong, not the bill"
+        )
+    invoice_number = parsed.invoice_number
+
+    fields, truncated = _fit_all(VendorInvoice, {
+        "vendor_name_raw": vendor_name_raw,
+        "po_reference": parsed.po_reference,
+        "terms": parsed.terms,
+    })
+    vendor_name_raw = fields["vendor_name_raw"] or ""
+    if truncated:
+        log.warning(
+            "vendor_invoice_field_truncated fields=%s invoice_number=%s",
+            ",".join(truncated), invoice_number,
+        )
+
     vendor = resolve_vendor(db, vendor_name_raw)
     vendor_id = vendor.id if vendor else None
 
@@ -282,7 +333,7 @@ def _persist_parsed_invoice(
         db,
         vendor_id=vendor_id,
         vendor_name_raw=vendor_name_raw,
-        invoice_number=parsed.invoice_number,
+        invoice_number=invoice_number,
     )
     if dup is not None:
         return InvoiceUploadResult(
@@ -312,7 +363,7 @@ def _persist_parsed_invoice(
             file_size=len(pdf_bytes),
             content_type=content_type or "application/pdf",
             uploaded_by=uploaded_by or "",
-            title=f"{vendor_name_raw} Invoice {parsed.invoice_number}".strip(),
+            title=f"{vendor_name_raw} Invoice {invoice_number}".strip(),
             description=f"Auto-imported vendor bill (extractor={extractor_label})",
             folder_id=folder.id,
             content_hash=content_hash,
@@ -342,14 +393,18 @@ def _persist_parsed_invoice(
             f"worst line qty*unit vs total off by {worst_line_disc}"
         )
 
+    # A truncated value is a fact about the record, not something to swallow.
+    if truncated:
+        note_parts.append("truncated to fit: " + ", ".join(truncated))
+
     invoice = VendorInvoice(
         vendor_id=vendor_id,
         vendor_key=compute_vendor_key(vendor_id, vendor_name_raw),
         vendor_name_raw=vendor_name_raw,
-        invoice_number=parsed.invoice_number,
+        invoice_number=invoice_number,
         invoice_date=parsed.invoice_date,
-        po_reference=parsed.po_reference,
-        terms=parsed.terms,
+        po_reference=fields["po_reference"],
+        terms=fields["terms"],
         due_date=parsed.due_date,
         subtotal=parsed.subtotal,
         tax=parsed.tax,
@@ -380,7 +435,7 @@ def _persist_parsed_invoice(
         winner = find_invoice_by_key(
             db,
             vendor_key=compute_vendor_key(vendor_id, vendor_name_raw),
-            invoice_number=parsed.invoice_number,
+            invoice_number=invoice_number,
         )
         if winner is not None:
             return InvoiceUploadResult(
