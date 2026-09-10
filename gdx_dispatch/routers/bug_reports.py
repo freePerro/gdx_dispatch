@@ -4,8 +4,9 @@ The in-app bug-report form posts to ``/api/support/bug`` (routers/support.py),
 which is what the Feedback page reads back. The ``/bug-report`` POST and
 ``/bug-reports`` GET that lived here wrote a second copy to ``bug_reports``,
 a table no screen ever read; removed 2026-09-06. Migration 087 copied its
-rows into ``support_tickets`` (the Feedback page lists them by subject and
-status; it renders no body yet) and dropped the table.
+rows into ``support_tickets`` (the Feedback page lists them; since #622 a row
+opens to its body for the team and the reporter, and the team can close it)
+and dropped the table.
 """
 from __future__ import annotations
 

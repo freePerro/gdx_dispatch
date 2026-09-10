@@ -1180,6 +1180,7 @@ POST /api/signatures/token/{token}
 POST /api/signatures/{signature_id}/cancel
 POST /api/support/bug
 POST /api/support/feature
+POST /api/support/tickets/{ticket_id}/close
 POST /api/surveys/public/{token}
 POST /api/surveys/send
 POST /api/surveys/templates

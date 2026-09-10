@@ -23,16 +23,18 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import audit_or_rollback, ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.models.tenant_models import AppSettings, SupportTicket
+from gdx_dispatch.core.modules import has_permission, require_permission
+from gdx_dispatch.models.tenant_models import AppSettings, SupportTicket, User
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -54,12 +56,27 @@ class SupportSubmissionResponse(BaseModel):
 class MyTicketRow(BaseModel):
     id: str
     subject: str
+    # #622: the description the reporter typed (with the page URL and browser
+    # the bug button appends) was stored and shown nowhere. Only for the team
+    # (settings.write — the key that can close a ticket) and for the ticket's
+    # own reporter: the bug button files from any page, customer and invoice
+    # pages included, so a body can carry customer details, and /my answers
+    # every signed-in role. Everyone else gets the list as it always was.
+    # The body is the protected part. Who filed a ticket is not a secret: the
+    # ticket's audit rows name the reporter, and GET /api/activity/recent
+    # shows audit rows to any signed-in user.
+    body: str | None
+    opened_by_email: str | None
     category: str
     status: str
     priority: str
     created_at: str
     closed_at: str | None
     resolution_summary: str | None
+
+
+class CloseTicketIn(BaseModel):
+    resolution_summary: str = Field(min_length=1, max_length=5000)
 
 
 class MyTicketsResponse(BaseModel):
@@ -78,11 +95,55 @@ def _resolve_tenant_id(request: Request) -> str:
     return str(tid)
 
 
-def _resolve_user(user: dict[str, Any]) -> tuple[str, str | None]:
-    """Return (email, user_id_uuid_str_or_none) from the JWT claims dict."""
-    email = user.get("email") or user.get("preferred_username") or "anonymous@unknown"
+_PLACEHOLDER_EMAILS = {"anonymous@unknown", "unknown@bug-reports"}
+
+
+def _user_emails(db: Session, user_ids) -> dict[str, str]:
+    """``{user_id: email}`` for the given ids, in one query."""
+    ids = set()
+    for uid in user_ids:
+        try:
+            ids.add(UUID(str(uid)))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return {}
+    rows = db.execute(select(User.id, User.email).where(User.id.in_(ids))).all()
+    return {str(uid): email for uid, email in rows if email}
+
+
+def _resolve_user(db: Session, user: dict[str, Any]) -> tuple[str, str | None]:
+    """Return (email, user_id) for the submitter.
+
+    #622: the JWT carries no ``email`` claim, so this used to fall back to
+    ``anonymous@unknown`` — 5 of the 7 tickets on prod name nobody, though
+    every one carries the user id. The user row knows the email.
+    """
     uid = user.get("sub") or user.get("user_id")
-    return email, str(uid) if uid else None
+    uid = str(uid) if uid else None
+    email = user.get("email") or user.get("preferred_username")
+    if not email and uid:
+        email = _user_emails(db, [uid]).get(_normalize_id(uid))
+    return email or "anonymous@unknown", uid
+
+
+def _normalize_id(uid: Any) -> str:
+    try:
+        return str(UUID(str(uid)))
+    except (TypeError, ValueError):
+        return str(uid)
+
+
+def _reporter_email(ticket: SupportTicket, emails: dict[str, str]) -> str | None:
+    """The stored reporter, unless it is a placeholder a user id can replace —
+    display-time, so the rows already filed as anonymous read correctly without
+    rewriting them."""
+    stored = ticket.opened_by_email
+    if stored and stored not in _PLACEHOLDER_EMAILS:
+        return stored
+    if ticket.opened_by_user_id:
+        return emails.get(_normalize_id(ticket.opened_by_user_id)) or stored
+    return stored
 
 
 # support_tickets is created by create_orm_tables() at container start, but a
@@ -166,7 +227,21 @@ def _create_ticket(
         created_at=datetime.now(UTC),
     )
     try:
+        # Before anything is staged: the first audit write on an engine
+        # initializes the guard and would commit the ticket ahead of its row.
+        ensure_audit_table(db)
         db.add(ticket)
+        # Invariant #1: who filed it, what, when — staged into the SAME commit
+        # as the ticket (#622/#700). It used to be written after the commit and
+        # never committed at all: get_db() closes without committing, so the
+        # row was rolled back on every submission — 0 rows on prod for 7
+        # tickets.
+        log_audit_event_sync(
+            db, tenant_id=tenant_id, user_id=opened_by_user_id or "system", action="create",
+            entity_type="support_ticket", entity_id=ticket.id,
+            details={"category": category, "subject": payload.subject, "priority": payload.priority},
+            request=request,
+        )
         db.commit()
     except (ProgrammingError, OperationalError) as exc:
         db.rollback()
@@ -178,15 +253,27 @@ def _create_ticket(
                 detail="Support ticketing is temporarily unavailable. Please try again later.",
             ) from exc
         raise
-    # Invariant #1: who filed it, what, when. The retired /api/feedback path
-    # audited its copy; this path never did (0 rows on prod for either).
-    log_audit_event_sync(
-        db, tenant_id=tenant_id, user_id=opened_by_user_id or "system", action="create",
-        entity_type="support_ticket", entity_id=ticket.id,
-        details={"category": category, "subject": payload.subject, "priority": payload.priority},
-        request=request,
-    )
     return ticket.id
+
+
+def _caller_id(user: dict[str, Any]) -> str | None:
+    uid = user.get("sub") or user.get("user_id")
+    return str(uid) if uid else None
+
+
+def _row(r: SupportTicket, emails: dict[str, str], *, detail: bool) -> MyTicketRow:
+    return MyTicketRow(
+        id=str(r.id),
+        subject=r.subject,
+        body=(r.body or "") if detail else None,
+        opened_by_email=_reporter_email(r, emails) if detail else None,
+        category=r.category,
+        status=r.status,
+        priority=r.priority,
+        created_at=r.created_at.isoformat(),
+        closed_at=r.closed_at.isoformat() if r.closed_at else None,
+        resolution_summary=r.resolution_summary,
+    )
 
 
 @router.post(
@@ -202,7 +289,7 @@ def submit_bug(
 ) -> SupportSubmissionResponse:
     """Submit a bug report. Lands in support_tickets with category='bug'."""
     tenant_id = _resolve_tenant_id(request)
-    email, uid = _resolve_user(user)
+    email, uid = _resolve_user(db, user)
     ticket_id = _create_ticket(
         request,
         db,
@@ -236,7 +323,7 @@ def submit_feature(
 ) -> SupportSubmissionResponse:
     """Submit a feature request. Lands in support_tickets with category='feature'."""
     tenant_id = _resolve_tenant_id(request)
-    email, uid = _resolve_user(user)
+    email, uid = _resolve_user(db, user)
     ticket_id = _create_ticket(
         request,
         db,
@@ -288,21 +375,79 @@ def list_my_tickets(
             return MyTicketsResponse(items=[])
         raise
 
-    items = [
-        MyTicketRow(
-            id=str(r.id),
-            subject=r.subject,
-            category=r.category,
-            status=r.status,
-            priority=r.priority,
-            created_at=r.created_at.isoformat(),
-            closed_at=r.closed_at.isoformat() if r.closed_at else None,
-            resolution_summary=r.resolution_summary,
+    team = has_permission(request, db, "settings.write")
+    caller = _caller_id(user)
+    caller_key = _normalize_id(caller) if caller else None
+
+    def _may_read(r: SupportTicket) -> bool:
+        return team or (
+            caller_key is not None
+            and r.opened_by_user_id is not None
+            and _normalize_id(r.opened_by_user_id) == caller_key
         )
-        for r in rows
-    ]
+
+    readable = [r for r in rows if _may_read(r)]
+    emails = _user_emails(db, [r.opened_by_user_id for r in readable])
+    items = [_row(r, emails, detail=_may_read(r)) for r in rows]
     log.info(
         "support my-list — tenant=%s actor=%s n=%d",
-        tenant_id, user.get("sub", "?"), len(items),
+        tenant_id, _caller_id(user) or "?", len(items),
     )
     return MyTicketsResponse(items=items)
+
+
+@router.post(
+    "/tickets/{ticket_id}/close",
+    response_model=MyTicketRow,
+    # Owner/admin: the Feedback Portal lives in the Admin nav, and
+    # settings.write is the key the admin pages share. A reporter cannot close
+    # their own ticket — closing is the team saying it is dealt with.
+    dependencies=[Depends(require_permission("settings.write"))],
+)
+def close_ticket(
+    ticket_id: str,
+    payload: CloseTicketIn,
+    request: Request,
+    user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MyTicketRow:
+    """Close a ticket with the resolution its reporter will read (#622).
+
+    Tickets arrived ``open`` and stayed open forever: nothing could change a
+    status. The close, and the audit row saying who closed it, how it was
+    resolved and what it was before, commit together or not at all.
+    """
+    ensure_audit_table(db)
+    ticket = db.get(SupportTicket, ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="ticket not found")
+    if ticket.status == "closed":
+        raise HTTPException(status_code=409, detail="ticket is already closed")
+    resolution = payload.resolution_summary.strip()
+    if not resolution:
+        raise HTTPException(status_code=422, detail="a resolution is required")
+    previous = ticket.status
+    # Conditional, not read-then-write (#622 audit): two people closing the
+    # same ticket at once both got 200, and the second resolution silently
+    # replaced the first. Whoever loses the race gets the 409.
+    closed = db.execute(
+        update(SupportTicket)
+        .where(SupportTicket.id == ticket_id, SupportTicket.status != "closed")
+        .values(status="closed", closed_at=datetime.now(UTC), resolution_summary=resolution)
+    ).rowcount
+    if not closed:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="ticket is already closed")
+    audit_or_rollback(
+        db,
+        action="support_ticket_closed",
+        entity_type="support_ticket",
+        entity_id=str(ticket.id),
+        actor=user,
+        request=request,
+        details={"subject": ticket.subject, "from_status": previous, "resolution_summary": resolution},
+    )
+    db.commit()
+    db.refresh(ticket)
+    log.info("support ticket closed — ticket=%s actor=%s", ticket.id, _caller_id(user) or "?")
+    return _row(ticket, _user_emails(db, [ticket.opened_by_user_id]), detail=True)
