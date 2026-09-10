@@ -50,7 +50,18 @@ owed by Doug before PR A. Nothing starts until the exit condition above is met.
 
 ### While hardening
 
-- **No new sweeps** while the sweep budget is CLOSED (see below).
+- **No new sweeps** while the sweep budget is CLOSED (see below). Discovery
+  tools count: `/redteam`, the agent-quality agent,
+  `gdx_dispatch/tools/comment_drift_scan.py`,
+  `gdx_dispatch/tools/frontend_contract_scan.py`, `/ux-audit` and orphan-route
+  sweeps are each a sweep by another name. `/audit` on the diff being
+  committed is not a sweep and is still required.
+- **Net-zero filing** while the sweep budget is CLOSED: a PR or session may
+  file a new `sweep-finding` only if it also closes one, or Doug says yes to
+  that specific filing. Everything else goes on the close-out's *found, not
+  filed* list and Doug decides. Adopted 2026-09-10; "Why deferral costs
+  something" below says how this meets CLAUDE.md step 4.
+- **One issue per session** (CLAUDE.md). Doug can widen it; Claude does not.
 - **No new feature work** without Doug saying so explicitly. A feature request
   from Doug overrides this file; a feature idea from Claude does not.
 - `live-defect` work is **never** rate-limited. If a user can hit it on prod
@@ -96,6 +107,18 @@ Instances: <N found / N fixed / N deferred → #NNN (reason)>
 ```
 
 …or whose numbers don't add up (`fixed + deferred != found`).
+
+**While the budget is CLOSED, a deferred instance is counted but not
+automatically filed** (net-zero, above). It is filed only if the same PR closes
+a `sweep-finding` or Doug approves it. Otherwise the PR body says so —
+`N deferred → not filed (net-zero; close-out list)` — and the instance goes on
+the session's close-out list. The gate reads only the three numbers, so that
+line passes as written.
+
+These rules are enforced by this file, not by a hook (decided 2026-09-10).
+`~/.claude/hooks/session_checklist.py` could be taught to stop a
+`sweep-finding` filing while the budget is CLOSED; add that only if the rule
+gets ignored.
 
 ---
 
