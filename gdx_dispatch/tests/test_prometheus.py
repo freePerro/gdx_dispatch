@@ -6,8 +6,17 @@ import os
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from starlette.responses import PlainTextResponse
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
-from gdx_dispatch.core.prometheus import prometheus_middleware, router, track_db_query
+from gdx_dispatch.core.prometheus import (
+    UNMATCHED_ENDPOINT,
+    _endpoint_label,
+    prometheus_middleware,
+    router,
+    track_db_query,
+)
 
 
 @pytest.fixture()
@@ -127,3 +136,157 @@ def test_metrics_non_ascii_token_header_is_401_not_500() -> None:
         assert exc.value.status_code == 401
     finally:
         os.environ.pop("METRICS_TOKEN", None)
+
+
+# ---------------------------------------------------------------------------
+# Label cardinality (#597) — the registry is in-memory, never evicted, and
+# reset only by a redeploy, so a label value driven by untrusted input is an
+# unbounded memory leak driven by whoever wants to drive it.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def routed_client(monkeypatch, tmp_path) -> TestClient:
+    """An app shaped like the REAL one, which is the whole point of the fixture.
+
+    An earlier version claimed "parameterised routes and a SPA catch-all" and
+    registered no catch-all — so it tested a shape production does not have.
+    In prod, junk URLs match `/{full_path:path}` and never reach the sentinel.
+    It also needs a StaticFiles mount and a plain Starlette Route, because only
+    FastAPI's APIRoute sets `scope["route"]`: without them the label helper's
+    mount and plain-route branches have no coverage at all.
+    """
+    monkeypatch.setenv("METRICS_TOKEN", "test-secret")
+    (tmp_path / "index-abc123.js").write_text("console.log(1)")
+
+    app = FastAPI()
+    app.middleware("http")(prometheus_middleware)
+    app.include_router(router)
+
+    @app.get("/api/jobs/{job_id}")
+    def one_job(job_id: str):
+        return {"id": job_id}
+
+    @app.get("/api/jobs")
+    def jobs():
+        return []
+
+    async def plain_route(request):
+        return PlainTextResponse("mcp")
+
+    app.router.routes.append(Route("/mcp", plain_route))
+    app.router.routes.append(Mount("/assets", StaticFiles(directory=str(tmp_path))))
+
+    # Registered LAST, exactly like app.py:1946 — it matches anything left.
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def spa(full_path: str):
+        return {"spa": full_path}
+
+    return TestClient(app)
+
+
+def _endpoint_labels(client: TestClient) -> set[str]:
+    body = client.get("/metrics", headers={"x-metrics-token": "test-secret"}).text
+    out = set()
+    for line in body.splitlines():
+        if line.startswith("http_requests_total") and 'endpoint="' in line:
+            out.add(line.split('endpoint="', 1)[1].split('"', 1)[0])
+    return out
+
+
+def test_a_parameterised_route_reports_its_template_not_the_id(routed_client) -> None:
+    """`/api/jobs/{job_id}`, once — not one series per job id.
+
+    The old normalizer only collapsed a segment longer than 20 characters or
+    shaped like a uuid, so a short id (`/api/jobs/42`) minted its own series.
+    """
+    for job_id in ("42", "abc", "00000000-0000-0000-0000-000000000000", "x" * 40):
+        routed_client.get(f"/api/jobs/{job_id}")
+
+    labels = _endpoint_labels(routed_client)
+    assert "/api/jobs/{job_id}" in labels
+    assert "/api/jobs/42" not in labels
+    assert "/api/jobs/abc" not in labels
+
+
+def test_unmatched_paths_collapse_to_one_series(routed_client) -> None:
+    """THE #597 regression. Scanner traffic is unauthenticated and endless.
+
+    Measured on 24h of real production paths (2026-09-10): 1,075 distinct paths
+    produced 770 distinct label values under the old normalizer, 257 of them
+    probes like `/.git/config`. Here 60 junk paths must produce ONE label.
+
+    That label is the SPA catch-all's template, NOT the sentinel — in this app
+    the catch-all matches first, which is what production actually does. The
+    assertion is on the property (one bucket, no per-URL series), not on which
+    bucket, because asserting the sentinel would have quietly tested a shape
+    prod does not have.
+    """
+    probes = [
+        "/.git/config", "/.git/HEAD", "/.aws/credentials", "/1.php",
+        "/wp-admin/setup-config.php", "/xmlrpc.php", "/vendor/phpunit/phpunit",
+        "/cgi-bin/luci", "/actuator/health", "/../../../../etc/passwd",
+    ]
+    probes += [f"/scan-{i}" for i in range(50)]
+    before = _endpoint_labels(routed_client)
+    for p in probes:
+        routed_client.get(p)
+
+    labels = _endpoint_labels(routed_client)
+    assert len(labels - before) <= 1, f"{len(probes)} junk paths minted {len(labels - before)} series"
+    leaked = {lab for lab in labels if "scan-" in lab or "php" in lab or "git" in lab}
+    assert leaked == set(), f"junk paths still mint their own series: {sorted(leaked)[:5]}"
+
+
+def test_a_static_asset_is_not_pooled_with_scanner_junk(routed_client) -> None:
+    """Only FastAPI's APIRoute sets `scope["route"]`; a StaticFiles Mount does
+    not. Reading route alone labelled every asset `<unmatched>`, putting real
+    200s in the same bucket as 404 noise — bounded, but useless.
+    """
+    routed_client.get("/assets/index-abc123.js")
+    routed_client.get("/assets/does-not-exist.js")
+
+    labels = _endpoint_labels(routed_client)
+    assert "/assets/*" in labels
+    assert "/assets/index-abc123.js" not in labels   # …and not one per filename
+
+
+def test_a_plain_starlette_route_gets_its_own_bucket(routed_client) -> None:
+    """`/mcp` is a deliberately plain Starlette Route (mcp_mount.py), so it
+    sets no `route` either. It must not fall in with the unmatched junk."""
+    routed_client.get("/mcp")
+    labels = _endpoint_labels(routed_client)
+    assert any(lab.startswith("<route:") for lab in labels), labels
+    assert UNMATCHED_ENDPOINT not in labels
+
+
+def test_the_label_set_is_bounded_by_the_route_table(routed_client) -> None:
+    """Cardinality must not grow with traffic — that is the whole property.
+
+    200 distinct never-seen URLs must add no label beyond the sentinel.
+    """
+    routed_client.get("/api/jobs")
+    before = _endpoint_labels(routed_client)
+
+    for i in range(200):
+        routed_client.get(f"/never-registered/{i}/{i * 7}")
+
+    after = _endpoint_labels(routed_client)
+    assert len(after) <= len(before) + 1, sorted(after - before)[:5]
+
+
+def test_the_helper_falls_back_when_no_route_matched() -> None:
+    """Unit-level: no `route` in scope must never raise, and never echo the path."""
+    from starlette.requests import Request
+
+    def _req(scope_extra: dict) -> Request:
+        return Request({"type": "http", "method": "GET", "path": "/whatever",
+                        "headers": [], **scope_extra})
+
+    assert _endpoint_label(_req({})) == UNMATCHED_ENDPOINT
+    assert _endpoint_label(_req({"route": None})) == UNMATCHED_ENDPOINT
+    assert _endpoint_label(_req({"route": object()})) == UNMATCHED_ENDPOINT
+
+    class _R:
+        path = "/api/jobs/{job_id}"
+
+    assert _endpoint_label(_req({"route": _R()})) == "/api/jobs/{job_id}"

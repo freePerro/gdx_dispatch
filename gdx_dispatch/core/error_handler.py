@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import traceback
-from collections import defaultdict
 
 from fastapi import Request
 from fastapi.exceptions import HTTPException
@@ -87,12 +86,22 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
     """Catches unhandled exceptions and returns structured JSON errors.
 
     Prevents HTML stacktraces from leaking to clients. Logs every error
-    with request context for debugging. Tracks error rates per endpoint.
-    """
+    with request context for debugging.
 
-    def __init__(self, app):
-        super().__init__(app)
-        self.error_counts: dict[str, int] = defaultdict(int)
+    It used to also claim to "track error rates per endpoint", via
+    ``self.error_counts[f"{method} {path}"] += 1`` — a defaultdict keyed on the
+    RAW request path, incremented on every error and **read by nothing, ever**
+    (no endpoint, no log line, no test, no reader anywhere in the repo). So it
+    delivered no observability while growing without bound on exactly the
+    traffic you cannot control: one permanent key per junk URL that raises,
+    for the life of the process.
+
+    Removed as the sibling of #597 — same shape, same middleware stack. Error
+    rates per endpoint are already available, bounded, from
+    ``http_requests_total{status="5xx"}``, whose endpoint label is the matched
+    route (``core/prometheus.py::_endpoint_label``). A counter nobody reads is
+    not a metric; an unbounded one is a leak.
+    """
 
     async def dispatch(self, request: Request, call_next):
         try:
@@ -107,8 +116,6 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
         tenant_id = str((tenant or {}).get("id", ""))
         path = request.url.path
         method = request.method
-
-        self.error_counts[f"{method} {path}"] += 1
 
         status = 500
         message = "Internal server error"
