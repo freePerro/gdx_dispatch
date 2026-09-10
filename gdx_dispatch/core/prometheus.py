@@ -4,6 +4,14 @@ Tracks HTTP request counts, latencies, active connections, and DB query timing.
 The /metrics endpoint requires the METRICS_TOKEN header for security. With
 METRICS_TOKEN unset the endpoint refuses to serve rather than serving the
 whole registry to anyone (it failed open until 2026-09-04).
+
+Cardinality is the other half of keeping this endpoint safe. The registry lives
+in process memory, is never evicted, and only resets on a redeploy — so a label
+value that varies with untrusted input is an unbounded memory leak driven by
+whoever wants to drive it. Both label sources that did that are closed: the
+`tenant_id` label reads the server-verified tenant rather than a client header,
+and `endpoint` is the MATCHED ROUTE rather than the requested path (#597, see
+`_endpoint_label`).
 """
 from __future__ import annotations
 
@@ -103,13 +111,7 @@ async def prometheus_middleware(request: Request, call_next: Any) -> Any:
         # Server-verified tenant only. The x-tenant-id header this once read
         # was multi-tenant residue: any client could stamp any label value.
         tenant_id = str((getattr(request.state, "tenant", None) or {}).get("id", "-"))
-        # Normalize path to avoid high-cardinality (strip UUIDs)
-        path = request.url.path
-        parts = path.strip("/").split("/")
-        normalized = "/" + "/".join(
-            "{id}" if len(p) > 20 or _looks_like_uuid(p) else p
-            for p in parts
-        )
+        normalized = _endpoint_label(request)
         http_requests_total.labels(
             method=request.method,
             endpoint=normalized,
@@ -122,9 +124,66 @@ async def prometheus_middleware(request: Request, call_next: Any) -> Any:
         ).observe(duration)
 
 
-def _looks_like_uuid(s: str) -> bool:
-    """Quick check if a string looks like a UUID (to normalize paths)."""
-    return len(s) == 36 and s.count("-") == 4
+#: Label for a request that matched nothing at all. ONE value, not one per
+#: URL — that is the whole point. In THIS app very little reaches it, because
+#: the SPA catch-all (`/{full_path:path}`) matches unknown paths first; it is
+#: the floor for a deployment with no catch-all, and for ASGI scopes that never
+#: reach the router.
+UNMATCHED_ENDPOINT = "<unmatched>"
+
+#: Bucket for a Starlette `Mount` (StaticFiles and friends). One value per
+#: mount, not one per asset filename.
+MOUNT_ENDPOINT_FMT = "{root}/*"
+
+
+def _endpoint_label(request: Request) -> str:
+    """A BOUNDED label for this request: what it matched, never what it asked for.
+
+    The registry is in-memory, unbounded, and reset only by a redeploy, so every
+    distinct `endpoint` value is a permanent new series. This used to be the
+    requested path, collapsed only when a segment was longer than 20 characters
+    or looked like a uuid::
+
+        "{id}" if len(p) > 20 or _looks_like_uuid(p) else p
+
+    so every junk URL minted its own series, driven by unauthenticated traffic.
+    Measured on 24h of real production request paths (2026-09-10): **1,075
+    distinct paths produced 770 distinct label values**, 257 of them scanner
+    probes like `/.git/config` and `/1.php`. Nothing evicts them; ~4.6 KB per
+    counter+histogram pair.
+
+    Four sources, in order, each drawn from a FIXED set:
+
+    1. ``scope["route"].path`` — the route template. Prefixed with ``root_path``
+       so a mounted sub-app's ``/ping`` cannot merge with a top-level ``/ping``.
+    2. ``root_path`` alone — a ``Mount`` matched but set no route. One bucket
+       per mount (``/assets/*``), not one per asset.
+    3. the handler's name — a plain ``starlette.routing.Route`` matched.
+    4. ``UNMATCHED_ENDPOINT``.
+
+    Steps 2 and 3 exist because **only FastAPI's ``APIRoute.matches`` sets
+    ``scope["route"]``** — plain ``Route`` and ``Mount`` do not (verified
+    against starlette 1.6.0 / fastapi 0.141.1). Reading route alone would have
+    labelled every static asset and the ``/mcp`` route ``<unmatched>``, pooling
+    real 200s with scanner 404s and making the sentinel the busiest series in
+    the registry — bounded, but useless.
+    """
+    scope = request.scope
+    root = scope.get("root_path") or ""
+
+    template = getattr(scope.get("route"), "path", None)
+    if isinstance(template, str) and template:
+        return f"{root}{template}" if root else template
+
+    if root:
+        return MOUNT_ENDPOINT_FMT.format(root=root)
+
+    endpoint = scope.get("endpoint")
+    if endpoint is not None:
+        name = getattr(endpoint, "__qualname__", None) or type(endpoint).__name__
+        return f"<route:{name}>"
+
+    return UNMATCHED_ENDPOINT
 
 
 router = APIRouter(tags=["metrics"])
