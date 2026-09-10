@@ -15,9 +15,12 @@ from sqlalchemy.pool import StaticPool
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.models import tenant_models  # noqa: F401  (register models on TenantBase.metadata)
-from gdx_dispatch.models.tenant_models import ServiceAgreementTemplate
+from gdx_dispatch.models.tenant_models import Customer, ServiceAgreementTemplate
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.service_agreements import router
+
+CUSTOMER_ID = "5a3c1e2d-0b4f-4a6e-9c7d-8e1f2a3b4c5d"
+CUSTOMER_NAME = "Jane Customer"
 
 
 def _make_client(tenant_id: str = "tenant-test") -> TestClient:
@@ -39,6 +42,10 @@ def _make_client(tenant_id: str = "tenant-test") -> TestClient:
         ),
         {"id": f"g2-{tenant_id}", "tid": tenant_id},
     )
+    # #684: an agreement must point at a real customer, so the helper payload's
+    # customer exists. Through the ORM — SQLite stores Uuid columns dashless, and
+    # a raw INSERT of the dashed string would never match.
+    setup.add(Customer(id=UUID(CUSTOMER_ID), name=CUSTOMER_NAME, company_id=tenant_id))
     setup.commit()
     setup.close()
 
@@ -85,7 +92,7 @@ def _iso(dt: datetime) -> str:
 def _agreement_payload(**overrides) -> dict:
     now = datetime.now(timezone.utc).replace(microsecond=0)
     base = {
-        "customer_id": str(uuid4()),
+        "customer_id": CUSTOMER_ID,
         "name": "Annual Maintenance",
         "start_date": _iso(now),
         "end_date": _iso(now + timedelta(days=365)),
@@ -445,5 +452,232 @@ def test_patch_status(client: TestClient):
     bad = client.patch(
         f"/api/service-agreements/{created['id']}",
         json={"status": "bogus"},
+    )
+    assert bad.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# #684 — the New Agreement dialog could not create anything
+# ---------------------------------------------------------------------------
+
+
+def test_create_with_exactly_what_the_dialog_now_sends(client: TestClient):
+    """The dialog's payload, key for key: a picked customer id, calendar dates
+    (YYYY-MM-DD, no time) and the price the user entered — the dialog requires
+    one, so a blank never turns into a silent $0. Before #684 the dialog sent
+    customer_id=null, a free-text customer_name the model never declared and a
+    null price, so every create was a 422."""
+    r = client.post(
+        "/api/service-agreements",
+        json={
+            "customer_id": CUSTOMER_ID,
+            "template_id": None,
+            "name": "Spring tune-up plan",
+            "start_date": "2026-09-10",
+            "end_date": "2027-09-10",
+            "price": 249.0,
+            "services_included": ["Spring inspection"],
+            "notes": "",
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["customer_id"] == CUSTOMER_ID
+    assert body["customer_name"] == CUSTOMER_NAME
+    assert body["price"] == 249.0
+    assert body["start_date"].startswith("2026-09-10")
+    assert body["status"] == "active"
+
+
+def test_create_for_a_customer_that_does_not_exist_is_422(client: TestClient):
+    r = client.post(
+        "/api/service-agreements", json=_agreement_payload(customer_id=str(uuid4()))
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"] == "Customer not found"
+    assert client.get("/api/service-agreements").json() == []
+
+
+def test_every_agreement_response_names_its_customer(client: TestClient):
+    """The list's Customer column bound `customer_name`, which no agreement
+    response carried, so it read blank on every row."""
+    created = client.post("/api/service-agreements", json=_agreement_payload()).json()
+    assert created["customer_name"] == CUSTOMER_NAME
+
+    listed = client.get("/api/service-agreements").json()
+    assert [row["customer_name"] for row in listed] == [CUSTOMER_NAME]
+    assert client.get(f"/api/service-agreements/{created['id']}").json()["customer_name"] == CUSTOMER_NAME
+    patched = client.patch(f"/api/service-agreements/{created['id']}", json={"name": "Renamed"}).json()
+    assert patched["customer_name"] == CUSTOMER_NAME
+    cancelled = client.post(f"/api/service-agreements/{created['id']}/cancel").json()
+    assert cancelled["customer_name"] == CUSTOMER_NAME
+
+
+def test_relinking_to_a_customer_that_does_not_exist_is_422(client: TestClient):
+    created = client.post("/api/service-agreements", json=_agreement_payload()).json()
+    r = client.patch(
+        f"/api/service-agreements/{created['id']}", json={"customer_id": str(uuid4())}
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"] == "Customer not found"
+    assert client.get(f"/api/service-agreements/{created['id']}").json()["customer_id"] == CUSTOMER_ID
+
+
+def test_an_agreement_stays_editable_after_its_customer_is_deleted(client: TestClient):
+    """#684 audit: a caller may re-send the current customer_id (the first
+    version of the dialog did, on every save), so checking it unconditionally
+    locked the agreement of any soft-deleted customer out of renewals,
+    re-pricing and expiry. Only a change of customer is checked."""
+    created = client.post("/api/service-agreements", json=_agreement_payload()).json()
+    Session = sessionmaker(bind=client._engine)  # type: ignore[attr-defined]
+    with Session() as db:
+        cust = db.get(Customer, UUID(CUSTOMER_ID))
+        cust.deleted_at = datetime.now(timezone.utc)
+        db.commit()
+
+    r = client.patch(
+        f"/api/service-agreements/{created['id']}",
+        json={"customer_id": CUSTOMER_ID, "status": "expired", "price": 350.0},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "expired"
+    # The list still says whose agreement it is.
+    assert r.json()["customer_name"] == CUSTOMER_NAME
+
+
+def test_relinking_to_a_deleted_customer_is_422(client: TestClient):
+    created = client.post("/api/service-agreements", json=_agreement_payload()).json()
+    Session = sessionmaker(bind=client._engine)  # type: ignore[attr-defined]
+    other_id = uuid4()
+    with Session() as db:
+        db.add(Customer(id=other_id, name="Gone Customer", company_id="tenant-test",
+                        deleted_at=datetime.now(timezone.utc)))
+        db.commit()
+    r = client.patch(
+        f"/api/service-agreements/{created['id']}", json={"customer_id": str(other_id)}
+    )
+    assert r.status_code == 422
+
+
+def test_the_response_says_when_the_customer_is_deleted(client: TestClient):
+    """The edit dialog labels a gone customer from this flag, not from a guess
+    against its own live-only customer list (which fails, caps at 1000, and
+    filters names)."""
+    created = client.post("/api/service-agreements", json=_agreement_payload()).json()
+    assert created["customer_deleted"] is False
+    Session = sessionmaker(bind=client._engine)  # type: ignore[attr-defined]
+    with Session() as db:
+        db.get(Customer, UUID(CUSTOMER_ID)).deleted_at = datetime.now(timezone.utc)
+        db.commit()
+    listed = client.get("/api/service-agreements").json()
+    assert listed[0]["customer_deleted"] is True
+    assert listed[0]["customer_name"] == CUSTOMER_NAME
+
+
+def _updated_rows(client: TestClient) -> list[dict]:
+    from gdx_dispatch.core.audit import AuditLog
+
+    Session = sessionmaker(bind=client._engine)  # type: ignore[attr-defined]
+    with Session() as db:
+        rows = db.execute(
+            select(AuditLog)
+            .where(AuditLog.action == "service_agreement_updated")
+            .order_by(AuditLog.created_at, AuditLog.id)
+        ).scalars().all()
+        return [r.details for r in rows]
+
+
+def test_an_edit_audit_row_says_what_changed_old_to_new(client: TestClient):
+    """#684 audit. The row used to list the SENT keys, so any save that sent
+    more than it changed reported fields nobody touched. It now carries what
+    changed, from and to. The payloads are the dialog's real ones: it sends
+    only the fields the user changed."""
+    created = client.post("/api/service-agreements", json=_agreement_payload()).json()
+
+    r1 = client.patch(f"/api/service-agreements/{created['id']}", json={"notes": "Gate code 4411"})
+    assert r1.status_code == 200, r1.text
+    r2 = client.patch(f"/api/service-agreements/{created['id']}", json={"price": 0})
+    assert r2.status_code == 200, r2.text
+
+    notes_only, repriced = _updated_rows(client)
+    assert notes_only["fields"] == ["notes"]
+    assert notes_only["changes"]["notes"] == {"from": "Signed on-site", "to": "Gate code 4411"}
+    assert repriced["fields"] == ["price"]
+    assert repriced["changes"]["price"] == {"from": 299.0, "to": 0.0}
+
+
+def test_resending_unchanged_values_records_no_changes(client: TestClient):
+    """A caller that re-sends the stored values (same timestamps, same notes)
+    changed nothing, and the row must say so rather than invent edits."""
+    created = client.post("/api/service-agreements", json=_agreement_payload()).json()
+    same = {k: created[k] for k in ("name", "start_date", "end_date", "price", "notes", "status")}
+    r = client.patch(f"/api/service-agreements/{created['id']}", json=same)
+    assert r.status_code == 200, r.text
+    assert _updated_rows(client)[-1]["changes"] == {}
+
+
+def test_re_dating_only_the_end_is_not_a_500(client: TestClient):
+    """#684 audit: the end_date branch compared the payload's datetime with the
+    stored start_date directly. One naive and one aware is a TypeError — on
+    Postgres (aware start) for a date-only end, and here (naive SQLite start)
+    for an explicit-offset end. The dialog now sends only a changed end date,
+    so this is the path a renewal takes."""
+    created = client.post("/api/service-agreements", json=_agreement_payload()).json()
+    r = client.patch(
+        f"/api/service-agreements/{created['id']}",
+        json={"end_date": "2030-01-01T00:00:00+00:00"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["end_date"].startswith("2030-01-01")
+
+
+def test_create_without_a_price_is_422_not_a_silent_zero(client: TestClient):
+    payload = _agreement_payload()
+    del payload["price"]
+    r = client.post("/api/service-agreements", json=payload)
+    assert r.status_code == 422
+    assert client.get("/api/service-agreements").json() == []
+
+
+def test_relinking_to_a_template_that_does_not_exist_is_404(client: TestClient):
+    tpl = _create_template(client)
+    created = client.post(
+        "/api/service-agreements", json=_agreement_payload(template_id=tpl["id"])
+    ).json()
+    r = client.patch(
+        f"/api/service-agreements/{created['id']}", json={"template_id": str(uuid4())}
+    )
+    assert r.status_code == 404
+    assert client.get(f"/api/service-agreements/{created['id']}").json()["template_id"] == tpl["id"]
+    # Re-sending the current template is not a relink, even once it is deleted.
+    assert client.delete(f"/api/service-agreements/templates/{tpl['id']}").status_code in (200, 204)
+    r2 = client.patch(f"/api/service-agreements/{created['id']}", json={"template_id": tpl["id"]})
+    assert r2.status_code == 200, r2.text
+
+
+def test_an_agreement_whose_customer_row_is_gone_reads_as_deleted(client: TestClient):
+    """No customer row at all is as gone as a soft-deleted one — the edit
+    dialog must not present it as a live customer."""
+    created = client.post("/api/service-agreements", json=_agreement_payload()).json()
+    Session = sessionmaker(bind=client._engine)  # type: ignore[attr-defined]
+    with Session() as db:
+        db.delete(db.get(Customer, UUID(CUSTOMER_ID)))
+        db.commit()
+    row = client.get(f"/api/service-agreements/{created['id']}").json()
+    assert row["customer_name"] is None
+    assert row["customer_deleted"] is True
+
+
+def test_create_with_mixed_date_formats_is_not_a_500(client: TestClient):
+    """#684 audit: one date-only and one offset date compared naive against
+    aware — a TypeError before the handler could answer."""
+    r = client.post(
+        "/api/service-agreements",
+        json=_agreement_payload(start_date="2026-09-10", end_date="2027-09-10T00:00:00+00:00"),
+    )
+    assert r.status_code == 201, r.text
+    bad = client.post(
+        "/api/service-agreements",
+        json=_agreement_payload(start_date="2027-09-10T00:00:00+00:00", end_date="2026-09-10"),
     )
     assert bad.status_code == 422

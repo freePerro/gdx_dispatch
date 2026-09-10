@@ -193,12 +193,15 @@ def test_service_agreement_relink_and_redate():
             status="active",
         )
         db.add(agreement)
+        # #684: a relink must point at a customer that exists.
+        new_customer_row = Customer(id=uuid4(), name="Relinked Customer", company_id=TENANT)
+        db.add(new_customer_row)
         db.commit()
         agreement_id = str(agreement.id)
+        new_customer = str(new_customer_row.id)
         db.close()
 
         client = TestClient(app)
-        new_customer = str(uuid4())
         r = client.patch(
             f"/api/service-agreements/{agreement_id}",
             json={"start_date": "2026-02-01T00:00:00Z", "customer_id": new_customer},
