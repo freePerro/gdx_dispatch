@@ -23,7 +23,7 @@
 # ⚠ Check who loses access FIRST. The gate 403s every user whose role snapshot
 # lacks the key. Only admin and owner pass via the BUILTIN union escape hatch.
 #
-# Counts at freeze: 422 total — 409 staff, 13 customer-portal.
+# Counts at freeze: 405 total — 392 staff, 13 customer-portal.
 
 # ── customer portal ───────────────────────────────────────────────────────
 # These authenticate a CUSTOMER, not a tenant user, so no role or permission
@@ -82,8 +82,6 @@ DELETE /api/integrations/zapier/unsubscribe
 DELETE /api/integrations/{integration_id}
 DELETE /api/integrations/{integration_type}
 DELETE /api/inventory/parts/{item_id}
-DELETE /api/invoices/{invoice_id}
-DELETE /api/invoices/{invoice_id}/lines/{line_id}
 DELETE /api/job-templates/{template_id}
 DELETE /api/jobs/{job_id}/dependencies/{dependency_id}
 DELETE /api/jobs/{job_id}/notes/{note_id}
@@ -138,8 +136,6 @@ PATCH /api/expenses/{expense_id}
 PATCH /api/fleet/vehicles/{vehicle_id}
 PATCH /api/inbound-email/{email_id}/read
 PATCH /api/inventory/parts/{item_id}
-PATCH /api/invoices/{invoice_id}
-PATCH /api/invoices/{invoice_id}/lines/{line_id}
 PATCH /api/job-templates/{template_id}
 PATCH /api/jobs/{job_id}
 PATCH /api/jobs/{job_id}/notes/{note_id}
@@ -271,19 +267,6 @@ POST /api/integrations/{integration_id}/test
 POST /api/integrations/{integration_type}/connect
 POST /api/inventory/items/{item_id}/adjust
 POST /api/inventory/parts
-POST /api/invoices
-POST /api/invoices/{invoice_id}/apply-credit
-POST /api/invoices/{invoice_id}/credit-memo
-POST /api/invoices/{invoice_id}/email-preview
-POST /api/invoices/{invoice_id}/finalize
-POST /api/invoices/{invoice_id}/lines
-POST /api/invoices/{invoice_id}/mark-sent
-POST /api/invoices/{invoice_id}/pay-link
-POST /api/invoices/{invoice_id}/payments
-POST /api/invoices/{invoice_id}/payments/{payment_id}/void
-POST /api/invoices/{invoice_id}/refund
-POST /api/invoices/{invoice_id}/send
-POST /api/invoices/{invoice_id}/send-receipt
 POST /api/job-templates
 POST /api/job-templates/{template_id}/apply
 POST /api/jobs
