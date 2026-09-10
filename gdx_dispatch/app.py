@@ -1179,6 +1179,14 @@ async def lifespan(app: FastAPI):
     observability.init_otel(service_name="gdx-api", app=app)
     _check_encryption_at_rest()
     _check_customer_facing_config()
+    # The plugin-host internal token is normally DERIVED from SECRET_KEY, so a
+    # container that disagrees breaks plugin events, the restart hook, the
+    # credential store and the browser stream at once — while every container
+    # still looks healthy. Log the fingerprint so it can be compared with
+    # plugin-host's line instead of guessed at (#596).
+    from gdx_dispatch.core.internal_auth import log_identity
+
+    log_identity(logging.getLogger("gdx_dispatch.app.startup_internal_auth"), "app")
     # Sprint Outlook Integration: seed GDX outlook credentials from env
     # if the existing POWER_APPS_*/GDX_MICROSOFT_SECRET_KEY are set.
     # Idempotent + swallow-all-errors per bootstrap contract.

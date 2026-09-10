@@ -36,7 +36,6 @@ See gdx_dispatch/docs/decisions/ADR-013-third-party-module-plugins.md.
 """
 from __future__ import annotations
 
-import hmac
 import logging
 import os
 import signal
@@ -45,6 +44,12 @@ import threading
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse
 
+from gdx_dispatch.core.internal_auth import (
+    INTERNAL_TOKEN_HEADER,
+    REFUSAL_DETAIL,
+    log_identity,
+    rejection_reason,
+)
 from gdx_dispatch.plugin_api.discovery import discover_with_dists
 from gdx_dispatch.plugin_api.events import PluginEvent, event_matches
 
@@ -52,8 +57,9 @@ log = logging.getLogger(__name__)
 
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 
-# Header carrying the shared internal-auth token (see _install_internal_guard).
-INTERNAL_TOKEN_HEADER = "x-gdx-internal-token"
+# INTERNAL_TOKEN_HEADER is imported above rather than defined here: one
+# definition, shared with the core app's caller side. It used to be a second
+# string literal in this file, differing from the caller's only in case.
 
 
 def create_plugin_host(plugins=None, degraded=None, stale=None, dists=None) -> FastAPI:
@@ -84,22 +90,38 @@ def create_plugin_host(plugins=None, degraded=None, stale=None, dists=None) -> F
 
     app = FastAPI(title="GDX Plugin Host")
 
+    # Say which internal-auth identity this container ended up with. The
+    # token is normally DERIVED from SECRET_KEY, so a divergence between
+    # here and the core app is otherwise invisible until the whole plugin
+    # surface stops. Compare this line with the app's.
+    log_identity(log, "plugin-host")
+
     # Internal-route auth. plugin-host's `/internal/*` routes (restart, browser
     # credentials, and the event/schedule dispatch below) were historically
     # protected only by network isolation ("reached only from the core app").
-    # Once an untrusted-workflow container (n8n) shares the compose network that
-    # assumption breaks, so we add a shared-secret gate. STAGED ROLLOUT: enforced
-    # only when GDX_INTERNAL_TOKEN is set — existing prod/dev (token unset, no n8n
-    # on the net) keep working; Sprint 3 mints the token AND isolates n8n's
-    # network, at which point this becomes the second line of defence.
+    # Network isolation is a single point of failure for a route that hands out
+    # the operator's stored login, so it gets a shared-secret gate as well.
+    # (The original comment justified this by n8n sharing the compose network.
+    # It does not today — prod runs no n8n, and the customer stack keeps it on a
+    # separate network — so this is defence in depth, not a live breach.)
+    #
+    # This FAILS CLOSED (#596). It used to enforce only when GDX_INTERNAL_TOKEN
+    # happened to be set — a "staged rollout" whose second stage never landed,
+    # so the token was unset in production and the gate had never once run. The
+    # policy now lives in core.internal_auth, shared with the websocket below.
     @app.middleware("http")
     async def _internal_guard(request: Request, call_next):  # noqa: ANN001
         if request.url.path.startswith("/internal/"):
-            token = os.getenv("GDX_INTERNAL_TOKEN", "")
-            if token and not hmac.compare_digest(
-                request.headers.get(INTERNAL_TOKEN_HEADER, ""), token
-            ):
-                return JSONResponse(status_code=401, content={"detail": "internal token required"})
+            reason = rejection_reason(request.headers.get(INTERNAL_TOKEN_HEADER, ""))
+            if reason:
+                # The reason goes to the log, not the wire: telling an
+                # unauthenticated caller "the gate is unconfigured" advertises
+                # the window. The operator who can fix it reads the log.
+                log.warning(
+                    "plugin_host_internal_refused path=%s reason=%s",
+                    request.url.path, reason,
+                )
+                return JSONResponse(status_code=401, content={"detail": REFUSAL_DETAIL})
         return await call_next(request)
 
     def _degraded_payload() -> dict:
@@ -254,12 +276,12 @@ def create_plugin_host(plugins=None, degraded=None, stale=None, dists=None) -> F
         Token check is INLINE, not via _internal_guard: Starlette http middleware
         never runs for websocket scope, so this — the highest-value /internal/*
         route (it autofills the operator's stored login) — must gate itself, or
-        an on-network container could open it tokenless. Same staged rule: only
-        enforced when GDX_INTERNAL_TOKEN is set."""
-        token = os.getenv("GDX_INTERNAL_TOKEN", "")
-        if token and not hmac.compare_digest(
-            ws.headers.get(INTERNAL_TOKEN_HEADER, ""), token
-        ):
+        an on-network container could open it tokenless. It shares
+        core.internal_auth with the middleware so the two rules cannot drift,
+        and it FAILS CLOSED: an unset token refuses (#596)."""
+        reason = rejection_reason(ws.headers.get(INTERNAL_TOKEN_HEADER, ""))
+        if reason:
+            log.warning("plugin_host_internal_ws_refused reason=%s", reason)
             await ws.close(code=1008)  # policy violation
             return
         from gdx_dispatch.plugin_host.browser_stream import stream_browser

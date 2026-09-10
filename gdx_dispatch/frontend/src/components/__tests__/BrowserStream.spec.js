@@ -76,6 +76,51 @@ describe('BrowserStream.vue remembered login', () => {
     expect(w.find('[data-testid="browser-creds-btn"]').text()).toContain('Login remembered');
   });
 
+  it('a 403 means "no remembered login for you" — the button offers to save one', async () => {
+    // Non-owner, or no consent: the store really has nothing for this user, and
+    // the save would 403 too. "Remember login" is the honest label.
+    apiGet.mockRejectedValueOnce(Object.assign(new Error('forbidden'), { status: 403 }));
+    const w = mountStream();
+    await flushPromises();
+    expect(w.find('[data-testid="browser-creds-btn"]').text()).toContain('Remember login');
+    expect(w.vm.credsUnknown).toBe(false);
+  });
+
+  it('a 5xx means we could not ASK — it must not claim no login is remembered', async () => {
+    // Since #596 the plugin browser service can refuse this server's own
+    // internal token, surfacing here as 502. Reporting that as "no sign-in
+    // remembered" invites the owner to re-enter a credential that is already
+    // stored and was never the problem.
+    apiGet.mockRejectedValueOnce(Object.assign(new Error('bad gateway'), { status: 502 }));
+    const w = mountStream();
+    await flushPromises();
+    const label = w.find('[data-testid="browser-creds-btn"]').text();
+    expect(label).toContain('unknown');
+    expect(label).not.toContain('Remember login');
+    expect(label).not.toContain('Login remembered');
+    expect(w.vm.credsUnknown).toBe(true);
+  });
+
+  it('a successful save settles the question a 5xx left open', async () => {
+    // credsUnknown was assigned only inside loadCredsStatus, so after a 502 the
+    // button kept reading "Login status unknown" even after a save that
+    // demonstrably reached the store — a label asserting a fact that had since
+    // become false, which is the class this branch exists to remove.
+    apiGet.mockRejectedValueOnce(Object.assign(new Error('bad gateway'), { status: 502 }));
+    const w = mountStream();
+    await flushPromises();
+    expect(w.vm.credsUnknown).toBe(true);
+
+    await w.find('[data-testid="browser-creds-btn"]').trigger('click');
+    w.vm.credsUsername = 'doug@x.com';
+    w.vm.credsPassword = 'pw';
+    await w.vm.onSaveCreds();
+    await flushPromises();
+
+    expect(w.vm.credsUnknown).toBe(false);
+    expect(w.find('[data-testid="browser-creds-btn"]').text()).toContain('Login remembered');
+  });
+
   it('saves credentials with the plugin key and closes the dialog', async () => {
     const w = mountStream();
     await flushPromises();

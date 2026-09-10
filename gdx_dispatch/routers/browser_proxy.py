@@ -145,6 +145,31 @@ async def _creds_call(method: str, **kwargs) -> dict:
         r = await client.request(
             method, f"{_host_http_url()}/internal/browser/credentials", headers=headers, **kwargs
         )
+    if r.status_code in (401, 403):
+        # Do NOT relay plugin-host's 401 to the browser. A 401 on this API means
+        # "the OPERATOR's session expired" to every caller in the SPA:
+        # useApi.js burns a refreshAccessToken() and re-sends the request — so a
+        # credential POST gets replayed — and BrowserStream's loadCredsStatus()
+        # swallows it into credsSaved=false, telling the owner no sign-in is
+        # remembered when the app merely could not ask.
+        #
+        # This is server-to-server auth failing, which is a bad gateway, not a
+        # bad user. Since #596 the cause is almost always a missing or mismatched
+        # GDX_INTERNAL_TOKEN in this container.
+        #
+        # The detail string below is for the API response and the log, NOT the
+        # screen: useApi.js maps every status >= 500 to a generic
+        # "Something went wrong". The win here is the status code, not the prose
+        # — 502 stops the SPA burning a token refresh and replaying the request.
+        log.error(
+            "plugin_host_credentials_unauthorized status=%s — plugin-host refused "
+            "this server's internal token (see core/internal_auth.py).",
+            r.status_code,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="the plugin browser service rejected this server's credentials",
+        )
     if r.status_code >= 400:
         raise HTTPException(r.status_code, r.text[:500])
     return r.json()
@@ -275,8 +300,48 @@ async def browser_stream_proxy(websocket: WebSocket, ticket: str = "") -> None:
                 _upstream_to_client(up, websocket, rec),
                 _recorder_heartbeat(websocket, rec),
             )
+    except websockets.exceptions.InvalidStatus as exc:
+        # plugin-host refused the upstream socket. Since #596 the commonest
+        # cause by far is a missing GDX_INTERNAL_TOKEN in this container, and
+        # the operator must be TOLD: this proxy accepts the client socket
+        # before dialling upstream, so a bare close reads to the UI as an
+        # ordinary disconnect (useBrowserStream sets connected=false and
+        # leaves error null) — a dead end with no way to find out why.
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        # Do not name a cause we cannot actually distinguish. uvicorn renders
+        # ANY close-before-accept as HTTP 403, and plugin-host has two of them:
+        # the token gate (1008) and stream_browser's URL allowlist (4403). A
+        # message blaming GDX_INTERNAL_TOKEN would misdiagnose every allowlist
+        # refusal. The server log names both candidates; the operator's screen
+        # says what is true — it was refused, and by whom.
+        log.error(
+            "browser_stream_upstream_refused status=%s key=%s url=%s — plugin-host "
+            "refused /internal/browser/ws. Two causes close before accept and both "
+            "surface as 403: a missing/mismatched GDX_INTERNAL_TOKEN "
+            "(core/internal_auth.py) or a URL not in PLUGIN_BROWSER_ALLOWED_HOSTS "
+            "(plugin_host/browser_stream.py). plugin-host's own log distinguishes them.",
+            status, claims.get("k", ""), claims.get("u", ""),
+        )
+        await _tell_client(
+            websocket,
+            "The plugin browser service refused this connection. An administrator "
+            "can check the plugin-host log for the reason — the usual causes are "
+            "the site not being on the allowed-hosts list, or a server "
+            "configuration problem.",
+        )
     except Exception:
+        # Every OTHER upstream failure — connection refused, timeout, plugin-host
+        # cycling — lands here, and the client socket is ALREADY accepted, so a
+        # bare close reads to the UI as an ordinary disconnect: blank panel, no
+        # reason. That is the same dead end the InvalidStatus arm above exists to
+        # prevent, and it is the LIKELIER arm: restarting plugin-host (which this
+        # PR just made fail loudly) is precisely when it is unreachable.
         log.exception("browser-stream proxy error")
+        await _tell_client(
+            websocket,
+            "Lost the connection to the plugin browser service. If it was just "
+            "restarted, wait a few seconds and try again.",
+        )
     finally:
         # Synchronous drain FIRST: this finally is reached by CancelledError on
         # every prod deploy (uvicorn SIGTERM), and inside a cancelled finally the
@@ -288,6 +353,19 @@ async def browser_stream_proxy(websocket: WebSocket, ticket: str = "") -> None:
             await websocket.close()
         except Exception:
             pass
+
+
+async def _tell_client(websocket, message: str) -> None:
+    """Push a displayable error to the operator's socket. Never raises.
+
+    The client renders `{type: "error"}` (useBrowserStream.js); every other
+    message type it knows is stream content, so without this a refusal upstream
+    is indistinguishable from the stream simply ending.
+    """
+    try:
+        await websocket.send_json({"type": "error", "message": message})
+    except Exception:
+        log.debug("browser-stream: could not deliver error to client")
 
 
 def _start_recorder(claims: dict):

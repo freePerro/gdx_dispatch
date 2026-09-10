@@ -52,6 +52,25 @@ x-app-env: &app-env
   # a var absent from this block never reaches the container no matter what
   # .env says, and the gate that reads it then behaves as "not configured".
   INBOUND_EMAIL_WEBHOOK_SECRET: ${INBOUND_EMAIL_WEBHOOK_SECRET:-}
+  # Shared secret gating plugin-host's /internal/* routes — including the
+  # WebSocket that streams a headless browser and autofills the operator's
+  # stored login (ADR-014). plugin-host FAILS CLOSED on this outside dev
+  # (core/internal_auth.py, #596), so it must be delivered or the plugin
+  # surface stops working.
+  #
+  # It lives in the SHARED block, not app-only, on purpose (#598): celery-high
+  # runs deliver_plugin_event_task, which POSTs /internal/events itself. A
+  # token given only to app + plugin-host would 401 every plugin event
+  # delivery — the same shape that made STRIPE_SECRET_KEY app-only and left
+  # the stale-intent sweep silently inert.
+  GDX_INTERNAL_TOKEN: ${GDX_INTERNAL_TOKEN:-}
+  # Hosts the plugin browser-stream may navigate to. Documented as an operator
+  # override in plugin_host/browser_stream.py and, until now, in no compose
+  # environment block at all — the same #598 shape as GDX_INTERNAL_TOKEN: an
+  # operator sets it, nothing happens, and there is no error saying why. Only
+  # plugin-host reads it, but it rides the shared block so the two stacks that
+  # merge this file cannot drift.
+  PLUGIN_BROWSER_ALLOWED_HOSTS: ${PLUGIN_BROWSER_ALLOWED_HOSTS:-}
 
 services:
   # ── Database ─────────────────────────────────────────────────────────────────

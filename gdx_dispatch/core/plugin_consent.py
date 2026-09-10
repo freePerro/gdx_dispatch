@@ -25,6 +25,7 @@ import httpx
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core import internal_auth
 from gdx_dispatch.plugin_api.events import capability_fingerprint, event_matches
 
 log = logging.getLogger(__name__)
@@ -35,11 +36,31 @@ def _plugin_host_url() -> str:
 
 
 def internal_auth_headers() -> dict[str, str]:
-    """Header carrying the shared internal token for plugin-host /internal/*
-    calls. Empty when unset (staged rollout — plugin-host only enforces when the
-    token is present, and n8n isn't on the network until Sprint 3 sets it)."""
-    tok = os.getenv("GDX_INTERNAL_TOKEN", "")
-    return {"X-GDX-Internal-Token": tok} if tok else {}
+    """Header carrying the shared internal token for plugin-host /internal/* calls.
+
+    Empty when no token is configured. Since #596 plugin-host FAILS CLOSED, so an
+    empty header set in an enforcing environment means every /internal/* call
+    gets a 401 — a real misconfiguration, not a quiet degrade. Log it loudly
+    here, at the caller, because that is the side that can name which container
+    is missing the variable; the 401 on its own only says "someone was refused".
+    """
+    tok = internal_auth.token()
+    if not tok:
+        if internal_auth.enforced():
+            # Neither an explicit GDX_INTERNAL_TOKEN nor a SECRET_KEY to derive
+            # one from. SECRET_KEY has a compose default, so reaching here means
+            # the container was started outside compose or with it blanked.
+            log.error(
+                "No internal token available in this container (neither "
+                "GDX_INTERNAL_TOKEN nor SECRET_KEY is set) but plugin-host "
+                "enforces it (GDX_ENV=%s) — every /internal/* call will 401. "
+                "app, plugin-host and celery-high must all hold the SAME value; "
+                "the compose files have no env_file, so an explicit override "
+                "belongs in the shared x-app-env block.",
+                os.getenv("GDX_ENV", ""),
+            )
+        return {}
+    return {internal_auth.INTERNAL_TOKEN_HEADER: tok}
 
 
 def ensure_consent_table(db: Session) -> None:
