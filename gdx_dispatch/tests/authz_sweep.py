@@ -18,6 +18,8 @@ becomes a deliberate, reviewed act.
 """
 from __future__ import annotations
 
+import inspect
+
 # Callables that constitute authentication, by ``__qualname__``. A route is
 # gated when any dependency in its tree resolves to one of these. Add to this
 # set when a new auth dependency is introduced — otherwise its routes look
@@ -30,7 +32,37 @@ from __future__ import annotations
 # an anonymous caller (their user lookup yields an empty dict, which satisfies
 # no permission or role). Collapsing them by bare name marks every
 # module-gated route as authenticated.
-AUTH_DEPENDENCIES = frozenset(
+# ── the authentication / authorization seam ──────────────────────────────
+#
+# These two sets used to be one. Collapsing them meant the sweep could tell
+# you a route had *someone* behind it, but never whether that someone was
+# ALLOWED — `get_current_user` and `require_permission(...)` scored
+# identically. That is why `routers/payments.py` could carry mutation routes
+# with no permission gate and still show green.
+#
+# AUTHN answers "who are you"; AUTHZ answers "may you". A route needs both.
+# `ungated_routes()` still unions them, so the authentication ratchet and
+# `.authz_ungated_baseline` are unchanged by this split.
+AUTHZ_DEPENDENCIES = frozenset(
+    {
+        # Permission / role gates proper.
+        "require_permission.<locals>._dependency",
+        "require_role.<locals>._dependency",
+        "_require_admin",
+        "_require_owner",
+        "_require_dispatch",
+        # Machine callers: the scope check, not the key check. `_require_api_key`
+        # authenticates the caller; these decide what that caller may do.
+        "scope_required",
+        "_check_scope",
+        # Verified to raise 403 for anything but admin/owner — that is an
+        # authorization decision, not an identity one.
+        "get_admin_principal",
+        "get_admin_principal_for_ai_settings",
+    }
+)
+
+AUTHN_DEPENDENCIES = frozenset(
     {
         # Staff / session
         "get_current_user",
@@ -40,28 +72,23 @@ AUTH_DEPENDENCIES = frozenset(
         "get_user_for_views",
         "get_user_for_send",
         "get_user_for_oauth_start",
-        "require_permission.<locals>._dependency",
-        "require_role.<locals>._dependency",
-        "_require_admin",
-        "_require_owner",
-        "_require_dispatch",
         # Customer portal
         "_current_portal_user",
         "_get_portal_principal",
         "get_current_portal_customer",
         # Admin / principal
-        "get_admin_principal",
-        "get_admin_principal_for_ai_settings",
         "get_current_principal",
         "get_current_principal_for_ai",
         # Machine callers
         "_require_api_key",
-        "scope_required",
-        "_check_scope",
         # Signature- / secret-verified webhook callers
         "verify_inbound_email_secret",
     }
 )
+
+# Preserved under its original name: every caller of `ungated_routes()` and the
+# `.authz_ungated_baseline` ratchet must see exactly the set they saw before.
+AUTH_DEPENDENCIES = AUTHN_DEPENDENCIES | AUTHZ_DEPENDENCIES
 
 # Explicitly NOT authentication, listed so the intent is on the record:
 #   require_module.<locals>._dependency — feature flag, authenticates nobody
@@ -106,8 +133,50 @@ def _dependency_names(dependant, depth: int = 0) -> set[str]:
     return names
 
 
-def ungated_routes(app=None) -> list[str]:
-    """Sorted ``"METHOD /path"`` strings for every route without auth."""
+MUTATION_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# Authorization does not only live in dependencies. Several routers call a
+# role gate from inside the handler body — `_require_admin(user)` alone appears
+# 34 times. A dependency-only sweep books every one of those as unprotected and
+# tells a reviewer to "add require_permission" to a route that is already
+# admin-only, which is a semantic change, not hardening.
+#
+# This is a TEXT heuristic over the handler's source, so it is deliberately
+# generous: a marker inside a comment or a docstring counts, and a gate reached
+# through a helper two calls deep does not. It exists to keep false ACCUSATIONS
+# out of the baseline, and it errs toward silence.
+IN_BODY_AUTHZ_MARKERS = (
+    "_require_admin(",
+    "_require_owner(",
+    "_is_admin(",
+    "_gate_browser(",
+    "_OWNER_ROLES",
+    "require_permission(",
+    "require_role(",
+)
+
+
+def _enforces_authz_in_body(route) -> bool:
+    """True when the handler's own source calls a role/permission gate."""
+    fn = getattr(route, "endpoint", None)
+    if fn is None:
+        return False
+    try:
+        src = inspect.getsource(fn)
+    except (OSError, TypeError):  # C-level, or source unavailable
+        return False
+    return any(m in src for m in IN_BODY_AUTHZ_MARKERS)
+
+
+_IN_BODY_SENTINEL = "<authz-enforced-in-handler-body>"
+
+
+def _first_registration_dependencies(app=None) -> dict[str, set[str]]:
+    """``{"METHOD /path": {dependency qualnames}}`` for reachable registrations.
+
+    Shared by both sweeps so they can never disagree about which route table
+    they are judging.
+    """
     if app is None:
         from gdx_dispatch.app import create_app
 
@@ -131,14 +200,53 @@ def ungated_routes(app=None) -> list[str]:
     # The lesson survives it: an ungated route excused as unreachable is a
     # hole waiting for an import to fail. Prefer deleting the twin to trusting
     # the shadow.
-    verdict: dict[str, bool] = {}
+    out: dict[str, set[str]] = {}
     for path, route in iter_app_routes(app):
         dependant = getattr(route, "dependant", None)
         if dependant is None:  # mounts, static files, websockets
             continue
-        gated = bool(_dependency_names(dependant) & AUTH_DEPENDENCIES)
+        names = _dependency_names(dependant)
+        if _enforces_authz_in_body(route):
+            names = names | {_IN_BODY_SENTINEL}
         for method in getattr(route, "methods", None) or []:
             if method in ("HEAD", "OPTIONS"):
                 continue
-            verdict.setdefault(f"{method} {path}", gated)
-    return sorted(key for key, gated in verdict.items() if not gated)
+            out.setdefault(f"{method} {path}", names)
+    return out
+
+
+def ungated_routes(app=None) -> list[str]:
+    """Sorted ``"METHOD /path"`` strings for every route without auth."""
+    return sorted(
+        key
+        for key, names in _first_registration_dependencies(app).items()
+        if not (names & AUTH_DEPENDENCIES)
+    )
+
+
+def unpermissioned_mutations(app=None) -> list[str]:
+    """Mutation routes that authenticate a caller but never ask if they may.
+
+    The gap ``ungated_routes()`` structurally cannot see: it unions
+    authentication and authorization, so a route carrying only
+    ``get_current_user`` scores exactly like one carrying
+    ``require_permission("invoices.write")``.
+
+    Restricted to POST/PUT/PATCH/DELETE deliberately. A read that only needs a
+    logged-in user is an ordinary design choice; a *write* that never consults
+    the 61-key permission catalog means the roles a tenant configures do not
+    constrain that route at all.
+
+    This is a structural check, not proof of a vulnerability — some mutations
+    are legitimately open to any authenticated staff user, and the customer
+    portal's own writes are authorized by an unguessable token rather than a
+    permission key. Those live in the baseline with a reason.
+    """
+    return sorted(
+        key
+        for key, names in _first_registration_dependencies(app).items()
+        if key.split(" ", 1)[0] in MUTATION_METHODS
+        and (names & AUTHN_DEPENDENCIES)
+        and not (names & AUTHZ_DEPENDENCIES)
+        and _IN_BODY_SENTINEL not in names
+    )
