@@ -25,12 +25,17 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.column_fit import fit_all
 from gdx_dispatch.models.tenant_models import Document, DocumentFolder
 from gdx_dispatch.modules.vendor_statements.classifier import classify_line
 from gdx_dispatch.modules.vendor_statements.models import VendorStatement, VendorStatementLine
 from gdx_dispatch.modules.vendor_statements.parsers.midwest import (
     PARSER_NAME as MIDWEST_PARSER_NAME,
+)
+from gdx_dispatch.modules.vendor_statements.parsers.midwest import (
     PARSER_VERSION as MIDWEST_PARSER_VERSION,
+)
+from gdx_dispatch.modules.vendor_statements.parsers.midwest import (
     MidwestParseError,
     parse_midwest_statement,
 )
@@ -313,9 +318,19 @@ def _persist_parsed_statement(
         db.add(document)
         db.flush()
 
+    # Clamp parsed text to its columns (#513 sibling sweep). Same shape as the
+    # vendor-bill ingest: text lifted off a PDF into String(N) columns, where
+    # Postgres raises StringDataRightTruncation and aborts the whole import
+    # while SQLite accepts it silently — so the suite cannot see it by default.
+    _stmt_fields, _stmt_cut = fit_all(VendorStatement, {
+        "vendor_code": parsed.customer_code,
+    })
+    if _stmt_cut:
+        log.warning("vendor_statement_field_truncated fields=%s", ",".join(_stmt_cut))
+
     statement = VendorStatement(
         vendor_name=MIDWEST_VENDOR_NAME,
-        vendor_code=parsed.customer_code,
+        vendor_code=_stmt_fields["vendor_code"],
         statement_date=parsed.statement_date,
         document_id=document.id,
         parser_name=MIDWEST_PARSER_NAME,
@@ -325,6 +340,9 @@ def _persist_parsed_statement(
         status="parsed",
         source=source,
         uploaded_by=uploaded_by,
+        # On the ROW, not only in a log: a truncated value is a fact about the
+        # record, and prod has no log shipper (SENTRY_DSN is unset).
+        notes=("truncated to fit: " + ", ".join(_stmt_cut)) if _stmt_cut else None,
     )
     db.add(statement)
     db.flush()
@@ -338,17 +356,30 @@ def _persist_parsed_statement(
             "120+": str(parsed_line.aging_120_plus),
             "retainage": str(parsed_line.retainage),
         }
+        _line_fields, _line_cut = fit_all(VendorStatementLine, {
+            "vendor_invoice_no": parsed_line.invoice_no,
+            "vendor_job_no": parsed_line.job_no,
+            "description": parsed_line.description,
+            "po_ref": parsed_line.po_ref,
+            "aging_bucket": parsed_line.aging_bucket,
+        })
+        if _line_cut:
+            log.warning(
+                "vendor_statement_line_field_truncated line_no=%s fields=%s",
+                parsed_line.line_no, ",".join(_line_cut),
+            )
         line = VendorStatementLine(
             statement_id=statement.id,
             line_no=parsed_line.line_no,
-            vendor_invoice_no=parsed_line.invoice_no,
-            vendor_job_no=parsed_line.job_no,
+            vendor_invoice_no=_line_fields["vendor_invoice_no"],
+            vendor_job_no=_line_fields["vendor_job_no"],
             line_date=parsed_line.line_date,
             amount=parsed_line.amount,
             balance=parsed_line.balance,
-            description=parsed_line.description,
-            po_ref=parsed_line.po_ref,
-            aging_bucket=parsed_line.aging_bucket,
+            description=_line_fields["description"],
+            po_ref=_line_fields["po_ref"],
+            aging_bucket=_line_fields["aging_bucket"],
+            notes=("truncated to fit: " + ", ".join(_line_cut)) if _line_cut else None,
             classification=classify_line(parsed_line.description),
             raw_text=parsed_line.raw_text,
             raw_aging_json=dumps(aging_breakdown),

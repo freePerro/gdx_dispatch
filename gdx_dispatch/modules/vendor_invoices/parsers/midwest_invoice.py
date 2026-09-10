@@ -87,6 +87,19 @@ _ITEM_ROW = re.compile(
 _INVOICE_NO = re.compile(r"INVOICE\s+(\d{4,})", re.IGNORECASE | re.DOTALL)
 _INVOICE_DATE = re.compile(r"Invoice\s+Date:\s*(\d{1,2}/\d{1,2}/\d{4})", re.IGNORECASE)
 _PO = re.compile(r"PO#:\s*(.+)")
+# `[^.]` is a NEGATED CLASS, so it matches newlines: this runs from "TERMS:"
+# past every line break to the next literal period, which is how a wrapped
+# terms paragraph reached 215 characters and overflowed a String(60) on
+# Postgres (#513).
+#
+# DELIBERATELY LEFT MULTI-LINE. Bounding it to one line looked like the
+# tidy fix and quietly broke something else: `_NET_DAYS` searches this
+# capture for "Net N" to derive `net_days` and then `due_date`, and on a
+# bill where the terms wrap, "Net 30" sits on the SECOND line. Stopping at
+# the newline turned net_days=30 / due_date=2026-10-01 into None / None —
+# silently blanking an A/P aging field to tidy a string. The overflow is
+# fixed where it belongs, at the write (core/column_fit.py): the full
+# capture still feeds the date maths, and only the STORED value is clamped.
 _TERMS = re.compile(r"TERMS:\s*([^.]+)\.", re.IGNORECASE)
 _NET_DAYS = re.compile(r"Net\s+(\d+)", re.IGNORECASE)
 
