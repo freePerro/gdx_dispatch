@@ -184,8 +184,10 @@ describe('MobileJobCloseoutDialog', () => {
         notes: 'No issues.',
         signed_by: 'Eric W',
       }),
-      // Offline-queue metadata (actionType/resourceId) rides along.
-      expect.objectContaining({ actionType: 'job.closeout' }),
+      // Offline-queue metadata (actionType/resourceId) rides along — and
+      // conflictIsError (#528): unflagged, a 409 on replay was filed as
+      // "synced" and the closeout vanished without a word.
+      expect.objectContaining({ actionType: 'job.closeout', conflictIsError: true }),
     );
     // Success toast surfaces the Ready-for-Billing handoff.
     const successToast = toastAdd.mock.calls.find((c) => c[0]?.severity === 'success');
@@ -399,6 +401,28 @@ describe('MobileJobCloseoutDialog', () => {
     expect(payload.parts_to_order).toEqual([]);
     // And no return-visit toast when the backend created nothing.
     expect(toastAdd.mock.calls.find((c) => c[0]?.severity === 'info')).toBeFalsy();
+  });
+
+  // #528 sixth review: a redo tapped while an earlier closeout for the job is
+  // still uploading waits for it (the queue sends one at a time per job). The
+  // tech has signal — "No signal" would be a lie.
+  it('a closeout queued behind an earlier one still uploading says so — not "No signal"', async () => {
+    apiPost.mockResolvedValue({ queued: true, idempotency_key: 'k', waiting: true });
+    const wrapper = mountDialog();
+    await flushPromises();
+    await setInput(wrapper, 'mjco-notes', 'Done.');
+    await confirmedSubmit(wrapper);
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ summary: 'Sending after your earlier closeout' }));
+    expect(toastAdd).not.toHaveBeenCalledWith(expect.objectContaining({ summary: 'Saved offline' }));
+  });
+
+  it('a closeout queued with no signal still says "Saved offline"', async () => {
+    apiPost.mockResolvedValue({ queued: true, idempotency_key: 'k' });
+    const wrapper = mountDialog();
+    await flushPromises();
+    await setInput(wrapper, 'mjco-notes', 'Done.');
+    await confirmedSubmit(wrapper);
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'warn', summary: 'Saved offline' }));
   });
 
   // ─── Photos (2026-08-28) ───────────────────────────────────────────

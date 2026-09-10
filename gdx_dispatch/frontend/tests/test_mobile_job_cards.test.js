@@ -45,6 +45,14 @@ vi.mock("../src/composables/useOfflineSync", () => ({
     syncing: { value: false }, syncNow: vi.fn(),
   }),
   queueAction: vi.fn(),
+  // The #528 "didn't send" strip both views mount reads these directly.
+  failedActions: { value: [] },
+  refreshFailedActions: vi.fn(),
+  retryFailedActions: vi.fn(),
+  discardFailedActions: vi.fn(),
+  describeQueuedAction: () => "",
+  describeQueuedRefusal: () => "",
+  isRetryable: () => true,
 }));
 vi.mock("../src/composables/useMobileTour", () => ({
   useMobileTour: () => ({ start: vi.fn() }),

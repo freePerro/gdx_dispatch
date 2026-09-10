@@ -20,6 +20,7 @@ import {
   fetchVapidPublicKey,
 } from '../composables/usePushSubscription'
 import { useOfflineSync } from '../composables/useOfflineSync'
+import QueuedActionFailedStrip from '../components/QueuedActionFailedStrip.vue'
 import { useMobileTour } from '../composables/useMobileTour'
 
 // Sprint tech_mobile S1-A1 + A3 + A4 + A7 — today's route screen.
@@ -707,6 +708,11 @@ function replayTour() {
         </div>
       </Transition>
 
+      <!-- #528: every job's refused offline writes, phone-wide. Today is where
+           the app opens, so a closeout refused overnight is the first thing
+           the tech sees in the morning, not something they have to go find. -->
+      <QueuedActionFailedStrip class="today-failed" />
+
       <div v-if="pushCta.visible" class="push-cta">
         <i class="pi pi-bell" />
         <div class="push-cta-text">
@@ -894,6 +900,7 @@ function replayTour() {
 }
 
 /* Phase 3 (S3-A5) — offline banner */
+.today-failed { margin-bottom: 0.75rem; }
 .offline-banner {
   display: flex;
   align-items: center;
