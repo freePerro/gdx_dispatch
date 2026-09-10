@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.job_access import assert_can_attach_to_job
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import Checklist, ChecklistItem, ChecklistTemplate
 from gdx_dispatch.routers.auth import get_current_user
@@ -147,6 +148,11 @@ def create_job_checklist(
     current_user: dict[str, Any] = Depends(get_current_user), db: Session = Depends(get_db),
 ) -> ChecklistResponse:
     tenant_id = _tenant_id(request)
+    # Object-level authz on the job this write attaches to (#518 sweep).
+    # `require_module` asks whether the feature is on for the tenant, never
+    # who the caller is, so this route accepted any job id from any
+    # authenticated technician. Same opaque 404 as the mobile read gates.
+    assert_can_attach_to_job(db, tenant_id, current_user, job_id)
     checklist_id = str(uuid4())
     created_at = datetime.now(UTC).isoformat()
     try:

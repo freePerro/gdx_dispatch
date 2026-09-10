@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.job_access import assert_can_attach_to_job
 from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -55,6 +56,18 @@ async def upload_voice_note(
     # HTTPException: raise` clause ahead of its catch-all, and a 413 should not
     # depend on the ordering of except clauses staying the way it is today.
     assert_upload_within_limit(file)
+
+    # Object-level authz on the CALLER-SUPPLIED job id. Sibling of #518, same
+    # shape one file over: `job_id` arrives in the multipart form and nothing
+    # checked it, so any authenticated technician could attach a transcribed
+    # voice note to any job in the tenant — a note is evidence on someone
+    # else's work, and the job's note trail is what gets read back later.
+    #
+    # OUTSIDE the try below, for the same reason the size ceiling is: that block
+    # only lets an HTTPException through because of an `except HTTPException:
+    # raise` clause ahead of its catch-all, and an authz refusal must not depend
+    # on the ordering of except clauses staying the way it is today.
+    assert_can_attach_to_job(db, tenant_id, user, job_id)
 
     try:
         # Save audio file

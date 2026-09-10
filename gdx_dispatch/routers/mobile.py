@@ -336,25 +336,15 @@ def _creator_can_read(db: Session, tenant_id: str, job_id: str, user_id: str | N
     is payroll evidence). The moment assigned_to or a live job_assignments
     row exists, this returns False and normal assignment rules are the only
     path in. 2026-07-22 /audit of the mobile job-create fix demanded the
-    read/write split."""
-    if not job_id or not user_id:
-        return False
-    return bool(
-        db.execute(
-            _text(
-                "SELECT 1 FROM jobs j "
-                "WHERE j.id = :j AND j.company_id = :t AND j.deleted_at IS NULL "
-                "AND CAST(j.created_by AS TEXT) = :u "
-                "AND j.assigned_to IS NULL "
-                "AND NOT EXISTS ("
-                "  SELECT 1 FROM job_assignments ja "
-                "  WHERE CAST(ja.job_id AS TEXT) = CAST(j.id AS TEXT) "
-                "  AND ja.deleted_at IS NULL"
-                ") LIMIT 1"
-            ),
-            {"j": str(job_id), "t": tenant_id, "u": str(user_id)},
-        ).scalar()
-    )
+    read/write split.
+
+    Delegates to the shared helper so web + mobile enforce ONE creator rule —
+    the same reason _job_belongs_to_user delegates. #518 needed this grant on
+    the document-upload path, and a second copy of the SQL is how two gates
+    drift apart."""
+    from gdx_dispatch.core.job_access import creator_of_unassigned_job
+
+    return creator_of_unassigned_job(db, tenant_id, job_id, user_id)
 
 
 def _assert_job_read_access(db: Session, request: Request, current_user: Any, job_id: str) -> str:

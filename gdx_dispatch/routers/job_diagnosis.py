@@ -19,6 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.job_access import assert_can_attach_to_job
 from gdx_dispatch.models.tenant_models import JobDiagnosis
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -157,7 +158,12 @@ def create_diagnosis(
     current_user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> DiagnosisOut:
-    _ = request
+    # Object-level authz on the job this write attaches to (#518 sweep).
+    # `require_module` asks whether the feature is on for the tenant, never
+    # who the caller is, so this route accepted any job id from any
+    # authenticated technician. Same opaque 404 as the mobile read gates.
+    _tenant = str((getattr(request.state, "tenant", {}) or {}).get("id", ""))
+    assert_can_attach_to_job(db, _tenant, current_user, job_id)
     job_uuid = _validate_uuid(job_id, "Job")
     _validate_service_type(payload.service_type)
     user = current_user or {}
@@ -184,6 +190,18 @@ def create_diagnosis(
         raise HTTPException(status_code=500, detail="Failed to save diagnosis") from None
 
 
+def _assert_may_touch_diagnosis(db, request, current_user, diag) -> None:
+    """Same job gate as the create path, applied to an EXISTING row.
+
+    The create gate alone bolts the door in and leaves the door out open: an
+    unrelated technician could still edit or delete somebody else's diagnosis,
+    and destroying the evidence is the same harm as planting it. Resolve the
+    row's OWN job_id rather than trusting anything the caller sent.
+    """
+    tenant = str((getattr(request.state, "tenant", {}) or {}).get("id", ""))
+    assert_can_attach_to_job(db, tenant, current_user, str(diag.job_id))
+
+
 @router.patch("/api/diagnosis/{diagnosis_id}", response_model=DiagnosisOut)
 def update_diagnosis(
     diagnosis_id: str,
@@ -192,8 +210,6 @@ def update_diagnosis(
     current_user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> DiagnosisOut:
-    _ = current_user
-    _ = request
     diag_uuid = _validate_uuid(diagnosis_id, "Diagnosis")
     _validate_service_type(payload.service_type)
     try:
@@ -205,6 +221,7 @@ def update_diagnosis(
         ).scalar_one_or_none()
         if not diag:
             raise HTTPException(status_code=404, detail="Diagnosis not found")
+        _assert_may_touch_diagnosis(db, request, current_user, diag)
         diag.service_type = payload.service_type
         diag.data = payload.data
         diag.notes = payload.notes
@@ -225,8 +242,6 @@ def delete_diagnosis(
     current_user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
-    _ = current_user
-    _ = request
     diag_uuid = _validate_uuid(diagnosis_id, "Diagnosis")
     try:
         diag = db.execute(
@@ -237,6 +252,7 @@ def delete_diagnosis(
         ).scalar_one_or_none()
         if not diag:
             raise HTTPException(status_code=404, detail="Diagnosis not found")
+        _assert_may_touch_diagnosis(db, request, current_user, diag)
         diag.deleted_at = datetime.now(UTC)
         db.commit()
         return {"deleted": True}
