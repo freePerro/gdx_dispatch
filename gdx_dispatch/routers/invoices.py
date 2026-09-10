@@ -16,7 +16,7 @@ from sqlalchemy import text as _text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.invoice_delivery import require_deliverable
 from gdx_dispatch.core.modules import require_module, require_permission
@@ -1136,6 +1136,11 @@ def create_invoice(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
+    # Before anything is staged (#696): deposit netting below writes audit
+    # rows on the deposits it voids or credits, mid-create, and the first audit
+    # write on an engine initializes the guard — committing (or rolling back)
+    # whatever is pending. Primed here, a failed create still leaves nothing.
+    ensure_audit_table(db)
     # Counter-sale invoices skip the job lookup entirely; the contract guards
     # estimate_id/from_part_ids so we can't reach those branches without a job.
     job: Job | None = None

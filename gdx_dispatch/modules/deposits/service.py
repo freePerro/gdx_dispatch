@@ -349,6 +349,42 @@ def adopt_orphan_deposit_invoices(db: Session, estimate, job_id) -> int:
     return len(orphans)
 
 
+def _audit_superseded_deposit(
+    db: Session, dep: Invoice, final: Invoice, *, actor: str, action: str, details: dict
+) -> None:
+    """Record a supersede on the DEPOSIT it changed (#696).
+
+    The void or credit is a side effect of creating a different invoice, and
+    the final's own ``invoice_created`` row never named the deposit — so on
+    prod a deposit sat void with nothing saying who voided it or why. Same
+    action names as the /void and /credit-memo routes, so a void or a credit
+    reads the same in the trail whichever path made it; ``via`` says it was a
+    supersede, and which final did it.
+
+    Staged, not committed: it lands or rolls back with the caller's create,
+    like everything else here. That holds only because both create handlers
+    prime the audit table before they stage anything — the first audit write
+    on an engine initializes the guard and would commit the half-built create.
+    """
+    from gdx_dispatch.core.audit import log_audit_event_sync
+
+    log_audit_event_sync(
+        db=db,
+        tenant_id=None,
+        user_id=actor,
+        action=action,
+        entity_type="invoice",
+        entity_id=str(dep.id),
+        details={
+            "invoice_number": dep.invoice_number,
+            "via": "deposit_superseded",
+            "superseded_by": final.invoice_number,
+            "final_invoice_id": str(final.id),
+            **details,
+        },
+    )
+
+
 def apply_deposits_to_final(db: Session, invoice: Invoice, *, actor: str) -> dict | None:
     """Net this job's deposit invoices into a freshly-created final/standard
     invoice. Adds ONE negative 'Less deposit paid' line for the paid portion
@@ -453,6 +489,10 @@ def apply_deposits_to_final(db: Session, invoice: Invoice, *, actor: str) -> dic
                 settle_opening_on_void(db, dep, actor=actor)
                 dep.balance_due = _money(Decimal("0"))
                 voided.append(dep.invoice_number)
+                _audit_superseded_deposit(
+                    db, dep, invoice, actor=actor, action="invoice_voided",
+                    details={"total": _to_f(dep.total)},
+                )
             else:
                 # Partially-paid: the payment history must survive, so void
                 # is off the table — credit-memo the remainder. The paid
@@ -475,6 +515,14 @@ def apply_deposits_to_final(db: Session, invoice: Invoice, *, actor: str) -> dic
                 resettle_invoice_payments(db, dep, actor=actor)
                 _recalculate_invoice(dep, db)
                 superseded.append(dep.invoice_number)
+                _audit_superseded_deposit(
+                    db, dep, invoice, actor=actor, action="credit_memo_issued",
+                    details={
+                        "amount": _to_f(adj.amount),
+                        "reason": adj.reason,
+                        "adjustment_id": str(adj.id),
+                    },
+                )
         # A DRAFT deposit with a balance is edited or deleted, not credited
         # (mirrors issue_credit_memo's draft refusal) — leave it alone.
 

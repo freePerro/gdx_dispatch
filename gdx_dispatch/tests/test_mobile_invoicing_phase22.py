@@ -442,6 +442,123 @@ def test_send_receipt_no_payment_404(session_factory):
 # ---------------------------------------------------------------------------
 
 
+def test_truck_create_audits_the_deposit_it_voids(session_factory):
+    """#696. The truck path runs the same deposit netting as the office create;
+    the deposit it voids carries its own row, naming the tech who did it and
+    the invoice that superseded it."""
+    from sqlalchemy import select
+
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.models.tenant_models import Invoice
+    from gdx_dispatch.modules.deposits import create_deposit_invoice
+    from gdx_dispatch.modules.proposals.models import Estimate
+
+    seed = _seed(session_factory)
+    estimate_id = _build_and_accept(session_factory, seed)
+    db = session_factory()
+    try:
+        est = db.get(Estimate, UUID(estimate_id))
+        dep = create_deposit_invoice(
+            db, estimate=est, amount=100.0, tenant_id="tenant-a",
+            actor="user-1", source="test",
+        )
+        dep_id = dep.id
+        resp = mobile_invoicing.mobile_create_invoice(
+            job_id=seed["job_id"],
+            payload=mobile_invoicing.CreateInvoiceIn(estimate_id=estimate_id),
+            request=_request(), current_user=_TEST_USER, db=db,
+        )
+        assert resp.status_code == 201, resp.body
+        final = _as_json(resp)
+        db.expire_all()
+        assert db.get(Invoice, dep_id).status == "void"
+        rows = db.execute(
+            select(AuditLog).where(
+                AuditLog.entity_id == str(dep_id), AuditLog.action == "invoice_voided"
+            )
+        ).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].user_id == "user-1"
+        assert rows[0].details["via"] == "deposit_superseded"
+        assert rows[0].details["final_invoice_id"] == final["id"]
+    finally:
+        db.close()
+
+
+def test_truck_create_supersedes_the_deposit_atomically_on_a_fresh_engine(session_factory, monkeypatch):
+    """#696. The truck's create voids the job's unpaid deposit and now writes an
+    invoice_voided row on it, mid-create. The first audit write on an engine
+    initializes the guard — on SQLite that commits whatever is pending. The
+    handler primes the audit table before staging anything, so when its one
+    commit fails, the deposit, the new invoice and the row all go together.
+    Deleting that prime turns this red."""
+    from sqlalchemy import select
+    from sqlalchemy.exc import OperationalError
+
+    import gdx_dispatch.core.audit as audit_mod
+    import gdx_dispatch.modules.deposits as deposits_pkg
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.models.tenant_models import Invoice
+    from gdx_dispatch.modules.deposits import create_deposit_invoice
+    from gdx_dispatch.modules.proposals.models import Estimate
+
+    seed = _seed(session_factory)
+    estimate_id = _build_and_accept(session_factory, seed)
+    db = session_factory()
+    try:
+        est = db.get(Estimate, UUID(estimate_id))
+        dep = create_deposit_invoice(
+            db, estimate=est, amount=100.0, tenant_id="tenant-a",
+            actor="user-1", source="test",
+        )
+        dep_id = dep.id
+        assert dep.status == "sent"
+        # The deposit was made by "another worker": this request's engine has
+        # never initialized the audit guard.
+        audit_mod._AUDIT_GUARD_INITIALIZED.discard(db.get_bind())
+
+        netted = {"done": False}
+        real_apply = deposits_pkg.apply_deposits_to_final
+
+        def apply_then_flag(*args, **kwargs):
+            out = real_apply(*args, **kwargs)
+            netted["done"] = True
+            return out
+
+        real_commit = db.commit
+
+        def commit_fails_after_netting():
+            if netted["done"]:
+                raise OperationalError("COMMIT", {}, Exception("connection lost"))
+            return real_commit()
+
+        monkeypatch.setattr(deposits_pkg, "apply_deposits_to_final", apply_then_flag)
+        monkeypatch.setattr(db, "commit", commit_fails_after_netting)
+        with pytest.raises(OperationalError):
+            mobile_invoicing.mobile_create_invoice(
+                job_id=seed["job_id"],
+                payload=mobile_invoicing.CreateInvoiceIn(estimate_id=estimate_id),
+                request=_request(), current_user=_TEST_USER, db=db,
+            )
+        assert netted["done"], "the create never reached deposit netting"
+        monkeypatch.undo()
+        db.rollback()
+        db.expire_all()
+
+        assert db.get(Invoice, dep_id).status == "sent"
+        finals = db.execute(
+            select(Invoice).where(Invoice.billing_type != "deposit")
+        ).scalars().all()
+        assert finals == []
+        assert db.execute(
+            select(AuditLog).where(
+                AuditLog.entity_id == str(dep_id), AuditLog.action == "invoice_voided"
+            )
+        ).scalars().all() == []
+    finally:
+        db.close()
+
+
 def test_create_invoice_zero_price_line_blocked_by_policy(session_factory, monkeypatch):
     """The mobile create path bypassed the F-75 zero-price policy — a tenant
     with block_zero_price_on_invoice ON still got $0 lines from the truck.
