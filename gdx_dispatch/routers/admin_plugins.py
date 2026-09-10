@@ -430,27 +430,79 @@ def restart_plugin_host(
 ) -> dict:
     """Trigger a plugin-host restart so pending installs/removals take effect.
     Safe from inside the app: plugin-host is a separate container, so the core
-    app keeps serving while it cycles (unlike app self-update). Best-effort —
-    plugin-host may already be cycling or not deployed; the UI polls
-    /api/plugins to confirm it comes back."""
+    app keeps serving while it cycles (unlike app self-update).
+
+    NOT best-effort any more. It used to swallow every failure and answer
+    "restart requested" regardless — including a 401, which httpx does not raise
+    on, so the `except` never even saw it. A restart that did not happen now
+    answers 502, because the owner's next act is to use a plugin that has not
+    actually loaded."""
     # Audited before the trigger fires: a restart is what makes pending plugin
     # code go live, and an unrecordable restart must not happen at all.
     _audit(db, request, user, "plugin_host.restart_requested", entity_type="plugin_host")
     db.commit()
     url = os.getenv("PLUGIN_HOST_URL", "http://plugin-host:8000").rstrip("/")
+    refused = False       # plugin-host answered, and said no
+    undelivered = False   # we never got an answer at all
     try:
         from gdx_dispatch.core.plugin_consent import internal_auth_headers
 
-        httpx.post(f"{url}/internal/restart", timeout=5.0, headers=internal_auth_headers())
+        r = httpx.post(f"{url}/internal/restart", timeout=5.0, headers=internal_auth_headers())
+        # A 401 is NOT an exception, so the `except` below never saw it: the
+        # call "succeeded", the cache was dropped and the owner was told
+        # "restart requested" for work that did not happen — and the UI's
+        # confirmation (poll /api/plugins until it comes back) passes trivially
+        # because plugin-host never went down. Sibling of the same silent-success
+        # shape fixed in core/plugin_events.py; found by the #596 sweep.
+        if r.status_code in (401, 403):
+            refused = True
+            log.error(
+                "plugin_host_restart_unauthorized status=%s — GDX_INTERNAL_TOKEN is "
+                "missing or wrong in this container; plugin-host refused the "
+                "restart and pending plugin installs have NOT gone live.",
+                r.status_code,
+            )
+        elif r.status_code >= 400:
+            refused = True
+            log.error("plugin_host_restart_failed status=%s", r.status_code)
     except Exception:
-        log.warning("plugin-host restart trigger failed (may be cycling)")
+        # NOT the same as a refusal. A connection error genuinely means "we do
+        # not know": plugin-host restarts `unless-stopped`, so a host that is
+        # already cycling will come back WITH the pending changes applied.
+        # Calling that a failure would just swap a false success for a false
+        # failure. Report it honestly as undelivered and let the UI's existing
+        # poll (waitForHost) decide — that poll is the real verification, and it
+        # already warns when the host never returns.
+        undelivered = True
+        log.warning("plugin-host restart trigger did not connect (may be cycling)",
+                    exc_info=True)
     # The permission catalog caches the installed-plugin list; a restart is
     # exactly when that list changes, so drop it rather than making the owner
     # wait out the TTL to see the new plugin's permission checkboxes.
     from gdx_dispatch.core.plugin_permissions import reset_catalog_cache
 
     reset_catalog_cache()
-    return {"status": "restart requested"}
+    if refused:
+        # A definite no: plugin-host answered and declined. "restart requested"
+        # here is the fake-success class — the owner installs a plugin, is told
+        # it worked, and it never loads. The UI's own confirmation (poll
+        # /api/plugins until it returns) cannot catch this one either, because
+        # plugin-host never went down, so the poll passes immediately.
+        #
+        # The operator sees useApi.js's generic 5xx toast rather than this
+        # detail, but an error instead of "Restarting — applying changes…" is
+        # the point: they stop believing it worked.
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "plugin-host refused the restart, so pending plugin changes are "
+                "not live."
+            ),
+        )
+    # `delivered` lets the caller tell "it accepted the trigger" from "we could
+    # not reach it". The UI polls either way; this only stops the toast from
+    # asserting more than we know.
+    return {"status": "restart requested", "delivered": not undelivered}
 
 
 @router.delete("/{package}")

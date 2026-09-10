@@ -64,6 +64,17 @@ x-app-env: &app-env
   GDX_FERNET_KEY: ${GDX_FERNET_KEY:-}
   FERNET_KEY: ${FERNET_KEY:-}
   DB_PASSWORD: ${DB_PASSWORD:-}
+  # Gates plugin-host's /internal/* routes (#596). secrets-init mints this
+  # into /secrets/runtime.env, which entrypoint.sh sources over the container
+  # env — so blank here means "use the minted one", same as the keys above.
+  GDX_INTERNAL_TOKEN: ${GDX_INTERNAL_TOKEN:-}
+  # Hosts the plugin browser-stream may navigate to. Documented as an operator
+  # override in plugin_host/browser_stream.py and, until now, in no compose
+  # environment block at all — the same #598 shape as GDX_INTERNAL_TOKEN: an
+  # operator sets it, nothing happens, and there is no error saying why. Only
+  # plugin-host reads it, but it rides the shared block so the two stacks that
+  # merge this file cannot drift.
+  PLUGIN_BROWSER_ALLOWED_HOSTS: ${PLUGIN_BROWSER_ALLOWED_HOSTS:-}
   GDX_PUBLIC_BASE_URL: ${GDX_PUBLIC_BASE_URL:-}
   GDX_BASE_URL: ${GDX_BASE_URL:-}
   RS_PRIVATE_KEY: ${RS_PRIVATE_KEY:-}

@@ -31,11 +31,14 @@
         @click="onCapture"
       />
       <Button
-        :label="credsSaved ? 'Login remembered' : 'Remember login'"
-        :icon="credsSaved ? 'pi pi-check' : 'pi pi-key'"
+        :label="credsLabel"
+        :icon="credsUnknown ? 'pi pi-question-circle' : (credsSaved ? 'pi pi-check' : 'pi pi-key')"
         size="small"
         severity="secondary"
         outlined
+        :title="credsUnknown
+          ? 'Could not reach the plugin browser service to check. Your saved login may still be there.'
+          : undefined"
         data-testid="browser-creds-btn"
         @click="credsOpen = true"
       />
@@ -208,13 +211,31 @@ const credsUsername = ref('');
 const credsPassword = ref('');
 const credsUrl = `/api/plugins/_browser/credentials?key=${encodeURIComponent(props.pluginKey)}`;
 
+const credsUnknown = ref(false);
+
+// "Login remembered" / "Remember login" both assert a FACT about the store. When
+// the store could not be reached, neither is true — say so rather than picking
+// the reassuring-sounding lie.
+const credsLabel = computed(() => {
+  if (credsUnknown.value) return 'Login status unknown';
+  return credsSaved.value ? 'Login remembered' : 'Remember login';
+});
+
 async function loadCredsStatus() {
   try {
     const s = await api.get(credsUrl);
     credsSaved.value = !!s?.saved;
     credsUsername.value = s?.username || '';
-  } catch {
-    credsSaved.value = false; // non-owner / no consent — dialog will just 403 on save
+    credsUnknown.value = false;
+  } catch (e) {
+    // A 403 genuinely means "no remembered sign-in for you" — non-owner or no
+    // consent, and the save will 403 too. A 5xx means we could not ASK: since
+    // #596 the plugin browser service can refuse this server's own internal
+    // token, and reporting that as "no sign-in remembered" invites the owner to
+    // re-enter a credential that is already stored and was never the problem.
+    const status = e?.status ?? 0;
+    credsSaved.value = false;
+    credsUnknown.value = status >= 500 || status === 0;
   }
 }
 
@@ -229,6 +250,11 @@ async function onSaveCreds() {
       password: credsPassword.value,
     }, { successMessage: 'Sign-in remembered — it will be pre-filled for you' });
     credsSaved.value = true;
+    // A save that reached the store settles the question the 5xx left open.
+    // Without this the button kept reading "Login status unknown" after a
+    // demonstrably successful save — a label asserting a fact that is no longer
+    // true, which is the class this whole branch exists to remove.
+    credsUnknown.value = false;
     credsPassword.value = '';
     credsOpen.value = false;
   } finally {
@@ -239,6 +265,7 @@ async function onSaveCreds() {
 async function onForgetCreds() {
   await api.del(credsUrl);
   credsSaved.value = false;
+  credsUnknown.value = false;   // the delete reached the store — we know again
   credsUsername.value = '';
   credsPassword.value = '';
   credsOpen.value = false;

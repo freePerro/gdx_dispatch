@@ -77,9 +77,20 @@ MANAGED_SECRETS = {
     "GDX_FERNET_KEY": _fernet_key,
     "FERNET_KEY": _fernet_key,
     "DB_PASSWORD": lambda: pysecrets.token_urlsafe(24),  # URL-safe: goes in DATABASE_URL
-    # Shared secret gating plugin-host's /internal/* routes. Injected into app +
-    # plugin-host (both load runtime.env), never into n8n. Enforcement is
-    # opt-in: plugin-host only checks it when this is set (staged rollout).
+    # Shared secret gating plugin-host's /internal/* routes — including the
+    # WebSocket that autofills the operator's stored login (ADR-014). Injected
+    # into app, plugin-host AND the celery services (all of them load
+    # runtime.env; celery-high dispatches plugin events over /internal/events),
+    # never into n8n — keeping it out of the untrusted workflow container is the
+    # whole point. plugin-host fails closed on it outside dev
+    # (core/internal_auth.py, #596); this comment previously said "enforcement is
+    # opt-in … staged rollout", and that stage never landed, so the token was
+    # unset in production and the gate had never once run.
+    #
+    # Minting one here is belt-and-braces, not a requirement: when no explicit
+    # token is set, core/internal_auth.py derives one from SECRET_KEY, which
+    # every container in this stack already shares. Stacks with no secrets-init
+    # (prod, demo) rely on exactly that.
     "GDX_INTERNAL_TOKEN": lambda: pysecrets.token_hex(32),
     # Redis --requirepass. URL-safe so it drops cleanly into REDIS_URL. The redis
     # service reads the bare value from the redis_password file; app/celery get it

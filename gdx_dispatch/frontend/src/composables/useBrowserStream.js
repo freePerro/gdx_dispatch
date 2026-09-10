@@ -117,6 +117,12 @@ export function useBrowserStream() {
       else if (msg.type === 'session' && onSession) { onSession(msg.state); onSession = null; }
       else if (msg.type === 'capture' && onCapture) { onCapture({ url: msg.url, text: msg.text, image: msg.image }); onCapture = null; }
       else if (msg.type === 'rec') rec.value = msg;
+      // The server can only reach us over this socket once it is accepted, so a
+      // refusal UPSTREAM (plugin-host declining /internal/browser/ws) arrives as
+      // a message, not as an onerror. Without this branch the socket just closes
+      // and the operator sees a blank panel with no reason — the dead end #596's
+      // fail-closed flip would otherwise create.
+      else if (msg.type === 'error') error.value = msg.message || 'browser stream failed';
     };
   }
 

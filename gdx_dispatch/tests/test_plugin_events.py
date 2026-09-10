@@ -8,6 +8,7 @@ enumeration with fail-closed drift detection.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
@@ -158,28 +159,88 @@ def test_internal_events_isolates_handler_failure():
 # plugin-host /internal/* token gate
 # ---------------------------------------------------------------------------
 
-def test_internal_token_gate_enforced_only_when_set():
-    received: list = []
-    client = TestClient(_host_with(received))
-    body = {"event": "invoice.paid", "data": {}, "tenant_id": "t",
-            "occurred_at": "x", "delivery_id": "d", "recipients": ["n8n"]}
+_BODY = {"event": "invoice.paid", "data": {}, "tenant_id": "t",
+         "occurred_at": "x", "delivery_id": "d", "recipients": ["n8n"]}
 
-    # token unset → open (staged rollout, network-isolation era)
-    r = client.post("/internal/events", json=body)
-    assert r.status_code == 200
 
-    os.environ["GDX_INTERNAL_TOKEN"] = "s3cr3t-token"
+@contextmanager
+def _env(**kv):
+    """Set/clear env vars for the duration of the block."""
+    old = {k: os.environ.get(k) for k in kv}
     try:
-        r = client.post("/internal/events", json=body)
-        assert r.status_code == 401  # missing header
-        r = client.post("/internal/events", json=body,
-                        headers={"X-GDX-Internal-Token": "s3cr3t-token"})
-        assert r.status_code == 200  # correct header
-        r = client.post("/internal/events", json=body,
-                        headers={"X-GDX-Internal-Token": "wrong"})
-        assert r.status_code == 401  # wrong header
+        for k, v in kv.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        yield
     finally:
-        del os.environ["GDX_INTERNAL_TOKEN"]
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_internal_token_gate_is_open_in_dev_so_a_fresh_clone_works():
+    """The one thing that must stay permissive: a dev box with nothing set.
+
+    This is the concession that makes fail-closed deployable at all — without
+    it, `docker compose up` on a fresh clone would 401 its own plugin surface.
+    """
+    client = TestClient(_host_with([]))
+    with _env(GDX_INTERNAL_TOKEN=None, GDX_ENV="dev"):
+        assert client.post("/internal/events", json=_BODY).status_code == 200
+
+
+@pytest.mark.parametrize("env", ["production", "prod", "staging", "prod-eu", "anything-else"])
+def test_internal_http_fails_closed_when_the_token_is_unset(env):
+    """#596: the gate used to run only when GDX_INTERNAL_TOKEN happened to be set.
+
+    It was unset in production, so it had never once run. This is the test that
+    can fail for that defect — it asserts the REFUSAL, and reverting
+    core.internal_auth to `if token and ...` turns it red.
+
+    `prod-eu` and `anything-else` are in the list on purpose: the retired Twilio
+    gate enforced for an allowlist of prod-like names, so an unrecognised value
+    silently disabled it. Anything that is not a known dev/test name enforces.
+    """
+    client = TestClient(_host_with([]))
+    with _env(GDX_INTERNAL_TOKEN=None, GDX_ENV=env):
+        r = client.post("/internal/events", json=_BODY)
+        assert r.status_code == 401
+        # The body is deliberately the SAME whether the gate is unconfigured or
+        # the token was simply wrong — an unauthenticated caller must not learn
+        # which. The operator-actionable reason goes to the log instead.
+        assert r.json()["detail"] == "internal token required"
+
+
+def test_a_configured_token_is_enforced_even_in_dev():
+    """Setting a token is an explicit request to have it checked."""
+    client = TestClient(_host_with([]))
+    with _env(GDX_INTERNAL_TOKEN="s3cr3t-token", GDX_ENV="dev"):
+        assert client.post("/internal/events", json=_BODY).status_code == 401
+        assert client.post(
+            "/internal/events", json=_BODY,
+            headers={"X-GDX-Internal-Token": "s3cr3t-token"},
+        ).status_code == 200
+        assert client.post(
+            "/internal/events", json=_BODY,
+            headers={"X-GDX-Internal-Token": "wrong"},
+        ).status_code == 401
+
+
+def test_every_internal_path_is_gated_not_just_events():
+    """The middleware keys off the /internal/ prefix, so a route added later is
+    covered by construction. Pin that: /internal/restart would restart the host."""
+    client = TestClient(_host_with([]))
+    with _env(GDX_INTERNAL_TOKEN=None, GDX_ENV="production"):
+        assert client.post("/internal/restart").status_code == 401
+        assert client.get("/internal/browser/credentials?key=n8n").status_code == 401
+    # …and the public routes are NOT gated by it.
+    with _env(GDX_INTERNAL_TOKEN=None, GDX_ENV="production"):
+        assert client.get("/health").status_code == 200
+        assert client.get("/api/plugins").status_code == 200
 
 
 async def _ok_stream(ws, url, key):
@@ -194,14 +255,15 @@ def test_internal_ws_token_gate():
     # with it, it passes (stream_browser mocked so no real Chromium launches).
     from starlette.websockets import WebSocketDisconnect
 
-    received: list = []
-    client = TestClient(_host_with(received))
-    os.environ["GDX_INTERNAL_TOKEN"] = "ws-tok"
-    try:
-        with pytest.raises(WebSocketDisconnect), client.websocket_connect(
+    client = TestClient(_host_with([]))
+    with (
+        _env(GDX_INTERNAL_TOKEN="ws-tok", GDX_ENV="dev"),
+        pytest.raises(WebSocketDisconnect),
+        client.websocket_connect(
             "/internal/browser/ws?url=https://example.com&key=n8n"
-        ) as ws:
-            ws.receive_text()  # server closed 1008 → disconnect
+        ) as ws,
+    ):
+        ws.receive_text()  # server closed 1008 → disconnect
         with (
             patch("gdx_dispatch.plugin_host.browser_stream.stream_browser", new=_ok_stream),
             client.websocket_connect(
@@ -210,8 +272,30 @@ def test_internal_ws_token_gate():
             ) as ws,
         ):
             assert ws.receive_text() == "ok"
-    finally:
-        del os.environ["GDX_INTERNAL_TOKEN"]
+
+
+def test_internal_ws_fails_closed_when_the_token_is_unset():
+    """The highest-value route in the repo: it autofills the operator's stored
+    login. #596 — with GDX_INTERNAL_TOKEN unset on prod this accepted anything
+    on the compose network. The socket needs its OWN test because Starlette
+    http middleware never runs for websocket scope, so the HTTP test above
+    cannot cover it — that asymmetry is exactly how the hole survived.
+    """
+    from starlette.websockets import WebSocketDisconnect
+
+    client = TestClient(_host_with([]))
+    # stream_browser is patched to a success stream, so if the gate let the
+    # caller through this would receive "ok" instead of disconnecting — the
+    # assertion can only pass because the refusal happened.
+    with (
+        _env(GDX_INTERNAL_TOKEN=None, GDX_ENV="production"),
+        patch("gdx_dispatch.plugin_host.browser_stream.stream_browser", new=_ok_stream),
+        pytest.raises(WebSocketDisconnect),
+        client.websocket_connect(
+            "/internal/browser/ws?url=https://example.com&key=n8n"
+        ) as ws,
+    ):
+        ws.receive_text()
 
 
 def test_catalog_exposes_events_and_schedules():

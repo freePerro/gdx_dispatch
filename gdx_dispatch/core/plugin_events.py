@@ -108,8 +108,27 @@ def deliver_plugin_event_task(self, envelope: dict) -> int:
             raise self.retry(exc=exc) from exc
         if r.status_code >= 500:
             raise self.retry(exc=RuntimeError(f"plugin-host {r.status_code}"))
+        if r.status_code in (401, 403):
+            # Not a plugin problem and not transient: THIS container is missing
+            # GDX_INTERNAL_TOKEN, or has the wrong one. Retrying cannot help.
+            #
+            # This used to fall into the generic 4xx branch below, which logged
+            # at WARNING and returned 0 — a task that reports success while
+            # silently dropping every plugin event for as long as the
+            # misconfiguration lasts. ERROR, and name the fix, because the
+            # symptom (nothing happens) is otherwise indistinguishable from
+            # "no plugin was interested".
+            log.error(
+                "plugin_event_dispatch_unauthorized event=%s status=%s recipients=%s — "
+                "GDX_INTERNAL_TOKEN is missing or wrong in THIS container. "
+                "plugin-host fails closed on it (#596); the compose files have no "
+                "env_file, so the variable must be in the shared x-app-env block. "
+                "Every event to these plugins is being dropped.",
+                event_name, r.status_code, recipients,
+            )
+            return 0
         if r.status_code >= 300:
-            # 4xx (e.g. 401 token) is not retryable — log and drop.
+            # Other 4xx is not retryable — log and drop.
             log.warning("plugin_event_dispatch_http_%s event=%s", r.status_code, event_name)
             return 0
     return len(recipients)

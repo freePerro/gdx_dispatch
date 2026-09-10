@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   mapCoords, keyPayload, wsTicketUrl, isPrintableKey, isImeKey, diffInput,
-  KBD_SEED, REMOTE_W, REMOTE_H,
+  KBD_SEED, REMOTE_W, REMOTE_H, useBrowserStream,
 } from '../useBrowserStream';
 
 describe('isImeKey (soft-keyboard keydowns routed to the value diff)', () => {
@@ -94,5 +94,54 @@ describe('useBrowserStream pure logic', () => {
     expect(u).toContain('/api/plugins/_browser/ws?');
     expect(u).toContain('ticket=tkt-abc.def.ghi');
     expect(u).toMatch(/^wss?:\/\//);
+  });
+});
+
+describe('server-pushed error (the upstream refusal path)', () => {
+  const realWS = globalThis.WebSocket;
+  afterEach(() => { globalThis.WebSocket = realWS; });
+
+  function mockSocket() {
+    const sock = { readyState: 1, send: vi.fn(), close: vi.fn() };
+    // `new WebSocket(...)` needs a constructable — an arrow fn is not one.
+    globalThis.WebSocket = function WebSocketMock() { return sock; };
+    return sock;
+  }
+
+  it('surfaces {type:"error"} from the server as a displayable error', async () => {
+    const sock = mockSocket();
+    const s = useBrowserStream();
+    await s.connect({ key: 'n8n', url: 'https://example.com',
+                      api: { post: async () => ({ ticket: 't' }) } });
+
+    // plugin-host refused /internal/browser/ws; the proxy relays the reason.
+    sock.onmessage({ data: JSON.stringify({
+      type: 'error',
+      message: 'The plugin browser service refused this connection.',
+    }) });
+
+    expect(s.error.value).toContain('refused this connection');
+  });
+
+  it('without that branch a refusal is indistinguishable from a normal close', async () => {
+    // The regression this guards: onclose alone only clears `connected`, so the
+    // operator gets a blank panel and no reason (#596 fail-closed dead end).
+    const sock = mockSocket();
+    const s = useBrowserStream();
+    await s.connect({ key: 'n8n', url: 'https://example.com',
+                      api: { post: async () => ({ ticket: 't' }) } });
+
+    sock.onclose();
+    expect(s.connected.value).toBe(false);
+    expect(s.error.value).toBeNull();   // <- why the error message is required
+  });
+
+  it('falls back to a generic message when the server sends none', async () => {
+    const sock = mockSocket();
+    const s = useBrowserStream();
+    await s.connect({ key: 'n8n', url: 'https://example.com',
+                      api: { post: async () => ({ ticket: 't' }) } });
+    sock.onmessage({ data: JSON.stringify({ type: 'error' }) });
+    expect(s.error.value).toBe('browser stream failed');
   });
 });

@@ -35,8 +35,20 @@ _DEFAULT_HOSTS = "orderentry.chiohd.com,chiohd.b2clogin.com,hubx.chiohd.com"
 
 
 def allowed_hosts() -> set[str]:
-    raw = os.environ.get("PLUGIN_BROWSER_ALLOWED_HOSTS", _DEFAULT_HOSTS)
-    return {h.strip().lower() for h in raw.split(",") if h.strip()}
+    # The fallback is decided on the PARSED result, not on the raw string.
+    #
+    # Compose passes `${PLUGIN_BROWSER_ALLOWED_HOSTS:-}`, so the variable is
+    # PRESENT AND EMPTY on every deploy that does not set it. A `get(key,
+    # default)` default fires only when the key is ABSENT, so it would collapse
+    # the allowlist to set() and refuse every URL — killing the browser stream
+    # on a stack that changed nothing but the image. Checking the raw string
+    # instead is not enough either: `","` is truthy and still parses to nothing.
+    # Empty means "use the built-in list", the same contract
+    # GDX_PLUGIN_CATALOG_URL has. Narrowing the list is done by naming hosts,
+    # never by blanking it.
+    raw = os.environ.get("PLUGIN_BROWSER_ALLOWED_HOSTS", "")
+    hosts = {h.strip().lower() for h in raw.split(",") if h.strip()}
+    return hosts or {h.strip().lower() for h in _DEFAULT_HOSTS.split(",") if h.strip()}
 
 
 def host_allowed(url: str) -> bool:
@@ -172,8 +184,13 @@ def subresource_should_block(url: str) -> bool:
     Sub-resources normally pass un-allowlisted (pages need their CDN assets to
     render), but the streamed Chromium runs INSIDE the plugin-host container —
     so an allowlisted-but-hostile page could otherwise fetch() the host's own
-    unauthenticated /internal/* API (which stores the remembered credentials),
-    sibling containers, or cloud metadata (169.254.169.254). Explicitly
+    /internal/* API (which stores the remembered credentials), sibling
+    containers, or cloud metadata (169.254.169.254). That API is no longer
+    unauthenticated — it fails closed on a shared token since #596
+    (core/internal_auth.py) — but this guard stays load-bearing: a page running
+    inside the container is exactly the position from which the token might be
+    readable, so network isolation and the token are two layers, not one
+    replacing the other. Explicitly
     allowlisted hosts pass, so a dev allowlist of 127.0.0.1 still works.
     """
     parsed = urlparse(url)

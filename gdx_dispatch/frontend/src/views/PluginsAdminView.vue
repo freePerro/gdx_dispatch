@@ -443,8 +443,25 @@ async function remove(row) {
 async function restartHost() {
   restarting.value = true;
   try {
-    await api.post('/api/admin/plugins/restart', {},
-      { successMessage: 'Restarting plugin-host — applying changes…' });
+    try {
+      await api.post('/api/admin/plugins/restart', {},
+        { successMessage: 'Restarting plugin-host — applying changes…' });
+    } catch (e) {
+      // plugin-host answered and declined (502) — pending changes are NOT live.
+      // Without this catch the throw skipped waitForHost/load entirely, leaving
+      // the table stale, the specific advice below unreachable and the click
+      // ending in an unhandled rejection. useApi already toasted the generic
+      // error; add the part that says what to do about it, then reload so the
+      // rows show the real state.
+      toast.add({
+        severity: 'error',
+        summary: 'Restart refused',
+        detail: 'plugin-host would not restart, so pending plugin changes are not live. Check container logs.',
+        life: 8000,
+      });
+      await load();
+      return;
+    }
     const back = await waitForHost();
     await load();
     // Don't leave the operator with a false "applying…" sense of success: if the
