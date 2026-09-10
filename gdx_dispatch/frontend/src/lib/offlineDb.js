@@ -42,6 +42,35 @@ db.version(2).stores({
 // a single sync_queue store with autoIncrement and no indexes). Dexie's
 // versioning handles the migration automatically — old rows are kept.
 
+// v3 (#528): same stores; a one-time pass over refusals already on the phone.
+// Refused rows now surface in a "didn't send" strip unless `acknowledged`. Before
+// v3, a refusal on the IMMEDIATE online attempt was thrown to the caller — who
+// showed it ("Cannot close out yet", and the tech fixed it and resubmitted) —
+// but was still left FAILED with no flag, so the strip would resurrect every one
+// on the first day. The immediate attempt starts within milliseconds of the row
+// being written; a background replay waits for signal to come back — which can
+// be only seconds in a short dead zone, so the window is kept tight. Rows
+// attempted within 2 s of creation are marked seen; the rest are genuine unseen
+// refusals and stay.
+const LEGACY_IMMEDIATE_MS = 2_000
+
+db.version(3).stores({
+  sync_queue: '++id, status, created_at, action_type, resource_id, idempotency_key',
+  jobs: 'id, dispatch_status, synced_at, updated_at',
+  parts_needed: 'id, job_id, status, synced_at',
+  photos: 'id, job_id, status, created_at',
+  sync_metadata: 'key',
+}).upgrade((tx) =>
+  tx.table('sync_queue').toCollection().modify((row) => {
+    if (row.status !== 'failed' || 'acknowledged' in row) return
+    const created = Date.parse(row.created_at)
+    const attempted = Date.parse(row.last_attempted_at)
+    if (Number.isFinite(created) && Number.isFinite(attempted) && attempted - created < LEGACY_IMMEDIATE_MS) {
+      row.acknowledged = true
+    }
+  }),
+)
+
 export const QUEUE_STATUS = Object.freeze({
   PENDING: 'pending',
   SYNCING: 'syncing',

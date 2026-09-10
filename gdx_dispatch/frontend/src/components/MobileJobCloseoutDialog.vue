@@ -470,14 +470,26 @@ async function submit() {
     // tech's 5 minutes of data entry survives the signal drop.
     const created = await api.postQueued(`/api/jobs/${props.jobId}/closeout`, payload, {
       actionType: 'job.closeout', resourceId: String(props.jobId),
+      // #528: the closeout endpoint never answers 409 on purpose (a sequential
+      // replay is served from the idempotency cache as the original 2xx), so a
+      // 409 here is an integrity error — a refusal. Unflagged, the queue filed
+      // it as "synced" and the closeout vanished without a word.
+      conflictIsError: true,
     })
     if (created?.queued) {
-      toast.add({
-        severity: 'warn',
-        summary: 'Saved offline',
-        detail: 'No signal — the closeout is stored on this phone and will submit automatically when you reconnect.',
-        life: 6000,
-      })
+      toast.add(created.waiting
+        ? {
+            severity: 'info',
+            summary: 'Sending after your earlier closeout',
+            detail: 'An earlier closeout for this job is still uploading — this one is stored on this phone and goes out right after it.',
+            life: 6000,
+          }
+        : {
+            severity: 'warn',
+            summary: 'Saved offline',
+            detail: 'No signal — the closeout is stored on this phone and will submit automatically when you reconnect.',
+            life: 6000,
+          })
     } else {
       toast.add({
         severity: 'success',

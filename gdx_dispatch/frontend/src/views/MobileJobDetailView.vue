@@ -12,6 +12,12 @@
       <h1>Job details</h1>
     </header>
 
+    <!-- #528: what this job's offline writes the server refused on replay —
+         the tech was told they'd submit automatically. Outside the job's
+         v-if on purpose: a job that no longer exists is one of the refusals,
+         and this is where the tech would look for it. -->
+    <QueuedActionFailedStrip :job-id="String(route.params.id)" class="detail-failed" />
+
     <div v-if="loading" class="state-msg">
       <i class="pi pi-spin pi-spinner" />
       <span>Loading…</span>
@@ -1031,6 +1037,7 @@ import AuthedImage from '../components/AuthedImage.vue'
 import DoorSpecList from '../components/DoorSpecList.vue'
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue'
 import PhotoQueueFailedStrip from '../components/PhotoQueueFailedStrip.vue'
+import QueuedActionFailedStrip from '../components/QueuedActionFailedStrip.vue'
 import MobileInvoiceDialog from '../components/MobileInvoiceDialog.vue'
 // PR A (one-job-card plan): the quote / change-order / chat / equipment
 // surfaces existed ONLY on Today's route card. A tech reaching a job any other
@@ -2241,6 +2248,7 @@ onMounted(() => {
    from e2e/mobile-touch-targets.spec.js, which now opens the first job and
    walks this screen too — it previously only covered param-less routes, which
    is how the screen a tech works from went uncovered. */
+.detail-failed { margin: 0 0 0.75rem; }
 .action-bar {
   position: sticky; bottom: 0; z-index: 5;
   display: flex; flex-wrap: wrap; gap: 0.5rem;
