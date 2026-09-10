@@ -503,28 +503,46 @@ def require_permission(*required_keys: str) -> Callable:
     required = set(required_keys)
 
     def _dependency(request: Request, db: Session = Depends(get_db)) -> None:
-        from gdx_dispatch.core.permissions import WILDCARD
-
-        user = _resolve_request_user(request)
-
-        # The escape hatch (admin/owner always pass) is enforced at the
-        # _load_user_permissions level: builtin admin gets every key except
-        # billing.write, builtin owner gets WILDCARD. Reading from User.role
-        # in the tenant DB makes role demotions effective immediately —
-        # we no longer trust the JWT `role` claim for over-privileged
-        # bypass. (Stale-JWT fix, post-phase-4.)
-        cached = getattr(request.state, "user_permissions", None)
-        if cached is None:
-            cached = _load_user_permissions(db, request, user)
-            request.state.user_permissions = cached
-
-        if WILDCARD in cached or required.issubset(cached):
+        if has_permission(request, db, *required):
             return
-
-        missing = sorted(required - cached)
+        missing = sorted(required - _request_permissions(request, db))
         raise HTTPException(status_code=403, detail=f"Missing permission: {missing}")
 
     return _dependency
+
+
+def _request_permissions(request: Request, db: Session) -> set[str]:
+    """The current user's resolved permission set, cached on the request so
+    composite checks hit the DB once.
+
+    The escape hatch (admin/owner always pass) is enforced at the
+    _load_user_permissions level: builtin admin gets every key except
+    billing.write, builtin owner gets WILDCARD. Reading from User.role in the
+    tenant DB makes role demotions effective immediately — we no longer trust
+    the JWT `role` claim for over-privileged bypass. (Stale-JWT fix,
+    post-phase-4.)
+    """
+    cached = getattr(request.state, "user_permissions", None)
+    if cached is None:
+        cached = _load_user_permissions(db, request, _resolve_request_user(request))
+        request.state.user_permissions = cached
+    return cached
+
+
+def has_permission(request: Request, db: Session, *keys: str) -> bool:
+    """True when the current user holds every key — ``require_permission``'s
+    check without the 403, for handlers that shape a response by permission
+    (e.g. which fields a list includes) rather than refusing it.
+
+    Precondition: call it only from a route that depends on
+    ``get_current_user``. With no user on the request yet,
+    ``_resolve_request_user`` falls back to decoding the bearer token itself,
+    which skips the revocation and user-row checks ``get_current_user`` does.
+    """
+    from gdx_dispatch.core.permissions import WILDCARD
+
+    perms = _request_permissions(request, db)
+    return WILDCARD in perms or set(keys).issubset(perms)
 
 
 # @router.get('/api/qb/status', dependencies=[Depends(require_module('quickbooks'))])

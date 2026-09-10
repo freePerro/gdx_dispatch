@@ -94,8 +94,20 @@
         <p>No prior submissions yet.</p>
       </div>
 
+      <!-- #622: a row opens to what the reporter actually wrote — the body
+           (with the page and browser the bug button appends) was stored and
+           shown nowhere — and, for the office, a way to close it. -->
       <DataTable
-      responsiveLayout="scroll" v-else :value="tickets" stripedRows>
+        v-else
+        v-model:expandedRows="expandedRows"
+        :value="tickets"
+        dataKey="id"
+        responsiveLayout="scroll"
+        stripedRows
+        class="clickable-rows"
+        @row-click="toggleTicket($event.data)"
+      >
+        <Column expander style="width: 3rem" />
         <Column field="created_at" header="Submitted">
           <template #body="{ data }">
             {{ shortDate(data.created_at) }}
@@ -121,14 +133,75 @@
             <span v-else class="muted">—</span>
           </template>
         </Column>
+        <template #expansion="{ data }">
+          <div class="ticket-detail" :data-testid="`ticket-detail-${data.id}`">
+            <p class="ticket-meta">
+              <template v-if="data.opened_by_email">
+                Reported by <strong>{{ data.opened_by_email }}</strong> on
+              </template>
+              <template v-else>Reported </template>{{ shortDate(data.created_at) }}
+            </p>
+            <!-- The server sends a body only to the team and to the ticket's
+                 own reporter (it can carry customer details). -->
+            <pre v-if="data.body != null" class="ticket-body" data-testid="ticket-body">{{ data.body || 'No description was given.' }}</pre>
+            <p v-else class="muted" data-testid="ticket-body-withheld">
+              Only the team and the person who reported it can read this report.
+            </p>
+            <p v-if="data.status === 'closed'" class="ticket-resolution" data-testid="ticket-resolution">
+              Closed {{ shortDate(data.closed_at) }} — {{ data.resolution_summary || 'no resolution recorded' }}
+            </p>
+            <Button
+              v-else-if="canClose"
+              label="Close ticket…"
+              icon="pi pi-check-circle"
+              severity="secondary"
+              size="small"
+              data-testid="ticket-close"
+              @click.stop="openClose(data)"
+            />
+          </div>
+        </template>
       </DataTable>
+
+      <Dialog
+        v-model:visible="closeDialogVisible"
+        header="Close ticket"
+        modal
+        :style="{ width: '520px' }"
+        data-testid="ticket-close-dialog"
+      >
+        <p v-if="closeTarget" class="close-subject">{{ closeTarget.subject }}</p>
+        <div class="field">
+          <label for="ticket-resolution-input">Resolution *</label>
+          <Textarea
+            id="ticket-resolution-input"
+            v-model="closeResolution"
+            rows="4"
+            placeholder="What was done — shown on the ticket"
+            data-testid="ticket-resolution-input"
+          />
+        </div>
+        <template #footer>
+          <Button label="Cancel" severity="secondary" @click="closeDialogVisible = false" />
+          <Button
+            label="Close ticket"
+            icon="pi pi-check"
+            :loading="closing"
+            :disabled="!closeResolution.trim()"
+            data-testid="ticket-close-confirm"
+            @click="confirmClose"
+          />
+        </template>
+      </Dialog>
     </section>
 </template>
 
 <script setup>
-import { ref, onMounted } from "vue";
+import { computed, ref, onMounted } from "vue";
 import { useToast } from "primevue/usetoast";
 import { useApi } from "../composables/useApi";
+import { useAuthStore } from "../stores/auth";
+import Dialog from "primevue/dialog";
 import { formatDate } from "../composables/useFormatters";
 import Toolbar from "primevue/toolbar";
 import Button from "primevue/button";
@@ -142,6 +215,16 @@ import ProgressSpinner from "primevue/progressspinner";
 
 const api = useApi();
 const toast = useToast();
+const auth = useAuthStore();
+// Closing is the team's call, not the reporter's — the same key the server
+// gates the close on (settings.write, the admin pages' permission).
+const canClose = computed(() => auth.hasPermission("settings.write"));
+
+const expandedRows = ref({});
+const closeDialogVisible = ref(false);
+const closeTarget = ref(null);
+const closeResolution = ref("");
+const closing = ref(false);
 
 const tickets = ref([]);
 const loading = ref(false);
@@ -226,6 +309,42 @@ function shortDate(iso) {
   return formatDate(iso);
 }
 
+function toggleTicket(row) {
+  const next = { ...expandedRows.value };
+  if (next[row.id]) delete next[row.id];
+  else next[row.id] = true;
+  expandedRows.value = next;
+}
+
+function openClose(row) {
+  closeTarget.value = row;
+  closeResolution.value = "";
+  closeDialogVisible.value = true;
+}
+
+async function confirmClose() {
+  const resolution = closeResolution.value.trim();
+  if (!closeTarget.value || !resolution) return;
+  closing.value = true;
+  try {
+    await api.post(`/api/support/tickets/${closeTarget.value.id}/close`, {
+      resolution_summary: resolution,
+    });
+    toast.add({ severity: "success", summary: "Ticket closed", detail: closeTarget.value.subject, life: 4000 });
+    closeDialogVisible.value = false;
+    await fetchTickets();
+  } catch (e) {
+    toast.add({
+      severity: "error",
+      summary: "Could not close the ticket",
+      detail: e?.body?.detail || e?.message || "Try again.",
+      life: 5000,
+    });
+  } finally {
+    closing.value = false;
+  }
+}
+
 function statusSeverity(status) {
   if (status === "closed") return "success";
   if (status === "in_progress") return "warn";
@@ -288,5 +407,39 @@ onMounted(fetchTickets);
   text-align: center;
   padding: 2rem;
   color: var(--p-text-muted-color);
+}
+.ticket-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+}
+.ticket-meta,
+.ticket-resolution,
+.close-subject {
+  margin: 0;
+}
+.ticket-meta {
+  color: var(--p-text-muted-color);
+  font-size: 0.85rem;
+}
+.ticket-body {
+  margin: 0;
+  padding: 0.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+  font-size: 0.9rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: 6px;
+  background: var(--p-content-hover-background, transparent);
+  color: var(--p-text-color);
+}
+.ticket-resolution {
+  font-weight: 600;
+}
+.close-subject {
+  font-weight: 600;
+  margin-bottom: 0.75rem;
 }
 </style>
