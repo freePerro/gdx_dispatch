@@ -1130,7 +1130,7 @@ def list_invoices(
     return items
 
 
-@router.post("", response_model=None, status_code=201)
+@router.post("", response_model=None, status_code=201, dependencies=[Depends(require_permission("invoices.write"))])
 def create_invoice(
     payload: InvoiceCreateIn,
     _: dict = Depends(get_current_user),
@@ -1993,7 +1993,7 @@ def get_invoice(
     return payload
 
 
-@router.patch("/{invoice_id}", response_model=None)
+@router.patch("/{invoice_id}", response_model=None, dependencies=[Depends(require_permission("invoices.write"))])
 def patch_invoice(
     invoice_id: UUID,
     payload: InvoicePatchIn,
@@ -2057,7 +2057,7 @@ def patch_invoice(
     return _serialize_invoice(invoice)
 
 
-@router.delete("/{invoice_id}", response_model=None)
+@router.delete("/{invoice_id}", response_model=None, dependencies=[Depends(require_permission("invoices.write"))])
 def delete_invoice(
     invoice_id: UUID,
     current_user: dict = Depends(get_current_user),
@@ -2346,7 +2346,7 @@ class SendInvoiceIn(BaseModel):
     to_email: str | None = Field(default=None, max_length=254)
 
 
-@router.post("/{invoice_id}/email-preview", response_model=None)
+@router.post("/{invoice_id}/email-preview", response_model=None, dependencies=[Depends(require_permission("invoices.send"))])
 def invoice_email_preview(
     invoice_id: UUID,
     payload: SendInvoiceIn | None = None,
@@ -2458,7 +2458,7 @@ class MarkSentIn(BaseModel):
     channel: Literal["email", "mail", "manual"] = "manual"
 
 
-@router.post("/{invoice_id}/mark-sent", response_model=None)
+@router.post("/{invoice_id}/mark-sent", response_model=None, dependencies=[Depends(require_permission("invoices.send"))])
 def mark_invoice_sent(
     invoice_id: UUID,
     payload: MarkSentIn | None = None,
@@ -2506,7 +2506,7 @@ def mark_invoice_sent(
     return _serialize_invoice(invoice)
 
 
-@router.post("/{invoice_id}/pay-link", response_model=None)
+@router.post("/{invoice_id}/pay-link", response_model=None, dependencies=[Depends(require_permission("invoices.send"))])
 def get_invoice_pay_link(
     invoice_id: UUID,
     _: dict = Depends(get_current_user),
@@ -2540,7 +2540,7 @@ def get_invoice_pay_link(
     }
 
 
-@router.post("/{invoice_id}/send", response_model=None)
+@router.post("/{invoice_id}/send", response_model=None, dependencies=[Depends(require_permission("invoices.send"))])
 def send_invoice(
     invoice_id: UUID,
     payload: SendInvoiceIn | None = None,
@@ -2687,7 +2687,7 @@ def send_invoice(
     return payload
 
 
-@router.post("/{invoice_id}/lines", response_model=None, status_code=201)
+@router.post("/{invoice_id}/lines", response_model=None, status_code=201, dependencies=[Depends(require_permission("invoices.write"))])
 def add_invoice_line(
     invoice_id: UUID,
     payload: InvoiceLineCreateIn,
@@ -2830,7 +2830,7 @@ def _get_line_or_404(invoice: Invoice, line_id: UUID, db: Session) -> InvoiceLin
     return line
 
 
-@router.patch("/{invoice_id}/lines/{line_id}", response_model=None)
+@router.patch("/{invoice_id}/lines/{line_id}", response_model=None, dependencies=[Depends(require_permission("invoices.write"))])
 def patch_invoice_line(
     invoice_id: UUID,
     line_id: UUID,
@@ -2935,7 +2935,7 @@ def patch_invoice_line(
     return _serialize_line(line)
 
 
-@router.delete("/{invoice_id}/lines/{line_id}", response_model=None)
+@router.delete("/{invoice_id}/lines/{line_id}", response_model=None, dependencies=[Depends(require_permission("invoices.write"))])
 def delete_invoice_line(
     invoice_id: UUID,
     line_id: UUID,
@@ -2987,7 +2987,26 @@ def delete_invoice_line(
     return {"ok": True, "id": str(line.id), "invoice": _serialize_invoice(invoice, include_lines=False)}
 
 
-@router.post("/{invoice_id}/payments", response_model=None, status_code=201)
+# invoices.write, deliberately NOT payments.process.
+#
+# Technicians capture payment in the field through this exact endpoint
+# (MobileInvoiceDialog.vue:134, MobileCustomerQuoteDialog.vue:84, both via
+# api.postQueued); mobile_invoicing.py has no payments route of its own. That
+# makes the key choice load-bearing rather than cosmetic: useOfflineSync retries
+# only on 401 and treats every other 4xx as TERMINAL, so a key the technician
+# lacks would turn a payment captured offline in a garage into a permanent dead
+# write — money collected, nothing recorded, after the tech was told it saved.
+#
+# payments.process would be the obvious name, and it is the wrong choice: it
+# also gates /payments/{id}/void and /apply-credit below, which are office-only
+# and have no mobile caller. Granting it to technicians to preserve capture
+# would hand them payment voiding and credit application as well.
+#
+# invoices.write is held by the live technician role, and by admin/owner via the
+# BUILTIN union — so this changes access for no current user while closing the
+# route to the dispatcher, sales and viewer roles. The boundary it draws: if you
+# may write the invoice, you may record payment against it.
+@router.post("/{invoice_id}/payments", response_model=None, status_code=201, dependencies=[Depends(require_permission("invoices.write"))])
 def record_payment(
     invoice_id: UUID,
     payload: PaymentCreateIn,
@@ -3271,7 +3290,7 @@ def record_payment(
     return _serialize_payment(payment)
 
 
-@router.post("/{invoice_id}/payments/{payment_id}/void", response_model=None)
+@router.post("/{invoice_id}/payments/{payment_id}/void", response_model=None, dependencies=[Depends(require_permission("payments.process"))])
 def void_payment(
     invoice_id: UUID,
     payment_id: UUID,
@@ -3481,7 +3500,7 @@ def void_invoice(
     return _serialize_invoice(invoice)
 
 
-@router.post("/{invoice_id}/finalize", response_model=None)
+@router.post("/{invoice_id}/finalize", response_model=None, dependencies=[Depends(require_permission("invoices.write"))])
 def finalize_invoice(
     invoice_id: UUID,
     _: dict = Depends(get_current_user),
@@ -3725,7 +3744,7 @@ def _net_paid(db: Session, invoice) -> float:
     return _to_float(paid) - _to_float(refunded)
 
 
-@router.post("/{invoice_id}/credit-memo", response_model=None)
+@router.post("/{invoice_id}/credit-memo", response_model=None, dependencies=[Depends(require_permission("invoices.refund"))])
 def issue_credit_memo(
     invoice_id: str,
     payload: CreditMemoIn,
@@ -3809,7 +3828,7 @@ class ApplyCreditIn(BaseModel):
     amount: float = Field(gt=0)
 
 
-@router.post("/{invoice_id}/apply-credit", response_model=None)
+@router.post("/{invoice_id}/apply-credit", response_model=None, dependencies=[Depends(require_permission("payments.process"))])
 def apply_customer_credit(
     invoice_id: UUID,
     payload: ApplyCreditIn,
@@ -3908,7 +3927,7 @@ class RefundIn(BaseModel):
     refund_method: str | None = Field(default=None, max_length=50)
 
 
-@router.post("/{invoice_id}/refund", response_model=None)
+@router.post("/{invoice_id}/refund", response_model=None, dependencies=[Depends(require_permission("invoices.refund"))])
 def process_refund(
     invoice_id: str,
     payload: RefundIn,
@@ -4205,7 +4224,7 @@ def cancel_payment_plan(
 # Payment Receipt (#220)
 # ---------------------------------------------------------------------------
 
-@router.post("/{invoice_id}/send-receipt", response_model=None)
+@router.post("/{invoice_id}/send-receipt", response_model=None, dependencies=[Depends(require_permission("invoices.send"))])
 def send_payment_receipt(
     invoice_id: str,
     db: Session = Depends(get_db),
