@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import (
@@ -242,6 +242,7 @@ def create_task(body: TaskIn, request: Request, user: dict = Depends(get_current
         if norm_phone:
             contact_phone = norm_phone
 
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     task = PlannerTask(
         id=str(uuid4()),
         company_id=tid,
@@ -260,16 +261,16 @@ def create_task(body: TaskIn, request: Request, user: dict = Depends(get_current
         created_at=_now(),
     )
     db.add(task)
+    # The task and its audit row commit together (#700). The row used to be
+    # written after the commit, and get_db() closes without committing, so it
+    # never landed; a failed audit write now fails the request instead of
+    # leaving a task nobody can attribute.
+    log_audit_event_sync(
+        db=db, action="create_task", user_id=uid,
+        entity_type="planner_task", entity_id=str(task.id),
+        details={"title": task.title},
+    )
     db.commit()
-
-    try:
-        log_audit_event_sync(
-            db=db, action="create_task", user_id=uid,
-            entity_type="planner_task", entity_id=str(task.id),
-            details={"title": task.title},
-        )
-    except Exception:
-        log.exception("create_task_audit_failed")
 
     return {"id": str(task.id), "title": task.title, "priority": task.priority, "assigned_to": task.assigned_to}
 

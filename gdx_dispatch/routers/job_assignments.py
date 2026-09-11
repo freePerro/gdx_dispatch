@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.permissions import is_dispatch_manager
@@ -145,6 +145,7 @@ def add_assignment(
     _require_dispatch_role(user)
     tid = _tid(request)
     uid = _uid(user)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
 
     # Reject duplicate active assignments for the same tech on this job.
     existing = db.execute(
@@ -185,7 +186,8 @@ def add_assignment(
     db.add(row)
     db.flush()
     primary = _recompute_primary(db, job_id)
-    db.commit()
+    # Audit rows ride the same commit as the change (#700): get_db() closes
+    # without committing, so a row written after the commit never landed.
     log_audit_event_sync(
         db, tenant_id=tid, user_id=uid, action="assign",
         entity_type="job_assignment", entity_id=row.id,
@@ -195,6 +197,7 @@ def add_assignment(
         },
         request=request,
     )
+    db.commit()
     return _serialize(row)
 
 
@@ -212,6 +215,7 @@ def remove_assignment(
     _require_dispatch_role(user)
     tid = _tid(request)
     uid = _uid(user)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
 
     row = db.execute(
         select(JobAssignment).where(
@@ -225,13 +229,13 @@ def remove_assignment(
     row.deleted_at = datetime.now(timezone.utc)
     db.flush()
     primary = _recompute_primary(db, job_id)
-    db.commit()
     log_audit_event_sync(
         db, tenant_id=tid, user_id=uid, action="unassign",
         entity_type="job_assignment", entity_id=assignment_id,
         details={"job_id": job_id, "tech_id": row.tech_id, "primary_after": primary},
         request=request,
     )
+    db.commit()
     return {"status": "removed", "primary_after": primary}
 
 
@@ -250,6 +254,7 @@ def set_lead(
     _require_dispatch_role(user)
     tid = _tid(request)
     uid = _uid(user)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
 
     rows = _list_active(db, job_id)
     if not rows:
@@ -285,13 +290,13 @@ def set_lead(
     # _recompute_primary sees the new is_lead values, not stale cache.
     db.expire_all()
     primary = _recompute_primary(db, job_id)
-    db.commit()
     log_audit_event_sync(
         db, tenant_id=tid, user_id=uid, action="set_lead",
         entity_type="job", entity_id=job_id,
         details={"lead_tech_id": target_tech, "primary_after": primary},
         request=request,
     )
+    db.commit()
     return {"job_id": job_id, "lead_tech_id": target_tech, "primary_after": primary}
 
 

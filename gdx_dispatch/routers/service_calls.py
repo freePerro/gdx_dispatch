@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.tenant import company_id
@@ -50,6 +50,7 @@ def create_service_call(
     # Map urgency to priority
     priority_map = {"emergency": "Urgent", "urgent": "High", "normal": "Normal"}
     priority = priority_map.get(payload.urgency, "Normal")
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
 
     try:
         from uuid import UUID as _UUID
@@ -71,24 +72,24 @@ def create_service_call(
             updated_at=now_dt,
         )
         db.add(job)
+        # Same commit as the job (#700): get_db() closes without committing.
+        log_audit_event_sync(
+            db, tenant_id=tid, user_id=uid, action="create",
+            entity_type="service_call", entity_id=job_id,
+            details={
+                "customer_name": payload.customer_name,
+                "urgency": payload.urgency,
+                "phone": payload.customer_phone,
+                "preferred_window": payload.preferred_window,
+            },
+            request=request,
+        )
         db.commit()
     except Exception:
         db.rollback()
         log.exception("service_call_create_failed")
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail="Failed to create service call") from None
-
-    log_audit_event_sync(
-        db, tenant_id=tid, user_id=uid, action="create",
-        entity_type="service_call", entity_id=job_id,
-        details={
-            "customer_name": payload.customer_name,
-            "urgency": payload.urgency,
-            "phone": payload.customer_phone,
-            "preferred_window": payload.preferred_window,
-        },
-        request=request,
-    )
 
     return {
         "status": "created",

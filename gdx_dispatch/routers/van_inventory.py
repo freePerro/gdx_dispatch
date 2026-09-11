@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.part_pricing import resolve_sell_price_with_source
@@ -97,6 +97,7 @@ def add_van_item(
     tid = _tid(request)
     uid = _uid(user)
     now = _now()
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     try:
         item = VanInventoryItem(
             id=uuid4(), company_id=tid, truck_id=payload.truck_id,
@@ -105,6 +106,13 @@ def add_van_item(
             created_at=now, updated_at=now,
         )
         db.add(item)
+        # Same commit as the change (#700): get_db() closes without committing.
+        log_audit_event_sync(
+            db, tenant_id=tid, user_id=uid, action="create",
+            entity_type="van_inventory", entity_id=str(item.id),
+            details={"truck_id": payload.truck_id, "name": payload.name, "quantity": payload.quantity},
+            request=request,
+        )
         db.commit()
         db.refresh(item)
     except Exception:
@@ -112,12 +120,6 @@ def add_van_item(
         log.exception("van_inventory_create_failed")
         raise HTTPException(status_code=500, detail="Failed to add van inventory item") from None
 
-    log_audit_event_sync(
-        db, tenant_id=tid, user_id=uid, action="create",
-        entity_type="van_inventory", entity_id=str(item.id),
-        details={"truck_id": payload.truck_id, "name": payload.name, "quantity": payload.quantity},
-        request=request,
-    )
     return _serialize(item)
 
 
@@ -130,6 +132,7 @@ def use_van_item(
 ) -> dict[str, Any]:
     tid = _tid(request)
     uid = _uid(user)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
 
     # PR4: bind a UUID object — the Uuid column rejects a raw str on the
     # SQLite test path; malformed ids 404 instead of 500.
@@ -208,18 +211,19 @@ def use_van_item(
                 created_at=now,
                 updated_at=now,
             ))
+        # Same commit as the stock change (#700): get_db() closes without committing.
+        log_audit_event_sync(
+            db, tenant_id=tid, user_id=uid, action="update",
+            entity_type="van_inventory", entity_id=str(item.id),
+            details={"action": "use", "quantity_deducted": payload.quantity, "job_id": payload.job_id, "new_quantity": item.quantity},
+            request=request,
+        )
         db.commit()
     except Exception:
         db.rollback()
         log.exception("van_inventory_use_failed")
         raise HTTPException(status_code=500, detail="Failed to deduct van inventory") from None
 
-    log_audit_event_sync(
-        db, tenant_id=tid, user_id=uid, action="update",
-        entity_type="van_inventory", entity_id=str(item.id),
-        details={"action": "use", "quantity_deducted": payload.quantity, "job_id": payload.job_id, "new_quantity": item.quantity},
-        request=request,
-    )
     return {"id": str(item.id), "new_quantity": item.quantity, "log_id": str(log_entry.id)}
 
 

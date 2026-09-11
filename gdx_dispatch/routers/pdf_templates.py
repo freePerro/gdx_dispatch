@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 # default_blocks lives in pdf_generator (the consumer) so editor defaults and
@@ -173,6 +173,7 @@ def save_template(
     uid = _uid(user)
     now = datetime.now(timezone.utc)
     blocks_json = json.dumps([b.model_dump() for b in payload.blocks])
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
 
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
     existing = db.execute(
@@ -206,14 +207,15 @@ def save_template(
             updated_at=now,
         )
         db.add(new_tmpl)
-    db.commit()
 
+    # Same commit as the change (#700): get_db() closes without committing.
     log_audit_event_sync(
         db, tenant_id=tid, user_id=uid, action="update",
         entity_type="pdf_template", entity_id=template_id,
         details={"template_type": template_type, "blocks": len(payload.blocks)},
         request=request,
     )
+    db.commit()
 
     return {"status": "saved", "id": template_id, "template_type": template_type}
 

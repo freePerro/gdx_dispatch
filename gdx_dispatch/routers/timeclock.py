@@ -12,7 +12,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pay_periods import (
@@ -1360,6 +1360,7 @@ async def start_break(
 ) -> BreakResponse:
     tenant_id = _tenant_id(request)
     user_id = _user_id(current_user)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     if payload.type not in _VALID_BREAK_TYPES:
         raise HTTPException(
             status_code=422,
@@ -1419,6 +1420,19 @@ async def start_break(
             created_at=now_iso,
         )
         db.add(brk)
+        # The break and its audit row commit together (#700). The row used to be
+        # written after the commit, and get_db() closes without committing, so
+        # it never landed; a failed audit write now fails the request instead
+        # of leaving a break nobody can attribute.
+        await log_audit_event(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            action="timeclock_break_started",
+            entity_type="timeclock_break",
+            entity_id=break_id,
+            details={"type": payload.type, "notes": payload.notes},
+        )
         db.commit()
         # Re-fetch to ensure we have the committed state
         brk_row = db.execute(
@@ -1428,18 +1442,6 @@ async def start_break(
                 TimeclockBreak.user_id == user_id,
             )
         ).scalars().first()
-        try:
-            await log_audit_event(
-                db,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                action="timeclock_break_started",
-                entity_type="timeclock_break",
-                entity_id=break_id,
-                details={"type": payload.type, "notes": payload.notes},
-            )
-        except Exception:
-            log.exception("audit_log_failed_timeclock_break_started")
         log.info("timeclock_break_started", extra={"tenant_id": tenant_id, "user_id": user_id, "break_id": break_id})
         return _break_to_response(brk_row)
     except HTTPException:
@@ -1459,6 +1461,7 @@ async def end_break(
 ) -> BreakResponse:
     tenant_id = _tenant_id(request)
     user_id = _user_id(current_user)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     try:
         # Find the break to end — either by explicit id or the most recent active one
         if payload.break_id:
@@ -1486,21 +1489,19 @@ async def end_break(
         duration = _minutes_between(str(brk.started_at), now_iso)
         brk.ended_at = now_iso
         brk.duration_minutes = duration
+        # Same commit as the change (#700) — see start_break.
+        await log_audit_event(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            action="timeclock_break_ended",
+            entity_type="timeclock_break",
+            entity_id=break_id,
+            details={"duration_minutes": duration},
+        )
         db.commit()
         # Re-fetch to get committed state
         db.refresh(brk)
-        try:
-            await log_audit_event(
-                db,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                action="timeclock_break_ended",
-                entity_type="timeclock_break",
-                entity_id=break_id,
-                details={"duration_minutes": duration},
-            )
-        except Exception:
-            log.exception("audit_log_failed_timeclock_break_ended")
         log.info(
             "timeclock_break_ended",
             extra={"tenant_id": tenant_id, "user_id": user_id, "break_id": break_id, "duration_minutes": duration},

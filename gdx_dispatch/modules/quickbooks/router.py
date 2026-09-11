@@ -15,7 +15,7 @@ from fastapi import Request as FastAPIRequest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.quickbooks import QBConnection, QBEntityMap
@@ -649,6 +649,7 @@ def set_delete_sync(
         raise HTTPException(status_code=400, detail="enabled must be a boolean or null")
 
     tenant_id = _tenant_id(request)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     conn = db.execute(
         select(QBConnection).where(QBConnection.tenant_id == tenant_id)
     ).scalar_one_or_none()
@@ -660,8 +661,9 @@ def set_delete_sync(
 
     previous = conn.delete_sync_enabled
     conn.delete_sync_enabled = new_value
-    db.commit()
-    _audit(db, request, current_user, "set_delete_sync", "settings")
+    # The flag flip and both audit rows commit together — `_audit` commits.
+    # The previous/new row used to be written after that commit and never
+    # landed (#700): get_db() closes without committing.
     log_audit_event_sync(
         db,
         tenant_id=tenant_id,
@@ -671,6 +673,7 @@ def set_delete_sync(
         entity_id="settings",
         details={"previous": previous, "new": new_value},
     )
+    _audit(db, request, current_user, "set_delete_sync", "settings")
 
     return {
         "delete_sync_enabled": sync._delete_sync_enabled(tenant_id, db),
@@ -852,9 +855,10 @@ async def sync_deposits(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     log_audit_event_sync(
-        db, tenant_id=tenant_id, actor_id=str(current_user.get("sub") or ""),
-        action="qb.sync_deposits", entity_type="qb_deposits", entity_id="*", metadata=result,
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(current_user, request), request=request,
+        action="qb.sync_deposits", entity_type="qb_deposits", entity_id="*", details=result,
     )
+    db.commit()  # the pull committed its own rows; this one needs its own (#700)
     return result
 
 
@@ -873,9 +877,10 @@ async def sync_transfers(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     log_audit_event_sync(
-        db, tenant_id=tenant_id, actor_id=str(current_user.get("sub") or ""),
-        action="qb.sync_transfers", entity_type="qb_transfers", entity_id="*", metadata=result,
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(current_user, request), request=request,
+        action="qb.sync_transfers", entity_type="qb_transfers", entity_id="*", details=result,
     )
+    db.commit()  # the pull committed its own rows; this one needs its own (#700)
     return result
 
 
@@ -999,10 +1004,11 @@ async def banking_sync(
         }
 
     log_audit_event_sync(
-        db, tenant_id=tenant_id, actor_id=str(current_user.get("sub") or ""),
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(current_user, request), request=request,
         action="qb.banking_sync", entity_type="qb_banking", entity_id="*",
-        metadata={k: _audit_slice(v) for k, v in out.items()},
+        details={k: _audit_slice(v) for k, v in out.items()},
     )
+    db.commit()  # record_scheduled_run committed; this row needs its own (#700)
     return out
 
 
@@ -1033,15 +1039,19 @@ def put_qb_schedule(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
+    current = _banking.get_or_create_schedule(db)
+    # Staged BEFORE update_schedule, whose commit lands the change and its row
+    # together; a refused frequency rolls both back (#700).
+    log_audit_event_sync(
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(current_user, request), request=request,
+        action="qb.schedule.update", entity_type="qb_sync_schedule", entity_id=str(current.id),
+        details={"frequency": payload.frequency, "previous": current.frequency},
+    )
     try:
         s = _banking.update_schedule(db, payload.frequency)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    log_audit_event_sync(
-        db, tenant_id=tenant_id, actor_id=str(current_user.get("sub") or ""),
-        action="qb.schedule.update", entity_type="qb_sync_schedule", entity_id=str(s.id),
-        metadata={"frequency": s.frequency},
-    )
     return _banking.schedule_dict(s)
 
 

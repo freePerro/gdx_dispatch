@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import Job, SafetyChecklist
@@ -110,6 +110,7 @@ def complete_checklist(
     )
     items_json = json.dumps(payload.items)
     signed_at = now if payload.signed else None
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
 
     try:
         checklist = SafetyChecklist(
@@ -124,6 +125,15 @@ def complete_checklist(
             created_at=now,
         )
         db.add(checklist)
+        # Same commit as the change (#700): get_db() closes without committing.
+        log_audit_event_sync(
+            db, tenant_id=tid, user_id=uid, action="create",
+            entity_type="safety_checklist", entity_id=checklist_id,
+            details={"job_id": payload.job_id, "completed": all_checked,
+                     "items_count": len(payload.items),
+                     "checked_count": sum(1 for i in payload.items if i.get("checked"))},
+            request=request,
+        )
         db.commit()
         db.refresh(checklist)
     except Exception:
@@ -131,14 +141,6 @@ def complete_checklist(
         log.exception("safety_checklist_complete_failed")
         raise HTTPException(status_code=500, detail="Failed to save safety checklist") from None
 
-    log_audit_event_sync(
-        db, tenant_id=tid, user_id=uid, action="create",
-        entity_type="safety_checklist", entity_id=checklist_id,
-        details={"job_id": payload.job_id, "completed": all_checked,
-                 "items_count": len(payload.items),
-                 "checked_count": sum(1 for i in payload.items if i.get("checked"))},
-        request=request,
-    )
     return _serialize(checklist)
 
 
