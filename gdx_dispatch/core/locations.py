@@ -145,7 +145,9 @@ def list_locations(
             locations = db.execute(base_q).scalars().all()
         else:
             assigned_ids = db.execute(
-                select(UserLocation.location_id).where(UserLocation.user_id == user["sub"])
+                # user_id (#701): the login dict has no "sub" — indexing it raised
+                # KeyError, a 500 for every non-admin.
+                select(UserLocation.location_id).where(UserLocation.user_id == user["user_id"])
             ).scalars().all()
             locations = db.execute(
                 base_q.where(ServiceLocation.id.in_(assigned_ids))

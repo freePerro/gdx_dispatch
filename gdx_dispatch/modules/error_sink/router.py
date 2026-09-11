@@ -4,13 +4,16 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.audit import resolve_audit_actor
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.models.tenant_models import User
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -64,6 +67,49 @@ class ResolvePayload(BaseModel):
     resolve_group: bool = False
 
 
+def _as_uuid(value: Any) -> UUID | None:
+    try:
+        return UUID(str(value)) if value else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _fill_user_labels(db: Session, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Who hit it and who resolved it, from the users row (#701).
+
+    The sink stores ids only — it used to copy an ``email`` claim no login
+    carries (the User column was blank for every error) and a resolver label
+    built the same way ("system" for a person). The email comes from
+    ``user_id``, which fills the rows written before the fix too; a
+    ``resolved_by`` that is a user's id reads as their name. Labels that are
+    not an id ("claude", "triage-2026-07-02") are left as they are.
+    """
+    wanted = {
+        uid
+        for item in items
+        for uid in (_as_uuid(item.get("user_id")), _as_uuid(item.get("resolved_by")))
+        if uid is not None
+    }
+    if not wanted:
+        return items
+    # User.id is a Uuid column (dashless on SQLite) — bind UUIDs, not text.
+    users = {
+        row.id: row
+        for row in db.execute(select(User).where(User.id.in_(list(wanted)))).scalars()
+    }
+    for item in items:
+        who = users.get(_as_uuid(item.get("user_id")))
+        if who is not None and not item.get("user_email"):
+            item["user_email"] = who.email
+        resolver = users.get(_as_uuid(item.get("resolved_by")))
+        if resolver is not None:
+            # Same order as core.user_display.resolve_author_name, off the row
+            # already loaded rather than one more query per item.
+            names = (resolver.name, resolver.full_name, resolver.username, resolver.email)
+            item["resolved_by"] = next((v.strip() for v in names if isinstance(v, str) and v.strip()), item["resolved_by"])
+    return items
+
+
 @router.get("", response_model=None)
 def list_errors(
     request: Request,
@@ -110,7 +156,7 @@ def list_errors(
     rows = db.execute(
         text(
             f"SELECT id, tenant_id, method, path, status_code, exception_class, "
-            f"exception_message, user_email, git_sha, group_fingerprint, "
+            f"exception_message, user_id, user_email, git_sha, group_fingerprint, "
             f"occurred_at, resolved_at, resolved_by "
             f"FROM server_errors WHERE {where_sql} "
             f"ORDER BY occurred_at DESC LIMIT :limit OFFSET :offset"
@@ -118,7 +164,7 @@ def list_errors(
         {**params, "limit": page_size, "offset": (page - 1) * page_size},
     ).mappings().all()
     return {
-        "items": [dict(r) for r in rows],
+        "items": _fill_user_labels(db, [dict(r) for r in rows]),
         "total": int(total),
         "page": page,
         "page_size": page_size,
@@ -198,7 +244,7 @@ def get_error(
     ).mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="error not found")
-    return dict(row)
+    return _fill_user_labels(db, [dict(row)])[0]
 
 
 @router.patch("/{error_id}/resolve", response_model=None)
@@ -211,7 +257,11 @@ def resolve_error(
 ):
     _require_admin(user)
     now = datetime.now(timezone.utc)
-    user_label = user.get("email") or user.get("sub") or "system"
+    # Who resolved it (#701): the id, which is unique and fits the column's 64
+    # characters. It read an email/sub the login dict never carries, so it
+    # recorded "system" for a person (1 row on prod). The list and detail
+    # endpoints show the name — see _fill_user_labels.
+    user_label = resolve_audit_actor(user)
 
     base_where = "id = :id"
     params: dict[str, Any] = {"id": error_id}

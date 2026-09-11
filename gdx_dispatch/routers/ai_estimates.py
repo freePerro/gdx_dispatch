@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.ai_provider import generate_sync
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.routers.auth import get_current_user
@@ -132,7 +132,7 @@ def suggest_estimate(
     try:
         log_audit_event_sync(
             db, tenant_id=tenant_id,
-            user_id=str(user.get("sub") or "system"),
+            user_id=resolve_audit_actor(user, request),  # not `sub`: the login has none (#701)
             action="ai_estimate_suggested",
             entity_type="estimate",
             entity_id="",

@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.audit import resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_role
 from gdx_dispatch.core.next_action import queue as action_queue
@@ -61,9 +62,16 @@ def _get_tenant_id(request: Request) -> str:
 
 
 def _get_user_id(request: Request) -> str:
-    """Extract user ID from request state; fall back to 'anonymous'."""
-    user = getattr(request.state, "user", None) or {}
-    return str(user.get("id", "anonymous"))
+    """The caller's user id; 'anonymous' only when there is no principal.
+
+    Read ``request.state.user["id"]`` before — the login dict carries
+    ``user_id``, never ``id``, and these routes gate on ``require_role``, which
+    stashes its principal on ``state.current_user`` instead. Every caller was
+    "anonymous": a manual next-action named nobody, and one assigned to a real
+    user would have been hidden from everyone's queue (#701).
+    """
+    actor = resolve_audit_actor(None, request)
+    return "anonymous" if actor == "system" else actor
 
 
 # ---------------------------------------------------------------------------

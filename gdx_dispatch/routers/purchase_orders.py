@@ -243,7 +243,9 @@ def create_po(
         notes=payload.notes,
         tax=Decimal(str(payload.tax)),
         shipping=Decimal(str(payload.shipping)),
-        created_by=user.get("email") if isinstance(user, dict) else None,
+        # Who did it (#701): the login dict is {user_id, tenant_id, role} —
+        # it never carries an email, so reading one stored NULL for every row.
+        created_by=resolve_audit_actor(user),
     )
     for line_in in payload.lines:
         line = PurchaseOrderLine(

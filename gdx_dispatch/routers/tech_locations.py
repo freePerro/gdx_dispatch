@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.tenant_mobile_settings import get_tenant_mobile_setting
-from gdx_dispatch.models.tenant_models import CustomerLocation, Job, TechLocation, TimeclockEntry
+from gdx_dispatch.models.tenant_models import CustomerLocation, Job, TechLocation, Technician, TimeclockEntry
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -66,9 +66,22 @@ def _tenant_id(request: Request) -> str:
     return str((getattr(request.state, "tenant", {}) or {}).get("id") or "")
 
 
-def _technician_id(current_user: Any) -> str | None:
-    user = current_user or {}
-    return user.get("technician_id") or user.get("tech_id")
+def _technician_id(db: Session, user_id: str | None) -> str | None:
+    """The caller's active Technician row id, for the ping's ``technician_id``.
+
+    Read ``technician_id``/``tech_id`` off the login dict before — it is
+    {user_id, tenant_id, role} and carries neither, so every ping stored NULL
+    (#701). Same lookup as ``routers/mobile._get_technician_id``.
+    """
+    if not user_id:
+        return None
+    row = db.execute(
+        select(Technician.id)
+        .where(Technician.user_id == str(user_id), Technician.active.isnot(False))
+        .order_by(Technician.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    return str(row) if row else None
 
 
 def _open_clock_in(db: Session, user_id: str) -> TimeclockEntry | None:
@@ -135,7 +148,7 @@ def post_location(
         loc = TechLocation(
             id=uuid4(),
             user_id=user_id,
-            technician_id=_technician_id(current_user),
+            technician_id=_technician_id(db, user_id),
             job_id=job_uuid,
             lat=Decimal(str(payload.lat)),
             lng=Decimal(str(payload.lng)),

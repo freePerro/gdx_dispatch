@@ -110,7 +110,9 @@ def create_reminder(
         stage=payload.stage,
         channel=payload.channel,
         sent_at=utcnow(),
-        sent_by=user.get("email") if isinstance(user, dict) else None,
+        # Who sent it (#701): the login dict carries no email, so this stored
+        # NULL for every manual send — the automated sends already store ids.
+        sent_by=resolve_audit_actor(user),
         notes=payload.notes,
         promised_payment_date=promised,
     )
@@ -373,7 +375,7 @@ def update_collection_entry(
             stage="friendly",
             channel=payload.contact_type or "phone",
             sent_at=contacted_at,
-            sent_by=user.get("email") if isinstance(user, dict) else None,
+            sent_by=resolve_audit_actor(user),  # the acting user's id (#701)
             notes=payload.note,
         ))
 

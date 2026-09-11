@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.user_display import resolve_author_name
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -105,10 +106,13 @@ def _user_id(user: Any) -> str:
     return str(user.get("sub") or user.get("user_id") or user.get("email") or "system")
 
 
-def _user_label(user: Any) -> str | None:
-    if not isinstance(user, dict):
-        return None
-    return user.get("email") or user.get("name") or user.get("sub")
+def _user_label(user: Any, db: Session) -> str | None:
+    """Who asked for the signature, from the users row (#701).
+
+    Was ``email or name or sub`` off the login dict, which carries none of
+    them (``{user_id, tenant_id, role}``) — every request stored NULL.
+    """
+    return resolve_author_name(db, user)
 
 
 def _client_ip(request: Request) -> str | None:
@@ -250,7 +254,7 @@ def create_in_person_signature(
         signed_by_email=payload.signed_by_email,
         signed_at=now,
         signed_ip=_client_ip(request),
-        requested_by=_user_label(user),
+        requested_by=_user_label(user, db),
         requested_at=now,
         created_at=now,
     )
@@ -294,7 +298,7 @@ def request_remote_signature(
         signed_by_email=payload.customer_email,
         token=token,
         token_expires_at=expires_at,
-        requested_by=_user_label(user),
+        requested_by=_user_label(user, db),
         requested_at=now,
         created_at=now,
     )

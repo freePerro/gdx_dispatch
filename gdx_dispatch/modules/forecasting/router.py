@@ -50,6 +50,18 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["forecasting"])
 
 
+def _actor_uuid(current_user: dict[str, str]) -> UUID | None:
+    """The creator's id for ``created_by_user_id`` (a Uuid column).
+
+    Read ``sub`` alone before — the login dict is {user_id, tenant_id, role}
+    and never carries one, so every manual stream was created by nobody (#701).
+    """
+    try:
+        return UUID(resolve_audit_actor(current_user))
+    except (ValueError, TypeError):
+        return None
+
+
 def _tenant_id(request: FastAPIRequest, current_user: dict[str, str] | None) -> str:
     state_tenant = getattr(request.state, "tenant", {}) or {}
     tid = str(state_tenant.get("id") or "").strip()
@@ -309,12 +321,7 @@ def create_recurring_stream(
     _validate_term_shape(payload.term_total_occurrences, payload.term_end_date)
     if payload.amount_min > payload.amount_max:
         raise HTTPException(status_code=400, detail="amount_min must be ≤ amount_max")
-    actor_uuid = None
-    try:
-        if current_user.get("sub"):
-            actor_uuid = UUID(str(current_user["sub"]))
-    except (ValueError, TypeError):
-        actor_uuid = None
+    actor_uuid = _actor_uuid(current_user)
     ensure_audit_table(db)  # before staging: its first run on an engine commits
     s = RecurringStream(
         label=payload.label,
@@ -388,12 +395,7 @@ def create_recurring_from_transaction(
             status_code=409,
             detail=f"This transaction is already attached to stream {already.stream_id}",
         )
-    actor_uuid = None
-    try:
-        if current_user.get("sub"):
-            actor_uuid = UUID(str(current_user["sub"]))
-    except (ValueError, TypeError):
-        actor_uuid = None
+    actor_uuid = _actor_uuid(current_user)
     ensure_audit_table(db)  # before staging: its first run on an engine commits
     s = RecurringStream(
         label=payload.label or (txn.payee or payee_norm),
