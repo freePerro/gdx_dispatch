@@ -575,13 +575,6 @@ def test_router_import_list_detail_void_lines(svc):
     )
     assert patched["name"] == "Main Checking"
 
-    lines = r.list_statement_lines(
-        account_id=accounts["items"][0]["id"], date_from=None, date_to=None,
-        section=None, q="loan", limit=100, offset=0, _perm=None, db=svc,
-    )
-    assert lines["total"] == 1
-    assert "ACCT ENDING 7097" in lines["items"][0]["description"]
-
     voided = r.void_statement_import(import_id, _request(), USER, None, svc)
     assert voided["status"] == "voided" and voided["lines_removed"] == 8
 
@@ -693,13 +686,3 @@ def test_image_endpoints_and_path_guard(svc, monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         r.download_statement_image(image_id, None, svc)
     assert exc_info.value.status_code == 404
-
-    # Lines listing carries image refs.
-    account_id = result["account"]["id"]
-    lines = r.list_statement_lines(
-        account_id=account_id, date_from=None, date_to=None, section=None,
-        q=None, limit=100, offset=0, _perm=None, db=svc,
-    )
-    with_images = [line for line in lines["items"] if line["image_ids"]]
-    assert len(with_images) == 3  # the $500 deposit ticket + checks 1062/1083
-    assert {line["section"] for line in with_images} == {SECTION_DEPOSIT, SECTION_CHECK}

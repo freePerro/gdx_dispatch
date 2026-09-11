@@ -242,7 +242,6 @@ def test_forecast_settings_blocked_for_technician():
         client = TestClient(app)
         for path in (
             "/api/forecast/settings",
-            "/api/forecast/snapshots",
             "/api/forecast/recurring/streams",
         ):
             assert client.get(path).status_code == 403, path

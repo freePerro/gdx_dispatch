@@ -182,7 +182,6 @@ GET /api/bank-feeds/statements/images/{image_id}/file
 GET /api/bank-feeds/statements/imports
 GET /api/bank-feeds/statements/imports/{import_id}
 GET /api/bank-feeds/statements/imports/{import_id}/images
-GET /api/bank-feeds/statements/lines
 GET /api/bank-feeds/statements/matches
 GET /api/bank-feeds/statements/reconcile/candidates
 GET /api/bank-feeds/statements/reconciliation
@@ -236,7 +235,6 @@ GET /api/customers/{customer_id}/activity
 GET /api/customers/{customer_id}/contacts
 GET /api/customers/{customer_id}/custom-fields
 GET /api/customers/{customer_id}/equipment
-GET /api/customers/{customer_id}/equipment/{equipment_id}/history
 GET /api/customers/{customer_id}/locations
 GET /api/customers/{customer_id}/recurring-jobs
 GET /api/customers/{customer_id}/tags
@@ -289,19 +287,14 @@ GET /api/exports/jobs
 GET /api/exports/leads
 GET /api/exports/payments
 GET /api/exports/technicians
-GET /api/fleet/due-maintenance
 GET /api/fleet/vehicles
 GET /api/fleet/vehicles/due-for-service
-GET /api/fleet/vehicles/{vehicle_id}/service-history
 GET /api/fleet/vehicles/{vehicle_id}/service-log
 GET /api/follow-ups
-GET /api/forecast/accuracy
-GET /api/forecast/calibration
 GET /api/forecast/recurring/streams
 GET /api/forecast/recurring/streams/{stream_id}
 GET /api/forecast/revenue
 GET /api/forecast/settings
-GET /api/forecast/snapshots
 GET /api/games/catalog
 GET /api/games/state
 GET /api/gdpr/export-customer/{customer_id}
@@ -864,7 +857,6 @@ POST /api/budgets/{line_id}/unlock
 POST /api/campaigns
 POST /api/campaigns/preview-filter
 POST /api/campaigns/{campaign_id}/send
-POST /api/catalog-policy/suggest-description
 POST /api/catalogs
 POST /api/catalogs/save-from-estimate-line
 POST /api/catalogs/{catalog_id}/ai-import
@@ -897,9 +889,7 @@ POST /api/customers/{parent_id}/absorb
 POST /api/dealer/orders
 POST /api/developer/keys
 POST /api/dispatch/geocode-missing
-POST /api/dispatch/location
 POST /api/dispatch/optimize
-POST /api/dispatch/routes
 POST /api/distributor/orders/{order_id}/cancel
 POST /api/distributor/orders/{order_id}/confirm
 POST /api/distributor/orders/{order_id}/deliver
@@ -940,7 +930,6 @@ POST /api/expenses/{expense_id}/lines
 POST /api/expenses/{expense_id}/receipts
 POST /api/feedback/client-error
 POST /api/fleet/vehicles
-POST /api/fleet/vehicles/{vehicle_id}/service
 POST /api/fleet/vehicles/{vehicle_id}/service-log
 POST /api/follow-ups
 POST /api/follow-ups/bulk-send
@@ -951,8 +940,6 @@ POST /api/forecast/recurring/streams/from-transaction
 POST /api/forecast/recurring/streams/{stream_id}/confirm
 POST /api/forecast/recurring/streams/{stream_id}/end
 POST /api/forecast/recurring/streams/{stream_id}/hits/{hit_id}/unlink
-POST /api/forecast/snapshots
-POST /api/forecast/snapshots/reconcile
 POST /api/games/event
 POST /api/gdpr/delete-customer/{customer_id}
 POST /api/gps/route-optimize
@@ -1265,7 +1252,6 @@ PUT /api/campaigns/{campaign_id}/activate
 PUT /api/campaigns/{campaign_id}/deactivate
 PUT /api/commissions/rules/{rule_id}
 PUT /api/customers/{customer_id}/custom-fields
-PUT /api/customers/{customer_id}/equipment/{equipment_id}
 PUT /api/equipment/{equipment_id}
 PUT /api/fleet/vehicles/{vehicle_id}
 PUT /api/forecast/settings

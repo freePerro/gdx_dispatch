@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
+from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.tenant import company_id
@@ -61,18 +61,6 @@ class EquipmentIn(BaseModel):
     last_service_date: date | None = None
     notes: str | None = None
     metadata_: dict | None = None
-
-
-class EquipmentPatch(BaseModel):
-    equipment_type: str | None = None
-    manufacturer: str | None = None
-    model: str | None = None
-    serial_number: str | None = None
-    installation_date: date | None = None
-    last_service_date: date | None = None
-    notes: str | None = None
-    metadata_: dict | None = None
-    deleted_at: datetime | None = None
 
 
 class EquipmentCreate(BaseModel):
@@ -161,64 +149,10 @@ def create_equipment_for_customer(
     return row
 
 
-@router.put("/customers/{customer_id}/equipment/{equipment_id}", response_model=None)
-def update_equipment_for_customer(
-    customer_id: UUID,
-    equipment_id: UUID,
-    payload: EquipmentPatch,
-    request: Request,
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> CustomerEquipment:
-    row = db.execute(
-        select(CustomerEquipment).where(
-            CustomerEquipment.id == equipment_id,
-            CustomerEquipment.customer_id == customer_id,
-            CustomerEquipment.deleted_at.is_(None),
-        )
-    ).scalar_one_or_none()
-    if not row:
-        raise HTTPException(status_code=404, detail="Equipment not found")
-    changes = payload.model_dump(exclude_unset=True)
-    before = {k: getattr(row, k) for k in changes}
-    for k, v in changes.items():
-        setattr(row, k, v)
-    _audit(
-        db, request, user,
-        action="equipment_updated", entity_type="equipment", entity_id=row.id,
-        details={
-            "customer_id": str(customer_id),
-            "changes": payload.model_dump(exclude_unset=True, mode="json"),
-            "before": {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in before.items()},
-        },
-    )
-    db.commit()
-    db.refresh(row)
-    return row
-
-
-@router.get("/customers/{customer_id}/equipment/{equipment_id}/history", response_model=None)
-def equipment_history(
-    customer_id: UUID,
-    equipment_id: UUID,
-    db: Session = Depends(get_db),
-) -> list[EquipmentServiceHistory]:
-    exists = db.execute(
-        select(CustomerEquipment.id).where(
-            CustomerEquipment.id == equipment_id,
-            CustomerEquipment.customer_id == customer_id,
-            CustomerEquipment.deleted_at.is_(None),
-        )
-    ).scalar_one_or_none()
-    if not exists:
-        raise HTTPException(status_code=404, detail="Equipment not found")
-    return list(
-        db.execute(
-            select(EquipmentServiceHistory)
-            .where(EquipmentServiceHistory.equipment_id == equipment_id)
-            .order_by(EquipmentServiceHistory.service_date.desc())
-        ).scalars().all()
-    )
+# PUT /customers/{customer_id}/equipment/{equipment_id} and
+# GET /customers/{customer_id}/equipment/{equipment_id}/history left
+# 2026-09-10 (#651): customer-scoped copies of PUT /equipment/{equipment_id}
+# and GET /equipment/{equipment_id}/service-history, with no caller.
 
 
 @router.post("/jobs/{job_id}/equipment/{equipment_id}/service", response_model=None)
@@ -379,7 +313,10 @@ def log_equipment_service(
         equipment_id=equipment_id,
         job_id=payload.job_id,
         service_type=payload.service_type,
-        technician_id="system",
+        # The person logging it, the same id the audit row below carries. This
+        # was the literal "system" (#651), so an office entry could not say who
+        # made it.
+        technician_id=resolve_audit_actor(user, request),
         notes=payload.technician_notes,
         parts_used=payload.parts_used,
         service_date=service_date,

@@ -197,7 +197,6 @@ POST /api/audit/ux-event
 POST /api/campaigns
 POST /api/campaigns/preview-filter
 POST /api/campaigns/{campaign_id}/send
-POST /api/catalog-policy/suggest-description
 POST /api/catalogs
 POST /api/catalogs/save-from-estimate-line
 POST /api/catalogs/{catalog_id}/ai-import
@@ -221,9 +220,7 @@ POST /api/customers/{customer_id}/optout
 POST /api/customers/{customer_id}/tags
 POST /api/developer/keys
 POST /api/dispatch/geocode-missing
-POST /api/dispatch/location
 POST /api/dispatch/optimize
-POST /api/dispatch/routes
 POST /api/document-folders
 POST /api/documents
 POST /api/equipment
@@ -250,7 +247,6 @@ POST /api/expenses/promote-from-receipt
 POST /api/expenses/{expense_id}/lines
 POST /api/expenses/{expense_id}/receipts
 POST /api/fleet/vehicles
-POST /api/fleet/vehicles/{vehicle_id}/service
 POST /api/fleet/vehicles/{vehicle_id}/service-log
 POST /api/follow-ups
 POST /api/follow-ups/bulk-send
@@ -433,7 +429,6 @@ POST /api/workflows
 PUT /api/campaigns/{campaign_id}/activate
 PUT /api/campaigns/{campaign_id}/deactivate
 PUT /api/commissions/rules/{rule_id}
-PUT /api/customers/{customer_id}/equipment/{equipment_id}
 PUT /api/equipment/{equipment_id}
 PUT /api/fleet/vehicles/{vehicle_id}
 PUT /api/holding-areas/{area_id}

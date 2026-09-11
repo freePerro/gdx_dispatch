@@ -48,7 +48,6 @@ def tech_hdr() -> dict[str, str]:
         ("POST", "/api/fleet/vehicles"),
         ("GET", "/api/purchase-orders"),
         ("POST", "/api/purchase-orders"),
-        ("POST", "/api/dispatch/location"),
         ("GET", "/api/dispatch/locations"),
     ],
 )
@@ -155,11 +154,15 @@ def _seeded_session():
 
 
 def test_financial_module_endpoints_require_dispatch() -> None:
-    """change-order create/approve/reject and proposal-accept are financial
-    actions — they must be gated by a dispatch dependency, not bare auth.
-    (These modules aren't always mounted in create_app(), so introspect the
-    routers directly.)"""
-    from gdx_dispatch.modules.change_orders import router as co
+    """proposal-accept is a financial action — it must be gated by a dispatch
+    dependency, not bare auth. (The module isn't always mounted in
+    create_app(), so introspect the router directly.)
+
+    This test also pinned change-order create/approve/reject until 2026-09-10,
+    but on modules/change_orders/router.py, which nothing ever mounted, so it
+    could not fail for the change-order routes a user reaches. That file was
+    deleted (#637). The live routes are routers/change_orders.py, and their
+    missing permission gate is tracked in .authz_unpermissioned_baseline."""
     from gdx_dispatch.modules.proposals import router as pr
 
     def _dep_names(router_obj, path_frag, method):
@@ -168,9 +171,6 @@ def test_financial_module_endpoints_require_dispatch() -> None:
                 return [getattr(d.call, "__name__", "") for d in rt.dependant.dependencies]
         raise AssertionError(f"route not found: {method} {path_frag}")
 
-    assert "_require_dispatch" in _dep_names(co.router, "/change-orders/{co_id}/approve", "POST")
-    assert "_require_dispatch" in _dep_names(co.router, "/change-orders/{co_id}/reject", "POST")
-    assert "_require_dispatch" in _dep_names(co.router, "/jobs/{job_id}/change-orders", "POST")
     assert "_require_dispatch" in _dep_names(pr.router, "/proposal/accept", "POST")
 
 
