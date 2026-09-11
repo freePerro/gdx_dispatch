@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.push_subscriptions import (
     list_subscriptions_for_user,
@@ -64,6 +64,7 @@ def subscribe(
     uid = _uid(user)
     if not uid:
         raise HTTPException(status_code=401, detail="login required")
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     row = upsert_subscription(
         db,
         user_id=uid,
@@ -72,13 +73,14 @@ def subscribe(
         auth=body.auth,
         user_agent=body.user_agent,
     )
-    db.commit()
+    # Same commit as the change (#700): get_db() closes without committing.
     log_audit_event_sync(
         db, tenant_id=_tid(request), user_id=uid,
         action="push_subscribe", entity_type="push_subscription",
         entity_id=row.id, details={"endpoint": body.endpoint[:80]},
         request=request,
     )
+    db.commit()
     return {"status": "subscribed", "id": row.id}
 
 
@@ -92,8 +94,8 @@ def unsubscribe(
     uid = _uid(user)
     if not uid:
         raise HTTPException(status_code=401, detail="login required")
+    ensure_audit_table(db)
     ok = revoke_subscription(db, endpoint=body.endpoint)
-    db.commit()
     if not ok:
         raise HTTPException(status_code=404, detail="subscription not found")
     log_audit_event_sync(
@@ -102,6 +104,7 @@ def unsubscribe(
         entity_id="", details={"endpoint": body.endpoint[:80]},
         request=request,
     )
+    db.commit()
     return {"status": "unsubscribed"}
 
 

@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.permissions import is_dispatch_manager
@@ -198,6 +198,7 @@ def add_part_needed(
 ) -> dict[str, Any]:
     tid = _tid(request)
     uid = _uid(user)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     part_id = str(uuid4())
     now = datetime.now(timezone.utc)
     _resolved_price, _price_source = _resolved_unit_price(db, job_id, payload)
@@ -231,7 +232,9 @@ def add_part_needed(
         updated_at=now,
     )
     db.add(part)
-    db.commit()
+    # Same commit as the part (#700). The row used to be written after this
+    # commit, and the only later one sits inside the critical-urgency branch
+    # below — so every ordinary part lost its trail.
     log_audit_event_sync(
         db,
         tenant_id=tid,
@@ -264,6 +267,7 @@ def add_part_needed(
         },
         request=request,
     )
+    db.commit()
 
     # Phase 1.5 — C5 push upgrade. Critical-urgency part on create →
     # fan-out push to every dispatcher / admin / owner with an active
@@ -349,6 +353,7 @@ def tech_edit_part(
     """
     tid = _tid(request)
     uid = _uid(user)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     part = db.execute(
         select(JobPartNeeded).where(JobPartNeeded.id == part_id)
     ).scalar_one_or_none()
@@ -375,7 +380,7 @@ def tech_edit_part(
         return _serialize(part)
 
     part.updated_at = datetime.now(timezone.utc)
-    db.commit()
+    # Same commit as the change (#700): get_db() closes without committing.
     log_audit_event_sync(
         db,
         tenant_id=tid,
@@ -386,6 +391,7 @@ def tech_edit_part(
         details={"job_id": part.job_id, "changes": changes},
         request=request,
     )
+    db.commit()
     return _serialize(part)
 
 
@@ -404,6 +410,7 @@ def update_part_status(
     tech sees on their card. Restricted to dispatcher / admin / owner."""
     _require_dispatch_role(user)
     tid = _tid(request)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     part = db.execute(
         select(JobPartNeeded).where(JobPartNeeded.id == part_id)
     ).scalar_one_or_none()
@@ -418,8 +425,10 @@ def update_part_status(
     if payload.eta_at is not None:
         part.eta_at = payload.eta_at
     part.updated_at = now
-    db.commit()
 
+    # Same commit as the status flip (#700). The row used to be written after
+    # this commit, and the only later one runs just for ordered/received with a
+    # requester — so wont_bill and every other flip lost its trail.
     log_audit_event_sync(
         db,
         tenant_id=tid,
@@ -441,6 +450,7 @@ def update_part_status(
         },
         request=request,
     )
+    db.commit()
 
     # Phase 1.5 — C4 push upgrade. If status flipped to ordered/received
     # AND the requesting tech has subscribed to push, send the

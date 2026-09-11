@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import HoldingArea
@@ -66,6 +66,7 @@ def create_area(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tid = _tid(request)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     area_id = str(uuid4())
     now = datetime.now(timezone.utc)
     area = HoldingArea(
@@ -77,10 +78,12 @@ def create_area(
         created_at=now,
     )
     db.add(area)
-    db.commit()
+    # The audit row rides the same commit as the change (#700): get_db() closes
+    # without committing, so a row written after the commit never landed.
     log_audit_event_sync(db, tenant_id=tid, user_id=_uid(user), action="create",
                          entity_type="holding_area", entity_id=area_id,
                          details={"name": payload.name}, request=request)
+    db.commit()
     return {"id": area_id, "name": payload.name, "color": payload.color}
 
 
@@ -91,6 +94,7 @@ def update_area(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tid = _tid(request)
+    ensure_audit_table(db)
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
     area = (
         db.query(HoldingArea)
@@ -100,10 +104,10 @@ def update_area(
     if area:
         area.name = payload.name
         area.color = payload.color
+        log_audit_event_sync(db, tenant_id=tid, user_id=_uid(user), action="update",
+                             entity_type="holding_area", entity_id=area_id,
+                             details={"name": payload.name}, request=request)
         db.commit()
-    log_audit_event_sync(db, tenant_id=tid, user_id=_uid(user), action="update",
-                         entity_type="holding_area", entity_id=area_id,
-                         details={"name": payload.name}, request=request)
     return {"status": "updated", "id": area_id}
 
 
@@ -114,6 +118,7 @@ def delete_area(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tid = _tid(request)
+    ensure_audit_table(db)
     now = datetime.now(timezone.utc)
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
     area = (
@@ -123,9 +128,9 @@ def delete_area(
     )
     if area:
         area.deleted_at = now
+        log_audit_event_sync(db, tenant_id=tid, user_id=_uid(user), action="delete",
+                             entity_type="holding_area", entity_id=area_id, details={}, request=request)
         db.commit()
-    log_audit_event_sync(db, tenant_id=tid, user_id=_uid(user), action="delete",
-                         entity_type="holding_area", entity_id=area_id, details={}, request=request)
     return {"status": "deleted"}
 
 

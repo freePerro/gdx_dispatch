@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import WarrantyClaim
@@ -84,6 +84,7 @@ def file_claim(
     tid = _tid(request)
     uid = _uid(user)
     now = _now()
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     try:
         claim = WarrantyClaim(
             id=uuid4(), company_id=tid, warranty_id=payload.warranty_id,
@@ -108,6 +109,14 @@ def file_claim(
                 if payload.claim_notes:
                     w.last_claim_notes = payload.claim_notes
                 w.updated_at = now
+        # Same commit as the change (#700): get_db() closes without committing.
+        log_audit_event_sync(
+            db, tenant_id=tid, user_id=uid, action="create",
+            entity_type="warranty_claim", entity_id=str(claim.id),
+            details={"customer_id": payload.customer_id, "manufacturer": payload.manufacturer,
+                     "serial_number": payload.serial_number},
+            request=request,
+        )
         db.commit()
         db.refresh(claim)
     except Exception:
@@ -115,13 +124,6 @@ def file_claim(
         log.exception("warranty_claim_create_failed")
         raise HTTPException(status_code=500, detail="Failed to file warranty claim") from None
 
-    log_audit_event_sync(
-        db, tenant_id=tid, user_id=uid, action="create",
-        entity_type="warranty_claim", entity_id=str(claim.id),
-        details={"customer_id": payload.customer_id, "manufacturer": payload.manufacturer,
-                 "serial_number": payload.serial_number},
-        request=request,
-    )
     return _serialize(claim)
 
 
@@ -154,6 +156,7 @@ def update_claim(
 ) -> dict[str, Any]:
     tid = _tid(request)
     uid = _uid(user)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
 
     # claim_id arrives as a path string; the column is Uuid(as_uuid=True) —
     # coerce explicitly so a malformed id 404s instead of erroring on PG.
@@ -186,6 +189,13 @@ def update_claim(
         claim.claim_notes = payload.claim_notes
 
     try:
+        # Same commit as the change (#700): get_db() closes without committing.
+        log_audit_event_sync(
+            db, tenant_id=tid, user_id=uid, action="update",
+            entity_type="warranty_claim", entity_id=claim_id,
+            details={"changes": payload.model_dump(exclude_none=True)},
+            request=request,
+        )
         db.commit()
         db.refresh(claim)
     except Exception:
@@ -193,12 +203,6 @@ def update_claim(
         log.exception("warranty_claim_update_failed")
         raise HTTPException(status_code=500, detail="Failed to update warranty claim") from None
 
-    log_audit_event_sync(
-        db, tenant_id=tid, user_id=uid, action="update",
-        entity_type="warranty_claim", entity_id=claim_id,
-        details={"changes": payload.model_dump(exclude_none=True)},
-        request=request,
-    )
     return _serialize(claim)
 
 

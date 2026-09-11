@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.job_taxonomy import MAINTENANCE
 from gdx_dispatch.core.modules import require_module
@@ -77,6 +77,7 @@ def create_trigger(
     tid = _tid(request)
     uid = _uid(user)
     now = datetime.now(timezone.utc)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
 
     # Validate next_due is a parseable date/datetime
     try:
@@ -99,6 +100,14 @@ def create_trigger(
 
     try:
         db.add(trigger)
+        # Same commit as the change (#700): get_db() closes without committing.
+        log_audit_event_sync(
+            db, tenant_id=tid, user_id=uid, action="create",
+            entity_type="service_trigger", entity_id=str(trigger.id),
+            details={"agreement_id": payload.agreement_id, "customer_id": payload.customer_id,
+                     "interval_months": payload.interval_months},
+            request=request,
+        )
         db.commit()
         db.refresh(trigger)
     except Exception:
@@ -106,13 +115,6 @@ def create_trigger(
         log.exception("service_trigger_create_failed")
         raise HTTPException(status_code=500, detail="Failed to create service trigger") from None
 
-    log_audit_event_sync(
-        db, tenant_id=tid, user_id=uid, action="create",
-        entity_type="service_trigger", entity_id=str(trigger.id),
-        details={"agreement_id": payload.agreement_id, "customer_id": payload.customer_id,
-                 "interval_months": payload.interval_months},
-        request=request,
-    )
     return _serialize(trigger)
 
 
@@ -145,6 +147,7 @@ def run_triggers(
     tid = _tid(request)
     uid = _uid(user)
     now = datetime.now(timezone.utc)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
 
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
     stmt = (
@@ -205,13 +208,7 @@ def run_triggers(
         trigger.next_due = next_due
         trigger.updated_at = now
 
-    try:
-        db.commit()
-    except Exception:
-        db.rollback()
-        log.exception("service_triggers_run_commit_failed")
-        raise HTTPException(status_code=500, detail="Failed to process service triggers") from None
-
+    # Same commit as the jobs it minted (#700): get_db() closes without committing.
     if jobs_created:
         log_audit_event_sync(
             db, tenant_id=tid, user_id=uid, action="create",
@@ -219,6 +216,12 @@ def run_triggers(
             details={"triggers_processed": triggers_processed, "jobs_created": len(jobs_created)},
             request=request,
         )
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("service_triggers_run_commit_failed")
+        raise HTTPException(status_code=500, detail="Failed to process service triggers") from None
 
     return {
         "triggers_processed": triggers_processed,
@@ -236,6 +239,7 @@ def update_trigger(
 ) -> dict[str, Any]:
     tid = _tid(request)
     uid = _uid(user)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
 
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
     trigger = db.scalars(
@@ -267,6 +271,13 @@ def update_trigger(
     trigger.updated_at = now
 
     try:
+        # Same commit as the change (#700): get_db() closes without committing.
+        log_audit_event_sync(
+            db, tenant_id=tid, user_id=uid, action="update",
+            entity_type="service_trigger", entity_id=trigger_id,
+            details={"changes": payload.model_dump(exclude_none=True)},
+            request=request,
+        )
         db.commit()
         db.refresh(trigger)
     except Exception:
@@ -274,10 +285,4 @@ def update_trigger(
         log.exception("service_trigger_update_failed")
         raise HTTPException(status_code=500, detail="Failed to update service trigger") from None
 
-    log_audit_event_sync(
-        db, tenant_id=tid, user_id=uid, action="update",
-        entity_type="service_trigger", entity_id=trigger_id,
-        details={"changes": payload.model_dump(exclude_none=True)},
-        request=request,
-    )
     return _serialize(trigger)

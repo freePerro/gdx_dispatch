@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.models.tenant_models import Invoice
@@ -112,6 +112,7 @@ def create_job_line_item(job_id: str, request: Request, payload: dict, user: dic
     price = float(payload.get("unit_price", 0))
     line_total = qty * price
     now = datetime.now(UTC)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     try:
         from uuid import UUID as _UUID
 
@@ -132,6 +133,8 @@ def create_job_line_item(job_id: str, request: Request, payload: dict, user: dic
             created_at=now,
         )
         db.add(line)
+        # Same commit as the change (#700): get_db() closes without committing.
+        log_audit_event_sync(db, tenant_id=tenant_id, user_id=user_id, action="create_line_item", entity_type="invoice_line", entity_id=new_id, details={"job_id": job_id, "invoice_id": invoice_id}, request=request)
         db.commit()
     except HTTPException:
         raise
@@ -139,7 +142,6 @@ def create_job_line_item(job_id: str, request: Request, payload: dict, user: dic
         log.exception("create_line_item_failed")
         db.rollback()
         raise HTTPException(500, "Failed to create line item") from None
-    log_audit_event_sync(db, tenant_id=tenant_id, user_id=user_id, action="create_line_item", entity_type="invoice_line", entity_id=new_id, details={"job_id": job_id, "invoice_id": invoice_id}, request=request)
     return {"ok": True, "id": new_id}
 
 

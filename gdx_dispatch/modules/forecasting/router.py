@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from datetime import date as _date
 from uuid import UUID
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission, require_role
 from gdx_dispatch.core.quickbooks import QBAuthError, QBError
@@ -95,16 +95,21 @@ def update_forecast_settings(
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request, current_user)
     body = {k: v for k, v in payload.model_dump().items() if v is not None}
-    s = forecast_service.update_settings(db, body)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
+    current = forecast_service.get_or_create_settings(db)
+    # Staged BEFORE update_settings, whose commit then lands the change and
+    # its row together (#700). Written after that commit, as it was, the row
+    # never landed: get_db() closes without committing.
     log_audit_event_sync(
         db,
         tenant_id=tenant_id,
-        user_id=str(current_user.get("sub") or ""),
+        user_id=resolve_audit_actor(current_user, request),
         action="forecast_settings.update",
         entity_type="forecast_settings",
-        entity_id=str(s.id),
+        entity_id=str(current.id),
         details=body,
     )
+    s = forecast_service.update_settings(db, body)
     return forecast_service._settings_dict(s)
 
 
@@ -146,12 +151,15 @@ def sync_qb_recurring(
     log_audit_event_sync(
         db,
         tenant_id=tenant_id,
-        user_id=str(current_user.get("sub") or ""),
+        user_id=resolve_audit_actor(current_user, request),
         action="qb.recurring_sync",
         entity_type="qb_recurring_transactions",
         entity_id="*",
         details=result,
     )
+    # The sync committed its rows as it went; this is a summary of the run and
+    # needs a commit of its own, or get_db() discards it (#700).
+    db.commit()
     return result
 
 
@@ -307,6 +315,7 @@ def create_recurring_stream(
             actor_uuid = UUID(str(current_user["sub"]))
     except (ValueError, TypeError):
         actor_uuid = None
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     s = RecurringStream(
         label=payload.label,
         source="manual",
@@ -324,13 +333,14 @@ def create_recurring_stream(
         created_by_user_id=actor_uuid,
     )
     db.add(s)
-    db.commit()
-    db.refresh(s)
+    db.flush()  # assigns s.id for the audit row
     log_audit_event_sync(
-        db, tenant_id=tenant_id, user_id=str(current_user.get("sub") or ""),
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(current_user, request),
         action="recurring_stream.create", entity_type="recurring_stream",
         entity_id=str(s.id), details={"label": s.label, "source": s.source},
     )
+    db.commit()
+    db.refresh(s)
     return _stream_dict(s)
 
 
@@ -384,6 +394,7 @@ def create_recurring_from_transaction(
             actor_uuid = UUID(str(current_user["sub"]))
     except (ValueError, TypeError):
         actor_uuid = None
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     s = RecurringStream(
         label=payload.label or (txn.payee or payee_norm),
         source="manual",
@@ -408,13 +419,13 @@ def create_recurring_from_transaction(
         stream_id=s.id, qb_txn_id=txn.qb_txn_id,
         txn_date=txn.txn_date, amount=amt, confirmed=True,
     ))
-    db.commit()
-    db.refresh(s)
     log_audit_event_sync(
-        db, tenant_id=tenant_id, user_id=str(current_user.get("sub") or ""),
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(current_user, request),
         action="recurring_stream.create_from_txn", entity_type="recurring_stream",
         entity_id=str(s.id), details={"qb_txn_id": payload.qb_txn_id},
     )
+    db.commit()
+    db.refresh(s)
     return _stream_dict(s, include_hits=True)
 
 
@@ -426,17 +437,18 @@ def confirm_recurring_stream(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request, current_user)
+    ensure_audit_table(db)
     s = _get_stream_or_404(db, stream_id)
     if s.status != STREAM_STATUS_SUGGESTED:
         raise HTTPException(status_code=409, detail=f"Only suggested streams can be confirmed; current status: {s.status}")
     s.status = STREAM_STATUS_ACTIVE
-    db.commit()
-    db.refresh(s)
     log_audit_event_sync(
-        db, tenant_id=tenant_id, user_id=str(current_user.get("sub") or ""),
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(current_user, request),
         action="recurring_stream.confirm", entity_type="recurring_stream",
         entity_id=stream_id, details={"label": s.label},
     )
+    db.commit()
+    db.refresh(s)
     return _stream_dict(s)
 
 
@@ -454,19 +466,20 @@ def end_recurring_stream(
     queryable in 'Ended' tab. Future forecast projections drop this stream.
     """
     tenant_id = _tenant_id(request, current_user)
+    ensure_audit_table(db)
     s = _get_stream_or_404(db, stream_id)
     if s.status in {STREAM_STATUS_PAID_OFF, STREAM_STATUS_CANCELLED, STREAM_STATUS_EXPIRED}:
         raise HTTPException(status_code=409, detail=f"Stream already ended ({s.status})")
     s.status = payload.reason  # reason maps directly to a terminal status enum
     s.ended_at = payload.ended_at or _date.today()
     s.ended_reason = payload.reason
-    db.commit()
-    db.refresh(s)
     log_audit_event_sync(
-        db, tenant_id=tenant_id, user_id=str(current_user.get("sub") or ""),
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(current_user, request),
         action="recurring_stream.end", entity_type="recurring_stream",
         entity_id=stream_id, details={"reason": payload.reason, "ended_at": s.ended_at.isoformat()},
     )
+    db.commit()
+    db.refresh(s)
     return _stream_dict(s)
 
 
@@ -479,6 +492,7 @@ def update_recurring_stream(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request, current_user)
+    ensure_audit_table(db)
     s = _get_stream_or_404(db, stream_id)
     if s.status in {STREAM_STATUS_PAID_OFF, STREAM_STATUS_CANCELLED, STREAM_STATUS_EXPIRED}:
         raise HTTPException(status_code=409, detail="Cannot edit an ended stream")
@@ -497,13 +511,13 @@ def update_recurring_stream(
 
     for key, value in body.items():
         setattr(s, key, value)
-    db.commit()
-    db.refresh(s)
     log_audit_event_sync(
-        db, tenant_id=tenant_id, user_id=str(current_user.get("sub") or ""),
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(current_user, request),
         action="recurring_stream.update", entity_type="recurring_stream",
         entity_id=stream_id, details=body,
     )
+    db.commit()
+    db.refresh(s)
     return _stream_dict(s)
 
 
@@ -520,15 +534,16 @@ def soft_delete_recurring_stream(
     real-world payment finished but keep the history for analytics."
     """
     tenant_id = _tenant_id(request, current_user)
+    ensure_audit_table(db)
     s = _get_stream_or_404(db, stream_id)
     from datetime import UTC, datetime as _dt
     s.deleted_at = _dt.now(UTC)
-    db.commit()
     log_audit_event_sync(
-        db, tenant_id=tenant_id, user_id=str(current_user.get("sub") or ""),
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(current_user, request),
         action="recurring_stream.delete", entity_type="recurring_stream",
         entity_id=stream_id, details={"label": s.label},
     )
+    db.commit()
     return {"ok": True, "id": stream_id}
 
 
@@ -545,6 +560,7 @@ def unlink_hit(
 ) -> dict[str, Any]:
     """Remove a falsely-attached hit. Doesn't touch the source qb_bank_transactions row."""
     tenant_id = _tenant_id(request, current_user)
+    ensure_audit_table(db)
     s = _get_stream_or_404(db, stream_id)
     try:
         hid = UUID(hit_id)
@@ -557,12 +573,12 @@ def unlink_hit(
     # If the user un-attached an inflated occurrence, decrement.
     if int(s.occurrences_seen) > 0:
         s.occurrences_seen = int(s.occurrences_seen) - 1
-    db.commit()
     log_audit_event_sync(
-        db, tenant_id=tenant_id, user_id=str(current_user.get("sub") or ""),
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(current_user, request),
         action="recurring_stream.unlink_hit", entity_type="recurring_stream",
         entity_id=stream_id, details={"hit_id": hit_id, "qb_txn_id": hit.qb_txn_id},
     )
+    db.commit()
     return {"ok": True, "stream_id": stream_id, "hit_id": hit_id}
 
 
@@ -580,10 +596,11 @@ def run_observed_recurring_detector(
     tenant_id = _tenant_id(request, current_user)
     stats = observed_recurring.run_detector(db)
     log_audit_event_sync(
-        db, tenant_id=tenant_id, user_id=str(current_user.get("sub") or ""),
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(current_user, request),
         action="recurring_stream.detect_now", entity_type="recurring_stream",
         entity_id="*", details=stats,
     )
+    db.commit()  # the detector committed its rows itself; this summary needs its own (#700)
     return stats
 
 

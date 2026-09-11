@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
 from gdx_dispatch.models.tenant_models import AppSettings, MonthlyBudget
@@ -40,6 +40,7 @@ from gdx_dispatch.modules.quickbooks.recategorize import (
     recategorize_transaction,
     suggest_target_account,
 )
+from gdx_dispatch.routers.auth import get_current_user
 
 
 log = logging.getLogger(__name__)
@@ -493,6 +494,7 @@ def create_budget_line(
     payload: BudgetLineIn,
     request: Request,
     db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> BudgetLineOut:
     """Manually add a budget line. UI typically uses this when the account
     isn't in P&L yet (new account, future plan)."""
@@ -509,6 +511,7 @@ def create_budget_line(
     if existing is not None:
         raise HTTPException(409, "budget line already exists for that account/month")
 
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     line = MonthlyBudget(
         id=str(uuid4()),
         year=payload.year,
@@ -523,14 +526,18 @@ def create_budget_line(
         notes=payload.notes,
     )
     db.add(line)
-    db.commit()
-    db.refresh(line)
+    # Every audit row in this router rides the same commit as its change
+    # (#700): get_db() closes without committing, so a row written after the
+    # commit never landed. They also named the actor "api" — a literal — so
+    # even a landed row could not say who changed a budget.
     log_audit_event_sync(
-        db, tenant_id=_tenant_id(request), user_id="api",
+        db, tenant_id=_tenant_id(request), user_id=resolve_audit_actor(user, request), request=request,
         action="monthly_budget.create", entity_type="monthly_budget",
         entity_id=str(line.id),
         details={"year": line.year, "month": line.month, "qb_account_id": line.qb_account_id},
     )
+    db.commit()
+    db.refresh(line)
     monthly_revenue = _revenue_basis_for_month(db, year=line.year, month=line.month)
     actuals = _actuals_for_month(db, year=line.year, month=line.month)
     meta = actuals.get(line.qb_account_id) or {}
@@ -544,7 +551,9 @@ def update_budget_line(
     payload: BudgetLineUpdate,
     request: Request,
     db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> BudgetLineOut:
+    ensure_audit_table(db)
     line = db.get(MonthlyBudget, line_id)
     if line is None:
         raise HTTPException(404, "budget line not found")
@@ -568,13 +577,13 @@ def update_budget_line(
     # won't overwrite it.
     if changes:
         line.source = "user"
-    db.commit()
-    db.refresh(line)
     log_audit_event_sync(
-        db, tenant_id=_tenant_id(request), user_id="api",
+        db, tenant_id=_tenant_id(request), user_id=resolve_audit_actor(user, request), request=request,
         action="monthly_budget.update", entity_type="monthly_budget",
         entity_id=str(line.id), details=changes,
     )
+    db.commit()
+    db.refresh(line)
     monthly_revenue = _revenue_basis_for_month(db, year=line.year, month=line.month)
     actuals = _actuals_for_month(db, year=line.year, month=line.month)
     meta = actuals.get(line.qb_account_id) or {}
@@ -585,6 +594,7 @@ def update_budget_line(
 @router.delete("/{line_id}", dependencies=[Depends(require_permission("accounting.write"))])
 def delete_budget_line(
     line_id: str, request: Request, db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, str]:
     line = db.get(MonthlyBudget, line_id)
     if line is None:
@@ -592,13 +602,14 @@ def delete_budget_line(
     if line.is_locked:
         raise HTTPException(409, "line is locked — unlock before deleting")
     snap = {"year": line.year, "month": line.month, "qb_account_id": line.qb_account_id}
+    ensure_audit_table(db)
     db.delete(line)
-    db.commit()
     log_audit_event_sync(
-        db, tenant_id=_tenant_id(request), user_id="api",
+        db, tenant_id=_tenant_id(request), user_id=resolve_audit_actor(user, request), request=request,
         action="monthly_budget.delete", entity_type="monthly_budget",
         entity_id=line_id, details=snap,
     )
+    db.commit()
     return {"ok": "true"}
 
 
@@ -609,6 +620,7 @@ def seed_budget(
     month: int = Query(..., ge=1, le=12),
     lookback_months: int = Query(3, ge=1, le=12),
     db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Starting-template fill: create budget lines for expense accounts that
     DON'T have a line yet, using the trailing average of P&L actuals.
@@ -636,6 +648,7 @@ def seed_budget(
         months.append((y, m))
     if not months:
         raise HTTPException(400, "lookback_months must be >= 1")
+    ensure_audit_table(db)
 
     # SUM by qb_account_id across the lookback window. Composite-key IN
     # is encoded as (year * 100 + month) so the query works on both
@@ -685,14 +698,14 @@ def seed_budget(
             is_locked=False,
         ))
         created += 1
-    db.commit()
 
     log_audit_event_sync(
-        db, tenant_id=_tenant_id(request), user_id="api",
+        db, tenant_id=_tenant_id(request), user_id=resolve_audit_actor(user, request), request=request,
         action="monthly_budget.seed", entity_type="monthly_budget", entity_id=f"{year}-{month:02d}",
         details={"created": created, "skipped_existing": skipped_existing,
                  "lookback_months": lookback_months},
     )
+    db.commit()
     return {
         "year": year, "month": month,
         "lookback_months": lookback_months,
@@ -788,32 +801,36 @@ def spending_trends(
 @router.post("/{line_id}/lock", dependencies=[Depends(require_permission("accounting.write"))])
 def lock_line(
     line_id: str, request: Request, db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
+    ensure_audit_table(db)
     line = db.get(MonthlyBudget, line_id)
     if line is None:
         raise HTTPException(404, "budget line not found")
     line.is_locked = True
-    db.commit()
     log_audit_event_sync(
-        db, tenant_id=_tenant_id(request), user_id="api",
+        db, tenant_id=_tenant_id(request), user_id=resolve_audit_actor(user, request), request=request,
         action="monthly_budget.lock", entity_type="monthly_budget", entity_id=line_id, details={},
     )
+    db.commit()
     return {"id": line_id, "is_locked": True}
 
 
 @router.post("/{line_id}/unlock", dependencies=[Depends(require_permission("accounting.write"))])
 def unlock_line(
     line_id: str, request: Request, db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
+    ensure_audit_table(db)
     line = db.get(MonthlyBudget, line_id)
     if line is None:
         raise HTTPException(404, "budget line not found")
     line.is_locked = False
-    db.commit()
     log_audit_event_sync(
-        db, tenant_id=_tenant_id(request), user_id="api",
+        db, tenant_id=_tenant_id(request), user_id=resolve_audit_actor(user, request), request=request,
         action="monthly_budget.unlock", entity_type="monthly_budget", entity_id=line_id, details={},
     )
+    db.commit()
     return {"id": line_id, "is_locked": False}
 
 
@@ -932,6 +949,7 @@ async def refresh_actuals(
     request: Request,
     year: int = Query(..., ge=2000, le=2999),
     db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Pull a fresh QBO ProfitAndLoss for `year` and refresh the cache.
 
@@ -960,11 +978,14 @@ async def refresh_actuals(
             502,
             "QuickBooks ProfitAndLoss fetch failed. See server logs for details.",
         ) from exc
+    # The puller committed the cache refresh itself, so this row cannot join
+    # that commit; it gets its own, or get_db() discards it (#700).
     log_audit_event_sync(
-        db, tenant_id=tenant_id, user_id="api",
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(user, request), request=request,
         action="monthly_budget.refresh_actuals", entity_type="qb_pnl_monthly",
         entity_id=str(year), details=result,
     )
+    db.commit()
     return result
 
 
@@ -1114,6 +1135,7 @@ async def recategorize_one(
     payload: RecategorizeIn,
     request: Request,
     db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Apply one recategorization in QuickBooks. Yellow-tier: UI proposes,
     user confirms, this endpoint writes. Audit-logged with before/after.
@@ -1156,9 +1178,12 @@ async def recategorize_one(
             "QuickBooks recategorize failed. See server logs for details.",
         ) from exc
 
+    # The change was made in QuickBooks; this row is the only local record of
+    # it, so it needs a commit of its own (#700).
     log_audit_event_sync(
-        db, tenant_id=tenant_id, user_id="api",
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(user, request), request=request,
         action="qb.recategorize", entity_type=payload.txn_type,
         entity_id=payload.txn_id, details=result,
     )
+    db.commit()
     return result

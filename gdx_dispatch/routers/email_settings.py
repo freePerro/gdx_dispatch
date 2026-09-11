@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.models.tenant_models import EmailSetting
 from gdx_dispatch.routers.auth import get_current_user
@@ -76,6 +76,7 @@ def save_email_config(
 ) -> dict[str, Any]:
     tid = _tid(request)
     now = datetime.now(timezone.utc)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     # Phase 5.8: real encryption (pii Fernet), not the base64 obfuscation
     # the column name always implied. Legacy b64 rows still read (see
     # core/pii.decrypt_secret).
@@ -118,11 +119,12 @@ def save_email_config(
             updated_at=now,
         )
         db.add(new_setting)
-    db.commit()
 
+    # Same commit as the change (#700): get_db() closes without committing.
     log_audit_event_sync(db, tenant_id=tid, user_id=str(user.get("sub", "system")),
                          action="update", entity_type="email_settings", entity_id=tid,
                          details={"provider": payload.provider}, request=request)
+    db.commit()
     return {"status": "saved", "provider": payload.provider}
 
 

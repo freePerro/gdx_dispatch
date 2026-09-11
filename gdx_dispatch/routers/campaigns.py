@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.tenant import company_id
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import MarketingCampaign
@@ -478,14 +478,16 @@ def activate_campaign(campaign_id: str, request: Request, user: dict = Depends(g
     tenant_id = company_id()
     user_id = user.get("sub") or user.get("user_id") or "system"
     now = datetime.now(UTC)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     try:
         campaign = _get_campaign(db, campaign_id, tenant_id)
         if not campaign:
             raise HTTPException(404, "Campaign not found")
         campaign.status = "active"
         campaign.updated_at = now
-        db.commit()
+        # Same commit as the change (#700): get_db() closes without committing.
         log_audit_event_sync(db, tenant_id=tenant_id, user_id=user_id, action="activate_campaign", entity_type="campaign", entity_id=campaign_id, details={"status": "active"}, request=request)
+        db.commit()
         return {"ok": True, "status": "active"}
     except HTTPException:
         raise
@@ -500,14 +502,15 @@ def deactivate_campaign(campaign_id: str, request: Request, user: dict = Depends
     tenant_id = company_id()
     user_id = user.get("sub") or user.get("user_id") or "system"
     now = datetime.now(UTC)
+    ensure_audit_table(db)
     try:
         campaign = _get_campaign(db, campaign_id, tenant_id)
         if not campaign:
             raise HTTPException(404, "Campaign not found")
         campaign.status = "paused"
         campaign.updated_at = now
-        db.commit()
         log_audit_event_sync(db, tenant_id=tenant_id, user_id=user_id, action="deactivate_campaign", entity_type="campaign", entity_id=campaign_id, details={"status": "paused"}, request=request)
+        db.commit()
         return {"ok": True, "status": "paused"}
     except HTTPException:
         raise

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import EstimateNurtureLog, EstimateNurtureRule
@@ -80,6 +80,7 @@ def create_rule(
     tid = _tid(request)
     uid = _uid(user)
     now = _now()
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     try:
         rule = EstimateNurtureRule(
             id=uuid4(), company_id=tid, delay_hours=payload.delay_hours,
@@ -88,6 +89,13 @@ def create_rule(
             active=payload.active, created_at=now, updated_at=now,
         )
         db.add(rule)
+        # Same commit as the change (#700): get_db() closes without committing.
+        log_audit_event_sync(
+            db, tenant_id=tid, user_id=uid, action="create",
+            entity_type="estimate_nurture_rule", entity_id=str(rule.id),
+            details={"delay_hours": payload.delay_hours, "discount_pct": payload.discount_pct},
+            request=request,
+        )
         db.commit()
         db.refresh(rule)
     except Exception:
@@ -95,12 +103,6 @@ def create_rule(
         log.exception("nurture_rule_create_failed")
         raise HTTPException(status_code=500, detail="Failed to create nurture rule") from None
 
-    log_audit_event_sync(
-        db, tenant_id=tid, user_id=uid, action="create",
-        entity_type="estimate_nurture_rule", entity_id=str(rule.id),
-        details={"delay_hours": payload.delay_hours, "discount_pct": payload.discount_pct},
-        request=request,
-    )
     return _serialize_rule(rule)
 
 
@@ -124,6 +126,7 @@ def run_nurture(
 
     if not rules:
         return {"processed": 0, "sent": 0, "message": "No active nurture rules"}
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
 
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
     # "rejected" removed 2026-08-13: it now means the estimate EMAIL bounced —
@@ -179,13 +182,7 @@ def run_nurture(
             except Exception:
                 log.exception("nurture_log_insert_failed for estimate %s", est_id)
 
-    try:
-        db.commit()
-    except Exception:
-        db.rollback()
-        log.exception("nurture_run_commit_failed")
-        raise HTTPException(status_code=500, detail="Failed to process nurture run") from None
-
+    # Same commit as the log rows (#700): get_db() closes without committing.
     if sent_count > 0:
         log_audit_event_sync(
             db, tenant_id=tid, user_id=uid, action="create",
@@ -193,6 +190,12 @@ def run_nurture(
             details={"processed": processed, "sent": sent_count},
             request=request,
         )
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("nurture_run_commit_failed")
+        raise HTTPException(status_code=500, detail="Failed to process nurture run") from None
 
     return {"processed": processed, "sent": sent_count}
 

@@ -25,7 +25,7 @@ from sqlalchemy import JSON, Boolean, DateTime, Index, String, Text, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 from sqlalchemy.types import Uuid
 
-from gdx_dispatch.core.audit import TenantBase, log_audit_event, utcnow
+from gdx_dispatch.core.audit import TenantBase, ensure_audit_table, log_audit_event, resolve_audit_actor, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.pii import EncryptedString
 from gdx_dispatch.core.webhooks.models import WebhookDelivery, WebhookEndpoint
@@ -321,7 +321,14 @@ async def zapier_subscribe(
     )
     db.add(config)
     db.flush()
-    await log_audit_event(db, "integration.zapier.subscribe", tenant_id, "integration_config", str(config.id), {"event": body.event, "url": body.target_url})
+    # Keyword form (#700): the positional call these routes used put the
+    # tenant id in the ACTOR slot, so every integration change was attributed
+    # to the tenant and filed with no tenant.
+    await log_audit_event(
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(_auth, request), request=request,
+        action="integration.zapier.subscribe", entity_type="integration_config",
+        entity_id=str(config.id), details={"event": body.event, "url": body.target_url},
+    )
     db.commit()
     return IntegrationOut.model_validate(config)
 
@@ -347,7 +354,11 @@ async def zapier_unsubscribe(
 
     for config in configs:
         config.is_active = False
-        await log_audit_event(db, "integration.zapier.unsubscribe", tenant_id, "integration_config", str(config.id), {"url": body.target_url})
+        await log_audit_event(
+            db, tenant_id=tenant_id, user_id=resolve_audit_actor(_auth, request), request=request,
+            action="integration.zapier.unsubscribe", entity_type="integration_config",
+            entity_id=str(config.id), details={"url": body.target_url},
+        )
     db.commit()
     return {"unsubscribed": len(configs)}
 
@@ -395,7 +406,11 @@ async def create_integration(
     )
     db.add(config)
     db.flush()
-    await log_audit_event(db, "integration.created", tenant_id, "integration_config", str(config.id), {"name": body.name, "type": body.integration_type})
+    await log_audit_event(
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(_auth, request), request=request,
+        action="integration.created", entity_type="integration_config",
+        entity_id=str(config.id), details={"name": body.name, "type": body.integration_type},
+    )
     db.commit()
     return config
 
@@ -425,7 +440,11 @@ async def update_integration(
     if body.is_active is not None:
         config.is_active = body.is_active
 
-    await log_audit_event(db, "integration.updated", tenant_id, "integration_config", integration_id, body.model_dump(exclude_none=True))
+    await log_audit_event(
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(_auth, request), request=request,
+        action="integration.updated", entity_type="integration_config",
+        entity_id=integration_id, details=body.model_dump(exclude_none=True),
+    )
     db.commit()
     return config
 
@@ -442,7 +461,11 @@ async def delete_integration(
     if not config or config.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="not found")
 
-    await log_audit_event(db, "integration.deleted", tenant_id, "integration_config", integration_id, {"name": config.name})
+    await log_audit_event(
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(_auth, request), request=request,
+        action="integration.deleted", entity_type="integration_config",
+        entity_id=integration_id, details={"name": config.name},
+    )
     db.delete(config)
     db.commit()
 
@@ -608,12 +631,17 @@ def connect_integration(
     integration_type: str,
     credentials: dict,
     db: Session,
+    *,
+    commit: bool = True,
 ) -> dict:
     """
     Store connection credentials for an integration type.
 
     For OAuth types (quickbooks, google_calendar): expects credentials["access_token"].
     For API key types (stripe, mailchimp, google_maps, zapier): expects credentials["api_key"].
+
+    ``commit=False`` flushes instead, so a route can stage the audit row into
+    the same transaction as the credential (#700).
 
     Returns {"status": "connected", "integration_type": ..., "id": ...}
     Raises ValueError on invalid type or missing credentials.
@@ -642,6 +670,9 @@ def connect_integration(
         is_active=True,
     )
     db.add(config)
+    if not commit:
+        db.flush()
+        return {"status": "connected", "integration_type": integration_type, "id": str(config.id)}
     db.commit()
     db.refresh(config)
     return {"status": "connected", "integration_type": integration_type, "id": str(config.id)}
@@ -651,9 +682,14 @@ def disconnect_integration(
     tenant_id: str,
     integration_type: str,
     db: Session,
+    *,
+    commit: bool = True,
 ) -> dict:
     """
     Deactivate all active IntegrationConfig rows for this tenant + integration_type.
+
+    ``commit=False`` leaves the change staged for the caller to commit with its
+    audit row (#700).
 
     Returns {"status": "disconnected", "count": n}
     Raises ValueError on invalid type.
@@ -669,7 +705,8 @@ def disconnect_integration(
     configs = db.execute(stmt).scalars().all()
     for cfg in configs:
         cfg.is_active = False
-    db.commit()
+    if commit:
+        db.commit()
     return {"status": "disconnected", "count": len(configs)}
 
 
@@ -804,15 +841,20 @@ async def connect_integration_route(
 ):
     """Initiate a connection for the given integration type."""
     tenant_id = _get_tenant_id(request)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     try:
-        result = connect_integration(tenant_id, integration_type, body.credentials, db)
+        result = connect_integration(tenant_id, integration_type, body.credentials, db, commit=False)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    # A stored credential and its audit row commit together, or neither does
+    # (#700). The row used to be written after connect_integration's own
+    # commit, and get_db() closes without committing, so it never landed.
     await log_audit_event(
-        db, "integration.connected", tenant_id,
-        "integration_config", result["id"],
-        {"integration_type": integration_type},
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(_auth, request), request=request,
+        action="integration.connected", entity_type="integration_config",
+        entity_id=result["id"], details={"integration_type": integration_type},
     )
+    db.commit()
     return result
 
 
@@ -825,15 +867,17 @@ async def disconnect_integration_route(
 ):
     """Disconnect (deactivate) all connections for the given integration type."""
     tenant_id = _get_tenant_id(request)
+    ensure_audit_table(db)
     try:
-        result = disconnect_integration(tenant_id, integration_type, db)
+        result = disconnect_integration(tenant_id, integration_type, db, commit=False)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     await log_audit_event(
-        db, "integration.disconnected", tenant_id,
-        "integration_config", integration_type,
-        {"integration_type": integration_type, "count": result["count"]},
+        db, tenant_id=tenant_id, user_id=resolve_audit_actor(_auth, request), request=request,
+        action="integration.disconnected", entity_type="integration_config",
+        entity_id=integration_type, details={"integration_type": integration_type, "count": result["count"]},
     )
+    db.commit()  # the deactivation and its row together — see connect_integration_route
     return result
 
 
