@@ -1218,70 +1218,9 @@ def void_statement_import(
     return result
 
 
-@router.get("/statements/lines", dependencies=[_MODULE])
-def list_statement_lines(
-    account_id: str | None = None,
-    date_from: date | None = None,
-    date_to: date | None = None,
-    section: str | None = None,
-    q: str | None = None,
-    limit: int = 100,
-    offset: int = 0,
-    _perm: None = Depends(require_permission("bank_feeds.read")),
-    db: Session = Depends(get_db),
-) -> dict:
-    limit = max(1, min(limit, 500))
-    offset = max(0, offset)
-    query = select(BankStatementLine)
-    count_query = select(func.count(BankStatementLine.id))
-    conditions = []
-    if account_id:
-        try:
-            conditions.append(BankStatementLine.bank_account_id == UUID(str(account_id)))
-        except ValueError:
-            raise HTTPException(status_code=422, detail="invalid account_id") from None
-    if date_from:
-        conditions.append(BankStatementLine.txn_date >= date_from)
-    if date_to:
-        conditions.append(BankStatementLine.txn_date <= date_to)
-    if section:
-        conditions.append(BankStatementLine.section == section)
-    if q:
-        conditions.append(BankStatementLine.description.ilike(f"%{q}%"))
-    for cond in conditions:
-        query = query.where(cond)
-        count_query = count_query.where(cond)
-    total = db.scalar(count_query) or 0
-    rows = db.scalars(
-        query.order_by(BankStatementLine.txn_date, BankStatementLine.created_at)
-        .limit(limit).offset(offset)
-    ).all()
-    from gdx_dispatch.modules.bank_feeds.statement_models import BankStatementLineImage as _Img
-    image_ids: dict = {}
-    if rows:
-        for img in db.scalars(
-            select(_Img).where(_Img.line_id.in_([row.id for row in rows])).order_by(_Img.sort_order)
-        ).all():
-            image_ids.setdefault(img.line_id, []).append(str(img.id))
-    return {
-        "items": [
-            {
-                "id": str(line.id),
-                "bank_account_id": str(line.bank_account_id),
-                "import_id": str(line.import_id),
-                "txn_date": line.txn_date.isoformat(),
-                "amount_cents": line.amount_cents,
-                "description": line.description,
-                "section": line.section,
-                "check_number": line.check_number,
-                "image_ids": image_ids.get(line.id, []),
-            }
-            for line in rows
-        ],
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-    }
+# GET /statements/lines (filter + text search over statement lines) left
+# 2026-09-10 (#650): nothing called it. Reconciliation finds a line in
+# context, and the bank's own site searches history.
 
 
 # ── statement check/deposit-ticket images (PR 2) ───────────────────────

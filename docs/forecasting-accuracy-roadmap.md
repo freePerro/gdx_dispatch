@@ -1,6 +1,6 @@
 # Forecasting Accuracy Roadmap
 
-**Status:** Experimental feature (grouped under the "Experimental" nav category).
+**Status:** PARTIALLY BUILT — Stage A (the nightly measurement loop) and Stage B (calibrated rates in the live revenue forecast) are built; Stages C and D are not. The five manual snapshot/accuracy/calibration endpoints were removed 2026-09-10 (#648), so nothing shows the measurements directly. Still grouped under the "Experimental" nav category.
 **Owner:** Doug
 **Created:** 2026-06-28
 
@@ -56,8 +56,10 @@ window-calibrated rates.
   rows, not a JSON id blob, so thousands of open invoices don't balloon a column.
 - **Service:** [accuracy.py](../gdx_dispatch/modules/forecasting/accuracy.py) —
   `capture_snapshot`, `reconcile_due_snapshots`, `accuracy_summary`.
-- **API:** `POST /api/forecast/snapshots`, `POST /api/forecast/snapshots/reconcile`,
-  `GET /api/forecast/accuracy` (per-bucket calibration table), `GET /api/forecast/snapshots`.
+- **API:** none since 2026-09-10 (#648). `POST /api/forecast/snapshots`,
+  `POST /api/forecast/snapshots/reconcile`, `GET /api/forecast/accuracy` and
+  `GET /api/forecast/snapshots` were removed: nothing in the app called them, and
+  the daily task below does the capture and reconcile.
 
 ### Reconciliation rules (and the audit findings they address)
 
@@ -84,8 +86,8 @@ window-calibrated rates.
 A daily Celery beat task `forecasting-measurement-tick-daily` (05:00 UTC) fires
 `advance_forecast_measurement_dispatcher` → `advance_forecast_measurement_task`,
 which captures today's snapshot and reconciles any matured ones per tenant
-(`modules/forecasting/tasks.py`). The admin endpoints remain for manual
-drive/inspection. (`forecasting.tasks` is now registered in the celery `include`
+(`modules/forecasting/tasks.py`). The admin endpoints for manual
+drive/inspection were removed 2026-09-10 (#648). (`forecasting.tasks` is now registered in the celery `include`
 list + explicit import — previously it was only registered transitively.)
 
 `ForecastSnapshot`/`ForecastSnapshotInvoice` are TenantBase, built by
@@ -116,8 +118,8 @@ once a cold-start threshold is met (`CALIBRATION_MIN_SNAPSHOTS`, default 3
 reconciled snapshots *at the matching window*). Until then a bucket falls back
 to its configured rate, so behaviour is unchanged with no data and self-tunes as
 snapshots accrue. Each bucket's `rate_source` (`calibrated`|`configured`) is
-surfaced in the forecast output, and `GET /api/forecast/calibration` shows the
-calibrated rate next to the prior. Computed live from snapshots — no persisted
+surfaced in the forecast output. (`GET /api/forecast/calibration`, which showed
+the calibrated rate next to the prior, was removed 2026-09-10, #648.) Computed live from snapshots — no persisted
 calibration state (nothing to drift), and **no new table** (the configured rates
 in `ForecastSettings` are untouched, so no ALTER per the caveat above).
 
@@ -145,8 +147,9 @@ These are acceptable for a self-correcting prior that's clearly labelled
 Semantics note (audit-aware): calibrated buckets make the AR component a genuine
 *within-window* expectation; uncalibrated buckets use the configured rate as a
 *prior*. The output's per-bucket `rate_source` makes the mix explicit. The
-configured rate and calibrated rate are reported side by side but never
-differenced.
+forecast reports the rate it used (`rate_used`) and where it came from; the
+configured and calibrated rates were shown side by side (never differenced)
+only by `GET /api/forecast/calibration`, removed 2026-09-10 (#648).
 
 ### Stage C — Per-customer / per-stage granularity
 - **AR:** per-customer average days-to-pay (no ML); cohort fallback for new

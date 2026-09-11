@@ -246,13 +246,6 @@ class TestMobilePartsAndLocation:
             "longitude": -112.0740,
             "accuracy": 10.0,
         })
-        if resp.status_code == 404:
-            # Try dispatch location endpoint
-            resp = api.post("/api/dispatch/location", json_data={
-                "latitude": 33.4484,
-                "longitude": -112.0740,
-                "accuracy": 10.0,
-            })
         assert resp.status_code < 500, f"Location tracking failed: {resp.status_code} {resp.text[:200]}"
         console_tracker.assert_no_errors("MOB-12")
 

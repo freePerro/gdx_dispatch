@@ -597,11 +597,9 @@ except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: fleet")
     fleet = APIRouter(tags=["fleet"])
 
-try:
-    from gdx_dispatch.modules.gps_dispatch import router as gps_dispatch
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: gps_dispatch")
-    gps_dispatch = APIRouter(tags=["gps_dispatch"])
+# modules/gps_dispatch/router.py left 2026-09-10 (#637): its two routes,
+# POST /api/dispatch/location and /api/dispatch/routes, had no caller and took
+# the technician id from the request body. Tech GPS is POST /api/mobile/location.
 
 try:
     from gdx_dispatch.routers import portal as customer_portal_router
@@ -1615,7 +1613,6 @@ def create_app() -> FastAPI:
     app.include_router(workflows.router if hasattr(workflows, "router") else workflows)
     app.include_router(proposals.router if hasattr(proposals, "router") else proposals)
     app.include_router(fleet.router if hasattr(fleet, "router") else fleet)
-    app.include_router(gps_dispatch.router if hasattr(gps_dispatch, "router") else gps_dispatch)
     app.include_router(
         customer_portal_router.router if hasattr(customer_portal_router, "router") else customer_portal_router
     )

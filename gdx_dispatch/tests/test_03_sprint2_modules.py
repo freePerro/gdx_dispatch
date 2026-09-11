@@ -7,8 +7,6 @@ import pytest
 
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.modules.equipment.models import CustomerEquipment, EquipmentServiceHistory
-from gdx_dispatch.modules.inventory.models import Part
-from gdx_dispatch.modules.inventory.service import check_low_stock_alerts, deduct_stock
 from gdx_dispatch.modules.quickbooks.oauth import QBTokenStore
 from gdx_dispatch.modules.quickbooks.sync import (
     QBRateLimitError,
@@ -25,31 +23,9 @@ from gdx_dispatch.modules.timeclock.service import clock_in, clock_out, daily_la
 
 
 @pytest.fixture
-def inventory_db(tenant_db):
-    """Reuse the shared tenant_db fixture which creates all tables."""
-    yield tenant_db
-
-
-@pytest.fixture
 def timeclock_db(tenant_db):
     """Reuse the shared tenant_db fixture which creates all tables."""
     yield tenant_db
-
-
-def test_inventory_deduct_stock_thread_safe(inventory_db):
-    p = Part(sku="SKU-1", name="Bolt", qty_on_hand=10, reorder_point=2, unit_cost=1, unit_price=2)
-    inventory_db.add(p); inventory_db.commit(); inventory_db.refresh(p)  # noqa: E701,E702
-    deduct_stock(p.id, 3, inventory_db); inventory_db.commit(); inventory_db.refresh(p)  # noqa: E701,E702
-    assert p.qty_on_hand == 7
-    from fastapi import HTTPException
-    with pytest.raises((ValueError, HTTPException)):
-        deduct_stock(p.id, 8, inventory_db)
-
-
-def test_inventory_low_stock_alert(inventory_db):
-    p = Part(sku="SKU-2", name="Nut", qty_on_hand=2, reorder_point=5, unit_cost=1, unit_price=2)
-    inventory_db.add(p); inventory_db.commit(); inventory_db.refresh(p)  # noqa: E701,E702
-    assert p.id in {row.id for row in check_low_stock_alerts(inventory_db)}
 
 
 def test_timeclock_clock_in_out(timeclock_db):

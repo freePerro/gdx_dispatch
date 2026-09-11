@@ -14,7 +14,6 @@ the row count.
 
 from __future__ import annotations
 
-from datetime import date
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -25,7 +24,6 @@ from gdx_dispatch.modules.equipment.models import CustomerEquipment, EquipmentSe
 from gdx_dispatch.modules.equipment.router import (
     EquipmentCreate,
     EquipmentIn,
-    EquipmentPatch,
     EquipmentUpdate,
     ServiceEventIn,
     ServiceLogIn,
@@ -35,7 +33,6 @@ from gdx_dispatch.modules.equipment.router import (
     log_equipment_service,
     log_service_event,
     update_equipment,
-    update_equipment_for_customer,
 )
 
 USER_ID = "user-equipment-auditor"
@@ -113,23 +110,6 @@ def test_update_records_before_and_after(tenant_db):
     assert rows[0].details["before"]["serial_number"] == "SN-BEFORE"
 
 
-def test_customer_scoped_update_records_before_and_after(tenant_db):
-    row = _seed(tenant_db)
-    update_equipment_for_customer(
-        row.customer_id,
-        row.id,
-        EquipmentPatch(model="9000", installation_date=date(2030, 1, 1)),
-        _request(),
-        user=USER,
-        db=tenant_db,
-    )
-    rows = _audit_rows(tenant_db, "equipment_updated")
-    assert len(rows) == 1
-    assert rows[0].details["changes"]["model"] == "9000"
-    assert rows[0].details["changes"]["installation_date"] == "2030-01-01"
-    assert rows[0].details["before"]["model"] == "8500"
-
-
 def test_delete_is_audited_with_what_was_deleted(tenant_db):
     row = _seed(tenant_db)
     delete_equipment(row.id, _request(), user=USER, db=tenant_db)
@@ -158,6 +138,21 @@ def test_both_service_log_routes_are_audited(tenant_db):
     assert {r.entity_id for r in rows} == {str(svc1.id), str(svc2.id)}
     assert all(r.user_id == USER_ID and r.entity_type == "equipment_service" for r in rows)
     assert all(r.details["equipment_id"] == str(row.id) for r in rows)
+
+
+def test_office_service_log_records_who_logged_it(tenant_db):
+    """#651: the office route stamped every entry technician_id="system", so
+    the service history could not say who logged it. It now carries the
+    acting user, the same id as its audit row."""
+    row = _seed(tenant_db)
+    svc = log_equipment_service(
+        row.id, ServiceLogIn(service_type="inspection"),
+        _request(), user=USER, db=tenant_db,
+    )
+    tenant_db.refresh(svc)
+    assert svc.technician_id == USER_ID
+    (audit,) = _audit_rows(tenant_db, "equipment_service_logged")
+    assert audit.user_id == svc.technician_id
 
 
 def test_a_missing_row_audits_nothing(tenant_db):
