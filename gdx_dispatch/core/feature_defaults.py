@@ -122,20 +122,6 @@ TECH_MOBILE_SETTINGS: dict[str, dict[str, Any]] = {
             "clock-in) always require assignment regardless of this setting."
         ),
     },
-    "tech_mobile.completion_lead_tech_only": {
-        "type": "bool",
-        "default": False,
-        "bounds": None,
-        "phase": "1.4",
-        "label": "Restrict job completion to lead tech",
-        "help": (
-            "When ON, only the designated lead tech can flip a multi-tech "
-            "job to 'done'. When OFF (default), any assigned tech can. "
-            "Falls back to permissive when no lead is set, so a tenant "
-            "that flips this on without designating leads doesn't lock "
-            "every job from completing."
-        ),
-    },
     "tech_mobile.multi_tech_jobs": {
         "type": "bool",
         "default": True,
@@ -143,14 +129,6 @@ TECH_MOBILE_SETTINGS: dict[str, dict[str, Any]] = {
         "phase": "1.4",
         "label": "Multi-tech jobs allowed",
         "help": "Whether a single job can have multiple assigned technicians.",
-    },
-    "tech_mobile.lead_tech_only_completion": {
-        "type": "bool",
-        "default": False,
-        "bounds": None,
-        "phase": "1.4",
-        "label": "Restrict completion to lead tech",
-        "help": "When ON, only the designated lead tech can mark a job complete.",
     },
     # --- Phase 1.5 — Push -------------------------------------------------
     "tech_mobile.push_fallback_policy": {

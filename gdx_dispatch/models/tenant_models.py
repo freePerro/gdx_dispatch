@@ -2309,8 +2309,10 @@ class JobAssignment(Base):
     tech denormalization for backwards-compat with single-tech reads
     (dashboard, /api/jobs list). When dispatch assigns multiple techs,
     every tech gets a row here and a separate Appointment.tech_id row;
-    ``is_lead`` marks the accountable tech (used by D4's
-    ``completion_lead_tech_only`` gate).
+    ``is_lead`` marks the accountable tech — it drives the primary-tech
+    recompute and the lead shown on the job screens. (A D4
+    ``completion_lead_tech_only`` gate also read it until #644 deleted
+    that gate.)
 
     Three-plane: tenant connection IS the isolation; no company_id /
     tenant_id column. Existing tenants pick the table up via the
