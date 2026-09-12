@@ -92,6 +92,15 @@ PYTEST="docker run --rm --entrypoint python -e JWT_SECRET=<32+ bytes> \
   -v $PWD:/app -w /app docker-app -m pytest" \
   bash gdx_dispatch/tools/run_tests_split.sh
 
+# A requirements.txt change needs an image REBUILD before the matrix means
+# anything. The working tree is bind-mounted (-v $PWD:/app), so source is
+# always current; requirements are baked at build time, so a new dependency is
+# absent until you rebuild — and the symptom is a collection error that removes
+# a whole file from the run. run_tests_split.sh now refuses to start on drift
+# (exit 3); a single-file `docker run ... -m pytest` does NOT check, so rebuild
+# after any requirements.txt edit:
+docker compose -f gdx_dispatch/docker/docker-compose.yml build app
+
 # Vue frontend
 cd gdx_dispatch/frontend && npx vitest run
 

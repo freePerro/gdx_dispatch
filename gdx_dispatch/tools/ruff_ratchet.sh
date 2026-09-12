@@ -56,6 +56,42 @@ case "$BASELINE" in
         ;;
 esac
 
+# ── ruff version drift (#679 sibling sweep, 2026-09-12) ───────────────────
+# The baseline is VERSION-SPECIFIC — ci.yml says so where it pins the install:
+# "a ruff bump that adds/changes rules would shift the count and false-fail".
+# But this script invokes a bare `ruff`, so a local run measures with whatever
+# is on PATH against a baseline calibrated for CI's pin. Measured 2026-09-12:
+# CI pins 0.15.18, this machine had 0.15.8.
+#
+# The risk is asymmetric and that is why this warns rather than refuses: an
+# OLDER ruff knows FEWER rules, so it reports FEWER violations, so a local run
+# can read "under baseline" on a tree CI will fail. A false green, which is the
+# one outcome a ratchet must never produce silently.
+#
+# Not a hard failure: a version mismatch makes the number untrustworthy, not
+# wrong, and refusing would block a legitimate local run for a cosmetic reason.
+# The pin is read FROM ci.yml so there is no second copy to drift.
+CI_WORKFLOW="$REPO_ROOT/.github/workflows/ci.yml"
+if [ -f "$CI_WORKFLOW" ]; then
+    # Every part of this probe is non-fatal by construction. `set -euo pipefail`
+    # is in force, so a bare command substitution that exits non-zero would kill
+    # the script — and `ruff` here may be a STUB: test_ruff_ratchet_gate.py
+    # replays a scenario for any argv it does not recognise, so `ruff --version`
+    # can return "Found 3 errors." with rc 1. Hence `|| true` on both pipelines
+    # and a strict version-shape test before comparing: anything that is not
+    # X.Y.Z is treated as "cannot tell", not as drift.
+    PINNED=$(grep -oE 'pip install ruff==[0-9]+\.[0-9]+\.[0-9]+' "$CI_WORKFLOW" 2>/dev/null | head -1 | sed 's/.*ruff==//' || true)
+    LOCAL=$(ruff --version 2>/dev/null | awk '{print $2}' || true)
+    if printf '%s' "$LOCAL" | grep -qvE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        LOCAL=""
+    fi
+    if [ -n "$PINNED" ] && [ -n "$LOCAL" ] && [ "$PINNED" != "$LOCAL" ]; then
+        echo "⚠ ruff version drift: measuring with $LOCAL, baseline calibrated for $PINNED (ci.yml)."
+        echo "  An older ruff knows fewer rules — this count can read GREEN on a tree CI fails."
+        echo "  Match CI before trusting a pass:  pip install ruff==$PINNED"
+    fi
+fi
+
 RC=0
 OUT=$(ruff check "$TARGET" 2>&1) || RC=$?
 
