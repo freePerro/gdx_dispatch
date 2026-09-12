@@ -107,7 +107,14 @@ def create_job_line_item(job_id: str, request: Request, payload: dict, user: dic
     invoice_id = payload.get("invoice_id")
     if not invoice_id:
         raise HTTPException(400, "invoice_id required")
-    new_id = str(uuid4())
+    # UUID object for the column, string for the audit row and the response
+    # body. `InvoiceLine.id` is Uuid(as_uuid=True), whose bind processor is
+    # dialect-specific: Postgres has a native uuid type and takes a string,
+    # SQLite stores CHAR(32) and calls `value.hex`, raising AttributeError.
+    # The handler already coerces `invoice_id` below for the same reason; its
+    # own primary key was missed. Same shape as #631 in routers/campaigns.py.
+    new_uuid = uuid4()
+    new_id = str(new_uuid)
     # This handler takes a raw dict, so InvoiceLineCreateIn's `gt=0` never ran
     # here: it was the one writer in the app that could put a 0 on an invoice
     # line, and a 0 line is one the invoice API itself refuses (#560).
@@ -138,7 +145,7 @@ def create_job_line_item(job_id: str, request: Request, payload: dict, user: dic
         except (ValueError, AttributeError):
             raise HTTPException(400, "invalid invoice_id") from None
         line = InvoiceLine(
-            id=new_id,
+            id=new_uuid,
             company_id=tenant_id,
             invoice_id=_inv_uuid,
             description=payload.get("description", ""),

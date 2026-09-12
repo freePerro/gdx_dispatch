@@ -172,10 +172,14 @@ def create_campaign(
         )
 
     now = datetime.now(UTC)
-    campaign_id = str(uuid.uuid4())
+    # Keep the UUID object for the column (see `_get_campaign` on the dialect
+    # split) and the string for the response body and audit row, which are
+    # JSON and have always been strings.
+    campaign_uuid = uuid.uuid4()
+    campaign_id = str(campaign_uuid)
     try:
         campaign = MarketingCampaign(
-            id=campaign_id,
+            id=campaign_uuid,
             company_id=tenant_id,
             name=payload.name.strip(),
             type=payload.type,
@@ -222,10 +226,24 @@ def _validate_uuid(campaign_id: str) -> bool:
 
 
 def _get_campaign(db: Session, campaign_id: str, tenant_id: str) -> MarketingCampaign | None:
-    """Fetch a single non-deleted campaign by id and tenant."""
+    """Fetch a single non-deleted campaign by id and tenant.
+
+    The id is coerced to ``uuid.UUID`` because ``MarketingCampaign.id`` is
+    ``Uuid(as_uuid=True)``, whose bind processor differs by dialect: Postgres
+    has a native UUID type and accepts a string, while SQLite stores CHAR(32)
+    and calls ``value.hex`` — which raises ``AttributeError: 'str' object has
+    no attribute 'hex'``, surfacing as a 500 from the handler's SQLAlchemyError
+    branch. Production is Postgres, so this router worked; the whole suite runs
+    on in-memory SQLite, so it could not be tested at all. That is why
+    routers/campaigns.py had no direct test (#631) — the gap was a dialect
+    difference, not an oversight.
+
+    Callers still pass a string and `_validate_uuid` still guards the shape, so
+    a malformed id remains a 404 rather than becoming a 422.
+    """
     return db.execute(
         select(MarketingCampaign).where(
-            MarketingCampaign.id == campaign_id,
+            MarketingCampaign.id == uuid.UUID(str(campaign_id)),
             MarketingCampaign.company_id == tenant_id,
             MarketingCampaign.deleted_at.is_(None),
         )
