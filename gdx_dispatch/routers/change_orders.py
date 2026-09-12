@@ -218,7 +218,9 @@ def create_change_order(
         reason=payload.reason,
         status=payload.status if payload.status in CO_STATUSES else "draft",
         amount=Decimal(str(computed_amount)),
-        created_by=user.get("email") if isinstance(user, dict) else None,
+        # Who did it (#701): the login dict is {user_id, tenant_id, role} —
+        # it never carries an email, so reading one stored NULL for every row.
+        created_by=resolve_audit_actor(user),
     )
     db.add(co)
     db.flush()
@@ -405,7 +407,7 @@ def approve_change_order(
     if not co or co.deleted_at:
         raise HTTPException(status_code=404, detail="Change order not found")
     co.status = "approved"
-    co.approved_by = user.get("email") if isinstance(user, dict) else "system"
+    co.approved_by = resolve_audit_actor(user)  # the approver's id (#701), not an email the login never carries
     co.approved_at = utcnow()
     db.commit()
     db.refresh(co)

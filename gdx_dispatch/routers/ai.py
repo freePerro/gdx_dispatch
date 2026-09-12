@@ -84,7 +84,10 @@ def get_current_principal_for_ai(
 
     role = (user.get("role") or "user").lower()
     caps = caps_for_role(role)
-    raw_id = user.get("id") or user.get("sub") or str(uuid4())
+    # user_id first (#701): the login dict is {user_id, tenant_id, role}, so
+    # `id or sub` never matched and every AI action was delegated by a fresh
+    # random uuid — the delegation record named nobody.
+    raw_id = user.get("user_id") or user.get("id") or user.get("sub") or str(uuid4())
     try:
         identity_id = UUID(str(raw_id))
     except (ValueError, TypeError):

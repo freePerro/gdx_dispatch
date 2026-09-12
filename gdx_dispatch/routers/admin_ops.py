@@ -21,6 +21,7 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
 from gdx_dispatch.core.permissions import PLATFORM_LOCKED_ROLES, assert_can_assign_role
 from gdx_dispatch.core.upload_limits import assert_body_within_limit, assert_upload_within_limit
+from gdx_dispatch.core.user_display import resolve_author_name
 from gdx_dispatch.models.tenant_models import Customer, Invoice, Job, RolePermission, User
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -214,7 +215,9 @@ def invite_user(
         action="user_invited",
         entity_type="user",
         entity_id=user_id,
-        details={"email": email, "role": body.role, "invited_by": _.get("email"), "invite_token": invite_token},
+        # invited_by from the users row (#701): the login dict carries no email,
+        # so this detail was always null.
+        details={"email": email, "role": body.role, "invited_by": resolve_author_name(db, _), "invite_token": invite_token},
         ip_address=(request.client.host if request and request.client else None),
         request=request,
     )

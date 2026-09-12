@@ -37,6 +37,7 @@ from starlette.responses import JSONResponse
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.user_display import resolve_author_name
 from gdx_dispatch.models.tenant_models import JobChatMessage
 
 log = logging.getLogger(__name__)
@@ -253,7 +254,9 @@ def send_job_chat(
         return _jr({"detail": "photo attachments deferred to v2"}, 501)
 
     role = "dispatcher" if _is_dispatcher(user) else "tech"
-    name = user.get("name") or user.get("display_name") or user.get("email")
+    # From the users row (#701): the login dict is {user_id, tenant_id, role}
+    # and carries no name, so every message stored a NULL sender_name.
+    name = resolve_author_name(db, user)
     msg = JobChatMessage(
         id=uuid4(),
         company_id=str(tenant_id),

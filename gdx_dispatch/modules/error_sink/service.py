@@ -18,6 +18,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from gdx_dispatch.core.audit import resolve_audit_actor
 from gdx_dispatch.core.database import SessionLocal, tenant_context
 
 log = logging.getLogger(__name__)
@@ -75,12 +76,16 @@ def record_server_error(
         except Exception:
             tenant_id = None
 
-        principal = getattr(getattr(request, "state", None), "user", None) if request else None
-        user_id = None
+        # Who hit it (#701). resolve_audit_actor reads BOTH stashes: a
+        # get_current_user route leaves the login dict on state.user, a
+        # require_role-only route leaves its principal on state.current_user —
+        # reading state.user alone lost every error on those routes. No email
+        # is stored: no principal carries one, and looking it up here would open
+        # a second session in the crash path. The Server Errors endpoints fill
+        # it from the users row when they read.
+        actor = resolve_audit_actor(None, request) if request is not None else "system"
+        user_id = None if actor == "system" else actor
         user_email = None
-        if isinstance(principal, dict):
-            user_id = str(principal.get("sub") or principal.get("user_id") or "") or None
-            user_email = (principal.get("email") or "") or None
 
         traceback_text = "".join(tb_mod.format_exception(type(exc), exc, exc.__traceback__))[-_TRACEBACK_MAX:]
         exc_class = type(exc).__name__

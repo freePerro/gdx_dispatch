@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.models.tenant_models import EmailSetting
 from gdx_dispatch.routers.auth import get_current_user
@@ -121,7 +121,7 @@ def save_email_config(
         db.add(new_setting)
 
     # Same commit as the change (#700): get_db() closes without committing.
-    log_audit_event_sync(db, tenant_id=tid, user_id=str(user.get("sub", "system")),
+    log_audit_event_sync(db, tenant_id=tid, user_id=resolve_audit_actor(user, request),
                          action="update", entity_type="email_settings", entity_id=tid,
                          details={"provider": payload.provider}, request=request)
     db.commit()

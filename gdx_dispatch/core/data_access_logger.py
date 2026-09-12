@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response, StreamingResponse
 
+from gdx_dispatch.core.audit import resolve_audit_actor
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import SessionLocal, get_db
 from gdx_dispatch.core.log_format import build_log_entry
@@ -160,7 +161,12 @@ class GDPRDataAccessMiddleware(BaseHTTPMiddleware):
             # x-tenant-id header would let clients forge tenant entries in the
             # audit log, which breaks tenant-scoped compliance reports.
             tenant_id = str(tenant.get("id") or "-").strip() or "-"
-            user_id = str(getattr(request.state, "current_user", {}).get("user_id") or "-")
+            # Who read it (#701). This read state.current_user["user_id"]: a
+            # get_current_user route never sets current_user, and require_role
+            # stashes raw JWT claims there (sub, no user_id) — every one of the
+            # 4,065 rows on prod said "-". resolve_audit_actor reads both stashes.
+            actor = resolve_audit_actor(None, request)
+            user_id = "-" if actor == "system" else actor
             request_id = str(getattr(request.state, "request_id", request.headers.get("x-request-id", "-")))
             log_data_access(
                 db,

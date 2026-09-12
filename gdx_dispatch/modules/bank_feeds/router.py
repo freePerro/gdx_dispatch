@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import is_module_enabled, require_module, require_permission
 from gdx_dispatch.modules.bank_feeds import oauth, service
@@ -53,6 +53,18 @@ def _tenant_id(request: FastAPIRequest) -> str:
     if not tenant_id:
         raise HTTPException(status_code=400, detail="Missing tenant context")
     return tenant_id
+
+
+def _actor_id(current_user: dict) -> str | None:
+    """Who confirmed a match, classified a line or created an expense.
+
+    These read ``sub`` alone, and the login dict is {user_id, tenant_id, role}
+    — it never carries one — so every confirmation, manual match and bank-line
+    expense (and its GL entry's ``created_by``) named nobody (#701). A money
+    record must name the acting user.
+    """
+    actor = resolve_audit_actor(current_user)
+    return None if actor == "system" else actor[:64]
 
 
 def _audit(
@@ -1429,7 +1441,7 @@ def confirm_match(
         # mutates books, so a double-click/client retry must be a pure
         # no-op, never a re-stamp that re-fires effects.
         return {"id": str(match.id), "status": match.status, "effects": {"already_confirmed": True}}
-    user_id = str(current_user.get("sub") or "")[:64] or None
+    user_id = _actor_id(current_user)
     from gdx_dispatch.modules.ledger.engine import PeriodLockedError
 
     try:
@@ -1461,7 +1473,7 @@ def reject_match(
     # one click destroys a confirmed reconciliation.
     if match.status == MATCH_CONFIRMED:
         raise HTTPException(status_code=409, detail="Confirmed match — unconfirm it first, then reject")
-    user_id = str(current_user.get("sub") or "")[:64] or None
+    user_id = _actor_id(current_user)
     result = statement_matching.set_match_status(db, match, MATCH_REJECTED, user_id)
     _audit(db, request, current_user, "bank_match_rejected", str(match.id))
     return result
@@ -1478,7 +1490,7 @@ def unconfirm_match(
     match = _load_match(db, match_id)
     if match.status != MATCH_CONFIRMED:
         raise HTTPException(status_code=409, detail="Only confirmed matches can be unconfirmed")
-    user_id = str(current_user.get("sub") or "")[:64] or None
+    user_id = _actor_id(current_user)
     from gdx_dispatch.modules.ledger.engine import PeriodLockedError
 
     try:
@@ -1521,7 +1533,7 @@ def create_match(
         externals = [(e.source_table, UUID(str(e.source_id))) for e in body.externals]
     except ValueError:
         raise HTTPException(status_code=422, detail="invalid id") from None
-    user_id = str(current_user.get("sub") or "")[:64] or None
+    user_id = _actor_id(current_user)
     from gdx_dispatch.modules.ledger.engine import PeriodLockedError
 
     try:
@@ -1670,7 +1682,7 @@ def create_expense_from_line(
     cutover = settings.cutover_month if settings else None
     try:
         if not (cutover is not None and line.txn_date < cutover):
-            post_expense_recorded(db, expense, actor=str(current_user.get("sub") or "") or None)
+            post_expense_recorded(db, expense, actor=_actor_id(current_user))
     except ExpenseCompositionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PeriodLockedError as exc:
@@ -1679,7 +1691,7 @@ def create_expense_from_line(
             detail=f"bank line date falls in a locked accounting period — {exc}",
         ) from exc
 
-    user_id = str(current_user.get("sub") or "")[:64] or None
+    user_id = _actor_id(current_user)
     try:
         match = statement_matching.create_manual_match(
             db, account, [line.id], [("expenses", expense.id)],

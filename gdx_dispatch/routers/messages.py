@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.user_display import resolve_author_name
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -83,10 +84,14 @@ def _user_id(user: Any) -> str:
     return str(user.get("sub") or user.get("user_id") or user.get("email") or "system")
 
 
-def _user_name(user: Any) -> str | None:
-    if not isinstance(user, dict):
-        return None
-    return user.get("name") or user.get("email") or None
+def _user_name(user: Any, db: Session) -> str | None:
+    """The sender's display name, from the users row (#701).
+
+    Was ``user.get("name") or user.get("email")`` — the login dict carries
+    neither (it is ``{user_id, tenant_id, role}``), so every message stored a
+    NULL sender name. notes.py fixed its copy of this the same way.
+    """
+    return resolve_author_name(db, user)
 
 
 def _user_role(user: Any) -> str:
@@ -295,7 +300,7 @@ def send_message(
     msg = TeamMessage(
         company_id=tenant_id,
         sender_id=sender_id,
-        sender_name=_user_name(user),
+        sender_name=_user_name(user, db),
         subject=payload.subject,
         body=payload.body,
     )
