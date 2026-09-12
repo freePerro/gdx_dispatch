@@ -55,7 +55,9 @@ starting a sweep while the budget is CLOSED is choosing more backlog, not less.
   which is why **mid-stack PRs still need the local matrix run and its results
   posted before merge**: the rule is right, the old reason ("runs only on
   main") was not. Note also the `push` trigger carries a paths filter
-  (`gdx_dispatch/**`, `docker/**`, `.github/workflows/**`, excluding `**/*.md`)
+  (`gdx_dispatch/**`, `gdx_dispatch/docker/**` — note the prefix: a *root*
+  `docker/` change matches nothing — `.github/workflows/**`, excluding
+  `**/*.md`)
   while the `pull_request` trigger has none, so a docs-only PR runs the full
   suite and a docs-only push to main does not. Verified against
   `.github/workflows/ci.yml` 2026-09-01.
@@ -146,14 +148,19 @@ it found 14 of 52 plan headers that would have sent a reader to rebuild shipped
 work — every one a plan that shipped and never had its status updated. No doc
 in this repo has ever overclaimed; the record only ever undersells what exists.
 
-- **Every doc carries a status line on line 3 — plans, guides, runbooks and
-  ADRs alike.** Vocabulary: `PLAN` · `PARTIALLY BUILT` · `MERGED #N` ·
-  `RELEASED vX.Y.Z` · `HISTORICAL`. It names what is *not* built when the
-  answer is "some of it". A doc with no status line is incomplete. Measured
-  2026-09-01 over tracked files: `docs/design/` is at **64 of 65**;
-  `gdx_dispatch/docs/` (guides + ADRs) at **10 of 42**, and the guides alone
-  at **1 of 33**. That gap is not a coincidence — it is exactly where the ten
-  defects were.
+- **Every doc carries a status line in its header block — plans, guides,
+  runbooks and ADRs alike.** Line 3, or just below it when a `**Date:**` (and
+  sometimes `**Branch:**`) block comes first — 5 of the 70 design docs are
+  shaped that way, four on line 4 and one on line 7. Vocabulary: `PLAN` ·
+  `PARTIALLY BUILT` · `MERGED #N` · `RELEASED vX.Y.Z` · `HISTORICAL`. It names
+  what is *not* built when the answer is "some of it". A doc with no status
+  line is incomplete. Measured 2026-09-01 over tracked files, `docs/design/`
+  was at **64 of 65** and `gdx_dispatch/docs/` at **10 of 42** — and that gap
+  was not a coincidence, it was exactly where the ten defects were.
+  **Re-measured 2026-09-12: `docs/design/` is 70 of 70 and
+  `gdx_dispatch/docs/` is 41 of 41.** The gap that produced those defects is
+  closed; the rule is what keeps it closed. (This bullet had itself gone stale
+  in the direction the paragraph above predicts — it undersold what exists.)
 - **The status line ships with the code.** A PR that implements part of a plan
   updates that plan's status in the same PR. ADR-016 was edited *inside its own
   build commit* and still read "nothing built yet" while the feature sat in the
@@ -226,7 +233,8 @@ buttons wired to stubs. Before calling anything done:
   Before citing a scanner or baseline as evidence, name the input that would
   turn it red. `tests/authz_sweep.py` counts any authenticated route as gated,
   so it can never fail for a missing permission check — `routers/payments.py`
-  has 7 mutation routes, 0 permission gates, and a green sweep. (Several of
+  has 5 mutation routes, 0 permission gates, and a green sweep (it was 7 until
+  the 2026-09-10 orphan sweep deleted two; re-counted 2026-09-12). (Several of
   those are public by design and token-scoped; see `.authz_ungated_baseline`
   before "fixing" one. The point is the sweep cannot tell you which.)
 - **A row-refusing drop can take prod down.** The guarded table-drop
@@ -270,13 +278,23 @@ filed, not investigated mid-task — and Doug decides what becomes an issue
 something a real user can hit on prod today is raised the moment it is seen.
 Doug can widen the scope of a session; Claude does not. Adopted 2026-09-10.
 
+That list is also **appended to `FOUND_NOT_FILED.md` in the repo root**, which <!-- FOUND_NOT_FILED.md is deliberately untracked — local to the maintainer's checkout, never committed; link-ok -->
+is a durable local ledger, not a GitHub issue: git-ignored through
+`.git/info/exclude`, never committed, never pushed (Doug, 2026-09-12). Filing
+on the tracker is net-zero while the budget is CLOSED, and the close-out list
+was evaporating between sessions. Each entry carries the date observed, the
+file, and why it matters; entries are dated observations, so re-verify against
+the code before acting on one. When Doug rules, the entry moves to that file's
+"Ruled / closed" section with the decision.
+
 ## Close every work turn with
 
 - Commit status: committed? pushed? PR number? Anything intentionally
   uncommitted, and why.
 - What was verified (with the evidence), and what was not.
 - Remaining open items as a list — "nothing left" requires having looked.
-- The session's *found, not filed* list, or "nothing found".
+- The session's *found, not filed* list, or "nothing found" — reported here
+  **and** appended to `FOUND_NOT_FILED.md`. <!-- untracked by design, see above; link-ok -->
 
 ## Planning defaults (standing answers — don't re-ask)
 
