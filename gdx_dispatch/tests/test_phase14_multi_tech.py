@@ -4,7 +4,6 @@ D1 — JobAssignment CRUD + Job.assigned_to recompute on every write.
 D2 — per-tech state stamps via the mobile state-machine handlers.
 D3 — per-tech attribution stamps survive multi-tech jobs (photos,
      notes, parts, signatures already attribute from earlier phases).
-D4 — completion_lead_tech_only gate; permissive fallback when no lead set.
 D5 — at-most-one lead per job; clearing the lead works.
 D6 — single Job.signed_at / signed_by per job (one customer signature
      regardless of tech count).
@@ -254,57 +253,6 @@ def test_d2_lazy_backfill_refuses_non_technician_id(db):
     db.commit()
     assert row is None
     assert db.query(JobAssignment).filter_by(job_id=jid).count() == 0
-
-
-# ---------------------------------------------------------------------------
-# D4 — lead-tech-only completion gate.
-# ---------------------------------------------------------------------------
-
-
-def _set_lead_only_setting(db, value: bool) -> None:
-    from gdx_dispatch.models.tenant_models import AppSettings
-
-    existing = db.query(AppSettings).first()
-    overrides = {"tech_mobile.completion_lead_tech_only": value}
-    if existing is None:
-        db.add(AppSettings(
-            company_name="Acme",
-            address="-",
-            tenant_mobile_settings=overrides,
-        ))
-    else:
-        existing.tenant_mobile_settings = overrides
-    db.commit()
-
-
-def test_d4_off_default_any_tech_can_complete(db):
-    """Permissive default — completion_lead_tech_only=False (catalog default)."""
-    jid = _seed_job(db)
-    ja.add_assignment(jid, _request(), ja.AssignBody(tech_id=_TECH_A_ID, is_lead=True), user=_DISP, db=db)
-    ja.add_assignment(jid, _request(), ja.AssignBody(tech_id=_TECH_B_ID), user=_DISP, db=db)
-    # Tech B (not lead) tries to complete — should NOT be blocked when setting is off.
-    assert ja.is_lead_for_job(db, job_id=jid, tech_id=_TECH_B_ID) is False
-    assert ja.has_any_lead(db, job_id=jid) is True
-
-
-def test_d4_no_lead_set_falls_back_to_permissive(db):
-    """Even with the gate ON, a job with no lead set must still be completable
-    by any tech — otherwise misconfiguration would lock every job."""
-    _set_lead_only_setting(db, True)
-    jid = _seed_job(db)
-    ja.add_assignment(jid, _request(), ja.AssignBody(tech_id=_TECH_A_ID), user=_DISP, db=db)
-    ja.add_assignment(jid, _request(), ja.AssignBody(tech_id=_TECH_B_ID), user=_DISP, db=db)
-    assert ja.has_any_lead(db, job_id=jid) is False  # no lead → fall-back path
-
-
-def test_d4_lead_set_and_gate_on_blocks_non_lead(db):
-    _set_lead_only_setting(db, True)
-    jid = _seed_job(db)
-    ja.add_assignment(jid, _request(), ja.AssignBody(tech_id=_TECH_A_ID, is_lead=True), user=_DISP, db=db)
-    ja.add_assignment(jid, _request(), ja.AssignBody(tech_id=_TECH_B_ID), user=_DISP, db=db)
-    assert ja.has_any_lead(db, job_id=jid) is True
-    assert ja.is_lead_for_job(db, job_id=jid, tech_id=_TECH_A_ID) is True
-    assert ja.is_lead_for_job(db, job_id=jid, tech_id=_TECH_B_ID) is False
 
 
 # ---------------------------------------------------------------------------

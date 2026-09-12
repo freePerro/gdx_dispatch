@@ -1,7 +1,10 @@
 # Tech Mobile — Workflow, API, Permissions, Offline Sync
 
 **Status: CURRENT** (spot-checked 2026-09-01 — all 3 file references resolve;
-last substantive edit 2026-08-25).
+last substantive edit 2026-09-12 — both lead-tech-completion toggles
+(`completion_lead_tech_only`, `lead_tech_only_completion`) removed with #644:
+the first gated only a deprecated route no client called, the second was never
+read by anything. Lead-tech-only completion is deferred, not shipped).
 
 
 Sprint `sprint_tech_mobile` documentation. The mobile surface is a PWA
@@ -163,7 +166,6 @@ Settings used by mobile (non-exhaustive):
 - `tech_mobile.quote_decline_reasons` (list[string])
 - `tech_mobile.quote_tax_shape`
 - `tech_mobile.offline_mode_enabled`
-- `tech_mobile.completion_lead_tech_only`
 
 ## Offline sync contract (Phase 3.1)
 

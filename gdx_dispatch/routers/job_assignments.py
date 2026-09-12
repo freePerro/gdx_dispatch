@@ -393,33 +393,3 @@ def ensure_assignment_for_legacy_job(
     db.add(row)
     db.flush()
     return row
-
-
-def is_lead_for_job(db: Session, *, job_id: str, tech_id: str) -> bool:
-    """D4 helper — is this tech the lead on this job?
-
-    Returns False if the tech has no assignment OR if no lead is set.
-    """
-    row = db.execute(
-        select(JobAssignment.is_lead).where(
-            JobAssignment.job_id == job_id,
-            JobAssignment.tech_id == tech_id,
-            JobAssignment.deleted_at.is_(None),
-        )
-    ).scalar_one_or_none()
-    return bool(row)
-
-
-def has_any_lead(db: Session, *, job_id: str) -> bool:
-    """Distinguishes "no lead set" from "this tech is not lead." When
-    there is no lead at all, D4's gate falls back to permissive (any
-    assigned tech can complete) — otherwise a misconfigured tenant could
-    lock every job from completing."""
-    row = db.execute(
-        text(
-            "SELECT 1 FROM job_assignments "
-            "WHERE job_id = :j AND deleted_at IS NULL AND is_lead = :t LIMIT 1"
-        ),
-        {"j": job_id, "t": True},
-    ).scalar()
-    return bool(row)

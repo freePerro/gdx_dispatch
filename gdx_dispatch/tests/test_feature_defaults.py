@@ -108,3 +108,36 @@ class TestValidator:
     def test_enum_rejects_unlisted_value(self) -> None:
         with pytest.raises(ValueError, match="not in"):
             validate_tech_mobile_value("tech_mobile.drive_time_provider", "waze")
+
+
+class TestNoLeadTechCompletionToggle:
+    """#644 — both lead-tech-completion toggles are gone, and stay gone.
+
+    Two keys spelled the same idea in opposite orders. Only one was ever
+    read, and only by a gate on the deprecated
+    ``POST /api/mobile/jobs/{job_id}/complete``; the other was never read
+    by anything, so the admin form offered a switch that could not do
+    what its label promised. Both were removed rather than repaired —
+    lead-tech-only completion is deferred, not shipped.
+
+    An absence assertion is the honest guard here: re-adding a catalog
+    entry is what would make the UI lie again, and that is exactly what
+    this catches. Whoever builds the feature for real deletes this class
+    in the same PR that adds a reader.
+    """
+
+    def test_neither_spelling_is_in_the_catalog(self) -> None:
+        assert "tech_mobile.completion_lead_tech_only" not in TECH_MOBILE_SETTINGS
+        assert "tech_mobile.lead_tech_only_completion" not in TECH_MOBILE_SETTINGS
+
+
+# NOTE on what this guard is NOT. The honest general guard is reader-shaped —
+# "every catalog key is read by something" — not spelling-shaped. It is not
+# written here because it would fail today: an /audit scan during #644 found 16
+# of the 33 surviving keys have no reader outside the catalog, including a
+# THIRD duplicate-spelling pair (gps_breadcrumb_interval_sec / _seconds). That
+# is the same class as #644 and wants its own PR; a substring match on "lead"
+# was tried here and rejected — it misses the spelling this repo would actually
+# reach for ("primary", as in _recompute_primary) and reddens on an innocent
+# tech_mobile.lead_time_minutes. Two exact keys, precisely asserted, is a guard
+# that cannot lie.

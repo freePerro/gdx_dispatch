@@ -2380,37 +2380,6 @@ def mobile_job_complete(
     # S1-B5 — signature gating + surface check.
     from gdx_dispatch.core.tenant_mobile_settings import get_tenant_mobile_setting
 
-    # Phase 1.4 D4 — lead-tech-only completion gate. Falls back to
-    # permissive when no lead is set on the job (otherwise a tenant
-    # that flips the flag without designating leads would lock every
-    # job from completing). Single-tech jobs without a JobAssignment
-    # row also fall back to permissive — Phase 1.4 doesn't retroactively
-    # block legacy single-tech jobs.
-    if get_tenant_mobile_setting(
-        db, "tech_mobile.completion_lead_tech_only", default=False, request=request
-    ):
-        from gdx_dispatch.routers.job_assignments import has_any_lead, is_lead_for_job
-
-        # A caller with no active Technician row hands a users.id into a
-        # technicians.id lookup here, never matches, and is 403'd out of
-        # completing the job (#644). Left as-is on purpose: dropping the
-        # fallback would SKIP the lead gate for them, which grants permission
-        # rather than fixing the lookup, and that is a decision for #644 with
-        # its own test — not a ride-along in a clock-display fix.
-        _technician_id_complete = _get_technician_id(db, tenant_id, user_id) or user_id
-        if _technician_id_complete and has_any_lead(db, job_id=job_id):
-            if not is_lead_for_job(db, job_id=job_id, tech_id=_technician_id_complete):
-                return jsonable_response(
-                    {
-                        "detail": (
-                            "Only the lead tech can complete this job. "
-                            "Ask the lead to mark it done, or have dispatch "
-                            "reassign the lead role."
-                        )
-                    },
-                    403,
-                )
-
     sig_required_setting = get_tenant_mobile_setting(
         db, "tech_mobile.signature_required_completion", request=request
     )
