@@ -126,7 +126,29 @@ class APIClient:
 
 
 def _login_and_get_token() -> str:
-    """Login via API and return access token."""
+    """The bearer token every API assertion runs under.
+
+    ``GDX_E2E_TOKEN`` short-circuits the password login. A local run has no
+    e2e account and cannot read ``JWT_SECRET`` out of the container (the
+    credential guard blocks it, correctly), but the app container can mint a
+    token for itself — so the token can be injected without a password ever
+    leaving that container. Without this, the whole suite is unrunnable
+    locally, which is how its assertions drifted in the first place (#640).
+
+    A failed login RAISES. It used to ``pytest.skip``, which meant a typo in
+    the password turned every E2E test green-by-absence — the same shape #640
+    is about: a check that cannot fail for the thing it exists to catch.
+
+    To opt out deliberately, set ``GDX_E2E_SKIP=1``. Note the module-level
+    ``skipif`` on ``GDX_E2E_PASSWORD`` cannot do it: the constant carries a
+    non-empty default, so unsetting the variable changes nothing.
+    """
+    if os.getenv("GDX_E2E_SKIP") == "1":
+        pytest.skip("GDX_E2E_SKIP=1 — E2E suite skipped deliberately")
+    injected = os.getenv("GDX_E2E_TOKEN", "").strip()
+    if injected:
+        return injected
+
     with httpx.Client(base_url=BASE_URL, verify=False, timeout=15) as client:
         resp = client.post(
             "/auth/login",
@@ -134,9 +156,16 @@ def _login_and_get_token() -> str:
             headers={"x-tenant-id": TENANT_ID, "Content-Type": "application/json"},
         )
         if resp.status_code != 200:
-            pytest.skip(f"Login failed: {resp.status_code} {resp.text[:200]}")
+            raise AssertionError(
+                f"E2E login failed against {BASE_URL}: {resp.status_code} "
+                f"{resp.text[:200]}\nSet GDX_E2E_TOKEN to run against a local "
+                f"stack without an e2e account."
+            )
         data = resp.json()
-        return data.get("access_token") or data.get("token") or ""
+        token = data.get("access_token") or data.get("token") or ""
+        if not token:
+            raise AssertionError(f"E2E login returned no token: {resp.text[:200]}")
+        return token
 
 
 @pytest.fixture(scope="session")
@@ -151,6 +180,61 @@ def api(auth_token: str) -> APIClient:
     client = APIClient(BASE_URL, auth_token, TENANT_ID)
     yield client
     client.close()
+
+
+@pytest.fixture
+def scratch_job(api):
+    """A job the calling test owns outright, removed on the way out.
+
+    Every mutating E2E check used to act on ``/api/jobs``' FIRST row — a real
+    customer's job. That was survivable only while the assertions were
+    ``status_code < 500``, because the requests were failing: on a seeded stack
+    the first row is ``done``, so ``/en-route`` answered 400 *"cannot
+    transition from 'done' back to 'en_route'"* and the test passed without
+    transitioning anything (#640).
+
+    Making those assertions real makes the writes real, and several are not
+    reversible in kind: ``/closeout`` flips lifecycle to completed and writes a
+    synthetic time entry from the attested ``hours``; ``parts-used`` writes
+    priced rows onto the billing spine; ``PATCH assigned_to`` soft-deletes every
+    JobAssignment outside the desired set, so patching a list's primary tech
+    back onto a multi-tech job strips the rest of the crew. Pointed at prod or
+    demo, the old target selection would have turned a scheduled customer
+    appointment into a completed job carrying fabricated attested hours — and
+    CLAUDE.md is explicit that billed labor comes from attested hours only.
+
+    A fresh job is also ``unassigned``, which is below every dispatch rank, so
+    the forward-transition gate is satisfied by construction rather than by
+    hunting for a row that happens to fit.
+
+    KNOWN LIMIT: the job is created unassigned, so `_assert_job_access`
+    (`routers/mobile.py`) admits the caller via the dispatch-manager branch,
+    not the technician-ownership one. These checks therefore prove the mobile
+    ENDPOINTS, not the tech ownership gate, and a technician-role account will
+    404 against them. Assigning the scratch job to the caller needs an active
+    technician row for the E2E user, which is data this fixture cannot assume.
+    """
+    resp = api.post("/api/jobs", json_data={
+        "title": "E2E scratch job — safe to delete",
+        "description": "Created by the E2E suite; removed in teardown.",
+    })
+    assert resp.status_code == 201, (
+        f"Could not create a scratch job: {resp.status_code} {resp.text[:200]}"
+    )
+    job_id = str(resp.json()["id"])
+    try:
+        yield job_id
+    finally:
+        # Close anything the test (or the endpoints it called) left running:
+        # `/arrived` auto-opens a per-job time entry, and a soft-deleted job
+        # does not close it — it would run forever and a later real closeout
+        # would inherit it.
+        api.post(f"/api/mobile/jobs/{job_id}/clock-out", json_data={})
+        deleted = api.delete(f"/api/jobs/{job_id}")
+        assert deleted.status_code in (200, 204), (
+            f"scratch job {job_id} was NOT removed: {deleted.status_code} "
+            f"{deleted.text[:200]} — teardown must not fail silently"
+        )
 
 
 @pytest.fixture
