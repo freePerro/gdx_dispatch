@@ -53,7 +53,6 @@ import importlib
 import io
 import json
 import re
-import subprocess
 import sys
 import tokenize
 from collections import defaultdict
@@ -61,6 +60,12 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Running this file BY PATH puts `tools/` on sys.path, not the repo root.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from gdx_dispatch.tools.tracked_files import tracked_or_none  # noqa: E402
 
 ALL_DETECTORS = ("D1", "D2", "D3", "X1", "X2")
 
@@ -190,27 +195,29 @@ _SKIP_DIRS = {
 
 
 def _git_tracked(root: Path, *patterns: str) -> list[str]:
-    """Tracked files, via git when available, else a filtered filesystem walk.
+    """Tracked files, read from `.git/index` directly.
 
-    The container image that runs the test suite has no git binary, so the
-    walk fallback is a normal path, not an error case.
+    2026-09-12 — this shelled out to ``git ls-files`` and fell back to a
+    filesystem walk, and its own docstring called the fallback "a normal path,
+    not an error case" because the docker-app image ships no git binary. #716
+    disproved that: the walk includes **gitignored** files that exist on one
+    machine and not in CI, so the same commit scans a different corpus in each
+    place — three guards were red locally and green in CI for exactly this, and
+    the standing local red masked a genuine failure.
+
+    ``tracked_files`` needs no git binary (it parses the index) and refuses
+    rather than degrading. The only caller passes ``"*"``, i.e. "everything
+    tracked", so no pathspec matching is needed here; ``patterns`` is kept for
+    signature compatibility and asserted rather than silently ignored.
     """
-    try:
-        out: list[str] = []
-        for pat in patterns:
-            res = subprocess.run(
-                ["git", "ls-files", pat],
-                cwd=root,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            out += [line for line in res.stdout.split("\n") if line.strip()]
-        if out:
-            return out
-    except (OSError, subprocess.SubprocessError):
-        pass
+    assert not patterns or set(patterns) == {"*"}, f"unsupported pathspec: {patterns}"
 
+    tracked = tracked_or_none(root)
+    if tracked is not None:
+        return sorted(tracked)
+
+    # No `.git` at all (a scratch dir, or the shipped image where
+    # `.dockerignore` drops it). `tracked_or_none` has already said so loudly.
     walked: list[str] = []
     for path in root.rglob("*"):
         if not path.is_file():

@@ -341,3 +341,182 @@ def test_clean_pair_reports_nothing(tmp_path):
         """,
     })
     assert scan(repo, ["C1", "C2", "C3", "C5"]) == []
+
+
+# ── the route table itself (#454) ────────────────────────────────────────
+#
+# Everything above hands `scan()` a route table and checks the logic on top of
+# it. None of it can fail if the TABLE is wrong — which is exactly how this
+# scanner stayed green through #451, a Vue call into a router nobody mounts.
+# These pin where the table comes from.
+
+
+def test_include_time_router_prefix_survives():
+    """`include_router(sub, prefix=...)` lives on the wrapper, not on the path.
+
+    Constructor prefixes (`APIRouter(prefix=...)`) are baked into `route.path`,
+    so dropping include-time prefixes still produced a mostly-correct table —
+    which is why this hid. The eight SimpleFIN routes came out as bare
+    `/status`, `/connect`, … instead of `/api/bank-feeds/simplefin/*`, so the
+    "ground truth" table reported live routes as dead.
+    """
+    fastapi = pytest.importorskip("fastapi")
+    from gdx_dispatch.tools import frontend_contract_scan as fcs
+
+    inner = fastapi.APIRouter()
+
+    @inner.get("/status")
+    def _status():  # pragma: no cover - never called
+        return {}
+
+    outer = fastapi.APIRouter(prefix="/api/bank-feeds")
+    outer.include_router(inner, prefix="/simplefin")
+
+    app = fastapi.FastAPI()
+    app.include_router(outer)
+
+    table = fcs._routes_of(app)
+    paths = {(r["method"], r["path"]) for r in table}
+    assert ("GET", "/api/bank-feeds/simplefin/status") in paths, sorted(paths)
+    assert ("GET", "/status") not in paths
+
+
+def test_one_router_included_under_two_prefixes_keeps_both():
+    """Dedupe is keyed by (route, prefix); keying by route alone drops a mount."""
+    fastapi = pytest.importorskip("fastapi")
+    from gdx_dispatch.tools import frontend_contract_scan as fcs
+
+    shared = fastapi.APIRouter()
+
+    @shared.get("/ping")
+    def _ping():  # pragma: no cover - never called
+        return {}
+
+    app = fastapi.FastAPI()
+    app.include_router(shared, prefix="/api/a")
+    app.include_router(shared, prefix="/api/b")
+
+    paths = {(r["method"], r["path"]) for r in fcs._routes_of(app)}
+    assert ("GET", "/api/a/ping") in paths
+    assert ("GET", "/api/b/ping") in paths
+
+
+def test_main_refuses_rather_than_scanning_on_a_static_table(monkeypatch, capsys):
+    """The whole point of #454: no silent degrade.
+
+    The old default printed `route table: static parse` and exited 0/1 like any
+    other run, so a green scan meant nothing.
+    """
+    from gdx_dispatch.tools import frontend_contract_scan as fcs
+
+    def _boom():
+        raise ModuleNotFoundError("No module named 'gdx_dispatch'")
+
+    monkeypatch.setattr(fcs, "routes_from_app", _boom)
+    assert fcs.main(["--check", "C1"]) == 2
+    err = capsys.readouterr().err
+    assert "REFUSED" in err
+    assert "--allow-static" in err
+
+
+def test_main_scans_degraded_only_when_asked(monkeypatch, capsys):
+    from gdx_dispatch.tools import frontend_contract_scan as fcs
+
+    def _boom():
+        raise ModuleNotFoundError("No module named 'gdx_dispatch'")
+
+    monkeypatch.setattr(fcs, "routes_from_app", _boom)
+    rc = fcs.main(["--check", "C1", "--allow-static"])
+    assert rc in (0, 1)  # findings or not, it ran
+    out = capsys.readouterr()
+    assert "STATIC PARSE" in out.err  # loud on the way in
+    assert "DEGRADED" in out.out      # and in the summary, not just stderr
+
+
+# ── Starlette catch-all routes ───────────────────────────────────────────
+
+
+def test_catch_all_route_serves_deeper_paths(tmp_path):
+    """`{path:path}` spans slashes; collapsing it to `{}` invented a dead call.
+
+    Live example: `GET /api/plugins/{path:path}` serves the plugin UI manifest
+    at `/api/plugins/${key}/ui`, which C1 reported as served by nothing.
+    """
+    assert normalize("/api/plugins/{path:path}") == "/api/plugins/{*}"
+    assert path_matches("/api/plugins/{}/ui", "/api/plugins/{*}")
+    assert path_matches("/api/plugins/a/b/c", "/api/plugins/{*}")
+    # the head still has to line up
+    assert not path_matches("/api/other/x", "/api/plugins/{*}")
+
+    repo = _mkrepo(tmp_path, {
+        "gdx_dispatch/frontend/src/composables/p.js": """
+            const m = await api.get(`/api/plugins/${key}/ui`);
+        """,
+    })
+    routes = [{"method": "GET", "path": "/api/plugins/{path:path}"}]
+    assert scan(repo, ["C1", "C2"], routes=routes) == []
+
+
+def test_catch_all_does_not_swallow_a_method_mismatch(tmp_path):
+    """Permissive matching must not cost C2 its teeth."""
+    repo = _mkrepo(tmp_path, {
+        "gdx_dispatch/frontend/src/composables/p.js": """
+            await api.post(`/api/plugins/${key}/ui`, {});
+        """,
+    })
+    routes = [{"method": "GET", "path": "/api/plugins/{path:path}"}]
+    assert _checks(scan(repo, ["C1", "C2"], routes=routes)) == ["C2"]
+
+
+def test_spa_shell_does_not_count_as_serving_api_calls(tmp_path):
+    """The SPA catch-all matches every GET and serves none of the API.
+
+    `@app.get("/{full_path:path}")` (gdx_dispatch/app.py) exists whenever
+    `frontend/dist` does, and returns 404 for anything starting with `api/`.
+    Treating it as a route that serves `/api/...` silently retires C1 for every
+    GET in the app, and reports dead POSTs as bogus 405s against it. Caught by
+    the pre-commit audit of #454, after the live scan had already gone green
+    "C1: 0, C2: 0" — green by construction, which is the thing this scanner is
+    supposed to make impossible.
+    """
+    repo = _mkrepo(tmp_path, {
+        "gdx_dispatch/frontend/src/views/V.vue": """
+            await api.get(`/api/this-route-does-not-exist`);
+            await api.post(`/api/also-not-real`, {});
+        """,
+    })
+    routes = [
+        {"method": "GET", "path": "/{full_path:path}"},   # the SPA shell
+        {"method": "GET", "path": "/api/jobs"},
+    ]
+    found = scan(repo, ["C1", "C2"], routes=routes)
+    assert _checks(found) == ["C1", "C1"], found
+    assert not any(f["check"] == "C2" for f in found)
+
+
+def test_scoped_catch_all_still_serves_its_own_subtree(tmp_path):
+    """The SPA exclusion is rooted, not a blanket ban on catch-alls."""
+    repo = _mkrepo(tmp_path, {
+        "gdx_dispatch/frontend/src/views/V.vue": """
+            await api.get(`/api/plugins/${key}/ui`);
+        """,
+    })
+    routes = [
+        {"method": "GET", "path": "/{full_path:path}"},
+        {"method": "GET", "path": "/api/plugins/{path:path}"},
+    ]
+    assert scan(repo, ["C1", "C2"], routes=routes) == []
+
+
+def test_main_refuses_an_implausible_route_table(tmp_path, capsys):
+    """A table that is present but wrong reads green; refuse it.
+
+    The bug #454 fixed published routes at the wrong paths and looked perfectly
+    well-formed, so 'is this table plausible' has to be asked out loud.
+    """
+    from gdx_dispatch.tools import frontend_contract_scan as fcs
+
+    table = tmp_path / "routes.json"
+    table.write_text('[{"method": "GET", "path": "/{full_path:path}"}]')
+    assert fcs.main(["--routes", str(table), "--check", "C1"]) == 2
+    assert "REFUSED" in capsys.readouterr().err
