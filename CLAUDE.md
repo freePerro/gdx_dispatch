@@ -245,6 +245,13 @@ in this repo has ever overclaimed; the record only ever undersells what exists.
   only when the doc holds no decision anyone could still need.
 - **Open a plan with "what already exists (do not rebuild)."** The best doc in
   the corpus established that half its ask needed no code at all.
+- **When something is to be deleted, delete it.** No tarball, no `archive/`
+  copy, no "just in case" branch, no commented-out block. Every hedge becomes
+  a second thing to maintain, to search, and to be misled by later — and the
+  copy is always the one that goes stale unnoticed (Doug, 2026-09-12). This
+  does not override *Keep the past*: a shipped plan's reasoning still stays,
+  because it is the record. A backup of something already decided dead is not
+  a record, it is a hedge against a decision that has already been made.
 
 ## Can someone actually use it?
 
@@ -353,16 +360,24 @@ buttons wired to stubs. Before calling anything done:
 Name the issue and what "done" means before starting. Anything noticed on the
 way goes on a **found, not filed** list in the close-out — not fixed, not
 filed, not investigated mid-task — and Doug decides what becomes an issue
-(net-zero while the sweep budget is CLOSED; see `PHASE.md`). One exception:
-something a real user can hit on prod today is raised the moment it is seen.
-**That exception is self-triggering, so distrust it**: Claude both judges
-whether it applies and benefits from it applying. "Reachable in principle" is
-not "a real user hits it today" — a hole needing a hand-crafted request from a
-staff account in a single-tenant app is a hardening gap, not a live defect. If
-the exception is the only thing authorizing a filing, that is the signal to
-ask Doug instead. (2026-09-12: #712 was filed on exactly that mistake and
-closed back to the ledger.)
+(net-zero while the sweep budget is CLOSED; see `PHASE.md`).
 Doug can widen the scope of a session; Claude does not. Adopted 2026-09-10.
+
+**Claude does not open GitHub issues. At all.** Not for a sweep finding, not
+for a security hole, not under the old "a real user can hit it today"
+exception — that exception is withdrawn as a licence to file (Doug,
+2026-09-12: a week was spent cleaning up issues Claude posted, and the intake
+was pure cost). Something urgent still gets **raised the moment it is seen —
+to Doug, in the conversation**, which is faster than a ticket anyway.
+Everything else lands in `FOUND_NOT_FILED.md`. Doug files what deserves
+filing.
+
+The withdrawn exception was self-triggering, which is why it failed: Claude
+both judged whether it applied and benefited from it applying. #712 was filed
+on that mistake — a hardening gap needing a hand-crafted request from a staff
+account in a single-tenant app, labelled a live defect — and closed back to
+the ledger the same night. Treat any rule that authorizes an action Claude
+already wants to take as the rule most likely being misread.
 
 That list is also **appended to `FOUND_NOT_FILED.md` in the repo root**, which <!-- FOUND_NOT_FILED.md is deliberately untracked — local to the maintainer's checkout, never committed; link-ok -->
 is a durable local ledger, not a GitHub issue: git-ignored through
