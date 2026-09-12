@@ -14,7 +14,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.audit import audit_ready_db
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.settings_audit import audited_settings_upsert
 from gdx_dispatch.modules.numbering.service import preview as render_preview
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -95,7 +97,7 @@ def update_config(
     payload: NumberingConfigIn,
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
 ) -> dict[str, Any]:
     if (user.get("role") or "").lower() not in {"admin", "owner"}:
         raise HTTPException(status_code=403, detail="admin or owner required")
@@ -106,15 +108,18 @@ def update_config(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid format template: {exc}") from exc
 
-    db.execute(
-        text(
-            "INSERT INTO tenant_settings (tenant_id, job_number_format, job_number_next_seq) "
-            "VALUES (:tid, :fmt, :seq) "
-            "ON CONFLICT (tenant_id) DO UPDATE "
-            "  SET job_number_format = EXCLUDED.job_number_format, "
-            "      job_number_next_seq = EXCLUDED.job_number_next_seq"
-        ),
-        {"tid": str(tid), "fmt": payload.job_number_format, "seq": payload.job_number_next_seq},
+    # Invariant #1. This is the change most likely to need forensics: the
+    # router's own docstring warns that rewinding the counter collides with
+    # job numbers already issued.
+    return audited_settings_upsert(
+        db,
+        request,
+        user,
+        tenant_id=tid,
+        values={
+            "job_number_format": payload.job_number_format,
+            "job_number_next_seq": payload.job_number_next_seq,
+        },
+        action="numbering_config_updated",
+        read=_read_row,
     )
-    db.commit()
-    return _read_row(db, tid)

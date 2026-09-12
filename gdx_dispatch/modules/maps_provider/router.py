@@ -10,7 +10,9 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.audit import audit_ready_db
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.settings_audit import audited_settings_upsert
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -57,7 +59,7 @@ def set_provider(
     payload: ProviderIn,
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
-    cdb: Session = Depends(get_db),
+    cdb: Session = Depends(audit_ready_db),
 ) -> dict[str, Any]:
     if (user.get("role") or "").lower() not in {"admin", "owner"}:
         raise HTTPException(status_code=403, detail="admin or owner required")
@@ -69,13 +71,22 @@ def set_provider(
             detail=f"'{payload.provider}' is planned; only {sorted(_WIRED_TODAY)} are wired today.",
         )
     tid = str(_tid(request))
-    cdb.execute(
-        text(
-            "INSERT INTO tenant_settings (tenant_id, maps_provider) "
-            "VALUES (:tid, :p) "
-            "ON CONFLICT (tenant_id) DO UPDATE SET maps_provider = EXCLUDED.maps_provider"
-        ),
-        {"tid": tid, "p": payload.provider},
+    # Invariant #1. `_read` here is the GET's own projection, so the audit
+    # diff records exactly what a reader would see change.
+    audited_settings_upsert(
+        cdb,
+        request,
+        user,
+        tenant_id=tid,
+        values={"maps_provider": payload.provider},
+        action="maps_provider_updated",
+        read=lambda db, t: {
+            "maps_provider": (
+                db.execute(
+                    text("SELECT maps_provider FROM tenant_settings WHERE tenant_id = :tid"),
+                    {"tid": str(t)},
+                ).scalar()
+            )
+        },
     )
-    cdb.commit()
     return get_provider(request, user, cdb)
