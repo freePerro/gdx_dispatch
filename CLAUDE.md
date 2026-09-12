@@ -33,11 +33,8 @@ open. Read it at session start; `/start` opens with it and
 
 Doug declares the phase. Claude does not switch it, and does not call the exit
 condition met without naming the evidence. Our own audits generate most of the
-backlog — in the 30 days to 2026-09-07 we opened 99 issues and closed 54
-(measured against the tracker 2026-09-07; an earlier 48/47 "parity" reading was
-wrong — intake runs at roughly 1.8x closure) — so
-starting a sweep while the budget is CLOSED is choosing more backlog, not less.
-`live-defect` work is never rate-limited by any of this.
+backlog, so starting a sweep while the budget is CLOSED is choosing more
+backlog, not less.
 
 ## Project map
 
@@ -70,8 +67,7 @@ starting a sweep while the budget is CLOSED is choosing more backlog, not less.
 - **CI (`ci.yml`) triggers on `pull_request` with base `main`, and on `push`
   to `main`.** It does *not* run on a PR whose base is another feature branch —
   which is why **mid-stack PRs still need the local matrix run and its results
-  posted before merge**: the rule is right, the old reason ("runs only on
-  main") was not. Note also the `push` trigger carries a paths filter
+  posted before merge**. Note also the `push` trigger carries a paths filter
   (`gdx_dispatch/**`, `gdx_dispatch/docker/**` — note the prefix: a *root*
   `docker/` change matches nothing — `.github/workflows/**`, excluding
   `**/*.md`)
@@ -99,8 +95,8 @@ starting a sweep while the budget is CLOSED is choosing more backlog, not less.
   for a clean read.
 - Mako 1.4.0 shadows `tools/`, producing an ImportError that only appears in
   CI.
-- `refresh.sh` does not rebuild the plugin-host; rebuild it by hand or you are
-  testing stale plugin code.
+- The local stack's `refresh.sh` does not rebuild the plugin-host; rebuild it <!-- ~/gdx-local/refresh.sh, outside this repo; link-ok -->
+  by hand or you are testing stale plugin code.
 - Compose `--env-file`: an empty `JWT_SECRET` crash-loops the container. The
   `verifyplaywright` path passes `--env-file` rather than cloning the
   environment, deliberately — cloning trips the credential guard.
@@ -149,13 +145,9 @@ starting a sweep while the budget is CLOSED is choosing more backlog, not less.
    Instances: <N> found / <N> fixed / <N> deferred → #NNN (reason)
    ```
 
-   Deferring is allowed; it just has to be counted, and each deferred instance
-   is filed `sweep-finding`, which spends sweep budget. Deferral used to be
-   free — that is why #558, #560 and #637 are all sweeps spawned by sweeps.
-   While the sweep budget is CLOSED, filing is **net-zero** (`PHASE.md`): a
-   deferred instance is counted here but filed only if the same PR closes a
-   `sweep-finding` or Doug approves — otherwise it goes on the close-out's
-   *found, not filed* list.
+   Deferring is allowed; it just has to be counted. A deferred instance goes
+   on the close-out's *found, not filed* list and into `FOUND_NOT_FILED.md` — <!-- untracked by design, see "One issue per session"; link-ok -->
+   Claude does not file it on the tracker (see *One issue per session*).
 5. **After deploy, walk it on prod** before calling it shipped. The walk is
    the finish line, not the release.
 
@@ -189,24 +181,14 @@ system as it is right now, and starts rotting the day it is written.
 it predicts where the defects are. The 2026-09-01 doc audit found ten live
 defects and **all ten came from present-tense docs**: guides, runbooks, an ADR
 whose status was left behind by its own build commit, and two root trackers.
-**Zero came from a completed design doc.** The 2026-08-18 corpus audit before
-it found 14 of 52 plan headers that would have sent a reader to rebuild shipped
-work — every one a plan that shipped and never had its status updated. No doc
-in this repo has ever overclaimed; the record only ever undersells what exists.
+**Zero came from a completed design doc.** No doc in this repo has ever
+overclaimed; the record only ever undersells what exists.
 
 - **Every doc carries a status line in its header block — plans, guides,
-  runbooks and ADRs alike.** Line 3, or just below it when a `**Date:**` (and
-  sometimes `**Branch:**`) block comes first — 5 of the 70 design docs are
-  shaped that way, four on line 4 and one on line 7. Vocabulary: `PLAN` ·
-  `PARTIALLY BUILT` · `MERGED #N` · `RELEASED vX.Y.Z` · `HISTORICAL`. It names
-  what is *not* built when the answer is "some of it". A doc with no status
-  line is incomplete. Measured 2026-09-01 over tracked files, `docs/design/`
-  was at **64 of 65** and `gdx_dispatch/docs/` at **10 of 42** — and that gap
-  was not a coincidence, it was exactly where the ten defects were.
-  **Re-measured 2026-09-12: `docs/design/` is 70 of 70 and
-  `gdx_dispatch/docs/` is 41 of 41.** The gap that produced those defects is
-  closed; the rule is what keeps it closed. (This bullet had itself gone stale
-  in the direction the paragraph above predicts — it undersold what exists.)
+  runbooks and ADRs alike.** Line 3, or just below it when a `**Date:**` block
+  comes first. Vocabulary: `PLAN` · `PARTIALLY BUILT` · `MERGED #N` ·
+  `RELEASED vX.Y.Z` · `HISTORICAL`. It names what is *not* built when the
+  answer is "some of it". A doc with no status line is incomplete.
 - **The status line ships with the code.** A PR that implements part of a plan
   updates that plan's status in the same PR. ADR-016 was edited *inside its own
   build commit* and still read "nothing built yet" while the feature sat in the
@@ -230,14 +212,8 @@ in this repo has ever overclaimed; the record only ever undersells what exists.
   superseded — in both docs. Two plans in this repo reached opposite decisions
   about the same money path without ever referencing each other.
 - **Keep the past; retire the present.** A shipped plan stays — its rejected
-  alternatives and audit findings are the part code cannot recover. Measured
-  2026-09-07: **14** source files cite a design doc by filename, **11 of them
-  migrations** — and those migrations are self-documenting (056 carries the
-  whole money-rail argument inline and merely names the audit it came from),
-  so the doc is provenance, not the record. This page previously claimed 56
-  and 8, and claimed the doc was those migrations' *only* record of why a
-  money column is locked; both were wrong. Deleting one still manufactures the
-  dead references this repo audits for. A
+  alternatives and audit findings are the part code cannot recover, and
+  deleting one manufactures the dead references this repo audits for. A
   present-tense doc whose subject no longer exists is the opposite case: it
   carries no reasoning, only instructions for a system that isn't there. Give
   it a `HISTORICAL` status line saying what it described and that the thing was
@@ -369,7 +345,7 @@ exception — that exception is withdrawn as a licence to file (Doug,
 2026-09-12: a week was spent cleaning up issues Claude posted, and the intake
 was pure cost). Something urgent still gets **raised the moment it is seen —
 to Doug, in the conversation**, which is faster than a ticket anyway.
-Everything else lands in `FOUND_NOT_FILED.md`. Doug files what deserves
+Everything else lands in `FOUND_NOT_FILED.md`. Doug files what deserves <!-- untracked by design, see below; link-ok -->
 filing.
 
 The withdrawn exception was self-triggering, which is why it failed: Claude
