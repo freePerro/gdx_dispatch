@@ -7,6 +7,23 @@ ships with the artifact that proves it — pasted output, a screenshot, or a
 browser walk. No evidence in hand means the claim is "not yet verified", said
 plainly.
 
+**Name the falsifier before you trust your own call**, not just someone
+else's. Say what would make the claim wrong, then go look for it. This applies
+hardest to a severity judgement, an aggregate, or any conclusion that
+authorizes an action you already want to take — that is exactly when the check
+gets skipped. On 2026-09-12 an audit of #644's `live-defect` label was done
+properly (prod queried, `audit_logs` checked, the falsifier named) and then
+the identical label was applied to a fresh finding with none of that rigor,
+because the finding was mine and I was pleased with it.
+
+**Verify state, don't assert it from memory.** Branch, PR status, deployed
+version, prod flags: check them live. A remembered value is a guess with a
+timestamp.
+
+**A question is not a work order.** "What would be best?", "is it really an
+issue?", "what needs doing?" — answer, then stop. Doug widens scope
+explicitly; a question is not that.
+
 ## What phase are we in
 
 `PHASE.md` answers it, and it is the only file that does. It names the current
@@ -63,6 +80,35 @@ starting a sweep while the budget is CLOSED is choosing more backlog, not less.
   `.github/workflows/ci.yml` 2026-09-01.
 - Main is merge-protected; `--admin` merge is the sanctioned path, but only
   after enumerating every check's result by name.
+- **Run the matrix with `gdx_dispatch/tools/run_tests_split.sh` (N=7), and
+  never with `--network host`** — the host network breaks ~15 tests. The cost
+  of leaving it off is that the Postgres arm goes **silently SKIPped** (24+,
+  and CI too, #440): a green run has not exercised PG. Enumerate skips with
+  `-rs` and read the categories, or the gap is invisible.
+- `pytest.ini` already carries `-q`; adding another makes output useless. To
+  read a CI failure use the `jobs/<id>/logs` API, not `gh run view --log`.
+- **A foreground `sleep` is blocked and a background Bash dies at 600s.** Long
+  runs go through `nohup`, watched by ONE `Monitor` or a single until-loop —
+  never a poll loop.
+- The frontend lockfile can only be regenerated on **npm 11**: 10.8.2 (what
+  CI's `setup-node` 20 and `node:20-slim` ship) and 9.2.0 both crash in
+  arborist with `Cannot read properties of null (reading 'edgesOut')`. Prove
+  `npm ci` in `node:20-slim` before pushing a lockfile.
+- The git-ignored local `docker/demo/` directory fails three scanner tests
+  locally that are green in CI. A fresh worktree does not have it — prefer one
+  for a clean read.
+- Mako 1.4.0 shadows `tools/`, producing an ImportError that only appears in
+  CI.
+- `refresh.sh` does not rebuild the plugin-host; rebuild it by hand or you are
+  testing stale plugin code.
+- Compose `--env-file`: an empty `JWT_SECRET` crash-loops the container. The
+  `verifyplaywright` path passes `--env-file` rather than cloning the
+  environment, deliberately — cloning trips the credential guard.
+- Each gated commit needs its own dedicated `cd`; everywhere else use
+  `git -C`. Check the current branch before every commit — an IDE or a
+  parallel session can move it under you.
+- `ssh gdx-vps` reaches production over Tailscale. Real mobile verification
+  runs on the local Pixel 8 AVD, where `10.0.2.2` is the host.
 
 ## Build pipeline (every non-trivial change)
 
@@ -257,6 +303,35 @@ buttons wired to stubs. Before calling anything done:
   `{items: [...]}`.
 - Plugin manifest handling: warn-and-strip unknown fields, never raise —
   raising during manifest parse silently removes the plugin.
+- **SQLite stores a `Uuid` column as 32 dashless hex.** Raw SQL comparing
+  `id = :dashed_uuid` matches on Postgres and **never** on SQLite — and a
+  gate that cannot match looks exactly like a legitimate refusal.
+- **`create_all` tables diverge from the ORM**, so a schema sweep has to
+  search the *database*, not the models. For the same reason test fixtures
+  must build their schema from the ORM: hand-written DDL once hid a feature
+  that could not be inserted at all.
+- `.tenant_plane_redundant_filter_baseline` is **line-keyed** — deleting or
+  adding lines above a recorded finding shifts it and reddens the scan even
+  when nothing changed. Re-freeze with
+  `gdx_dispatch/tools/tenant_plane_redundant_filter_scan.py`.
+- **`# noqa:` is shared with the repo's own scanners.** Their codes
+  (`RAW_ENC`, `T6`, `X1`) are not ruff rules, so ruff prints
+  `Invalid # noqa directive` for each — and a scanner code placed *before* a
+  ruff code voids the ruff suppression.
+- CodeQL's `py/path-injection` recognizes only `realpath`/`normpath`/`abspath`
+  followed by `startswith`. `Path.resolve().is_relative_to()` and
+  `commonpath` are genuinely safe and still flagged.
+- **`pip install --target` does not replace an existing package directory.**
+  A plugin artifact upgrade leaves the OLD code in place while writing the NEW
+  dist-info, so `/ready` is green and stale-detection is fooled. Remove the
+  package dir and both dist-infos, then restart. The plugin tables also drift:
+  `schema_reconcile` auto-ALTERs them at boot.
+- **A mock proves which arguments were passed, never which value comes back** —
+  run at least one real invocation. And a test asserting that source text is
+  *present* proves nothing; asserting text is *absent* is fine.
+- **Playwright MCP autofills the production password.** Never open a prod
+  login page with it — inject a token instead; headed snapshots have written
+  that password to disk.
 
 ## Domain rules that shape code
 
@@ -268,6 +343,10 @@ buttons wired to stubs. Before calling anything done:
   installation.
 - QuickBooks is being phased out: never schedule new QB syncs; backfills go
   into this system, not QB.
+  QB API reads are metered, writes are free.
+- **Commission is plugin-bound and out of core** — never fix it in core.
+- The Midland operator/parts multiplier is an open question with the
+  distributor; do not invent one.
 
 ## One issue per session
 
@@ -276,6 +355,13 @@ way goes on a **found, not filed** list in the close-out — not fixed, not
 filed, not investigated mid-task — and Doug decides what becomes an issue
 (net-zero while the sweep budget is CLOSED; see `PHASE.md`). One exception:
 something a real user can hit on prod today is raised the moment it is seen.
+**That exception is self-triggering, so distrust it**: Claude both judges
+whether it applies and benefits from it applying. "Reachable in principle" is
+not "a real user hits it today" — a hole needing a hand-crafted request from a
+staff account in a single-tenant app is a hardening gap, not a live defect. If
+the exception is the only thing authorizing a filing, that is the signal to
+ask Doug instead. (2026-09-12: #712 was filed on exactly that mistake and
+closed back to the ledger.)
 Doug can widen the scope of a session; Claude does not. Adopted 2026-09-10.
 
 That list is also **appended to `FOUND_NOT_FILED.md` in the repo root**, which <!-- FOUND_NOT_FILED.md is deliberately untracked — local to the maintainer's checkout, never committed; link-ok -->
