@@ -278,7 +278,7 @@ filed, not investigated mid-task — and Doug decides what becomes an issue
 something a real user can hit on prod today is raised the moment it is seen.
 Doug can widen the scope of a session; Claude does not. Adopted 2026-09-10.
 
-That list is also **appended to `FOUND_NOT_FILED.md` in the repo root**, which
+That list is also **appended to `FOUND_NOT_FILED.md` in the repo root**, which <!-- FOUND_NOT_FILED.md is deliberately untracked — local to the maintainer's checkout, never committed; link-ok -->
 is a durable local ledger, not a GitHub issue: git-ignored through
 `.git/info/exclude`, never committed, never pushed (Doug, 2026-09-12). Filing
 on the tracker is net-zero while the budget is CLOSED, and the close-out list
@@ -294,7 +294,7 @@ the code before acting on one. When Doug rules, the entry moves to that file's
 - What was verified (with the evidence), and what was not.
 - Remaining open items as a list — "nothing left" requires having looked.
 - The session's *found, not filed* list, or "nothing found" — reported here
-  **and** appended to `FOUND_NOT_FILED.md`.
+  **and** appended to `FOUND_NOT_FILED.md`. <!-- untracked by design, see above; link-ok -->
 
 ## Planning defaults (standing answers — don't re-ask)
 
