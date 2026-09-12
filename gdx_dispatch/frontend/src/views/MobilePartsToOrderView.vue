@@ -40,7 +40,7 @@
           </div>
           <div class="part-meta">
             <span v-if="p.sku" class="meta-item"><i class="pi pi-tag" /> {{ p.sku }}</span>
-            <span v-if="p.quantity" class="meta-item"><i class="pi pi-hashtag" /> ×{{ p.quantity }}</span>
+            <span v-if="p.quantity != null" class="meta-item"><i class="pi pi-hashtag" /> ×{{ recordedQuantity(p.quantity) }}</span>
             <span v-if="p.job_title || p.job?.title" class="meta-item"><i class="pi pi-briefcase" /> {{ p.job_title || p.job?.title }}</span>
             <span v-if="p.requested_by_name" class="meta-item"><i class="pi pi-user" /> {{ p.requested_by_name }}</span>
             <Tag :value="prettyStatus(p.status)" :severity="statusSeverity(p.status)" />
@@ -74,6 +74,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { recordedQuantity } from '../utils/quantity'
 import { useApi } from '../composables/useApi'
 import { useToast } from 'primevue/usetoast'
 

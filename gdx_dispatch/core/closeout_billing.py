@@ -35,6 +35,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.quantities import recorded_quantity, zero_quantity_verdict
 from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Job, JobCloseout, JobPartNeeded
 from gdx_dispatch.modules.proposals.models import Estimate
 
@@ -298,6 +299,13 @@ def build_closeout_lines(
         )
     ).scalars().all()
     for part_row in candidate_rows:
+        # A recorded zero is not billed as one (#560, owner 2026-09-11).
+        # JobPartNeeded stores no line total — the amount below is unit × qty,
+        # so a zero quantity is a $0 line with nothing to bill. Skipped BEFORE
+        # the claim, so the row stays unclaimed and on the office checklist
+        # for a human to price.
+        if zero_quantity_verdict(part_row.quantity, 0) == "skip":
+            continue
         claimed = db.execute(
             update(JobPartNeeded)
             .where(
@@ -308,7 +316,7 @@ def build_closeout_lines(
         ).rowcount
         if not claimed:
             continue
-        qty = int(part_row.quantity or 1)
+        qty = int(recorded_quantity(part_row.quantity))
         unit = _money(part_row.unit_price or 0)
         db.add(InvoiceLine(
             id=_uuid.uuid4(),

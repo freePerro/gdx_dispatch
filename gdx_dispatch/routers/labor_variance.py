@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
+from gdx_dispatch.core.quantities import recorded_quantity
 from gdx_dispatch.models.tenant_models import Job, JobAssignment, PayrollEntry, Technician, User
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
@@ -158,7 +159,7 @@ def labor_variance(
         for hours, qty in rows:
             if hours is None:
                 continue
-            estimated_hours += Decimal(str(hours)) * Decimal(int(qty or 1))
+            estimated_hours += Decimal(str(hours)) * Decimal(int(recorded_quantity(qty)))
 
     # --- actual side ---
     assignments = db.execute(

@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.door_specs import door_specs_for_job, flatten_door_spec
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.quantities import recorded_quantity
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Job, Technician
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
@@ -150,7 +151,7 @@ def daily_loadsheet(
             desc = (line["description"] or "").strip()
             if not desc:
                 continue
-            qty = int(float(line["quantity"] or 1))
+            qty = int(float(recorded_quantity(line["quantity"])))
 
             # Categorize
             dl = desc.lower()
@@ -218,7 +219,7 @@ def install_specs(
             ).order_by(EstimateLine.id)
         ).scalars().all()
         for lr in line_rows:
-            qty = float(lr.quantity or 1)
+            qty = float(recorded_quantity(lr.quantity))
             price = float(lr.unit_price or 0)
             lines.append({"description": lr.description, "quantity": int(qty), "unit_price": price})
 
@@ -350,7 +351,7 @@ def install_sheet(
             ).order_by(EstimateLine.id)
         ).scalars().all()
         for lr in line_rows:
-            qty = float(lr.quantity or 1)
+            qty = float(recorded_quantity(lr.quantity))
             price = float(lr.unit_price or 0)
             total = float(lr.line_total or qty * price)
             lines.append({"description": lr.description, "quantity": int(qty), "unit_price": price, "total": total})

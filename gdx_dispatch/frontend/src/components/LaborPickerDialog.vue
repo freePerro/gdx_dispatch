@@ -166,6 +166,7 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue';
+import { recordedQuantity } from '../utils/quantity';
 import Button from 'primevue/button';
 import InputText from 'primevue/inputtext';
 import Dialog from 'primevue/dialog';
@@ -297,7 +298,7 @@ const attested = computed(() => {
   if (l.source !== 'attested') return null;
   return {
     description: l.description,
-    quantity: Number(l.quantity || 1) || 1,
+    quantity: recordedQuantity(l.quantity),
     unitPrice: Number(l.unit_price || 0),
     hours: l.man_hours ?? c.closeout?.hours_worked,
     techs: c.closeout?.techs_on_site ?? 1,
@@ -313,7 +314,7 @@ const suggestedMatrixLine = computed(() => {
   if (!props.closeout?.has_closeout || !l || l.source !== 'matrix') return null;
   return {
     description: l.description,
-    quantity: Number(l.quantity || 1) || 1,
+    quantity: recordedQuantity(l.quantity),
     unitPrice: Number(l.unit_price || 0),
     laborPriceItemId: l.labor_price_item_id || null,
   };

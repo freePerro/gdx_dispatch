@@ -98,8 +98,8 @@
             <li v-for="(line, i) in detail.lines" :key="line.id || i" class="line-row">
               <div class="line-name">{{ line.description || line.name || '—' }}</div>
               <div class="line-meta">
-                <span>{{ line.quantity || 1 }} × ${{ fmtMoney(line.unit_price) }}</span>
-                <span class="line-total">${{ fmtMoney(line.total ?? (Number(line.quantity || 1) * Number(line.unit_price || 0))) }}</span>
+                <span>{{ recordedQuantity(line.quantity) }} × ${{ fmtMoney(line.unit_price) }}</span>
+                <span class="line-total">${{ fmtMoney(line.line_total ?? line.total ?? (recordedQuantity(line.quantity) * Number(line.unit_price || 0))) }}</span>
               </div>
             </li>
           </ol>
@@ -140,6 +140,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { recordedQuantity } from '../utils/quantity'
 import { useApi } from '../composables/useApi'
 import { useToast } from 'primevue/usetoast'
 

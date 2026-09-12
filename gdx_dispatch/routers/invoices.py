@@ -25,6 +25,7 @@ from gdx_dispatch.core.pricing_provenance import (
     build_invoice_line,
     derive_margin_pct,
 )
+from gdx_dispatch.core.quantities import recorded_quantity, zero_quantity_verdict
 from gdx_dispatch.models.tenant_models import (
     Invoice,
     InvoiceAdjustment,
@@ -1499,6 +1500,23 @@ def create_invoice(
             return True if _tax_labor else not _is_labor_line(ln)
 
         for line in lines:
+            # A zero-quantity estimate line is not billed as one (#560). A
+            # zero-quantity line that still carries a stored amount IS copied,
+            # with its recorded 0 — skipping it would drop that money while
+            # the estimate is consumed.
+            _verdict = zero_quantity_verdict(line.quantity, line.line_total)
+            if _verdict == "refuse":
+                db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"estimate line \"{line.description}\" records no quantity but carries "
+                        f"${_money(line.line_total)} — correct the quantity on the estimate "
+                        "before invoicing it."
+                    ),
+                )
+            if _verdict == "skip":
+                continue
             # S122-b: forward category/cost/margin snapshot from estimate line
             # so invoice line shape matches estimate line shape (Doug 2026-05-11).
             # Auditor catch: also forward margin_pct_snapshot so the engine-
@@ -1508,7 +1526,7 @@ def create_invoice(
                     company_id=invoice.company_id,
                     invoice_id=invoice.id,
                     description=line.description,
-                    quantity=line.quantity,
+                    quantity=int(recorded_quantity(line.quantity)),
                     unit_price=_money(line.unit_price),
                     line_total=_money(line.line_total),
                     taxable=_line_is_taxable(line),
@@ -1726,7 +1744,30 @@ def create_invoice(
         ).all()
         _offset = 0
         _cos_with_lines: set = set()
+        # COs that HAD line rows, whatever became of them. The lineless
+        # fallback below exists for COs with no rows at all; a CO whose rows
+        # were all empty ($0, no quantity) has nothing to bill and must not be
+        # mistaken for one (#560 audit round 6).
+        _cos_seen: set = set()
         for _offset, (co_ln, co_number) in enumerate(co_rows, start=1):
+            # A zero-quantity change-order line is not billed as one (#560).
+            # An empty line is skipped before the `_cos_with_lines` mark below,
+            # so a CO whose lines are all empty falls through to the
+            # signed-amount fallback underneath rather than billing nothing.
+            _cos_seen.add(co_ln.co_id)
+            _verdict = zero_quantity_verdict(co_ln.qty, co_ln.line_total)
+            if _verdict == "refuse":
+                db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"{co_number} line \"{co_ln.description}\" records no quantity but "
+                        f"carries ${_money(co_ln.line_total)} — correct the quantity on the "
+                        "change order before billing it."
+                    ),
+                )
+            if _verdict == "skip":
+                continue
             _cos_with_lines.add(co_ln.co_id)
             db.add(
                 build_invoice_line(
@@ -1737,7 +1778,7 @@ def create_invoice(
                     company_id=invoice.company_id,
                     invoice_id=invoice.id,
                     description=f"{co_number}: {co_ln.description}"[:500],
-                    quantity=int(co_ln.qty or 1),
+                    quantity=int(recorded_quantity(co_ln.qty)),
                     unit_price=_money(co_ln.unit_price),
                     line_total=_money(co_ln.line_total),
                     taxable=bool(getattr(co_ln, "taxable", True)),
@@ -1757,6 +1798,11 @@ def create_invoice(
         ).scalars().all()
         for _co in _lineless:
             if float(_co.amount or 0) <= 0:
+                # Its lines existed and were all empty, and it is signed for
+                # nothing: there is no money here to lose, so bill the rest of
+                # the invoice instead of refusing the whole create (#560).
+                if _co.id in _cos_seen:
+                    continue
                 db.rollback()
                 raise HTTPException(
                     status_code=409,
@@ -2920,8 +2966,17 @@ def patch_invoice_line(
         line.includes_labor = bool(updates["includes_labor"])
 
     # Recompute line_total from the post-patch quantity × unit_price so a
-    # qty edit doesn't leave the stored line_total stale.
-    line.line_total = _money(Decimal(str(line.quantity)) * Decimal(str(line.unit_price)))
+    # qty edit doesn't leave the stored line_total stale — but ONLY when one of
+    # those two actually changed. Unconditionally, this rewrote the stored
+    # amount of any line whose total was never quantity × unit_price on an edit
+    # that had nothing to do with either: a QuickBooks-imported line (their
+    # totals and line sets are lossy — see _recalculate_invoice) or a lump-sum
+    # line silently re-priced when someone toggled `taxable` or fixed a typo in
+    # the description. #560 audit round 6 reproduced the loss: a $350 invoice
+    # became $300 from a taxable-only PATCH, and the totals invariant stayed
+    # green because header and lines fell together.
+    if "quantity" in updates or "unit_price" in updates:
+        line.line_total = _money(Decimal(str(line.quantity)) * Decimal(str(line.unit_price)))
     db.flush()
 
     _recalculate_invoice(invoice, db)
@@ -3608,7 +3663,7 @@ def _unbilled_parts_for_invoice(db: Session, invoice: Invoice) -> list[dict[str,
         {
             "id": str(row.id),
             "part_name": row.part_name,
-            "quantity": int(row.quantity or 1),
+            "quantity": int(recorded_quantity(row.quantity)),
             "unit_price": _to_float(row.unit_price) if row.unit_price is not None else None,
         }
         for row in rows

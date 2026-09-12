@@ -44,7 +44,7 @@
               </div>
               <div class="item-jobs">
                 <span v-for="j in item.jobs" :key="j.job_id" class="job-ref">
-                  {{ j.customer }} <span v-if="j.qty > 1">({{ j.qty }})</span>
+                  {{ j.customer }} <span v-if="recordedQuantity(j.qty) !== 1">({{ recordedQuantity(j.qty) }})</span>
                 </span>
               </div>
             </div>
@@ -56,6 +56,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from "vue";
+import { recordedQuantity } from "../utils/quantity";
 import { useApi } from "../composables/useApi";
 import { formatDate } from "../composables/useFormatters";
 import Checkbox from "primevue/checkbox";

@@ -25,6 +25,7 @@ from gdx_dispatch.core.audit import (
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission, require_role
 from gdx_dispatch.core.pricing_provenance import derive_margin_pct
+from gdx_dispatch.core.quantities import recorded_quantity
 from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.models.tenant_models import Customer, Document, Job, JobPartNeeded
 from gdx_dispatch.modules.deposits import (
@@ -2271,7 +2272,7 @@ def _copy_tier_package_to_job(estimate, new_job, db: Session) -> int | None:
                 company_id=company,
                 job_id=str(new_job.id),
                 part_name=(line.description or "Item")[:200],
-                quantity=int(line.quantity or 1),
+                quantity=int(recorded_quantity(line.quantity)),
                 status="needed",
                 notes=(" • ".join(note_bits) or None),
                 created_at=now,
@@ -2332,7 +2333,7 @@ def _copy_estimate_lines_to_job(estimate, new_job, db: Session) -> int:
             company_id=str(new_job.company_id or estimate.company_id or ""),
             job_id=str(new_job.id),
             part_name=(line.description or "Item")[:200],
-            quantity=int(line.quantity or 1),
+            quantity=int(recorded_quantity(line.quantity)),
             supplier=(str(md.get("vendor") or md.get("supplier") or "")[:200] or None),
             sku=(str(md.get("sku") or "")[:64] or None),
             status="needed",
@@ -2802,7 +2803,7 @@ def _compute_price_drift(estimate: Estimate, db: Session) -> list[dict]:
             continue  # non-labor / free-form — no reliable current price to compare
         current = db.get(LaborPriceItem, item_id)
         quoted = _to_float(line.unit_price)
-        qty = int(getattr(line, "quantity", 1) or 1)
+        qty = int(recorded_quantity(getattr(line, "quantity", None)))
         if _is_retired(current):
             drift.append({
                 "line_id": str(line.id),
