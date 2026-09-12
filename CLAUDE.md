@@ -7,6 +7,23 @@ ships with the artifact that proves it — pasted output, a screenshot, or a
 browser walk. No evidence in hand means the claim is "not yet verified", said
 plainly.
 
+**Name the falsifier before you trust your own call**, not just someone
+else's. Say what would make the claim wrong, then go look for it. This applies
+hardest to a severity judgement, an aggregate, or any conclusion that
+authorizes an action you already want to take — that is exactly when the check
+gets skipped. On 2026-09-12 an audit of #644's `live-defect` label was done
+properly (prod queried, `audit_logs` checked, the falsifier named) and then
+the identical label was applied to a fresh finding with none of that rigor,
+because the finding was mine and I was pleased with it.
+
+**Verify state, don't assert it from memory.** Branch, PR status, deployed
+version, prod flags: check them live. A remembered value is a guess with a
+timestamp.
+
+**A question is not a work order.** "What would be best?", "is it really an
+issue?", "what needs doing?" — answer, then stop. Doug widens scope
+explicitly; a question is not that.
+
 ## What phase are we in
 
 `PHASE.md` answers it, and it is the only file that does. It names the current
@@ -16,11 +33,9 @@ open. Read it at session start; `/start` opens with it and
 
 Doug declares the phase. Claude does not switch it, and does not call the exit
 condition met without naming the evidence. Our own audits generate most of the
-backlog — in the 30 days to 2026-09-07 we opened 99 issues and closed 54
-(measured against the tracker 2026-09-07; an earlier 48/47 "parity" reading was
-wrong — intake runs at roughly 1.8x closure) — so
-starting a sweep while the budget is CLOSED is choosing more backlog, not less.
-`live-defect` work is never rate-limited by any of this.
+backlog, so starting a sweep while the budget is CLOSED is choosing more
+backlog, not less. Fixing a `live-defect` is never rate-limited by any of
+this — the budget governs sweeps, not repairs.
 
 ## Project map
 
@@ -53,8 +68,7 @@ starting a sweep while the budget is CLOSED is choosing more backlog, not less.
 - **CI (`ci.yml`) triggers on `pull_request` with base `main`, and on `push`
   to `main`.** It does *not* run on a PR whose base is another feature branch —
   which is why **mid-stack PRs still need the local matrix run and its results
-  posted before merge**: the rule is right, the old reason ("runs only on
-  main") was not. Note also the `push` trigger carries a paths filter
+  posted before merge**. Note also the `push` trigger carries a paths filter
   (`gdx_dispatch/**`, `gdx_dispatch/docker/**` — note the prefix: a *root*
   `docker/` change matches nothing — `.github/workflows/**`, excluding
   `**/*.md`)
@@ -63,6 +77,35 @@ starting a sweep while the budget is CLOSED is choosing more backlog, not less.
   `.github/workflows/ci.yml` 2026-09-01.
 - Main is merge-protected; `--admin` merge is the sanctioned path, but only
   after enumerating every check's result by name.
+- **Run the matrix with `gdx_dispatch/tools/run_tests_split.sh` (N=7), and
+  never with `--network host`** — the host network breaks ~15 tests. The cost
+  of leaving it off is that the Postgres arm goes **silently SKIPped** (24+,
+  and CI too, #440): a green run has not exercised PG. Enumerate skips with
+  `-rs` and read the categories, or the gap is invisible.
+- `pytest.ini` already carries `-q`; adding another makes output useless. To
+  read a CI failure use the `jobs/<id>/logs` API, not `gh run view --log`.
+- **A foreground `sleep` is blocked and a background Bash dies at 600s.** Long
+  runs go through `nohup`, watched by ONE `Monitor` or a single until-loop —
+  never a poll loop.
+- The frontend lockfile can only be regenerated on **npm 11**: 10.8.2 (what
+  CI's `setup-node` 20 and `node:20-slim` ship) and 9.2.0 both crash in
+  arborist with `Cannot read properties of null (reading 'edgesOut')`. Prove
+  `npm ci` in `node:20-slim` before pushing a lockfile.
+- The git-ignored local `docker/demo/` directory fails three scanner tests
+  locally that are green in CI. A fresh worktree does not have it — prefer one
+  for a clean read.
+- Mako 1.4.0 shadows `tools/`, producing an ImportError that only appears in
+  CI.
+- The local stack's `refresh.sh` does not rebuild the plugin-host; rebuild it <!-- ~/gdx-local/refresh.sh, outside this repo; link-ok -->
+  by hand or you are testing stale plugin code.
+- Compose `--env-file`: an empty `JWT_SECRET` crash-loops the container. The
+  `verifyplaywright` path passes `--env-file` rather than cloning the
+  environment, deliberately — cloning trips the credential guard.
+- Each gated commit needs its own dedicated `cd`; everywhere else use
+  `git -C`. Check the current branch before every commit — an IDE or a
+  parallel session can move it under you.
+- `ssh gdx-vps` reaches production over Tailscale. Real mobile verification
+  runs on the local Pixel 8 AVD, where `10.0.2.2` is the host.
 
 ## Build pipeline (every non-trivial change)
 
@@ -100,16 +143,12 @@ starting a sweep while the budget is CLOSED is choosing more backlog, not less.
    ```
    Class:     <the shape the code gets wrong, not a finding number>
    Searched:  <every file/glob that could hold that shape>
-   Instances: <N> found / <N> fixed / <N> deferred → #NNN (reason)
+   Instances: <N> found / <N> fixed / <N> deferred (reason)
    ```
 
-   Deferring is allowed; it just has to be counted, and each deferred instance
-   is filed `sweep-finding`, which spends sweep budget. Deferral used to be
-   free — that is why #558, #560 and #637 are all sweeps spawned by sweeps.
-   While the sweep budget is CLOSED, filing is **net-zero** (`PHASE.md`): a
-   deferred instance is counted here but filed only if the same PR closes a
-   `sweep-finding` or Doug approves — otherwise it goes on the close-out's
-   *found, not filed* list.
+   Deferring is allowed; it just has to be counted. A deferred instance goes
+   on the close-out's *found, not filed* list and into `FOUND_NOT_FILED.md` — <!-- untracked by design, see "One issue per session"; link-ok -->
+   Claude does not file it on the tracker (see *One issue per session*).
 5. **After deploy, walk it on prod** before calling it shipped. The walk is
    the finish line, not the release.
 
@@ -143,24 +182,17 @@ system as it is right now, and starts rotting the day it is written.
 it predicts where the defects are. The 2026-09-01 doc audit found ten live
 defects and **all ten came from present-tense docs**: guides, runbooks, an ADR
 whose status was left behind by its own build commit, and two root trackers.
-**Zero came from a completed design doc.** The 2026-08-18 corpus audit before
-it found 14 of 52 plan headers that would have sent a reader to rebuild shipped
-work — every one a plan that shipped and never had its status updated. No doc
-in this repo has ever overclaimed; the record only ever undersells what exists.
+**Zero came from a completed design doc.** No doc in this repo has ever
+overclaimed; the record only ever undersells what exists.
 
 - **Every doc carries a status line in its header block — plans, guides,
-  runbooks and ADRs alike.** Line 3, or just below it when a `**Date:**` (and
-  sometimes `**Branch:**`) block comes first — 5 of the 70 design docs are
-  shaped that way, four on line 4 and one on line 7. Vocabulary: `PLAN` ·
-  `PARTIALLY BUILT` · `MERGED #N` · `RELEASED vX.Y.Z` · `HISTORICAL`. It names
-  what is *not* built when the answer is "some of it". A doc with no status
-  line is incomplete. Measured 2026-09-01 over tracked files, `docs/design/`
-  was at **64 of 65** and `gdx_dispatch/docs/` at **10 of 42** — and that gap
-  was not a coincidence, it was exactly where the ten defects were.
-  **Re-measured 2026-09-12: `docs/design/` is 70 of 70 and
-  `gdx_dispatch/docs/` is 41 of 41.** The gap that produced those defects is
-  closed; the rule is what keeps it closed. (This bullet had itself gone stale
-  in the direction the paragraph above predicts — it undersold what exists.)
+  runbooks and ADRs alike.** Line 3, or just below it when a `**Date:**` block
+  comes first. Vocabulary: `PLAN` · `PARTIALLY BUILT` · `MERGED #N` ·
+  `RELEASED vX.Y.Z` · `HISTORICAL`. It names what is *not* built when the
+  answer is "some of it". A doc with no status line is incomplete. Measured
+  2026-09-12 over tracked files: `docs/design/` is 70 of 70 and
+  `gdx_dispatch/docs/` is 41 of 41. Every doc complies today; the rule is what
+  keeps it that way.
 - **The status line ships with the code.** A PR that implements part of a plan
   updates that plan's status in the same PR. ADR-016 was edited *inside its own
   build commit* and still read "nothing built yet" while the feature sat in the
@@ -184,14 +216,8 @@ in this repo has ever overclaimed; the record only ever undersells what exists.
   superseded — in both docs. Two plans in this repo reached opposite decisions
   about the same money path without ever referencing each other.
 - **Keep the past; retire the present.** A shipped plan stays — its rejected
-  alternatives and audit findings are the part code cannot recover. Measured
-  2026-09-07: **14** source files cite a design doc by filename, **11 of them
-  migrations** — and those migrations are self-documenting (056 carries the
-  whole money-rail argument inline and merely names the audit it came from),
-  so the doc is provenance, not the record. This page previously claimed 56
-  and 8, and claimed the doc was those migrations' *only* record of why a
-  money column is locked; both were wrong. Deleting one still manufactures the
-  dead references this repo audits for. A
+  alternatives and audit findings are the part code cannot recover, and
+  deleting one manufactures the dead references this repo audits for. A
   present-tense doc whose subject no longer exists is the opposite case: it
   carries no reasoning, only instructions for a system that isn't there. Give
   it a `HISTORICAL` status line saying what it described and that the thing was
@@ -199,6 +225,13 @@ in this repo has ever overclaimed; the record only ever undersells what exists.
   only when the doc holds no decision anyone could still need.
 - **Open a plan with "what already exists (do not rebuild)."** The best doc in
   the corpus established that half its ask needed no code at all.
+- **When something is to be deleted, delete it.** No tarball, no `archive/`
+  copy, no "just in case" branch, no commented-out block. Every hedge becomes
+  a second thing to maintain, to search, and to be misled by later — and the
+  copy is always the one that goes stale unnoticed (Doug, 2026-09-12). This
+  does not override *Keep the past*: a shipped plan's reasoning still stays,
+  because it is the record. A backup of something already decided dead is not
+  a record, it is a hedge against a decision that has already been made.
 
 ## Can someone actually use it?
 
@@ -257,6 +290,35 @@ buttons wired to stubs. Before calling anything done:
   `{items: [...]}`.
 - Plugin manifest handling: warn-and-strip unknown fields, never raise —
   raising during manifest parse silently removes the plugin.
+- **SQLite stores a `Uuid` column as 32 dashless hex.** Raw SQL comparing
+  `id = :dashed_uuid` matches on Postgres and **never** on SQLite — and a
+  gate that cannot match looks exactly like a legitimate refusal.
+- **`create_all` tables diverge from the ORM**, so a schema sweep has to
+  search the *database*, not the models. For the same reason test fixtures
+  must build their schema from the ORM: hand-written DDL once hid a feature
+  that could not be inserted at all.
+- `.tenant_plane_redundant_filter_baseline` is **line-keyed** — deleting or
+  adding lines above a recorded finding shifts it and reddens the scan even
+  when nothing changed. Re-freeze with
+  `gdx_dispatch/tools/tenant_plane_redundant_filter_scan.py`.
+- **`# noqa:` is shared with the repo's own scanners.** Their codes
+  (`RAW_ENC`, `T6`, `X1`) are not ruff rules, so ruff prints
+  `Invalid # noqa directive` for each — and a scanner code placed *before* a
+  ruff code voids the ruff suppression.
+- CodeQL's `py/path-injection` recognizes only `realpath`/`normpath`/`abspath`
+  followed by `startswith`. `Path.resolve().is_relative_to()` and
+  `commonpath` are genuinely safe and still flagged.
+- **`pip install --target` does not replace an existing package directory.**
+  A plugin artifact upgrade leaves the OLD code in place while writing the NEW
+  dist-info, so `/ready` is green and stale-detection is fooled. Remove the
+  package dir and both dist-infos, then restart. The plugin tables also drift:
+  `schema_reconcile` auto-ALTERs them at boot.
+- **A mock proves which arguments were passed, never which value comes back** —
+  run at least one real invocation. And a test asserting that source text is
+  *present* proves nothing; asserting text is *absent* is fine.
+- **Playwright MCP autofills the production password.** Never open a prod
+  login page with it — inject a token instead; headed snapshots have written
+  that password to disk.
 
 ## Domain rules that shape code
 
@@ -268,15 +330,34 @@ buttons wired to stubs. Before calling anything done:
   installation.
 - QuickBooks is being phased out: never schedule new QB syncs; backfills go
   into this system, not QB.
+  QB API reads are metered, writes are free.
+- **Commission is plugin-bound and out of core** — never fix it in core.
+- The Midland operator/parts multiplier is an open question with the
+  distributor; do not invent one.
 
 ## One issue per session
 
 Name the issue and what "done" means before starting. Anything noticed on the
 way goes on a **found, not filed** list in the close-out — not fixed, not
 filed, not investigated mid-task — and Doug decides what becomes an issue
-(net-zero while the sweep budget is CLOSED; see `PHASE.md`). One exception:
-something a real user can hit on prod today is raised the moment it is seen.
+(net-zero while the sweep budget is CLOSED; see `PHASE.md`).
 Doug can widen the scope of a session; Claude does not. Adopted 2026-09-10.
+
+**Claude does not open GitHub issues. At all.** Not for a sweep finding, not
+for a security hole, not under the old "a real user can hit it today"
+exception — that exception is withdrawn as a licence to file (Doug,
+2026-09-12: a week was spent cleaning up issues Claude posted, and the intake
+was pure cost). Something urgent still gets **raised the moment it is seen —
+to Doug, in the conversation**, which is faster than a ticket anyway.
+Everything else lands in `FOUND_NOT_FILED.md`. Doug files what deserves <!-- untracked by design, see below; link-ok -->
+filing.
+
+The withdrawn exception was self-triggering, which is why it failed: Claude
+both judged whether it applied and benefited from it applying. #712 was filed
+on that mistake — a hardening gap needing a hand-crafted request from a staff
+account in a single-tenant app, labelled a live defect — and closed back to
+the ledger the same night. Treat any rule that authorizes an action Claude
+already wants to take as the rule most likely being misread.
 
 That list is also **appended to `FOUND_NOT_FILED.md` in the repo root**, which <!-- FOUND_NOT_FILED.md is deliberately untracked — local to the maintainer's checkout, never committed; link-ok -->
 is a durable local ledger, not a GitHub issue: git-ignored through
