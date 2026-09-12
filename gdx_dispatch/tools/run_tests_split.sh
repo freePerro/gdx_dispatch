@@ -58,6 +58,49 @@ elif ! $PYTEST --version >/dev/null 2>&1; then
   exit 2
 fi
 
+# ── dependency drift gate (#679) ───────────────────────────────────────────
+# The image bakes gdx_dispatch/requirements.txt at BUILD time; the working tree
+# is bind-mounted over /app at RUN time. So source is always current and deps
+# never are: add a dependency, and it is absent from the harness until someone
+# rebuilds, with nothing to tell you. The failure mode is a COLLECTION error
+# ("ModuleNotFoundError: No module named 'freezegun'"), which takes a whole file
+# out of the run and reads like noise next to a wall of passes. CI is immune —
+# it pip-installs on a fresh runner — which is exactly why this is easy to miss
+# on mid-stack PRs, where the local matrix is the only gate (ci.yml does not
+# trigger on a PR whose base is another feature branch).
+#
+# `pip install --dry-run --no-index` is the whole check: --no-index keeps it
+# offline (~2s, no network, no resolver round-trips), exit 0 when every
+# requirement is satisfied by what is installed, exit 1 otherwise.
+#
+# Measured 2026-09-12 — this gate CAN fail, which is the point:
+#   clean tree ............................................. exit 0
+#   version drift (freezegun>=99.0 vs installed 1.5.5) ...... exit 1
+#   missing package (the #679 shape) ........................ exit 1
+# `pip check` was rejected as the instrument: it verifies that INSTALLED
+# packages agree with each other and never reads requirements.txt, so it
+# returns "No broken requirements found" / exit 0 with the defect present.
+#
+# SKIP_DEP_CHECK=1 bypasses it. Deliberately not silent when you do.
+REQ_FILE="gdx_dispatch/requirements.txt"
+if [ "${SKIP_DEP_CHECK:-0}" = "1" ]; then
+  echo "⚠ dependency drift check SKIPPED (SKIP_DEP_CHECK=1)"
+elif [ -n "${PYBIN:-}" ] && [ -f "$REQ_FILE" ]; then
+  dep_log="$LOG_DIR/dep_drift.log"
+  if $PYBIN -m pip install --dry-run --no-index -r "$REQ_FILE" > "$dep_log" 2>&1; then
+    :
+  else
+    echo "✗ dependency drift: the test environment does not satisfy $REQ_FILE"
+    echo
+    grep -E "^ERROR:|No matching distribution|ResolutionImpossible" "$dep_log" | head -5 | sed 's/^/    /'
+    echo
+    echo "  The image bakes requirements at build time. Rebuild it:"
+    echo "    docker compose -f gdx_dispatch/docker/docker-compose.yml build app"
+    echo "  Full log: $dep_log   Bypass (not advised): SKIP_DEP_CHECK=1 $0"
+    exit 3
+  fi
+fi
+
 # addopts comes from pytest.ini (marker filter + -q + -p no:schemathesis_xdist).
 # --ignore is REQUIRED on top of it: e2e/test_schemathesis.py performs a
 # network call at import time, and marker filtering happens after import.
@@ -95,6 +138,35 @@ echo "=== per-shard summary ==="
 for g in $(seq 1 "$N"); do
   printf "group %s: %s\n" "$g" "$(tail -1 "$LOG_DIR/group_${g}.log")"
 done
+
+# Collection errors are the loudest-consequence, quietest-looking failure here
+# (#679): the file never ran at all, and the tail line says "1 error" next to a
+# wall of passes. Name the files instead of leaving them in the scroll. This is
+# a REPORT, not the gate — pytest exits 2 on a collection error, so `fail` is
+# already set above; surfacing it separately means it cannot be skimmed past.
+# Anchor on pytest's "short test summary info" line (`ERROR <path>`), NOT on
+# the banner `____ ERROR collecting <path> ____` — the banner is padded with
+# underscores, so `^ERROR collecting` matches nothing. Verified 2026-09-12 by
+# planting a module that fails to import and reading the log.
+#
+# `|| true` is load-bearing: `set -e` is in force here (re-enabled inside the
+# wait loop above), and grep exits 1 when it finds nothing — which is the
+# HAPPY path. Without it a clean run dies silently right before "PASS".
+collect_errors="$(grep -hE "^ERROR [^ ]+\.py" "$LOG_DIR"/group_*.log 2>/dev/null | sort -u || true)"
+missing_mods="$(grep -hoE "ModuleNotFoundError: No module named '[^']+'" "$LOG_DIR"/group_*.log 2>/dev/null | sort -u || true)"
+if [ -n "$collect_errors" ]; then
+  echo
+  echo "✗ COLLECTION ERRORS — these files did NOT run:"
+  echo "$collect_errors" | sed 's/^/    /'
+  if [ -n "$missing_mods" ]; then
+    echo
+    echo "  Missing imports:"
+    echo "$missing_mods" | sed 's/^/    /'
+  fi
+  echo "  A collection error removes the whole file from the run. If this is an"
+  echo "  ImportError for a package in requirements.txt, rebuild the image."
+  fail=1
+fi
 
 if [ "$fail" -ne 0 ]; then
   echo
