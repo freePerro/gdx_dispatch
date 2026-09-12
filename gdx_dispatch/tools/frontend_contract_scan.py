@@ -47,17 +47,36 @@ CHECKS
     bug (mobile, webhooks, public API, integrations), so this is OFF by
     default: ``--check C4``. Use it to hunt dead surface, and read each hit.
 
-USAGE
------
-    python3 gdx_dispatch/tools/frontend_contract_scan.py
-    python3 gdx_dispatch/tools/frontend_contract_scan.py --check C1,C2
-    python3 gdx_dispatch/tools/frontend_contract_scan.py --json /tmp/fe.json
+ROUTE TABLE
+-----------
 
-    # Ground truth instead of static parsing (needs the app to import):
+The route table is GROUND TRUTH read from the mounted app, and that is now the
+default. It used to be a static parse of ``@router.<verb>`` decorators, which
+has no idea whether a router is ever mounted: a call into an UNWIRED router
+matched a decorator, so C1 and C2 cleared it. That is the #451 defect, and this
+scanner passed while it was live (#454). A static parse is still available, but
+you have to ask for it and it announces itself as degraded.
+
+Run it where ``gdx_dispatch`` imports. Note ``-m``: invoking the file BY PATH
+puts ``tools/`` on ``sys.path`` instead of the repo root and dies with
+``ModuleNotFoundError: No module named 'gdx_dispatch'``.
+
     docker run --rm --entrypoint python -e JWT_SECRET=<32+ bytes> \
       -v $PWD:/app -w /app docker-app \
-      gdx_dispatch/tools/frontend_contract_scan.py --dump-routes /app/routes.json
+      -m gdx_dispatch.tools.frontend_contract_scan
+
+Or dump the table once and reuse it from the host, where the app cannot import:
+
+    docker run --rm --entrypoint python -e JWT_SECRET=<32+ bytes> \
+      -v $PWD:/app -w /app docker-app \
+      -m gdx_dispatch.tools.frontend_contract_scan --dump-routes /app/routes.json
     python3 gdx_dispatch/tools/frontend_contract_scan.py --routes routes.json
+
+USAGE
+-----
+    ... -m gdx_dispatch.tools.frontend_contract_scan --check C1,C2
+    ... -m gdx_dispatch.tools.frontend_contract_scan --json /tmp/fe.json
+    python3 gdx_dispatch/tools/frontend_contract_scan.py --allow-static  # degraded
 
 Static parsing resolves ``APIRouter(prefix=)`` and full ``/api/...`` decorator
 paths, plus the handful of ``include_router(prefix=)`` cases. ``--routes``
@@ -69,12 +88,21 @@ import argparse
 import ast
 import json
 import re
-import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Running this file BY PATH puts `tools/` on sys.path, not the repo root, so
+# every `gdx_dispatch.*` import dies with ModuleNotFoundError — that is the
+# second half of #454, and why `--dump-routes` never ran in the container.
+# `-m gdx_dispatch.tools.frontend_contract_scan` needs no help; this keeps the
+# documented host invocation (`--routes routes.json`) working too.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from gdx_dispatch.tools.tracked_files import tracked_or_none  # noqa: E402
 
 ALL_CHECKS = ("C1", "C2", "C3", "C4", "C5", "C6")
 DEFAULT_CHECKS = ("C1", "C2", "C3", "C5", "C6")
@@ -102,17 +130,37 @@ _SKIP_DIRS = {
 # Paths the Vue legitimately references that are not FastAPI routes.
 _NON_ROUTE_PREFIXES = ("/api/placeholder", "/api/...")
 
+# `normalize()` shape of a root-level catch-all — the SPA shell. See scan().
+_SPA_CATCH_ALL = "/{*}"
+
+# A route table smaller than this is broken, not small. The app serves ~1279.
+# The bug this scanner was just fixed for (a walker that silently published
+# routes at the wrong paths, or saw 9 of 1100) produced a table that looked
+# perfectly well-formed, so "did we get a plausible table?" has to be asked out
+# loud. Both the in-process table and a `--routes` file are checked.
+_MIN_PLAUSIBLE_ROUTES = 200
+
 
 def _tracked(root: Path) -> list[str]:
-    try:
-        res = subprocess.run(
-            ["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True
-        )
-        out = [ln for ln in res.stdout.split("\n") if ln.strip()]
-        if out:
-            return out
-    except (OSError, subprocess.SubprocessError):
-        pass
+    """The corpus this scanner reads: every file git tracks.
+
+    2026-09-12 — this shelled out to ``git ls-files`` and fell back to
+    ``rglob("*")`` on failure, silently. The docker-app image ships no git
+    binary (verified 2026-09-12), and this scanner now HAS to run there, since
+    that is where the app imports for the live route table. So the fallback was
+    never an edge case: moving the scan into the container swapped the corpus
+    for the whole working tree, gitignored files included, and C3 went 11 -> 14
+    on an unchanged repo. Fixing the route table while silently changing the
+    file set would have traded one blind spot for another.
+
+    ``tracked_files`` reads ``.git/index`` directly — no binary needed — and
+    refuses rather than degrading (#716, same shape). It returns None only when
+    there is no ``.git`` at all, which is the tests' ``tmp_path`` repos; there,
+    walking the tree is correct and the helper says so on stderr.
+    """
+    tracked = tracked_or_none(root)
+    if tracked is not None:
+        return sorted(tracked)
     return [
         p.relative_to(root).as_posix()
         for p in root.rglob("*")
@@ -156,12 +204,23 @@ def normalize(path: str) -> str:
     path segment — the Vue builds `/api/payments${qs}` where ``qs`` is
     ``"?source=x"`` or ``""``. Treating it as a segment made every
     query-string call look like a dead route.
+
+    ``{path:path}`` is NOT an ordinary segment: Starlette's path converter
+    swallows the remainder of the URL, slashes included. Collapsing it to
+    ``{}`` made ``/api/plugins/{path:path}`` a two-segment route that could
+    never match the three-segment ``/api/plugins/${key}/ui`` the plugin UI
+    actually calls — a C1 "no backend route serves this path" against a route
+    that serves it fine. It gets its own marker, ``{*}``.
     """
     p = path.split("?")[0].split("#")[0]
     p = re.sub(r"(?<!/)\$\{[^}]*\}.*$", "", p)       # trailing query/suffix var
     p = re.sub(r"\$\{[^}]*\}", "{}", p)              # JS template segment
+    # Parked as a brace-free sentinel: the generic `{...}` rule below would
+    # otherwise swallow the marker and undo this.
+    p = re.sub(r"\{[^}]*:path\}", "\x00", p)         # Starlette catch-all (spans "/")
     p = re.sub(r"\{[^}]*\}", "{}", p)                # FastAPI path param
     p = re.sub(r":[A-Za-z_][A-Za-z0-9_]*", "{}", p)  # :param style
+    p = p.replace("\x00", "{*}")
     p = re.sub(r"/+", "/", p)
     return p.rstrip("/") or "/"
 
@@ -174,8 +233,23 @@ def path_matches(fe: str, be: str) -> bool:
     resolved statically, so a frontend ``{}`` must be allowed to match a
     backend literal. Costs a little precision; removes a whole false-positive
     class that would otherwise bury the real findings.
+
+    ``{*}`` is the catch-all marker from ``normalize`` and matches the whole
+    remainder of the path.
     """
     fs, bs = fe.split("/"), be.split("/")
+
+    # A trailing `{*}` (Starlette `{path:path}`) consumes every remaining
+    # segment, so only the head has to line up and the lengths need not match.
+    if bs and bs[-1] == "{*}":
+        head = bs[:-1]
+        if len(fs) < len(head):
+            return False
+        return all(
+            a == b or a == "{}" or b == "{}"
+            for a, b in zip(fs[:len(head)], head, strict=True)
+        )
+
     if len(fs) != len(bs):
         return False
     return all(a == b or a == "{}" or b == "{}" for a, b in zip(fs, bs, strict=True))
@@ -205,21 +279,45 @@ def routes_from_app() -> list[dict]:
     Most entries in ``app.routes`` are FastAPI ``_IncludedRouter`` wrappers,
     not routes — the real ``APIRoute``s hang off ``.original_router.routes``.
     Reading only the top level yields 9 routes instead of ~1100, so recurse.
+
+    2026-09-12 FIX — the recursion dropped **include-time** prefixes. A router
+    pulled in by ``include_router(sub, prefix="/simplefin")`` carries that
+    prefix on the wrapper's ``include_context``, not on ``route.path``.
+    Constructor prefixes (``APIRouter(prefix=...)``) ARE baked into
+    ``route.path``, which is why most of the table looked right and this stayed
+    hidden. Passing ``prefix`` through unchanged published the eight SimpleFIN
+    routes as bare ``/status``, ``/connect``, ``/sync`` … instead of
+    ``/api/bank-feeds/simplefin/*`` — so the "ground truth" table reported live
+    routes as dead, and it is the table this scanner now uses BY DEFAULT.
+    ``tests/conftest.py::iter_app_routes`` and ``tools/route_shadow_scan.py``
+    already re-applied the prefix; the fix was never carried across to here.
     """
     from gdx_dispatch.app import app  # noqa: PLC0415 — optional, import-heavy
 
+    return _routes_of(app)
+
+
+def _routes_of(app) -> list[dict]:
+    """The walk itself, against any app — so it is testable without importing
+    the real one (which needs the full dependency set and ~10s of import)."""
     out: list[dict] = []
-    seen: set[int] = set()
+    winners: set[tuple[str, str]] = set()
+    # Keyed by (route, prefix) rather than route alone: one router object can be
+    # included under two different prefixes, and skipping the second visit would
+    # drop every route it serves at the second mount point.
+    seen: set[tuple[int, str]] = set()
 
     def walk(routes, prefix: str = "") -> None:
         for route in routes or ():
-            if id(route) in seen:
+            if (id(route), prefix) in seen:
                 continue
-            seen.add(id(route))
+            seen.add((id(route), prefix))
 
             inner = getattr(route, "original_router", None)
             if inner is not None:
-                walk(getattr(inner, "routes", None), prefix)
+                include_prefix = getattr(
+                    getattr(route, "include_context", None), "prefix", "") or ""
+                walk(getattr(inner, "routes", None), prefix + include_prefix)
                 continue
 
             path = getattr(route, "path", None)
@@ -236,14 +334,16 @@ def routes_from_app() -> list[dict]:
                 f"{getattr(endpoint, '__module__', '?')}.{getattr(endpoint, '__name__', '?')}"
                 if endpoint is not None else ""
             )
+            full = prefix + path
             for method in methods:
                 if method in ("HEAD", "OPTIONS"):
                     continue
                 # FIRST registration wins in this app (route-order shadowing),
                 # so only keep the winner for each (method, path).
-                if any(o["method"] == method and o["path"] == prefix + path for o in out):
+                if (method, full) in winners:
                     continue
-                out.append({"method": method, "path": prefix + path, "endpoint": fqn})
+                winners.add((method, full))
+                out.append({"method": method, "path": full, "endpoint": fqn})
 
     walk(app.routes)
     return out
@@ -673,8 +773,18 @@ def scan(root: Path, checks, routes: list[dict] | None = None) -> list[dict]:
     routes = routes if routes is not None else routes_from_source(root, tracked)
 
     by_path: dict[str, set[str]] = defaultdict(set)
+    real_path: dict[str, str] = {}   # normalized -> a real path, for reporting
     for r in routes:
-        by_path[normalize(r["path"])].add(r["method"])
+        norm_be = normalize(r["path"])
+        if norm_be == _SPA_CATCH_ALL:
+            # `@app.get("/{full_path:path}")` (the Vue SPA shell) matches every
+            # GET path in the app, and then explicitly 404s anything starting
+            # with `api/`. Counting it as a server clears EVERY dead GET call
+            # and turns dead POSTs into bogus 405s — it retires C1 outright.
+            # It serves the browser's client-side routes, never the API.
+            continue
+        by_path[norm_be].add(r["method"])
+        real_path.setdefault(norm_be, r["path"])
 
     calls = frontend_calls(root, tracked)
     findings: list[dict] = []
@@ -720,13 +830,48 @@ def scan(root: Path, checks, routes: list[dict] | None = None) -> list[dict]:
                 continue
             findings.append({
                 "check": "C4", "file": "-", "line": 0,
-                "detail": f"{sorted(by_path[path])} {path} — no frontend caller",
+                "detail": (
+                    f"{sorted(by_path[path])} {real_path.get(path, path)} "
+                    f"— no frontend caller"
+                ),
                 "expr": "",
             })
 
     order = {c: i for i, c in enumerate(ALL_CHECKS)}
     findings.sort(key=lambda f: (order[f["check"]], f["file"], f["line"]))
     return findings
+
+
+_REFUSAL = """\
+frontend-contract scan REFUSED — could not build the live route table.
+
+  {exc}
+
+Falling back to the static parse would count `@router.<verb>` decorators in
+files nobody mounts, so C1/C2 cannot fail for a call into an UNWIRED router --
+the exact defect they exist to catch (#451, #454). Scanning degraded WITHOUT
+SAYING SO is how this scanner stayed green through a real bug, so it now stops.
+
+Run it where the app imports (note `-m`, not the file path):
+
+  docker run --rm --entrypoint python -e JWT_SECRET=<32+ bytes> \\
+    -v $PWD:/app -w /app docker-app \\
+    -m gdx_dispatch.tools.frontend_contract_scan
+
+or dump the table there once and reuse it here:
+
+  ... -m gdx_dispatch.tools.frontend_contract_scan --dump-routes /app/routes.json
+  python3 gdx_dispatch/tools/frontend_contract_scan.py --routes routes.json
+
+To scan anyway, knowing C1/C2 are unreliable and C4 is noise: --allow-static
+"""
+
+_DEGRADED = """\
+WARNING: --allow-static — route table is a STATIC PARSE of decorators.
+  {exc}
+C1/C2 cannot fail for a call into an unwired router; C4 will list routes that
+are never served. Do not cite this run as evidence that a contract holds.
+"""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -737,6 +882,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dump-routes", default=None, help="import the app and write its route table")
     ap.add_argument("--json", dest="json_out", default=None)
     ap.add_argument("--root", default=str(REPO_ROOT))
+    ap.add_argument("--allow-static", action="store_true",
+                    help="scan with the degraded static-parse route table when the "
+                         "app will not import (C1/C2 become unreliable)")
     args = ap.parse_args(argv)
 
     if args.dump_routes:
@@ -751,9 +899,37 @@ def main(argv: list[str] | None = None) -> int:
         print(f"unknown check(s): {sorted(unknown)}", file=sys.stderr)
         return 2
 
-    routes = None
+    routes: list[dict] | None = None
     if args.routes:
         routes = json.loads(Path(args.routes).read_text())
+        source = f"live app (dumped: {args.routes})"
+    else:
+        try:
+            routes = routes_from_app()
+            source = "live app (imported in-process)"
+        except Exception as exc:  # noqa: BLE001 — any import failure is the same story
+            if not args.allow_static:
+                print(_REFUSAL.format(exc=f"{type(exc).__name__}: {exc}"), file=sys.stderr)
+                return 2
+            print(_DEGRADED.format(exc=f"{type(exc).__name__}: {exc}"), file=sys.stderr)
+            routes = None
+            source = "STATIC PARSE — DEGRADED, C1/C2 unreliable"
+
+    # A table that is present but wrong is the failure mode this tool keeps
+    # having, and it reads green. Refuse an implausible one rather than scan
+    # against it — a near-empty table makes every call look dead (C1 noise),
+    # and a table missing whole prefixes makes live routes look unserved.
+    if routes is not None and len(routes) < _MIN_PLAUSIBLE_ROUTES:
+        print(
+            f"frontend-contract scan REFUSED — route table has only "
+            f"{len(routes)} routes (expected >= {_MIN_PLAUSIBLE_ROUTES}).\n"
+            f"  source: {source}\n"
+            f"That is a broken table, not a small app. Re-dump it; if the app "
+            f"really did shrink this far, lower _MIN_PLAUSIBLE_ROUTES "
+            f"deliberately.",
+            file=sys.stderr,
+        )
+        return 2
 
     findings = scan(Path(args.root), checks, routes)
 
@@ -768,7 +944,7 @@ def main(argv: list[str] | None = None) -> int:
     for f in findings:
         counts[f["check"]] += 1
     print("\n=== frontend-contract summary ===")
-    print(f"  route table: {'live app' if args.routes else 'static parse'}")
+    print(f"  route table: {source}")
     for c in ALL_CHECKS:
         if c in checks:
             print(f"  {c}: {counts[c]}")
