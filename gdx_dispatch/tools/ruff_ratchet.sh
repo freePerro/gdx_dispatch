@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Ruff ratchet — fail when the violation count rises above .ruff_baseline.
+# Ruff ratchet — fail when the violation count rises above .ruff_baseline,
+# and lower the baseline when it falls (see 'the ratchet half' below).
 #
 # This lives in a script rather than inline in ci.yml so the gate's OWN
 # failure modes are reachable from a test
@@ -40,7 +41,16 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BASELINE_FILE="${RUFF_BASELINE_FILE:-$REPO_ROOT/.ruff_baseline}"
-TARGET="${RUFF_TARGET:-gdx_dispatch/}"
+TARGET_DEFAULT="gdx_dispatch/"
+TARGET="${RUFF_TARGET:-$TARGET_DEFAULT}"
+
+# Whether the COUNT describes the whole tree, which is the only thing that
+# decides if it may be written back as a baseline. A narrowed RUFF_TARGET makes
+# it a partial measurement; a redirected RUFF_BASELINE_FILE does not — that
+# just says where to keep the number, and is how the gate's own tests exercise
+# this without touching the repo's real baseline.
+NARROWED=0
+[ "$TARGET" != "$TARGET_DEFAULT" ] && NARROWED=1
 
 _fail() {
     echo "❌ $1"
@@ -132,3 +142,67 @@ fi
 
 # Hard-fail on syntax / undefined-name errors regardless of the baseline.
 ruff check "$TARGET" --select F821,F823 --quiet
+
+# ── the ratchet half (Doug, 2026-09-12) ───────────────────────────────────
+#
+# Until now this was a one-way CEILING: it failed on an increase and did
+# nothing on a decrease, and no code path anywhere wrote .ruff_baseline. Every
+# cleanup banked headroom instead of locking it in — measured on merged main
+# 2026-09-12, baseline 980 against a real count of 974, six violations of free
+# slack a future regression could spend while the gate stayed green. That is
+# the "a green gate proves nothing unless it can fail for your defect" class
+# this repo keeps finding (#454, #679, #716): the gate was named for a
+# behaviour it did not have.
+#
+# This runs LAST, after the F821/F823 hard gate. An earlier draft wrote the
+# baseline before it, so a run that ultimately FAILED still banked a lower
+# number — a failing gate must never move the bar.
+#
+# Lowering can only make the gate stricter, so the write is safe in kind. The
+# danger is writing a number that does not describe the committed tree, which
+# would red CI for everyone. Hence:
+#
+#   * the ruff that measured it matches CI's pin. An OLDER ruff knows fewer
+#     rules and reports FEWER violations, so its count would set a baseline
+#     CI can never meet.
+#   * the working tree is CLEAN. This is the guard the first draft missed and
+#     the one most likely to fire in real use: a lint gate is normally run
+#     mid-edit, and an uncommitted `# ruff: noqa` was measured taking the
+#     baseline from 980 to 937. The count has to describe the tree that is
+#     actually committed, not the one on disk at the moment.
+#   * RUFF_TARGET is not narrowed, so the count covers the whole tree.
+#     (RUFF_BASELINE_FILE may be redirected — that only moves where the number
+#     is kept, which is how this behaviour is tested.)
+#   * RUFF_RATCHET_NO_WRITE is unset. ANY non-empty value suppresses; the
+#     first draft compared against the literal "1", so `=true` still wrote.
+#
+# Where this actually fires: a developer run with the pinned ruff on a clean
+# tree, which leaves .ruff_baseline modified for them to commit. On a CI runner
+# the write is real but the file is discarded at the end of the job, so CI
+# cannot lock a gain in by itself — it reports the slack instead, and someone
+# has to run this locally and commit the number. Making CI *fail* on slack
+# would close that loop; that is a policy call, not a mechanical one.
+if [ "$CURRENT" -lt "$BASELINE" ]; then
+    DIRTY=""
+    if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+        DIRTY=$(git -C "$REPO_ROOT" status --porcelain -- . ':!.ruff_baseline' 2>/dev/null || true)
+    fi
+
+    if [ -n "${RUFF_RATCHET_NO_WRITE:-}" ]; then
+        echo "   (would lower to $CURRENT — suppressed by RUFF_RATCHET_NO_WRITE)"
+    elif [ "$NARROWED" = "1" ]; then
+        echo "   (would lower to $CURRENT — not writing: RUFF_TARGET is '$TARGET', so this"
+        echo "    count does not describe the whole tree)"
+    elif [ -z "${LOCAL:-}" ] || [ -z "${PINNED:-}" ] || [ "${LOCAL:-}" != "${PINNED:-}" ]; then
+        echo "   (would lower to $CURRENT — not writing: measured with ruff ${LOCAL:-unknown},"
+        echo "    baseline is calibrated for ${PINNED:-unknown}. A lower count from an older ruff"
+        echo "    would set a baseline CI cannot meet. Run:  pip install ruff==${PINNED:-<ci pin>})"
+    elif [ -n "$DIRTY" ]; then
+        echo "   (would lower to $CURRENT — not writing: working tree is dirty, so this count"
+        echo "    describes uncommitted edits rather than the committed tree. Commit, then re-run.)"
+    else
+        printf '%s\n' "$CURRENT" > "$BASELINE_FILE"
+        echo "🔒 ratchet: baseline lowered $BASELINE -> $CURRENT"
+        echo "   Commit .ruff_baseline with this change, or the gain is not kept."
+    fi
+fi

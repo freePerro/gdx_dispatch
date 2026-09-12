@@ -46,7 +46,7 @@ SNIPPET = (
 )
 
 
-def _stub_ruff(bin_dir: Path, stdout: str, rc: int) -> None:
+def _stub_ruff(bin_dir: Path, stdout: str, rc: int, version: str = "0.0.0") -> None:
     """Install a fake `ruff` that replays one scenario.
 
     The ratchet also invokes ruff on its other branches (``--statistics`` when
@@ -60,6 +60,11 @@ def _stub_ruff(bin_dir: Path, stdout: str, rc: int) -> None:
         'for a in "$@"; do\n'
         '  case "$a" in --statistics|--select) exit 0 ;; esac\n'
         "done\n"
+        # The ratchet asks `ruff --version` to decide whether the count is
+        # trustworthy enough to write back. Without this the stub replays the
+        # scenario text, the version reads as unparseable, and every
+        # baseline-lowering path is unreachable from a test.
+        f'if [ "$1" = "--version" ]; then echo "ruff {version}"; exit 0; fi\n'
         f"cat <<'OUT'\n{stdout}\nOUT\n"
         f"exit {rc}\n",
         encoding="utf-8",
@@ -67,9 +72,43 @@ def _stub_ruff(bin_dir: Path, stdout: str, rc: int) -> None:
     stub.chmod(0o755)
 
 
-def _run(tmp_path: Path, stdout: str, rc: int, baseline: str = "3") -> subprocess.CompletedProcess[str]:
+def _stub_git(bin_dir: Path, *, dirty: bool) -> None:
+    """A `git` that reports a clean or dirty tree on demand.
+
+    The ratchet refuses to lower the baseline from a dirty tree — the count
+    would describe uncommitted edits rather than the committed tree. Stubbing
+    git here lets the tests drive both sides without a production backdoor that
+    could switch the real guard off.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    stub = bin_dir / "git"
+    porcelain = " M gdx_dispatch/example.py" if dirty else ""
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'for a in "$@"; do\n'
+        '  case "$a" in rev-parse) exit 0 ;; esac\n'
+        "done\n"
+        f'for a in "$@"; do\n'
+        f'  case "$a" in --porcelain) printf "%s" "{porcelain}"; exit 0 ;; esac\n'
+        f"done\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+
+
+def _run(
+    tmp_path: Path,
+    stdout: str,
+    rc: int,
+    baseline: str = "3",
+    version: str = "0.0.0",
+    extra_env: dict[str, str] | None = None,
+    dirty: bool = False,
+) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
-    _stub_ruff(bin_dir, stdout, rc)
+    _stub_ruff(bin_dir, stdout, rc, version=version)
+    _stub_git(bin_dir, dirty=dirty)
     baseline_file = tmp_path / "baseline"
     baseline_file.write_text(baseline, encoding="utf-8")
     env = {
@@ -78,6 +117,7 @@ def _run(tmp_path: Path, stdout: str, rc: int, baseline: str = "3") -> subproces
         "RUFF_TARGET": "gdx_dispatch/",
         "HOME": str(tmp_path),
     }
+    env.update(extra_env or {})
     return subprocess.run(
         ["bash", str(RATCHET)],
         capture_output=True,
@@ -191,3 +231,149 @@ def test_unreadable_baseline_fails_the_gate(tmp_path: Path) -> None:
 def test_ordinary_counts(tmp_path: Path, stdout: str, rc: int, baseline: str, expect_pass: bool) -> None:
     result = _run(tmp_path, stdout, rc=rc, baseline=baseline)
     assert (result.returncode == 0) is expect_pass, f"stdout={result.stdout!r}"
+
+
+# ── the ratchet half: the baseline must come DOWN when the count does ────
+#
+# Until 2026-09-12 this gate was a one-way ceiling — it failed on an increase
+# and did nothing on a decrease, and nothing in the repo ever wrote
+# `.ruff_baseline`. Measured on merged main that day: baseline 980, real count
+# 974, six violations of slack a later regression could spend while the gate
+# stayed green. These pin the write, and every condition that must suppress it.
+
+_CI_PIN = "0.15.18"  # must match the pin ci.yml installs
+
+
+def _baseline_after(result, tmp_path: Path) -> str:
+    return (tmp_path / "baseline").read_text(encoding="utf-8").strip()
+
+
+def test_baseline_is_lowered_when_the_count_drops(tmp_path: Path) -> None:
+    result = _run(tmp_path, "Found 1 error.", rc=1, baseline="3", version=_CI_PIN)
+    assert result.returncode == 0, result.stdout
+    assert _baseline_after(result, tmp_path) == "1", (
+        "the gate is named a ratchet; a decrease must tighten it"
+    )
+    assert "lowered 3 -> 1" in result.stdout
+
+
+def test_a_clean_tree_ratchets_to_zero(tmp_path: Path) -> None:
+    result = _run(tmp_path, "All checks passed!", rc=0, baseline="3", version=_CI_PIN)
+    assert result.returncode == 0, result.stdout
+    assert _baseline_after(result, tmp_path) == "0"
+
+
+def test_an_older_ruff_must_not_lower_the_baseline(tmp_path: Path) -> None:
+    """The one that actually bites.
+
+    An older ruff knows fewer rules and reports FEWER violations. Writing that
+    count would set a baseline CI's pinned ruff can never meet, turning a local
+    convenience into a repo-wide red.
+    """
+    result = _run(tmp_path, "Found 1 error.", rc=1, baseline="3", version="0.15.8")
+    assert result.returncode == 0, result.stdout
+    assert _baseline_after(result, tmp_path) == "3", "stale-version count was written"
+    assert "not writing" in result.stdout
+
+
+def test_a_narrowed_target_must_not_lower_the_baseline(tmp_path: Path) -> None:
+    """A partial measurement is not a baseline for the whole tree."""
+    result = _run(
+        tmp_path, "Found 1 error.", rc=1, baseline="3", version=_CI_PIN,
+        extra_env={"RUFF_TARGET": "gdx_dispatch/tools/"},
+    )
+    assert result.returncode == 0, result.stdout
+    assert _baseline_after(result, tmp_path) == "3", "partial count was written"
+    assert "not writing" in result.stdout
+
+
+def test_no_write_opt_out_is_honoured(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path, "Found 1 error.", rc=1, baseline="3", version=_CI_PIN,
+        extra_env={"RUFF_RATCHET_NO_WRITE": "1"},
+    )
+    assert result.returncode == 0, result.stdout
+    assert _baseline_after(result, tmp_path) == "3"
+
+
+def test_an_increase_still_fails_and_leaves_the_baseline_alone(tmp_path: Path) -> None:
+    """The ceiling half must survive the ratchet half."""
+    result = _run(tmp_path, "Found 9 errors.", rc=1, baseline="3", version=_CI_PIN)
+    assert result.returncode != 0
+    assert "increased" in result.stdout
+    assert _baseline_after(result, tmp_path) == "3", "a regression must never raise the bar"
+
+
+def test_the_pin_this_file_asserts_matches_ci() -> None:
+    """If ci.yml bumps ruff, the tests above silently stop exercising the
+    write path — they would take the version-drift branch instead and still
+    pass. Fail loudly here instead."""
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert f"pip install ruff=={_CI_PIN}" in ci, (
+        f"ci.yml no longer pins ruff {_CI_PIN}; update _CI_PIN and re-baseline"
+    )
+
+
+def test_a_dirty_tree_must_not_lower_the_baseline(tmp_path: Path) -> None:
+    """The guard most likely to fire in real use.
+
+    A lint gate is normally run mid-edit. An uncommitted `# ruff: noqa` was
+    measured taking the baseline from 980 to 937 — a number describing the
+    tree on disk, not the tree that gets committed, which would red CI for
+    everyone on the next push.
+    """
+    result = _run(
+        tmp_path, "Found 1 error.", rc=1, baseline="3", version=_CI_PIN, dirty=True
+    )
+    assert result.returncode == 0, result.stdout
+    assert _baseline_after(result, tmp_path) == "3", "dirty-tree count was written"
+    assert "working tree is dirty" in result.stdout
+
+
+def test_no_write_opt_out_accepts_any_truthy_value(tmp_path: Path) -> None:
+    """It compared against the literal "1", so `=true` still wrote."""
+    result = _run(
+        tmp_path, "Found 1 error.", rc=1, baseline="3", version=_CI_PIN,
+        extra_env={"RUFF_RATCHET_NO_WRITE": "true"},
+    )
+    assert result.returncode == 0, result.stdout
+    assert _baseline_after(result, tmp_path) == "3"
+
+
+def test_a_failing_hard_gate_must_not_lower_the_baseline(tmp_path: Path) -> None:
+    """F821/F823 hard-fail regardless of the count. The first draft wrote the
+    baseline BEFORE that gate, so a run that ultimately failed still banked a
+    lower number — a failing gate must never move the bar."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _stub_git(bin_dir, dirty=False)
+    # Count is under baseline, but `--select F821,F823` exits non-zero.
+    stub = bin_dir / "ruff"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$1" = "--version" ]; then echo "ruff {_CI_PIN}"; exit 0; fi\n'
+        'for a in "$@"; do\n'
+        '  case "$a" in --select) echo "F821 Undefined name \\`x\\`"; exit 1 ;; esac\n'
+        '  case "$a" in --statistics) exit 0 ;; esac\n'
+        "done\n"
+        "echo 'Found 1 error.'\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    baseline_file = tmp_path / "baseline"
+    baseline_file.write_text("3", encoding="utf-8")
+    result = subprocess.run(
+        ["bash", str(RATCHET)],
+        capture_output=True, text=True, timeout=60, cwd=str(REPO_ROOT),
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "RUFF_BASELINE_FILE": str(baseline_file),
+            "RUFF_TARGET": "gdx_dispatch/",
+            "HOME": str(tmp_path),
+        },
+    )
+    assert result.returncode != 0, "F821 must still fail the gate"
+    assert baseline_file.read_text(encoding="utf-8").strip() == "3", (
+        "a failing run lowered the bar"
+    )
