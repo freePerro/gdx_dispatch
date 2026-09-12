@@ -10,7 +10,9 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
+from gdx_dispatch.core.audit import audit_ready_db
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.settings_audit import audited_settings_upsert
 from gdx_dispatch.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/estimates-features", tags=["estimates-features"])
@@ -115,39 +117,26 @@ def update_features(
     payload: FeaturesPayload,
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
 ) -> dict[str, Any]:
     if (user.get("role") or "").lower() not in {"admin", "owner"}:
         raise HTTPException(status_code=403, detail="admin or owner required")
     tid = _tenant_uuid(request)
-    before = _read(db, tid)
-    set_clause = ", ".join(f"{c} = :{c}" for c in _COLS)
-    db.execute(
-        text(
-            f"INSERT INTO tenant_settings (tenant_id, {', '.join(_COLS)}) "
-            f"VALUES (:tid, {', '.join(':' + c for c in _COLS)}) "
-            f"ON CONFLICT (tenant_id) DO UPDATE SET {set_clause}"
-        ),
-        {"tid": str(tid), **{c: getattr(payload, c) for c in _COLS}},
-    )
-    db.commit()
-    after = _read(db, tid)
-    # Invariant #1 (ARCHITECTURAL_INVARIANTS.md): who changed which setting,
-    # to what. These columns include the customer-facing email copy, so a
-    # wrong template that went out to customers must be traceable to the
-    # save that introduced it. Only the columns that actually moved are
-    # recorded — a no-op save leaves an empty diff, not eleven values.
-    changed = {c: after[c] for c in _COLS if before.get(c) != after.get(c)}
-    log_audit_event_sync(
-        db=db,
-        tenant_id=str(tid),
-        user_id=resolve_audit_actor(user, request),
+    # Invariant #1: who changed the customer-facing copy, and to what. These
+    # columns include the invoice/receipt email templates, so a wrong template
+    # that reached customers must be traceable to the save that introduced it.
+    #
+    # 2026-09-12 (#558): this was the in-repo template for an audited settings
+    # write, and it committed the change BEFORE writing the audit row, then
+    # committed again — so a failed audit left the change standing with no
+    # trail. It now shares `audited_settings_upsert` with the six routers that
+    # had no audit at all, which stages the row inside the same transaction.
+    return audited_settings_upsert(
+        db,
+        request,
+        user,
+        tenant_id=tid,
+        values={c: getattr(payload, c) for c in _COLS},
         action="estimates_features_updated",
-        entity_type="tenant_settings",
-        entity_id=str(tid),
-        details={"changed": changed},
-        ip_address=(request.client.host if request.client else None),
-        request=request,
+        read=_read,
     )
-    db.commit()
-    return after

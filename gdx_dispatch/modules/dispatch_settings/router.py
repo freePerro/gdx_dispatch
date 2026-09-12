@@ -9,7 +9,9 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.audit import audit_ready_db
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.settings_audit import audited_settings_upsert
 from gdx_dispatch.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/dispatch-settings", tags=["dispatch-settings"])
@@ -71,19 +73,18 @@ def update_settings(
     payload: DispatchSettingsPayload,
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
 ) -> dict[str, Any]:
     if (user.get("role") or "").lower() not in {"admin", "owner"}:
         raise HTTPException(status_code=403, detail="admin or owner required")
     tid = _tenant_uuid(request)
-    set_clause = ", ".join(f"{c} = :{c}" for c in _COLS)
-    db.execute(
-        text(
-            f"INSERT INTO tenant_settings (tenant_id, {', '.join(_COLS)}) "
-            f"VALUES (:tid, {', '.join(':' + c for c in _COLS)}) "
-            f"ON CONFLICT (tenant_id) DO UPDATE SET {set_clause}"
-        ),
-        {"tid": str(tid), **{c: getattr(payload, c) for c in _COLS}},
+    # Invariant #1: who changed which setting, to what, and when.
+    return audited_settings_upsert(
+        db,
+        request,
+        user,
+        tenant_id=tid,
+        values={c: getattr(payload, c) for c in _COLS},
+        action="dispatch_settings_updated",
+        read=_read,
     )
-    db.commit()
-    return _read(db, tid)

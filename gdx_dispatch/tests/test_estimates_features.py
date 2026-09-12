@@ -21,7 +21,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from gdx_dispatch.core.audit import AuditLog, TenantBase
+from gdx_dispatch.core.audit import AuditLog, TenantBase, _get_db_dep
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.modules.estimates_features import service as features_service
 from gdx_dispatch.modules.estimates_features.router import (
@@ -135,6 +135,9 @@ def features_env():
 
     app.include_router(router)
     app.dependency_overrides[get_db] = _override_db
+    # The PATCH handler is on `audit_ready_db`, whose inner
+    # `_get_db_dep` calls `get_db()` directly — override it too.
+    app.dependency_overrides[_get_db_dep] = _override_db
     app.dependency_overrides[get_current_user] = lambda: dict(user)
     tc = TestClient(app, raise_server_exceptions=True)
     yield tc, Session, user
@@ -245,9 +248,15 @@ def test_patch_writes_an_audit_row_naming_the_changed_columns(features_env):
     assert row.entity_type == "tenant_settings"
     assert row.entity_id == TID
     changed = row.details["changed"]
-    assert changed == {"invoice_email_subject_template": SAMPLE["invoice_email_subject_template"]}, (
+    # Since #558 the diff carries both halves — "who set this template" is not
+    # answerable without the value it replaced.
+    assert set(changed) == {"invoice_email_subject_template"}, (
         "only the column that moved belongs in the diff"
     )
+    assert changed["invoice_email_subject_template"]["to"] == (
+        SAMPLE["invoice_email_subject_template"]
+    )
+    assert "from" in changed["invoice_email_subject_template"]
 
 
 def test_service_reads_the_four_templates_from_tenant_settings(features_env, monkeypatch):
