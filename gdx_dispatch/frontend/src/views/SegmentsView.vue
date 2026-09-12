@@ -385,6 +385,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { useToast } from 'primevue/usetoast';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { useRouter } from 'vue-router';
 import EmptyState from '../components/EmptyState.vue';
@@ -403,6 +404,9 @@ import TabPanels from 'primevue/tabpanels';
 import Tabs from 'primevue/tabs';
 
 const api = useApiWithToast();
+// Bulk tag reports SERVER counts, so it raises its own toast instead of the
+// composable's fixed successMessage — see saveBulkTag.
+const toast = useToast();
 const router = useRouter();
 const { confirmAsync } = useDestructiveConfirm();
 
@@ -721,11 +725,20 @@ async function saveBulkTag() {
   if (!ids.length || !tag) return;
   bulkTagging.value = true;
   try {
-    await api.post(
-      '/api/customers/bulk-tag',
-      { customer_ids: ids, tag },
-      { successMessage: 'Tag applied to selected customers' }
-    );
+    // Report what the server actually did, not what was asked for. The old
+    // toast was a fixed string on a handler that wrote nothing, so "Tag
+    // applied to selected customers" appeared whether or not anything landed.
+    const res = await api.post('/api/customers/bulk-tag', { customer_ids: ids, tag });
+    const tagged = res?.tagged ?? 0;
+    const missing = res?.not_found?.length ?? 0;
+    let detail = `Tag "${tag}" applied to ${tagged} customer${tagged === 1 ? '' : 's'}`;
+    if (missing) detail += ` — ${missing} could not be found`;
+    toast.add({
+      severity: missing ? 'warn' : 'success',
+      summary: missing ? 'Tagged with skips' : 'Tag applied',
+      detail,
+      life: 4000,
+    });
     showBulkTagDialog.value = false;
     bulkTagValue.value = '';
     clearCustomerSelection();

@@ -497,13 +497,20 @@ def list_staff_users(_: dict = Depends(get_current_user)) -> dict:
 
 
 # ── Customers bulk actions ────────────────────────────────────────────────
-
-@router.post("/api/customers/bulk-tag", response_model=None)
-def bulk_tag_customers(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    # Was {"ok": True, "tagged": 0}. Fail loud — bulk tag is real Core-Five work
-    # but isn't implemented yet (audit 2026-05-05).
-    from fastapi import HTTPException
-    raise HTTPException(status_code=501, detail="Customer bulk-tag not implemented")
+#
+# `POST /api/customers/bulk-tag` removed 2026-09-12 (#462 / #570). It raised a
+# 501 "not implemented", which was the HONEST answer — and it never ran. This
+# router is included at app.py:1584, behind sub_resources at :1579, so the copy
+# that served was sub_resources', and that one returned
+# `{"ok": True, "tagged": len(ids)}` while writing nothing at all.
+#
+# That is the same silent-write landmine described for line-items below, except
+# it had already fired: the Segments toolbar calls this path and toasts "Tag
+# applied to selected customers". sub_resources now does the work for real, so
+# the 501 twin goes rather than being left as a second answer to one question.
+#
+# This was the LAST shadowed (method, path) pair in the app —
+# `tools/route_shadow_scan.py` went from 43 to 1 to 0.
 
 
 # ── Job costing line items + parts ────────────────────────────────────────
