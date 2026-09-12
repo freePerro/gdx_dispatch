@@ -61,7 +61,7 @@ class TestDispatchBoard:
                 )
         console_tracker.assert_no_errors("DISP-02")
 
-    def test_disp_03_drag_and_drop_assignment_via_api(self, api, console_tracker):
+    def test_disp_03_drag_and_drop_assignment_via_api(self, api, scratch_job, console_tracker):
         """DISP-03: Job assignment (simulated via API since drag-and-drop is hard to automate)."""
         # Get jobs list
         jobs_resp = api.get("/api/jobs")
@@ -76,16 +76,34 @@ class TestDispatchBoard:
         if not jobs_list:
             pytest.skip("No jobs available to assign")
 
-        job = jobs_list[0]
-        job_id = job.get("id")
+        # `technician_id` is not a field on JobUpdate, so the patch mapped
+        # nothing and the router answered 400 "no fields to update" — which
+        # `< 500` accepted. DISP-03 never assigned a job (#640). The real
+        # field is `assigned_to`.
+        #
+        # It also must not run against a real job: `_set_job_assignments`
+        # soft-deletes every JobAssignment not in the desired set, and the
+        # list's `assigned_to` carries only the PRIMARY tech — so patching it
+        # back onto a multi-tech job strips the rest of the crew and resets
+        # is_lead. Use a job this test owns.
+        tech_id = next(
+            (j.get("assigned_to") for j in jobs_list if j.get("assigned_to")), None
+        )
+        if not tech_id:
+            pytest.skip("No assigned technician to re-assign with")
 
-        # Attempt to assign/reassign via PATCH
+        job_id = scratch_job
         assign_resp = api.patch(f"/api/jobs/{job_id}", json_data={
-            "technician_id": job.get("technician_id")  # re-assign same tech (safe for e2e)
+            "assigned_to": tech_id,
         })
-        # Accept 200 or 422 (validation) — just not 500
-        assert assign_resp.status_code < 500, (
-            f"Job assignment returned server error: {assign_resp.status_code}"
+        assert assign_resp.status_code == 200, (
+            f"Job assignment failed: {assign_resp.status_code} "
+            f"{assign_resp.text[:200]}"
+        )
+        detail = api.get(f"/api/jobs/{job_id}")
+        assert detail.status_code == 200, detail.status_code
+        assert str(detail.json().get("assigned_to")) == str(tech_id), (
+            "assignment returned 200 but the job is unassigned"
         )
         console_tracker.assert_no_errors("DISP-03")
 

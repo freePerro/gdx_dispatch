@@ -122,48 +122,43 @@ class TestTimeclockAPI:
             assert has_out or has_dur, f"Clock out missing timestamp/duration: {data}"
         console_tracker.assert_no_errors("TIME-03")
 
-    def test_time_04_job_clock_in(self, api, console_tracker):
+    def test_time_04_job_clock_in(self, api, scratch_job, console_tracker):
         """TIME-04: POST /api/timeclock/jobs/{id}/clock-in links time entry to job."""
         # Get a job ID
-        jobs_resp = api.get("/api/jobs")
-        if jobs_resp.status_code != 200:
-            pytest.skip("Cannot fetch jobs")
-        jobs = jobs_resp.json()
-        items = jobs if isinstance(jobs, list) else (
-            jobs.get("items") or jobs.get("data") or jobs.get("results") or []
-        )
-        if not items:
-            pytest.skip("No jobs available")
-        job_id = str(items[0]["id"])
+        # Own the job: this opens a per-job TimeEntry, and doing that on an
+        # arbitrary customer's row leaves a timer a later real closeout would
+        # inherit. The `pytest.skip("Cannot fetch jobs")` guard that used to
+        # sit here was green-by-absence too.
+        job_id = scratch_job
 
-        resp = api.post(f"/api/timeclock/jobs/{job_id}/clock-in")
-        if resp.status_code == 404:
-            pytest.skip("Job timeclock endpoint not available")
-        assert resp.status_code < 500, (
+        # `/api/timeclock/jobs/{id}/clock-in` does not exist — per-job clock
+        # lives on the mobile router. The old target answered 405, not 404, so
+        # the skip guard never fired either, and `< 500` passed on the 405
+        # (#640). This test ran green against a route that isn't served.
+        # Don't inherit an open entry: mobile clock-in answers 409 "Already
+        # clocked in on this job" and the assertion below would red on stale
+        # state rather than on a defect. Same fix as MOB-06.
+        api.post(f"/api/mobile/jobs/{job_id}/clock-out", json_data={})
+
+        resp = api.post(f"/api/mobile/jobs/{job_id}/clock-in", json_data={})
+        assert resp.status_code in (200, 201), (
             f"Job clock-in failed: {resp.status_code} {resp.text[:200]}"
         )
         console_tracker.assert_no_errors("TIME-04")
 
-    def test_time_05_job_clock_out(self, api, console_tracker):
+    def test_time_05_job_clock_out(self, api, scratch_job, console_tracker):
         """TIME-05: POST /api/timeclock/jobs/{id}/clock-out calculates duration."""
-        jobs_resp = api.get("/api/jobs")
-        if jobs_resp.status_code != 200:
-            pytest.skip("Cannot fetch jobs")
-        jobs = jobs_resp.json()
-        items = jobs if isinstance(jobs, list) else (
-            jobs.get("items") or jobs.get("data") or jobs.get("results") or []
-        )
-        if not items:
-            pytest.skip("No jobs available")
-        job_id = str(items[0]["id"])
+        # Own the job: this opens a per-job TimeEntry, and doing that on an
+        # arbitrary customer's row leaves a timer a later real closeout would
+        # inherit. The `pytest.skip("Cannot fetch jobs")` guard that used to
+        # sit here was green-by-absence too.
+        job_id = scratch_job
 
-        # Ensure clocked in
-        api.post(f"/api/timeclock/jobs/{job_id}/clock-in")
+        # Ensure clocked in (see TIME-04 for why the path changed).
+        api.post(f"/api/mobile/jobs/{job_id}/clock-in", json_data={})
 
-        resp = api.post(f"/api/timeclock/jobs/{job_id}/clock-out")
-        if resp.status_code == 404:
-            pytest.skip("Job timeclock endpoint not available")
-        assert resp.status_code < 500, (
+        resp = api.post(f"/api/mobile/jobs/{job_id}/clock-out", json_data={})
+        assert resp.status_code in (200, 201), (
             f"Job clock-out failed: {resp.status_code} {resp.text[:200]}"
         )
         console_tracker.assert_no_errors("TIME-05")

@@ -245,7 +245,7 @@ The dispatch board shows a real-time view of today's jobs, technician assignment
 |----|-----------|-------------|
 | DISP-01 | Dispatch page renders | Calendar/board view loads, shows jobs for current day/week |
 | DISP-02 | Jobs shown on board | Each scheduled job appears as a card with customer name, address, time, assigned tech |
-| DISP-03 | Drag-and-drop assignment | Drag job card to technician column, API call fires, job.technician_id updates |
+| DISP-03 | Drag-and-drop assignment | Drag job card to technician column, API call fires, `job.assigned_to` updates. **Not** `technician_id` — that is not a field on `JobUpdate`, so the patch mapped nothing and the router answered 400 "no fields to update" (corrected 2026-09-12, #640). Exercise it on a scratch job: patching `assigned_to` re-derives crew and soft-deletes assignments not in the set |
 | DISP-04 | WebSocket connects | On page load, WS connection to /ws/dispatch established (check network tab) |
 | DISP-05 | WebSocket receives job_assigned | When another user assigns a job, board updates without refresh |
 | DISP-06 | WebSocket receives job_status | When tech marks job in_progress, card color/status changes live |
@@ -382,8 +382,8 @@ Technicians can clock in/out for the day and for individual jobs. Time entries a
 | TIME-01 | Timeclock page renders | Shows clock in/out button, today's entries |
 | TIME-02 | Clock in (daily) | POST /api/timeclock/clock-in, entry created with clock_in timestamp |
 | TIME-03 | Clock out (daily) | POST /api/timeclock/clock-out, entry updated with clock_out, duration calculated |
-| TIME-04 | Job clock in | POST /api/timeclock/jobs/{id}/clock-in, time entry linked to job |
-| TIME-05 | Job clock out | POST /api/timeclock/jobs/{id}/clock-out, duration calculated |
+| TIME-04 | Job clock in | POST /api/mobile/jobs/{id}/clock-in, time entry linked to job. There is no `/api/timeclock/jobs/{id}/clock-in` — the old row named a route that is not served, and it answered 405 (not 404), so the test's skip guard never fired either (corrected 2026-09-12, #640) |
+| TIME-05 | Job clock out | POST /api/mobile/jobs/{id}/clock-out, duration calculated. Same correction as TIME-04 |
 | TIME-06 | Time entries list | GET /api/timeclock/entries returns entries with dates, durations |
 | TIME-07 | Delete time entry | DELETE /api/timeclock/time-entries/{id} removes entry |
 | TIME-08 | Timecard view | Shows weekly/biweekly summary with total hours |
@@ -559,16 +559,16 @@ Technicians on mobile devices can view their schedule, update job status, clock 
 |----|-----------|-------------|
 | MOB-01 | Mobile schedule | GET /api/mobile/today returns today's jobs for logged-in tech (`/api/mobile/schedule` removed 2026-09-06, #480) |
 | MOB-02 | Job detail | GET /api/mobile/job/{id} returns full job info |
-| MOB-03 | En-route | POST /api/mobile/jobs/{id}/en-route updates status |
-| MOB-04 | Arrived | POST /api/mobile/jobs/{id}/arrived updates status |
-| MOB-05 | Complete job | POST /api/mobile/jobs/{id}/complete, job marked complete |
+| MOB-03 | En-route | POST /api/mobile/jobs/{id}/en-route sets `dispatch_status` = `en_route` (verified by re-reading the job) |
+| MOB-04 | Arrived | POST /api/mobile/jobs/{id}/arrived sets `dispatch_status` = `on_site` — note `arrived` is the verb, `on_site` is the state; `Job.dispatch_status` never holds "arrived" |
+| MOB-05 | Complete job | POST /api/jobs/{id}/closeout, lifecycle flips to completed. **Not** `/api/mobile/jobs/{id}/complete`: that route is `deprecated=True` and no UI calls it — PR B moved completion to the closeout sheet on the job detail screen, and `MobileCloseoutOwnership.spec.js` guards that it stays unreachable. The row named the legacy path until 2026-09-12 (#640) |
 | MOB-06 | Mobile clock in/out | POST /api/timeclock/clock-in and /clock-out work (the `/api/mobile/clock-in|out` duplicates removed 2026-09-07) |
 | MOB-07 | Job clock in/out | POST /api/mobile/jobs/{id}/clock-in and /clock-out work |
-| MOB-08 | Photo upload (mobile) | POST /api/mobile/jobs/{id}/photos, photo saved |
+| MOB-08 | Photo upload (mobile) | POST /api/jobs/{id}/photos, photo saved. There is no `/api/mobile/jobs/{id}/photos` route — the mobile SPA posts to the jobs router (corrected 2026-09-12, #640) |
 | MOB-09 | Signature capture (mobile) | POST /api/jobs/{id}/signature with `{signature}` returns 201 and a document row (the `/api/mobile/...` alias removed 2026-09-06, #480; the test sent the wrong key until 2026-09-07) |
-| MOB-10 | Add note | POST /api/mobile/jobs/{id}/notes, note appears on job |
-| MOB-11 | Parts used | POST /api/mobile/jobs/{id}/parts-used records parts |
-| MOB-12 | Location tracking | POST /api/mobile/location records GPS coordinates |
+| MOB-10 | Add note | POST /api/mobile/jobs/{id}/notes with body `{note: ...}` (**not** `content`), note appears on job |
+| MOB-11 | Parts used | POST /api/mobile/jobs/{id}/parts-used with part lines `{name, qty}` (**not** `quantity`) records parts |
+| MOB-12 | Location tracking | POST /api/mobile/location with `{lat, lng}` (**not** `latitude`/`longitude`) records GPS. Requires an open shift — answers 403 "Not clocked in" otherwise |
 | ~~MOB-13~~ | ~~Offline sync~~ | Retired 2026-09-06 (#480) — `POST /api/mobile/sync` had no caller; the PWA queue (useOfflineSync) replays each write to its own route |
 | MOB-14 | Mobile viewport | Mobile schedule page renders correctly at 375px width |
 | MOB-15 | Touch targets | All buttons/links at least 44x44px (mobile accessibility) |
