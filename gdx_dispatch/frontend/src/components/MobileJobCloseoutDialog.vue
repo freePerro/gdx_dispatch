@@ -35,6 +35,7 @@
 // job cards or DispatchView Status="Complete" handler).
 
 import { ref, reactive, computed, watch, nextTick } from 'vue'
+import { recordedQuantity } from '../utils/quantity'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
@@ -683,7 +684,7 @@ watch(open, async (v) => {
           <li v-for="r in existingUsed" :key="r.id" class="part-row existing-request">
             <span class="muted">
               <i class="pi pi-check-circle" style="font-size: 0.8rem" />
-              {{ r.part_name }} ×{{ r.quantity || 1 }} — already logged on this job
+              {{ r.part_name }} ×{{ recordedQuantity(r.quantity) }} — already logged on this job
             </span>
             <span class="qty-pill">used</span>
           </li>

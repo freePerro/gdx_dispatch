@@ -38,6 +38,8 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.quantities import recorded_quantity
+
 log = logging.getLogger(__name__)
 
 __all__ = ["resolve_sell_price"]
@@ -499,7 +501,7 @@ def duplicate_capture_groups(db: Session, job_id: str) -> list[dict]:
     for row in rows:
         key = (
             (row.sku or "").strip().lower() or (row.part_name or "").strip().lower(),
-            int(row.quantity or 1),
+            int(recorded_quantity(row.quantity)),
         )
         if not key[0]:
             continue

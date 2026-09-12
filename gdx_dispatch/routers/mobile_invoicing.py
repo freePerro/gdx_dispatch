@@ -46,6 +46,7 @@ from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.invoice_paid import paid_to_date
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.quantities import recorded_quantity, zero_quantity_verdict
 from gdx_dispatch.models.tenant_models import (
     Customer,
     Invoice,
@@ -645,12 +646,24 @@ def mobile_create_invoice(
                 _tax_labor = bool(_load_tax_labor_flag(db))
                 line_sum = Decimal("0")
                 for tl in tier_lines:
+                    # A zero-quantity tier line is not billed as one (#560).
+                    _verdict = zero_quantity_verdict(tl.quantity, tl.line_total)
+                    if _verdict == "refuse":
+                        db.rollback()
+                        return _jr(
+                            {"detail": f"line \"{tl.description or 'Item'}\" records no quantity but "
+                                       f"carries ${_money(tl.line_total or 0)} — the office needs to "
+                                       "correct it on the estimate before this can be invoiced"},
+                            422,
+                        )
+                    if _verdict == "skip":
+                        continue
                     lt = _money(tl.line_total or 0)
                     db.add(InvoiceLine(
                         id=uuid4(),
                         invoice_id=invoice.id,
                         description=(tl.description or "Item")[:500],
-                        quantity=int(tl.quantity or 1),
+                        quantity=int(recorded_quantity(tl.quantity)),
                         unit_price=_money(tl.unit_price or 0),
                         line_total=lt,
                         taxable=True if _tax_labor else not _is_labor_line(tl),
@@ -759,12 +772,24 @@ def mobile_create_invoice(
                         422,
                     )
             for ln in line_rows:
+                # A zero-quantity estimate line is not billed as one (#560).
+                _verdict = zero_quantity_verdict(ln[1], ln[3])
+                if _verdict == "refuse":
+                    db.rollback()
+                    return _jr(
+                        {"detail": f"line \"{ln[0]}\" records no quantity but carries "
+                                   f"${_money(ln[3] or 0)} — the office needs to correct it on "
+                                   "the estimate before this can be invoiced"},
+                        422,
+                    )
+                if _verdict == "skip":
+                    continue
                 db.add(
                     InvoiceLine(
                         id=uuid4(),
                         invoice_id=invoice.id,
                         description=ln[0],
-                        quantity=int(ln[1]),
+                        quantity=int(recorded_quantity(ln[1])),
                         unit_price=_money(ln[2]),
                         line_total=_money(ln[3]),
                         sort_order=int(ln[4]),

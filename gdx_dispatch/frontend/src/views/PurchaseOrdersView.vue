@@ -99,7 +99,7 @@
           <div v-for="(door, di) in detailReceiving.door_specs" :key="door.line_id || di" class="door-expected">
             <div class="door-expected-title">
               {{ door.identity.Model || door.label || 'Door' }}
-              <span v-if="door.quantity > 1" class="door-expected-qty">×{{ door.quantity }}</span>
+              <span v-if="recordedQuantity(door.quantity) !== 1" class="door-expected-qty">×{{ recordedQuantity(door.quantity) }}</span>
             </div>
             <dl class="door-expected-grid">
               <template v-for="(val, key) in { ...door.identity, ...door.receiving }" :key="key">
@@ -175,6 +175,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from "vue";
+import { recordedQuantity } from "../utils/quantity";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { formatMoney as formatCurrency } from "../composables/useFormatters";
 import EmptyState from "../components/EmptyState.vue";

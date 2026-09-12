@@ -76,7 +76,7 @@
                 <span v-if="t.description" class="meta">{{ t.description }}</span>
                 <ul v-if="t.lines?.length" class="tier-included" :data-testid="`tier-lines-${t.tier_name}`">
                   <li v-for="(ln, i) in t.lines" :key="i" class="meta">
-                    {{ ln.quantity > 1 ? `${ln.quantity}× ` : "" }}{{ ln.description }}<template
+                    {{ recordedQuantity(ln.quantity) !== 1 ? `${recordedQuantity(ln.quantity)}× ` : "" }}{{ ln.description }}<template
                       v-if="ln.line_total != null"> — {{ currency(ln.line_total) }}</template>
                   </li>
                 </ul>
@@ -269,6 +269,7 @@
 
 <script setup>
 import { computed, ref, onMounted } from "vue";
+import { recordedQuantity } from "../utils/quantity";
 import { useRoute } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import Button from "primevue/button";

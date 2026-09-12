@@ -21,6 +21,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync, resolve_audit_actor, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.quantities import recorded_quantity
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -130,7 +131,7 @@ def _serialize(
             {
                 "id": str(ln.id),
                 "description": ln.description,
-                "quantity": int(ln.qty or 1),
+                "quantity": int(recorded_quantity(ln.qty)),
                 "unit_price": float(ln.unit_price or 0),
                 "line_total": float(ln.line_total or 0),
                 "taxable": bool(getattr(ln, "taxable", True)),

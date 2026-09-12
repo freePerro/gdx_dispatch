@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.quantities import recorded_quantity
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -120,7 +121,7 @@ def compute_man_hour_duration_minutes(db: Session, job_id: Any) -> int | None:
     for hours, qty, item_id in rows:
         if hours is None:
             continue
-        total_hours += Decimal(str(hours)) * Decimal(int(qty or 1))
+        total_hours += Decimal(str(hours)) * Decimal(int(recorded_quantity(qty)))
         if item_id is not None:
             row = db.get(LaborPriceItem, item_id)
             if row is not None:
@@ -401,7 +402,7 @@ def get_suggested_duration(
         for hours, qty in line_rows:
             if hours is None:
                 continue
-            total_hours += Decimal(str(hours)) * Decimal(int(qty or 1))
+            total_hours += Decimal(str(hours)) * Decimal(int(recorded_quantity(qty)))
 
     minutes = compute_man_hour_duration_minutes(db, job_id)
     return {

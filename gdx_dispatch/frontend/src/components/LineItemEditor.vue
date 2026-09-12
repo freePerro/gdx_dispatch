@@ -79,7 +79,7 @@
           {{ part.part_name }}
           <small v-if="part.sku" class="muted">· {{ part.sku }}</small>
         </label>
-        <span class="parts-from-job-qty">×{{ part.quantity || 1 }}</span>
+        <span class="parts-from-job-qty">×{{ recordedQuantity(part.quantity) }}</span>
         <span
           v-if="part.source === 'vendor_invoice'"
           class="status-pill status-vendor-bill"
@@ -347,6 +347,7 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
+import { recordedQuantity } from '../utils/quantity';
 import Button from 'primevue/button';
 import InputText from 'primevue/inputtext';
 import InputNumber from 'primevue/inputnumber';
@@ -1009,7 +1010,7 @@ async function addSelectedParts() {
     }
     return {
       description: p.part_name,
-      quantity: Number(p.quantity) || 1,
+      quantity: recordedQuantity(p.quantity),
       unit_price: unitPrice,
       _lastPrice: unitPrice,
       // D-S122-line-removal-unbill: stamp the part's ID on the line so the

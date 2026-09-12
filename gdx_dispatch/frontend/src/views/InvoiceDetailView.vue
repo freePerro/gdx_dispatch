@@ -942,7 +942,7 @@
           <ul class="verify-unbilled-list" data-testid="verify-unbilled-list">
             <li v-for="p in verifyUnbilledParts" :key="p.id">
               {{ p.part_name }}
-              <span v-if="p.quantity > 1">&times;{{ p.quantity }}</span>
+              <span v-if="recordedQuantity(p.quantity) !== 1">&times;{{ recordedQuantity(p.quantity) }}</span>
               <span v-if="p.unit_price != null" class="verify-unbilled-price">
                 — {{ currency(p.unit_price) }} each
               </span>
@@ -1064,6 +1064,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from "vue";
+import { recordedQuantity } from "../utils/quantity";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
@@ -1479,6 +1480,15 @@ function toNum(v) {
 }
 
 function lineTotal(item) {
+  // The STORED amount is the money on file: the server's subtotal sums
+  // `line_total` (`_recalculate_invoice`) and never re-multiplies quantity.
+  // Recomputing qty × unit_price here printed $0.00 against a line recorded 0
+  // that still carries its amount, so the rows visibly disagreed with the
+  // invoice's own subtotal (#560 browser walk, 2026-09-11). Edit rows carry no
+  // stored total, so typing a quantity still reprices live.
+  if (item?.line_total != null && Number.isFinite(Number(item.line_total))) {
+    return Number(item.line_total);
+  }
   return toNum(item.quantity) * toNum(item.unit_price);
 }
 
@@ -1513,6 +1523,8 @@ function normalizeInvoice(payload) {
     description: item.description || "",
     quantity: toNum(item.quantity ?? 1),
     unit_price: toNum(item.unit_price ?? item.unitPrice ?? item.amount ?? 0),
+    // The stored amount, so the row shows what is billed (see lineTotal()).
+    line_total: item.line_total ?? item.lineTotal ?? null,
     // Default true when the server didn't tell us — matches the column's
     // server_default. Only legacy QB-imported lines might come back without
     // an explicit value and historically those were treated as taxable.
@@ -2056,7 +2068,7 @@ function enterEditMode() {
     _key: `e-${ln.id ?? i}`,
     id: typeof ln.id === "string" && ln.id.length >= 32 ? ln.id : null,
     description: ln.description || "",
-    quantity: toNum(ln.quantity) || 1,
+    quantity: recordedQuantity(ln.quantity),
     unit_price: toNum(ln.unit_price),
     taxable: ln.taxable !== false,
     // D-S122b-detail-view-columns — snapshot the new fields too.

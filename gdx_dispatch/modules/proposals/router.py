@@ -15,6 +15,7 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.office_notifications import notify_estimate_decision
 from gdx_dispatch.core.permissions import is_dispatch_manager
+from gdx_dispatch.core.quantities import recorded_quantity
 from gdx_dispatch.modules.deposits.service import (
     DepositError,
     create_deposit_invoice,
@@ -69,7 +70,7 @@ def _tier_line_dict(ln) -> dict[str, object]:
         "id": str(ln.id),
         "description": ln.description,
         "category": ln.category,
-        "quantity": int(ln.quantity or 1),
+        "quantity": int(recorded_quantity(ln.quantity)),
         "unit_price": float(ln.unit_price or 0),
         "line_total": float(ln.line_total or 0),
         "sort_order": ln.sort_order,

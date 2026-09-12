@@ -15,7 +15,7 @@
         <span class="door-size">{{ doorSize(door) }}</span>
         <span v-if="doorNumber(door)" class="door-qcd">{{ doorNumber(door) }}</span>
         <span v-if="doorSub(door)" class="door-sub">{{ doorSub(door) }}</span>
-        <span v-if="door.quantity > 1" class="door-qty">×{{ door.quantity }}</span>
+        <span v-if="recordedQuantity(door.quantity) !== 1" class="door-qty">×{{ recordedQuantity(door.quantity) }}</span>
       </button>
 
       <div v-if="isOpen(door, i)" class="door-body" :data-testid="`door-body-${i}`">
@@ -38,6 +38,7 @@
 
 <script setup>
 import { reactive, watch } from "vue";
+import { recordedQuantity } from "../utils/quantity";
 
 const props = defineProps({
   doors: { type: Array, default: () => [] },

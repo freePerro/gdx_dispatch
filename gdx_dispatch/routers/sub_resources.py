@@ -108,7 +108,23 @@ def create_job_line_item(job_id: str, request: Request, payload: dict, user: dic
     if not invoice_id:
         raise HTTPException(400, "invoice_id required")
     new_id = str(uuid4())
-    qty = int(payload.get("quantity", 1))
+    # This handler takes a raw dict, so InvoiceLineCreateIn's `gt=0` never ran
+    # here: it was the one writer in the app that could put a 0 on an invoice
+    # line, and a 0 line is one the invoice API itself refuses (#560).
+    _raw_qty = payload.get("quantity", 1)
+    try:
+        qty = int(_raw_qty)
+        # int() truncates, so 2.9 would silently bill 2 — compare against the
+        # real number. Both calls raise OverflowError on an infinity or a
+        # 400-digit integer (json.loads accepts `Infinity`), which is bad input
+        # answered with a 422, not an unhandled 500.
+        _is_whole = qty == float(_raw_qty)
+    except (TypeError, ValueError, OverflowError):
+        raise HTTPException(422, "quantity must be a whole number") from None
+    if not _is_whole:
+        raise HTTPException(422, "quantity must be a whole number")
+    if qty < 1:
+        raise HTTPException(422, "quantity must be at least 1 — a line with no quantity is not billed as 1")
     price = float(payload.get("unit_price", 0))
     line_total = qty * price
     now = datetime.now(UTC)

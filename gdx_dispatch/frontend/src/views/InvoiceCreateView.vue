@@ -359,6 +359,7 @@
 
 <script setup>
 import { computed, ref, onMounted, watch } from 'vue';
+import { recordedQuantity } from '../utils/quantity';
 
 // M21/M34 audit round 2: the first cut referenced tenantTaxLabor without
 // defining it — a ReferenceError swallowed by the prefill's own try/catch,
@@ -744,7 +745,7 @@ async function prefillFromJobCloseout(jobId) {
           : {};
       form.value.line_items = [{
         description: s.labor_line.description,
-        quantity: Number(s.labor_line.quantity || 1) || 1,
+        quantity: recordedQuantity(s.labor_line.quantity),
         unit_price: Number(s.labor_line.unit_price || 0),
         // M34: mirror the tenant's tax_labor setting instead of hardcoding —
         // a tax-labor tenant under-collected on every prefill (irrelevant at
@@ -789,7 +790,7 @@ async function prefillFromJobEstimate(jobId) {
     if (!lines.length) return;
     form.value.line_items = lines.map((ln) => ({
       description: ln.description || '',
-      quantity: Number(ln.quantity || 1) || 1,
+      quantity: recordedQuantity(ln.quantity),
       unit_price: Number(ln.unit_price || 0),
       taxable: ln.category && ln.category.toLowerCase() === 'labor' ? false : true,
       // S122-b — forward estimate-parity fields when present on the estimate

@@ -23,6 +23,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.quantities import recorded_quantity
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 
 log = logging.getLogger(__name__)
@@ -100,7 +101,7 @@ def _door_from_metadata(md: dict, line: EstimateLine) -> dict:
         "line_id": str(getattr(line, "id", "") or ""),
         "label": label,
         "description": getattr(line, "description", None),
-        "quantity": int(getattr(line, "quantity", 1) or 1),
+        "quantity": int(recorded_quantity(getattr(line, "quantity", None))),
         "identity": identity,
         "installer": installer,
         "receiving": receiving,

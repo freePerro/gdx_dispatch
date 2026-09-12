@@ -486,7 +486,7 @@
             <li v-for="p in usedParts" :key="p.id">
               <div class="part-main">
                 <span class="part-name">{{ p.part_name }}</span>
-                <span class="part-qty">×{{ p.quantity || 1 }}</span>
+                <span class="part-qty">×{{ recordedQuantity(p.quantity) }}</span>
               </div>
               <div class="part-meta">
                 <span v-if="p.sku" class="part-sku">{{ p.sku }}</span>
@@ -522,7 +522,7 @@
             <li v-for="p in requestedParts" :key="p.id">
               <div class="part-main">
                 <span class="part-name">{{ p.part_name }}</span>
-                <span class="part-qty">×{{ p.quantity || 1 }}</span>
+                <span class="part-qty">×{{ recordedQuantity(p.quantity) }}</span>
               </div>
               <div class="part-meta">
                 <span v-if="p.sku" class="part-sku">{{ p.sku }}</span>
@@ -1021,6 +1021,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { recordedQuantity } from '../utils/quantity'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
