@@ -56,6 +56,7 @@ import tokenize
 from collections import defaultdict
 from pathlib import Path
 from typing import Iterable
+from gdx_dispatch.tools.tracked_files import tracked_or_none
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_FILE = REPO_ROOT / ".duplicate_block_baseline"
@@ -122,12 +123,24 @@ def _canonicalize_via_tokenize(text: str) -> list[tuple[int, str]]:
 
 
 def _iter_py_files(roots: Iterable[Path]) -> Iterable[Path]:
+    """Tracked .py files under `roots` — a literal twin of the function in
+    tenant_plane_redundant_filter_scan.py, and baseline-gated the same way, so
+    it carries the same working-tree defect and the same fix. It yielded 607
+    files including the gitignored `gdx_dispatch/docker/demo/seed_demo.py`."""
+    tracked = tracked_or_none(REPO_ROOT)
     for root in roots:
         if not root.exists():
             continue
         for p in root.rglob("*.py"):
             if any(part in SKIP_DIR_PARTS for part in p.parts):
                 continue
+            if tracked is not None:
+                try:
+                    rel = p.relative_to(REPO_ROOT).as_posix()
+                except ValueError:
+                    continue
+                if rel not in tracked:
+                    continue
             yield p
 
 
