@@ -212,7 +212,6 @@ POST /api/collections/reminders
 POST /api/collections/send-reminders
 POST /api/commissions/rules
 POST /api/customers
-POST /api/customers/bulk-tag
 POST /api/customers/{customer_id}/contacts/{contact_id}/make-primary
 POST /api/customers/{customer_id}/equipment
 POST /api/customers/{customer_id}/locations

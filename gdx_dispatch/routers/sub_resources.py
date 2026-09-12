@@ -25,14 +25,21 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
+from gdx_dispatch.core.audit import (
+    ensure_audit_table,
+    log_audit_event_sync,
+    resolve_audit_actor,
+)
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.modules import require_permission
 from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.models.tenant_models import Invoice
 from gdx_dispatch.routers.auth import get_current_user
@@ -78,10 +85,161 @@ def customer_optout(customer_id: str, request: Request, user: dict = Depends(get
     return {"ok": True, "opted_out": True}
 
 
-@router.post("/api/customers/bulk-tag")
-def customers_bulk_tag(payload: dict, user: dict = Depends(get_current_user)):
-    customer_ids = payload.get("customer_ids", [])
-    return {"ok": True, "tagged": len(customer_ids)}
+class BulkTagIn(BaseModel):
+    """Typed on purpose. The previous handler took a raw `dict`, which is how
+    the sibling `create_job_line_item` ended up the one writer that could put a
+    0 on an invoice line (#560): a raw dict runs no validation at all."""
+
+    customer_ids: list[str] = Field(min_length=1, max_length=500)
+    tag: str = Field(min_length=1, max_length=80)
+
+
+@router.post(
+    "/api/customers/bulk-tag",
+    dependencies=[Depends(require_permission("customers.write"))],
+)
+def customers_bulk_tag(
+    payload: BulkTagIn,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Apply one tag, by name, to many customers.
+
+    This replaces a stub that returned `{"ok": True, "tagged": len(ids)}` with
+    no database session at all — it took no `db`, wrote nothing, audited
+    nothing, and reported success. The Segments toolbar calls it and toasts
+    "Tag applied to selected customers", so office staff were told a tag landed
+    on every selection and none ever did. `ui_compat` held a second copy that
+    correctly raised 501; `sub_resources` is included first, so the honest one
+    was the unreachable one.
+
+    The UI field is free text ("Tag name"), and `tags.name` is unique per
+    tenant with soft-delete resurrection, so the name is the natural key:
+    find-or-create, matching `POST /api/tags` semantics rather than inventing
+    new ones.
+
+    Assignment goes through `tags._assign_tag`, which already writes the
+    `tag_assigned` audit row (invariant #1) and is idempotent on re-tagging.
+    Re-implementing it here would have duplicated both.
+    """
+    from gdx_dispatch.models.tenant_models import Customer, Tag
+    from gdx_dispatch.routers.tags import _assign_tag
+
+    tenant_id = company_id()
+    name = payload.tag.strip()
+    if not name:
+        raise HTTPException(422, "tag name cannot be blank")
+
+    requested = list(dict.fromkeys(payload.customer_ids))  # de-dup, keep order
+
+    # `Customer.id` is Uuid(as_uuid=True): Postgres accepts a string, SQLite
+    # calls `value.hex` and raises. Coerce for the QUERY and keep the strings
+    # for the response and for `entity_id`, which is free-form text. Same
+    # dialect split as #631.
+    # A malformed id simply cannot match a row, so it falls into `missing`
+    # below with every other unknown id — no separate bucket, which is why an
+    # earlier `malformed` list here was dead code the audit caught.
+    as_uuid: dict[str, UUID] = {}
+    for cid in requested:
+        try:
+            as_uuid[cid] = UUID(str(cid))
+        except (ValueError, AttributeError, TypeError):
+            continue
+
+    # Only tag customers that exist and are not soft-deleted. The assignment
+    # table takes a free-form entity_id, so without this a typo would create a
+    # tidy-looking assignment row pointing at nothing.
+    live_ids: set[str] = set()
+    if as_uuid:
+        live = db.execute(
+            select(Customer.id).where(
+                Customer.id.in_(list(as_uuid.values())),
+                Customer.deleted_at.is_(None),
+            )
+        ).scalars().all()
+        found = {str(c) for c in live}
+        live_ids = {cid for cid in as_uuid if str(as_uuid[cid]) in found}
+    missing = [c for c in requested if c not in live_ids]
+
+    ensure_audit_table(db)
+
+    # Find-or-create the tag, resurrecting a soft-deleted one by the same name
+    # exactly as POST /api/tags does.
+    tag = db.execute(select(Tag).where(Tag.name == name)).scalar_one_or_none()
+    created = False
+    if tag is None:
+        tag = Tag(company_id=tenant_id, name=name)
+        db.add(tag)
+        try:
+            db.commit()
+        except IntegrityError:
+            # Concurrent create of the same name. POST /api/tags answers 409
+            # rather than 500; match it instead of inventing a second contract.
+            db.rollback()
+            tag = db.execute(select(Tag).where(Tag.name == name)).scalar_one_or_none()
+            if tag is None:
+                raise HTTPException(409, "Tag name already exists") from None
+        else:
+            created = True
+        db.refresh(tag)
+    elif tag.deleted_at is not None:
+        tag.deleted_at = None
+        tag.updated_at = datetime.now(UTC)
+        db.commit()
+        db.refresh(tag)
+        created = True
+    if created:
+        log_audit_event_sync(
+            db, tenant_id=tenant_id,
+            user_id=resolve_audit_actor(user, request),
+            action="tag_created", entity_type="tag", entity_id=str(tag.id),
+            details={"name": name, "via": "customers_bulk_tag"}, request=request,
+        )
+        db.commit()
+
+    tagged = 0
+    failed: list[str] = []
+    for cid in requested:
+        if cid not in live_ids:
+            continue
+        # CANONICAL spelling, not the caller's. `entity_id` is free-form text,
+        # so an uppercase or braced UUID would write a row that
+        # `_list_tags_for_entity` (which queries the lowercase canonical id)
+        # can never read — and a second call with the canonical form would add
+        # a DUPLICATE assignment, defeating the idempotency below. Found by the
+        # adversarial audit with an uppercase id: tagged:1, then unreadable.
+        try:
+            _assign_tag(
+                db, tenant_id=tenant_id, entity_type="customer",
+                entity_id=str(as_uuid[cid]), tag_id=tag.id, user=user, request=request,
+            )
+        except Exception:
+            # AUDIT #3: there is no transaction around this loop — `_assign_tag`
+            # commits per assignment. A raise partway used to abandon the batch
+            # with a 500, losing exactly the per-customer reporting this handler
+            # exists to provide. Record the failure and keep going; the caller
+            # gets counts plus the ids that did not land.
+            log.exception("bulk_tag_assign_failed", extra={"customer_id": cid})
+            failed.append(cid)
+            continue
+        tagged += 1
+
+    log.info(
+        "customers_bulk_tag", extra={"tenant_id": tenant_id, "tag": name,
+                                     "tagged": tagged, "missing": len(missing),
+                                     "failed": len(failed)},
+    )
+    # Real counts, not an echo of what was asked for. `missing` is returned so
+    # the UI can say "4 of 5" instead of a blanket success.
+    return {
+        "ok": True,
+        "tag": {"id": str(tag.id), "name": tag.name, "created": created},
+        "tagged": tagged,
+        "requested": len(requested),
+        "not_found": missing,
+        "failed": failed,
+    }
 
 
 @router.get("/api/jobs/{job_id}/line-items")
