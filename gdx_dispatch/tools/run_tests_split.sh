@@ -99,6 +99,18 @@ elif [ -n "${PYBIN:-}" ] && [ -f "$REQ_FILE" ]; then
     echo "  Full log: $dep_log   Bypass (not advised): SKIP_DEP_CHECK=1 $0"
     exit 3
   fi
+else
+  # Say so rather than skip in silence. `PYBIN` is only set for the
+  # "<python> -m pytest" shape of $PYTEST; a bare `pytest` binary gives us no
+  # interpreter to ask about its own site-packages, so the check cannot run.
+  # An unrunnable gate that prints nothing is indistinguishable from a gate
+  # that passed — the exact shape this script now exists to prevent.
+  if [ -z "${PYBIN:-}" ]; then
+    echo "⚠ dependency drift NOT CHECKED: \$PYTEST is not the '<python> -m pytest' form,"
+    echo "  so there is no interpreter to query. A stale dependency set would be invisible."
+  elif [ ! -f "$REQ_FILE" ]; then
+    echo "⚠ dependency drift NOT CHECKED: $REQ_FILE not found from $REPO_ROOT."
+  fi
 fi
 
 # addopts comes from pytest.ini (marker filter + -q + -p no:schemathesis_xdist).
