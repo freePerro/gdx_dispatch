@@ -59,12 +59,16 @@ from __future__ import annotations
 
 import argparse
 import os
+import posixpath
 import re
 import subprocess
 import sys
 from pathlib import Path
 
+from gdx_dispatch.tools.tracked_files import tracked_or_none
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
 BASELINE_PATH = REPO_ROOT / ".doc_link_baseline"
 
 DOC_GLOBS = ("docs/**/*.md", "gdx_dispatch/docs/**/*.md", "*.md")
@@ -87,21 +91,40 @@ _index: dict[str, bool] | None = None
 
 
 def _basenames() -> dict[str, bool]:
+    """Basenames of every file that ships, for the last-resort resolve.
+
+    Tracked-only, for the same reason the doc enumeration is (audit 2026-09-12):
+    `os.walk` here made a reference RESOLVE because a gitignored path happened
+    to exist locally. Measured that day: 157 dead refs locally vs 159 in a
+    tracked-only tree — the two extras resolved only via `gdx_dispatch/docker/
+    demo/` and `.claude/`. That is the worse direction, green locally and red in
+    CI, and `--write` would have frozen the local 157 into the baseline.
+    """
     global _index
     if _index is None:
-        _index = {}
-        for dp, dn, fs in os.walk(REPO_ROOT):
-            dn[:] = [d for d in dn if d not in
-                     (".git", "node_modules", "__pycache__", ".pytest_cache", "dist", ".venv")]
-            for f in fs:
-                _index[f] = True
+        tracked = tracked_or_none(REPO_ROOT)
+        if tracked is not None:
+            _index = {posixpath.basename(rel): True for rel in tracked}
+        else:
+            _index = {}
+            for dp, dn, fs in os.walk(REPO_ROOT):
+                dn[:] = [d for d in dn if d not in
+                         (".git", "node_modules", "__pycache__", ".pytest_cache", "dist", ".venv")]
+                for f in fs:
+                    _index[f] = True
     return _index
 
 
 def resolves(ref: str) -> bool:
+    # Exact-path check against the tracked set, not the filesystem: a
+    # gitignored file that exists locally must not make a reference resolve.
+    tracked = tracked_or_none(REPO_ROOT)
     for cand in (ref, f"gdx_dispatch/{ref}", f"gdx_dispatch/frontend/{ref}",
                  f"gdx_dispatch/frontend/src/{ref}"):
-        if (REPO_ROOT / cand).exists():
+        if tracked is not None:
+            if cand in tracked:
+                return True
+        elif (REPO_ROOT / cand).exists():
             return True
     return os.path.basename(ref) in _basenames()
 
@@ -114,10 +137,37 @@ def interesting(ref: str) -> bool:
 
 
 def docs() -> list[Path]:
+    """Tracked docs matching DOC_GLOBS.
+
+    Tracked-only because this scan is baseline-gated: an UNTRACKED doc changes
+    the verdict on one machine and not in CI. Measured 2026-09-12, the globs
+    picked up two files that are gitignored by design — `FOUND_NOT_FILED.md`
+    (the local findings ledger CLAUDE.md requires, and which by its nature names
+    source files) and `VERIFICATION_MANIFEST.md`. Neither produced a hit that
+    day, so this was latent rather than broken; it would have fired the first
+    time a ledger entry named a file that no longer exists, turning the gate red
+    locally and leaving it green in CI.
+
+    Same class as the demo-directory failures that made three other guards
+    permanently red on a maintainer's checkout — where a standing red went on to
+    mask a real regression.
+    """
+    # None when REPO_ROOT is not a git checkout (a scratch dir in a test);
+    # raises when it IS a checkout whose index cannot be read, because a silent
+    # fallback to globbing the tree restores the defect. Same rule, and same
+    # reasoning, as tenant_plane_redundant_filter_scan._tracked_or_none.
+    tracked = tracked_or_none(REPO_ROOT)
     out: list[Path] = []
     for g in DOC_GLOBS:
-        out += [p for p in REPO_ROOT.glob(g)
-                if p.is_file() and p.relative_to(REPO_ROOT).as_posix() not in SELF_EXEMPT]
+        for p in REPO_ROOT.glob(g):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(REPO_ROOT).as_posix()
+            if rel in SELF_EXEMPT:
+                continue
+            if tracked is not None and rel not in tracked:
+                continue
+            out.append(p)
     return sorted(set(out))
 
 

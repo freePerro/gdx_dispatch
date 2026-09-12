@@ -23,6 +23,8 @@ import re
 
 import pytest
 
+from gdx_dispatch.tools.tracked_files import tracked_or_none
+
 _HERE = pathlib.Path(__file__).resolve().parent.parent  # gdx_dispatch/
 
 _RETIRED_MODULES = [
@@ -285,6 +287,22 @@ _SKIP_FILES = {"VERIFICATION_MANIFEST.md"}
 _SCAN_SUFFIXES = {".py", ".sh", ".yml", ".yaml", ".js", ".vue", ".json", ".template", ".example", ".txt", ".md"}
 
 
+
+def _files_that_ship() -> list[pathlib.Path]:
+    """Every tracked file, or the working tree when this is not a checkout.
+
+    Degrades rather than errors: `tracked_paths()` raises on a `.git`-less tree,
+    which is the shipped docker image (`.dockerignore` excludes `.git`) and a
+    tarball checkout — real environments, per tracked_files' own docstring, and
+    erroring there would turn these guards into failures instead of scans.
+    `tracked_or_none` warns loudly on that path, so the degradation is visible.
+    """
+    tracked = tracked_or_none(_REPO_ROOT)
+    if tracked is None:
+        return [p for p in _REPO_ROOT.rglob("*") if p.is_file()]
+    return [p for rel in sorted(tracked) if (p := _REPO_ROOT / rel).is_file()]
+
+
 def test_retired_env_and_state_names_appear_nowhere() -> None:
     """Round three, B1/B3/B7/B8/B9. A source-absence guard: every retired env var
     and the two dead state names are gone from every file that ships, outside
@@ -294,8 +312,14 @@ def test_retired_env_and_state_names_appear_nowhere() -> None:
     matches only (`VPS_IPV4` would not fire); docs whose status line says
     HISTORICAL keep their vocabulary; this file's own list is exempt."""
     hits: list[str] = []
-    for path in _REPO_ROOT.rglob("*"):
-        if not path.is_file() or path == pathlib.Path(__file__).resolve():
+    # Tracked files only. `rglob` walked the WORKING TREE, so a gitignored path
+    # that exists on one machine and not in CI turned this red locally and
+    # green in CI on the same commit — `gdx_dispatch/docker/demo/` did exactly
+    # that with a stale CONTROL_DATABASE_URL (2026-09-12). An always-red guard
+    # is one nobody reads, and this one went on to hide a real regression.
+    # Unreadable index raises rather than silently walking the tree again.
+    for path in _files_that_ship():
+        if path == pathlib.Path(__file__).resolve():
             continue
         rel = path.relative_to(_REPO_ROOT).as_posix()
         if rel in _SKIP_FILES or any(part == "__pycache__" for part in path.parts):
@@ -397,7 +421,7 @@ def test_nothing_outside_the_records_names_a_design_doc() -> None:
     cannot change; env.py and grant_helpers.py ARE scanned), the link-scanner baseline (keyed by doc path), and this file.
     Counterfactual: add `see docs/design/foo.md` to any router docstring."""
     hits: list[str] = []
-    for path in _REPO_ROOT.rglob("*"):
+    for path in _files_that_ship():
         if not path.is_file() or path == pathlib.Path(__file__).resolve():
             continue
         rel = path.relative_to(_REPO_ROOT).as_posix()
