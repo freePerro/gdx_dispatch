@@ -34,7 +34,8 @@ open. Read it at session start; `/start` opens with it and
 Doug declares the phase. Claude does not switch it, and does not call the exit
 condition met without naming the evidence. Our own audits generate most of the
 backlog, so starting a sweep while the budget is CLOSED is choosing more
-backlog, not less.
+backlog, not less. Fixing a `live-defect` is never rate-limited by any of
+this — the budget governs sweeps, not repairs.
 
 ## Project map
 
@@ -142,7 +143,7 @@ backlog, not less.
    ```
    Class:     <the shape the code gets wrong, not a finding number>
    Searched:  <every file/glob that could hold that shape>
-   Instances: <N> found / <N> fixed / <N> deferred → #NNN (reason)
+   Instances: <N> found / <N> fixed / <N> deferred (reason)
    ```
 
    Deferring is allowed; it just has to be counted. A deferred instance goes
@@ -188,7 +189,10 @@ overclaimed; the record only ever undersells what exists.
   runbooks and ADRs alike.** Line 3, or just below it when a `**Date:**` block
   comes first. Vocabulary: `PLAN` · `PARTIALLY BUILT` · `MERGED #N` ·
   `RELEASED vX.Y.Z` · `HISTORICAL`. It names what is *not* built when the
-  answer is "some of it". A doc with no status line is incomplete.
+  answer is "some of it". A doc with no status line is incomplete. Measured
+  2026-09-12 over tracked files: `docs/design/` is 70 of 70 and
+  `gdx_dispatch/docs/` is 41 of 41. Every doc complies today; the rule is what
+  keeps it that way.
 - **The status line ships with the code.** A PR that implements part of a plan
   updates that plan's status in the same PR. ADR-016 was edited *inside its own
   build commit* and still read "nothing built yet" while the feature sat in the
