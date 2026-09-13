@@ -2094,8 +2094,21 @@ watch(pendingCount, (now, before) => {
   if (now < before) refresh()
 })
 
+// A dispatcher's chat message pushes the tech /mobile/jobs/<id>?chat=1
+// (#657). Open the thread the way the Chat button would, and only where that
+// button exists — it is hidden on a read-only job.
+function openChatFromLink() {
+  if (route.query.chat !== '1') return
+  // Consume the link so Back or a refresh does not reopen the chat. Through
+  // the router, not history.replaceState: the router keeps its own copy of
+  // the URL and writes it back on the next navigation.
+  const { chat, ...rest } = route.query
+  router.replace({ query: rest })?.catch?.(() => {})
+  if (job.value && !readOnly.value) chatOpen.value = true
+}
+
 onMounted(() => {
-  load()
+  load().then(openChatFromLink)
   loadCatalogs()
 })
 </script>
