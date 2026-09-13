@@ -12,6 +12,7 @@ deleted, deactivated, or role-reassigned.
 """
 from __future__ import annotations
 
+import copy
 import logging
 from datetime import date
 from uuid import UUID
@@ -91,6 +92,51 @@ def _audit(db: Session, company_id: str, actor: str, action: str, details: dict)
             details=details,
         )
     )
+
+
+# The gl_settings fields ``ensure_gl_seed`` may rewrite on a re-run (see
+# service.ensure_gl_settings). ``payment_method_role_map`` is also in
+# LOCKED_ONCE_LIVE — the seed's top-up writes it with none of the PATCH path's
+# lock checks, which is exactly why a re-run has to leave a trail.
+_TOPUP_FIELDS = (
+    "payment_method_role_map",
+    "credit_reason_role_map",
+    "expense_category_account_map",
+    "cpa_review",
+)
+
+
+def _topup_snapshot(settings) -> dict:
+    """Copy of every field a seed re-run can rewrite.
+
+    Copied, not referenced: ``service._with_topup`` returns a NEW dict today,
+    so a reference would still show the old value — but an in-place edit later
+    would silently alias before to after and make every diff empty.
+    """
+    return {f: copy.deepcopy(getattr(settings, f, None)) for f in _TOPUP_FIELDS}
+
+
+def _audit_seed_effect(db: Session, company_id: str, actor: str, before: dict | None, settings) -> None:
+    """Record what a ``ensure_gl_seed`` run actually did.
+
+    ``before is None`` means there was no settings row — a first
+    initialization. Otherwise this was a re-run, and only the fields the
+    top-up actually moved are recorded; a genuinely idempotent re-POST writes
+    no row at all.
+    """
+    if before is None:
+        _audit(db, company_id, actor, "gl_settings_initialized", {})
+        return
+    after = _topup_snapshot(settings)
+    moved = sorted(f for f in _TOPUP_FIELDS if before.get(f) != after.get(f))
+    if moved:
+        # A DISTINCT action from the release-top-up at :282. Both rewrite seed
+        # maps, but they answer different questions: that one is an unattended
+        # migration stamped "system:release-topup" over two fields, this one is
+        # a signed-in operator re-running initialize over four. Sharing a name
+        # would make "who changed the payment_method_role_map" unanswerable
+        # from the action alone — which is the whole point of the row.
+        _audit(db, company_id, actor, "gl_settings_reinitialized", {"fields": moved})
 
 
 def _account_payload(a: GlAccount) -> dict:
@@ -175,19 +221,33 @@ def initialize_accounting(
 ) -> dict:
     """Idempotent first-boot: seed the starter CoA + materialize gl_settings
     (and top up any default keys a release added). Audited — config must
-    never mutate actorlessly."""
+    never mutate actorlessly.
+
+    The re-run is audited too (#558). ``ensure_gl_seed`` runs unconditionally
+    and ``db.commit()`` is outside any guard, so a re-POST after a
+    LOCKED_ONCE_LIVE field was blanked rewrote it and committed with zero
+    audit rows. Same before/after comparison the PATCH path uses for its own
+    top-up, so an idempotent re-POST still records nothing.
+    """
     company_id = _tenant_id(user)
-    already = get_gl_settings(db, company_id) is not None
+    actor = _actor(user)
+    existing = get_gl_settings(db, company_id)
+    before = _topup_snapshot(existing) if existing is not None else None
     settings = ensure_gl_seed(db, company_id)
-    if not already:
-        _audit(db, company_id, _actor(user), "gl_settings_initialized", {})
+    _audit_seed_effect(db, company_id, actor, before, settings)
     try:
         db.commit()
     except IntegrityError:
         # Two racing first-initializes: the unique role index kills one seed.
-        # Self-heals — re-read the winner's rows.
+        # Self-heals — re-read the winner's rows. The rollback discarded our
+        # staged audit row along with the seed it described, so redo BOTH
+        # against the winner's state: if the retry's top-up moves nothing,
+        # there is correctly nothing left to record.
         db.rollback()
+        existing = get_gl_settings(db, company_id)
+        before = _topup_snapshot(existing) if existing is not None else None
         settings = ensure_gl_seed(db, company_id)
+        _audit_seed_effect(db, company_id, actor, before, settings)
         db.commit()
     return _settings_payload(db, settings, company_id)
 

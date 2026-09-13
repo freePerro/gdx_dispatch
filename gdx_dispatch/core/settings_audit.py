@@ -31,12 +31,20 @@ commit, or make `_read` commit unconditionally, that harmlessness is gone —
 this note exists so the next reader does not trust a simpler invariant than
 the one that actually holds.
 
-**Callers must depend on `audit_ready_db`, not `get_db`.** `ensure_audit_table`
-commits the first time it runs for an engine; if that fires from inside
-`log_audit_event_sync` here, it would commit the staged upsert early and undo
-the guarantee above. `audit_ready_db` (`core/audit.py`) moves that
-initialization in front of the handler, where committing has nothing to
-disturb.
+**`ensure_audit_table` runs here, first, before anything is staged.** It
+COMMITS the first time it runs for an engine; left to fire lazily from inside
+`log_audit_event_sync` it would harden the staged upsert before the audit row
+exists, undoing the guarantee above. Running it at the top costs nothing —
+every later call for that engine is a no-op.
+
+Deliberately NOT `Depends(audit_ready_db)`, which is the obvious-looking
+alternative and is a trap: that dependency resolves its own session through
+`_get_db_dep`, which *calls* `get_db()` imperatively rather than declaring
+`Depends(get_db)`, so it bypasses every `app.dependency_overrides[get_db]` in
+the test suite. `routers/customers.py` records two tests that went 404 that
+way, and switching three routers to it during #558 silently pointed two more
+at the real database while they still passed. In-handler `ensure_audit_table`
+is the repo's majority pattern for exactly this reason.
 """
 
 from __future__ import annotations
@@ -46,7 +54,11 @@ from typing import Any
 
 from sqlalchemy import text
 
-from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
+from gdx_dispatch.core.audit import (
+    ensure_audit_table,
+    log_audit_event_sync,
+    resolve_audit_actor,
+)
 
 
 def _client_host(request: Any) -> str | None:
@@ -73,6 +85,9 @@ def audited_settings_upsert(
 
     Returns the settings row as the caller's `_read` renders it.
     """
+    # First, before anything is staged — see the module docstring.
+    ensure_audit_table(db)
+
     cols = list(values)
     before = read(db, tenant_id)
 

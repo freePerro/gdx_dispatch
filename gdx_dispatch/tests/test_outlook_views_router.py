@@ -15,10 +15,11 @@ from gdx_dispatch.modules.outlook.models import OutlookMessage
 from gdx_dispatch.modules.outlook.views_router import (
     get_db_for_views,
     get_user_for_views,
+)
+from gdx_dispatch.modules.outlook.views_router import (
     router as views_router,
 )
 from gdx_dispatch.routers.auth import get_current_user
-
 
 UID, TID = uuid4(), uuid4()
 
@@ -80,6 +81,22 @@ def _filtered_on(tdb, column_name: str) -> bool:
     """
     calls = tdb.query.return_value.filter.call_args_list
     return any(c.args and column_name in str(c.args[0]) for c in calls)
+
+
+def _added(tdb, type_name: str):
+    """The object of type `type_name` passed to db.add().
+
+    These used to read `tdb.add.call_args.args[0]` — the LAST add — which
+    silently became the AuditLog row once the handlers started writing one
+    (#558). Select by type instead, so a handler that adds more rows later
+    cannot make the assertion inspect the wrong object.
+    """
+    added = [
+        c.args[0] for c in tdb.add.call_args_list
+        if c.args and type(c.args[0]).__name__ == type_name
+    ]
+    assert added, f"no {type_name} was added; got {[type(c.args[0]).__name__ for c in tdb.add.call_args_list if c.args]}"
+    return added[0]
 
 
 def _set_raw_rows(tdb, rows):
@@ -845,7 +862,7 @@ def test_create_task_from_message_carries_links(app):
         r = client.post(f"/api/outlook/messages/{msg.id}/create-task", json={})
     assert r.status_code == 201
     assert r.json()["title"] == "Email: Broken spring"
-    task = tdb.add.call_args.args[0]
+    task = _added(tdb, "PlannerTask")
     assert task.customer_id == str(cust)
     assert task.job_id == str(job)
     assert task.source == "email_capture"
@@ -907,7 +924,7 @@ def test_save_attachment_to_job_creates_document(app, tmp_path):
     # than no row at all.
     written = list(tmp_path.iterdir())
     assert len(written) == 1 and written[0].read_bytes() == b"%PDF"
-    doc = tdb.add.call_args.args[0]
+    doc = _added(tdb, "Document")
     assert doc.job_id == job_id
     # content_hash is deliberately unset — it is the vendor pipelines'
     # tenant-wide dedup key and would block importing the same PDF as a
@@ -1091,7 +1108,7 @@ def test_save_attachment_truncates_an_overlong_filename(app, tmp_path):
             json={"job_id": str(uuid4())},
         )
     assert r.status_code == 201
-    doc = tdb.add.call_args.args[0]
+    doc = _added(tdb, "Document")
     assert len(doc.original_name) <= 255
     assert len(doc.title) <= 255
 
@@ -1192,12 +1209,13 @@ def test_list_messages_orders_flagged_first_against_a_real_db(monkeypatch):
     Runs the real query against SQLite: an older flagged message must come
     before a newer unflagged one, and the tiebreak inside each group stays
     newest-first. A MagicMock cannot fail this; a database can."""
-    import gdx_dispatch.models  # noqa: F401 — registers jobs/customers for the FKs
     from datetime import timedelta
 
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import StaticPool
+
+    import gdx_dispatch.models  # noqa: F401 — registers jobs/customers for the FKs
 
     monkeypatch.setenv("JWT_SECRET", "x" * 64)
     # StaticPool: an in-memory SQLite is per-connection; TestClient's thread

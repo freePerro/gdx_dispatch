@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import audit_ready_db
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.settings_audit import audited_settings_upsert
 from gdx_dispatch.routers.auth import get_current_user
@@ -92,7 +91,7 @@ def update_terms(
     payload: TermsPayload,
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
-    db: Session = Depends(audit_ready_db),
+    db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     if (user.get("role") or "").lower() not in {"admin", "owner"}:
         raise HTTPException(status_code=403, detail="admin or owner required")

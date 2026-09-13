@@ -1253,7 +1253,6 @@ PUT /api/campaigns/{campaign_id}/deactivate
 PUT /api/commissions/rules/{rule_id}
 PUT /api/customers/{customer_id}/custom-fields
 PUT /api/equipment/{equipment_id}
-PUT /api/fleet/vehicles/{vehicle_id}
 PUT /api/forecast/settings
 PUT /api/holding-areas/{area_id}
 PUT /api/integrations/{integration_id}
