@@ -8,6 +8,7 @@
 // picker dialog. That's the most usable shape on a phone — drag-targets
 // don't survive small viewports.
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import SelectButton from 'primevue/selectbutton'
@@ -22,6 +23,8 @@ import MobileChatDialog from '../components/MobileChatDialog.vue'
 
 const api = useApi()
 const toast = useToast()
+const route = useRoute()
+const router = useRouter()
 // Office display timezone — the board buckets jobs into the selected day in
 // THIS zone (same basis as the desktop board), not UTC/browser time.
 const { zonedDateKey } = useTenantTimezone()
@@ -387,6 +390,24 @@ function openThread(t) {
   chatOpen.value = true
 }
 
+// A tech's chat message pushes the dispatcher /mobile/dispatch?job=<id>
+// (#657). Open that thread here — mounted with mark-read, so following the
+// notification is what clears its unread badge.
+async function openThreadFromLink() {
+  const jobId = typeof route.query.job === 'string' ? route.query.job : ''
+  if (!jobId) return
+  // Consume the link so Back or a refresh does not reopen the thread and
+  // stamp it read again. Through the router, not history.replaceState: the
+  // router keeps its own copy of the URL and writes it back on the next
+  // navigation, so a hand-stripped query returns on Back.
+  const { job, ...rest } = route.query
+  router.replace({ query: rest })?.catch?.(() => {})
+  activeTab.value = 'threads'
+  await loadThreads()
+  // Older than the 7-day thread window: still open it, just without a title.
+  openThread(threads.value.find((t) => String(t.job_id) === jobId) || { job_id: jobId })
+}
+
 function fmtAgo(iso) {
   if (!iso) return ''
   const d = typeof iso === 'string' ? new Date(iso) : iso
@@ -434,12 +455,13 @@ watch(selectedDate, () => {
 
 watch(activeTab, (tab) => {
   if (tab === 'board' && jobs.value.length === 0) refreshBoard()
-  if (tab === 'threads' && threads.value.length === 0) loadThreads()
+  if (tab === 'threads' && threads.value.length === 0 && !threadsLoading.value) loadThreads()
   if (tab === 'live') loadLive()
 })
 
 onMounted(() => {
   refreshBoard()
+  openThreadFromLink()
   // Threads tab keeps the original 15s polling cadence when active.
   pollTimer = setInterval(() => {
     if (activeTab.value === 'threads') loadThreads()

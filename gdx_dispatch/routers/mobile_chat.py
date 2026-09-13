@@ -306,7 +306,14 @@ def _push_other_party(db: Session, *, job_id: str, msg: JobChatMessage, user: di
 
     title = "Job message"
     body = (msg.body or "").strip()[:140]
-    url = f"/mobile?job={job_id}"
+    # A tap must land on the thread itself. Both links used to be
+    # /mobile?job=<id>, a query MobileTodayView never reads, so the tap
+    # opened the generic Today screen (#657). Each side reads the thread
+    # where it already lives: the tech on their job page, the dispatcher on
+    # the dispatch board — the only place a read receipt is stamped, so
+    # following the notification is what clears the unread badge.
+    tech_url = f"/mobile/jobs/{job_id}?chat=1"
+    dispatcher_url = f"/mobile/dispatch?job={job_id}"
     if msg.sender_role in ("dispatcher", "admin", "owner"):
         # Push the assigned tech(s).
         rows = db.execute(
@@ -317,7 +324,10 @@ def _push_other_party(db: Session, *, job_id: str, msg: JobChatMessage, user: di
                   UNION
                   SELECT t.user_id FROM job_assignments ja
                   JOIN technicians t ON t.id = ja.tech_id
-                  WHERE ja.job_id = :jid AND t.active IS NOT FALSE
+                  -- A removed tech (soft-deleted assignment) is not notified:
+                  -- the job page refuses them, so the link would dead-end.
+                  WHERE ja.job_id = :jid AND ja.deleted_at IS NULL
+                    AND t.active IS NOT FALSE
                 ) s WHERE user_id IS NOT NULL
                 """
             ),
@@ -325,7 +335,7 @@ def _push_other_party(db: Session, *, job_id: str, msg: JobChatMessage, user: di
         ).all()
         for r in rows:
             try:
-                send_push(db, user_id=r[0], title=title, body=body, url=url,
+                send_push(db, user_id=r[0], title=title, body=body, url=tech_url,
                           data={"type": "chat_message", "job_id": job_id})
             except Exception:
                 log.exception("send_push failed user=%s", r[0])
@@ -344,7 +354,7 @@ def _push_other_party(db: Session, *, job_id: str, msg: JobChatMessage, user: di
             ).all()
             for r in rows:
                 try:
-                    send_push(db, user_id=r[0], title=title, body=body, url=url,
+                    send_push(db, user_id=r[0], title=title, body=body, url=dispatcher_url,
                               data={"type": "chat_message", "job_id": job_id})
                 except Exception:
                     log.exception("send_push failed user=%s", r[0])
