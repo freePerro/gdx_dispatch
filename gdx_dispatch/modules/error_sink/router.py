@@ -11,7 +11,11 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import resolve_audit_actor
+from gdx_dispatch.core.audit import (
+    ensure_audit_table,
+    log_audit_event_sync,
+    resolve_audit_actor,
+)
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.models.tenant_models import User
 from gdx_dispatch.routers.auth import get_current_user
@@ -256,6 +260,15 @@ def resolve_error(
     db: Session = Depends(get_db),
 ):
     _require_admin(user)
+    # `ensure_audit_table` here, before anything is staged: its first call for
+    # an engine COMMITS the guard DDL, and fired lazily from inside the audit
+    # write below it would harden the staged UPDATE before its audit row
+    # exists. NOT `Depends(audit_ready_db)` — that resolves its own session via
+    # `_get_db_dep`, which calls `get_db()` imperatively instead of declaring
+    # `Depends(get_db)`, so it bypasses every `dependency_overrides[get_db]` in
+    # the suite (routers/customers.py records two tests that went 404 that way;
+    # during #558 it silently pointed two more at the real database).
+    ensure_audit_table(db)
     now = datetime.now(timezone.utc)
     # Who resolved it (#701): the id, which is unique and fits the column's 64
     # characters. It read an email/sub the login dict never carries, so it
@@ -276,8 +289,9 @@ def resolve_error(
     if not row:
         raise HTTPException(status_code=404, detail="error not found")
 
-    if payload.resolve_group and row["group_fingerprint"]:
-        db.execute(
+    grouped = bool(payload.resolve_group and row["group_fingerprint"])
+    if grouped:
+        result = db.execute(
             text(
                 "UPDATE server_errors SET resolved_at = :ts, resolved_by = :who, "
                 "resolution_note = :note WHERE group_fingerprint = :fp AND resolved_at IS NULL"
@@ -285,12 +299,33 @@ def resolve_error(
             {"ts": now, "who": user_label, "note": payload.note, "fp": row["group_fingerprint"]},
         )
     else:
-        db.execute(
+        result = db.execute(
             text(
                 "UPDATE server_errors SET resolved_at = :ts, resolved_by = :who, "
                 "resolution_note = :note WHERE id = :id"
             ),
             {"ts": now, "who": user_label, "note": payload.note, "id": error_id},
         )
+    # The ledger row (#558, invariant #1). The rows already carry resolved_by /
+    # resolved_at, so this is not about attribution — it is about the BULK
+    # case: `resolve_group=True` closes every open row sharing a fingerprint,
+    # and the per-row columns cannot tell you that one request closed N of
+    # them, nor which fingerprint was swept. `rowcount` is that number.
+    # Staged before the commit, so the sweep and its record land together.
+    log_audit_event_sync(
+        db,
+        user_id=resolve_audit_actor(user, request),
+        action="server_error_resolved",
+        entity_type="server_error",
+        entity_id=error_id,
+        details={
+            "rows_affected": int(result.rowcount or 0),
+            "resolve_group": bool(payload.resolve_group),
+            "group_fingerprint": row["group_fingerprint"],
+            "swept_group": grouped,
+            "note": payload.note,
+        },
+        request=request,
+    )
     db.commit()
     return {"ok": True, "resolved_at": now}

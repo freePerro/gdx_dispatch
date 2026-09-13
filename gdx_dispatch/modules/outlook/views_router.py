@@ -19,11 +19,16 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, or_
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.audit import (
+    ensure_audit_table,
+    log_audit_event_sync,
+    resolve_audit_actor,
+)
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.modules.outlook.models import OutlookMessage
@@ -271,7 +276,64 @@ def get_user_for_views(
 
 
 def get_db_for_views(db: Session = Depends(get_db)) -> Session:
+    """The views session, with the audit table already initialized.
+
+    ``ensure_audit_table`` runs HERE, before the handler stages anything. That
+    matters for atomicity, not tidiness: the first audit write for an engine
+    COMMITS the guard DDL, and if that fires from inside the audit write
+    itself it commits whatever the handler has already staged — the mutation
+    lands early and its audit row is no longer bound to it. Every later call
+    for that engine is a no-op.
+
+    Deliberately ``Depends(get_db)`` and NOT ``Depends(audit_ready_db)``,
+    which looks like it does exactly this and is a trap: that dependency
+    resolves its own session via ``_get_db_dep``, which *calls* ``get_db()``
+    imperatively instead of declaring ``Depends(get_db)``, so it bypasses
+    every ``app.dependency_overrides[get_db]`` in the suite.
+    ``routers/customers.py`` records two tests that went 404 that way, and
+    switching routers to it during #558 silently pointed two more at the REAL
+    database while they still passed green.
+    """
+    ensure_audit_table(db)
     return db
+
+
+def _audit(
+    tenant_db: Session,
+    request: Request,
+    user: dict[str, Any],
+    *,
+    action: str,
+    entity_type: str,
+    entity_id: Any,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Invariant #1: every create/update/delete here answers who / what / when.
+
+    Actor comes from ``resolve_audit_actor(user, request)``. NOT from
+    ``user.get("sub")`` — the login JWT this app mints is exactly
+    ``{"user_id", "tenant_id", "role"}``, so a ``.get("sub")``-first chain
+    writes "system" for a real person (#701).
+
+    ``tenant_id`` is read leniently rather than through ``_tenant_id()``: that
+    raises 400 on a missing claim, and three of the handlers below never needed
+    tenant context before. An audit call must not invent a new way for a
+    working request to fail. A missing claim falls through to the tenant on
+    ``request.state`` inside core/audit.py.
+
+    Call this BEFORE ``tenant_db.commit()`` — a row flushed after the last
+    commit is discarded when ``get_db()`` closes the session (#700).
+    """
+    log_audit_event_sync(
+        tenant_db,
+        tenant_id=str(user.get("tenant_id") or "") or None,
+        user_id=resolve_audit_actor(user, request),
+        action=action,
+        entity_type=entity_type,
+        entity_id=str(entity_id),
+        details=details or {},
+        request=request,
+    )
 
 
 def _user_id(user: dict[str, Any]) -> UUID:
@@ -683,6 +745,7 @@ def get_message_detail(
 def set_message_personal(
     message_id: UUID,
     payload: PersonalIn,
+    request: Request,
     user: dict[str, Any] = Depends(get_user_for_views),
     tenant_db: Session = Depends(get_db_for_views),
 ) -> MessageDetailOut:
@@ -709,7 +772,18 @@ def set_message_personal(
             status_code=403,
             detail="only the mailbox owner can mark a message personal",
         )
+    was_personal = bool(msg.is_personal)
     msg.is_personal = payload.is_personal
+    # This flag hides a message from every other person in the tenant (the ACL
+    # chokepoint shows a personal message to nobody but the mailbox owner), so
+    # "who hid this, and when" has to be answerable. Staged before the commit.
+    _audit(
+        tenant_db, request, user,
+        action="outlook_message_personal_updated",
+        entity_type="outlook_message",
+        entity_id=msg.id,
+        details={"from": was_personal, "to": bool(payload.is_personal)},
+    )
     tenant_db.commit()
     return _to_detail(msg, viewer_is_owner=True, tenant_db=tenant_db)
 
@@ -722,6 +796,7 @@ def set_message_personal(
 def link_message(
     message_id: UUID,
     payload: LinkIn,
+    request: Request,
     user: dict[str, Any] = Depends(get_user_for_views),
     tenant_db: Session = Depends(get_db_for_views),
 ) -> MessageDetailOut:
@@ -768,7 +843,30 @@ def link_message(
 
     from gdx_dispatch.modules.outlook.tagger import manual_tag  # noqa: PLC0415
 
+    # Capture the prior attribution BEFORE manual_tag overwrites it. This
+    # endpoint decides which customer and which job an email belongs to — a
+    # human judgement that overrides the auto-tagger — so the record has to
+    # carry what it changed FROM, not only what it changed to.
+    prior = {
+        "customer_id": str(msg.linked_customer_id) if msg.linked_customer_id else None,
+        "job_id": str(msg.linked_job_id) if msg.linked_job_id else None,
+        "tag_strategy": msg.tag_strategy,
+    }
     manual_tag(msg, customer_id=payload.customer_id, job_id=payload.job_id)
+    _audit(
+        tenant_db, request, user,
+        action="outlook_message_linked",
+        entity_type="outlook_message",
+        entity_id=msg.id,
+        details={
+            "from": prior,
+            "to": {
+                "customer_id": str(payload.customer_id) if payload.customer_id else None,
+                "job_id": str(payload.job_id) if payload.job_id else None,
+                "tag_strategy": "manual",
+            },
+        },
+    )
     tenant_db.commit()
     return _to_detail(
         msg, viewer_is_owner=_viewer_owns_mailbox(tenant_db, msg, uid), tenant_db=tenant_db
@@ -782,6 +880,7 @@ def link_message(
 )
 def unlink_message(
     message_id: UUID,
+    request: Request,
     user: dict[str, Any] = Depends(get_user_for_views),
     tenant_db: Session = Depends(get_db_for_views),
 ) -> MessageDetailOut:
@@ -804,10 +903,27 @@ def unlink_message(
         raise HTTPException(status_code=404, detail="message not found")
     from gdx_dispatch.modules.outlook.tagger import manual_tag  # noqa: PLC0415
 
+    # Capture the prior links BEFORE manual_tag clears them. This write is a
+    # DURABLE human override — it pins the message so the hourly retag never
+    # re-links it — so without this snapshot the record of which customer and
+    # job the email used to be attributed to is gone for good, along with any
+    # way to say who decided that.
+    prior = {
+        "customer_id": str(msg.linked_customer_id) if msg.linked_customer_id else None,
+        "job_id": str(msg.linked_job_id) if msg.linked_job_id else None,
+        "tag_strategy": msg.tag_strategy,
+    }
     # manual_tag with no ids: links NULL, strategy 'manual' — pins it so
     # neither tag_message (skips tagged) nor the retag (WHERE tag_strategy IS
     # NULL) re-links it.
     manual_tag(msg)
+    _audit(
+        tenant_db, request, user,
+        action="outlook_message_unlinked",
+        entity_type="outlook_message",
+        entity_id=msg.id,
+        details={"from": prior, "suppresses_retag": True},
+    )
     tenant_db.commit()
     return _to_detail(
         msg, viewer_is_owner=_viewer_owns_mailbox(tenant_db, msg, uid), tenant_db=tenant_db
@@ -888,6 +1004,7 @@ class TaskFromEmailOut(BaseModel):
 def create_task_from_message(
     message_id: UUID,
     payload: TaskFromEmailIn,
+    request: Request,
     user: dict[str, Any] = Depends(get_user_for_views),
     tenant_db: Session = Depends(get_db_for_views),
 ) -> TaskFromEmailOut:
@@ -970,6 +1087,22 @@ def create_task_from_message(
         created_at=datetime.now(timezone.utc),
     )
     tenant_db.add(task)
+    # SAME action/entity_type as routers/planner.py's create_task (#700), on
+    # purpose: this is a second write path to the same PlannerTask table, and a
+    # trail that answers "who created this task" only for one of the two paths
+    # is not a trail. #700 fixed the typed path and missed this one.
+    _audit(
+        tenant_db, request, user,
+        action="create_task",
+        entity_type="planner_task",
+        entity_id=task.id,
+        details={
+            "title": task.title,
+            "source": "email_capture",
+            "outlook_message_id": str(message_id),
+            "assigned_to": task.assigned_to,
+        },
+    )
     tenant_db.commit()
     log.info("create_task_from_message: task=%s message=%s", task.id, message_id)
     return TaskFromEmailOut(id=str(task.id), title=task.title)
@@ -1294,6 +1427,7 @@ def save_attachment_to_job(
     message_id: UUID,
     attachment_id: str,
     payload: SaveAttachmentIn,
+    request: Request,
     user: dict[str, Any] = Depends(get_user_for_views),
     tenant_db: Session = Depends(get_db_for_views),
     control_db: Session = Depends(get_db),
@@ -1433,6 +1567,35 @@ def save_attachment_to_job(
     )
     tenant_db.add(doc)
     try:
+        # flush() first: Document.id is a python-side uuid4 default, so it does
+        # not exist until the row is flushed and the audit row would otherwise
+        # carry entity_id "None".
+        tenant_db.flush()
+        # SAME action/entity_type as routers/documents.py's upload
+        # ("document_created"/"document"), on purpose: this is a second write
+        # path to the same Document table, and the trail has to be queryable as
+        # one thing regardless of which door the file came through.
+        #
+        # INSIDE the try on purpose. The bytes are already on disk at this
+        # point; a failed audit write must take the same exit as a failed
+        # commit — rollback, unlink, 500 — or it would leave an orphaned blob
+        # in UPLOAD_DIR, or worse, a Document row with no record of who filed
+        # it onto a customer's job.
+        _audit(
+            tenant_db, request, user,
+            action="document_created",
+            entity_type="document",
+            entity_id=doc.id,
+            details={
+                "original_name": original_name,
+                "file_size": len(data),
+                "content_type": content_type,
+                "job_id": str(payload.job_id),
+                "source": "outlook_attachment",
+                "outlook_message_id": str(message_id),
+                "attachment_id": attachment_id,
+            },
+        )
         tenant_db.commit()
     except Exception:
         # Never leave bytes on disk with no row pointing at them — a repeatable

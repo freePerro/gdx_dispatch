@@ -5,6 +5,11 @@ configure: backfill_days, tag-strategy order/enabled/threshold, visibility
 rules, vendor_bill_sender_allowlist. (auto_email_triggers retired 2026-08-31.) Mirrors
 ``admin_ai_settings`` shape (Sprint 1.x S26): module-level dependency callables
 for test override, never returns secrets, audit-logged on change.
+(The audit half of that sentence was aspirational until #558: the module
+contained no audit call at all. Every mutating handler below now stages an
+``audit_logs`` row inside its own transaction — the two credential handlers
+through ``audit_or_rollback``, so an audit failure takes the credential
+change down with it.)
 
 ``vendor_bill_sender_allowlist`` was writable only by hand-written SQL until
 2026-07-28 — the column existed and gated the whole vendor-bill/statement
@@ -24,11 +29,17 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.audit import (
+    audit_or_rollback,
+    ensure_audit_table,
+    log_audit_event_sync,
+    resolve_audit_actor,
+)
 from gdx_dispatch.core.tenant_settings import TenantSettings
 from gdx_dispatch.modules.outlook import key_storage
 from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookSettings
@@ -144,7 +155,61 @@ def get_admin_principal(
 
 
 def get_db_for_admin(db: Session = Depends(get_db)) -> Session:
+    """The admin session, with the audit table already initialized.
+
+    ``ensure_audit_table`` runs HERE, before the handler stages anything. That
+    matters for atomicity, not tidiness: the first audit write for an engine
+    COMMITS the guard DDL, and if that fires from inside the audit write
+    itself it commits whatever the handler has already staged — the mutation
+    lands early and its audit row is no longer bound to it. Every later call
+    for that engine is a no-op.
+
+    Deliberately ``Depends(get_db)`` and NOT ``Depends(audit_ready_db)``,
+    which looks like it does exactly this and is a trap: that dependency
+    resolves its own session via ``_get_db_dep``, which *calls* ``get_db()``
+    imperatively instead of declaring ``Depends(get_db)``, so it bypasses
+    every ``app.dependency_overrides[get_db]`` in the suite.
+    ``routers/customers.py`` records two tests that went 404 that way, and
+    switching routers to it during #558 silently pointed two more at the REAL
+    database while they still passed green.
+    """
+    ensure_audit_table(db)
     return db
+
+
+def _audit(
+    db: Session,
+    request: Request,
+    user: dict[str, Any],
+    *,
+    action: str,
+    entity_type: str,
+    entity_id: Any,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Invariant #1: every create/update/delete here answers who / what / when.
+
+    Actor comes from ``resolve_audit_actor(user, request)``, NOT from
+    ``user.get("sub")``. The login JWT this app mints is exactly
+    ``{"user_id", "tenant_id", "role"}`` — there is no ``sub`` claim — so a
+    ``.get("sub")``-first chain writes "system" for a real admin (#701).
+
+    Call this BEFORE ``db.commit()``: the row is flushed into the caller's
+    transaction so the change and its trail commit together.
+    """
+    log_audit_event_sync(
+        db,
+        # From the claim, not from entity_id — they happen to be the same value
+        # for the one current caller, and a future caller auditing something
+        # that is not the tenant would otherwise mislabel the row's tenant.
+        tenant_id=str(user.get("tenant_id") or "") or None,
+        user_id=resolve_audit_actor(user, request),
+        action=action,
+        entity_type=entity_type,
+        entity_id=str(entity_id),
+        details=details or {},
+        request=request,
+    )
 
 
 def _coerce_tenant_uuid(user: dict[str, Any]) -> UUID:
@@ -227,6 +292,7 @@ def get_settings(
 @router.patch("/settings", response_model=OutlookSettingsOut)
 def patch_settings(
     payload: OutlookSettingsPatchIn,
+    request: Request,
     user: dict[str, Any] = Depends(get_admin_principal),
     tenant_db: Session = Depends(get_db_for_admin),
 ) -> OutlookSettingsOut:
@@ -242,16 +308,34 @@ def patch_settings(
         else None
     )
 
+    # Snapshot BEFORE assigning. "who set the AI tag threshold to 0.4" is
+    # not answerable without "from 0.85" — the old value is the forensic half.
+    before_fields = {
+        "backfill_days": row.backfill_days,
+        "tag_strategy_order": row.tag_strategy_order,
+        "tag_strategy_enabled": row.tag_strategy_enabled,
+        # Decimal is not JSON; float() here so the diff compares like with like
+        # rather than "0.85" (string) vs 0.4 (number).
+        "ai_tag_threshold": float(row.ai_tag_threshold) if row.ai_tag_threshold is not None else None,
+        "visibility_rules": row.visibility_rules,
+    }
+    after_fields = dict(before_fields)
+
     if payload.backfill_days is not None:
         row.backfill_days = payload.backfill_days
+        after_fields["backfill_days"] = payload.backfill_days
     if payload.tag_strategy_order is not None:
         row.tag_strategy_order = payload.tag_strategy_order
+        after_fields["tag_strategy_order"] = payload.tag_strategy_order
     if payload.tag_strategy_enabled is not None:
         row.tag_strategy_enabled = payload.tag_strategy_enabled
+        after_fields["tag_strategy_enabled"] = payload.tag_strategy_enabled
     if payload.ai_tag_threshold is not None:
         row.ai_tag_threshold = Decimal(str(payload.ai_tag_threshold))
+        after_fields["ai_tag_threshold"] = float(payload.ai_tag_threshold)
     if payload.visibility_rules is not None:
         row.visibility_rules = payload.visibility_rules
+        after_fields["visibility_rules"] = payload.visibility_rules
 
     allowlist_change: tuple[list[str], list[str]] | None = None
     if cleaned_allowlist is not None:
@@ -259,9 +343,26 @@ def patch_settings(
         if cleaned_allowlist != before:
             allowlist_change = (before, cleaned_allowlist)
         row.vendor_bill_sender_allowlist = cleaned_allowlist
+        before_fields["vendor_bill_sender_allowlist"] = before
+        after_fields["vendor_bill_sender_allowlist"] = cleaned_allowlist
 
-    tenant_db.commit()
     tenant_id = _coerce_tenant_uuid(user)
+    # Staged BEFORE the commit so the settings change and its trail land
+    # together — a row written after `tenant_db.commit()` is discarded when
+    # get_db() closes the session without committing (#700).
+    changed = {
+        k: {"from": v, "to": after_fields[k]}
+        for k, v in before_fields.items()
+        if after_fields[k] != v
+    }
+    _audit(
+        tenant_db, request, user,
+        action="outlook_settings_updated",
+        entity_type="outlook_settings",
+        entity_id=tenant_id,
+        details={"changed": changed},
+    )
+    tenant_db.commit()
     if allowlist_change is not None:
         # Log this one specifically. It governs whose attachments GDX
         # downloads and files unattended, so "who widened it, and to what"
@@ -299,6 +400,7 @@ def get_credentials(
 @router.patch("/credentials", response_model=OutlookCredentialsOut)
 def patch_credentials(
     payload: OutlookCredentialsPatchIn,
+    request: Request,
     user: dict[str, Any] = Depends(get_admin_principal),
     control_db: Session = Depends(get_db_for_admin),
 ) -> OutlookCredentialsOut:
@@ -309,6 +411,7 @@ def patch_credentials(
         settings.tenant_id = tenant_id
         control_db.add(settings)
 
+    secret_was_set = bool(getattr(settings, "outlook_client_secret_enc", None))
     if payload.microsoft_tenant_id is not None:
         settings.outlook_microsoft_tenant_id = payload.microsoft_tenant_id
     if payload.client_id is not None:
@@ -316,6 +419,29 @@ def patch_credentials(
     if payload.client_secret is not None:
         # Fernet-encrypt + stamp set_at
         key_storage.set_client_secret(control_db, tenant_id, payload.client_secret)
+    # audit_or_rollback, not a bare log call: this writes the Entra client
+    # secret — the credential that grants GDX access to the whole mailbox.
+    # core/audit.py names "credential stores" as exactly the class where an
+    # unaudited change is worse than a failed one, so a failed audit write
+    # takes the credential change down with it. Staged BEFORE the commit,
+    # which is what makes that rollback able to undo anything.
+    #
+    # NEVER the secret itself in details — booleans only. This row is readable
+    # by anyone who can read the audit feed.
+    audit_or_rollback(
+        control_db,
+        action="outlook_credentials_updated",
+        entity_type="outlook_credentials",
+        entity_id=str(tenant_id),
+        actor=user,
+        request=request,
+        details={
+            "microsoft_tenant_id_set": payload.microsoft_tenant_id is not None,
+            "client_id_set": payload.client_id is not None,
+            "secret_rotated": payload.client_secret is not None,
+            "secret_was_set": secret_was_set,
+        },
+    )
     control_db.commit()
     log.info("outlook credentials updated for tenant %s", tenant_id)
     return get_credentials(user=user, control_db=control_db)
@@ -323,12 +449,29 @@ def patch_credentials(
 
 @router.delete("/credentials", status_code=status.HTTP_204_NO_CONTENT)
 def delete_credentials(
+    request: Request,
     user: dict[str, Any] = Depends(get_admin_principal),
     control_db: Session = Depends(get_db_for_admin),
 ) -> None:
     """Wipe the Entra app client_secret (e.g., before rotation)."""
     tenant_id = _coerce_tenant_uuid(user)
+    # Read the prior state BEFORE the clear — afterwards there is nothing left
+    # to say whether this call revoked a live credential or was a no-op.
+    prior = control_db.get(TenantSettings, tenant_id)
+    secret_was_set = bool(getattr(prior, "outlook_client_secret_enc", None))
     key_storage.clear_client_secret(control_db, tenant_id)
+    # Same reasoning as patch_credentials: revoking mailbox access is a
+    # credential-store mutation, so the audit row is a precondition of the
+    # change, not a note about it.
+    audit_or_rollback(
+        control_db,
+        action="outlook_credentials_cleared",
+        entity_type="outlook_credentials",
+        entity_id=str(tenant_id),
+        actor=user,
+        request=request,
+        details={"secret_was_set": secret_was_set},
+    )
     control_db.commit()
     log.info("outlook credentials cleared for tenant %s", tenant_id)
     return None
