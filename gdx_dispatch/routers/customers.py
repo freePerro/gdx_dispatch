@@ -138,11 +138,18 @@ class CustomerListOut(BaseModel):
     per_page: int
 
 
+# city/state/zip/access_notes are real columns the Customer page's location
+# dialog collects. Until #683 neither model declared city/state/zip, so the
+# dialog toasted "Saved" while the server kept only the street. Lengths match
+# the columns (String(120)/String(20)).
 class CustomerLocationCreateIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     label: str | None = "Service Address"
     address: str = Field(..., min_length=1)
+    city: str | None = Field(default=None, max_length=120)
+    state: str | None = Field(default=None, max_length=20)
+    zip: str | None = Field(default=None, max_length=20)
     access_notes: str | None = None
     is_primary: bool = False
 
@@ -157,6 +164,9 @@ class CustomerLocationOut(BaseModel):
     # pickers rendered empty exactly for the customers that have sites
     # (found live in the PR 2 browser walk, 2026-08-18).
     address: str | None = None
+    city: str | None = None
+    state: str | None = None
+    zip: str | None = None
     access_notes: str | None = None
     is_primary: bool
     created_at: str | None = None
@@ -167,8 +177,20 @@ class CustomerLocationPatchIn(BaseModel):
 
     label: str | None = None
     address: str | None = None
+    city: str | None = Field(default=None, max_length=120)
+    state: str | None = Field(default=None, max_length=20)
+    zip: str | None = Field(default=None, max_length=20)
     access_notes: str | None = None
     is_primary: bool | None = None
+
+
+# The dialog sends "" for a field left blank; store NULL, the column's
+# "not known" value (the QB import and the geocode reset both write NULL).
+_LOCATION_TEXT_FIELDS = ("city", "state", "zip", "access_notes")
+
+
+def _blank_to_none(value: str | None) -> str | None:
+    return value if value else None
 
 
 def _normalize_datetime(value: Any) -> str | None:
@@ -236,6 +258,9 @@ def _location_dict(row: Any) -> dict[str, Any]:
         "customer_id": str(row["customer_id"]),
         "label": row.get("label"),
         "address": row["address"],
+        "city": row.get("city"),
+        "state": row.get("state"),
+        "zip": row.get("zip"),
         "access_notes": row.get("access_notes"),
         "is_primary": bool(row.get("is_primary", False)),
         "created_at": _normalize_datetime(row.get("created_at")),
@@ -732,7 +757,7 @@ async def list_customer_locations(
     rows = db.execute(
         text(
             """
-            SELECT id, customer_id, label, address, access_notes, is_primary, created_at
+            SELECT id, customer_id, label, address, city, state, zip, access_notes, is_primary, created_at
             FROM customer_locations
             WHERE customer_id = :customer_id AND deleted_at IS NULL
             ORDER BY created_at ASC
@@ -773,9 +798,11 @@ async def create_customer_location(
             text(
                 """
                 INSERT INTO customer_locations
-                    (id, company_id, customer_id, label, address, access_notes, is_primary, created_at, deleted_at)
+                    (id, company_id, customer_id, label, address, city, state, zip,
+                     access_notes, is_primary, created_at, deleted_at)
                 VALUES
-                    (:id, :company_id, :customer_id, :label, :address, :access_notes, :is_primary, :created_at, NULL)
+                    (:id, :company_id, :customer_id, :label, :address, :city, :state, :zip,
+                     :access_notes, :is_primary, :created_at, NULL)
                 """
             ),
             {
@@ -784,7 +811,7 @@ async def create_customer_location(
                 "customer_id": customer_id,
                 "label": payload.label or "Service Address",
                 "address": payload.address,
-                "access_notes": payload.access_notes,
+                **{f: _blank_to_none(getattr(payload, f)) for f in _LOCATION_TEXT_FIELDS},
                 # Python bool, NOT int: psycopg2 adapts bool->boolean; the old
                 # int literal 500'd every location create on prod Postgres
                 # (DatatypeMismatch; found live in the PR 2 walk 2026-08-18).
@@ -804,7 +831,7 @@ async def create_customer_location(
     row = db.execute(
         text(
             """
-            SELECT id, customer_id, label, address, access_notes, is_primary, created_at
+            SELECT id, customer_id, label, address, city, state, zip, access_notes, is_primary, created_at
             FROM customer_locations
             WHERE id = :location_id AND customer_id = :customer_id
             LIMIT 1
@@ -884,10 +911,10 @@ async def update_customer_location(
 
         set_parts = []
         params: dict[str, Any] = {"location_id": location_id}
-        for col in ("label", "address", "access_notes"):
+        for col in ("label", "address", *_LOCATION_TEXT_FIELDS):
             if col in data:
                 set_parts.append(f"{col} = :{col}")
-                params[col] = data[col]
+                params[col] = _blank_to_none(data[col]) if col in _LOCATION_TEXT_FIELDS else data[col]
         # An address CHANGE invalidates everything geocoded from the OLD
         # text — stale lat/lng would keep serving as the AUTHORITATIVE map
         # pin (core/job_site.py) for the new address. Guarded on a REAL
@@ -899,13 +926,27 @@ async def update_customer_location(
             from gdx_dispatch.core.job_site import normalize_address  # noqa: PLC0415
 
             current = db.execute(
-                text("SELECT address FROM customer_locations WHERE id = :location_id"),
+                text("SELECT address, city, state, zip FROM customer_locations WHERE id = :location_id"),
                 {"location_id": location_id},
-            ).scalar()
-            if normalize_address(data["address"]) != normalize_address(current):
-                for col in ("lat", "lng", "city", "state", "zip"):
-                    set_parts.append(f"{col} = :{col}")
-                    params[col] = None
+            ).mappings().first()
+            if normalize_address(data["address"]) != normalize_address(current["address"]):
+                for col in ("lat", "lng"):
+                    set_parts.append(f"{col} = NULL")
+                # The dialog re-sends city/state/zip pre-filled from the row. If
+                # the user changed none of them, only the street was retyped and
+                # the split still names the OLD place: clear it, as before #683.
+                # If they changed any, they edited the split for the new address
+                # (a move across town keeps "MN"): keep what was sent.
+                split = ("city", "state", "zip")
+                edited_split = any(c in params and params[c] != current[c] for c in split)
+                if not edited_split:
+                    for col in split:
+                        # Overwrite the param of a column already in set_parts,
+                        # never add a second assignment: Postgres rejects
+                        # `SET city = …, city = …`.
+                        if col not in params:
+                            set_parts.append(f"{col} = :{col}")
+                        params[col] = None
         if "is_primary" in data:
             set_parts.append("is_primary = :is_primary")
             params["is_primary"] = bool(data["is_primary"])
@@ -930,7 +971,7 @@ async def update_customer_location(
     row = db.execute(
         text(
             """
-            SELECT id, customer_id, label, address, access_notes, is_primary, created_at
+            SELECT id, customer_id, label, address, city, state, zip, access_notes, is_primary, created_at
             FROM customer_locations
             WHERE id = :location_id AND customer_id = :customer_id
             LIMIT 1
