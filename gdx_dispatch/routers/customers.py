@@ -909,12 +909,13 @@ async def update_customer_location(
                 {"customer_id": customer_id, "location_id": location_id, "off": False},
             )
 
-        set_parts = []
-        params: dict[str, Any] = {"location_id": location_id}
+        # Column -> new value. A dict, so no column can be assigned twice in
+        # the UPDATE (Postgres rejects `SET city = …, city = …`; SQLite does
+        # not). Keys come only from the fixed names below, never from input.
+        updates: dict[str, Any] = {}
         for col in ("label", "address", *_LOCATION_TEXT_FIELDS):
             if col in data:
-                set_parts.append(f"{col} = :{col}")
-                params[col] = _blank_to_none(data[col]) if col in _LOCATION_TEXT_FIELDS else data[col]
+                updates[col] = _blank_to_none(data[col]) if col in _LOCATION_TEXT_FIELDS else data[col]
         # An address CHANGE invalidates everything geocoded from the OLD
         # text — stale lat/lng would keep serving as the AUTHORITATIVE map
         # pin (core/job_site.py) for the new address. Guarded on a REAL
@@ -926,36 +927,27 @@ async def update_customer_location(
             from gdx_dispatch.core.job_site import normalize_address  # noqa: PLC0415
 
             current = db.execute(
-                text("SELECT address, city, state, zip FROM customer_locations WHERE id = :location_id"),
+                text("SELECT address FROM customer_locations WHERE id = :location_id"),
                 {"location_id": location_id},
-            ).mappings().first()
-            if normalize_address(data["address"]) != normalize_address(current["address"]):
-                for col in ("lat", "lng"):
-                    set_parts.append(f"{col} = NULL")
-                # The dialog re-sends city/state/zip pre-filled from the row. If
-                # the user changed none of them, only the street was retyped and
-                # the split still names the OLD place: clear it, as before #683.
-                # If they changed any, they edited the split for the new address
-                # (a move across town keeps "MN"): keep what was sent.
-                split = ("city", "state", "zip")
-                edited_split = any(c in params and params[c] != current[c] for c in split)
-                if not edited_split:
-                    for col in split:
-                        # Overwrite the param of a column already in set_parts,
-                        # never add a second assignment: Postgres rejects
-                        # `SET city = …, city = …`.
-                        if col not in params:
-                            set_parts.append(f"{col} = :{col}")
-                        params[col] = None
+            ).scalar()
+            if normalize_address(data["address"]) != normalize_address(current):
+                updates["lat"] = None
+                updates["lng"] = None
+                # A city/state/zip the request did not send still names the
+                # old place: clear it. One it DID send is what the dialog showed
+                # the user when they pressed Save — keep it. The server cannot
+                # tell a typo fix from a move, and silently erasing a value the
+                # user saw is the #683 defect again (/audit 2026-09-13).
+                for col in ("city", "state", "zip"):
+                    updates.setdefault(col, None)
         if "is_primary" in data:
-            set_parts.append("is_primary = :is_primary")
-            params["is_primary"] = bool(data["is_primary"])
-        if not set_parts:
+            updates["is_primary"] = bool(data["is_primary"])
+        if not updates:
             raise HTTPException(status_code=400, detail="no fields to update")
-        set_sql = ", ".join(set_parts)
+        set_sql = ", ".join(f"{col} = :{col}" for col in updates)
         db.execute(
             text(f"UPDATE customer_locations SET {set_sql} WHERE id = :location_id"),
-            params,
+            {"location_id": location_id, **updates},
         )
         db.commit()
     except HTTPException:
