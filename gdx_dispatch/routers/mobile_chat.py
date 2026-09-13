@@ -20,7 +20,7 @@ Endpoints (all under /api/mobile, gated on the "mobile" module):
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID as _UUID
 from uuid import uuid4
@@ -442,6 +442,7 @@ def list_dispatch_threads(
             """
         )
     ).all()
+    seen = _last_read_receipts(db, [r[0] for r in rows])
     threads = []
     for r in rows:
         # Pull the job + customer details for context.
@@ -465,5 +466,45 @@ def list_dispatch_threads(
             "customer_name": jrow[1] if jrow else None,
             # Raw-SQL read bypasses the EncryptedString mapper — decrypt here.
             "customer_address": decrypt_if_ciphertext(jrow[2]) if jrow else None,
+            # Who last cleared this thread, and when (#656). Read state is
+            # one stamp per message, shared by the whole office: the first
+            # dispatcher to open a thread clears its badge for everyone. That
+            # is the intended meaning, but a badge that silently vanishes is
+            # indistinguishable from one nobody acted on — so say who it was.
+            "last_read_by_name": seen.get(str(r[0]), (None, None))[0],
+            "last_read_at": seen.get(str(r[0]), (None, None))[1],
         })
     return _jr({"threads": threads})
+
+
+def _last_read_receipts(db: Session, job_ids: list[Any]) -> dict[str, tuple[str | None, str | None]]:
+    """{job_id: (reader's display name, read_at iso)} for each thread's most
+    recently read tech message. One query for every thread, and one name
+    lookup per distinct reader rather than per thread.
+
+    Same 7-day message window as the thread list's unread count, so "Seen by"
+    and "N new" always describe the same messages."""
+    if not job_ids:
+        return {}
+    cutoff = datetime.now(UTC) - timedelta(days=7)
+    receipts = db.execute(
+        select(JobChatMessage.job_id, JobChatMessage.read_by_user_id, JobChatMessage.read_at).where(
+            JobChatMessage.job_id.in_([str(j) for j in job_ids]),
+            JobChatMessage.sender_role == "tech",
+            JobChatMessage.read_at.is_not(None),
+            JobChatMessage.deleted_at.is_(None),
+            JobChatMessage.created_at > cutoff,
+        )
+    ).all()
+    latest: dict[str, tuple[str | None, datetime]] = {}
+    for job_id, reader_id, read_at in receipts:
+        key = str(job_id)
+        if key not in latest or read_at > latest[key][1]:
+            latest[key] = (reader_id, read_at)
+    names: dict[str, str | None] = {}
+    out: dict[str, tuple[str | None, str | None]] = {}
+    for key, (reader_id, read_at) in latest.items():
+        if reader_id and reader_id not in names:
+            names[reader_id] = resolve_author_name(db, None, user_id=reader_id)
+        out[key] = (names.get(reader_id) if reader_id else None, read_at.isoformat())
+    return out
