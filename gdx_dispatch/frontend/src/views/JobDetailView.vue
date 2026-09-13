@@ -1391,6 +1391,7 @@ import { useApiWithToast } from "../composables/useApiWithToast";
 import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
 import { formatDate, formatDateTime, formatMoney, formatMoney as formatCurrency, formatPercent as fmtPercent, formatPhone } from "../composables/useFormatters";
 import { useToast } from "primevue/usetoast";
+import { downloadAuthedFile, openAuthedFile } from "../composables/useAuthedFile";
 import { useAuthStore } from "../stores/auth";
 import { isTechnician as isTechRole } from "../constants/roles";
 import { appointmentStatusSeverity, estimateStatusLabel, estimateStatusSeverity } from "../utils/statusSeverity";
@@ -2437,9 +2438,20 @@ function openPhoto(photo) {
   downloadPhoto(photo);
 }
 
+// Same tokenless-tab 401 as the install sheet — but these are UPLOADED files
+// (an attachment saved from an email keeps its sender's content type), so they
+// are saved to disk, never opened: a blob tab renders in the app's own origin,
+// where an uploaded HTML file could script the logged-in session.
 async function downloadDocument(id) {
-  const url = `/api/documents/${encodeURIComponent(id)}/download`;
-  window.open(url, "_blank", "noopener");
+  const doc = documents.value.find((d) => d.id === id);
+  try {
+    await downloadAuthedFile(
+      `/api/documents/${encodeURIComponent(id)}/download`,
+      doc?.original_name || doc?.title || "download",
+    );
+  } catch (e) {
+    toast.add({ severity: "error", summary: "Download failed", detail: e?.message || "Could not open the file", life: 5000 });
+  }
 }
 
 // Scheduling happens HERE, against the job row — not on the Appointments
@@ -2703,8 +2715,15 @@ function createInvoice() {
   router.push(`/billing?${params.toString()}`);
 }
 
-function openInstallSheet() {
-  window.open(`/api/jobs/${route.params.id}/install-sheet`, "_blank");
+// A plain window.open sends no bearer token, so the new tab got a 401 on every
+// click. Fetch it with the token and open the result, as the estimate and
+// invoice PDFs do.
+async function openInstallSheet() {
+  try {
+    await openAuthedFile(`/api/jobs/${route.params.id}/install-sheet`);
+  } catch (e) {
+    toast.add({ severity: "error", summary: "Install sheet failed", detail: e?.message || "Could not open the install sheet", life: 5000 });
+  }
 }
 
 async function fetchInstallData() {

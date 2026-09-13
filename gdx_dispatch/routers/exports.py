@@ -16,16 +16,19 @@ import io
 import logging
 from datetime import date, datetime, timezone
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy import text
+from sqlalchemy import Uuid, bindparam, text
 from sqlalchemy.exc import OperationalError, ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import TextClause
 
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
+from gdx_dispatch.core.pii import decrypt_if_ciphertext
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -100,11 +103,12 @@ def _csv_response(entity: str, tenant_id: str, header: list[str], rows: list[lis
 
 
 def _safe_query(
-    db: Session, sql: str, params: dict[str, Any], entity: str
+    db: Session, sql: str | TextClause, params: dict[str, Any], entity: str
 ) -> list[tuple]:
     """Run SQL, return rows. On missing table / schema issues, return []."""
     try:
-        return list(db.execute(text(sql), params).all())
+        stmt = text(sql) if isinstance(sql, str) else sql
+        return list(db.execute(stmt, params).all())
     except (OperationalError, ProgrammingError) as exc:
         # Audit round 2: "missing optional table" is OperationalError on
         # SQLite but ProgrammingError (UndefinedTable) on Postgres — and
@@ -139,7 +143,13 @@ def _audit_export(
     entity: str,
     row_count: int,
     request: Request,
+    selected: list[str] | None = None,
 ) -> None:
+    details: dict[str, Any] = {"entity": entity, "row_count": row_count}
+    if selected is not None:
+        # A hand-picked subset, not the whole table: record exactly which
+        # customers' details left, so the trail can answer "whose?".
+        details["selected_ids"] = selected
     try:
         log_audit_event_sync(
             db,
@@ -148,7 +158,7 @@ def _audit_export(
             action="export_downloaded",
             entity_type="export",
             entity_id=entity,
-            details={"entity": entity, "row_count": row_count},
+            details=details,
             request=request,
         )
         db.commit()
@@ -169,8 +179,35 @@ def _require_admin(user: Any) -> None:
 # ---------------------------------------------------------------------------
 # Fetch functions — each returns (header, rows) tuple. Graceful degrade.
 # ---------------------------------------------------------------------------
+# A selection travels in the query string, and nginx caps a request line at
+# 8 KB by default: ~200 ids of 36 characters plus separators. Refuse more with
+# a message rather than let the proxy answer 414.
+MAX_EXPORT_IDS = 200
+
+
+def _parse_ids(raw: str | None) -> list[UUID] | None:
+    """`?ids=a,b,c` → distinct UUIDs, or None when the filter is absent."""
+    if raw is None:
+        return None
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if not parts:
+        raise HTTPException(status_code=422, detail="ids is empty — select at least one customer")
+    try:
+        # Dedupe the parsed values: one id spelled upper-case, lower-case or
+        # without dashes is still one customer.
+        ids = list(dict.fromkeys(UUID(p) for p in parts))
+    except ValueError:
+        raise HTTPException(status_code=422, detail="ids must be customer ids") from None
+    if len(ids) > MAX_EXPORT_IDS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Export at most {MAX_EXPORT_IDS} selected customers at a time",
+        )
+    return ids
+
+
 def _fetch_customers(
-    db: Session, *, tenant_id: str
+    db: Session, *, tenant_id: str, ids: list[UUID] | None = None
 ) -> tuple[list[str], list[list[Any]]]:
     # M21 round 3: this SELECTed city/state/zip — columns that DO NOT EXIST
     # on prod — so every customers CSV ever downloaded was header-only, and
@@ -180,15 +217,37 @@ def _fetch_customers(
         "id", "name", "email", "phone", "address",
         "created_at", "deleted_at",
     ]
-    sql = """
-        SELECT id, name, email, phone, address,
-               created_at, deleted_at
-          FROM customers
-         WHERE company_id = :tenant_id
-         ORDER BY created_at DESC
-    """
-    rows = _safe_query(db, sql, {"tenant_id": tenant_id}, "customers")
-    return header, [list(r) for r in rows]
+    params: dict[str, Any] = {"tenant_id": tenant_id}
+    if ids is None:
+        stmt = text(  # noqa: RAW_ENC — customers.address decrypted below
+            """
+            SELECT id, name, email, phone, address,
+                   created_at, deleted_at
+              FROM customers
+             WHERE company_id = :tenant_id
+             ORDER BY created_at DESC
+            """
+        )
+    else:
+        stmt = text(  # noqa: RAW_ENC — customers.address decrypted below
+            """
+            SELECT id, name, email, phone, address,
+                   created_at, deleted_at
+              FROM customers
+             WHERE company_id = :tenant_id AND id IN :ids
+             ORDER BY created_at DESC
+            """
+        ).bindparams(
+            # Typed so each id is encoded for the dialect: SQLite stores a Uuid
+            # as 32-hex, so a dashed string would silently match nothing there.
+            bindparam("ids", expanding=True, type_=Uuid(as_uuid=True))
+        )
+        params["ids"] = ids
+    rows = _safe_query(db, stmt, params, "customers")
+    # `address` is an EncryptedString. A raw read skips the ORM's decrypt, so
+    # every encrypted address used to be exported as gAAAA… ciphertext
+    # (34 of 413 customers on prod, 2026-09-13).
+    return header, [[*r[:4], decrypt_if_ciphertext(r[4]), *r[5:]] for r in rows]
 
 
 def _fetch_jobs(
@@ -382,13 +441,21 @@ def export_customers(
     request: Request,
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
+    ids: str | None = Query(
+        default=None,
+        # A size guard only; the id count is refused, with a reason, in _parse_ids.
+        max_length=16_384,
+        description="Comma-separated customer ids: export only these (the Segments selection).",
+    ),
 ) -> Response:
     _require_admin(user)
     tenant_id = _tenant_id(request)
-    header, rows = _fetch_customers(db, tenant_id=tenant_id)
+    selected = _parse_ids(ids)
+    header, rows = _fetch_customers(db, tenant_id=tenant_id, ids=selected)
     _audit_export(
         db, tenant_id=tenant_id, user=user,
         entity="customers", row_count=len(rows), request=request,
+        selected=[str(i) for i in selected] if selected is not None else None,
     )
     return _csv_response("customers", tenant_id, header, rows)
 

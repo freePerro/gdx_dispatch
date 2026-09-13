@@ -129,6 +129,8 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { downloadAuthedFile } from "../composables/useAuthedFile";
+import { useToast } from "primevue/usetoast";
 import EmptyState from "../components/EmptyState.vue";
 import Button from "primevue/button";
 import Column from "primevue/column";
@@ -141,6 +143,7 @@ import Tag from "primevue/tag";
 import Toolbar from "primevue/toolbar";
 
 const api = useApiWithToast();
+const toast = useToast();
 
 const resources = ref([]);
 const loading = ref(true);
@@ -250,10 +253,16 @@ async function uploadResource() {
   }
 }
 
-function downloadResource(resource) {
-  const { download_url, file_url, id } = resource;
-  const url = download_url || file_url || `/api/resources/${id}/download`;
-  window.open(url, "_blank");
+// The download route needs the bearer token, which a plain new tab never sends,
+// so every click here opened a 401. (The list carries no other URL —
+// ResourceOut has no download_url or file_url.) Saved to disk, never opened: an
+// uploaded file rendered as a blob tab would run in the app's own origin.
+async function downloadResource(resource) {
+  try {
+    await downloadAuthedFile(`/api/resources/${resource.id}/download`, resource.name || "resource");
+  } catch (e) {
+    toast.add({ severity: "error", summary: "Download failed", detail: e?.message || "Could not open the file", life: 5000 });
+  }
 }
 
 onMounted(loadResources);
