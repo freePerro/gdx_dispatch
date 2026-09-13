@@ -634,6 +634,17 @@ onUnmounted(() => {
               </div>
               <div class="muted thread-cust">{{ t.customer_name || '' }}{{ t.customer_address ? ' · ' + t.customer_address : '' }}</div>
               <div class="muted thread-time">{{ fmtAgo(t.last_message_at) }}</div>
+              <!-- Read state is shared by the office (#656): one dispatcher
+                   opening a thread clears it for all. Say who, so a cleared
+                   badge is never mistaken for one nobody acted on. -->
+              <div
+                v-if="t.unread_count === 0 && t.last_read_at"
+                class="muted thread-seen"
+                data-test="md-thread-seen"
+              >
+                <i class="pi pi-check" aria-hidden="true" />
+                Seen by {{ t.last_read_by_name || 'someone' }} · {{ fmtAgo(t.last_read_at) }}
+              </div>
             </div>
             <i class="pi pi-chevron-right" />
           </li>
@@ -1033,6 +1044,18 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   gap: 0.4rem;
+}
+
+.thread-seen {
+  font-size: 0.75rem;
+  margin-top: 0.15rem;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.thread-seen .pi {
+  font-size: 0.7rem;
 }
 
 .thread-cust {
