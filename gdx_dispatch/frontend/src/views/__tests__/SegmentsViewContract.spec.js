@@ -17,7 +17,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRouter, createMemoryHistory } from 'vue-router';
 import SegmentsView from '../SegmentsView.vue';
 
-vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }));
+const toastAdd = vi.fn();
+vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: toastAdd }) }));
 vi.mock('primevue/useconfirm', () => ({ useConfirm: () => ({ require: vi.fn() }) }));
 
 const apiGet = vi.fn();
@@ -26,6 +27,15 @@ const apiPatch = vi.fn();
 const apiDel = vi.fn();
 vi.mock('../../composables/useApiWithToast', () => ({
   useApiWithToast: () => ({ get: apiGet, post: apiPost, patch: apiPatch, del: apiDel }),
+}));
+
+// The view reads only `isAdmin` from the store; each test sets the role it needs.
+const authState = { isAdmin: true };
+vi.mock('../../stores/auth', () => ({ useAuthStore: () => authState }));
+
+const downloadAuthedFile = vi.fn();
+vi.mock('../../composables/useAuthedFile', () => ({
+  downloadAuthedFile: (...args) => downloadAuthedFile(...args),
 }));
 
 const confirmAsync = vi.fn(() => Promise.resolve(true));
@@ -103,13 +113,17 @@ const stubs = {
   // SegmentsView puts its controls inside <Column><template #body>, so the
   // stubs have to render column bodies per row. RowScope hands each row down
   // to the Columns rendered inside it.
+  // A table bound with v-model:selection gets a select control per row, so a
+  // test can pick rows the way a click in the real DataTable would.
   DataTable: {
-    props: ['value'],
-    emits: ['row-click'],
+    props: ['value', 'selection'],
+    emits: ['row-click', 'update:selection'],
     components: { RowScope },
     template: `<table><tbody>
         <tr v-for="(row, i) in (value || [])" :key="i" class="dt-row"
             @click="$emit('row-click', { data: row })">
+          <td v-if="selection !== undefined"><button class="dt-select"
+            @click.stop="$emit('update:selection', [...selection, row])">pick</button></td>
           <RowScope :row="row"><slot /></RowScope>
         </tr>
       </tbody></table>`,
@@ -344,5 +358,111 @@ describe('SegmentsView — API contract', () => {
     await wrapper.find('[data-testid="segments-rule-remove-1"]').trigger('click');
     await flushPromises();
     expect(wrapper.findAll('[data-testid^="segments-rule-value-"]')).toHaveLength(1);
+  });
+});
+
+// ── Export CSV on selected customers (#673) ─────────────────────────────────
+// The button used to click a raw <a> to /api/customers/export — a route that
+// does not exist, carrying no bearer token — so it did nothing on every path.
+// It now downloads the admin-only /api/exports/customers?ids=… with the token,
+// and is offered only to the roles that endpoint allows.
+
+const CUSTOMERS = [
+  { id: 'aaaaaaaa-0000-4000-8000-000000000001', name: 'Ada', phone: '555-0001' },
+  { id: 'aaaaaaaa-0000-4000-8000-000000000002', name: 'Bo', phone: '555-0002' },
+  { id: 'aaaaaaaa-0000-4000-8000-000000000003', name: 'Cy', phone: '555-0003' },
+];
+
+describe('SegmentsView — Export CSV on selected customers (#673)', () => {
+  beforeEach(() => {
+    apiGet.mockReset();
+    toastAdd.mockClear();
+    downloadAuthedFile.mockReset();
+    downloadAuthedFile.mockResolvedValue(undefined);
+    authState.isAdmin = true;
+    apiGet.mockImplementation((url) => {
+      if (url === '/api/segments') return Promise.resolve({ items: [] });
+      if (url.startsWith('/api/customers')) return Promise.resolve({ items: CUSTOMERS, total: 3 });
+      return Promise.resolve({ items: [] });
+    });
+  });
+
+  const customersTable = (w) => w.find('[data-testid="segments-customers-table"]');
+
+  async function pick(wrapper, indexes) {
+    for (const i of indexes) {
+      await customersTable(wrapper).findAll('.dt-select')[i].trigger('click');
+      await flushPromises();
+    }
+  }
+
+  it('downloads exactly the selected customers through the authed export', async () => {
+    const wrapper = await mountView();
+    await pick(wrapper, [0, 2]);
+
+    await wrapper.find('[data-testid="segments-bulk-export"]').trigger('click');
+    await flushPromises();
+
+    expect(downloadAuthedFile).toHaveBeenCalledTimes(1);
+    const [url, filename] = downloadAuthedFile.mock.calls[0];
+    const parsed = new URL(url, 'http://x');
+    expect(parsed.pathname).toBe('/api/exports/customers');
+    expect(parsed.searchParams.get('ids')).toBe(`${CUSTOMERS[0].id},${CUSTOMERS[2].id}`);
+    expect(filename).toMatch(/^customers-selected-\d{4}-\d{2}-\d{2}\.csv$/);
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'success', detail: '2 selected customers' }));
+  });
+
+  it('is not offered to a role the export refuses', async () => {
+    authState.isAdmin = false;
+    const wrapper = await mountView();
+    await pick(wrapper, [0]);
+
+    // The toolbar is there (Add Tag still works) — only Export is withheld.
+    expect(wrapper.find('[data-testid="segments-customer-bulk-toolbar"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="segments-bulk-add-tag"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="segments-bulk-export"]').exists()).toBe(false);
+  });
+
+  it('says why when the download is refused, instead of doing nothing', async () => {
+    downloadAuthedFile.mockRejectedValue(Object.assign(new Error('Failed to load file (403)'), { status: 403 }));
+    const wrapper = await mountView();
+    await pick(wrapper, [1]);
+
+    await wrapper.find('[data-testid="segments-bulk-export"]').trigger('click');
+    await flushPromises();
+
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({
+      severity: 'error',
+      detail: 'Only admins and owners can export customers.',
+    }));
+  });
+
+  it('refuses a selection larger than the server accepts, with a way forward', async () => {
+    const many = Array.from({ length: 201 }, (_, i) => ({
+      id: `bbbbbbbb-0000-4000-8000-${String(i).padStart(12, '0')}`,
+      name: `C${i}`,
+    }));
+    apiGet.mockImplementation((url) => {
+      if (url === '/api/segments') return Promise.resolve({ items: [] });
+      if (url.startsWith('/api/customers')) return Promise.resolve({ items: many, total: many.length });
+      return Promise.resolve({ items: [] });
+    });
+    const wrapper = await mountView();
+    // The table pages at 15 rows, so a selection this size spans pages: emit
+    // it from the table component directly.
+    const table = wrapper
+      .findAllComponents(stubs.DataTable)
+      .find((c) => c.attributes('data-testid') === 'segments-customers-table');
+    table.vm.$emit('update:selection', many);
+    await flushPromises();
+
+    await wrapper.find('[data-testid="segments-bulk-export"]').trigger('click');
+    await flushPromises();
+
+    expect(downloadAuthedFile).not.toHaveBeenCalled();
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({
+      severity: 'warn',
+      detail: expect.stringContaining('Data Export'),
+    }));
   });
 });

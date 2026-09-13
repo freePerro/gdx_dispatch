@@ -142,10 +142,12 @@
             data-testid="segments-bulk-add-tag"
           />
           <Button
+            v-if="canExportCustomers"
             plain
             size="small"
             label="Export CSV"
             icon="pi pi-file"
+            :loading="exportingCustomers"
             @click="exportSelectedCustomers"
             data-testid="segments-bulk-export"
           />
@@ -388,6 +390,8 @@ import { useApiWithToast } from '../composables/useApiWithToast';
 import { useToast } from 'primevue/usetoast';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { useRouter } from 'vue-router';
+import { useAuthStore } from '../stores/auth';
+import { downloadAuthedFile } from '../composables/useAuthedFile';
 import EmptyState from '../components/EmptyState.vue';
 import Button from 'primevue/button';
 import Toolbar from 'primevue/toolbar';
@@ -407,6 +411,7 @@ const api = useApiWithToast();
 // Bulk tag reports SERVER counts, so it raises its own toast instead of the
 // composable's fixed successMessage — see saveBulkTag.
 const toast = useToast();
+const auth = useAuthStore();
 const router = useRouter();
 const { confirmAsync } = useDestructiveConfirm();
 
@@ -476,6 +481,14 @@ const allCustomersCount = ref(0);
 const showBulkTagDialog = ref(false);
 const bulkTagValue = ref('');
 const bulkTagging = ref(false);
+// GET /api/exports/customers is admin/owner-only — the exports router's
+// require_role("admin", "owner") and the handler's _require_admin — the same
+// roles auth.isAdmin names. Offering the button to anyone else would hand
+// them a 403.
+const canExportCustomers = computed(() => auth.isAdmin);
+// The selection travels in the query string; the server refuses more than this.
+const EXPORT_MAX_SELECTED = 200;
+const exportingCustomers = ref(false);
 
 // The old tabs keyed on `updated_at` and `customer_count`. The segments
 // table is `id, name, rules, created_at, deleted_at` — neither column has
@@ -747,18 +760,46 @@ async function saveBulkTag() {
   }
 }
 
-function exportSelectedCustomers() {
+// This used to click a raw <a> to /api/customers/export — a route that does
+// not exist, with no bearer token, against an export with no id filter — so
+// the button did nothing on every path (#673). The real export takes `ids` and
+// needs the token, which a plain link cannot carry.
+async function exportSelectedCustomers() {
   const ids = selectedCustomerIds.value;
-  if (!ids.length) return;
-  const params = new URLSearchParams();
-  params.set('ids', ids.join(','));
-  const link = document.createElement('a');
-  link.href = `/api/customers/export?${params.toString()}`;
-  link.target = '_blank';
-  link.rel = 'noreferrer noopener';
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
+  if (!ids.length || exportingCustomers.value) return;
+  if (ids.length > EXPORT_MAX_SELECTED) {
+    toast.add({
+      severity: 'warn',
+      summary: 'Too many selected',
+      detail: `Export up to ${EXPORT_MAX_SELECTED} customers at a time, or use Data Export for every customer.`,
+      life: 5000,
+    });
+    return;
+  }
+  exportingCustomers.value = true;
+  try {
+    const params = new URLSearchParams({ ids: ids.join(',') });
+    const day = new Date().toISOString().slice(0, 10);
+    await downloadAuthedFile(`/api/exports/customers?${params}`, `customers-selected-${day}.csv`);
+    toast.add({
+      severity: 'success',
+      summary: 'Export downloaded',
+      // What was asked for — the file itself is the server's answer.
+      detail: `${ids.length} selected customer${ids.length === 1 ? '' : 's'}`,
+      life: 3000,
+    });
+  } catch (err) {
+    toast.add({
+      severity: 'error',
+      summary: 'Export failed',
+      detail: err?.status === 403
+        ? 'Only admins and owners can export customers.'
+        : 'The export could not be downloaded. Try again.',
+      life: 5000,
+    });
+  } finally {
+    exportingCustomers.value = false;
+  }
 }
 
 function clearCustomerSelection() {

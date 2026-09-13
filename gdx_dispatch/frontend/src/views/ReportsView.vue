@@ -149,6 +149,8 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApi } from "../composables/useApi";
+import { downloadAuthedFile } from "../composables/useAuthedFile";
+import { useToast } from "primevue/usetoast";
 import { applyChartTheme, chartThemeColors } from "../utils/chartTheme";
 import Button from "primevue/button";
 import DatePicker from "primevue/datepicker";
@@ -166,6 +168,7 @@ import {
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Title, Tooltip, Legend);
 
 const api = useApi();
+const toast = useToast();
 
 const isLoading = ref(true);
 const loadError = ref("");
@@ -354,9 +357,16 @@ async function loadReports() {
   }
 }
 
-function exportCsv() {
+// A plain window.open sends no bearer token, so the new tab got a 401 on every
+// click. Download it with the token instead.
+async function exportCsv() {
   const params = buildDateParams();
-  window.open(`/api/reports/export${params || "?format=csv"}`, "_blank");
+  const day = new Date().toISOString().slice(0, 10);
+  try {
+    await downloadAuthedFile(`/api/reports/export${params || "?format=csv"}`, `report-${day}.csv`);
+  } catch (e) {
+    toast.add({ severity: "error", summary: "Export failed", detail: e?.message || "Could not download the report", life: 5000 });
+  }
 }
 
 onMounted(() => {
