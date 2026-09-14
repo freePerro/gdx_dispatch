@@ -33,6 +33,7 @@
 
 <script setup>
 import { ref, watch } from 'vue';
+import { localDateString } from '../../composables/useFormatters';
 import Dialog from 'primevue/dialog';
 import Button from 'primevue/button';
 import SelectButton from 'primevue/selectbutton';
@@ -73,7 +74,9 @@ function onSubmit() {
   const payload = { reason: reason.value };
   if (endedAt.value) {
     const d = endedAt.value;
-    payload.ended_at = d instanceof Date ? d.toISOString().slice(0, 10) : d;
+    // Local calendar day: the default is `new Date()`, whose UTC day is
+    // tomorrow after ~7pm Central (#698).
+    payload.ended_at = d instanceof Date ? localDateString(d) : d;
   }
   emit('submit', payload);
 }

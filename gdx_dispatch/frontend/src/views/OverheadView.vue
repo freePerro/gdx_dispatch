@@ -222,7 +222,7 @@ import Tag from 'primevue/tag';
 import Message from 'primevue/message';
 
 import { useOverhead } from '../composables/useOverhead';
-import { formatMoney as money, formatDate } from '../composables/useFormatters';
+import { formatMoney as money, formatDate, localDateString } from '../composables/useFormatters';
 
 Chart.register(LineElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend, Filler);
 
@@ -318,7 +318,8 @@ function emptyForm() {
     amount: null,
     cadence: 'monthly',
     cost_type: 'fixed',
-    start_date: new Date().toISOString().slice(0, 10),
+    // Today on the local calendar — the UTC slice was tomorrow after ~7pm (#698).
+    start_date: localDateString(new Date()),
     end_date: '',
     term_total_occurrences: null,
     is_estimate: false,
@@ -352,7 +353,7 @@ function addFromSuggestion(s) {
     amount: Number(s.suggested_amount),
     cadence: s.cadence || 'monthly',
     // Preserve the detected start so term math is right; fall back to today.
-    start_date: s.start_date || new Date().toISOString().slice(0, 10),
+    start_date: s.start_date || localDateString(new Date()),
     end_date: s.term_end_date || '',
     term_total_occurrences: s.term_total_occurrences || null,
     source_stream_id: s.stream_id,

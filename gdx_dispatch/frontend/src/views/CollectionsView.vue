@@ -557,8 +557,11 @@ function closeDialog() {
 }
 
 function payloadFromForm(overrides = {}) {
+  // The full instant, not a calendar day: the server stores last_contact as a
+  // timestamptz (payment_reminders.sent_at) and a bare "YYYY-MM-DD" lands at UTC
+  // midnight, which reads as the evening BEFORE in the list's local display (#698).
   const lastContact = form.value.last_contact
-    ? form.value.last_contact.toISOString().split('T')[0]
+    ? form.value.last_contact.toISOString()
     : null;
   return {
     status: form.value.status,
@@ -584,7 +587,11 @@ async function saveEntry() {
 
 async function markContacted(entry) {
   await api.patch(`/api/collections/${entry.id}`, {
-    last_contact: new Date().toISOString().split('T')[0],
+    // The moment of contact, as an instant. Not `.split('T')[0]` — after ~7pm
+    // Central that UTC day is tomorrow — and not a bare local day either: the
+    // server stores a timestamptz, so "YYYY-MM-DD" becomes UTC midnight and the
+    // list shows the day before (#698).
+    last_contact: new Date().toISOString(),
     status: 'active',
   }, { successMessage: 'Marked as contacted' });
   await loadCollections();

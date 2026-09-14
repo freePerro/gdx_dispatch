@@ -1193,7 +1193,7 @@ import { useApi } from "../composables/useApi";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { classifyPickerError, useEstimateSources } from "../composables/useEstimateSources";
 import { useAuthStore } from "../stores/auth";
-import { formatDate, formatMoney, formatPercent, formatPhone } from "../composables/useFormatters";
+import { formatDate, formatMoney, formatPercent, formatPhone, localDateString } from "../composables/useFormatters";
 import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
 import PaymentCaptureForm from "../components/PaymentCaptureForm.vue";
 import Button from "primevue/button";
@@ -2888,10 +2888,11 @@ async function _flushNow() {
     // 1. Header.
     const formPct = Number(form.value.tax_rate) || 0;
     const persistTax = Math.abs(formPct - tenantDefaultTaxPct.value) > 0.001;
-    // Same Date→ISO conversion createEstimate does — the DatePicker model is a
-    // Date object; the API wants yy-mm-dd.
+    // Same Date→yy-mm-dd conversion createEstimate does — the DatePicker model
+    // is a Date object. Local calendar parts: the default is now + 30 days WITH
+    // the clock, so a UTC slice after ~7pm Central was a day late (#698).
     const validUntil = form.value.valid_until instanceof Date
-      ? form.value.valid_until.toISOString().slice(0, 10)
+      ? localDateString(form.value.valid_until)
       : form.value.valid_until;
     await apiRaw.patch(`/api/estimates/${id}`, {
       label: form.value.label || null,
@@ -3025,7 +3026,7 @@ async function createEstimate() {
       }
     }
     const validUntil = form.value.valid_until instanceof Date
-      ? form.value.valid_until.toISOString().slice(0, 10)
+      ? localDateString(form.value.valid_until)
       : form.value.valid_until;
     // Only persist a per-estimate tax_rate if the user changed it from the
     // tenant default. Otherwise leave null so the estimate tracks tenant.

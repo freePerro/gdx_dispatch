@@ -281,6 +281,7 @@ import Tag from 'primevue/tag'
 import MobileReceiptCapture from '../components/MobileReceiptCapture.vue'
 import TimeEntryDialog from '../components/TimeEntryDialog.vue'
 import { useWeeklyTimesheet } from '../composables/useWeeklyTimesheet'
+import { dateKeyInZone } from '../composables/useTenantTimezone'
 
 const api = useApi()
 const toast = useToast()
@@ -291,7 +292,7 @@ const toast = useToast()
 const {
   days, weekLabel, weekLoading, weekWorkedHours, weekBreakHours, canGoNext,
   init: initWeek, reload: reloadWeek, prevWeek, nextWeek,
-  canSelfEdit, workedMinutes, formatClock: formatShopClock, shopToday,
+  canSelfEdit, workedMinutes, formatClock: formatShopClock, shopToday, tenantTimezone,
 } = useWeeklyTimesheet()
 
 const showEntryDialog = ref(false)
@@ -421,11 +422,16 @@ function dismissStillWorking() {
   setTimeout(() => { stillWorkingDismissed.value = false }, 60 * 60 * 1000)
 }
 
+// Both sides on the SHOP's calendar, the rule the This Week card follows (#698).
+// It compared the UTC day of "now" with the UTC day of each stamp: after ~7pm
+// Central "now" is already tomorrow, so the morning's shifts vanished, and a
+// shift clocked in after ~7pm never appeared at all.
 const todayEntries = computed(() => {
-  const today = new Date().toISOString().slice(0, 10)
+  const tz = tenantTimezone.value
+  const today = dateKeyInZone(new Date(), tz)
   return entries.value.filter((e) => {
-    const ts = String(e.clock_in || e.clock_in_at || '')
-    return ts.slice(0, 10) === today
+    const ts = e.clock_in || e.clock_in_at
+    return !!ts && dateKeyInZone(String(ts).replace(' ', 'T'), tz) === today
   })
 })
 
