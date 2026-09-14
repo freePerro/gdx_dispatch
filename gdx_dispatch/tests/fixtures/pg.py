@@ -17,7 +17,10 @@ are unaffected unless they request `pg_test_db` or `pg_test_engine`.
 
 Connection target: local docker container `gdx-test-postgres` (PG 15.17),
 exposed on 127.0.0.1:5433 as user `gdx`. Override via env:
-  GDX_TEST_PG_HOST, GDX_TEST_PG_PORT, GDX_TEST_PG_USER, GDX_TEST_PG_PASSWORD
+  GDX_TEST_PG_HOST, GDX_TEST_PG_PORT, GDX_TEST_PG_USER, GDX_TEST_PG_PASSWORD,
+  GDX_TEST_PG_ADMIN_DB
+CI sets all five in `.github/workflows/ci.yml`. With no reachable PG the chain
+skips on a laptop and FAILS under CI (see `_skip_unless_ci`, #440).
 """
 from __future__ import annotations
 
@@ -149,24 +152,36 @@ def _drop_stale_templates() -> None:
             continue
 
 
+def _skip_unless_ci(reason: str) -> None:
+    """Skip on a laptop; fail under CI.
+
+    Every test on this fixture used to skip green in CI (#440): the defaults
+    above point at a laptop's 5433 while CI's service is on 5432, and nothing
+    noticed for weeks — a skip is indistinguishable from a pass in a summary.
+    CI provides a Postgres, so there a skip here can only mean the wiring is
+    broken, and it must say so. GitHub Actions sets ``CI=true``.
+    """
+    if os.environ.get("CI"):
+        pytest.fail(f"CI is set, so the Postgres arm must run, not skip: {reason}")
+    pytest.skip(reason)
+
+
 @pytest.fixture(scope="session")
 def pg_template_db(request) -> str:
     """Create the template DB once per session and load structure.sql into it."""
-    # requires_pg gate: skip (not error) the whole pg-fixture chain when no
-    # PostgreSQL is reachable. Without this, environments without a test PG
-    # (default CI, most laptops) raised psycopg2.OperationalError at setup and
-    # surfaced as ERRORs. Set GDX_TEST_PG_HOST/PORT/USER/PASSWORD to run these.
+    # requires_pg gate: on a laptop with no test PG, skip (not error) the whole
+    # pg-fixture chain. Set GDX_TEST_PG_HOST/PORT/USER/PASSWORD to run these.
     try:
         _admin_conn().close()
     except psycopg2.OperationalError as exc:
-        pytest.skip(
+        _skip_unless_ci(
             f"PostgreSQL not reachable at {PG_HOST}:{PG_PORT} "
             f"(set GDX_TEST_PG_* to run requires-pg tests): {exc}"
         )
     _drop_stale_templates()
     request.addfinalizer(lambda: _cleanup_template(TEMPLATE_DB))
     if not STRUCTURE_SQL.exists():
-        pytest.skip(f"{STRUCTURE_SQL} not present — run gdx_dispatch/tools/refresh_test_schema.sh")
+        _skip_unless_ci(f"{STRUCTURE_SQL} not present — run gdx_dispatch/tools/refresh_test_schema.sh")
 
     # Templates can't be dropped while flagged as templates — un-flag first.
     conn = _admin_conn()

@@ -99,6 +99,18 @@ jobs:
       - name: Run tests (pytest-split shard ${{ matrix.group }}/7)
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/gdx_test
+          # 33 Postgres tests — incl. the GL trigger/engine money guards — take
+          # their connection from GDX_TEST_PG_*, not DATABASE_URL, and default
+          # to a laptop's 127.0.0.1:5433 gdx/gdx: tests/fixtures/pg.py,
+          # test_gl_triggers.py, test_gl_engine_pg.py. Without these five they
+          # all skipped green here (#440). Under CI those tests now FAIL rather
+          # than skip when they cannot connect (fixtures/pg.py::_skip_unless_ci),
+          # so dropping or breaking these reddens the shard.
+          GDX_TEST_PG_HOST: localhost
+          GDX_TEST_PG_PORT: "5432"
+          GDX_TEST_PG_USER: test
+          GDX_TEST_PG_PASSWORD: test
+          GDX_TEST_PG_ADMIN_DB: gdx_test
           # The conftest.py guard only blocks a bare serial full-suite run;
           # split shards are the sanctioned fast path, but set the bypass
           # explicitly so the guard never trips in CI. Serial tests under

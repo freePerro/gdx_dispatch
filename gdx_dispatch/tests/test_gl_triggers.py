@@ -33,6 +33,9 @@ from gdx_dispatch.modules.ledger.models import (
 psycopg2 = pytest.importorskip("psycopg2")
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT  # noqa: E402
 
+# Skips on a laptop, FAILS under CI — where a skip can only mean broken wiring (#440).
+from gdx_dispatch.tests.fixtures.pg import _skip_unless_ci  # noqa: E402
+
 PG_HOST = os.environ.get("GDX_TEST_PG_HOST", "127.0.0.1")
 PG_PORT = int(os.environ.get("GDX_TEST_PG_PORT", "5433"))
 PG_USER = os.environ.get("GDX_TEST_PG_USER", "gdx")
@@ -65,7 +68,7 @@ def gl():
     try:
         admin = _admin_conn()
     except psycopg2.OperationalError as exc:
-        pytest.skip(
+        _skip_unless_ci(
             f"PostgreSQL not reachable at {PG_HOST}:{PG_PORT} "
             f"(set GDX_TEST_PG_* to run GL trigger tests): {exc}"
         )
