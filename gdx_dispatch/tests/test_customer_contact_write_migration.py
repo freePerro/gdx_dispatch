@@ -28,6 +28,7 @@ from sqlalchemy.engine import Engine
 
 from gdx_dispatch.core.permissions import BUILTIN_ROLES
 from gdx_dispatch.migrations.grant_helpers import grant_permission_to_seeded_roles
+from gdx_dispatch.tests.fixtures.pg import _skip_unless_ci
 
 
 # The migration module can't be imported by dotted name (leading digit), so read
@@ -112,8 +113,8 @@ def pg() -> Generator[Engine, None, None]:
         eng = create_engine(_URL)
         with eng.connect() as c:
             c.execute(text("SELECT 1"))
-    except Exception as exc:  # unreachable / wrong creds → skip, don't fail
-        pytest.skip(f"postgres not reachable: {exc}")
+    except Exception as exc:  # unreachable / wrong creds → skip on a laptop, FAIL under CI (#440)
+        _skip_unless_ci(f"postgres not reachable: {exc}")
     yield eng
     eng.dispose()
 

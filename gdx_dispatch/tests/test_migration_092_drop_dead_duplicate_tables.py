@@ -214,6 +214,13 @@ _requires_pg = pytest.mark.skipif(
 )
 
 
+def test_these_tests_actually_run_in_ci() -> None:
+    """A skipif that fails open is how "tested on both engines" quietly becomes
+    false — the Postgres arm skips and the build stays green (#440)."""
+    if os.environ.get("CI"):
+        assert "postgresql" in _URL, "CI is set but no postgres URL — the Postgres arm would skip."
+
+
 @pytest.fixture()
 def pg_conn() -> Generator[Engine, None, None]:
     """Every table lives in a scratch schema — the shared CI database keeps its

@@ -79,9 +79,13 @@ this — the budget governs sweeps, not repairs.
   after enumerating every check's result by name.
 - **Run the matrix with `gdx_dispatch/tools/run_tests_split.sh` (N=7), and
   never with `--network host`** — the host network breaks ~15 tests. The cost
-  of leaving it off is that the Postgres arm goes **silently SKIPped** (24+,
-  and CI too, #440): a green run has not exercised PG. Enumerate skips with
-  `-rs` and read the categories, or the gap is invisible.
+  of leaving it off is that the Postgres arm goes **silently SKIPped** (102
+  tests, measured 2026-09-14): a green local run has not exercised PG.
+  Enumerate skips with `-rs` and read the categories, or the gap is invisible.
+  CI runs the `DATABASE_URL` and `GDX_TEST_PG_*` Postgres tests, and under `CI`
+  an unreachable Postgres fails them rather than skipping (#440). It does
+  **not** run the 8 `TEST_DATABASE_URL` role tests or the
+  `GDX_TEST_CONTROL_DB_URL` integration tests — those still skip green there.
 - `pytest.ini` already carries `-q`; adding another makes output useless. To
   read a CI failure use the `jobs/<id>/logs` API, not `gh run view --log`.
 - **A foreground `sleep` is blocked and a background Bash dies at 600s.** Long

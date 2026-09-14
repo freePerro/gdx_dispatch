@@ -53,6 +53,13 @@ _requires_pg = pytest.mark.skipif(
 )
 
 
+def test_these_tests_actually_run_in_ci() -> None:
+    """A skipif that fails open is how "tested on both engines" quietly becomes
+    false — the Postgres arm skips and the build stays green (#440)."""
+    if os.environ.get("CI"):
+        assert "postgresql" in _URL, "CI is set but no postgres URL — the Postgres arm would skip."
+
+
 def _group_by_clause(sql: str) -> str:
     m = re.search(r"GROUP BY(.*?)ORDER BY", sql, re.S | re.I)
     assert m, f"no GROUP BY ... ORDER BY found in:\n{sql}"

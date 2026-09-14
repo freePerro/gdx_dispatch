@@ -13,7 +13,10 @@ ORM changes.
 """
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import text
+
+from gdx_dispatch.tests.fixtures import pg
 
 
 def _column_type(session, schema: str, table: str, column: str) -> tuple[str, int | None]:
@@ -93,3 +96,73 @@ def test_per_test_isolation_pair(pg_test_engine):
             text("SELECT count(*) FROM public.technicians WHERE name = 'isolation-probe'")
         ).scalar()
         assert n == 0
+
+
+# ---------------------------------------------------------------------------
+# The skip-or-fail gate (#440). These two need no Postgres, so they run
+# everywhere — including the laptops where every test above skips.
+# ---------------------------------------------------------------------------
+
+
+def test_an_unreachable_pg_fails_under_ci(monkeypatch):
+    """CI provides a Postgres, so a skip there means broken wiring. For weeks
+    every test above skipped green in CI against the wrong port (#440)."""
+    monkeypatch.setenv("CI", "true")
+    with pytest.raises(pytest.fail.Exception, match="must run, not skip"):
+        pg._skip_unless_ci("PostgreSQL not reachable")
+
+
+def test_an_unreachable_pg_skips_on_a_laptop(monkeypatch):
+    monkeypatch.delenv("CI", raising=False)
+    with pytest.raises(pytest.skip.Exception):
+        pg._skip_unless_ci("PostgreSQL not reachable")
+
+
+def _fixture_body(fixture):
+    """The plain function under @pytest.fixture — pytest refuses a direct call."""
+    body = getattr(fixture, "__wrapped__", None)
+    if body is None:  # pytest < 8.4
+        body = fixture.__pytest_wrapped__.obj
+    return body
+
+
+def test_the_real_template_fixture_fails_under_ci_when_postgres_is_unreachable(monkeypatch):
+    """The two tests above call the helper directly, so they stay green if a call
+    site goes back to `pytest.skip(`. This drives the REAL fixture body."""
+    import psycopg2
+
+    def _refuse(*a, **kw):
+        raise psycopg2.OperationalError("connection refused")
+
+    monkeypatch.setattr(pg, "_admin_conn", _refuse)
+    monkeypatch.setenv("CI", "true")
+    # Not `pytest.raises(pytest.fail.Exception)`: a reverted call site raises
+    # pytest's Skipped, which escapes that and reports THIS test as skipped —
+    # the very false green it exists to catch.
+    try:
+        _fixture_body(pg.pg_template_db)(request=None)
+    except pytest.fail.Exception as exc:
+        assert "must run, not skip" in str(exc)
+    except pytest.skip.Exception as exc:
+        pytest.fail(f"pg_template_db SKIPPED under CI instead of failing: {exc}")
+    else:
+        pytest.fail("pg_template_db neither failed nor skipped with Postgres unreachable")
+
+
+def test_no_postgres_test_turns_an_unreachable_server_into_a_skip():
+    """Class guard (#440): any test that meets an unreachable Postgres must go
+    through `_skip_unless_ci`, never a bare `pytest.skip`, or CI reports the
+    missing Postgres arm as green. Catches a reverted call site and a new file
+    copying the old pattern alike."""
+    import re
+    from pathlib import Path
+
+    tests_root = Path(__file__).resolve().parent
+    bare = re.compile(r"pytest\.skip\(\s*f?[\"'][^\"']*not reachable", re.IGNORECASE)
+    offenders = [
+        f"{path.relative_to(tests_root)}:{text[: m.start()].count(chr(10)) + 1}"
+        for path in sorted(tests_root.rglob("*.py"))
+        for text in [path.read_text(encoding="utf-8", errors="replace")]
+        for m in bare.finditer(text)
+    ]
+    assert offenders == [], f"route these through fixtures.pg._skip_unless_ci: {offenders}"
