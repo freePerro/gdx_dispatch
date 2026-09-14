@@ -4,6 +4,9 @@
 (owner decisions 2026-08-24/25; released v1.99.0 + the PRs that followed).
 **Addendum 2026-08-31:** the Automations sequences shell is RETIRED — see the
 dated section at the end (same shape as the original seventeen).
+**Addendum 2026-09-14:** item 4 (recurring jobs) is RETIRED, together with the
+Job Templates page it depended on — see the dated section at the end. The
+2026-08-25 "DECIDED + BUILT" row below stays as the record of that decision.
 
 Shipped: items 1, 2, 3, 5, 6, 7, 8, 9, 12, 13, 14, 15, 16, 17 and 4 — five dead
 pages retired, the declined stubs removed, the customer-page Portal tab pointed
@@ -298,7 +301,7 @@ working features**, reachable from a different UI surface:
 | # | The stub | The real thing, already shipped |
 |---|---|---|
 | 2 | `POST /api/payroll/run-current-period` | resolved by M27 (#411) — button removed, page states runs are not built |
-| 4 | `POST /api/customers/{id}/recurring-jobs` | `routers/recurring_jobs.py` → `/api/recurring` |
+| 4 | `POST /api/customers/{id}/recurring-jobs` | `routers/recurring_jobs.py` → `/api/recurring` | <!-- link-ok: retired 2026-09-14 (#683) -->
 | 5 | `*/api/customers/{id}/portal-account` | `portal.py` `staff_router` → `/api/portal`, with a working office UI in `PortalView.vue` |
 | 8 | `PATCH /api/booking/{slot_id}` | `routers/booking.py` → request / approve / decline (no UI, see the orphan note) | <!-- link-ok: deleted 2026-09-06 -->
 | 9 | `*/api/equipment-tracking` | `modules/equipment/router.py` → `/api/equipment` |
@@ -502,3 +505,37 @@ recommendations and AI-usage ownership. These have competing data models,
 authorization, retention, or product semantics. They require a named
 canonical system and, where persisted records are involved, an explicit
 retention/migration decision before removal.
+
+## 2026-09-14 — recurring jobs and job templates; retired
+
+**Status:** **RETIRED 2026-09-14 (#683), owner ruling.** Item 4's 2026-08-25
+build is undone, and the Job Templates page goes with it.
+
+What the build left in place never worked for a user:
+
+- **Job Templates could not create a template.** `JobTemplatesView` posted
+  `name/service_type/default_duration/default_price/description/line_items`;
+  the router's create model requires `title` and `job_type`, so every create
+  was a 422 and every edit a 400. The list columns read fields the GET never
+  returned.
+- **Recurring Jobs could not create a schedule.** A schedule is built from a
+  template (`job_template_id` is NOT NULL), and the customer-page dialog
+  disables Save when no template exists — which, given the above, was always.
+- **Production held nothing:** 0 `job_templates`, 0 `recurring_job_schedules`,
+  0 jobs with `source = 'template'`, and no audit row for any template or
+  recurring action (read-only query, 2026-09-14).
+
+Removed: the Job Templates page, route and nav entry; the customer Recurring
+Jobs tab and dialog (desktop) and Recurring tab (mobile); the `/api/job-templates`
+and `/api/recurring` routers, `GET /api/customers/{id}/recurring-jobs`, and
+`POST /api/recurring-schedules/{id}/generate`; the daily
+`generate_recurring_jobs` beat task. Twelve operations left the route table.
+
+Kept: the `JobTemplate` and `RecurringJobSchedule` models and their tables.
+Migration 042 runs an unguarded `UPDATE job_templates`, and a fresh install
+builds that table from the ORM before Alembic runs, so the model cannot leave
+without a migration. Dropping the (empty) tables is a separate ruling.
+
+The "JobTemplatesView is real, routed and in the nav" note under item 12 above
+was true of the route and the nav, not of the page's ability to save.
+

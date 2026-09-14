@@ -82,7 +82,6 @@ const PhoneComColdLeadsView = () => import('../views/PhoneComColdLeadsView.vue')
 const PhoneComFaxesView = () => import('../views/PhoneComFaxesView.vue');
 const OutlookSettingsView = () => import('../views/admin/OutlookSettingsView.vue');
 const InboxView = () => import('../views/InboxView.vue');
-const JobTemplatesView = () => import('../views/JobTemplatesView.vue');
 const PayrollView = () => import('../views/PayrollView.vue');
 const OnboardingView = () => import('../views/OnboardingView.vue');
 const ServiceAgreementsView = () => import('../views/ServiceAgreementsView.vue');
@@ -351,7 +350,6 @@ export const routes = [
   },
   { path: '/settings/integrations/outlook', name: 'outlook-settings', component: OutlookSettingsView },
   { path: '/inbox', name: 'inbox', component: InboxView },
-  { path: '/job-templates', name: 'job-templates', component: JobTemplatesView },
   { path: '/checklists', name: 'checklists', component: ChecklistsView },
   { path: '/service-agreements', name: 'service-agreements', component: ServiceAgreementsView },
   { path: '/maintenance', name: 'maintenance', component: MaintenanceView },

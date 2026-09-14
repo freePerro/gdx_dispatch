@@ -26,16 +26,6 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(hour=int(os.getenv("PLANNER_DIGEST_HOUR", "13") or "13"), minute=0),
             "options": {"queue": "priority:low"},
         },
-        "generate-recurring-jobs-daily-6am": {
-            # 2026-07-07 prod audit: this entry pointed at a task name
-            # ("…generate_recurring_jobs_for_all_tenants") that never
-            # existed — the real task is generate_recurring_jobs, which
-            # walks the single tenant itself. Every 06:00 firing died as
-            # "unregistered task".
-            "task": "gdx_dispatch.tasks.recurring.generate_recurring_jobs",
-            "schedule": crontab(hour=6, minute=0),
-            "options": {"queue": "priority:low"},
-        },
         # "check-upcoming-appointment-reminders-hourly" was the same pattern,
         # and outlived both of the others. It fired every hour on prod and
         # logged `succeeded ... {'scheduled_count': 0}` every time, because

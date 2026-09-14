@@ -48,7 +48,6 @@ export const MODULE_CATEGORIES = [
       { key: 'tasks', label: 'Tasks', icon: 'pi pi-list', to: '/tasks', type: 'Operations', permission: 'nav.office' },
       { key: 'planner', label: 'Planner', icon: 'pi pi-calendar-plus', to: '/planner', type: 'Operations', permission: 'nav.office' },
       { key: 'checklists', label: 'Checklists', icon: 'pi pi-check-square', to: '/checklists', type: 'Operations', permission: 'nav.office' },
-      { key: 'job_templates', label: 'Job Templates', icon: 'pi pi-th-large', to: '/job-templates', type: 'Operations', permission: 'nav.office' },
       { key: 'maintenance', label: 'Maintenance Plans', icon: 'pi pi-wrench', to: '/maintenance', type: 'Jobs', permission: 'nav.admin' },
       { key: 'technicians', requires: 'dispatch', label: 'Technicians', icon: 'pi pi-users', to: '/technicians', type: 'Operations', permission: 'nav.office' },
       { key: 'performance', label: 'Performance', icon: 'pi pi-chart-line', to: '/performance', type: 'Operations', permission: 'nav.office' },

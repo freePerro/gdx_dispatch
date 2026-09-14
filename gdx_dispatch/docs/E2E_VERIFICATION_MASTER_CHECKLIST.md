@@ -59,8 +59,8 @@ PDF generation, file uploads.
 31. [Pricing Engine](#31-pricing-engine)
 32. [QuickBooks Integration](#32-quickbooks-integration)
 33. [Notifications and Push](#33-notifications-and-push)
-34. [Job Templates](#34-job-templates)
-35. [Recurring Jobs](#35-recurring-jobs)
+34. [Job Templates](#34-job-templates) — retired 2026-09-14
+35. [Recurring Jobs](#35-recurring-jobs) — retired 2026-09-14
 36. [Search](#36-search)
 37. [Audit Trail](#37-audit-trail)
 38. [Edge Cases and Failure Modes](#38-edge-cases-and-failure-modes-cross-cutting)
@@ -845,27 +845,21 @@ their place:
 
 ## 34. Job Templates
 
-### Functional Tests
-
-| ID | Test Case | Verification |
-|----|-----------|-------------|
-| TMPL-01 | List templates | GET /api/job-templates returns template list |
-| TMPL-02 | Create template | POST creates template with default fields |
-| TMPL-03 | Apply template | POST /{id}/apply creates job from template with pre-filled fields |
-| TMPL-04 | Delete template | Soft delete |
+**Retired 2026-09-14 (#683).** The page, its `/api/job-templates` routes and the
+apply-template path were removed: the create form could never save (it sent
+fields the API did not accept) and production had never held a template. There
+is nothing left to verify. The section number is kept so the anchors below do
+not shift.
 
 ---
 
 ## 35. Recurring Jobs
 
-### Functional Tests
-
-| ID | Test Case | Verification |
-|----|-----------|-------------|
-| RECUR-01 | Create recurring schedule | POST /api/recurring-jobs creates schedule (weekly/monthly) |
-| RECUR-02 | List schedules | GET returns recurring job schedules |
-| RECUR-03 | Schedule generates jobs | At scheduled time, new job instance created automatically |
-| RECUR-04 | Delete schedule | Stops future job generation |
+**Retired 2026-09-14 (#683), with Job Templates.** A schedule was built from a
+template, so the customer-page dialog could never save one; production had never
+held a schedule. The `/api/recurring*` routes, the customer Recurring tabs
+(desktop and mobile) and the daily `generate_recurring_jobs` beat task were
+removed. Nothing left to verify.
 
 ---
 
@@ -1265,8 +1259,8 @@ These are actual failure modes documented in industry post-mortems that only tes
 | Pricing Engine | 9 |
 | QuickBooks | 6 |
 | Notifications | 5 |
-| Job Templates | 4 |
-| Recurring Jobs | 4 |
+| Job Templates (retired) | 0 |
+| Recurring Jobs (retired) | 0 |
 | Search | 5 |
 | Audit Trail | 5 |
 | Edge Cases (cross-cutting) | 25 |
@@ -1275,7 +1269,7 @@ These are actual failure modes documented in industry post-mortems that only tes
 | Performance | 10 |
 | Visual Regression | 10 |
 | Chaos & Resilience | 10 |
-| **TOTAL** | **~445** |
+| **TOTAL** | **~437** |
 
 ---
 

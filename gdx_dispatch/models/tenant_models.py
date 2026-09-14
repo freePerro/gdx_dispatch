@@ -2848,6 +2848,10 @@ class JobDependency(Base):
 
 
 class JobTemplate(Base):
+    # Retired 2026-09-14 (#683): no router, page or task reads or writes this
+    # table any more. The model stays because migration 042 runs an unguarded
+    # UPDATE on job_templates and the entrypoint's create_all is what builds
+    # the table on a fresh install. Dropping it is a separate, counted ruling.
     __tablename__ = "job_templates"
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     title: Mapped[str] = mapped_column(Text, nullable=False)
@@ -2884,6 +2888,10 @@ class PortalMessage(Base):
 
 
 class RecurringJobSchedule(Base):
+    # Retired with JobTemplate, 2026-09-14 (#683): no router, page or beat task
+    # remains. No migration needs this model (unlike JobTemplate); it stays only
+    # because the table exists on prod and removing the model without a drop
+    # migration would leave that table owned by nothing. Drop both together.
     __tablename__ = "recurring_job_schedules"
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     job_template_id: Mapped[str] = mapped_column(Text, nullable=False)

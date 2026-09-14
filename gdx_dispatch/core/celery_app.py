@@ -18,7 +18,6 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
         broker=broker,
         backend=backend,
         include=[
-            "gdx_dispatch.tasks.recurring",
             "gdx_dispatch.tasks.planner_digest",
             # gdx_dispatch.tasks.qb_sync (S122-3 T2) and gdx_dispatch.tasks.late_fees
             # were both no-op stubs whose private helpers returned None / [] — the
@@ -75,7 +74,6 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
         ),
         task_default_queue="priority:low",
         task_routes={
-            "gdx_dispatch.tasks.recurring.*": {"queue": "priority:low"},
             "gdx_dispatch.core.webhooks.tasks.*": {"queue": "priority:high"},
             "gdx_dispatch.core.plugin_events.*": {"queue": "priority:high"},
             "gdx_dispatch.modules.campaigns.tasks.*": {"queue": "priority:high"},
@@ -102,7 +100,7 @@ from gdx_dispatch.modules.ledger.guard import install_flush_guard  # noqa: E402
 install_flush_guard()
 
 # Arm the webhook after_commit dispatch hook in worker/beat processes too —
-# beat-driven emits (e.g. recurring-job creation) commit here, not in the API.
+# beat-driven emits commit here, not in the API.
 from gdx_dispatch.core.webhooks.emit import install_webhook_dispatch_hook  # noqa: E402
 
 install_webhook_dispatch_hook()
@@ -121,7 +119,6 @@ from gdx_dispatch.tasks import customer_volume_refresh as _customer_volume_refre
 from gdx_dispatch.tasks import estimate_archive as _estimate_archive_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import estimate_expiry as _estimate_expiry_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import estimate_followup as _estimate_followup_tasks  # noqa: E402,F401
-from gdx_dispatch.tasks import recurring as _recurring_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import tech_locations_prune as _tech_locations_prune_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import timeclock_sweep as _timeclock_sweep_tasks  # noqa: E402,F401
 

@@ -1,8 +1,7 @@
 """
 Appointments router — dispatch calendar/appointment layer.
 
-Distinct from gdx_dispatch/routers/booking.py (customer booking intake) and
-gdx_dispatch/routers/recurring_jobs.py (recurring schedules). An appointment is a
+Distinct from gdx_dispatch/routers/booking.py (customer booking intake). An appointment is a
 scheduled time block tied to a technician, optionally linked to a job and
 customer. Supports confirmation workflow, "on my way" status transitions,
 arrived/completed/cancelled lifecycle, and per-day mapping queries.

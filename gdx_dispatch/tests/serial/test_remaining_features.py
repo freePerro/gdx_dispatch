@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import tempfile
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.models import tenant_models as tenant_models  # noqa: F401
 from gdx_dispatch.modules.proposals import models as proposal_models  # noqa: F401
-from gdx_dispatch.routers import job_templates, recurring_jobs, referrals, reviews, search
+from gdx_dispatch.routers import referrals, reviews, search
 
 
 @pytest.fixture()
@@ -125,209 +125,6 @@ def _seed_estimate(db: Session, *, customer_id: str, number: str) -> str:
     )
     db.commit()
     return estimate_id
-
-
-# Recurring schedules (3+)
-def test_recurring_create_and_list(db_session: Session):
-    req = _request()
-    user = {"id": "u1", "sub": "u1"}
-    template = job_templates.create_job_template(
-        payload=job_templates.JobTemplateCreateIn(
-            title="Tune-up",
-            job_type="maintenance",
-            default_priority="normal",
-            checklist=["inspect"],
-            estimated_duration=90,
-            default_parts=[],
-        ),
-        request=req,
-        user=user,
-        db=db_session,
-    )
-
-    created = recurring_jobs.create_recurring_schedule(
-        payload=recurring_jobs.RecurringCreateIn(
-            job_template_id=template["id"],
-            frequency="weekly",
-            customer_id=uuid4(),
-            next_run=datetime.now(UTC) + timedelta(days=1),
-        ),
-        request=req,
-        user=user,
-        db=db_session,
-    )
-    listed = recurring_jobs.list_recurring_schedules(_=user, db=db_session)
-
-    assert created["id"]
-    assert any(item["id"] == created["id"] for item in listed["items"])
-
-
-def test_recurring_patch_and_delete(db_session: Session):
-    req = _request()
-    user = {"id": "u1", "sub": "u1"}
-    template = job_templates.create_job_template(
-        payload=job_templates.JobTemplateCreateIn(
-            title="Quarterly",
-            job_type="maintenance",
-            default_priority="normal",
-            checklist=[],
-            estimated_duration=60,
-            default_parts=[],
-        ),
-        request=req,
-        user=user,
-        db=db_session,
-    )
-    created = recurring_jobs.create_recurring_schedule(
-        payload=recurring_jobs.RecurringCreateIn(
-            job_template_id=template["id"],
-            frequency="weekly",
-            customer_id=uuid4(),
-            next_run=datetime.now(UTC) + timedelta(days=1),
-        ),
-        request=req,
-        user=user,
-        db=db_session,
-    )
-
-    patched = recurring_jobs.patch_recurring_schedule(
-        schedule_id=created["id"],
-        payload=recurring_jobs.RecurringPatchIn(frequency="biweekly", status="active"),
-        request=req,
-        user=user,
-        db=db_session,
-    )
-    deleted = recurring_jobs.delete_recurring_schedule(created["id"], request=req, user=user, db=db_session)
-
-    assert patched["frequency"] == "biweekly"
-    assert deleted["ok"] is True
-
-
-def test_recurring_materialize_due_schedule_creates_job(db_session: Session):
-
-    customer_id = _seed_customer(db_session)
-    template_id = str(uuid4())
-    now = datetime.now(UTC)
-
-    db_session.execute(
-        text(
-            """
-            INSERT INTO job_templates
-                (id, title, job_type, default_priority, checklist, estimated_duration, default_parts, is_active, created_at, updated_at, deleted_at)
-            VALUES
-                (:id, 'Recurring Tune', 'maintenance', 'normal', '[]', 45, '[]', 1, :created_at, :updated_at, NULL)
-            """
-        ),
-        {"id": template_id, "created_at": now.isoformat(), "updated_at": now.isoformat()},
-    )
-    db_session.execute(
-        text(
-            """
-            INSERT INTO recurring_job_schedules
-                (id, job_template_id, frequency, customer_id, next_run, last_run, status, created_at, updated_at, deleted_at)
-            VALUES
-                (:id, :job_template_id, 'weekly', :customer_id, :next_run, NULL, 'active', :created_at, :updated_at, NULL)
-            """
-        ),
-        {
-            "id": str(uuid4()),
-            "job_template_id": template_id,
-            "customer_id": customer_id,
-            "next_run": (now - timedelta(minutes=1)).isoformat(),
-            "created_at": now.isoformat(),
-            "updated_at": now.isoformat(),
-        },
-    )
-    db_session.commit()
-
-    result = recurring_jobs.materialize_due_recurring_jobs(db_session, now=now, actor_id="system", tenant_id="t-1")
-    count = db_session.execute(text("SELECT COUNT(*) AS c FROM jobs")).mappings().first()["c"]
-
-    assert result["created_count"] == 1
-    assert int(count) == 1
-
-
-# Job templates (3+)
-def test_job_template_create_and_get(db_session: Session):
-    req = _request()
-    user = {"id": "u1"}
-    created = job_templates.create_job_template(
-        payload=job_templates.JobTemplateCreateIn(
-            title="Install",
-            job_type="install",
-            default_priority="high",
-            checklist=["measure"],
-            estimated_duration=120,
-            default_parts=[{"sku": "P-1"}],
-        ),
-        request=req,
-        user=user,
-        db=db_session,
-    )
-    got = job_templates.get_job_template(created["id"], _=user, db=db_session)
-
-    assert got["id"] == created["id"]
-    assert got["title"] == "Install"
-
-
-def test_job_template_patch_and_delete(db_session: Session):
-    req = _request()
-    user = {"id": "u1"}
-    created = job_templates.create_job_template(
-        payload=job_templates.JobTemplateCreateIn(
-            title="Repair",
-            job_type="repair",
-            default_priority="normal",
-            checklist=[],
-            estimated_duration=60,
-            default_parts=[],
-        ),
-        request=req,
-        user=user,
-        db=db_session,
-    )
-
-    patched = job_templates.patch_job_template(
-        created["id"],
-        payload=job_templates.JobTemplatePatchIn(default_priority="low"),
-        request=req,
-        user=user,
-        db=db_session,
-    )
-    deleted = job_templates.delete_job_template(created["id"], request=req, user=user, db=db_session)
-    listed = job_templates.list_job_templates(_=user, db=db_session)
-
-    assert patched["default_priority"] == "low"
-    assert deleted["ok"] is True
-    assert all(item["id"] != created["id"] for item in listed["items"])
-
-
-def test_job_template_apply_creates_real_job(db_session: Session):
-    req = _request()
-    user = {"id": "u1"}
-    created = job_templates.create_job_template(
-        payload=job_templates.JobTemplateCreateIn(
-            title="Seasonal Service",
-            job_type="maintenance",
-            default_priority="normal",
-            checklist=[],
-            estimated_duration=75,
-            default_parts=[],
-        ),
-        request=req,
-        user=user,
-        db=db_session,
-    )
-
-    applied = job_templates.apply_job_template(
-        created["id"],
-        payload=job_templates.TemplateApplyIn(customer_id=uuid4(), scheduled_at=datetime.now(UTC)),
-        request=req,
-        user=user,
-        db=db_session,
-    )
-
-    assert applied["title"] == "Seasonal Service"
 
 
 # Reviews (3+)
@@ -465,5 +262,3 @@ def test_new_routers_registered_in_app_source():
     assert "app.include_router(search_router.router if hasattr(search_router, \"router\") else search_router)" in app_py
     assert "app.include_router(reviews_router.router if hasattr(reviews_router, \"router\") else reviews_router)" in app_py
     assert "app.include_router(referrals_router.router if hasattr(referrals_router, \"router\") else referrals_router)" in app_py
-    assert "app.include_router(\n        recurring_jobs_router.router if hasattr(recurring_jobs_router, \"router\") else recurring_jobs_router\n    )" in app_py
-    assert "app.include_router(\n        job_templates_router.router if hasattr(job_templates_router, \"router\") else job_templates_router\n    )" in app_py

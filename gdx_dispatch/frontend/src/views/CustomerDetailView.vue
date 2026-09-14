@@ -282,35 +282,6 @@
         </Card>
       </div>
 
-      <!-- Recurring Jobs tab -->
-      <div v-if="activeTab === 'Recurring Jobs'" class="tab-content" data-testid="tab-recurring-content">
-        <div class="panel-header">
-          <h3>Recurring Jobs</h3>
-          <Button
-            label="+ Add Recurring"
-            icon="pi pi-plus"
-            size="small"
-            outlined
-            data-testid="add-recurring-btn"
-            @click="openRecurringDialog"
-          />
-        </div>
-        <Card class="section-card" data-testid="recurring-card">
-          <template #content>
-            <DataTable
-      responsiveLayout="scroll" :value="recurringJobs" responsive-layout="scroll" stripedRows data-testid="customer-recurring-table">
-              <template #empty><div class="empty-message">No recurring jobs yet.</div></template>
-              <Column field="title" header="Title" />
-              <Column field="job_type" header="Job Type" />
-              <Column field="interval_days" header="Interval (days)" />
-              <Column header="Next Due Date">
-                <template #body="{ data }">{{ formatDate(data.next_due_date) }}</template>
-              </Column>
-            </DataTable>
-          </template>
-        </Card>
-      </div>
-
       <!-- Email tab (P2.1) — mail the tagger linked to this customer.
            Lazy: only mounts when the tab is open, so a customer page never
            pays for an email query nobody asked for. -->
@@ -610,64 +581,6 @@
       </Dialog>
 
       <Dialog
-        v-model:visible="showRecurringDialog"
-        header="Add Recurring Job"
-        :style="{ width: '520px' }"
-        modal
-        data-testid="recurring-dialog"
-      >
-        <form class="dialog-form" @submit.prevent="saveRecurringJob">
-          <!-- A schedule is (job template + how often + when next). The daily
-               6am `generate_recurring_jobs` task builds each job FROM the
-               template, and skips any schedule whose template is missing — so
-               a template is required, not decorative. -->
-          <div v-if="!jobTemplates.length" class="inline-error" data-testid="recurring-no-templates">
-            No job templates exist yet, and a recurring schedule is built from one.
-            Create a template first under <strong>Job Templates</strong> — it defines
-            the checklist, duration and parts each generated job starts with.
-          </div>
-          <template v-else>
-            <div class="form-field">
-              <label for="recurring-template">Job template *</label>
-              <Select
-                id="recurring-template"
-                v-model="recurringForm.job_template_id"
-                :options="jobTemplates"
-                option-label="name"
-                option-value="id"
-                placeholder="Choose the template each visit is built from"
-                class="w-full"
-                data-testid="recurring-template-input"
-              />
-            </div>
-            <div class="form-row">
-              <div class="form-field">
-                <label for="recurring-frequency">How often *</label>
-                <Select
-                  id="recurring-frequency"
-                  v-model="recurringForm.frequency"
-                  :options="recurringFrequencies"
-                  option-label="label"
-                  option-value="value"
-                  class="w-full"
-                  data-testid="recurring-frequency-input"
-                />
-              </div>
-              <div class="form-field">
-                <label for="recurring-next-due">First visit *</label>
-                <DatePicker id="recurring-next-due" v-model="recurringForm.next_due_date" data-testid="recurring-date-input" class="w-full" />
-              </div>
-            </div>
-          </template>
-          <div v-if="recurringError" class="inline-error">{{ recurringError }}</div>
-          <div class="form-actions">
-            <Button type="button" label="Cancel" text @click="showRecurringDialog = false" />
-            <Button type="submit" label="Save" :loading="isSavingRecurring" :disabled="!jobTemplates.length" data-testid="save-recurring-btn" />
-          </div>
-        </form>
-      </Dialog>
-
-      <Dialog
         v-model:visible="showPortalDialog"
         header="Customer Portal Account"
         :style="{ width: '420px' }"
@@ -854,7 +767,7 @@ const activeTab = ref("Jobs");
 // People before places: a second person at an account had nowhere to live
 // before this tab, which is how QuickBooks sub-customers became the
 // dumping ground for names. See qb-subcustomer-flattening-plan.md.
-const tabs = ["Jobs", "Estimates", "Invoices", "Contacts", "Locations", "Notes", "Equipment", "Recurring Jobs", "Email", "Portal"];
+const tabs = ["Jobs", "Estimates", "Invoices", "Contacts", "Locations", "Notes", "Equipment", "Email", "Portal"];
 // Route param, not the loaded customer object — the tab must work while the
 // customer record is still in flight.
 const customerId = computed(() => route.params.id);
@@ -865,23 +778,9 @@ const showEquipmentDialog = ref(false);
 const equipmentForm = ref({ brand: "", model: "", serial: "", install_date: null, warranty_expires: null, type: "", notes: "" });
 const equipmentTypes = ["door", "opener", "motor", "remote", "other"];
 const isSavingEquipment = ref(false);
-const recurringJobs = ref([]);
-const showRecurringDialog = ref(false);
-const recurringForm = ref({ job_template_id: null, frequency: "monthly", next_due_date: null });
-const jobTemplates = ref([]);
-// Mirrors _next_run_from_frequency in routers/recurring_jobs.py — sending
-// anything else 400s. Keep in step if the server grows a new interval.
-const recurringFrequencies = [
-  { label: "Weekly", value: "weekly" },
-  { label: "Every 2 weeks", value: "biweekly" },
-  { label: "Monthly", value: "monthly" },
-  { label: "Quarterly", value: "quarterly" },
-];
 // Plan §9: shared vocabulary — this dropdown's divergent "Service" entry is
 // where the 12 mis-spelled prod rows came from.
 const jobTypeOptions = [...JOB_TYPE_OPTIONS];
-const recurringError = ref("");
-const isSavingRecurring = ref(false);
 const portalStatus = ref(null);
 const showPortalDialog = ref(false);
 const portalForm = ref({ email: '' });
@@ -899,20 +798,14 @@ const portalInviteResultVisible = ref(false);
 // got a "Permission denied" toast on every single page open — a regression this
 // change introduced and this defers away. Same lazy shape the mobile tab uses.
 let portalStatusRequested = false;
-let jobTemplatesRequested = false;
 
 // The watcher below only fires on a tab CHANGE. Landing directly on a tab —
-// a deep link, or a restored tab — would leave its lazy data unfetched, which
-// for Recurring Jobs means showing "no job templates exist" when the real
-// answer is "we never asked". Prime whichever tab we start on.
+// a deep link, or a restored tab — would leave its lazy data unfetched.
+// Prime whichever tab we start on.
 function primeLazyTabData(tab) {
   if (tab === 'Portal' && !portalStatusRequested) {
     portalStatusRequested = true;
     fetchPortalStatus();
-  }
-  if (tab === 'Recurring Jobs' && !jobTemplatesRequested) {
-    jobTemplatesRequested = true;
-    fetchJobTemplates();
   }
 }
 watch(() => activeTab.value, primeLazyTabData, { immediate: true });
@@ -999,12 +892,6 @@ function openEquipmentDialog() {
   showEquipmentDialog.value = true;
 }
 
-function openRecurringDialog() {
-  recurringError.value = "";
-  recurringForm.value = { job_template_id: null, frequency: "monthly", next_due_date: null };
-  showRecurringDialog.value = true;
-}
-
 async function fetchEquipment() {
   try {
     const data = await api.get(`/api/customers/${route.params.id}/equipment`);
@@ -1032,68 +919,6 @@ async function saveEquipment() {
     // errors surfaced by useApiWithToast
   } finally {
     isSavingEquipment.value = false;
-  }
-}
-
-// The READ was always real — `sub_resources.py` shadows the ui_compat shim and
-// queries recurring_job_schedules properly. Only the create path was a 501.
-// Kept on the same URL for that reason; only the writer moves.
-async function fetchRecurringJobs() {
-  try {
-    const data = await api.get(`/api/customers/${route.params.id}/recurring-jobs`);
-    recurringJobs.value = Array.isArray(data) ? data : data?.data || data?.items || [];
-  } catch {
-    recurringJobs.value = [];
-  }
-}
-
-// A schedule is built FROM a job template by the daily task, so the dialog can
-// only offer templates that exist. Loaded lazily with the tab.
-async function fetchJobTemplates() {
-  try {
-    const data = await rawApi.get('/api/job-templates');
-    const rows = Array.isArray(data) ? data : data?.items || [];
-    jobTemplates.value = rows.map((t) => ({ id: t.id, name: t.name || t.title || 'Untitled template' }));
-  } catch {
-    jobTemplates.value = [];
-  }
-}
-
-async function saveRecurringJob() {
-  recurringError.value = "";
-  // 2026-08-25: was POSTing {title, interval_days, …} at a ui_compat 501 whose
-  // shape no real endpoint has ever accepted. The real writer is
-  // `routers/recurring_jobs.py` (POST /api/recurring) and it takes a template
-  // id plus a frequency enum — the daily generator resolves the template to
-  // build each job, and skips schedules whose template is gone.
-  if (!recurringForm.value.job_template_id) {
-    recurringError.value = "Choose the job template each visit is built from.";
-    return;
-  }
-  if (!recurringForm.value.frequency) {
-    recurringError.value = "Choose how often this repeats.";
-    return;
-  }
-  if (!recurringForm.value.next_due_date) {
-    recurringError.value = "Pick the first visit date.";
-    return;
-  }
-
-  isSavingRecurring.value = true;
-  try {
-    await api.post('/api/recurring', {
-      job_template_id: recurringForm.value.job_template_id,
-      frequency: recurringForm.value.frequency,
-      customer_id: route.params.id,
-      next_run: new Date(recurringForm.value.next_due_date).toISOString(),
-    });
-    toast.add({ severity: "success", summary: "Saved", detail: "Recurring job added.", life: 3000 });
-    showRecurringDialog.value = false;
-    await fetchRecurringJobs();
-  } catch {
-    // errors surfaced by useApiWithToast
-  } finally {
-    isSavingRecurring.value = false;
   }
 }
 
@@ -1466,7 +1291,6 @@ onMounted(async () => {
     loadCustomerEstimates(),
     loadCustomerInvoices(),
     fetchEquipment(),
-    fetchRecurringJobs(),
     loadPricingSettings(),
   ]);
 });
