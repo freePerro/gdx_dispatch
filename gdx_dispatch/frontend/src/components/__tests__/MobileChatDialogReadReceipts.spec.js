@@ -163,6 +163,81 @@ describe('MobileChatDialog read receipts', () => {
     expect(wrapper.emitted('read')).toBeFalsy();
   });
 
+  // Each receipt writes a hash-chained audit row (#658), and core/audit.py's
+  // writer reads the newest hash before inserting with no lock: overlapping
+  // receipts fork the chain. So the dialog never has two in flight.
+  function holdEveryReceipt() {
+    const held = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    api.post.mockImplementation((url) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      return new Promise((resolve) => {
+        held.push(() => { inFlight -= 1; resolve({ id: url, read_at: '2026-09-07T10:05:00Z' }); });
+      });
+    });
+    return {
+      releaseNext: async () => { held.shift()(); await flushPromises(); },
+      maxInFlight: () => maxInFlight,
+    };
+  }
+  const tech = (id) => ({ ...techUnread(), id, created_at: `2026-09-07T10:0${id.length}:00Z` });
+
+  it('sends receipts one at a time (#658)', async () => {
+    const gate = holdEveryReceipt();
+    await mountDialog([tech('m1'), tech('m4')]);
+    expect(readCalls().map(([url]) => url)).toEqual(['/api/mobile/chat/m1/read']);
+
+    await gate.releaseNext();
+    expect(readCalls().map(([url]) => url)).toEqual(['/api/mobile/chat/m1/read', '/api/mobile/chat/m4/read']);
+    await gate.releaseNext();
+    expect(gate.maxInFlight()).toBe(1);
+  });
+
+  it('a poll landing while a receipt is in flight queues behind it, and re-sends nothing', async () => {
+    const gate = holdEveryReceipt();
+    const wrapper = await mountDialog([tech('m1'), tech('m4')]);
+
+    // What the 5s interval does, while m1 is still held: a message m5 arrives.
+    api.get.mockResolvedValue({ messages: [tech('m5')], quick_actions: {} });
+    await wrapper.vm.fetchMessages(false);
+    await flushPromises();
+    expect(readCalls()).toHaveLength(1);
+
+    await gate.releaseNext();
+    await gate.releaseNext();
+    await gate.releaseNext();
+    expect(readCalls().map(([url]) => url)).toEqual([
+      '/api/mobile/chat/m1/read', '/api/mobile/chat/m4/read', '/api/mobile/chat/m5/read',
+    ]);
+    expect(gate.maxInFlight()).toBe(1);
+  });
+
+  it('switching threads mid-queue does not overlap the previous thread\'s receipts', async () => {
+    const gate = holdEveryReceipt();
+    const wrapper = await mountDialog([tech('m1')]);
+
+    api.get.mockResolvedValue({ messages: [tech('n1')], quick_actions: {} });
+    await wrapper.setProps({ job: { id: 'job-2', title: 'Other job' } });
+    await reopen(wrapper);
+    expect(readCalls()).toHaveLength(1);
+
+    await gate.releaseNext();
+    await gate.releaseNext();
+    expect(readCalls().map(([url]) => url)).toEqual(['/api/mobile/chat/m1/read', '/api/mobile/chat/n1/read']);
+    expect(gate.maxInFlight()).toBe(1);
+  });
+
+  it('a failed receipt does not stop the ones after it', async () => {
+    api.post.mockRejectedValueOnce(new Error('offline'));
+    const second = () => ({ ...techUnread(), id: 'm4', created_at: '2026-09-07T10:03:00Z' });
+    const wrapper = await mountDialog([techUnread(), second()]);
+
+    expect(readCalls()).toHaveLength(2);
+    expect(wrapper.emitted('read')).toBeTruthy();
+  });
+
   it('tells the parent so the thread list can refresh its counts', async () => {
     const wrapper = await mountDialog([techUnread()]);
 

@@ -27,14 +27,14 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy import text as _text
 
 from gdx_dispatch.core.pii import decrypt_if_ciphertext
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.user_display import resolve_author_name
@@ -388,8 +388,35 @@ def mark_chat_read(
     if msg is None:
         return _jr({"detail": "message not found"}, 404)
     if msg.read_at is None:
-        msg.read_by_user_id = user_id
-        msg.read_at = datetime.now(UTC)
+        # Audited (#658, invariant #1), one row per message.
+        #
+        # The stamp is a conditional UPDATE, not an attribute set: two
+        # dispatchers opening the same thread at once both see `read_at IS
+        # NULL` above, and check-then-write stamped twice and audited twice.
+        # The WHERE re-evaluates under the row lock, so the second writer
+        # matches nothing and writes no audit row.
+        #
+        # `ensure_audit_table` runs before anything is written — its first call
+        # for an engine COMMITS — and the audit row goes in the same
+        # transaction as the stamp, so the two commit together or not at all.
+        ensure_audit_table(db)
+        stamped = db.execute(
+            update(JobChatMessage)
+            .where(JobChatMessage.id == msg.id, JobChatMessage.read_at.is_(None))
+            .values(read_by_user_id=user_id, read_at=datetime.now(UTC))
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if stamped == 1:
+            log_audit_event_sync(
+                db=db,
+                tenant_id=_tenant_id(request),
+                user_id=user_id,
+                action="mobile_chat_read",
+                entity_type="job_chat_message",
+                entity_id=str(msg.id),
+                details={"job_id": str(msg.job_id)},
+                request=request,
+            )
         db.commit()
         db.refresh(msg)
     return _jr(_serialize_message(msg))
