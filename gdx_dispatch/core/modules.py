@@ -24,7 +24,6 @@ MODULES = {
     "inventory": {"name": "Inventory"},
     "quickbooks": {"name": "QuickBooks Sync"},
     "customer_portal": {"name": "Customer Portal"},
-    "equipment_tracking": {"name": "Equipment Tracking"},
     "campaigns": {"name": "Marketing Campaigns"},
     "gps_dispatch": {"name": "GPS Dispatch"},
     "ai_estimates": {"name": "AI Smart Estimates"},
@@ -63,7 +62,6 @@ LEGACY_MODULE_ALIASES = {
     "change_orders": "estimates",
     "maintenance_plans": "jobs",
     "purchase_orders": "inventory",
-    "fleet": "equipment_tracking",
     "service_areas": "dispatch",
     "service_agreements": "jobs",
 }

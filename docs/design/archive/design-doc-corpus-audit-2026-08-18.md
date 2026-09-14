@@ -238,8 +238,8 @@ ancestor of `main`: the work landed and the tree was left behind.
   (Probe-verified 2026-08-23: one untracked file is enough to make `remove`
   refuse, so "dirty" here does not imply "holds work".)
 - **Salvage first: 1.** `.wt-equipment-verb` is the only tree holding unlanded
-  source: a modified `frontend/src/views/EquipmentView.vue` plus an untracked
-  `tests/test_equipment_verb_contract.py`. Land or discard it deliberately —
+  source: a modified `frontend/src/views/EquipmentView.vue` plus an untracked <!-- link-ok: retired 2026-09-14 (#683) -->
+  `tests/test_equipment_verb_contract.py`. Land or discard it deliberately — <!-- link-ok: retired 2026-09-14 (#683) -->
   `git worktree remove` will refuse that tree, and `--force` would destroy
   both files. The test has never run in the default gate.
 

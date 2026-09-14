@@ -64,7 +64,7 @@ def test_modules_get_seeds_every_module_on_fresh_tenant():
         # non-defaults the old bootstrap skipped. A skipped module reads as
         # an EXPLICIT enabled:false, which beats the frontend's
         # undefined→enabled fallback and hides its nav.
-        for key in ("google_maps", "reports_advanced", "equipment_tracking", "jobs"):
+        for key in ("google_maps", "reports_advanced", "jobs"):
             assert key in by_key, key
             assert by_key[key]["enabled"] is True, f"{key} not seeded enabled"
         assert len(by_key) == len(MODULES)

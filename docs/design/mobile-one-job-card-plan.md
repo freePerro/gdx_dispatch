@@ -11,6 +11,8 @@ route survives a cold remount with no signal behind a "no signal" banner. PR B â
 one `MobileJobCard` on all three surfaces, the route card finally a link, the
 navigate control kept as a sibling button, and the jobs-list endpoint emitting
 the same nested customer as the other two.
+**Since retired (2026-09-14, #683):** the install-equipment section, with the
+Customer Equipment feature it read from; the rest of PR A stands.
 **RELEASED v1.74.0** â€” merged #396 (`957142e`), deployed to prod and demo
 2026-08-22, walked on the demo as a technician against a **6-stop** route:
 all six cards rendered as links, stop badges `["1".."6"]` with the `.stop-num`

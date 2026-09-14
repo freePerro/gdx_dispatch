@@ -17,7 +17,7 @@ the copies deleted below were included later and never ran:
 | `GET/POST /api/purchase-orders`, `PATCH …/{id}`, `POST …/{id}/receive` | `routers/purchase_orders.py` | `routers/po_workflow.py` — whole router (all four routes shadowed) | <!-- link-ok: deleted 2026-09-06 -->
 | `GET/POST /api/campaigns`, `POST …/{id}/send` | `routers/campaigns.py` | `modules/campaigns/router.py` (3 of 4 routes; `/stats` stayed until the 2026-09-07 follow-up removed it too — see the last section) |
 | `GET /api/dispatch/locations` | `routers/tech_locations.py` | `modules/gps_dispatch/router.py::list_locations` |
-| `GET/POST /api/fleet/vehicles` | `routers/fleet.py` | `modules/fleet/router.py` |
+| `GET/POST /api/fleet/vehicles` | `routers/fleet.py` | `modules/fleet/router.py` | <!-- link-ok: Fleet retired 2026-09-14 (#683) -->
 | `GET/POST /api/inventory/parts`, `GET …/low-stock` | `routers/inventory.py` | `modules/inventory/router.py` |
 | `GET /api/timeclock/status`, `POST …/clock-in` | `routers/timeclock.py` | `modules/timeclock/router.py` |
 

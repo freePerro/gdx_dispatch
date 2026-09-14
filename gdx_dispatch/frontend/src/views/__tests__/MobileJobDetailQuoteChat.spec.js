@@ -1,7 +1,7 @@
 /**
  * MobileJobDetailView — PR A of the one-job-card plan.
  *
- * Build/Show quote, Change order, Chat and Install & equipment existed ONLY on
+ * Build/Show quote, Change order and Chat existed ONLY on
  * Today's route card. A tech who reached a job any other way — the Jobs list, a
  * notification, an unscheduled "in the area" job — could not build a quote,
  * raise a change order, or message dispatch about that job at all.
@@ -14,7 +14,7 @@
  *  3. NOTHING new is fetched at mount. test_mobile_job_cards mocks api.get with
  *     mockResolvedValueOnce — exactly once — so an extra mount-time GET resolves
  *     undefined and throws (July plan, trap #3). This is asserted
- *     counterfactually: the quote and equipment endpoints must NOT be called
+ *     counterfactually: the quote endpoint must NOT be called
  *     until the tech taps.
  *  4. Job context (priority, return visit, customer alerts, customer warnings)
  *     renders — the detail screen used to show strictly less about a job than
@@ -97,11 +97,10 @@ function jobPayload(overrides = {}) {
   };
 }
 
-/** Route GETs by URL so the quote/equipment calls are observable. */
-function routeGets({ job = {}, quotes = [], equipment = [] } = {}) {
+/** Route GETs by URL so the quote calls are observable. */
+function routeGets({ job = {}, quotes = [] } = {}) {
   getMock.mockImplementation(async (url) => {
     if (String(url).includes("/quote")) return { quotes };
-    if (String(url).includes("/equipment")) return equipment;
     return jobPayload(job);
   });
 }
@@ -165,10 +164,9 @@ describe("view-only browsing hides every dispatch action", () => {
 });
 
 describe("nothing new is fetched until the tech asks (trap #3)", () => {
-  it("does NOT call the quote or equipment endpoints at mount", async () => {
+  it("does NOT call the quote endpoint at mount", async () => {
     await mountWith({ job: { dispatch_status: "on_site" } });
     expect(urlsFetched().some((u) => u.includes("/quote"))).toBe(false);
-    expect(urlsFetched().some((u) => u.includes("/equipment"))).toBe(false);
   });
 
   it("fetches quotes only on the first tap, and not again on the second", async () => {
@@ -180,14 +178,6 @@ describe("nothing new is fetched until the tech asks (trap #3)", () => {
     await w.find('[data-testid="mjd-quote"]').trigger("click");
     await flushPromises();
     expect(urlsFetched().filter((u) => u.includes("/quote")).length).toBe(1);
-  });
-
-  it("fetches equipment only when the section is expanded", async () => {
-    const w = await mountWith({ job: { dispatch_status: "on_site" } });
-    expect(urlsFetched().some((u) => u.includes("/equipment"))).toBe(false);
-    await w.find('[data-testid="mjd-equipment-toggle"]').trigger("click");
-    await flushPromises();
-    expect(urlsFetched().some((u) => u.includes("/equipment"))).toBe(true);
   });
 });
 
@@ -209,45 +199,6 @@ describe("opening a job clears its parts badge", () => {
     mount(View, { global: { stubs } });
     await flushPromises();
     expect(markJobSeenMock).not.toHaveBeenCalled();
-  });
-});
-
-describe("equipment degrades quietly when the module is off", () => {
-  // Carried over from MobileTodayInstallEquipment.spec.js, which asserted this
-  // by grepping the .vue source for the function names. equipment_tracking is
-  // an optional module: when it is off the endpoint errors, and the tech must
-  // see "none on file" rather than a red toast about a module they have never
-  // heard of.
-  it("shows 'none on file' and raises no toast when the endpoint fails", async () => {
-    const { default: View } = await import("../MobileJobDetailView.vue");
-    getMock.mockImplementation(async (url) => {
-      if (String(url).includes("/equipment")) throw new Error("404 module disabled");
-      return jobPayload({ dispatch_status: "on_site" });
-    });
-    const w = mount(View, { global: { stubs } });
-    await flushPromises();
-    await w.find('[data-testid="mjd-equipment-toggle"]').trigger("click");
-    await flushPromises();
-
-    expect(w.find('[data-testid="mjd-equipment-list"]').exists()).toBe(false);
-    expect(w.text()).toContain("No install/equipment on file");
-    const summaries = toastAdd.mock.calls.map((c) => c[0].summary);
-    expect(summaries.some((s) => /equipment/i.test(String(s)))).toBe(false);
-  });
-
-  it("labels a garage door and an opener distinctly", async () => {
-    const w = await mountWith({
-      job: { dispatch_status: "on_site" },
-      equipment: [
-        { id: "e1", equipment_type: "garage_door", manufacturer: "CHI", model: "5250" },
-        { id: "e2", equipment_type: "opener", manufacturer: "LiftMaster", model: "8500W" },
-      ],
-    });
-    await w.find('[data-testid="mjd-equipment-toggle"]').trigger("click");
-    await flushPromises();
-    const list = w.find('[data-testid="mjd-equipment-list"]');
-    expect(list.text()).toContain("Door");
-    expect(list.text()).toContain("Opener");
   });
 });
 

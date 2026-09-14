@@ -76,19 +76,14 @@ REMOVED_PATHS = [
 ]
 
 KEPT_PATHS = [
-    # #651: office staff log service outside a job; the job route and the
-    # history reader wait for their UI
-    ("POST", "/api/equipment/{equipment_id}/service"),
-    ("POST", "/api/jobs/{job_id}/equipment/{equipment_id}/service"),
-    ("GET", "/api/equipment/{equipment_id}/service-history"),
+    # The #651 equipment service routes and the #637 fleet service-log routes
+    # this list used to keep were retired with Equipment and Fleet on
+    # 2026-09-14 (#683), superseding those keep-rulings; their absence is
+    # pinned in test_equipment_fleet_retired.py.
     # #650 (a): the rename gets its UI in its own PR; create-expense shares the
     # removed route's prefix and is called by BankFeedsView
     ("PATCH", "/api/bank-feeds/statements/accounts/{account_id}"),
     ("POST", "/api/bank-feeds/statements/lines/{line_id}/create-expense"),
-    # #637: the fleet maintenance copy that shares the Fleet page's table
-    ("GET", "/api/fleet/vehicles/{vehicle_id}/service-log"),
-    ("POST", "/api/fleet/vehicles/{vehicle_id}/service-log"),
-    ("GET", "/api/fleet/vehicles/due-for-service"),
     # #648: the forecast the calibrated rates feed
     ("GET", "/api/forecast/revenue"),
 ]

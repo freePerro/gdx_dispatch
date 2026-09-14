@@ -11,9 +11,9 @@ The platform spans the full field-service workflow, organized as feature
 modules under [`gdx_dispatch/modules/`](gdx_dispatch/modules/) and HTTP routes
 under [`gdx_dispatch/routers/`](gdx_dispatch/routers/):
 
-- **Dispatch & scheduling** — appointments, GPS dispatch, service areas, fleet
+- **Dispatch & scheduling** — appointments, GPS dispatch, service areas
 - **Sales** — estimates, proposals, change orders, catalogs & pricing
-- **Operations** — work orders, inventory, purchase orders, equipment, timeclock
+- **Operations** — work orders, inventory, purchase orders, timeclock
 - **Finance** — invoicing, payroll, commissions, tax, QuickBooks sync, vendor statements
 - **Customer engagement** — customer portal, campaigns, communications, notifications
 - **Telephony & email** — Phone.com (click-to-call, MMS) and Outlook integrations

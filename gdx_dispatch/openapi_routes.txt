@@ -29,7 +29,6 @@ DELETE /api/document-folders/{folder_id}
 DELETE /api/documents/{document_id}
 DELETE /api/door-listings/{listing_id}
 DELETE /api/door-listings/{listing_id}/photos/{photo_id}
-DELETE /api/equipment/{equipment_id}
 DELETE /api/estimates/{estimate_id}
 DELETE /api/estimates/{estimate_id}/attachments/{document_id}
 DELETE /api/estimates/{estimate_id}/lines/{line_id}
@@ -37,7 +36,6 @@ DELETE /api/estimates/{estimate_id}/proposal-tiers/{tier_id}
 DELETE /api/estimates/{estimate_id}/proposal-tiers/{tier_id}/lines/{line_id}
 DELETE /api/expenses/{expense_id}
 DELETE /api/expenses/{expense_id}/receipts/{receipt_id}
-DELETE /api/fleet/vehicles/{vehicle_id}
 DELETE /api/follow-ups/{follow_up_id}
 DELETE /api/forecast/recurring/streams/{stream_id}
 DELETE /api/gps/technicians/{tech_id}/history
@@ -232,7 +230,6 @@ GET /api/customers/{customer_id}
 GET /api/customers/{customer_id}/activity
 GET /api/customers/{customer_id}/contacts
 GET /api/customers/{customer_id}/custom-fields
-GET /api/customers/{customer_id}/equipment
 GET /api/customers/{customer_id}/locations
 GET /api/customers/{customer_id}/tags
 GET /api/dealer/orders
@@ -254,9 +251,6 @@ GET /api/documents/{document_id}
 GET /api/documents/{document_id}/download
 GET /api/door-listings
 GET /api/door-listings/{listing_id}
-GET /api/equipment
-GET /api/equipment/{equipment_id}
-GET /api/equipment/{equipment_id}/service-history
 GET /api/estimate-nurture/pending
 GET /api/estimate-nurture/rules
 GET /api/estimates
@@ -284,9 +278,6 @@ GET /api/exports/jobs
 GET /api/exports/leads
 GET /api/exports/payments
 GET /api/exports/technicians
-GET /api/fleet/vehicles
-GET /api/fleet/vehicles/due-for-service
-GET /api/fleet/vehicles/{vehicle_id}/service-log
 GET /api/follow-ups
 GET /api/forecast/recurring/streams
 GET /api/forecast/recurring/streams/{stream_id}
@@ -649,7 +640,6 @@ GET /portal/context
 GET /portal/dashboard
 GET /portal/documents
 GET /portal/door-listings
-GET /portal/equipment
 GET /portal/estimates
 GET /portal/estimates/{estimate_id}
 GET /portal/estimates/{estimate_id}/attachments/{document_id}
@@ -703,7 +693,6 @@ PATCH /api/estimates/{estimate_id}/lines/{line_id}
 PATCH /api/estimates/{estimate_id}/proposal-tiers/{tier_id}
 PATCH /api/estimates/{estimate_id}/proposal-tiers/{tier_id}/lines/{line_id}
 PATCH /api/expenses/{expense_id}
-PATCH /api/fleet/vehicles/{vehicle_id}
 PATCH /api/forecast/recurring/streams/{stream_id}
 PATCH /api/inbound-email/{email_id}/read
 PATCH /api/inventory/parts/{item_id}
@@ -873,7 +862,6 @@ POST /api/customers/bulk-tag
 POST /api/customers/merge
 POST /api/customers/{customer_id}/contacts
 POST /api/customers/{customer_id}/contacts/{contact_id}/make-primary
-POST /api/customers/{customer_id}/equipment
 POST /api/customers/{customer_id}/locations
 POST /api/customers/{customer_id}/optout
 POST /api/customers/{customer_id}/tags
@@ -895,8 +883,6 @@ POST /api/door-listings/{listing_id}/publish
 POST /api/door-listings/{listing_id}/reject
 POST /api/door-listings/{listing_id}/sold
 POST /api/door-listings/{listing_id}/unpublish
-POST /api/equipment
-POST /api/equipment/{equipment_id}/service
 POST /api/estimate-nurture/rules
 POST /api/estimate-nurture/run
 POST /api/estimates
@@ -921,8 +907,6 @@ POST /api/expenses/promote-from-receipt
 POST /api/expenses/{expense_id}/lines
 POST /api/expenses/{expense_id}/receipts
 POST /api/feedback/client-error
-POST /api/fleet/vehicles
-POST /api/fleet/vehicles/{vehicle_id}/service-log
 POST /api/follow-ups
 POST /api/follow-ups/bulk-send
 POST /api/follow-ups/{follow_up_id}/complete
@@ -973,7 +957,6 @@ POST /api/jobs/{job_id}/closeout
 POST /api/jobs/{job_id}/complete
 POST /api/jobs/{job_id}/dependencies
 POST /api/jobs/{job_id}/diagnosis
-POST /api/jobs/{job_id}/equipment/{equipment_id}/service
 POST /api/jobs/{job_id}/follow-up
 POST /api/jobs/{job_id}/hazards
 POST /api/jobs/{job_id}/line-items
@@ -1240,7 +1223,6 @@ PUT /api/campaigns/{campaign_id}/activate
 PUT /api/campaigns/{campaign_id}/deactivate
 PUT /api/commissions/rules/{rule_id}
 PUT /api/customers/{customer_id}/custom-fields
-PUT /api/equipment/{equipment_id}
 PUT /api/forecast/settings
 PUT /api/holding-areas/{area_id}
 PUT /api/integrations/{integration_id}

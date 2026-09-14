@@ -38,14 +38,6 @@
       "status": 200,
       "last_checked": "2026-04-08"
     },
-    "/api/fleet/vehicles": {
-      "status": 200,
-      "last_checked": "2026-04-08"
-    },
-    "/api/equipment": {
-      "status": 200,
-      "last_checked": "2026-04-08"
-    },
     "/api/inventory/parts": {
       "status": 200,
       "last_checked": "2026-04-08"
@@ -208,10 +200,6 @@
       "last_checked": "2026-04-08"
     },
     "/inventory": {
-      "js_errors": 0,
-      "last_checked": "2026-04-08"
-    },
-    "/equipment": {
       "js_errors": 0,
       "last_checked": "2026-04-08"
     },

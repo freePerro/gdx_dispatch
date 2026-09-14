@@ -35,7 +35,6 @@ from gdx_dispatch.modules.deposits import (
 )
 from gdx_dispatch.modules.door_listings import service as _listing_service
 from gdx_dispatch.modules.door_listings.models import DoorListing
-from gdx_dispatch.modules.equipment.models import CustomerEquipment
 from gdx_dispatch.modules.estimates_features import effective_hide_line_prices, get_features
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 
@@ -453,15 +452,9 @@ def portal_dashboard(
         .join(Job, Invoice.job_id == Job.id)
         .where(Job.customer_id == principal.customer_id, Invoice.deleted_at.is_(None))
     ).scalar_one()
-    equipment_count = db.execute(
-        select(func.count(CustomerEquipment.id)).where(
-            CustomerEquipment.customer_id == principal.customer_id,
-            CustomerEquipment.deleted_at.is_(None),
-        )
-    ).scalar_one()
     return {
         "customer_id": str(principal.customer_id),
-        "counts": {"jobs": int(job_count), "invoices": int(invoice_count), "equipment": int(equipment_count)},
+        "counts": {"jobs": int(job_count), "invoices": int(invoice_count)},
     }
 
 
@@ -697,32 +690,6 @@ def portal_invoice_pay(
         "client_secret": intent.client_secret,
         "status": getattr(intent, "status", None),
     }
-
-
-@router.get("/equipment", response_model=None)
-def portal_equipment(
-    principal: PortalPrincipal = Depends(get_current_portal_customer),
-    db: Session = Depends(get_db),
-) -> list[dict[str, Any]]:
-    rows = db.execute(
-        select(CustomerEquipment).where(
-            CustomerEquipment.customer_id == principal.customer_id,
-            CustomerEquipment.deleted_at.is_(None),
-        )
-    ).scalars()
-    return [
-        {
-            "id": str(row.id),
-            "customer_id": str(row.customer_id),
-            "equipment_type": row.equipment_type,
-            "manufacturer": row.manufacturer,
-            "model": row.model,
-            "serial_number": row.serial_number,
-            "installation_date": row.installation_date.isoformat() if row.installation_date else None,
-            "last_service_date": row.last_service_date.isoformat() if row.last_service_date else None,
-        }
-        for row in rows
-    ]
 
 
 @router.get("/documents", response_model=None)

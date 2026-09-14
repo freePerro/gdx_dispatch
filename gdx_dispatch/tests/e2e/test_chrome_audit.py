@@ -30,8 +30,6 @@ CORE_ENDPOINTS = [
     "/api/reports/revenue-analytics",
     "/api/reports/outstanding-aging",
     "/api/timeclock/status",
-    "/api/equipment",
-    "/api/fleet/vehicles",
     "/api/pricing/vendor-lists",
     "/api/resources",
     "/api/notifications/count",

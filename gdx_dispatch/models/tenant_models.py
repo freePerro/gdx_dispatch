@@ -2620,6 +2620,8 @@ class CommissionEntry(Base):
 
 
 class EquipmentAsset(Base):
+    # No router since 2026-05-03; Customer Equipment itself retired 2026-09-14
+    # (#683). Kept only because the table exists.
     __tablename__ = "equipment_assets"
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
@@ -2669,6 +2671,8 @@ class EstimateNurtureLog(Base):
 
 
 class FleetVehicle(Base):
+    # Fleet retired 2026-09-14 (#683): no router or page reads or writes this.
+    # Kept only because the table exists; drop with a counted migration.
     __tablename__ = "fleet_vehicles_router"
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
@@ -2687,6 +2691,7 @@ class FleetVehicle(Base):
 
 
 class FleetServiceLog(Base):
+    # Retired with FleetVehicle, 2026-09-14 (#683).
     __tablename__ = "fleet_vehicle_service_logs_router"
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False)

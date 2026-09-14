@@ -132,7 +132,6 @@ test('the job detail screen carries the actions this release moved there', async
     await expect(page.locator('[data-testid="mjd-secondary-actions"]')).toBeVisible();
     await expect(page.locator('[data-testid="mjd-chat"]')).toBeVisible();
   }
-  await expect(page.locator('[data-testid="mjd-equipment-toggle"]')).toBeVisible();
 });
 
 test('light and dark on prod', async ({ page }) => {

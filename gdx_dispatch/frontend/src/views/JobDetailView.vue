@@ -314,44 +314,6 @@
             </div>
           </div>
         </div>
-        <div class="card equipment-card" v-if="equipmentList.length">
-          <div class="card-header">
-            <h3>Customer Equipment</h3>
-          </div>
-          <DataTable :value="equipmentList" striped-rows responsive-layout="scroll" data-testid="equipment-table">
-            <Column field="equipment_type" header="Type" />
-            <Column field="manufacturer" header="Manufacturer" />
-            <Column field="model" header="Model" />
-            <Column field="serial_number" header="Serial" />
-            <Column field="install_date" header="Installed">
-              <template #body="{ data }">
-                {{ data.install_date || '—' }}
-              </template>
-            </Column>
-            <Column header="Warranty">
-              <template #body="{ data }">
-                <Tag
-                  v-if="data.warranty_expires_on && new Date(data.warranty_expires_on) >= new Date()"
-                  severity="success"
-                  :value="`Until ${data.warranty_expires_on}`"
-                  data-testid="warranty-active"
-                />
-                <Tag
-                  v-else-if="data.warranty_expires_on"
-                  severity="secondary"
-                  :value="`Expired ${data.warranty_expires_on}`"
-                />
-                <span v-else class="muted">—</span>
-              </template>
-            </Column>
-          </DataTable>
-        </div>
-        <div v-else class="card">
-          <div class="card-header">
-            <h3>Customer Equipment</h3>
-          </div>
-          <p class="muted">No equipment linked to this customer.</p>
-        </div>
         <div class="card">
           <div class="card-header">
             <h3>Past Visits</h3>
@@ -1458,7 +1420,6 @@ const installData = ref(null);
 const installLoading = ref(false);
 const jobNotes = ref([]);
 const technicians = ref([]);
-const equipmentList = ref([]);
 const customerDetail = ref(null);
 const pastJobs = ref([]);
 const diagnoses = ref([]);
@@ -1816,7 +1777,6 @@ async function refreshRelated() {
     fetchTechnicians(),
     fetchAssignments(),
     fetchAppointments(),
-    fetchEquipment(),
     fetchCustomerDetail(),
     fetchPastJobs(),
     fetchDiagnosisSchemas(),
@@ -2002,16 +1962,6 @@ async function fetchAppointments() {
     appointments.value = [];
   } finally {
     appointmentsLoading.value = false;
-  }
-}
-
-async function fetchEquipment() {
-  try {
-    const data = await api.get("/api/equipment");
-    const list = Array.isArray(data) ? data : data?.items || [];
-    equipmentList.value = list.filter((item) => item.customer_id === job.value.customer_id);
-  } catch {
-    equipmentList.value = [];
   }
 }
 
@@ -2885,7 +2835,6 @@ onMounted(async () => {
 .diagnosis-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; text-transform: capitalize; }
 .diagnosis-field { display: grid; grid-template-columns: 180px 1fr; gap: 0.5rem; align-items: center; margin-bottom: 0.4rem; }
 .diagnosis-field label { font-size: 0.85rem; color: var(--p-text-muted-color); }
-.equipment-card .p-datatable-wrapper { max-height: 260px; }
 .note-card .note-input { display: flex; flex-direction: column; gap: 0.75rem; }
 .note-actions { display: flex; gap: 0.5rem; align-items: center; }
 .notes-feed { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.75rem; }

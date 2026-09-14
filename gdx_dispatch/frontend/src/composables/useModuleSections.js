@@ -40,9 +40,8 @@ const SECTION_BY_KEY = {
   appointments: 'Field', tasks: 'Field', planner: 'Field',
   checklists: 'Field',
   maintenance: 'Field', technicians: 'Field', performance: 'Field',
-  timeclock: 'Field', timesheets: 'Field', fleet: 'Field', gps: 'Field', maps: 'Field',
+  timeclock: 'Field', timesheets: 'Field', gps: 'Field', maps: 'Field',
   daily_loadsheet: 'Field',
-  equipment: 'Field',
   photos: 'Field',
   // Customers & Comms
   customers: 'Customers & Comms', customer_portal: 'Customers & Comms',

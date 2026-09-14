@@ -251,26 +251,6 @@
             <div v-else class="state-msg"><span class="muted">No notes on file.</span></div>
           </div>
 
-          <!-- Equipment -->
-          <div v-else-if="activeTab === 'Equipment'" data-test="mcd-tab-equipment">
-            <div v-if="loadingEquipment" class="state-msg"><i class="pi pi-spin pi-spinner" /></div>
-            <ol v-else-if="equipment.length" class="card-list">
-              <li
-                v-for="eq in equipment"
-                :key="eq.id"
-                class="row-card"
-                data-test="mcd-equipment-row"
-              >
-                <div class="row-top">
-                  <span class="row-title">{{ eq.label || eq.type || 'Equipment' }}</span>
-                  <Tag v-if="eq.condition" :value="eq.condition" />
-                </div>
-                <div v-if="eq.notes" class="row-meta muted">{{ eq.notes }}</div>
-              </li>
-            </ol>
-            <div v-else class="state-msg"><span class="muted">No equipment on file.</span></div>
-          </div>
-
           <!-- Portal -->
           <div v-else-if="activeTab === 'Portal'" data-test="mcd-tab-portal">
             <div v-if="loadingPortal" class="state-msg"><i class="pi pi-spin pi-spinner" /></div>
@@ -373,21 +353,19 @@ function onJobCreatedHere(job) {
   if (job?.id) router.push({ path: `/mobile/jobs/${job.id}` })
 }
 
-const tabs = ['Jobs', 'Estimates', 'Invoices', 'Locations', 'Notes', 'Equipment', 'Portal']
+const tabs = ['Jobs', 'Estimates', 'Invoices', 'Locations', 'Notes', 'Portal']
 const activeTab = ref('Jobs')
 
 const jobs = ref([])
 const estimates = ref([])
 const invoices = ref([])
 const locations = ref([])
-const equipment = ref([])
 const portalStatus = ref(null)
 
 const loadingJobs = ref(false)
 const loadingEstimates = ref(false)
 const loadingInvoices = ref(false)
 const loadingLocations = ref(false)
-const loadingEquipment = ref(false)
 const loadingPortal = ref(false)
 
 const editOpen = ref(false)
@@ -471,18 +449,6 @@ async function fetchLocations() {
   }
 }
 
-async function fetchEquipment() {
-  loadingEquipment.value = true
-  try {
-    const r = await api.get(`/api/customers/${customerId.value}/equipment`)
-    equipment.value = Array.isArray(r) ? r : r?.items || r?.data || []
-  } catch (err) {
-    toast.add({ severity: 'error', summary: 'Equipment failed to load', detail: err.message, life: 3500 })
-  } finally {
-    loadingEquipment.value = false
-  }
-}
-
 // 2026-08-24: was `/api/customers/{id}/portal-account`, a ui_compat shim whose
 // GET returned a hardcoded {"exists": false, "account": null} — so this tab said
 // "No portal account." for every customer, and `last_login` below could never
@@ -504,7 +470,6 @@ const tabFetchers = {
   Estimates: fetchEstimates,
   Invoices: fetchInvoices,
   Locations: fetchLocations,
-  Equipment: fetchEquipment,
   Portal: fetchPortal,
 }
 

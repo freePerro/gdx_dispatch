@@ -138,8 +138,6 @@ RESOLVED_PAIRS = {
     ("POST", "/api/campaigns"): "gdx_dispatch.routers.campaigns",
     ("POST", "/api/campaigns/{campaign_id}/send"): "gdx_dispatch.routers.campaigns",
     ("GET", "/api/dispatch/locations"): "gdx_dispatch.routers.tech_locations",
-    ("GET", "/api/fleet/vehicles"): "gdx_dispatch.routers.fleet",
-    ("POST", "/api/fleet/vehicles"): "gdx_dispatch.routers.fleet",
     ("GET", "/api/inventory/parts"): "gdx_dispatch.routers.inventory",
     ("POST", "/api/inventory/parts"): "gdx_dispatch.routers.inventory",
     ("GET", "/api/inventory/low-stock"): "gdx_dispatch.routers.inventory",

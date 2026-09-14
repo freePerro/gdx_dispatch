@@ -1,9 +1,14 @@
 # Frontend ↔ backend contract gaps — 2026-08-12
 
 **Status:** **PARTIALLY FIXED** (verified 2026-08-21). C2's method mismatches
-are resolved (e.g. `equipment_tracking.py:215` now serves PATCH), and most of
+are resolved, and most of
 C6 — the fake-success class — was converted to a logged 501 via
 `ui_compat._not_implemented`.
+**Correction and retirement (2026-09-14, #683):** the example this line used to
+give — "`equipment_tracking.py:215` now serves PATCH" — was never true of the
+served app: that router had been unmounted since 2026-05-03. The whole equipment
+row is now moot: `EquipmentView`, the Fleet page and every equipment and fleet
+route were retired. The findings below are kept as the record.
 **C6 is now fully converted** (#391, merged 2026-08-21): the last three
 handlers refuse with a logged 501 and the `_ok()` helper is deleted. They were
 *shadowed* by real handlers at runtime — verified live, a PUT to a non-existent

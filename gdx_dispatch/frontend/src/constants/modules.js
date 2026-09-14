@@ -56,11 +56,9 @@ export const MODULE_CATEGORIES = [
       // where a pay period is grouped, exported and sent. They keep their
       // /timeclock and /timesheets routes, so bookmarks, Dispatch's "Fix"
       // deep link and the timesheet bell notification all still resolve.
-      { key: 'fleet', requires: 'equipment_tracking', label: 'Fleet', icon: 'pi pi-truck', to: '/fleet', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Vehicles' },
       { key: 'gps', requires: 'jobs', label: 'GPS', icon: 'pi pi-compass', to: '/gps', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Live GPS' },
       { key: 'maps', requires: 'google_maps', label: 'Maps', icon: 'pi pi-globe', to: '/maps', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Map' },
       { key: 'daily_loadsheet', label: 'Daily Load Sheet', icon: 'pi pi-check-square', to: '/daily-loadsheet', type: 'Operations', permission: 'nav.office' },
-      { key: 'equipment', label: 'Customer Equipment', icon: 'pi pi-cog', to: '/equipment', type: 'Operations', permission: 'nav.office' },
       // Office tier: the default /photos feed is /api/photos/recent, a tenant-wide
       // gallery restricted to dispatch/admin (a tech must not see other jobs'
       // customer-premises photos). Field-tier here showed techs a nav item that
@@ -268,7 +266,7 @@ export const NAV_CLUSTERS = [
   { key: 'reputation_hub', label: 'Reputation', icon: 'pi pi-star', description: 'Reviews, referrals & surveys' },
   { key: 'billing_hub', label: 'Billing', icon: 'pi pi-dollar', description: 'Invoices, payments, collections & reminders' },
   { key: 'marketing_hub', label: 'Marketing', icon: 'pi pi-megaphone', description: 'Campaigns, segments, event rules, winback & loyalty' },
-  { key: 'fleet_hub', label: 'Fleet', icon: 'pi pi-truck', description: 'Vehicles, live GPS & coverage map' },
+  { key: 'fleet_hub', label: 'Fleet', icon: 'pi pi-truck', description: 'Live GPS & coverage map' },
   { key: 'payroll_hub', label: 'Payroll', icon: 'pi pi-money-bill', description: "Timesheets, the crew's clock, pay periods & commissions" },
 ];
 

@@ -330,46 +330,6 @@
         <DoorSpecList :doors="doorSpecs" />
       </div>
 
-      <!-- PR A: the customer's installed equipment (door + opener specs).
-           Collapsed by default and fetched on first expand — an install/service
-           tech wants the unit details, but not at the cost of a GET on every
-           job open. Gated on the customer being known, same as Today's card. -->
-      <div v-if="customer?.id" class="detail-card">
-        <h2
-          class="equip-head"
-          data-testid="mjd-equipment-toggle"
-          @click="toggleEquipment"
-        >
-          <i class="pi pi-box" />
-          Install &amp; equipment
-          <i :class="['pi', equipOpen ? 'pi-chevron-up' : 'pi-chevron-down', 'equip-chevron']" />
-        </h2>
-        <template v-if="equipOpen">
-          <div v-if="equipLoading" class="muted">Loading…</div>
-          <ul v-else-if="(equipment || []).length" class="equip-list" data-testid="mjd-equipment-list">
-            <li v-for="e in equipment" :key="e.id" class="equip-item">
-              <div class="equip-line">
-                <Tag
-                  :value="equipTypeLabel(e.equipment_type)"
-                  :severity="e.equipment_type === 'garage_door' ? 'info' : 'secondary'"
-                />
-                <strong>{{ equipTitle(e) }}</strong>
-              </div>
-              <div
-                v-if="e.serial_number || e.installation_date || e.warranty_expires_on"
-                class="equip-meta"
-              >
-                <span v-if="e.serial_number">S/N {{ e.serial_number }}</span>
-                <span v-if="e.installation_date">Installed {{ e.installation_date }}</span>
-                <span v-if="e.warranty_expires_on">Warranty → {{ e.warranty_expires_on }}</span>
-              </div>
-              <div v-if="e.notes" class="equip-notes">{{ e.notes }}</div>
-            </li>
-          </ul>
-          <div v-else class="muted">No install/equipment on file for this site.</div>
-        </template>
-      </div>
-
       <!-- Always rendered, never `v-if="notes.length"`: the tech with nothing
            written yet is exactly the one who needs somewhere to write. -->
       <div class="detail-card">
@@ -1040,7 +1000,7 @@ import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue'
 import PhotoQueueFailedStrip from '../components/PhotoQueueFailedStrip.vue'
 import QueuedActionFailedStrip from '../components/QueuedActionFailedStrip.vue'
 import MobileInvoiceDialog from '../components/MobileInvoiceDialog.vue'
-// PR A (one-job-card plan): the quote / change-order / chat / equipment
+// PR A (one-job-card plan): the quote / change-order / chat
 // surfaces existed ONLY on Today's route card. A tech reaching a job any other
 // way — the Jobs list, a notification, an unscheduled "in the area" job — could
 // not build a quote, raise a change order, or message dispatch about it at all.
@@ -1122,7 +1082,7 @@ const clocks = ref(emptyClocks())
 const clockBusy = ref(false)
 const invoiceOpen = ref(false)
 
-// ─── PR A: quote / change order / chat / equipment ──────────────────
+// ─── PR A: quote / change order / chat ──────────────────────────────
 // Every one of these loads ON DEMAND, never at mount. test_mobile_job_cards
 // mocks api.get with mockResolvedValueOnce — exactly once — so an extra
 // mount-time GET resolves undefined and throws (July plan, trap #3).
@@ -1133,9 +1093,6 @@ const quotes = ref(null)          // null = never fetched, [] = fetched, empty
 const quotesLoading = ref(false)
 const changeOrderOpen = ref(false)
 const chatOpen = ref(false)
-const equipOpen = ref(false)
-const equipment = ref(null)       // null = never fetched
-const equipLoading = ref(false)
 
 const noteDraft = ref('')
 const noteBusy = ref(false)
@@ -1525,37 +1482,6 @@ function onQuoteAccepted(updated) {
 }
 function onQuoteDeclined(updated) {
   patchQuote(updated)
-}
-
-// ─── PR A: installed equipment ──────────────────────────────────────
-const EQUIP_TYPE_LABELS = {
-  garage_door: 'Door',
-  opener: 'Opener',
-  gate: 'Gate',
-  other: 'Equipment',
-}
-function equipTypeLabel(t) {
-  return EQUIP_TYPE_LABELS[t] || 'Equipment'
-}
-function equipTitle(e) {
-  const parts = [e.manufacturer, e.model].filter(Boolean).join(' ')
-  return parts || equipTypeLabel(e.equipment_type)
-}
-async function toggleEquipment() {
-  equipOpen.value = !equipOpen.value
-  if (!equipOpen.value) return
-  const cid = customer.value?.id
-  if (!cid || equipment.value !== null) return
-  equipLoading.value = true
-  try {
-    const r = await api.get(`/api/customers/${cid}/equipment`)
-    equipment.value = Array.isArray(r) ? r : r?.items || r?.data || []
-  } catch {
-    // equipment_tracking is an optional module — fail quiet, show "none".
-    equipment.value = []
-  } finally {
-    equipLoading.value = false
-  }
 }
 
 // Queued, not posted: a tech taps these in driveways and dead zones. postQueued
@@ -2396,7 +2322,7 @@ onMounted(() => {
 .readonly-banner .readonly-body { display: flex; flex-direction: column; gap: 0.5rem; }
 .readonly-banner .readonly-body :deep(.p-button) { align-self: flex-start; }
 
-/* ── PR A: job context, customer warnings, installed equipment ────────
+/* ── PR A: job context and customer warnings ─────────────────────────
    Theme tokens throughout, never literal colors: this screen is used in a
    dark garage and in a bright driveway, and jsdom applies no media queries
    so only a real browser proves either one. */
@@ -2412,24 +2338,6 @@ onMounted(() => {
   border-left: 3px solid var(--p-orange-500, #f97316);
   border-radius: 0.35rem; padding: 0.45rem 0.6rem;
 }
-.equip-head {
-  display: flex; align-items: center; gap: 0.45rem;
-  cursor: pointer; min-height: 44px;
-}
-.equip-chevron { margin-left: auto; font-size: 0.75rem; }
-.equip-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
-.equip-item {
-  border-top: 1px solid var(--p-content-border-color, #e5e7eb);
-  padding-top: 0.5rem;
-}
-.equip-item:first-child { border-top: 0; padding-top: 0; }
-.equip-line { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
-.equip-meta {
-  display: flex; flex-wrap: wrap; gap: 0.6rem;
-  font-size: 0.8rem; color: var(--p-text-muted-color, #6b7280); margin-top: 0.2rem;
-}
-.equip-notes { font-size: 0.83rem; margin-top: 0.2rem; color: var(--p-text-color, #111827); }
-.muted { color: var(--p-text-muted-color, #6b7280); font-size: 0.87rem; }
 .secondary-actions-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .secondary-actions-row > * { flex: 1 1 auto; min-height: 44px; }
 </style>

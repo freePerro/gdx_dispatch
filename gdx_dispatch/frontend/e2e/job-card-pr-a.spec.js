@@ -25,9 +25,9 @@ async function auth(page, baseURL) {
 
 test.use({ viewport: { width: 375, height: 812 } });
 
-// This walk needs a seeded job (on_site, Emergency, return visit, a tagged
-// customer with notes, and rows in customer_equipments -- NOT equipment_assets,
-// which is a different table behind a different endpoint). Without it the
+// This walk needs a seeded job (on_site, Emergency, return visit, and a tagged
+// customer with notes). The customer_equipments rows it once needed went with
+// the Install & equipment section (retired 2026-09-14, #683). Without it the
 // navigations would 404 and several assertions would pass vacuously, so refuse
 // to run rather than report a green nobody earned. Seed recipe: the one-job-card
 // plan's PR A section.
@@ -100,38 +100,12 @@ test('job context and the customer warning render', async ({ page, baseURL }) =>
   await expect(page.locator('[data-testid="mjd-customer-notes"]')).toContainText('Beware of dog');
 });
 
-test('equipment is NOT fetched until the tech expands it', async ({ page, baseURL }) => {
-  await auth(page, baseURL);
-  const equipCalls = [];
-  page.on('request', (r) => { if (r.url().includes('/equipment')) equipCalls.push(r.url()); });
-
-  await page.goto(`/mobile/jobs/${JOB}`);
-  await expect(page.locator('[data-testid="mjd-equipment-toggle"]')).toBeVisible({ timeout: 20000 });
-  await page.waitForTimeout(1200);
-  expect(equipCalls, 'equipment must not be fetched at mount').toHaveLength(0);
-
-  await page.locator('[data-testid="mjd-equipment-toggle"]').click();
-  await expect(page.locator('[data-testid="mjd-equipment-list"]')).toBeVisible({ timeout: 15000 });
-  expect(equipCalls.length, 'expanding must fetch exactly once').toBe(1);
-  await expect(page.locator('[data-testid="mjd-equipment-list"]')).toContainText('CHI');
-  await expect(page.locator('[data-testid="mjd-equipment-list"]')).toContainText('LiftMaster');
-
-  // Collapse + re-expand must not refetch — it is cached.
-  await page.locator('[data-testid="mjd-equipment-toggle"]').click();
-  await page.locator('[data-testid="mjd-equipment-toggle"]').click();
-  await page.waitForTimeout(600);
-  expect(equipCalls.length, 're-expanding must reuse the cache').toBe(1);
-});
-
 test('dark mode: the new sections are readable', async ({ page, baseURL }) => {
   await auth(page, baseURL);
   await page.addInitScript(() => localStorage.setItem('gdx_theme', 'dark'));
   await page.goto(`/mobile/jobs/${JOB}`);
   await expect(page.locator('[data-testid="mjd-job-context"]')).toBeVisible({ timeout: 20000 });
   expect(await page.evaluate(() => document.documentElement.getAttribute('data-theme'))).toBe('dark');
-  await page.locator('[data-testid="mjd-equipment-toggle"]').click();
-  await expect(page.locator('[data-testid="mjd-equipment-list"]')).toBeVisible({ timeout: 15000 });
-
   // Contrast is a real risk here: .customer-notes sets its own background.
   const contrast = await page.evaluate(() => {
     const el = document.querySelector('[data-testid="mjd-customer-notes"]');

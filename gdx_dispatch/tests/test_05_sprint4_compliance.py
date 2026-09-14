@@ -1,4 +1,3 @@
-from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -7,8 +6,6 @@ from sqlalchemy import select
 from gdx_dispatch.core.custom_fields import validate_custom_fields
 from gdx_dispatch.core.gdpr import delete_customer_data, export_customer_data
 from gdx_dispatch.models.tenant_models import Customer
-from gdx_dispatch.modules.fleet.models import Vehicle
-from gdx_dispatch.modules.fleet.service import get_due_maintenance, log_service
 
 
 def test_gdpr_export_customer(tenant_db):
@@ -28,18 +25,6 @@ def test_gdpr_hard_delete(tenant_db):
     delete_customer_data(str(c.id), tenant_db, hard=False); delete_customer_data(str(c.id), tenant_db, hard=True)  # noqa: E701,E702
     c2 = tenant_db.execute(select(Customer).where(Customer.id == c.id)).scalar_one()
     assert c2.name == "[DELETED]" and c2.email is None
-
-
-def test_fleet_service_log(tenant_db):
-    v = Vehicle(make="Ford", model="Transit", year=2022); tenant_db.add(v); tenant_db.commit(); tenant_db.refresh(v)  # noqa: E701,E702
-    log_service(v.id, "oil_change", 15000, datetime.now(UTC), 50.0, "Synthetic", tenant_db); tenant_db.refresh(v)  # noqa: E701,E702
-    assert v.last_service_odometer == 15000
-
-
-def test_fleet_due_maintenance(tenant_db):
-    v = Vehicle(make="Chevy", model="Express", year=2020, odometer=20000, last_service_odometer=10000, service_interval_miles=5000)
-    tenant_db.add(v); tenant_db.commit(); tenant_db.refresh(v)  # noqa: E701,E702
-    assert v.id in [row.id for row in get_due_maintenance(tenant_db)]
 
 
 def test_custom_fields_cx_prefix_validation():

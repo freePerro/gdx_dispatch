@@ -44,7 +44,7 @@ export const test = base.extend({
           // page was removed (#350). Keep it granted or the bell disappears.
           [
             'jobs', 'customers', 'estimates', 'invoices', 'dispatch', 'timeclock',
-            'inventory', 'quickbooks', 'customer_portal', 'equipment_tracking',
+            'inventory', 'quickbooks', 'customer_portal',
             'campaigns', 'gps_dispatch', 'ai_estimates', 'ai_dispatch',
             'ai_communication', 'stripe_connect', 'loyalty', 'warranties',
             'automations', 'documents', 'communications', 'reports_advanced',
