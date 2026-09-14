@@ -29,6 +29,9 @@ const toast = useToast()
 
 // Message ids we have already POSTed, so the 5s poll doesn't re-stamp them.
 const stamped = new Set()
+// Every receipt this dialog sends goes through this one queue (see
+// stampReadReceipts), across the 5s poll and across thread switches.
+let receiptQueue = Promise.resolve()
 
 const open = computed({
   get: () => props.visible,
@@ -99,9 +102,19 @@ async function stampReadReceipts() {
     (m) => m.id && !m.read_at && isTechnician(m.sender_role) && !stamped.has(m.id),
   )
   if (!pending.length) return
-  const results = await Promise.allSettled(
-    pending.map(async (m) => {
-      stamped.add(m.id)
+  // Claim every id BEFORE the first request, so a poll landing mid-queue does
+  // not pick the same messages up again.
+  for (const m of pending) stamped.add(m.id)
+  // One receipt in flight at a time — queued behind any batch still running,
+  // including one started by an earlier poll or for the previous thread. Each
+  // receipt writes a hash-chained audit row (#658), and core/audit.py's writer
+  // reads the newest hash and then inserts with no lock, so overlapping audited
+  // requests fork the chain. That race lives in core and other writers already
+  // reach it; this dialog must not add a burst of overlapping writes every time
+  // a dispatcher opens a thread.
+  const batch = receiptQueue.then(async () => {
+    let anyStamped = false
+    for (const m of pending) {
       try {
         const updated = await api.post(
           `/api/mobile/chat/${m.id}/read`,
@@ -109,15 +122,18 @@ async function stampReadReceipts() {
           { suppressErrorToast: true },
         )
         m.read_at = updated?.read_at || new Date().toISOString()
-      } catch (e) {
+        anyStamped = true
+      } catch {
+        // Unclaim it so the next poll retries.
         stamped.delete(m.id)
-        throw e
       }
-    }),
-  )
-  // Only tell the parent when something actually changed server-side — an
-  // all-failed round must not trigger a thread-list refetch every 5s.
-  if (results.some((r) => r.status === 'fulfilled')) emit('read')
+    }
+    // Only tell the parent when something actually changed server-side — an
+    // all-failed round must not trigger a thread-list refetch every 5s.
+    if (anyStamped) emit('read')
+  })
+  receiptQueue = batch
+  return batch
 }
 
 function scrollToBottom() {
