@@ -25,6 +25,11 @@ def tenant_db_session():
     )
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     db = Session()
+    # From the ORM, not hand DDL: report "today" is the shop's day, read from
+    # app_settings.timezone (#444).
+    from gdx_dispatch.models.tenant_models import AppSettings
+
+    AppSettings.__table__.create(bind=engine, checkfirst=True)
 
     db.execute(
         text(
@@ -512,6 +517,17 @@ def test_summary_respects_explicit_date_range(tenant_db_session):
 
 
 def test_daily_snapshot_returns_today_metrics(tenant_db_session):
+    # Pinned to noon Central, when the UTC and shop calendars agree: this
+    # checks the metric wiring. "Today" is the shop's day (#444), and a real
+    # clock read after 7pm Central seeds rows on tomorrow's UTC date — the
+    # evening itself is covered by test_invoice_shop_day_readers.py.
+    from freezegun import freeze_time
+
+    with freeze_time("2026-09-14 17:00:00"):
+        _daily_snapshot_returns_today_metrics(tenant_db_session)
+
+
+def _daily_snapshot_returns_today_metrics(tenant_db_session):
     now = datetime.now(UTC)
     cust = _seed_customer(tenant_db_session, name="Charlie")
     today_job = _seed_job(

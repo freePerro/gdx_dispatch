@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.collections import PaymentReminder
 
@@ -394,7 +395,7 @@ def preview_reminder(
 
 
 def _reminder_context(db: Session, invoice) -> dict[str, Any]:
-    from datetime import UTC, date, datetime
+    from datetime import UTC, datetime
 
     from gdx_dispatch.core.email_recipients import resolve_recipient
     from gdx_dispatch.core.payments import public_pay_url
@@ -408,7 +409,8 @@ def _reminder_context(db: Session, invoice) -> dict[str, Any]:
     recipient = resolve_recipient(db, customer) if customer is not None else None
     days_overdue = 0
     if invoice.due_date:
-        days_overdue = max((date.today() - invoice.due_date).days, 0)
+        # Shop day, the calendar invoice due dates are written in (#444).
+        days_overdue = max((shop_today_from_settings(db) - invoice.due_date).days, 0)
     _ = datetime.now(UTC)
     # The one thing a collections email must do is let the customer pay —
     # public_pay_url returns None unless the link would actually charge, so
@@ -516,7 +518,6 @@ def compute_due_sends(db: Session, settings: ReminderSettings) -> list[dict[str,
     dunning-paused, days_overdue >= T, and no PaymentReminder already
     recorded for that invoice at that threshold (threshold_days is the
     idempotency key; manual NULL-threshold logs never suppress)."""
-    from datetime import date as _date
 
     from gdx_dispatch.models.tenant_models import Invoice
 
@@ -528,7 +529,8 @@ def compute_due_sends(db: Session, settings: ReminderSettings) -> list[dict[str,
     if not thresholds:
         return []
 
-    today = _date.today()
+    # Shop day, the calendar invoice due dates are written in (#444).
+    today = shop_today_from_settings(db)
     overdue = db.execute(
         select(Invoice).where(
             Invoice.deleted_at.is_(None),

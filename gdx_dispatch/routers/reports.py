@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import (
     Customer,
     Invoice,
@@ -295,7 +296,8 @@ def _summary_window(db: Session, start_dt: str, end_dt: str, today: date | None 
     # The legacy `Invoice.status == "overdue"` filter returned 0 on prod
     # because the QB import never sets that status. Computing from the
     # underlying columns matches what /billing's "Overdue" tab shows.
-    today = today or datetime.now(UTC).date()
+    # Shop day, the calendar invoice due dates are written in (#444).
+    today = today or shop_today_from_settings(db)
     overdue_invoices = db.scalar(
         select(func.count()).where(
             Invoice.deleted_at.is_(None),
@@ -747,7 +749,13 @@ def daily_snapshot(
     # the QB import landed 165 jobs 14 days ago — all "today". Force a
     # single-day window when the caller doesn't specify.
     if not start_date and not end_date:
-        today = datetime.now(UTC).date()
+        # The shop's today (#444). Exact for everything keyed on a DATE —
+        # today's revenue (invoice_date) and the overdue cutoff. The job
+        # TIMESTAMP counts below still use this date's UTC-midnight bounds
+        # (7pm-7pm Central), which is nearer the shop's day than the UTC date
+        # was (that window dropped every daytime job at 7pm); local-midnight
+        # bounds are deferred, not claimed.
+        today = shop_today_from_settings(db)
         start_date = today.isoformat()
         end_date = today.isoformat()
     start_dt, end_dt, resolved_end = _resolve_date_range(start_date, end_date)
@@ -1474,6 +1482,11 @@ def cash_risk_kpis(
     today = now.date()
     last30_start_dt = datetime.combine(today - timedelta(days=29), time.min, tzinfo=UTC)
     tomorrow_start_dt = datetime.combine(today + timedelta(days=1), time.min, tzinfo=UTC)
+    # Aging counts days past a due DATE, and due dates are written on the
+    # shop's calendar (#444) — age on the shop's today, as /collections/aging
+    # does, or the two disagree every evening. The timestamp windows above
+    # stay on UTC bounds: moving them would drop evening payments.
+    shop_today = shop_today_from_settings(db, now=now)
 
     # AR aging: anchor on due_date, exclude paid/draft/void, exclude
     # invoices not yet due. Mirror the canonical reports.py semantics
@@ -1496,7 +1509,7 @@ def cash_risk_kpis(
     }
     total_outstanding = 0.0
     for inv in invoices:
-        days_overdue = (today - inv.due_date).days
+        days_overdue = (shop_today - inv.due_date).days
         if days_overdue < 0:
             continue
         # M35: the fallback arm used to subtract `amount_paid`, a cache nothing

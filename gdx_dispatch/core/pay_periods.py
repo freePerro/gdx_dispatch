@@ -315,6 +315,47 @@ def shop_today(tz_name: Any, *, now: datetime | None = None) -> date:
     return moment.astimezone(resolve_zone(tz_name)).date()
 
 
+_SHOP_TZ_SESSION_KEY = "gdx_shop_timezone"
+
+
+def shop_today_from_settings(db: Any, *, now: datetime | None = None) -> date:
+    """Today in the shop's own zone (``AppSettings.timezone``).
+
+    The date a new business record should carry, AND the "today" any check
+    against those dates must use. The containers run on UTC, so
+    ``date.today()`` is TOMORROW for the last five or six hours of every
+    Minnesota evening — 18 prod invoices were dated that way before #444, and
+    an overdue check left on the UTC day marks a due-on-receipt invoice
+    written that evening overdue the moment it exists.
+
+    A missing row or zone falls back to America/New_York, the column default
+    and the fallback the timeclock and bank-feed readers already use. The zone
+    name is kept in ``Session.info`` for the life of the session (a request),
+    so serializing a page of invoices costs one query, not one per row.
+    """
+    info = getattr(db, "info", None)
+    tz_name = info.get(_SHOP_TZ_SESSION_KEY) if isinstance(info, dict) else None
+    if tz_name is None:
+        from gdx_dispatch.models.tenant_models import AppSettings  # noqa: PLC0415
+
+        tz_name = db.query(AppSettings.timezone).limit(1).scalar() or "America/New_York"
+        if isinstance(info, dict):
+            info[_SHOP_TZ_SESSION_KEY] = tz_name
+    return shop_today(tz_name, now=now)
+
+
+def shop_today_for(instance: Any, *, now: datetime | None = None) -> date:
+    """``shop_today_from_settings`` for code holding an ORM row but no session
+    (a serializer). A row with no session — never persisted, or detached —
+    falls back to the same America/New_York default."""
+    from sqlalchemy.orm import object_session  # noqa: PLC0415
+
+    session = object_session(instance)
+    if session is None:
+        return shop_today("America/New_York", now=now)
+    return shop_today_from_settings(session, now=now)
+
+
 def shop_day_of(value: Any, tz_name: Any) -> date | None:
     """The shop-local calendar day an instant belongs to.
 

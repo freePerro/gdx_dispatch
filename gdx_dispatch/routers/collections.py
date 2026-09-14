@@ -5,7 +5,7 @@ Port of archive/dispatch_flask/blueprints/api_collections.py + api_invoice_remin
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.routers.auth import get_current_user
 
 router = APIRouter(
@@ -155,7 +156,8 @@ def aging_report(
     """
     from gdx_dispatch.models.tenant_models import Invoice  # lazy import to avoid circular
 
-    today = date.today()
+    # Shop day, the calendar invoice due dates are written in (#444).
+    today = shop_today_from_settings(db)
     buckets = {
         "current": {"label": "Current (0-30)", "min": 0, "max": 30, "count": 0, "total": 0.0, "invoices": []},
         "bucket_31_60": {"label": "31-60 Days", "min": 31, "max": 60, "count": 0, "total": 0.0, "invoices": []},
@@ -278,7 +280,8 @@ def list_collections(
 
     from gdx_dispatch.models.tenant_models import Customer, Invoice
 
-    today = utcnow().date()
+    # Shop day, the calendar invoice due dates are written in (#444).
+    today = shop_today_from_settings(db)
     rows = db.execute(
         select(Invoice, Customer.name)
         .join(Customer, Customer.id == Invoice.customer_id, isouter=True)

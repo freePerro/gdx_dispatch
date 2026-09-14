@@ -27,6 +27,7 @@ from sqlalchemy import func, select
 from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import SessionLocal
 from gdx_dispatch.core.next_action import NextAction
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import Invoice, PaymentReminder
 
 log = logging.getLogger(__name__)
@@ -129,7 +130,10 @@ def _weekly_nudge(db, tenant_id: str, settings) -> bool:
             Invoice.status == "sent",
             Invoice.balance_due > 0,
             Invoice.due_date.is_not(None),
-            Invoice.due_date < datetime.now(UTC).date(),
+            # Shop day, the calendar invoice due dates are written in (#444).
+            # `now` from this module's clock, so a test that fakes it controls
+            # the cutoff too (test_dunning_pr6 weekly-nudge).
+            Invoice.due_date < shop_today_from_settings(db, now=datetime.now(UTC)),
         )
     ).first()
     overdue_count = int(row[0] or 0)

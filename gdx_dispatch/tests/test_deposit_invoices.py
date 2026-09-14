@@ -730,3 +730,88 @@ def test_tier_deposit_nets_fully_on_final(db):
     inv = db.get(Invoice, UUID(resp["id"]))
     assert float(inv.total) == pytest.approx(4000.0)
     assert float(inv.balance_due) == pytest.approx(4000.0)
+
+
+# ── #444: an invoice carries the SHOP's date, not the UTC server's ─────────
+# 04:30 UTC on 14 Sep is 23:30 on the 13th in America/Chicago but already
+# 00:30 on the 14th in New York (the fallback) and in UTC (date.today() on the
+# container) — so each test fails both for the UTC clock and for a path that
+# ignores the configured zone. 18 prod invoices were dated a day ahead.
+
+_EVENING_UTC = "2026-09-14 04:30:00"
+_SHOP_DAY = date(2026, 9, 13)
+
+
+def _shop_in_chicago(db) -> None:
+    from gdx_dispatch.models.tenant_models import AppSettings
+
+    db.add(AppSettings(timezone="America/Chicago"))
+    db.commit()
+
+
+def test_deposit_invoice_is_dated_the_shop_day_not_the_utc_day(db):
+    from freezegun import freeze_time
+
+    _shop_in_chicago(db)
+    cust = _seed_customer(db)
+    job = _seed_job(db, cust)
+    est = _seed_estimate(db, cust, job=job)
+
+    with freeze_time(_EVENING_UTC):
+        inv = _make_deposit(db, est, 250.0)
+
+    assert inv.invoice_date == _SHOP_DAY
+    assert inv.due_date == _SHOP_DAY  # due on receipt
+
+
+def test_office_invoice_defaults_to_the_shop_day_not_the_utc_day(db):
+    from freezegun import freeze_time
+
+    _shop_in_chicago(db)
+    cust = _seed_customer(db)
+    job = _seed_job(db, cust)
+    est = _seed_estimate(db, cust, job=job)
+
+    with freeze_time(_EVENING_UTC):
+        resp = _make_final(db, est, job)
+
+    final = db.get(Invoice, UUID(resp["id"]))
+    assert final.invoice_date == _SHOP_DAY
+    # Terms can't resolve in this harness, so create_invoice takes its 30-day
+    # fallback — counted from the shop day, not the UTC one.
+    from datetime import timedelta
+
+    assert final.due_date == _SHOP_DAY + timedelta(days=30)
+
+
+def test_an_evening_deposit_is_not_overdue_the_moment_it_exists(db):
+    """/audit on #444: dating invoices in shop time while the overdue checks
+    stayed on the UTC day made a due-on-receipt deposit, sent at creation,
+    read "overdue" for the whole evening — on the invoice and in the Billing
+    summary's Overdue total. A really overdue invoice must still count."""
+    from datetime import timedelta
+
+    from freezegun import freeze_time
+    from starlette.requests import Request
+
+    from gdx_dispatch.routers.invoices import _effective_status, billing_summary
+
+    _shop_in_chicago(db)
+    cust = _seed_customer(db)
+    job = _seed_job(db, cust)
+    est = _seed_estimate(db, cust, job=job)
+    with freeze_time(_EVENING_UTC):
+        dep = _make_deposit(db, est, 250.0)
+        assert dep.status == "sent" and dep.due_date == _SHOP_DAY
+        assert _effective_status(dep) == "sent"
+
+        late_est = _seed_estimate(db, cust, job=_seed_job(db, cust))
+        late = _make_deposit(db, late_est, 100.0)
+        late.due_date = _SHOP_DAY - timedelta(days=1)
+        db.commit()
+        assert _effective_status(late) == "overdue"
+
+        req = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
+        req.state.tenant = {"id": "tenant-1"}
+        summary = billing_summary(request=req, _=USER, db=db)
+    assert summary["overdue"] == pytest.approx(100.0)

@@ -317,10 +317,19 @@ def test_create_invoice_sets_invoice_date_d99(tenant_db_session):
     against $712k of real revenue. Default to today; honour explicit
     payload value.
     """
+    from freezegun import freeze_time
+
+    from gdx_dispatch.models.tenant_models import AppSettings
+
+    # "Today" is the SHOP's today (#444). Asserting against date.today() read
+    # the UTC clock and failed every evening once invoices were dated in
+    # shop time: 04:30 UTC on 14 Sep is still the 13th in America/Chicago.
+    tenant_db_session.add(AppSettings(timezone="America/Chicago"))
+    tenant_db_session.commit()
     job = _seed_job(tenant_db_session)
-    today = date.today()
-    data = create_invoice(payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id), _=_current_user(), db=tenant_db_session)
-    assert data["invoice_date"] == today.isoformat()
+    with freeze_time("2026-09-14 04:30:00"):
+        data = create_invoice(payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id), _=_current_user(), db=tenant_db_session)
+    assert data["invoice_date"] == date(2026, 9, 13).isoformat()
 
     explicit = date(2026, 1, 15)
     data2 = create_invoice(

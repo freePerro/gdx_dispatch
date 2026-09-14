@@ -1073,3 +1073,32 @@ def test_send_receipt_branded_body_and_pipeline(session_factory, monkeypatch):
         assert "<table role=\"presentation\"" in html
     finally:
         db.close()
+
+
+def test_truck_invoice_is_dated_the_shop_day_not_the_utc_day(session_factory):
+    """#444: 04:30 UTC on 14 Sep is 23:30 on the 13th in America/Chicago, and
+    already the 14th in UTC and in the New York fallback. A truck
+    invoice written that evening was dated the 14th."""
+    from datetime import date, timedelta
+
+    from freezegun import freeze_time
+
+    from gdx_dispatch.models.tenant_models import AppSettings
+
+    seed = _seed(session_factory)
+    db = session_factory()
+    try:
+        db.add(AppSettings(timezone="America/Chicago"))
+        db.commit()
+        with freeze_time("2026-09-14 04:30:00"), patch("gdx_dispatch.routers.mobile_invoicing._send_invoice_email"):
+            resp = mobile_invoicing.mobile_create_invoice(
+                job_id=seed["job_id"],
+                payload=mobile_invoicing.CreateInvoiceIn(send_email=False),
+                request=_request(), current_user=_TEST_USER, db=db,
+            )
+        assert resp.status_code == 201
+        body = _as_json(resp)
+        assert body["invoice_date"] == date(2026, 9, 13).isoformat()
+        assert body["due_date"] == (date(2026, 9, 13) + timedelta(days=30)).isoformat()
+    finally:
+        db.close()
