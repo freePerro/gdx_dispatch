@@ -41,6 +41,9 @@ class TechnicianCreate(BaseModel):
     name: str | None = Field(default=None, max_length=200)
     email: str | None = Field(default=None, max_length=254)
     phone: str | None = Field(default=None, max_length=50)
+    # #683: the create form's "Active (dispatchable)" box was dropped here and
+    # every new technician was stored active. Omitted still means active.
+    active: bool | None = None
 
 
 class TechnicianPatch(BaseModel):
@@ -292,7 +295,7 @@ def create_technician(
         phone=(payload.phone or "").strip() or None,
         skills=skills_json,
         hourly_rate=payload.hourly_rate,
-        active=True,
+        active=True if payload.active is None else payload.active,
         created_at=now,
         updated_at=now,
     )
@@ -307,7 +310,7 @@ def create_technician(
         action="technician_created",
         entity_type="technician",
         entity_id=str(tech.id),
-        details={"user_id": tech.user_id},
+        details={"user_id": tech.user_id, "active": bool(tech.active)},
         ip_address=request.client.host if request.client else None,
         request=request,
     )

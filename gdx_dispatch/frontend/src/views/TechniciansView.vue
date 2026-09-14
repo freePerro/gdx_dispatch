@@ -87,10 +87,11 @@
             <small class="muted">e.g., Torsion spring, Commercial doors, Smart openers, Electrical</small>
           </div>
           <!-- Certifications and work-hours fields removed (Tier-6): the
-               backend has no columns for them — every value typed here was
-               silently dropped while the toast said saved. Work hours live on
-               the user's dispatch-capacity shift override; certifications can
-               ride in Skills until a real column exists. -->
+               technicians table has no columns for them — every value typed
+               here was silently dropped while the toast said saved. Both live
+               on the person's user record instead: work hours as the
+               dispatch-capacity shift override, certifications in the Users
+               page's edit dialog (saved since #683). -->
           <div class="form-field full-width">
             <div class="checkbox-row">
               <Checkbox v-model="form.active" :binary="true" inputId="tech-active" />

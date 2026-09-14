@@ -71,6 +71,10 @@ class UserPatchIn(BaseModel):
     shift_start: time | None = None
     shift_end: time | None = None
     workdays: int | None = Field(default=None, ge=1, le=127)
+    # #683: UsersView has always sent this. `users.certifications` is a real
+    # column, but the model never declared it, so a typed value was dropped
+    # and the dialog toasted "saved". Null clears it.
+    certifications: str | None = Field(default=None, max_length=2000)
 
 
 class SelfPatchIn(BaseModel):
@@ -166,6 +170,7 @@ def _serialize(u: User) -> dict[str, Any]:
         "shift_start": u.shift_start.isoformat(timespec="minutes") if u.shift_start else None,
         "shift_end": u.shift_end.isoformat(timespec="minutes") if u.shift_end else None,
         "workdays": int(u.workdays) if u.workdays is not None else None,
+        "certifications": u.certifications or "",
     }
 
 
@@ -353,6 +358,8 @@ def update_user(user_id: str, payload: UserPatchIn, request: Request, user: dict
         u.shift_end = data["shift_end"]
     if "workdays" in data:
         u.workdays = data["workdays"]
+    if "certifications" in data:
+        u.certifications = (data["certifications"] or "").strip() or None
     u.updated_at = utcnow()
     db.commit()
     _audit(db, request=request, user=user, action="user_updated", entity_id=user_id, details={"changed_fields": list(data.keys())})
