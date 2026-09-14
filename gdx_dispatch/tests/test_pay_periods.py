@@ -325,3 +325,72 @@ def test_a_typo_is_reported_and_a_real_address_is_not():
     assert invalid_recipient_emails("bookkeeper@example.com") == []
     assert invalid_recipient_emails("bookkeeper@example, ok@x.com") == ["bookkeeper@example"]
     assert invalid_recipient_emails("no-at-sign") == ["no-at-sign"]
+
+
+# ── shop_today_from_settings (#444) ──────────────────────────────────────
+
+
+def test_shop_today_from_settings_reads_the_shop_zone():
+    from datetime import UTC
+
+    from sqlalchemy.orm import sessionmaker
+
+    from gdx_dispatch.core.pay_periods import shop_today_for, shop_today_from_settings
+    from gdx_dispatch.models.tenant_models import AppSettings
+    from gdx_dispatch.tests.conftest import make_fresh_db
+
+    # 04:30 UTC on 14 Sep: 23:30 on the 13th in Chicago, 00:30 on the 14th in
+    # New York, the 14th in UTC — three zones, two answers, one right one.
+    moment = datetime(2026, 9, 14, 4, 30, tzinfo=UTC)
+    engine = make_fresh_db()
+    Session = sessionmaker(bind=engine)
+    try:
+        with Session() as db:
+            # No settings row: the column default, America/New_York.
+            assert shop_today_from_settings(db, now=moment) == date(2026, 9, 14)
+            db.add(AppSettings(timezone="America/Chicago"))
+            db.commit()
+        # A fresh session (the zone is cached per session, i.e. per request).
+        with Session() as db:
+            assert shop_today_from_settings(db, now=moment) == date(2026, 9, 13)
+            row = db.query(AppSettings).first()
+            assert shop_today_for(row, now=moment) == date(2026, 9, 13)
+        # A row with no session falls back to New York.
+        assert shop_today_for(AppSettings(timezone="America/Chicago"), now=moment) == date(2026, 9, 14)
+    finally:
+        engine.dispose()
+
+
+def test_shop_today_from_settings_reads_the_zone_once_per_session():
+    """Serializing a page of invoices calls this once per row; the zone must be
+    read once per session, not once per row (#444)."""
+    from datetime import UTC
+
+    from sqlalchemy import event
+    from sqlalchemy.orm import sessionmaker
+
+    from gdx_dispatch.core.pay_periods import shop_today_from_settings
+    from gdx_dispatch.models.tenant_models import AppSettings
+    from gdx_dispatch.tests.conftest import make_fresh_db
+
+    engine = make_fresh_db()
+    Session = sessionmaker(bind=engine)
+    reads: list[str] = []
+
+    def _count(conn, cursor, statement, parameters, context, executemany):
+        if "app_settings" in statement.lower():
+            reads.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _count)
+    try:
+        with Session() as db:
+            db.add(AppSettings(timezone="America/Chicago"))
+            db.commit()
+            reads.clear()
+            moment = datetime(2026, 9, 14, 4, 30, tzinfo=UTC)
+            days = {shop_today_from_settings(db, now=moment) for _ in range(25)}
+        assert days == {date(2026, 9, 13)}
+        assert len(reads) == 1, f"{len(reads)} app_settings reads for 25 calls"
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)
+        engine.dispose()

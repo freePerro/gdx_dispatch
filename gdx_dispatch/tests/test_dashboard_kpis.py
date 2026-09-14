@@ -119,6 +119,11 @@ def kpi_db():
         )
     """))
     db.commit()
+    # From the ORM, not hand DDL: cash-risk aging reads the shop's today from
+    # app_settings.timezone (#444).
+    from gdx_dispatch.models.tenant_models import AppSettings
+
+    AppSettings.__table__.create(bind=engine, checkfirst=True)
     try:
         yield db
     finally:

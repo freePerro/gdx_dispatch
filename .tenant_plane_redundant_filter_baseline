@@ -153,7 +153,7 @@
   "gdx_dispatch/routers/gps.py:T6:TechnicianLocation.company_id:181",
   "gdx_dispatch/routers/gps.py:T6:TechnicianLocation.company_id:237",
   "gdx_dispatch/routers/gps.py:T6:TechnicianLocation.company_id:287",
-  "gdx_dispatch/routers/invoice_reminders.py:T6:ReminderSettings.company_id:148",
+  "gdx_dispatch/routers/invoice_reminders.py:T6:ReminderSettings.company_id:149",
   "gdx_dispatch/routers/job_costing.py:T6:Invoice.company_id:559",
   "gdx_dispatch/routers/job_costing.py:T6:Invoice.company_id:864",
   "gdx_dispatch/routers/job_costing.py:T6:MarkupRule.company_id:119",
@@ -251,6 +251,6 @@
   "gdx_dispatch/routers/winback.py:T6:FollowUp.company_id:177",
   "gdx_dispatch/routers/winback.py:T6:WinbackCampaign.company_id:164",
   "gdx_dispatch/tasks/billing_followup.py:T5:NextAction.tenant_id:140",
-  "gdx_dispatch/tasks/invoice_reminders_auto.py:T5:NextAction.tenant_id:116",
-  "gdx_dispatch/tasks/invoice_reminders_auto.py:T5:NextAction.tenant_id:148"
+  "gdx_dispatch/tasks/invoice_reminders_auto.py:T5:NextAction.tenant_id:117",
+  "gdx_dispatch/tasks/invoice_reminders_auto.py:T5:NextAction.tenant_id:152"
 ]

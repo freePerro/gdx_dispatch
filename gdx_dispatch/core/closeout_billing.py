@@ -28,13 +28,14 @@ from __future__ import annotations
 import logging
 import secrets
 import uuid as _uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import or_, select, update
 from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.core.quantities import recorded_quantity, zero_quantity_verdict
 from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Job, JobCloseout, JobPartNeeded
 from gdx_dispatch.modules.proposals.models import Estimate
@@ -522,7 +523,9 @@ def autodraft_invoice_for_closeout(
                 customer_id = _uuid.UUID(str(customer_id))
             except (ValueError, AttributeError):
                 return None
-        today = date.today()
+        # The shop's today, not the UTC server's — a closeout after ~7pm
+        # Central auto-drafted an invoice dated tomorrow (#444).
+        today = shop_today_from_settings(db)
         inv = Invoice(
             id=_uuid.uuid4(),
             job_id=job.id,

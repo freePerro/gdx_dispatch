@@ -20,6 +20,7 @@ from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, re
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.invoice_delivery import require_deliverable
 from gdx_dispatch.core.modules import require_module, require_permission
+from gdx_dispatch.core.pay_periods import shop_today_for, shop_today_from_settings
 from gdx_dispatch.core.pricing_provenance import (
     COST_FORBIDDEN,
     build_invoice_line,
@@ -100,7 +101,15 @@ def _iso_dt(value: datetime | None) -> str | None:
 
 
 def _effective_status(invoice: Invoice) -> str:
-    if invoice.status == "sent" and invoice.due_date and invoice.due_date < date.today() and _to_float(invoice.balance_due) > 0:
+    # The shop's today, the same day invoice and due dates are written in
+    # (#444). On the UTC day, a due-on-receipt deposit sent after ~7pm Central
+    # read "overdue" the moment it was created.
+    if (
+        invoice.status == "sent"
+        and invoice.due_date
+        and invoice.due_date < shop_today_for(invoice)
+        and _to_float(invoice.balance_due) > 0
+    ):
         return "overdue"
     return invoice.status
 
@@ -961,8 +970,11 @@ def billing_summary(
     aggregate over the full table, not a windowed scan — fast even at
     100k+ invoices.
     """
-    today = datetime.now(UTC).date()
-    month_start = today.replace(day=1)
+    # Overdue compares due DATES, written on the shop's calendar (#444): use
+    # the shop's today. "Paid this month" compares a UTC timestamp, so its
+    # month start stays on the UTC day, as before.
+    today = shop_today_from_settings(db)
+    month_start = datetime.now(UTC).date().replace(day=1)
     _amount = Invoice.total
     _balance = func.coalesce(Invoice.balance_due, _amount)
 
@@ -1243,8 +1255,10 @@ def create_invoice(
 
     # D99 (an earlier session): invoice_date was never set on creation, so every
     # period-filtered metric (Dashboard Revenue, Reports, etc.) read $0
-    # against $712k of underlying invoices. Default to today.
-    invoice_date_value = payload.invoice_date or date.today()
+    # against $712k of underlying invoices. Default to today — the SHOP's
+    # today: the server clock is UTC, so date.today() dated every evening
+    # invoice tomorrow (#444). The office create screen sends no date.
+    invoice_date_value = payload.invoice_date or shop_today_from_settings(db)
     # F-36 / 2026-04-29 — payment terms come from billing_terms resolver:
     #   customer.payment_terms_days → tenant.{class}_payment_terms_days
     #   → tenant.default_payment_terms_days
@@ -4064,14 +4078,13 @@ def _payment_plans_enabled(db: Session) -> bool:
     return bool(row and getattr(row, "payment_plans_enabled", False))
 
 
-def _plan_out(plan, installments, *, invoice=None, db=None) -> dict[str, object]:
+def _plan_out(plan, installments, *, invoice=None, db: Session) -> dict[str, object]:
     """Audit round 2: nothing ever WRITES installment statuses (payments
     arrive through the normal paths, nothing auto-charges), so the stored
     'pending' would read as a lie on a paid invoice. Derive the display
     status at read time from money that actually arrived: an installment is
     'covered' once cumulative paid reaches its slice, else 'overdue' past
     its due date, else 'pending'."""
-    from datetime import date as _date
 
     paid = 0.0
     if invoice is not None and db is not None:
@@ -4081,7 +4094,8 @@ def _plan_out(plan, installments, *, invoice=None, db=None) -> dict[str, object]
             paid = float(paid_to_date(db, invoice.id))
         except Exception:
             paid = 0.0
-    today = _date.today()
+    # Shop day, the calendar the installment due dates are set in (#444).
+    today = shop_today_from_settings(db)
     out_installments = []
     cumulative = 0.0
     for i in installments:

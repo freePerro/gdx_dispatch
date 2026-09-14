@@ -25,13 +25,14 @@ from __future__ import annotations
 
 import logging
 import secrets
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import (
     Invoice,
     InvoiceAdjustment,
@@ -241,6 +242,7 @@ def create_deposit_invoice(
         raise DepositError("exceeds_estimate_total")
 
     now = datetime.now(UTC)
+    shop_today = shop_today_from_settings(db, now=now)
     company_id = str(tenant_id or estimate.company_id or "")
     invoice = Invoice(
         id=uuid4(),
@@ -256,8 +258,9 @@ def create_deposit_invoice(
         balance_due=amount_dec,
         status="draft",
         # Due on receipt — a deposit is the "before we order doors" money.
-        invoice_date=date.today(),
-        due_date=date.today(),
+        # The shop's today, not the UTC server's (#444).
+        invoice_date=shop_today,
+        due_date=shop_today,
         notes=f"Deposit for Estimate {estimate.estimate_number}",
         public_token=secrets.token_urlsafe(48)[:64],
         locked=False,

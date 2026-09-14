@@ -29,7 +29,7 @@ from __future__ import annotations
 import json as _json
 import logging
 import secrets
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID as _UUID
@@ -46,6 +46,7 @@ from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.invoice_paid import paid_to_date
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.core.quantities import recorded_quantity, zero_quantity_verdict
 from gdx_dispatch.models.tenant_models import (
     Customer,
@@ -511,7 +512,9 @@ def mobile_create_invoice(
             {"detail": "Job has no customer assigned — set a customer before invoicing"},
             400,
         )
-    invoice_date_value = date.today()
+    # The shop's today, not the UTC server's: a truck invoice written after
+    # ~7pm Central was dated tomorrow (#444).
+    invoice_date_value = shop_today_from_settings(db)
     due_date_value = invoice_date_value + timedelta(days=30)
 
     # M9 (money audit 2026-08-04): capture the RATE, not just the dollar tax.

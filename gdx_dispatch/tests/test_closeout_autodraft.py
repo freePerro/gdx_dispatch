@@ -740,3 +740,33 @@ def test_autodraft_part_line_carries_part_id(db) -> None:
     hinge = [line for line in lines if "hinge" in (line.description or "").lower()]
     assert len(hinge) == 1
     assert hinge[0].part_id == row.id
+
+
+def test_autodraft_is_dated_the_shop_day_not_the_utc_day(db) -> None:
+    """#444: 04:30 UTC on 14 Sep is 23:30 on the 13th in America/Chicago, and
+    already the 14th in UTC and in the New York fallback. A
+    closeout that evening auto-drafted an invoice dated the 14th."""
+    from datetime import date, timedelta
+
+    from freezegun import freeze_time
+
+    from gdx_dispatch.models.tenant_models import AppSettings
+
+    db.add(AppSettings(timezone="America/Chicago"))
+    db.commit()
+    job = _seed_job(db)
+    part = _seed_part(db, sell=45.00)
+
+    with freeze_time("2026-09-14 04:30:00"):
+        resp = _closeout(
+            db, job,
+            hours=2.0,
+            techs_on_site=1,
+            no_parts_used=False,
+            parts=[CloseoutPart(part_id=str(part.id), sku=part.sku, name=part.name, qty=1, unit_cost=20.0)],
+        )
+
+    assert resp.status_code == 201
+    (inv,) = _invoices(db, job)
+    assert inv.invoice_date == date(2026, 9, 13)
+    assert inv.due_date == date(2026, 9, 13) + timedelta(days=30)
