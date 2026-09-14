@@ -271,26 +271,6 @@
             <div v-else class="state-msg"><span class="muted">No equipment on file.</span></div>
           </div>
 
-          <!-- Recurring Jobs -->
-          <div v-else-if="activeTab === 'Recurring'" data-test="mcd-tab-recurring">
-            <div v-if="loadingRecurring" class="state-msg"><i class="pi pi-spin pi-spinner" /></div>
-            <ol v-else-if="recurring.length" class="card-list">
-              <li
-                v-for="r in recurring"
-                :key="r.id"
-                class="row-card"
-                data-test="mcd-recurring-row"
-              >
-                <div class="row-top">
-                  <span class="row-title">{{ r.title || r.template_name || 'Recurring' }}</span>
-                  <span v-if="r.frequency" class="muted">{{ r.frequency }}</span>
-                </div>
-                <div v-if="r.next_run_at" class="row-meta muted">Next: {{ fmtDate(r.next_run_at) }}</div>
-              </li>
-            </ol>
-            <div v-else class="state-msg"><span class="muted">No recurring jobs.</span></div>
-          </div>
-
           <!-- Portal -->
           <div v-else-if="activeTab === 'Portal'" data-test="mcd-tab-portal">
             <div v-if="loadingPortal" class="state-msg"><i class="pi pi-spin pi-spinner" /></div>
@@ -393,7 +373,7 @@ function onJobCreatedHere(job) {
   if (job?.id) router.push({ path: `/mobile/jobs/${job.id}` })
 }
 
-const tabs = ['Jobs', 'Estimates', 'Invoices', 'Locations', 'Notes', 'Equipment', 'Recurring', 'Portal']
+const tabs = ['Jobs', 'Estimates', 'Invoices', 'Locations', 'Notes', 'Equipment', 'Portal']
 const activeTab = ref('Jobs')
 
 const jobs = ref([])
@@ -401,7 +381,6 @@ const estimates = ref([])
 const invoices = ref([])
 const locations = ref([])
 const equipment = ref([])
-const recurring = ref([])
 const portalStatus = ref(null)
 
 const loadingJobs = ref(false)
@@ -409,7 +388,6 @@ const loadingEstimates = ref(false)
 const loadingInvoices = ref(false)
 const loadingLocations = ref(false)
 const loadingEquipment = ref(false)
-const loadingRecurring = ref(false)
 const loadingPortal = ref(false)
 
 const editOpen = ref(false)
@@ -505,18 +483,6 @@ async function fetchEquipment() {
   }
 }
 
-async function fetchRecurring() {
-  loadingRecurring.value = true
-  try {
-    const r = await api.get(`/api/customers/${customerId.value}/recurring-jobs`)
-    recurring.value = Array.isArray(r) ? r : r?.items || r?.data || []
-  } catch (err) {
-    toast.add({ severity: 'error', summary: 'Recurring failed to load', detail: err.message, life: 3500 })
-  } finally {
-    loadingRecurring.value = false
-  }
-}
-
 // 2026-08-24: was `/api/customers/{id}/portal-account`, a ui_compat shim whose
 // GET returned a hardcoded {"exists": false, "account": null} — so this tab said
 // "No portal account." for every customer, and `last_login` below could never
@@ -539,7 +505,6 @@ const tabFetchers = {
   Invoices: fetchInvoices,
   Locations: fetchLocations,
   Equipment: fetchEquipment,
-  Recurring: fetchRecurring,
   Portal: fetchPortal,
 }
 

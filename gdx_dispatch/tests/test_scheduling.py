@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -274,16 +273,3 @@ def test_bad_date_param_returns_422(client):
 
     r = client.get("/api/calendar/week", params={"date": "not-a-date"})
     assert r.status_code == 422
-
-
-# ---------------------------------------------------------------------------
-# Recurring schedule expansion
-# ---------------------------------------------------------------------------
-
-
-def test_recurring_expand_missing_schedule_returns_zero(client):
-    # No recurring_job_schedules table exists in the test DB → graceful 0 expanded
-    r = client.post(f"/api/recurring-schedules/{uuid4()}/generate", params={"horizon_days": 30})
-    assert r.status_code == 200
-    body = r.json()
-    assert body.get("expanded") == 0

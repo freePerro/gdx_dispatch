@@ -32,7 +32,6 @@ RESOLVED_SAFE_SHADOWS = {
     ("GET", "/api/campaigns/{campaign_id}/sends"),
     ("PUT", "/api/campaigns/{campaign_id}/activate"),
     ("PUT", "/api/campaigns/{campaign_id}/deactivate"),
-    ("GET", "/api/customers/{customer_id}/recurring-jobs"),
     ("POST", "/api/customers/{customer_id}/optout"),
     ("GET", "/api/jobs/{job_id}/line-items"),
     ("GET", "/api/settings/branding"),

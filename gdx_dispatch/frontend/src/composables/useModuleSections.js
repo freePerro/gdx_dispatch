@@ -38,7 +38,7 @@ const SECTION_BY_KEY = {
   // Field
   jobs: 'Field', dispatch: 'Field',
   appointments: 'Field', tasks: 'Field', planner: 'Field',
-  checklists: 'Field', job_templates: 'Field',
+  checklists: 'Field',
   maintenance: 'Field', technicians: 'Field', performance: 'Field',
   timeclock: 'Field', timesheets: 'Field', fleet: 'Field', gps: 'Field', maps: 'Field',
   daily_loadsheet: 'Field',

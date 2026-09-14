@@ -173,6 +173,10 @@ def test_model_default_and_omitting_writers() -> None:
     which makes estimates.py's convert path the ONLY sold-work → job closure
     left — and it was never pinned, so the assertion moves there rather than
     disappearing with the endpoint it used to guard.
+
+    The template materializer left with Job Templates and Recurring Jobs
+    (2026-09-14, #683): `routers/job_templates.py` no longer exists, so its pin
+    went with it.
     """
     from gdx_dispatch.models.tenant_models import Job
 
@@ -181,10 +185,6 @@ def test_model_default_and_omitting_writers() -> None:
         "omits job_type mints a non-canonical spelling again"
     )
 
-    jt = (REPO / "routers/job_templates.py").read_text(encoding="utf-8")
-    assert "job_type=canonical_job_type(template.job_type)" in jt, (
-        "the template materializer dropped the template's job_type again"
-    )
     st = (REPO / "routers/service_triggers.py").read_text(encoding="utf-8")
     assert "job_type=MAINTENANCE" in st, (
         "maintenance-agreement auto-jobs lost their job_type"

@@ -488,12 +488,6 @@ except Exception:
     fleet_router = APIRouter(tags=["fleet-router"])
 
 try:
-    from gdx_dispatch.routers import recurring_jobs as recurring_jobs_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: recurring_jobs_router")
-    recurring_jobs_router = APIRouter(prefix="/api/recurring", tags=["recurring"])
-
-try:
     from gdx_dispatch.routers import ui_compat as ui_compat_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: ui_compat_router")
@@ -504,12 +498,6 @@ try:
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: sub_resources_router")
     sub_resources_router = APIRouter(tags=["sub-resources"])
-
-try:
-    from gdx_dispatch.routers import job_templates as job_templates_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: job_templates_router")
-    job_templates_router = APIRouter(prefix="/api/job-templates", tags=["job-templates"])
 
 try:
     from gdx_dispatch.routers import reviews as reviews_router
@@ -1571,20 +1559,14 @@ def create_app() -> FastAPI:
     app.include_router(timeclock_router.router if hasattr(timeclock_router, "router") else timeclock_router)
     app.include_router(checklists_router.router if hasattr(checklists_router, "router") else checklists_router)
     app.include_router(fleet_router.router if hasattr(fleet_router, "router") else fleet_router)
-    app.include_router(
-        recurring_jobs_router.router if hasattr(recurring_jobs_router, "router") else recurring_jobs_router
-    )
-    # Sub-resource endpoints (customer recurring-jobs, job line-items,
-    # billing, AI quality) — real DB-backed implementations replacing shims.
+    # Sub-resource endpoints (customer opt-out and bulk-tag, job line-items)
+    # — real DB-backed implementations replacing shims.
     app.include_router(sub_resources_router.router if hasattr(sub_resources_router, "router") else sub_resources_router)
     # UI compat shim — thin handlers for Vue view endpoints that don't yet
     # have a dedicated router implementation. Returns empty lists / default
     # shapes so the UI renders without errors. MUST be registered AFTER all
     # real routers so that any real endpoint wins on path conflicts.
     app.include_router(ui_compat_router.router if hasattr(ui_compat_router, "router") else ui_compat_router)
-    app.include_router(
-        job_templates_router.router if hasattr(job_templates_router, "router") else job_templates_router
-    )
     app.include_router(reviews_router.router if hasattr(reviews_router, "router") else reviews_router)
     app.include_router(referrals_router.router if hasattr(referrals_router, "router") else referrals_router)
     app.include_router(search_router.router if hasattr(search_router, "router") else search_router)

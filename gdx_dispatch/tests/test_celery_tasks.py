@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from uuid import uuid4
-
 import pytest
 
 from gdx_dispatch.core.celery_app import celery_app
-from gdx_dispatch.tasks import recurring
 
 
 @pytest.fixture(autouse=True)
@@ -83,27 +80,6 @@ def test_every_beat_entry_names_a_task_the_worker_has_registered():
         "beat schedule points at tasks the worker has not registered "
         "(they will fire and die as 'unregistered task'):\n" + "\n".join(unregistered)
     )
-
-
-def test_recurring_job_created(monkeypatch):
-    from unittest.mock import MagicMock
-    tenant_id = str(uuid4())
-
-    mock_db = MagicMock()
-
-    # Phase C: recurring.py uses SessionLocal() directly (no per-tenant session factory).
-    monkeypatch.setattr(recurring, "SessionLocal", lambda: mock_db)
-    monkeypatch.setattr(
-        recurring,
-        "materialize_due_recurring_jobs",
-        lambda db, actor_id, tenant_id: {"created_count": 1},
-    )
-
-    result = recurring.generate_recurring_jobs.delay(tenant_id).get()
-
-    assert result["created_count"] == 1
-
-
 def test_s122_3_qb_sync_stub_removed():
     """S122-3 (T2): the no-op qb_sync stub was deleted 2026-05-12. It was
     wired to celery beat (every 15 min) and produced synced_count=0 forever

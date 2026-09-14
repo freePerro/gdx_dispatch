@@ -50,7 +50,6 @@ DELETE /api/inventory/parts/{item_id}
 DELETE /api/invoices/{invoice_id}
 DELETE /api/invoices/{invoice_id}/lines/{line_id}
 DELETE /api/invoices/{invoice_id}/payment-plan
-DELETE /api/job-templates/{template_id}
 DELETE /api/jobs/{job_id}
 DELETE /api/jobs/{job_id}/assignments/{assignment_id}
 DELETE /api/jobs/{job_id}/dependencies/{dependency_id}
@@ -83,7 +82,6 @@ DELETE /api/purchase-orders/{po_id}
 DELETE /api/push/unsubscribe
 DELETE /api/push/v2/unsubscribe
 DELETE /api/receipts/{receipt_id}
-DELETE /api/recurring/{schedule_id}
 DELETE /api/resources/{resource_id}
 DELETE /api/role-permissions/roles/{role_id}
 DELETE /api/role-permissions/users/{user_id}/roles/{role_id}
@@ -236,7 +234,6 @@ GET /api/customers/{customer_id}/contacts
 GET /api/customers/{customer_id}/custom-fields
 GET /api/customers/{customer_id}/equipment
 GET /api/customers/{customer_id}/locations
-GET /api/customers/{customer_id}/recurring-jobs
 GET /api/customers/{customer_id}/tags
 GET /api/dealer/orders
 GET /api/dealer/orders/{order_id}
@@ -324,8 +321,6 @@ GET /api/invoices/{invoice_id}/payment-plan
 GET /api/invoices/{invoice_id}/payments
 GET /api/invoices/{invoice_id}/pdf
 GET /api/invoices/{invoice_id}/reminder-history
-GET /api/job-templates
-GET /api/job-templates/{template_id}
 GET /api/jobs
 GET /api/jobs/ready-for-billing
 GET /api/jobs/return-visits-unscheduled
@@ -511,7 +506,6 @@ GET /api/quickbooks/recurring-transactions
 GET /api/recommendations
 GET /api/recommendations/customers/{customer_id}
 GET /api/recommendations/jobs/{job_id}
-GET /api/recurring
 GET /api/referrals
 GET /api/referrals/stats
 GET /api/reports/cash-risk
@@ -715,7 +709,6 @@ PATCH /api/inbound-email/{email_id}/read
 PATCH /api/inventory/parts/{item_id}
 PATCH /api/invoices/{invoice_id}
 PATCH /api/invoices/{invoice_id}/lines/{line_id}
-PATCH /api/job-templates/{template_id}
 PATCH /api/jobs/{job_id}
 PATCH /api/jobs/{job_id}/notes/{note_id}
 PATCH /api/jobs/{job_id}/photos/{photo_id}
@@ -750,7 +743,6 @@ PATCH /api/pricing-engine/settings
 PATCH /api/pricing/seasonal
 PATCH /api/pricing/settings
 PATCH /api/purchase-orders/{po_id}
-PATCH /api/recurring/{schedule_id}
 PATCH /api/referrals/{referral_id}
 PATCH /api/role-permissions/roles/{role_id}
 PATCH /api/segments/{segment_id}
@@ -974,8 +966,6 @@ POST /api/invoices/{invoice_id}/send-receipt
 POST /api/invoices/{invoice_id}/send-reminder
 POST /api/invoices/{invoice_id}/verify
 POST /api/invoices/{invoice_id}/void
-POST /api/job-templates
-POST /api/job-templates/{template_id}/apply
 POST /api/jobs
 POST /api/jobs/{job_id}/assignments
 POST /api/jobs/{job_id}/checklist
@@ -1134,8 +1124,6 @@ POST /api/qb/sync/items
 POST /api/qb/sync/transfers
 POST /api/qb/webhooks
 POST /api/quickbooks/sync/recurring-transactions
-POST /api/recurring
-POST /api/recurring-schedules/{schedule_id}/generate
 POST /api/referrals
 POST /api/resources
 POST /api/reviews

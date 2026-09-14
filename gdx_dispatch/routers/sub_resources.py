@@ -10,8 +10,9 @@ This router registers at app.py:1677, ahead of ui_compat at :1682, so its copy
 always won and the ui_compat copy was unreachable dead code. Anyone auditing
 ui_compat by reading it would have described behaviour that never runs — that
 is exactly how `GET /api/customers/{id}/recurring-jobs` got written up as
-"returns a hardcoded empty list" when the live handler here queries
-`recurring_job_schedules` for real.
+"returns a hardcoded empty list" when the live handler here queried
+`recurring_job_schedules` for real. (That route was retired with the
+Recurring Jobs feature, 2026-09-14, #683.)
 
 The billing and AI-quality blocks were removed 2026-08-24 (owner decision,
 decision-list items 16 and 17): six
@@ -29,7 +30,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -46,34 +47,6 @@ from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["sub-resources"])
-
-
-@router.get("/api/customers/{customer_id}/recurring-jobs")
-def customer_recurring_jobs(customer_id: str, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
-    # Table is `recurring_job_schedules` and the date column is `next_run`
-    # (aliased to next_run_at for the frontend) — the old query named a
-    # nonexistent "recurring_jobs" table with title/next_due columns, so it
-    # ALWAYS threw UndefinedTable and returned empty: every customer showed
-    # "No recurring jobs" regardless of their schedules. A left join pulls
-    # the template name for the row title. Found in the 2026-07-15 walk.
-    try:
-        rows = db.execute(
-            text(
-                """
-                SELECT s.id, s.customer_id, s.frequency, s.status, s.created_at,
-                       s.next_run AS next_run_at, t.title AS template_name
-                FROM recurring_job_schedules s
-                LEFT JOIN job_templates t ON t.id = s.job_template_id
-                WHERE s.customer_id = :cid AND s.deleted_at IS NULL
-                ORDER BY s.next_run NULLS LAST
-                """
-            ),
-            {"cid": customer_id},
-        ).mappings().all()
-        return {"items": [dict(r) for r in rows], "total": len(rows)}
-    except Exception:
-        log.exception("customer_recurring_jobs_query_failed")
-        return {"items": [], "total": 0}
 
 
 @router.post("/api/customers/{customer_id}/optout")
