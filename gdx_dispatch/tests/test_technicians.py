@@ -69,6 +69,16 @@ def test_create_technician_success(db):
     assert data["skills"] == ["spring", "cables"]
     assert Decimal(str(data["hourly_rate"])) == Decimal("80.0")
     assert data["deleted_at"] is None
+    assert data["active"] is True
+
+
+def test_create_technician_honours_an_unticked_active_box(db):
+    """#683: TechniciansView sends `active` on create. The model dropped it and
+    the handler hard-coded True, so a technician added as inactive was
+    dispatchable anyway."""
+    data = _create_tech(db, active=False)
+    assert data["active"] is False
+    assert _body(get_technician(data["id"], _request(), {}, db))["active"] is False
 
 
 def test_create_technician_requires_user_id(db):
