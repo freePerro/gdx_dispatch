@@ -177,7 +177,7 @@
 import { computed, onMounted, ref } from "vue";
 import { recordedQuantity } from "../utils/quantity";
 import { useApiWithToast } from "../composables/useApiWithToast";
-import { formatMoney as formatCurrency } from "../composables/useFormatters";
+import { formatMoney as formatCurrency, localDateString, parseLocalDateString } from "../composables/useFormatters";
 import EmptyState from "../components/EmptyState.vue";
 import FormField from "../components/FormField.vue";
 import { useDirtyDialog } from "../composables/useDirtyDialog";
@@ -330,8 +330,12 @@ async function openDetail(po) {
   editingPo.value = po;
   form.value = {
     vendor_id: po.vendor_id, vendor_name: po.vendor_name, job_id: po.job_id, status: po.status,
-    order_date: po.order_date ? new Date(po.order_date) : new Date(),
-    expected_date: po.expected_date ? new Date(po.expected_date) : null,
+    // Local midnight of the stored day, for both dates. `new Date("YYYY-MM-DD")`
+    // is UTC midnight — the evening before in Central — so the picker showed the
+    // day before, and it only round-tripped while the save below went back
+    // through UTC (#698).
+    order_date: po.order_date ? (parseLocalDateString(po.order_date) || new Date(po.order_date)) : new Date(),
+    expected_date: po.expected_date ? (parseLocalDateString(po.expected_date) || new Date(po.expected_date)) : null,
     notes: po.notes, tax: po.tax, shipping: po.shipping,
     lines: po.lines?.length ? [...po.lines] : [emptyLine()],
   };
@@ -364,8 +368,8 @@ async function savePo() {
   try {
     const payload = {
       ...form.value,
-      order_date: form.value.order_date instanceof Date ? form.value.order_date.toISOString().split('T')[0] : form.value.order_date,
-      expected_date: form.value.expected_date instanceof Date ? form.value.expected_date.toISOString().split('T')[0] : form.value.expected_date,
+      order_date: form.value.order_date instanceof Date ? localDateString(form.value.order_date) : form.value.order_date,
+      expected_date: form.value.expected_date instanceof Date ? localDateString(form.value.expected_date) : form.value.expected_date,
     };
     if (editingPo.value) {
       await api.patch(`/api/purchase-orders/${editingPo.value.id}`, payload);
