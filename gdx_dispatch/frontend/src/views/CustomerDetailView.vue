@@ -229,8 +229,8 @@
           <div class="location-info">
             <strong>{{ loc.label || loc.name || 'Service Address' }}</strong>
             <span>{{ loc.address || loc.street }}</span>
-            <span v-if="loc.city || loc.state">{{ [loc.city, loc.state, loc.zip].filter(Boolean).join(', ') }}</span>
-            <span v-if="loc.notes" class="muted">{{ loc.notes }}</span>
+            <span v-if="loc.city || loc.state || loc.zip">{{ [loc.city, loc.state, loc.zip].filter(Boolean).join(', ') }}</span>
+            <span v-if="loc.access_notes" class="muted">{{ loc.access_notes }}</span>
           </div>
           <div class="location-actions">
             <ToggleSwitch
@@ -1273,7 +1273,7 @@ function editLocation(loc) {
     city: loc.city || "",
     state: loc.state || "",
     zip: loc.zip || "",
-    notes: loc.notes || "",
+    notes: loc.access_notes || "",
     is_primary: Boolean(loc.is_primary),
   };
   showLocationDialog.value = true;
@@ -1293,7 +1293,9 @@ async function saveLocation() {
       city: locationForm.value.city || "",
       state: locationForm.value.state || "",
       zip: locationForm.value.zip || "",
-      notes: locationForm.value.notes || "",
+      // The API field (and the column the job page reads) is access_notes;
+      // sending `notes` was silently dropped (#683).
+      access_notes: locationForm.value.notes || "",
       is_primary: Boolean(locationForm.value.is_primary),
     };
     if (locationForm.value.id) {
