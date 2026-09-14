@@ -34,7 +34,6 @@ const TimeclockView = () => import('../views/TimeclockView.vue');
 const TimesheetsView = () => import('../views/TimesheetsView.vue');
 const DailyLoadsheetView = () => import('../views/DailyLoadsheetView.vue');
 const PlannerView = () => import('../views/PlannerView.vue');
-const EquipmentView = () => import('../views/EquipmentView.vue');
 const CampaignsView = () => import('../views/CampaignsView.vue');
 const WinbackView = () => import('../views/WinbackView.vue');
 const ExpensesView = () => import('../views/ExpensesView.vue');
@@ -46,7 +45,6 @@ const OverheadView = () => import('../views/OverheadView.vue');
 const LoyaltyView = () => import('../views/LoyaltyView.vue');
 const ReportsView = () => import('../views/ReportsView.vue');
 const DocumentsView = () => import('../views/DocumentsView.vue');
-const FleetView = () => import('../views/FleetView.vue');
 const MobileTodayView = () => import('../views/MobileTodayView.vue');
 const MobileJobsView = () => import('../views/MobileJobsView.vue');
 const MobileJobDetailView = () => import('../views/MobileJobDetailView.vue');
@@ -231,7 +229,6 @@ export const routes = [
   // guard, then two 403s and an empty page. scheduling.write's holders
   // (owner / admin / dispatcher) match DISPATCH_MANAGER_ROLES exactly, and
   // "create / edit schedule entries" is the right verb for correcting a clock.
-  { path: '/equipment', name: 'equipment', component: EquipmentView },
   // /communications → /inbox. The CommunicationsView screen was removed
   // (#350): threads lived in a dict in the API process, its senders were
   // unconfigured, and Send answered with a green toast when nothing left.
@@ -279,13 +276,14 @@ export const routes = [
   { path: '/uploads', redirect: '/documents' },
   { path: '/resources', name: 'resources', component: ResourcesView },
   { path: '/activity', name: 'activity', component: ActivityView },
-  // Fleet cluster — Vehicles / Live GPS / Map under one tab bar.
+  // Fleet cluster — Live GPS / Map under one tab bar. The Vehicles tab
+  // (FleetView) was retired 2026-09-14 (#683); /fleet bookmarks land on GPS.
   {
     path: '/fleet',
     component: ModuleTabsPage,
     props: { clusterKey: 'fleet_hub' },
     children: [
-      { path: '', name: 'fleet', component: FleetView },
+      { path: '', name: 'fleet', redirect: '/gps' },
       { path: '/gps', name: 'gps', component: GpsView },
       { path: '/maps', name: 'maps', component: MapsView },
     ],

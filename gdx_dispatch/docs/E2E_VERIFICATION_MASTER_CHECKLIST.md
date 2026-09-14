@@ -36,12 +36,12 @@ PDF generation, file uploads.
 8. [Invoicing and Billing](#8-invoicing-and-billing)
 9. [Payments and Stripe](#9-payments-and-stripe)
 10. [Timeclock and Labor](#10-timeclock-and-labor)
-11. [Equipment Tracking](#11-equipment-tracking)
+11. [Equipment Tracking](#11-equipment-tracking) — retired 2026-09-14
 12. [Communications (SMS/Email)](#12-communications-smsemail)
 13. [Campaigns and Marketing](#13-campaigns-and-marketing)
 14. [Reports](#14-reports)
 15. [Documents and File Uploads](#15-documents-and-file-uploads)
-16. [Fleet Management](#16-fleet-management)
+16. [Fleet Management](#16-fleet-management) — retired 2026-09-14
 17. [Mobile Technician App](#17-mobile-technician-app)
 18. [Inventory and Catalog](#18-inventory-and-catalog)
 19. [Settings and Configuration](#19-settings-and-configuration)
@@ -401,21 +401,13 @@ Technicians can clock in/out for the day and for individual jobs. Time entries a
 
 ## 11. Equipment Tracking
 
-### What "works" means
-
-Equipment is tracked per customer with service history, warranty info, and predictive maintenance alerts.
-
-### Functional Tests
-
-| ID | Test Case | Verification |
-|----|-----------|-------------|
-| EQUIP-01 | Equipment list | GET /api/equipment returns items with make, model, serial, customer |
-| EQUIP-02 | Equipment page renders | Vue shows equipment table with search/filter |
-| EQUIP-03 | Add equipment | Create new equipment linked to customer, appears in list |
-| EQUIP-04 | Equipment history | GET /{id}/history returns service records |
-| EQUIP-05 | Expiring warranties | GET /expiring-warranties returns items with soon-expiring warranties |
-| EQUIP-06 | Predictive maintenance | GET /predictive-maintenance returns maintenance predictions |
-| EQUIP-07 | Delete equipment | Soft delete, disappears from list |
+**Retired 2026-09-14 (#683).** The customer-page Equipment tab, the `/equipment`
+page, the office job page's equipment cards, the tech's "Install & equipment"
+section, `/portal/equipment` and every `/api/equipment` and
+`/api/customers/{id}/equipment` route were removed. Production had never held an
+equipment row, and the create form could not have saved one (wrong field names,
+and type choices the database enum rejects). Nothing left to verify; the section
+number is kept so anchors do not shift.
 
 ---
 
@@ -531,19 +523,10 @@ Files can be uploaded, stored, downloaded, and deleted. File associations with j
 
 ## 16. Fleet Management
 
-### What "works" means
-
-Vehicles are tracked with service schedules, mileage, and maintenance history.
-
-### Functional Tests
-
-| ID | Test Case | Verification |
-|----|-----------|-------------|
-| FLEET-01 | Fleet page renders | Shows vehicle list with make, model, year, mileage |
-| FLEET-02 | Add vehicle | POST creates vehicle, appears in list |
-| FLEET-03 | Vehicle service log | GET /{id}/service-log returns maintenance records |
-| FLEET-04 | Due for service | GET /due-for-service returns vehicles needing maintenance |
-| FLEET-05 | Delete vehicle | Soft delete, removed from list |
+**Retired 2026-09-14 (#683).** The Vehicles tab (`FleetView`) and every
+`/api/fleet/vehicles*` route were removed; production had never held a vehicle.
+The Fleet sidebar group remains for Live GPS and Map, and `/fleet` now opens
+Live GPS. Vehicle inspections are a separate surface and are unaffected.
 
 ---
 
@@ -653,9 +636,9 @@ When a module is disabled for a tenant, all API endpoints for that module return
 | MOD-03 | Disable estimates module | GET /api/estimates returns 403, Estimates link hidden in Vue sidebar |
 | MOD-04 | Disable invoices module | GET /api/invoices returns 403 |
 | MOD-05 | Disable timeclock module | GET /api/timeclock/*and /api/labor/* return 403 |
-| MOD-06 | Disable equipment_tracking | GET /api/equipment returns 403 |
+| ~~MOD-06~~ | **RETIRED 2026-09-14** | The `equipment_tracking` module key was removed with the Equipment and Fleet routers (#683). |
 | MOD-07 | Disable communications (shown as "Notifications") | GET /api/notifications/* return 403 (`/api/sms/*` removed in #350) |
-| MOD-08 | Disable fleet | GET /api/fleet/* returns 403 |
+| ~~MOD-08~~ | **RETIRED 2026-09-14** | The `fleet` alias left with `equipment_tracking` (#683). |
 | MOD-09 | Disable documents | GET /api/documents/*, file upload endpoints return 403, PDF endpoints return 403 |
 | ~~MOD-10~~ | **RETIRED 2026-09-01** | The `stripe_connect` module key was removed with its router. |
 | MOD-11 | Disable dispatch | GET /api/technicians returns 403, WebSocket connection rejected |
@@ -1236,12 +1219,12 @@ These are actual failure modes documented in industry post-mortems that only tes
 | Invoicing & Billing | 17 |
 | Payments & Stripe | 12 |
 | Timeclock & Labor | 10 |
-| Equipment | 7 |
+| Equipment (retired) | 0 |
 | Communications | 9 |
 | Campaigns & Marketing | 8 |
 | Reports | 6 |
 | Documents & Uploads | 11 |
-| Fleet | 5 |
+| Fleet (retired) | 0 |
 | Mobile Technician | 15 |
 | Inventory & Catalog | 6 |
 | Settings | 10 |
@@ -1269,7 +1252,7 @@ These are actual failure modes documented in industry post-mortems that only tes
 | Performance | 10 |
 | Visual Regression | 10 |
 | Chaos & Resilience | 10 |
-| **TOTAL** | **~437** |
+| **TOTAL** | **~425** |
 
 ---
 

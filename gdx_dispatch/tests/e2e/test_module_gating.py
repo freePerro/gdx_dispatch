@@ -30,7 +30,6 @@ MODULE_ENDPOINTS = {
     "invoices":            ("/api/invoices",          200),
     "dispatch":            ("/api/technicians",       200),
     "communications":      ("/api/notifications",     200),
-    "equipment_tracking":  ("/api/equipment",         200),
     "documents":           ("/api/documents",         200),
     "mobile":              ("/api/mobile/today",      200),
     "timeclock":           ("/api/timeclock/status",   200),
@@ -104,7 +103,6 @@ class TestModuleDisableReturns403:
         "estimates",           # MOD-03
         "invoices",            # MOD-04
         "timeclock",           # MOD-05
-        "equipment_tracking",  # MOD-06
         "communications",      # MOD-07
         "documents",           # MOD-09
         "dispatch",            # MOD-11

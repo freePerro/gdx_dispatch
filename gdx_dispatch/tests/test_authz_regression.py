@@ -40,12 +40,8 @@ def tech_hdr() -> dict[str, str]:
 @pytest.mark.parametrize(
     "method,path",
     [
-        ("GET", "/api/equipment"),
-        ("POST", "/api/equipment"),
         ("GET", "/api/workflows"),
         ("POST", "/api/workflows"),
-        ("GET", "/api/fleet/vehicles"),
-        ("POST", "/api/fleet/vehicles"),
         ("GET", "/api/purchase-orders"),
         ("POST", "/api/purchase-orders"),
         ("GET", "/api/dispatch/locations"),

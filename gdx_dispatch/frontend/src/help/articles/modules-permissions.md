@@ -26,7 +26,6 @@ Examples:
 | **Dispatch** | Drag-and-drop dispatch board |
 | **Invoices** | Customer invoicing + Stripe payments |
 | **Inventory** | Truck stock tracking |
-| **Equipment** | Customer equipment registry (model/serial) |
 | **Phone.com** | Inbound call routing + call-to-job |
 | **AI Assistant** | In-app conversational helper |
 | **QuickBooks** | Two-way sync with QBO |

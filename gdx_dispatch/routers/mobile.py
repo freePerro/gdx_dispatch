@@ -1803,7 +1803,7 @@ def get_mobile_job_detail(
                 job["alerts"] = sorted({t["name"] for t in _tags})
 
     # The tech's actions read the customer off the job (`job.customer?.id` for
-    # equipment/change-order, `job.customer?.name` for toasts) — same as the
+    # change-order, `job.customer?.name` for toasts) — same as the
     # Today cards. Nest it rather than shipping a second sibling copy: two
     # copies of one customer in one payload is a divergence trap, and there is
     # exactly one consumer of this endpoint to keep in step.

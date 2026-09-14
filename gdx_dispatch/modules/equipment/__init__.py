@@ -1,3 +1,3 @@
-from gdx_dispatch.modules.equipment import models, router
+from gdx_dispatch.modules.equipment import models
 
-__all__ = ["models", "router"]
+__all__ = ["models"]

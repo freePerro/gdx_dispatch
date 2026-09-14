@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.routers import checklists, equipment_tracking, fleet, notifications, timeclock
+from gdx_dispatch.routers import checklists, notifications, timeclock
 
 
 class DummyRequest:
@@ -46,10 +46,8 @@ def _audit_count(SessionLocal: sessionmaker) -> int:
 
 def test_routers_include_module_dependencies() -> None:
     assert require_module("communications") in [dep.dependency for dep in notifications.router.dependencies]
-    assert require_module("equipment_tracking") in [dep.dependency for dep in equipment_tracking.router.dependencies]
     assert require_module("timeclock") in [dep.dependency for dep in timeclock.router.dependencies]
     assert require_module("jobs") in [dep.dependency for dep in checklists.router.dependencies]
-    assert require_module("fleet") in [dep.dependency for dep in fleet.router.dependencies]
 
 
 # Notifications (3)
@@ -111,107 +109,6 @@ def test_notifications_send_and_history(app_ctx: tuple[Session, DummyRequest, di
     assert history.total >= 1
     assert history.items[0].customer_id == "cust-1"
     assert _audit_count(SessionLocal) == before + 1
-
-
-# Equipment Tracking (3)
-
-def test_equipment_crud_and_audit(app_ctx: tuple[Session, DummyRequest, dict[str, str], sessionmaker]) -> None:
-    db, request, current_user, SessionLocal = app_ctx
-    before = _audit_count(SessionLocal)
-    created = equipment_tracking.create_equipment(
-        payload=equipment_tracking.EquipmentCreateRequest(
-            customer_id="cust-eq-1",
-            equipment_type="opener",
-            manufacturer="LiftMaster",
-            model="8500W",
-        ),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-
-    patched = equipment_tracking.update_equipment(
-        equipment_id=created.id,
-        payload=equipment_tracking.EquipmentUpdateRequest(notes="updated notes"),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-    assert patched.notes == "updated notes"
-
-    deleted = equipment_tracking.delete_equipment(
-        equipment_id=created.id,
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-    assert deleted == {"deleted": True}
-    assert _audit_count(SessionLocal) == before + 3
-
-
-def test_equipment_history_add_and_get(app_ctx: tuple[Session, DummyRequest, dict[str, str], sessionmaker]) -> None:
-    db, request, current_user, SessionLocal = app_ctx
-    before = _audit_count(SessionLocal)
-    created = equipment_tracking.create_equipment(
-        payload=equipment_tracking.EquipmentCreateRequest(customer_id="cust-eq-2", equipment_type="roller"),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-
-    item = equipment_tracking.add_equipment_history(
-        equipment_id=created.id,
-        payload=equipment_tracking.EquipmentHistoryCreateRequest(
-            service_type="repair",
-            technician_id="tech-1",
-            notes="fixed roller",
-        ),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-    assert item.service_type == "repair"
-
-    history = equipment_tracking.get_equipment_history(
-        equipment_id=created.id,
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-    assert len(history) == 1
-    assert history[0].service_type == "repair"
-    assert _audit_count(SessionLocal) == before + 2
-
-
-def test_equipment_expiring_warranties(app_ctx: tuple[Session, DummyRequest, dict[str, str], sessionmaker]) -> None:
-    db, request, current_user, _ = app_ctx
-    soon = date.today() + timedelta(days=10)
-    later = date.today() + timedelta(days=45)
-
-    equipment_tracking.create_equipment(
-        payload=equipment_tracking.EquipmentCreateRequest(
-            customer_id="cust-eq-3",
-            equipment_type="track",
-            warranty_expires_on=soon,
-        ),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-    equipment_tracking.create_equipment(
-        payload=equipment_tracking.EquipmentCreateRequest(
-            customer_id="cust-eq-4",
-            equipment_type="track",
-            warranty_expires_on=later,
-        ),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-
-    rows = equipment_tracking.get_expiring_warranties(request=request, current_user=current_user, db=db)
-    assert len(rows) == 1
-    assert rows[0].customer_id == "cust-eq-3"
 
 
 # Timeclock (3)
@@ -373,88 +270,3 @@ def test_checklists_mark_item_complete(app_ctx: tuple[Session, DummyRequest, dic
     )
     assert updated.completed is True
     assert _audit_count(SessionLocal) == before + 3
-
-
-# Fleet (3)
-
-def test_fleet_vehicle_crud_and_audit(app_ctx: tuple[Session, DummyRequest, dict[str, str], sessionmaker]) -> None:
-    db, request, current_user, SessionLocal = app_ctx
-    before = _audit_count(SessionLocal)
-    created = fleet.create_vehicle(
-        payload=fleet.VehicleCreateRequest(make="Ford", model="Transit", year=2022, odometer=10000),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-    updated = fleet.update_vehicle(
-        vehicle_id=created.id,
-        payload=fleet.VehicleUpdateRequest(odometer=12000),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-    deleted = fleet.delete_vehicle(vehicle_id=created.id, request=request, current_user=current_user, db=db)
-
-    assert updated.odometer == 12000
-    assert deleted == {"deleted": True}
-    assert _audit_count(SessionLocal) == before + 3
-
-
-def test_fleet_service_log_create_and_list(app_ctx: tuple[Session, DummyRequest, dict[str, str], sessionmaker]) -> None:
-    db, request, current_user, SessionLocal = app_ctx
-    before = _audit_count(SessionLocal)
-    vehicle = fleet.create_vehicle(
-        payload=fleet.VehicleCreateRequest(make="Chevy", model="Express", year=2021, odometer=20000),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-
-    created = fleet.create_vehicle_service_log(
-        vehicle_id=vehicle.id,
-        payload=fleet.VehicleServiceCreateRequest(service_type="oil_change", mileage_at_service=20500, notes="routine"),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-    rows = fleet.list_vehicle_service_log(
-        vehicle_id=vehicle.id,
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-    assert created.service_type == "oil_change"
-    assert len(rows) == 1
-    assert _audit_count(SessionLocal) == before + 2
-
-
-def test_fleet_due_for_service(app_ctx: tuple[Session, DummyRequest, dict[str, str], sessionmaker]) -> None:
-    db, request, current_user, _ = app_ctx
-    fleet.create_vehicle(
-        payload=fleet.VehicleCreateRequest(
-            make="RAM",
-            model="ProMaster",
-            year=2020,
-            odometer=50000,
-            next_service_due_on=date.today() - timedelta(days=1),
-        ),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-    fleet.create_vehicle(
-        payload=fleet.VehicleCreateRequest(
-            make="Nissan",
-            model="NV200",
-            year=2023,
-            odometer=5000,
-            next_service_due_on=date.today() + timedelta(days=40),
-        ),
-        request=request,
-        current_user=current_user,
-        db=db,
-    )
-
-    rows = fleet.list_due_for_service(request=request, current_user=current_user, db=db)
-    assert len(rows) == 1
-    assert rows[0].make == "RAM"

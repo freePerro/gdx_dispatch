@@ -22,7 +22,6 @@ from sqlalchemy.pool import StaticPool
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Invoice, Job
 from gdx_dispatch.modules.customer_portal.models import CustomerUser
-from gdx_dispatch.modules.equipment.models import CustomerEquipment
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers import portal as portal_router
 from uuid import uuid4
@@ -44,7 +43,6 @@ def tenant_db_session():
     Job.__table__.create(bind=engine, checkfirst=True)
     Invoice.__table__.create(bind=engine, checkfirst=True)
     Document.__table__.create(bind=engine, checkfirst=True)
-    CustomerEquipment.__table__.create(bind=engine, checkfirst=True)
 
     db = Session()
     try:
@@ -105,10 +103,6 @@ def _seed_customer_data(db):
     doc_a = Document(filename="a.pdf", original_name="a.pdf", file_size=1, customer_id=customer_a.id)
     doc_b = Document(filename="b.pdf", original_name="b.pdf", file_size=1, customer_id=customer_b.id)
     db.add_all([doc_a, doc_b])
-
-    equip_a = CustomerEquipment(customer_id=customer_a.id, equipment_type="garage_door", manufacturer="LiftMaster")
-    equip_b = CustomerEquipment(customer_id=customer_b.id, equipment_type="opener", manufacturer="Genie")
-    db.add_all([equip_a, equip_b])
 
     db.commit()
     return {
@@ -212,7 +206,8 @@ def test_dashboard_shows_customer_data(tenant_db_session):
     assert body["customer_id"] == str(seeded["customer_a_id"])
     assert body["counts"]["jobs"] == 1
     assert body["counts"]["invoices"] == 1
-    assert body["counts"]["equipment"] == 1
+    # Equipment was retired 2026-09-14 (#683); the portal no longer counts it.
+    assert "equipment" not in body["counts"]
 
 
 def test_customer_cant_see_other_customers_data(tenant_db_session):
@@ -249,15 +244,6 @@ def test_invoices_endpoint_includes_payment_status(tenant_db_session):
     row = portal_router.portal_invoices(principal=principal, db=tenant_db_session)[0]
     assert row["status"] == "sent"
     assert row["payment_status"] == "unpaid"
-
-
-def test_equipment_endpoint_filters_to_customer(tenant_db_session):
-    seeded = _seed_customer_data(tenant_db_session)
-    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
-
-    rows = portal_router.portal_equipment(principal=principal, db=tenant_db_session)
-    assert len(rows) == 1
-    assert rows[0]["customer_id"] == str(seeded["customer_a_id"])
 
 
 def test_pay_invoice_creates_payment_intent(tenant_db_session, monkeypatch):

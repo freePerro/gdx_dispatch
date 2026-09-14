@@ -29,7 +29,7 @@ Tap **Arrived** when you pull up. This locks in your on-site time for payroll an
 
 The job page has everything you need:
 
-- **Customer history** — every prior job, equipment installed, warranty notes
+- **Customer history** — every prior job and warranty notes
 - **Parts** — search the truck inventory or add a snapshot part if it's not in stock
 - **Photos** — drag-and-drop or take photos directly; they attach to the job
 - **Notes** — for the office, for the next tech, or for the customer

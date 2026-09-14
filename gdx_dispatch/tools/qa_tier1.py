@@ -26,7 +26,7 @@ BASELINE = Path(__file__).parent / "qa_baseline.json"
 ENDPOINTS = [
     "/api/customers", "/api/estimates", "/api/invoices", "/api/jobs",
     "/api/leads", "/api/payments", "/api/technicians", "/api/users",
-    "/api/timeclock/entries", "/api/fleet/vehicles", "/api/equipment",
+    "/api/timeclock/entries",
     "/api/inventory/parts", "/api/campaigns",
     "/api/documents", "/api/tags", "/api/vendors", "/api/purchase-orders",
     "/api/reviews", "/api/photos/recent", "/api/commissions/summary",

@@ -9,6 +9,10 @@ from sqlalchemy.types import Uuid
 
 from gdx_dispatch.core.audit import TenantBase, utcnow
 
+# Retired surface, kept schema (2026-09-14, #683): the Fleet routers and pages
+# are gone. These models stay registered because the tables exist and nothing
+# but the ORM creates them; dropping them is a separate, counted ruling.
+
 
 class Vehicle(TenantBase):
     __tablename__ = "vehicles"

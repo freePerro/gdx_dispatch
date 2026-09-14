@@ -1,7 +1,7 @@
 /**
  * MobileCustomerDetailView — pins the contract:
- *  - Renders 7 tabs (Jobs/Estimates/Invoices/Locations/Notes/Equipment/Portal).
- *    (Recurring left 2026-09-14, #683: the Recurring Jobs feature was retired.)
+ *  - Renders 6 tabs (Jobs/Estimates/Invoices/Locations/Notes/Portal).
+ *    (Recurring and Equipment left 2026-09-14, #683: both features were retired.)
  *    (Communications left 2026-09-06, #459: it read a stub that always returned [].)
  *  - Loads the customer on mount and lazy-fetches each tab on selection.
  *  - Quick-action strip (Call/Text/Email/Map) honors the customer's contact info.
@@ -98,7 +98,7 @@ describe('MobileCustomerDetailView', () => {
     expect(wrapper.find('[data-test="mcd-navigate"]').attributes('href')).toContain('100%20Main%20St');
   });
 
-  it('renders all 7 tabs', async () => {
+  it('renders all 6 tabs', async () => {
     apiGet.mockResolvedValue(customerFixture);
     const wrapper = mount(MobileCustomerDetailView, { global: { stubs } });
     await flushPromises();
@@ -109,7 +109,6 @@ describe('MobileCustomerDetailView', () => {
       'Invoices',
       'Locations',
       'Notes',
-      'Equipment',
       'Portal',
     ]);
   });

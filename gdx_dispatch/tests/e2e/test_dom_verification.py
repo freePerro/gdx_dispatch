@@ -5,7 +5,7 @@ and verify the DOM contains actual data: numbers in KPI cards, rows in tables,
 content in detail views. If the API has data, the page must show it.
 
 Covers: /dashboard, /jobs, /customers, /estimates, /billing, /dispatch,
-        /settings, /timeclock, /equipment
+        /settings, /timeclock
 """
 from __future__ import annotations
 
@@ -335,39 +335,3 @@ class TestTimeclockPageShowsData:
         ).all()
         visible = [b for b in buttons if b.is_visible()]
         assert len(visible) > 0, "Timeclock page has no visible action buttons"
-
-
-# ---------------------------------------------------------------------------
-# Equipment
-# ---------------------------------------------------------------------------
-class TestEquipmentPageShowsData:
-    """Verify the equipment page renders content."""
-
-    def test_equipment_page_not_blank(
-        self, navigate, authenticated_page: Page
-    ):
-        """Equipment page must render visible content."""
-        page = navigate("/equipment")
-        page.wait_for_timeout(RENDER_WAIT)
-
-        body_text = page.locator("body").inner_text()
-        assert len(body_text.strip()) > 50, "Equipment page appears blank"
-
-    def test_equipment_table_has_rows_if_data(
-        self, navigate, api, authenticated_page: Page
-    ):
-        """If API has equipment, table should show rows."""
-        resp = api.get("/api/equipment")
-        if resp.status_code != 200:
-            pytest.skip(f"Equipment API returned {resp.status_code}")
-
-        data = resp.json()
-        items = data.get("items", data if isinstance(data, list) else [])
-        if not items:
-            pytest.skip("No equipment in database")
-
-        page = navigate("/equipment")
-        page.wait_for_timeout(RENDER_WAIT)
-
-        rows = page.locator(ROW_SELECTORS).all()
-        assert len(rows) > 0, f"API has {len(items)} equipment items but table is empty"

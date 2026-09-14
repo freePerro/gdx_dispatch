@@ -464,12 +464,6 @@ except Exception:
     notifications_router = APIRouter(tags=["notifications"])
 
 try:
-    from gdx_dispatch.routers import equipment_tracking as equipment_tracking_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: equipment_tracking_router")
-    equipment_tracking_router = APIRouter(tags=["equipment-tracking"])
-
-try:
     from gdx_dispatch.routers import timeclock as timeclock_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: timeclock_router")
@@ -480,12 +474,6 @@ try:
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: checklists_router")
     checklists_router = APIRouter(tags=["checklists"])
-
-try:
-    from gdx_dispatch.routers import fleet as fleet_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: fleet_router")
-    fleet_router = APIRouter(tags=["fleet-router"])
 
 try:
     from gdx_dispatch.routers import ui_compat as ui_compat_router
@@ -556,12 +544,6 @@ except Exception:
     quickbooks = APIRouter(tags=["quickbooks"])
 
 try:
-    from gdx_dispatch.modules.equipment import router as equipment
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: equipment")
-    equipment = APIRouter(tags=["equipment"])
-
-try:
     from gdx_dispatch.modules.timeclock import router as timeclock
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: timeclock")
@@ -578,12 +560,6 @@ try:
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: proposals")
     proposals = APIRouter(tags=["proposals"])
-
-try:
-    from gdx_dispatch.modules.fleet import router as fleet
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: fleet")
-    fleet = APIRouter(tags=["fleet"])
 
 # modules/gps_dispatch/router.py left 2026-09-10 (#637): its two routes,
 # POST /api/dispatch/location and /api/dispatch/routes, had no caller and took
@@ -1548,17 +1524,11 @@ def create_app() -> FastAPI:
     app.include_router(
         notifications_router.router if hasattr(notifications_router, "router") else notifications_router
     )
-    # equipment_tracking_router (legacy EquipmentAsset surface) was unwired
-    # 2026-05-03 in favor of the canonical CustomerEquipment surface in
-    # gdx_dispatch/modules/equipment/router.py. Both registered the same /api/equipment
-    # paths; legacy was winning by registration order and writing to the
-    # parallel `equipment_assets` table. See ai-queue/brainstorm/
-    # gap_equipment_router_consolidation.md for the audit + backfill plan.
-    # The model + table are kept for backward read access via the prune step
-    # in gdx_dispatch/tools/migrate_equipment_consolidation.py.
+    # Equipment and Fleet were retired 2026-09-14 (#683): their routers
+    # (modules/equipment, routers/equipment_tracking, routers/fleet,
+    # modules/fleet) are gone. The models stay registered in models/__init__.
     app.include_router(timeclock_router.router if hasattr(timeclock_router, "router") else timeclock_router)
     app.include_router(checklists_router.router if hasattr(checklists_router, "router") else checklists_router)
-    app.include_router(fleet_router.router if hasattr(fleet_router, "router") else fleet_router)
     # Sub-resource endpoints (customer opt-out and bulk-tag, job line-items)
     # — real DB-backed implementations replacing shims.
     app.include_router(sub_resources_router.router if hasattr(sub_resources_router, "router") else sub_resources_router)
@@ -1586,15 +1556,13 @@ def create_app() -> FastAPI:
     # thinner than it reads. The modules/inventory router left entirely
     # 2026-09-07: all four of its routes were unauthenticated and none of them
     # worked (the `parts` catalog has no writer). The paths the modules
-    # duplicated (inventory parts list/create + low-stock, fleet vehicles
-    # list/create, campaigns list/create/send, timeclock clock-in/status,
+    # duplicated (inventory parts list/create + low-stock, campaigns
+    # list/create/send, timeclock clock-in/status,
     # dispatch locations) were deleted from the module routers 2026-09-06
     # (#569): FastAPI serves the first registration, so they never ran.
-    app.include_router(equipment.router if hasattr(equipment, "router") else equipment)
     app.include_router(timeclock.router if hasattr(timeclock, "router") else timeclock)
     app.include_router(workflows.router if hasattr(workflows, "router") else workflows)
     app.include_router(proposals.router if hasattr(proposals, "router") else proposals)
-    app.include_router(fleet.router if hasattr(fleet, "router") else fleet)
     app.include_router(
         customer_portal_router.router if hasattr(customer_portal_router, "router") else customer_portal_router
     )

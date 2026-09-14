@@ -252,36 +252,6 @@
         <p v-else>{{ customer.notes }}</p>
       </div>
 
-      <!-- Equipment tab -->
-      <div v-if="activeTab === 'Equipment'" class="tab-content" data-testid="tab-equipment-content">
-        <div class="panel-header">
-          <h3>Equipment</h3>
-          <Button
-            label="+ Add Equipment"
-            icon="pi pi-plus"
-            size="small"
-            outlined
-            data-testid="add-equipment-btn"
-            @click="openEquipmentDialog"
-          />
-        </div>
-        <Card class="section-card" data-testid="equipment-card">
-          <template #content>
-            <DataTable
-      responsiveLayout="scroll" :value="equipment" responsive-layout="scroll" stripedRows data-testid="customer-equipment-table">
-              <template #empty><div class="empty-message">No equipment recorded yet.</div></template>
-              <Column field="brand" header="Brand" />
-              <Column field="model" header="Model" />
-              <Column field="serial_number" header="Serial #" />
-              <Column header="Install Date">
-                <template #body="{ data }">{{ formatDate(data.install_date) }}</template>
-              </Column>
-              <Column field="equipment_type" header="Type" />
-            </DataTable>
-          </template>
-        </Card>
-      </div>
-
       <!-- Email tab (P2.1) — mail the tagger linked to this customer.
            Lazy: only mounts when the tab is open, so a customer page never
            pays for an email query nobody asked for. -->
@@ -532,55 +502,6 @@
       </Dialog>
 
       <Dialog
-        v-model:visible="showEquipmentDialog"
-        header="Add Equipment"
-        :style="{ width: '520px' }"
-        modal
-        data-testid="equipment-dialog"
-      >
-        <form class="dialog-form" @submit.prevent="saveEquipment">
-          <div class="form-row">
-            <div class="form-field">
-              <label for="equipment-brand">Brand</label>
-              <InputText id="equipment-brand" v-model="equipmentForm.brand" data-testid="equipment-brand-input" class="w-full" />
-            </div>
-            <div class="form-field">
-              <label for="equipment-model">Model</label>
-              <InputText id="equipment-model" v-model="equipmentForm.model" data-testid="equipment-model-input" class="w-full" />
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-field">
-              <label for="equipment-serial">Serial #</label>
-              <InputText id="equipment-serial" v-model="equipmentForm.serial" data-testid="equipment-serial-input" class="w-full" />
-            </div>
-            <div class="form-field">
-              <label for="equipment-type">Type</label>
-              <Select id="equipment-type" v-model="equipmentForm.type" :options="equipmentTypes" data-testid="equipment-type-input" class="w-full" />
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-field">
-              <label for="equipment-install-date">Install Date</label>
-              <DatePicker id="equipment-install-date" v-model="equipmentForm.install_date" data-testid="equipment-install-date-input" class="w-full" />
-            </div>
-            <div class="form-field">
-              <label for="equipment-warranty-expires">Warranty Expires</label>
-              <DatePicker id="equipment-warranty-expires" v-model="equipmentForm.warranty_expires" data-testid="equipment-warranty-expires-input" class="w-full" />
-            </div>
-          </div>
-          <div class="form-field">
-            <label for="equipment-notes">Notes</label>
-            <Textarea id="equipment-notes" v-model="equipmentForm.notes" rows="2" data-testid="equipment-notes-input" class="w-full" />
-          </div>
-          <div class="form-actions">
-            <Button type="button" label="Cancel" text @click="showEquipmentDialog = false" />
-            <Button type="submit" label="Save Equipment" :loading="isSavingEquipment" data-testid="save-equipment-btn" />
-          </div>
-        </form>
-      </Dialog>
-
-      <Dialog
         v-model:visible="showPortalDialog"
         header="Customer Portal Account"
         :style="{ width: '420px' }"
@@ -684,7 +605,6 @@ import Column from "primevue/column";
 import DataTable from "primevue/datatable";
 import Dialog from "primevue/dialog";
 import Select from "primevue/select";
-import DatePicker from "primevue/datepicker";
 import InputText from "primevue/inputtext";
 import JobStateChip from "../components/JobStateChip.vue";
 import PhoneInput from "../components/PhoneInput.vue";
@@ -767,17 +687,12 @@ const activeTab = ref("Jobs");
 // People before places: a second person at an account had nowhere to live
 // before this tab, which is how QuickBooks sub-customers became the
 // dumping ground for names. See qb-subcustomer-flattening-plan.md.
-const tabs = ["Jobs", "Estimates", "Invoices", "Contacts", "Locations", "Notes", "Equipment", "Email", "Portal"];
+const tabs = ["Jobs", "Estimates", "Invoices", "Contacts", "Locations", "Notes", "Email", "Portal"];
 // Route param, not the loaded customer object — the tab must work while the
 // customer record is still in flight.
 const customerId = computed(() => route.params.id);
 const customerEstimates = ref([]);
 const customerInvoices = ref([]);
-const equipment = ref([]);
-const showEquipmentDialog = ref(false);
-const equipmentForm = ref({ brand: "", model: "", serial: "", install_date: null, warranty_expires: null, type: "", notes: "" });
-const equipmentTypes = ["door", "opener", "motor", "remote", "other"];
-const isSavingEquipment = ref(false);
 // Plan §9: shared vocabulary — this dropdown's divergent "Service" entry is
 // where the 12 mis-spelled prod rows came from.
 const jobTypeOptions = [...JOB_TYPE_OPTIONS];
@@ -871,55 +786,8 @@ function emptyLocation() {
   return { id: null, label: "", address: "", city: "", state: "", zip: "", notes: "", is_primary: false };
 }
 
-function toDatePayload(value) {
-  if (!value) return null;
-  if (value instanceof Date) {
-    return value.toISOString().split("T")[0];
-  }
-  return value;
-}
-
 function goToJob(job) {
   router.push(`/jobs/${job.id}`);
-}
-
-function resetEquipmentForm() {
-  equipmentForm.value = { brand: "", model: "", serial: "", install_date: null, warranty_expires: null, type: "", notes: "" };
-}
-
-function openEquipmentDialog() {
-  resetEquipmentForm();
-  showEquipmentDialog.value = true;
-}
-
-async function fetchEquipment() {
-  try {
-    const data = await api.get(`/api/customers/${route.params.id}/equipment`);
-    equipment.value = Array.isArray(data) ? data : data?.data || data?.items || [];
-  } catch {
-    equipment.value = [];
-  }
-}
-
-async function saveEquipment() {
-  isSavingEquipment.value = true;
-  try {
-    await api.post(`/api/customers/${route.params.id}/equipment`, {
-      brand: equipmentForm.value.brand || null,
-      model: equipmentForm.value.model || null,
-      serial_number: equipmentForm.value.serial || null,
-      install_date: toDatePayload(equipmentForm.value.install_date),
-      equipment_type: equipmentForm.value.type || null,
-      notes: equipmentForm.value.notes || null,
-    });
-    toast.add({ severity: "success", summary: "Saved", detail: "Equipment record added.", life: 3000 });
-    showEquipmentDialog.value = false;
-    await fetchEquipment();
-  } catch {
-    // errors surfaced by useApiWithToast
-  } finally {
-    isSavingEquipment.value = false;
-  }
 }
 
 // 2026-08-24: this tab used to call `/api/customers/{id}/portal-account`, a
@@ -1290,7 +1158,6 @@ onMounted(async () => {
     fetchContacts(),
     loadCustomerEstimates(),
     loadCustomerInvoices(),
-    fetchEquipment(),
     loadPricingSettings(),
   ]);
 });
