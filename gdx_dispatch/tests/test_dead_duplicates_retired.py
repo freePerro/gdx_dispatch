@@ -134,9 +134,6 @@ RESOLVED_PAIRS = {
     ("POST", "/api/purchase-orders"): "gdx_dispatch.routers.purchase_orders",
     ("PATCH", "/api/purchase-orders/{po_id}"): "gdx_dispatch.routers.purchase_orders",
     ("POST", "/api/purchase-orders/{po_id}/receive"): "gdx_dispatch.routers.purchase_orders",
-    ("GET", "/api/campaigns"): "gdx_dispatch.routers.campaigns",                  # #569
-    ("POST", "/api/campaigns"): "gdx_dispatch.routers.campaigns",
-    ("POST", "/api/campaigns/{campaign_id}/send"): "gdx_dispatch.routers.campaigns",
     ("GET", "/api/dispatch/locations"): "gdx_dispatch.routers.tech_locations",
     ("GET", "/api/inventory/parts"): "gdx_dispatch.routers.inventory",
     ("POST", "/api/inventory/parts"): "gdx_dispatch.routers.inventory",

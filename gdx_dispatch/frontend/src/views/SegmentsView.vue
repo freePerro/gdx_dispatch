@@ -51,7 +51,7 @@
           <EmptyState
             icon="pi pi-users"
             title="No segments yet"
-            message="Group customers by criteria to target campaigns and bulk actions."
+            message="Group customers by criteria to review them and take bulk actions."
             action-label="New Segment"
             @action="openSegmentDialog()"
           />

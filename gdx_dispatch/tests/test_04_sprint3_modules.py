@@ -2,12 +2,9 @@ import asyncio
 from types import SimpleNamespace
 from uuid import uuid4
 
-import pytest
-
 from gdx_dispatch.core.terminology import DEFAULT_TERMINOLOGY, INDUSTRY_PRESETS
 from gdx_dispatch.core.webhooks.delivery import RETRY_DELAYS, sign_payload
 from gdx_dispatch.models.tenant_models import Customer, Job
-from gdx_dispatch.modules.campaigns.service import render_template
 from gdx_dispatch.modules.change_orders.service import approve_change_order, create_change_order
 from gdx_dispatch.modules.inventory.models import Part
 from gdx_dispatch.modules.maintenance.models import ServicePlan
@@ -15,11 +12,6 @@ from gdx_dispatch.modules.maintenance.service import enroll_customer
 from gdx_dispatch.modules.proposals.service import accept_tier, add_proposal_tier, create_estimate
 from gdx_dispatch.modules.purchase_orders.service import create_po, receive_po
 from gdx_dispatch.modules.workflows.engine import SUPPORTED_TRIGGERS, evaluate_conditions, fire_trigger
-
-
-@pytest.fixture(autouse=True)
-def _patch_apply_async(monkeypatch):
-    monkeypatch.setattr("gdx_dispatch.modules.campaigns.service.send_campaign_task.apply_async", lambda *a, **k: None)
 
 
 def test_webhook_signature_hmac():
@@ -54,11 +46,6 @@ def test_purchase_order_receive_updates_inventory(tenant_db):
     po = create_po("Vendor", None, [{"part_id": part.id, "description": "Bolt", "qty": 3, "unit_cost": 1}], tenant_db)
     receive_po(po.id, tenant_db); tenant_db.refresh(part)  # noqa: E701,E702
     assert part.qty_on_hand == 8
-
-
-def test_campaign_template_rendering():
-    out = render_template("Hello {{customer_name}}, your estimate is {{estimate_total}}", {"customer_name": "Bob", "estimate_total": "$500"})
-    assert out == "Hello Bob, your estimate is $500"
 
 
 def test_change_order_lifecycle(tenant_db):

@@ -5,6 +5,11 @@ decision). Nothing built. No rival plan — every other "suppress" in
 `docs/design/` is about reminder idempotency, pay-link hiding, or GL match
 candidacy.
 
+Amended 2026-09-14: step 3's campaigns send path no longer exists. `routers/campaigns.py` <!-- link-ok: retired (#638) -->
+and `modules/campaigns/` were retired (#638); the send route never delivered anything.
+Winback's send (`routers/winback.py`) is the remaining bulk path, and whether it delivers
+has not been checked, so it is not named as a replacement here.
+
 Amended 2026-09-06: the SMS chokepoint this plan named (`core/sms.py`, Twilio <!-- link-ok -->)
 was removed with the provider, which was never configured; the only live SMS
 sender is Phone.com. See `twilio-removal-plan.md`. Everything else here stands.
@@ -138,7 +143,7 @@ consequence in view rather than inherited from a general principle.
 2. **Read it in `send_transactional_email`** before dispatch. On suppression,
    return `(False, None, "recipient_opted_out")` — the existing `skip_reason`
    channel, so every caller already handles it and nothing needs a new branch.
-3. **Read it in the campaigns send path** (`routers/campaigns.py:355`
+3. **Read it in the campaigns send path** (`routers/campaigns.py:355` <!-- link-ok: retired 2026-09-14 (#638) -->
    `send_campaign` and `modules/campaigns/`), filtering recipients before the
    batch rather than per-send, and **count the suppressed** in the result so the
    number is visible rather than silent.

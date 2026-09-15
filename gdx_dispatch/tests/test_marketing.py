@@ -289,8 +289,9 @@ async def test_segment_count_endpoint(db_sessionmaker):
     assert count["count"] >= 1
 
 
-def test_module_requirements_wired_for_segments_campaigns_loyalty():
-    from gdx_dispatch.routers import campaigns as live_campaigns_router
+def test_module_requirements_wired_for_segments_loyalty():
+    # The campaigns half of this test left with routers/campaigns.py (#638,
+    # 2026-09-14); test_campaigns_retired.py pins the module key's retirement.
     from gdx_dispatch.routers import referrals as referrals_router
 
     seg_dep = require_module("segments")
@@ -321,19 +322,6 @@ def test_module_requirements_wired_for_segments_campaigns_loyalty():
         if isinstance(cell.cell_contents, str)
     ]
     assert "loyalty" in captured_keys, f"Expected 'loyalty' module gate, got: {captured_keys}"
-
-    # The campaigns gate moved with the feature: modules/campaigns/router.py is gone
-    # (2026-09-07), so the surviving routers/campaigns.py must carry it at router level.
-    campaign_routes = [r for r in live_campaigns_router.router.routes if hasattr(r, "endpoint")]
-    assert campaign_routes, "campaigns router should have at least one route"
-    campaign_keys = [
-        cell.cell_contents
-        for d in campaign_routes[0].dependant.dependencies
-        if getattr(d.call, "__name__", "") == "_dependency" and getattr(d.call, "__closure__", None)
-        for cell in d.call.__closure__
-        if isinstance(cell.cell_contents, str)
-    ]
-    assert "campaigns" in campaign_keys, f"Expected 'campaigns' module gate, got: {campaign_keys}"
 
 
 async def test_referral_create_requires_required_fields():

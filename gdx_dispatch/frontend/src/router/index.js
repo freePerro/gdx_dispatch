@@ -34,7 +34,6 @@ const TimeclockView = () => import('../views/TimeclockView.vue');
 const TimesheetsView = () => import('../views/TimesheetsView.vue');
 const DailyLoadsheetView = () => import('../views/DailyLoadsheetView.vue');
 const PlannerView = () => import('../views/PlannerView.vue');
-const CampaignsView = () => import('../views/CampaignsView.vue');
 const WinbackView = () => import('../views/WinbackView.vue');
 const ExpensesView = () => import('../views/ExpensesView.vue');
 const ForecastingView = () => import('../views/ForecastingView.vue');
@@ -242,14 +241,15 @@ export const routes = [
   // /inbound-comms → /inbox (deduped 2026-04-29 to /communications; repointed
   // 2026-08-31 when that screen was removed, #350). Bookmark redirect.
   { path: '/inbound-comms', redirect: '/inbox' },
-  // Marketing cluster — Campaigns / Segments / Automations / Winback / Loyalty
-  // under one tab bar.
+  // Marketing cluster — Segments / Event Rules / Winback / Loyalty under one tab
+  // bar. The Campaigns tab (CampaignsView) was retired 2026-09-14 (#638); the
+  // cluster keeps /campaigns as its path so old links land on Segments.
   {
     path: '/campaigns',
     component: ModuleTabsPage,
     props: { clusterKey: 'marketing_hub' },
     children: [
-      { path: '', name: 'campaigns', component: CampaignsView },
+      { path: '', name: 'campaigns', redirect: '/segments' },
       { path: '/segments', name: 'segments', component: SegmentsView },
       // 2026-08-31: the "Automations" sequences page was a shell — its
       // sequences were never executed by anything. Event Rules is the
@@ -260,8 +260,9 @@ export const routes = [
       { path: '/loyalty', name: 'loyalty', component: LoyaltyView },
     ],
   },
-  // /marketing → /campaigns (deduped 2026-04-29). Bookmark redirect.
-  { path: '/marketing', redirect: '/campaigns' },
+  // /marketing bookmark redirect (deduped 2026-04-29). Repointed from /campaigns
+  // to /segments 2026-09-14, when the Campaigns tab was retired (#638).
+  { path: '/marketing', redirect: '/segments' },
   { path: '/reports', name: 'reports', component: ReportsView },
   { path: '/margin-tiers', name: 'margin-tiers', component: MarginTiersView },
   { path: '/labor-matrix', name: 'labor-matrix', component: LaborMatrixView },

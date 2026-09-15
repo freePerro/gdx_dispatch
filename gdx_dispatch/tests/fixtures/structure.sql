@@ -56,40 +56,6 @@ CREATE TYPE public.automation_trigger_event AS ENUM (
 
 
 --
--- Name: campaign_channel; Type: TYPE; Schema: public; Owner: -
---
-
-CREATE TYPE public.campaign_channel AS ENUM (
-    'sms',
-    'email',
-    'both'
-);
-
-
---
--- Name: campaign_send_status; Type: TYPE; Schema: public; Owner: -
---
-
-CREATE TYPE public.campaign_send_status AS ENUM (
-    'pending',
-    'sent',
-    'failed',
-    'cancelled'
-);
-
-
---
--- Name: campaign_trigger; Type: TYPE; Schema: public; Owner: -
---
-
-CREATE TYPE public.campaign_trigger AS ENUM (
-    'estimate_not_accepted',
-    'job_completed',
-    'manual'
-);
-
-
---
 -- Name: equipment_type; Type: TYPE; Schema: public; Owner: -
 --
 
@@ -453,40 +419,6 @@ CREATE TABLE public.automation_steps (
     action_type public.automation_action_type NOT NULL,
     delay_hours integer NOT NULL,
     template text NOT NULL,
-    created_at timestamp with time zone NOT NULL
-);
-
-
---
--- Name: campaign_sends; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.campaign_sends (
-    id uuid NOT NULL,
-    campaign_id uuid NOT NULL,
-    customer_id uuid NOT NULL,
-    entity_type character varying(50) NOT NULL,
-    entity_id character varying(50) NOT NULL,
-    scheduled_at timestamp with time zone NOT NULL,
-    sent_at timestamp with time zone,
-    status public.campaign_send_status NOT NULL,
-    idempotency_key character varying(100) NOT NULL
-);
-
-
---
--- Name: campaigns; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.campaigns (
-    id uuid NOT NULL,
-    name character varying(200) NOT NULL,
-    trigger public.campaign_trigger NOT NULL,
-    delay_days integer NOT NULL,
-    message_template text NOT NULL,
-    channel public.campaign_channel NOT NULL,
-    is_active boolean NOT NULL,
-    send_count integer NOT NULL,
     created_at timestamp with time zone NOT NULL
 );
 
@@ -1899,21 +1831,6 @@ CREATE TABLE public.messages (
     job_id character varying(36),
     customer_id character varying(36),
     created_at timestamp with time zone
-);
-
-
---
--- Name: mobile_sync_actions; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.mobile_sync_actions (
-    id text NOT NULL,
-    company_id text NOT NULL,
-    fingerprint text,
-    action_type text,
-    entity_id text,
-    queued_at text,
-    created_at text
 );
 
 
@@ -3520,30 +3437,6 @@ ALTER TABLE ONLY public.automation_steps
 
 
 --
--- Name: campaign_sends campaign_sends_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.campaign_sends
-    ADD CONSTRAINT campaign_sends_idempotency_key_key UNIQUE (idempotency_key);
-
-
---
--- Name: campaign_sends campaign_sends_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.campaign_sends
-    ADD CONSTRAINT campaign_sends_pkey PRIMARY KEY (id);
-
-
---
--- Name: campaigns campaigns_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.campaigns
-    ADD CONSTRAINT campaigns_pkey PRIMARY KEY (id);
-
-
---
 -- Name: catalog_items catalog_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4165,14 +4058,6 @@ ALTER TABLE ONLY public.message_threads
 
 ALTER TABLE ONLY public.messages
     ADD CONSTRAINT messages_pkey PRIMARY KEY (id);
-
-
---
--- Name: mobile_sync_actions mobile_sync_actions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.mobile_sync_actions
-    ADD CONSTRAINT mobile_sync_actions_pkey PRIMARY KEY (id);
 
 
 --
@@ -6013,22 +5898,6 @@ ALTER TABLE ONLY public.automation_enrollments
 
 ALTER TABLE ONLY public.automation_steps
     ADD CONSTRAINT automation_steps_sequence_id_fkey FOREIGN KEY (sequence_id) REFERENCES public.automation_sequences(id);
-
-
---
--- Name: campaign_sends campaign_sends_campaign_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.campaign_sends
-    ADD CONSTRAINT campaign_sends_campaign_id_fkey FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: campaign_sends campaign_sends_customer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.campaign_sends
-    ADD CONSTRAINT campaign_sends_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES public.customers(id);
 
 
 --

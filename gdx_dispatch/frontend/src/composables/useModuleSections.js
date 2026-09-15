@@ -52,7 +52,7 @@ const SECTION_BY_KEY = {
   reviews: 'Customers & Comms', referrals: 'Customers & Comms',
   surveys: 'Customers & Comms',
   warranties: 'Customers & Comms', leads: 'Customers & Comms',
-  campaigns: 'Customers & Comms', segments: 'Customers & Comms',
+  segments: 'Customers & Comms',
   automations: 'Customers & Comms', winback: 'Customers & Comms',
   loyalty: 'Customers & Comms', tags: 'Customers & Comms',
   // Money

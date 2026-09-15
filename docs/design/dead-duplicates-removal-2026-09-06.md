@@ -15,7 +15,7 @@ the copies deleted below were included later and never ran:
 | `POST /api/mobile/location` | `routers/tech_locations.py` | `routers/mobile.py::report_mobile_location` |
 | `GET /api/ai/usage` | `core/ai_usage_logger.py` (durable table) — **now session-gated**, with `/usage/export`. **Two behaviour changes here, not one:** auth (ungated → session) *and* response shape (`requests/input_tokens/output_tokens/total_tokens/cost` → `totals/by_model/by_day` with `cost_usd`). No in-repo caller; prod nginx logs checked for external pollers before merge (see PR) | `core/ai_router.py::ai_usage` (in-process list, emptied on restart) |
 | `GET/POST /api/purchase-orders`, `PATCH …/{id}`, `POST …/{id}/receive` | `routers/purchase_orders.py` | `routers/po_workflow.py` — whole router (all four routes shadowed) | <!-- link-ok: deleted 2026-09-06 -->
-| `GET/POST /api/campaigns`, `POST …/{id}/send` | `routers/campaigns.py` | `modules/campaigns/router.py` (3 of 4 routes; `/stats` stayed until the 2026-09-07 follow-up removed it too — see the last section) |
+| `GET/POST /api/campaigns`, `POST …/{id}/send` | `routers/campaigns.py` | `modules/campaigns/router.py` (3 of 4 routes; `/stats` stayed until the 2026-09-07 follow-up removed it too — see the last section) | <!-- link-ok: both retired 2026-09-14 (#638) -->
 | `GET /api/dispatch/locations` | `routers/tech_locations.py` | `modules/gps_dispatch/router.py::list_locations` |
 | `GET/POST /api/fleet/vehicles` | `routers/fleet.py` | `modules/fleet/router.py` | <!-- link-ok: Fleet retired 2026-09-14 (#683) -->
 | `GET/POST /api/inventory/parts`, `GET …/low-stock` | `routers/inventory.py` | `modules/inventory/router.py` |
@@ -73,7 +73,7 @@ All five must read 0 on prod and on demo; otherwise export, empty, then deploy.
   the same Communications tab reading the same stub.
 - **`tests/test_marketing.py` tested the dead module handlers.** Its
   create/send/audit tests exercised `modules/campaigns/router.py`, not the
-  `routers/campaigns.py` that serves. Those tests went with the dead code;
+  `routers/campaigns.py` that serves. Those tests went with the dead code; <!-- link-ok: retired 2026-09-14 (#638) -->
   the stats test now seeds the module's own tables directly. The canonical
   campaigns router has **no direct tests** — filed as #631, not fixed here.
 - **Two mobile tests pinned the write gate through `/start`.** They now pin
@@ -181,7 +181,7 @@ found two more `/api/mobile` routes mounted from other files with no SPA
 caller — `POST /api/mobile/voice-note` (`routers/voice.py`) and
 `POST /api/mobile/chat/{message_id}/read` (`routers/mobile_chat.py`) → #641,
 not adjudicated here. Lesson recorded there: sweep from the route table, not
-from decorator regexes over one file. The surviving `routers/campaigns.py`
+from decorator regexes over one file. The surviving `routers/campaigns.py` <!-- link-ok: retired 2026-09-14 (#638) -->
 serves four of its eleven routes to the SPA; the other seven are noted on #638.
 The MOB-05 checklist row that still names `/complete` as the completion path is
 part of #640.
@@ -198,6 +198,14 @@ and demo 2026-09-07) needs migration 093 → #636; the same sweep across every
 external-consumer / give-it-a-UI / delete verdict each → #637; with its router
 gone, the rest of `modules/campaigns` (service, tasks, models, and the empty
 `campaigns` / `campaign_sends` tables) is headless → #638.
+
+**Resolved 2026-09-14 (#636, #638),** in one PR per the maintainer's 2026-09-13
+ruling: `modules/campaigns/`, `routers/campaigns.py` and the Campaigns tab were <!-- link-ok: retired 2026-09-14 (#638) -->
+retired, and migration **095** (not 093; that number was taken) drops
+`campaigns`, `campaign_sends` and `mobile_sync_actions` with the same
+count-and-refuse contract as 092. All three held 0 rows on prod and demo.
+`/campaigns` and `/marketing` now land on Segments. `marketing_campaigns` is
+kept by that ruling.
 
 The removed paths are pinned in `test_dead_duplicates_retired.py::REMOVED_PATHS`
 so they stay gone.

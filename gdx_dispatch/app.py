@@ -428,12 +428,6 @@ except Exception:
     marketing_router = APIRouter(prefix="/api", tags=["marketing"])
 
 try:
-    from gdx_dispatch.routers import campaigns as campaigns_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: campaigns_router")
-    campaigns_router = APIRouter(tags=["campaigns"])
-
-try:
     from gdx_dispatch.routers import branding_public as branding_public_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: branding_public_router")
@@ -1513,7 +1507,6 @@ def create_app() -> FastAPI:
         logging.getLogger("gdx_dispatch.app").exception("Failed to import router: vendor_invoices")
     app.include_router(loyalty_router.router if hasattr(loyalty_router, "router") else loyalty_router)
     app.include_router(marketing_router.router if hasattr(marketing_router, "router") else marketing_router)
-    app.include_router(campaigns_router.router if hasattr(campaigns_router, "router") else campaigns_router)
     # Register the public branding router BEFORE the gated settings router
     # so /api/settings/branding GET resolves to the unrestricted handler
     # for non-admin users. FastAPI route lookup is first-match-wins.

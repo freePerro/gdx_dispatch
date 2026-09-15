@@ -45,7 +45,7 @@ export const test = base.extend({
           [
             'jobs', 'customers', 'estimates', 'invoices', 'dispatch', 'timeclock',
             'inventory', 'quickbooks', 'customer_portal',
-            'campaigns', 'gps_dispatch', 'ai_estimates', 'ai_dispatch',
+            'gps_dispatch', 'ai_estimates', 'ai_dispatch',
             'ai_communication', 'stripe_connect', 'loyalty', 'warranties',
             'automations', 'documents', 'communications', 'reports_advanced',
             'mobile', 'segments', 'google_maps',

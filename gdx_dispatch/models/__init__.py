@@ -69,7 +69,6 @@ from gdx_dispatch.models.tenant_models import (  # noqa: F401
     Message,
     MessageThread,
     MessageThreadMember,
-    MobileSyncAction,
     Notification,
     NotificationSentHistory,
     NotificationSettings,
@@ -130,10 +129,6 @@ try:
         ProposalTier,
         ProposalTierLine,
     )
-except ImportError:
-    pass
-try:
-    from gdx_dispatch.modules.campaigns.models import CampaignSend  # noqa: F401
 except ImportError:
     pass
 try:
