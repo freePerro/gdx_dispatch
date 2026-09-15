@@ -1,6 +1,6 @@
 # Dead duplicates removal — 2026-09-06
 
-Status: RELEASED v1.118.0 — MERGED #633 2026-09-07 (squash 3c0e7b9, stacked on #630); prod and demo rolled to 1.118.0 on 2026-09-07 ~02:36Z with the six-table recount at 0 rows on both immediately before; migrations 091+092 ran, alembic head 092 on both; walked on prod and demo (API, desktop and mobile customer pages, light and dark). Closes #458 #459 #480 #568 #569 #571 #572 #574 #595 #599. Migration 092. — **Follow-up (mobile status/clock orphans + campaigns module router) MERGED #642 2026-09-07 (squash e2fab15) — NOT yet released, NOT on prod; see the last section.**
+Status: RELEASED v1.118.0 — MERGED #633 2026-09-07 (squash 3c0e7b9, stacked on #630); prod and demo rolled to 1.118.0 on 2026-09-07 ~02:36Z with the six-table recount at 0 rows on both immediately before; migrations 091+092 ran, alembic head 092 on both; walked on prod and demo (API, desktop and mobile customer pages, light and dark). Closes #458 #459 #480 #568 #569 #571 #572 #574 #595 #599. Migration 092. — **Follow-up (mobile status/clock orphans + campaigns module router) MERGED #642 2026-09-07 (squash e2fab15) — NOT yet released, NOT on prod; see the last section.** — The sibling-sweep candidates this doc filed as #632 were resolved 2026-09-14; see *Resolved* under that section.
 
 ## What already exists (do not rebuild)
 
@@ -121,11 +121,28 @@ names from a table would not show up in this grep):**
 |---|---|
 | `modules/outlook/tasks.py` | `repair_blank_outlook_messages` |
 | `tasks/billing_followup.py` | `billing_followup_tick` |
-| `tasks/estimate_followup.py` | `check_estimate_followups` |
+| `tasks/estimate_followup.py` | `check_estimate_followups` | <!-- link-ok: deleted 2026-09-14 (#632) -->
 | `modules/quickbooks/tasks.py` | nine `sync_*` / `pull_payments_task` tasks (QB is being retired; its sync is set to manual on prod) |
 
 None is removed here: each needs a read, not a grep, and the QuickBooks set
 belongs to the QB retirement. Filed as #632.
+
+**Resolved 2026-09-14 (#632),** after the maintainer's 2026-09-13 ruling on a
+read of each candidate:
+- `billing_followup_tick`: a false positive. It is registered as
+  `billing_followup.daily_tick` and is on the beat schedule.
+- `repair_blank_outlook_messages`: kept, as a documented one-time manual repair.
+- `check_estimate_followups`: **deleted.** It stamped `reminder_sent_at` and
+  logged "reminders_sent" without sending anything.
+- The nine QuickBooks tasks moved to the maintainer's ledger under QuickBooks
+  retirement.
+
+One more instance of the same class was deleted in that PR **without a ruling
+of its own**: `run_daily_snapshot_task` in `core/celery_app.py`, whose body was
+`return None`, with its own task route and no caller. It was already on the
+maintainer's local ledger (2026-09-13, "the #632 shape, not on its list"). The
+PR's re-run of this search covered the 23 modules the worker loaded before the
+change, and found no other instance.
 
 ## Shipped (2026-09-07)
 
