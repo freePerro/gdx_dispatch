@@ -996,12 +996,16 @@ def configure_json_logging(level: str | None = None, stream: Any | None = None) 
 #
 # The same dead branch also held an E2E bypass (GDX_E2E_BYPASS + x-e2e-test →
 # 100000/minute) which likewise never fired — verified: e2e traffic still 429s
-# at 120. Repairing that needs a different mechanism than a default_limits
-# callable and is tracked separately; the working bypass in
-# `core/rate_limiter.py` is unaffected.
+# at 120. It needed a different mechanism than a default_limits callable:
+# create_app() now sets `limiter.enabled` from GDX_E2E_BYPASS (#579). The
+# bypass in `core/rate_limiter.py` is a separate layer and is unchanged.
 DEFAULT_RATE_LIMIT = "120/minute"
 
 limiter = Limiter(key_func=get_remote_address, default_limits=[DEFAULT_RATE_LIMIT])
+# What slowapi itself decided at construction: it reads RATELIMIT_ENABLED from the
+# environment (slowapi 0.1.10 extension.py:235). create_app() combines this with
+# the E2E bypass rather than overwriting it, so that switch keeps working.
+_LIMITER_CONFIGURED_ENABLED = limiter.enabled
 
 
 def _check_customer_facing_config() -> None:
@@ -1188,6 +1192,26 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
         lifespan=lifespan,
     )
+    # The slowapi layer's E2E bypass (#579). The old one lived in a
+    # default_limits callable, which slowapi never hands the request, so it
+    # could not fire and e2e traffic was capped at 120/minute (see
+    # DEFAULT_RATE_LIMIT). slowapi 0.1.10 checks `limiter.enabled` on every
+    # request, in SlowAPIMiddleware.dispatch and on the per-route decorator
+    # path (middleware.py:123, extension.py:574), so this switches the whole
+    # layer off.
+    #
+    # Coarser than the old intent: the env var alone turns it off, with no
+    # x-e2e-test header required. That header is client-supplied, so it never
+    # guarded anything; the env var is the whole protection. GDX_E2E_BYPASS=1
+    # belongs to throwaway e2e containers and the lab stack. Prod runs 0, and
+    # the celery workers and demo leave it unset (checked live 2026-09-14).
+    #
+    # `limiter` is module-global, so this assigns BOTH ways: the most recent
+    # create_app() in a process decides for every app in it. Setting only False
+    # would leave slowapi off for apps built later in the same process. It
+    # starts from _LIMITER_CONFIGURED_ENABLED, so RATELIMIT_ENABLED=false still
+    # turns slowapi off.
+    limiter.enabled = _LIMITER_CONFIGURED_ENABLED and os.environ.get("GDX_E2E_BYPASS") != "1"
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     app.add_exception_handler(Exception, global_exception_handler)
