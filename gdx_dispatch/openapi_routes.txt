@@ -12,7 +12,6 @@ DELETE /api/admin/users/{id}
 DELETE /api/appointments/{appt_id}
 DELETE /api/bank-feeds/institutions/{institution_id}
 DELETE /api/budgets/{line_id}
-DELETE /api/campaigns/{campaign_id}
 DELETE /api/catalogs/{catalog_id}
 DELETE /api/catalogs/{catalog_id}/items/{item_id}
 DELETE /api/change-orders/{co_id}
@@ -192,10 +191,6 @@ GET /api/calendar/events
 GET /api/calendar/month
 GET /api/calendar/technician/{tech_id}
 GET /api/calendar/week
-GET /api/campaigns
-GET /api/campaigns/{campaign_id}
-GET /api/campaigns/{campaign_id}/preview
-GET /api/campaigns/{campaign_id}/sends
 GET /api/catalog-policy
 GET /api/catalog/doors
 GET /api/catalog/doors/filters
@@ -669,7 +664,6 @@ PATCH /api/bank-feeds/institutions/{institution_id}
 PATCH /api/bank-feeds/statements/accounts/{account_id}
 PATCH /api/billing/terms
 PATCH /api/budgets/{line_id}
-PATCH /api/campaigns/{campaign_id}
 PATCH /api/catalog-policy
 PATCH /api/catalogs/{catalog_id}
 PATCH /api/catalogs/{catalog_id}/items/{item_id}
@@ -835,9 +829,6 @@ POST /api/budgets/refresh-actuals
 POST /api/budgets/seed
 POST /api/budgets/{line_id}/lock
 POST /api/budgets/{line_id}/unlock
-POST /api/campaigns
-POST /api/campaigns/preview-filter
-POST /api/campaigns/{campaign_id}/send
 POST /api/catalogs
 POST /api/catalogs/save-from-estimate-line
 POST /api/catalogs/{catalog_id}/ai-import
@@ -1219,8 +1210,6 @@ PUT /api/admin/customer-tags/{tag_id}
 PUT /api/admin/feature-settings/tech-mobile
 PUT /api/bank-feeds/schedule
 PUT /api/bank-feeds/simplefin/settings
-PUT /api/campaigns/{campaign_id}/activate
-PUT /api/campaigns/{campaign_id}/deactivate
 PUT /api/commissions/rules/{rule_id}
 PUT /api/customers/{customer_id}/custom-fields
 PUT /api/forecast/settings

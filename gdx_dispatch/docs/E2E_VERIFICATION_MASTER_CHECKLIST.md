@@ -452,13 +452,13 @@ channels are `/inbox` (Outlook, `/api/outlook/*`) and `/phone-com/messages`
 
 ### What "works" means
 
-Marketing campaigns can be created, segments targeted, messages sent, and results tracked.
+Segments can be targeted, loyalty tiers and points tracked, and reviews and referrals recorded. The Campaigns page was retired 2026-09-14 (#638): its send route reported sends it never made, and `/campaigns` now opens Segments.
 
 ### Functional Tests
 
 | ID | Test Case | Verification |
 |----|-----------|-------------|
-| CAMP-01 | Campaigns page renders | Shows campaign list with status |
+| CAMP-01 | Old Campaigns links | `/campaigns` and `/marketing` open Segments with no console errors. The Campaigns page itself was retired 2026-09-14 (#638). |
 | CAMP-02 | Loyalty tiers | GET /api/loyalty/tiers returns tier list |
 | CAMP-03 | Customer points | GET /customers/{id}/points returns point balance |
 | CAMP-04 | Add points | POST /customers/{id}/points, balance increases |

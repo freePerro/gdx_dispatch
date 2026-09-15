@@ -35,7 +35,7 @@ VUE_ROUTES = [
     "/settings",
     "/inventory",
     "/timeclock",
-    "/campaigns",
+    "/segments",
     "/reports",
     "/documents",
     "/mobile",

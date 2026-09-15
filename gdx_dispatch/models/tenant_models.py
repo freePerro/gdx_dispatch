@@ -2549,6 +2549,11 @@ class ServiceTrigger(Base):
 
 
 class MarketingCampaign(Base):
+    # Kept without a reader. routers/campaigns.py and the Campaigns tab were
+    # retired 2026-09-14 (#638), so nothing reads or writes this table. The
+    # 2026-09-13 ruling did not drop it: prod holds one soft-deleted QA seed
+    # draft from 2026-04-08. The model stays so the table is not left owned by
+    # nothing; drop both together if that is ever ruled.
     __tablename__ = "marketing_campaigns"
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     company_id: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -2869,17 +2874,6 @@ class JobTemplate(Base):
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[str] = mapped_column(Text, nullable=True)
     deleted_at: Mapped[str] = mapped_column(Text, nullable=True)
-
-
-class MobileSyncAction(Base):
-    __tablename__ = "mobile_sync_actions"
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
-    company_id: Mapped[str] = mapped_column(Text, nullable=False)
-    fingerprint: Mapped[str] = mapped_column(Text, nullable=True)
-    action_type: Mapped[str] = mapped_column(Text, nullable=True)
-    entity_id: Mapped[str] = mapped_column(Text, nullable=True)
-    queued_at: Mapped[str] = mapped_column(Text, nullable=True)
-    created_at: Mapped[str] = mapped_column(Text, nullable=True)
 
 
 class PortalMessage(Base):

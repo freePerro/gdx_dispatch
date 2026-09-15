@@ -1,6 +1,8 @@
-"""E2E tests for Campaigns and Marketing — CAMP-01 through CAMP-08.
+"""E2E tests for Marketing — CAMP-01 through CAMP-08.
 
-Covers: campaign list, loyalty tiers, customer points, reviews, referrals.
+Covers: old Campaigns links, loyalty tiers, customer points, reviews, referrals.
+The Campaigns page was retired 2026-09-14 (#638); CAMP-01 now checks that its
+old links land on Segments.
 """
 from __future__ import annotations
 
@@ -27,16 +29,16 @@ def test_customer_id(api):
     return resp.json()["id"]
 
 
-class TestCampaignsPage:
-    def test_camp_01_page_renders(self, navigate, console_tracker):
-        """Campaigns page renders with campaign list."""
-        page = navigate("/campaigns")
+class TestOldCampaignsLinks:
+    @pytest.mark.parametrize("old_path", ["/campaigns", "/marketing"])
+    def test_camp_01_old_links_land_on_segments(self, navigate, console_tracker, old_path):
+        """Bookmarks to the retired Campaigns page open Segments, not a 404."""
+        page = navigate(old_path)
         page.wait_for_timeout(3000)
+        assert page.url.rstrip("/").endswith("/segments"), f"{old_path} landed on {page.url}"
         body = page.content().lower()
-        assert any(kw in body for kw in ["campaign", "marketing", "loyalty"]), (
-            "Campaigns page should show campaign content"
-        )
-        console_tracker.assert_no_errors("campaigns page")
+        assert "customer segments" in body, "Segments did not render"
+        console_tracker.assert_no_errors(f"{old_path} redirect")
 
 
 class TestLoyaltyTiers:

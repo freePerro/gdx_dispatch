@@ -243,7 +243,8 @@ def create_job_line_item(job_id: str, request: Request, payload: dict, user: dic
     # dialect-specific: Postgres has a native uuid type and takes a string,
     # SQLite stores CHAR(32) and calls `value.hex`, raising AttributeError.
     # The handler already coerces `invoice_id` below for the same reason; its
-    # own primary key was missed. Same shape as #631 in routers/campaigns.py.
+    # own primary key was missed. Same shape as #631 in the since-retired
+    # routers/campaigns.py.
     new_uuid = uuid4()
     new_id = str(new_uuid)
     # This handler takes a raw dict, so InvoiceLineCreateIn's `gt=0` never ran

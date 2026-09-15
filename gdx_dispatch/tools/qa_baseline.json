@@ -42,10 +42,6 @@
       "status": 200,
       "last_checked": "2026-04-08"
     },
-    "/api/campaigns": {
-      "status": 200,
-      "last_checked": "2026-04-08"
-    },
     "/api/documents": {
       "status": 200,
       "last_checked": "2026-04-08"
@@ -220,10 +216,6 @@
       "last_checked": "2026-04-08"
     },
     "/warranties": {
-      "js_errors": 0,
-      "last_checked": "2026-04-08"
-    },
-    "/campaigns": {
       "js_errors": 0,
       "last_checked": "2026-04-08"
     },

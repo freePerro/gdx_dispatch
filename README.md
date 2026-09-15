@@ -15,7 +15,7 @@ under [`gdx_dispatch/routers/`](gdx_dispatch/routers/):
 - **Sales** — estimates, proposals, change orders, catalogs & pricing
 - **Operations** — work orders, inventory, purchase orders, timeclock
 - **Finance** — invoicing, payroll, commissions, tax, QuickBooks sync, vendor statements
-- **Customer engagement** — customer portal, campaigns, communications, notifications
+- **Customer engagement** — customer portal, segments, winback & follow-ups, communications, notifications
 - **Telephony & email** — Phone.com (click-to-call, MMS) and Outlook integrations
 - **AI assists** — AI estimates, communication drafting, health scoring, forecasting
 - **Plugins** — operator-installable modules run in a sandboxed plugin-host

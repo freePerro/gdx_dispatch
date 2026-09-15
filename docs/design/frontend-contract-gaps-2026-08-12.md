@@ -22,6 +22,11 @@ The three were `PATCH /api/onboarding/checklist` and
 
 **Still open:** the C5 permanent blanks remain (`onboarding_checklist`,
 `preview_campaign`, `campaign_send_history` all return fixed empty shapes).
+**Correction and retirement (2026-09-14, #638):** none of the three blanks named
+above remains. `preview_campaign`, `campaign_send_history` and the campaign
+activate/deactivate rows went with `routers/campaigns.py` and the Campaigns tab. <!-- link-ok: retired (#638) -->
+`onboarding_checklist` was already gone from the code: `routers/onboarding.py` serves
+`GET` and `PATCH /api/onboarding/checklist` (checked 2026-09-14).
 
 **The 17 decisions are TAKEN (2026-08-24, owner)** — see
 `unimplemented-endpoints-decision-list.md`, which now carries a Decision column

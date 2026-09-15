@@ -24,7 +24,6 @@ MODULES = {
     "inventory": {"name": "Inventory"},
     "quickbooks": {"name": "QuickBooks Sync"},
     "customer_portal": {"name": "Customer Portal"},
-    "campaigns": {"name": "Marketing Campaigns"},
     "gps_dispatch": {"name": "GPS Dispatch"},
     "ai_estimates": {"name": "AI Smart Estimates"},
     "ai_dispatch": {"name": "AI Dispatch Optimization"},
