@@ -56,10 +56,6 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
             "gdx_dispatch.modules.bank_feeds.tasks",
             "gdx_dispatch.tasks.tech_locations_prune",
             "gdx_dispatch.tasks.timeclock_sweep",
-            # Registered so it CAN run, but has no beat entry and no
-            # callers — enabling customer-facing estimate follow-ups is a
-            # product decision, not a wiring fix.
-            "gdx_dispatch.tasks.estimate_followup",
         ],
     )
     app.conf.update(
@@ -79,7 +75,6 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
             "gdx_dispatch.modules.campaigns.tasks.*": {"queue": "priority:high"},
             "outlook.*": {"queue": "priority:low"},
             "phone_com.*": {"queue": "priority:low"},
-            "gdx_dispatch.core.celery_app.run_daily_snapshot_task": {"queue": "priority:low"},
         },
         beat_schedule=build_beat_schedule(),
     )
@@ -118,7 +113,6 @@ from gdx_dispatch.tasks import audit_chain_verify as _audit_chain_verify_tasks  
 from gdx_dispatch.tasks import customer_volume_refresh as _customer_volume_refresh_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import estimate_archive as _estimate_archive_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import estimate_expiry as _estimate_expiry_tasks  # noqa: E402,F401
-from gdx_dispatch.tasks import estimate_followup as _estimate_followup_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import tech_locations_prune as _tech_locations_prune_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import timeclock_sweep as _timeclock_sweep_tasks  # noqa: E402,F401
 
@@ -156,8 +150,3 @@ def _check_celery_worker_encryption(**_: object) -> None:
             "Set the env var or override with GDX_ENV=dev."
         )
     log.warning("CELERY_WORKER_ENCRYPTION_DEV_MODE no MASTER_ENCRYPTION_KEY; plaintext fallback")
-
-
-@celery_app.task(queue="priority:low")
-def run_daily_snapshot_task(tenant_id: str) -> None:
-    return None
