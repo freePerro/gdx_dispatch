@@ -1,7 +1,7 @@
 # Customer Statements — Plan
 
-**Status:** **PARTIALLY BUILT** — §5–§8 built on branch `feat/customer-statements`
-(not merged, no release). Not built: the post-deploy prod walk (§9) and the
+**Status:** **PARTIALLY BUILT** — §5–§8 built in PR #741 (branch
+`feat/customer-statements`; not merged, no release). Not built: the post-deploy prod walk (§9) and the
 phone test of the emailed Pay links; bounce detection for statement emails (§11).
 **Date:** 2026-09-15. Decisions 1–7 ruled by Doug 2026-09-14/15. Researched
 against main @ `fbb83d3` (v1.120.0, alembic head `095`) and prod read-only
