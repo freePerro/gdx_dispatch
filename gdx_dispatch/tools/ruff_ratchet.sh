@@ -143,6 +143,36 @@ fi
 # Hard-fail on syntax / undefined-name errors regardless of the baseline.
 ruff check "$TARGET" --select F821,F823 --quiet
 
+# Hard-fail on F811 outside the test tree, regardless of the baseline (#475).
+#
+# F811 is a name bound twice in one scope, so the module-level name points at
+# the second binding and a reader cannot tell which body is meant. It belongs
+# to the shadowing class of #462 (a duplicate route registration whose losing
+# copy everyone assumed was live), though it only sees same-NAME cases. A
+# blended count hides it among the cosmetic findings, so it gets its own zero.
+#
+# The first binding is not always dead. Two decorated handlers sharing a name
+# are both registered by their decorators and both serve traffic, so the fix is
+# usually a rename. Ruff's own hint says "Remove definition"; don't take it
+# without checking.
+#
+# gdx_dispatch/tests is excluded on purpose. Measured 2026-09-14 with ruff
+# 0.15.18: the 35 test-side F811s are pytest fixture parameters shadowing the
+# imported fixture of the same name, a helper parameter, and repeated imports.
+# None was a test function defined twice. Outside tests the count was 4, all
+# `import get_db, get_db`, fixed in the PR that added this gate.
+#
+# --force-exclude applies the exclude even when RUFF_TARGET names a path inside
+# gdx_dispatch/tests directly; ruff skips excludes for explicitly passed paths
+# otherwise. Output is captured rather than left to `set -e` so the message
+# says what failed, and so a ruff failure (exit >= 2) fails closed here too.
+F811_RC=0
+F811_OUT=$(ruff check "$TARGET" --select F811 --extend-exclude gdx_dispatch/tests --force-exclude --quiet 2>&1) || F811_RC=$?
+if [ "$F811_RC" -ne 0 ]; then
+    OUT="$F811_OUT"
+    _fail "F811 outside gdx_dispatch/tests: a name is bound twice in one scope (#475). Rename or remove it; if a decorator registered the first one (a route, a task), it still runs, so rename:"
+fi
+
 # ── the ratchet half (Doug, 2026-09-12) ───────────────────────────────────
 #
 # Until now this was a one-way CEILING: it failed on an increase and did
