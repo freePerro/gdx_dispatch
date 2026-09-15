@@ -165,6 +165,18 @@ def _try_smtp(
         return False, "smtp_exception"
 
 
+# Postgres SQLSTATE 25P02, in_failed_sql_transaction: "current transaction is
+# aborted, commands ignored until end of transaction block".
+_PG_IN_FAILED_SQL_TRANSACTION = "25P02"
+
+
+def _transaction_already_aborted(exc: BaseException) -> bool:
+    # psycopg2 names the SQLSTATE ``pgcode``; psycopg 3 names it ``sqlstate``.
+    orig = getattr(exc, "orig", None)
+    code = getattr(orig, "pgcode", None) or getattr(orig, "sqlstate", None)
+    return code == _PG_IN_FAILED_SQL_TRANSACTION
+
+
 def _record_outbound(
     *,
     tenant_db: Session | None,
@@ -186,10 +198,21 @@ def _record_outbound(
     skip_reason: str | None,
 ) -> None:
     """Append-only audit row for this send attempt (locked requirement:
-    everything auditable). Rides the caller's session (every send path
-    commits right after a send); if that session is unusable — mid-rollback,
-    or None — a fresh session on the same bind (or SessionLocal) records it
-    anyway. A logging failure must never block or fail the send itself."""
+    everything auditable). Rides the caller's session, so it lands when the
+    caller commits; if that session is unusable — mid-rollback, or None — a
+    fresh session on the same bind (or SessionLocal) records it anyway. A
+    logging failure must never block or fail the send itself.
+
+    The row is written inside a SAVEPOINT, as ``core/webhooks/emit.py`` stages
+    its delivery rows. A bare add + flush that failed here was swallowed and
+    left the caller's session mid-failed-transaction after the email had gone
+    out, so the caller's next write (``sent_at`` on the invoice, ``status`` on
+    the estimate) raised: an error for a delivered email, and a retry the
+    duplicate guard could not stop, because it reads this very row. (Shown by
+    injecting a failed insert, 2026-09-15 — not observed in production logs.)
+    A failure inside the savepoint rolls back only the savepoint; the caller's
+    transaction, including work it has not committed, carries on — unless it
+    was already aborted before this write, which is kept loud (see below)."""
     from gdx_dispatch.models.tenant_models import OutboundEmail
 
     meta = [
@@ -223,11 +246,24 @@ def _record_outbound(
 
     try:
         if tenant_db is not None:
-            tenant_db.add(_row())
-            tenant_db.flush()
+            with tenant_db.begin_nested():
+                tenant_db.add(_row())
             return
-    except Exception:
+    except Exception as exc:
         log.exception("outbound_email_audit_primary_write_failed tenant=%s", tenant_id)
+        if tenant_db is not None and _transaction_already_aborted(exc):
+            # The caller's transaction was dead before this write — an earlier
+            # failure on it was swallowed — so Postgres refused the SAVEPOINT.
+            # Swallowing that leaves the Session looking healthy, and psycopg2
+            # answers a COMMIT on an aborted transaction by rolling back without
+            # raising: the caller's work would vanish behind a normal response.
+            # Fail through the Session instead, as the bare flush this replaced
+            # did, so the caller's commit raises. The row still lands below.
+            try:
+                tenant_db.add(_row())
+                tenant_db.flush()
+            except Exception:
+                log.warning("outbound_email_caller_transaction_already_aborted tenant=%s", tenant_id)
     try:
         from sqlalchemy.orm import Session as _Session
 
