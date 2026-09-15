@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.auth_revoke import revoke_user_sessions
-from gdx_dispatch.core.database import get_db, get_db
+from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.denylist import Denylist
 from gdx_dispatch.core.modules import require_role
 

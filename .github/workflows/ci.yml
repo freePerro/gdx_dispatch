@@ -27,6 +27,7 @@ jobs:
   # Live lint/syntax gate. Preserved from the retired fast-gate.yml so the
   # ruff ratchet (.ruff_baseline) + hard F821/F823 gate survive the workflow
   # cleanup — these target the current gdx_dispatch/ tree, not the old app.
+  # F811 outside gdx_dispatch/tests joined the hard gate in #475.
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10

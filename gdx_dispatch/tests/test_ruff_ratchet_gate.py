@@ -50,8 +50,9 @@ def _stub_ruff(bin_dir: Path, stdout: str, rc: int, version: str = "0.0.0") -> N
     """Install a fake `ruff` that replays one scenario.
 
     The ratchet also invokes ruff on its other branches (``--statistics`` when
-    over baseline, ``--select F821,F823`` at the end); those succeed quietly so
-    the scenario under test is the only thing being measured.
+    over baseline, ``--select F821,F823`` and ``--select F811`` at the end);
+    those succeed quietly so the scenario under test is the only thing being
+    measured.
     """
     bin_dir.mkdir(parents=True, exist_ok=True)
     stub = bin_dir / "ruff"
@@ -376,4 +377,103 @@ def test_a_failing_hard_gate_must_not_lower_the_baseline(tmp_path: Path) -> None
     assert result.returncode != 0, "F821 must still fail the gate"
     assert baseline_file.read_text(encoding="utf-8").strip() == "3", (
         "a failing run lowered the bar"
+    )
+
+
+# ── F811 outside tests: its own zero (#475) ──────────────────────────────
+#
+# A shadowed definition is dead code everyone assumes is live. The blended
+# count cannot see one arrive, so the ratchet hard-fails F811 outside
+# gdx_dispatch/tests regardless of the baseline. These drive the gate with a
+# ruff that answers per rule selection. The exclusion itself (that a real ruff
+# skips gdx_dispatch/tests and nothing else) is a property of ruff, not of this
+# script, so it was proven by planting a real F811 on both sides; see #475's PR.
+
+
+def _run_with_f811(
+    tmp_path: Path, *, f811_stdout: str, f811_rc: int, target: str = "gdx_dispatch/"
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Run the ratchet with a ruff whose `--select F811` call returns the given
+    result, whose other calls pass, and whose full count (1) is under the
+    baseline (3), so the F811 gate is the only thing that can fail."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _stub_git(bin_dir, dirty=False)
+    args_log = tmp_path / "f811_args"
+    stub = bin_dir / "ruff"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$1" = "--version" ]; then echo "ruff {_CI_PIN}"; exit 0; fi\n'
+        'prev=""\n'
+        'for a in "$@"; do\n'
+        '  if [ "$prev" = "--select" ]; then\n'
+        '    case "$a" in\n'
+        f"      F811) printf '%s\\n' \"$*\" > '{args_log}'; cat <<'OUT'\n{f811_stdout}\nOUT\n"
+        f"        exit {f811_rc} ;;\n"
+        "      *) exit 0 ;;\n"
+        "    esac\n"
+        "  fi\n"
+        '  case "$a" in --statistics) exit 0 ;; esac\n'
+        '  prev="$a"\n'
+        "done\n"
+        "echo 'Found 1 error.'\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    baseline_file = tmp_path / "baseline"
+    baseline_file.write_text("3", encoding="utf-8")
+    result = subprocess.run(
+        ["bash", str(RATCHET)],
+        capture_output=True, text=True, timeout=60, cwd=str(REPO_ROOT),
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "RUFF_BASELINE_FILE": str(baseline_file),
+            "RUFF_TARGET": target,
+            "HOME": str(tmp_path),
+        },
+    )
+    return result, args_log
+
+
+_F811_DIAG = (
+    "gdx_dispatch/routers/example.py:3:40: F811 Redefinition of unused `get_db` "
+    "from line 3: `get_db` redefined here"
+)
+
+
+def test_f811_outside_tests_fails_the_gate_under_baseline(tmp_path: Path) -> None:
+    result, _ = _run_with_f811(tmp_path, f811_stdout=_F811_DIAG, f811_rc=1)
+    assert result.returncode != 0, (
+        f"an F811 outside tests passed because the count was under baseline — stdout={result.stdout!r}"
+    )
+    assert "routers/example.py" in result.stdout, "the offending line must be shown"
+    assert (tmp_path / "baseline").read_text(encoding="utf-8").strip() == "3", (
+        "a run the F811 gate failed must not lower the bar"
+    )
+
+
+def test_f811_gate_fails_closed_when_ruff_itself_fails(tmp_path: Path) -> None:
+    """Exit >= 2 prints no diagnostics. It must not read as 'no F811'."""
+    result, _ = _run_with_f811(tmp_path, f811_stdout="ruff failed", f811_rc=2)
+    assert result.returncode != 0, result.stdout
+
+
+def test_f811_gate_passes_when_clean_and_excludes_only_the_test_tree(tmp_path: Path) -> None:
+    # A non-default target, so a hardcoded path in place of "$TARGET" fails here.
+    result, args_log = _run_with_f811(tmp_path, f811_stdout="", f811_rc=0, target="gdx_dispatch/tools/")
+    assert result.returncode == 0, result.stdout
+    assert args_log.is_file(), "the F811 gate never ran"
+    args = args_log.read_text(encoding="utf-8").split()
+    assert "gdx_dispatch/tools/" in args, f"F811 must check the ratchet's own target: {args}"
+    assert "gdx_dispatch/" not in args, f"F811 checked a hardcoded path, not RUFF_TARGET: {args}"
+    # --extend-exclude, never --exclude: --exclude REPLACES ruff's default
+    # excludes (.venv, node_modules, build dirs) and would widen what is checked.
+    assert "--exclude" not in args, f"--exclude drops ruff's default excludes: {args}"
+    excludes = [args[i + 1] for i, a in enumerate(args) if a == "--extend-exclude"]
+    assert excludes == ["gdx_dispatch/tests"], (
+        f"F811 must exclude exactly the test tree, nothing wider: {excludes}"
+    )
+    assert "--force-exclude" in args, (
+        "without --force-exclude a RUFF_TARGET inside gdx_dispatch/tests is checked anyway"
     )
