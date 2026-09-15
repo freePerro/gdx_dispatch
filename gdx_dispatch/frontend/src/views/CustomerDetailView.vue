@@ -20,6 +20,7 @@
         </div>
         <div class="header-actions">
           <Button label="Edit" icon="pi pi-pencil" aria-label="Edit" outlined data-testid="edit-customer-btn" @click="openEditDialog" />
+          <Button v-if="canViewStatement" label="Statement" icon="pi pi-file-export" outlined data-testid="customer-statement-btn" @click="showStatement = true" />
           <Button label="+ New Job" icon="pi pi-briefcase" data-testid="new-job-for-customer-btn" @click="$router.push({ path: '/jobs', query: { new: '1', customer_id: String(customer.id) } })" />
           <Button label="+ New Estimate" icon="pi pi-file" data-testid="new-estimate-for-customer-btn" severity="secondary" @click="$router.push({ path: '/estimates/new', query: { customer_id: String(customer.id) } })" />
         </div>
@@ -583,6 +584,8 @@
         </template>
       </Dialog>
 
+      <CustomerStatementDialog v-if="canViewStatement" v-model:visible="showStatement" :customer-id="customer.id" />
+
       <Toast data-testid="customer-detail-toast" />
     </section>
 </template>
@@ -609,6 +612,7 @@ import InputText from "primevue/inputtext";
 import JobStateChip from "../components/JobStateChip.vue";
 import PhoneInput from "../components/PhoneInput.vue";
 import EmailTimeline from "../components/EmailTimeline.vue";
+import CustomerStatementDialog from "../components/CustomerStatementDialog.vue";
 import ProgressSpinner from "primevue/progressspinner";
 import Tag from "primevue/tag";
 import Textarea from "primevue/textarea";
@@ -637,6 +641,10 @@ const { isEnabled } = useTenantModules();
 // "Permission denied" toast — a dead end, which this repo counts as a defect.
 const { hasPermission } = usePermission();
 const canWriteContacts = computed(() => hasPermission("customers.contact_write"));
+// The statement reads every invoice the customer has, so it needs the same key
+// the backend demands; the Email button inside checks invoices.send.
+const canViewStatement = computed(() => hasPermission("invoices.read_all"));
+const showStatement = ref(false);
 const qbEnabled = computed(() => isEnabled("quickbooks"));
 const qbSync = computed(() => qbSyncLabel(customer.value, formatDateTime));
 const locations = ref([]);

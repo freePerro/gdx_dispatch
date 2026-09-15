@@ -1,6 +1,8 @@
 # Customer Statements — Plan
 
-**Status:** **PLAN** — nothing built. Branch `feat/customer-statements`, no PR.
+**Status:** **PARTIALLY BUILT** — §5–§8 built on branch `feat/customer-statements`
+(not merged, no release). Not built: the post-deploy prod walk (§9) and the
+phone test of the emailed Pay links; bounce detection for statement emails (§11).
 **Date:** 2026-09-15. Decisions 1–7 ruled by Doug 2026-09-14/15. Researched
 against main @ `fbb83d3` (v1.120.0, alembic head `095`) and prod read-only
 (`gdx-db-1`, 2026-09-14/15). §5 is the third version of the arithmetic: two
@@ -341,7 +343,12 @@ v3 over every non-draft, non-void invoice and settlement record on prod:
 
 ### How the other money paths land
 
-- **Applied credit** — the overpayment was capped on its own invoice, and the
+- **Overpayment booked as credit** — the part of a payment the ledger posted
+  to 2300 is taken off that payment (read per payment from its own journal
+  lines: the ledger decides which payment overflowed in the order they were
+  recorded, net of every credit memo, which is not payment-date order), and
+  the row reads "$150.00 received; $50.00 held as credit on account".
+- **Applied credit** — the overpayment was held off its own invoice, and the
   application counts on the invoice it settles. Counted once.
 - **Refund of an overpayment** — 2300 drops, so credit on account drops. No
   entry moves.
@@ -384,7 +391,10 @@ v3 over every non-draft, non-void invoice and settlement record on prod:
 - **Dialog:** preset picker, opening on last 90 days (30 / 60 / 90 days,
   year to date, each completed calendar year from 2026 that holds an invoice
   for this customer, custom from 2026-01-01 — decision 7), then a rendered
-  preview of the actual PDF with any warnings above it.
+  preview of the actual PDF with any warnings above it. A custom range is
+  entered in native date inputs and loads on **Show**; Download and Email act
+  only on the range in the preview, and are disabled with a reason while the
+  controls say something else.
 - **Actions:** Download PDF (`invoices.read_all`); Email (`invoices.send`) —
   recipient prefilled by `resolve_recipient`, editable.
 - **Opt-out:** nothing reads `email_opt_out` before any send today — invoices
@@ -393,8 +403,9 @@ v3 over every non-draft, non-void invoice and settlement record on prod:
   puts the check, so they inherit it when that plan is built. Its taxonomy
   must classify `statement`; the natural class is payment reminders. This plan
   adds no separate check.
-- **After Email:** a result dialog. Sent → "Sent to X" and the send appears in
-  the customer's email log. Not sent → the skip reason, never a green toast.
+- **After Email:** a result message in the dialog. Sent → "emailed to X". Not
+  sent → the reason in words, never a green toast. Every attempt is in the
+  Email Log, which gains a "Statements" filter.
 - **Customer:** gets an email with the PDF attached and the open invoices'
   Pay links in the body too, so paying from a phone does not depend on the
   mail app's PDF viewer supporting links (not yet tested either way). Phone
@@ -406,7 +417,7 @@ v3 over every non-draft, non-void invoice and settlement record on prod:
 |---|---|---|---|
 | GET | `/api/customers/{id}/statement?preset=` or `?start=&end=` | `invoices.read_all` | nothing |
 | GET | `/api/customers/{id}/statement/pdf?…` | `invoices.read_all` | nothing |
-| POST | `/api/customers/{id}/statement/send` `{start, end, to_email}` | `invoices.send` | `outbound_emails` row (via the send path); audit `statement_sent` on entity `customer` |
+| POST | `/api/customers/{id}/statement/send` `{preset}` or `{start, end}`, `to_email` | `invoices.send` | `outbound_emails` row (via the send path); audit `statement_sent`, or `statement_not_sent` when nothing went out, on entity `customer` |
 
 The audit row's details hold the statement as sent: range, previous balance,
 invoiced, payments and credits, ending balance, unpaid today, credit on
@@ -434,8 +445,12 @@ total. Unifying the five agings is its own work.
 
 ## 9. Tests and verification
 
-- **Service (SQLite and Postgres, docker-app).** Fixtures take the shapes prod
-  actually holds, not the causes the author expected:
+- **Service (docker-app, SQLite in memory).** The Postgres arm is not in the
+  suite: the code audit of the build ran the service over 1,276 statements on a
+  Postgres restored from the local copy (0 errors, ending == unpaid everywhere,
+  a real PDF rendered), 2026-09-15 — run by the audit, not re-run by the author.
+  Fixtures take the shapes prod actually holds, not the causes the author
+  expected:
   - a **QuickBooks payment recorded in full on one invoice and again, split,
     on another** → the first invoice is warned, with no dollar difference;
   - an **overpayment booked to 2300** through `allow_overpayment` → not
@@ -491,7 +506,11 @@ total. Unifying the five agings is its own work.
   preview → download.
 - **Matrix:** `tools/run_tests_split.sh` (N=7), every FAIL and SKIP named, lint
   ratchet checked.
-- **Whole-book check (throwaway container, copy of prod data):** run the
+- **Whole-book check (throwaway container, copy of prod data):** NOT run on a
+  fresh prod copy — prod was unreachable from the build machine. Run on the
+  older local copy instead: 193 customers, year to date, ending == unpaid for
+  all; 7 invoices warned (the three below plus four more the older copy holds).
+  Before release, on a fresh copy: run the
   service for every customer, every 2026 start day and every month-end plus
   today as the end. Compare the warned set with the three named in §5 and
   explain every difference by a record change; an unexplained difference is a
@@ -519,6 +538,11 @@ None. Decisions 5–7 were ruled 2026-09-15.
   50530713 and 50187678 (unconfirmed without QuickBooks' allocation), and the
   wider QuickBooks-era payment-row repair that lifts decision 7
   (`qb-import-paid-status-repair-plan.md`). A money-data repair; its own plan.
+- **Bounce detection for statement emails.** `modules/outlook/bounce_detect.py`
+  matches only estimate and invoice subjects, so a bounced statement is not
+  stamped on its `outbound_emails` row or rung on the office bell; the NDR
+  still lands in the sender's mailbox. Deferred: a new matcher, bell case and
+  tests.
 - **Card and API payments dated on the UTC day** (`core/payments.py:808`,
   `routers/invoices.py:914`). A focused PR in #728's shape if Doug rules for
   it. The statement works either way.

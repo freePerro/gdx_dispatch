@@ -126,6 +126,7 @@ const statusOptions = [
 const kindOptions = [
   { label: "Documents (invoice/estimate)", value: "document" },
   { label: "Receipts", value: "receipt" },
+  { label: "Statements", value: "statement" },
   { label: "Reminders", value: "reminder" },
   { label: "Portal links", value: "magic_link" },
   { label: "Automations", value: "automation" },
