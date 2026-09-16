@@ -1,7 +1,7 @@
 # Credit-card surcharge on the customer pay page, off by default
 
 **Date:** 2026-09-16
-**Status:** **PLAN** — being built on `feat/card-surcharge-pay-page`; flip to `MERGED #N` in the PR that lands it, `RELEASED vX.Y.Z` after the prod walk. The fee stays **off** in production until Doug has given Stripe (the acquirer) Visa's 30-day written notice and turns the setting on.
+**Status:** **PLAN** — built and verified on PR #744 (opened 2026-09-16, not merged); flip to `MERGED #744` when it lands, `RELEASED vX.Y.Z` after the prod walk. The fee stays **off** in production until Doug has given Stripe (the acquirer) Visa's 30-day written notice and turns the setting on.
 **Branch:** `feat/card-surcharge-pay-page`
 **Rulings (Doug, 2026-09-16):** rate 2.9%; the fee is shown before the customer commits; the page says bank transfer has no fee; booking per the recommendation below.
 
