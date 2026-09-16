@@ -490,11 +490,16 @@ def _ring_estimate_bells(tdb: Session, bells: list[dict[str, Any]]) -> int:
 
 def _stamp_bounced(tdb: Session, row, ndr_received: datetime) -> None:
     """Record the bounce on the audit row (the one UPDATE the append-only
-    table allows). Idempotent — first stamp wins."""
+    table allows). Idempotent — first stamp wins.
+
+    Inside a SAVEPOINT: this runs mid-batch, with the batch's flips and audit
+    rows still uncommitted on the same session. A bare flush that failed here
+    was swallowed and left the session unusable, so every later write in the
+    batch — and its commit — failed too."""
     try:
         if row.bounced_at is None:
-            row.bounced_at = ndr_received
-            tdb.flush()
+            with tdb.begin_nested():
+                row.bounced_at = ndr_received
             try:
                 from gdx_dispatch.core.webhooks.emit import emit_domain_event
 
