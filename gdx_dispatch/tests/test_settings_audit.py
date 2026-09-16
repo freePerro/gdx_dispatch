@@ -42,8 +42,9 @@ sqlite3.register_adapter(Decimal, float)
 CASES = [
     (
         "billing_terms", "/api/billing", "/terms",
-        # late_fee_percent is a FRACTION (le=1), not a percentage.
-        {"default_payment_terms_days": 45, "late_fee_percent": 0.015},
+        # late_fee_percent and card_surcharge_percent are FRACTIONS, not
+        # percentages (0.029 = the 2.9% card surcharge, capped at 0.05).
+        {"default_payment_terms_days": 45, "late_fee_percent": 0.015, "card_surcharge_percent": 0.029},
         "billing_terms_updated",
     ),
     (

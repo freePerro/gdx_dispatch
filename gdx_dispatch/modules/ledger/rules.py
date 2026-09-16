@@ -27,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.modules.ledger import service as ledger_service
-from gdx_dispatch.modules.ledger.coa import LedgerConfigError, resolve_role_account
+from gdx_dispatch.modules.ledger.coa import LedgerConfigError, ensure_role_account, resolve_role_account
 from gdx_dispatch.modules.ledger.engine import (
     PostingEvent,
     PostingLine,
@@ -41,10 +41,11 @@ from gdx_dispatch.modules.ledger.models import (
     ROLE_EXPENSE_FALLBACK,
     ROLE_OPENING_EQUITY,
     ROLE_OPERATING_BANK,
+    ROLE_REFUNDS,
     ROLE_ROUNDING,
     ROLE_SALES_FALLBACK,
-    ROLE_REFUNDS,
     ROLE_SALES_TAX_PAYABLE,
+    ROLE_SURCHARGE_INCOME,
     GlAccount,
     GlJournalEntry,
     GlJournalLine,
@@ -368,7 +369,11 @@ def build_payment_lines(session: Session, payment, invoice) -> tuple[PostingLine
     prior payments AND balance-reducing adjustments — a pure function of
     current state, so replays and resettles stay key-identical."""
     amount_cents = to_cents(_dec(payment.amount))
-    if amount_cents == 0:
+    # The card surcharge (2026-09-16) rides the same settlement: the bank
+    # account receives amount + fee, AR is relieved by the amount only, and
+    # the fee is income on 4950. One entry, so a void reverses both legs.
+    surcharge_cents = to_cents(_dec(getattr(payment, "surcharge_amount", None) or 0))
+    if amount_cents == 0 and surcharge_cents == 0:
         return ()
     company_id = invoice.company_id
     settings = ledger_service.get_gl_settings(session, company_id)
@@ -388,13 +393,26 @@ def build_payment_lines(session: Session, payment, invoice) -> tuple[PostingLine
 
     lines = [
         PostingLine(
-            amount_cents=amount_cents,
+            amount_cents=amount_cents + surcharge_cents,
             role=method_role,
             job_id=invoice.job_id,
             customer_id=invoice.customer_id,
             memo=f"payment on {invoice.invoice_number} ({payment.method})",
         )
     ]
+    if surcharge_cents:
+        # 4950 is newer than most installs' CoA; seed it at first use rather
+        # than crash the recorder with the card already charged (audit round 2).
+        ensure_role_account(session, company_id, ROLE_SURCHARGE_INCOME)
+        lines.append(
+            PostingLine(
+                amount_cents=-surcharge_cents,
+                role=ROLE_SURCHARGE_INCOME,
+                job_id=invoice.job_id,
+                customer_id=invoice.customer_id,
+                memo=f"card surcharge on {invoice.invoice_number}",
+            )
+        )
     if ar_portion:
         lines.append(
             PostingLine(

@@ -621,7 +621,10 @@
           <Column field="method" header="Method" />
           <Column field="reference" header="Reference" />
           <Column field="amount" header="Amount" style="text-align: right">
-            <template #body="{ data }">{{ currency(data.amount) }}</template>
+            <template #body="{ data }">
+              {{ currency(data.amount) }}
+              <small v-if="data.surcharge_amount" class="muted" data-testid="payment-surcharge"> + {{ currency(data.surcharge_amount) }} card fee</small>
+            </template>
           </Column>
         </DataTable>
 

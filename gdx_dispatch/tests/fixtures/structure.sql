@@ -2042,7 +2042,8 @@ CREATE TABLE public.payments (
     created_at timestamp with time zone NOT NULL,
     company_id character varying(36) NOT NULL,
     voided_at timestamp with time zone,
-    voided_reason character varying(64)
+    voided_reason character varying(64),
+    surcharge_amount numeric(12,2)
 );
 
 

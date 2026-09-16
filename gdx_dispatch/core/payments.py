@@ -31,6 +31,7 @@ import os
 import uuid as _uuid
 from datetime import datetime, timedelta, timezone
 from datetime import time as dt_time
+from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
@@ -118,6 +119,12 @@ class CreateIntentRequest(BaseModel):
     # complete in the browser, mandate included. One intent per attempt and no
     # server-side charge step — see the NOTE where ach/setup + ach/charge were.
     method: Literal["card", "ach"] = "card"
+    # Card surcharge (2026-09-16). When the office has set a rate, the page
+    # creates the PaymentMethod first and sends its id here, so the server
+    # can ask Stripe whether THIS card may carry the fee (credit yes, debit
+    # no) and size the intent before the customer confirms. Absent = today's
+    # one-step card flow, and never a fee.
+    payment_method_id: str | None = None
 
 
 class ConfirmPaymentRequest(BaseModel):
@@ -261,6 +268,85 @@ def _idempotency_key(invoice: Invoice, amount_cents: int, method: str) -> str:
     return f"gdx-pi-{invoice.id}-{method}-{amount_cents}"
 
 
+def _attempt_key(invoice: Invoice, amount_cents: int, method: str, payment_method_id: str | None) -> str:
+    """The idempotency key for one charge attempt. A PaymentMethod attached
+    at mint time (the surcharge flow) makes each card a new attempt — Stripe
+    rejects a reused key whose parameters differ, and two cards on the same
+    balance differ exactly there."""
+    key = _idempotency_key(invoice, amount_cents, method)
+    return f"{key}-{payment_method_id}" if payment_method_id else key
+
+
+# Stripe's surcharge feature lives on a preview API version
+# (<https://docs.stripe.com/payments/cards/surcharge>, read 2026-09-16). It is
+# sent PER REQUEST on the calls that need it; the rest of the app stays on its
+# pinned version, and the webhook payload is rendered in the endpoint's version
+# — which is why the fee also travels in `metadata.surcharge_cents`.
+_SURCHARGE_API_VERSION = "2026-03-25.preview"
+
+
+def card_surcharge_rate(db: Session, tenant_id: str) -> Decimal:
+    """The office's credit-card surcharge rate as a fraction, or 0.
+
+    Read from `tenant_settings.card_surcharge_percent` (billing terms) by ORM
+    primary key, which matches on both engines — raw SQL on the dashed id
+    never matches SQLite's dashless storage (audit round 2). Fails OPEN to
+    zero: a settings read that breaks must never invent a fee.
+    """
+    try:
+        tid = UUID(str(tenant_id or ""))
+    except ValueError:
+        return Decimal(0)  # no settings row can own a non-UUID id
+    try:
+        from gdx_dispatch.core.tenant_settings import TenantSettings  # noqa: PLC0415
+
+        row = db.get(TenantSettings, tid)
+        raw = getattr(row, "card_surcharge_percent", None)
+        rate = Decimal(str(raw)) if raw is not None else Decimal(0)
+    except Exception:
+        logger.exception("card_surcharge_rate_read_failed tenant=%s — treating as no surcharge", tenant_id)
+        return Decimal(0)
+    return rate if rate > 0 else Decimal(0)
+
+
+def card_surcharge_notice(db: Session, tenant_id: str) -> str:
+    """The one sentence every customer-facing surface shows when the fee is
+    on. Empty when it is off, so nothing mentions a fee that does not exist."""
+    rate = card_surcharge_rate(db, tenant_id)
+    if rate <= 0:
+        return ""
+    return (
+        f"Credit cards carry a {_percent_label(rate)} processing fee. "
+        "Debit cards and bank transfer (ACH): no fee."
+    )
+
+
+def _percent_label(rate: Decimal) -> str:
+    """0.029 → "2.9%"; 0.03 → "3%"."""
+    pct = (rate * 100).normalize()
+    return f"{format(pct, 'f')}%"
+
+
+def _surcharge_cents(amount_cents: int, rate: Decimal, maximum_cents: int | None) -> int:
+    """The fee for one payment: the office's rate on the amount owed, never
+    above Stripe's per-payment maximum, never negative."""
+    fee = int((Decimal(amount_cents) * rate).to_integral_value(rounding="ROUND_HALF_UP"))
+    if maximum_cents is not None:
+        fee = min(fee, int(maximum_cents))
+    return max(fee, 0)
+
+
+def _surcharge_cents_recorded(intent: Any) -> int:
+    """The fee stamped on the intent at mint time (`metadata.surcharge_cents`),
+    or 0. Metadata, not `amount_details`: the webhook payload is rendered in
+    the endpoint's API version and does not carry the preview field."""
+    meta = _field(intent, "metadata") or {}
+    try:
+        return max(int(str(_field(meta, "surcharge_cents") or "0")), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 _UNUSABLE_INTENT_STATUSES = frozenset({"canceled", "succeeded"})
 
 
@@ -295,8 +381,12 @@ def _create_usable_intent(**kwargs) -> Any:
     if not pid:
         return pi
 
-    # `retrieve` must look at the same account the object lives on.
+    # `retrieve` must look at the same account the object lives on — and in
+    # the same API version, or a preview-only field (the surcharge probe)
+    # vanishes from the object we hand back.
     connect = {"stripe_account": kwargs["stripe_account"]} if kwargs.get("stripe_account") else {}
+    if kwargs.get("stripe_version"):
+        connect["stripe_version"] = kwargs["stripe_version"]
     try:
         live = stripe.PaymentIntent.retrieve(pid, **connect)
     except Exception:
@@ -306,7 +396,14 @@ def _create_usable_intent(**kwargs) -> Any:
         return pi
 
     status = str(getattr(live, "status", "") or "")
-    abandoned_with_account = status == "requires_confirmation" and bool(_field(live, "payment_method"))
+    # Only a REPLAY can be abandoned: an intent this very request created with
+    # a PaymentMethod attached on purpose (the surcharge flow) is live by
+    # construction, and its key names that PaymentMethod.
+    abandoned_with_account = (
+        status == "requires_confirmation"
+        and bool(_field(live, "payment_method"))
+        and not kwargs.get("payment_method")
+    )
     if status not in _UNUSABLE_INTENT_STATUSES and not abandoned_with_account:
         return live
 
@@ -855,8 +952,13 @@ def _mark_invoice_paid(
     amount: float | None = None,
     source: str = "stripe-webhook",
     connected_account: str = "",
+    surcharge: float | None = None,
 ) -> None:
     """Record processor money as a REAL Payment row, recalc, post P3.
+
+    ``surcharge`` (2026-09-16) is the card fee the customer paid on top of
+    ``amount``. It never touches the invoice: ``amount`` settles AR, the fee
+    lands on the Payment row and posts to 4950 Card Surcharge Income.
 
     GL S6 rewrite (bug #1, GL audit §12): the old version flipped the status
     straight to paid with NO Payment row and a mid-flow commit — money moved
@@ -925,6 +1027,14 @@ def _mark_invoice_paid(
     # (M11) already renders a banner on the invoice screen, but nothing wrote
     # a trace an operator could search, alert on, or reconcile against.
     overpay = round(float(pay_amount) - max(remaining, 0.0), 2)
+    if surcharge and float(surcharge) > 0 and float(pay_amount) + 0.005 < max(remaining, 0.0):
+        # A surcharged intent is always minted for the FULL balance, so a
+        # receipt that settles less than the balance while carrying a fee
+        # means the fee and the payment disagree about what was charged.
+        logger.warning(
+            "surcharge_on_short_receipt invoice=%s reference=%s payment=%.2f fee=%.2f remaining=%.2f",
+            invoice.id, external_ref, float(pay_amount), float(surcharge), max(remaining, 0.0),
+        )
     if overpay > 0.009:
         logger.error(
             "payment_exceeds_receivable invoice=%s reference=%s charged=%.2f "
@@ -941,6 +1051,7 @@ def _mark_invoice_paid(
         method=method,
         payment_date=datetime.now(timezone.utc).date(),
         reference=external_ref,
+        surcharge_amount=(round(float(surcharge), 2) if surcharge and float(surcharge) > 0 else None),
     )
     db.add(payment)
     try:
@@ -1069,7 +1180,50 @@ def _mark_invoice_paid(
         amount=pay_amount,
         method=method,
         overpaid=max(overpay, 0.0),
+        surcharge=float(surcharge or 0),
     )
+
+
+def _split_surcharge(intent: Any, received_cents: int, *, connect: dict | None = None) -> int:
+    """The part of ``received_cents`` that is the card fee, or 0.
+
+    The stamp in ``metadata.surcharge_cents`` says what fee was SIZED at
+    "Continue"; Stripe's ``amount_details.surcharge.amount`` says what fee was
+    COLLECTED at "Pay". The books follow the money, so when a stamp is present
+    the live figure is read (one retrieve, on the preview version that carries
+    the field) and wins over the stamp; the stamp is the fallback when Stripe
+    cannot be read (2026-09-16 audit, round 1 of the surcharge). A fee larger
+    than the receipt is inconsistent and books as payment only, loudly.
+    """
+    stamp = _surcharge_cents_recorded(intent)
+    if not stamp:
+        return 0
+    fee = stamp
+    pid = str(_field(intent, "id") or "")
+    if pid:
+        try:
+            live = stripe.PaymentIntent.retrieve(pid, stripe_version=_SURCHARGE_API_VERSION, **(connect or {}))
+            actual = _field(_field(_field(live, "amount_details"), "surcharge"), "amount")
+            # Only a real integer counts — never coerce an odd object into cents.
+            if isinstance(actual, (int, str)) and not isinstance(actual, bool) and str(actual).isdigit():
+                actual = int(actual)
+                if actual != stamp:
+                    logger.error(
+                        "surcharge_stamp_mismatch intent=%s stamped=%s collected=%s — booking what Stripe collected",
+                        pid, stamp, actual,
+                    )
+                fee = actual
+            else:
+                logger.warning("surcharge_live_read_unreadable intent=%s — booking the stamped fee %s", pid, stamp)
+        except Exception:
+            logger.warning("surcharge_live_read_failed intent=%s — booking the stamped fee %s", pid, stamp)
+    if fee > received_cents:
+        logger.error(
+            "surcharge_exceeds_receipt intent=%s fee=%s received=%s — booking the receipt as payment only",
+            pid, fee, received_cents,
+        )
+        return 0
+    return fee
 
 
 # ---------------------------------------------------------------------------
@@ -1115,17 +1269,36 @@ def create_intent(
         # on it. The type is what lets Stripe.js attach a bank account.
         rail["payment_method_types"] = ["us_bank_account"]
 
+    # Card surcharge (2026-09-16). With a rate set and the card's
+    # PaymentMethod in hand, the intent is created WITH that card attached and
+    # Stripe's surcharge probe on, so Stripe tells us whether this card may
+    # carry a fee (credit: yes, debit: no — its rule, not ours) and the
+    # per-payment maximum. Without a PaymentMethod (an old tab) this is
+    # today's one-step card intent and never a fee. With a PaymentMethod the
+    # mint is the SAME with or without a rate — attached, probed, on the
+    # preview version — so the Pay step's re-POST replays the same intent even
+    # if the office toggled the rate meanwhile (a different mint under the same
+    # key is refused by Stripe): a fee the customer was shown and agreed to is
+    # kept, and a card that was never sized never gains one (audit round 2).
+    pm_id = (body.payment_method_id or "").strip() or None
+    rate = card_surcharge_rate(db, str(tenant.get("id", ""))) if method == "card" else Decimal(0)
+    attached = method == "card" and pm_id is not None
+    probing = attached and rate > 0
+    if attached:
+        rail["payment_method"] = pm_id
+        rail["amount_details"] = {"surcharge": {"enforce_validation": "enabled"}}
+        rail["stripe_version"] = _SURCHARGE_API_VERSION
+
+    metadata = {"invoice_id": str(invoice.id), "tenant_id": str(tenant.get("id", ""))}
     try:
         pi = _create_usable_intent(
             amount=amount_cents,
             currency=CURRENCY,  # M4: never body.currency
-            metadata={
-                "invoice_id": str(invoice.id),
-                "tenant_id": str(tenant.get("id", "")),
-            },
+            metadata=metadata,
             # Keyed by method too: a customer who tries card, fails, then
-            # switches to bank for the same balance must not collide.
-            idempotency_key=_idempotency_key(invoice, amount_cents, method),
+            # switches to bank for the same balance must not collide — and by
+            # the card when one is attached, so a second card is a new attempt.
+            idempotency_key=_attempt_key(invoice, amount_cents, method, pm_id if attached else None),
             **rail,
             **_stripe_extra(tenant),
         )
@@ -1133,14 +1306,66 @@ def create_intent(
         logger.error("Stripe create_intent error (method=%s): %s", method, exc)
         raise HTTPException(status_code=402, detail=str(exc)) from None
 
+    surcharge_cents = 0
+    surcharge_status = "not_applicable"
+    card: dict[str, Any] | None = None
+    if attached:
+        probe = _field(_field(pi, "amount_details"), "surcharge") or {}
+        status = str(_field(probe, "status") or "")
+        maximum = _field(probe, "maximum_amount")
+        surcharge_status = "unavailable" if probing else "not_applicable"
+        if status == "available" and probing:
+            surcharge_cents = _surcharge_cents(
+                amount_cents, rate, int(maximum) if maximum is not None else None
+            )
+            surcharge_status = "applied" if surcharge_cents > 0 else "unavailable"
+        # A replay of an already-sized intent carries the fee in its amount and
+        # metadata; a fresh probe has amount == balance. Size it exactly once.
+        already = _surcharge_cents_recorded(pi)
+        if surcharge_cents > 0 and already != surcharge_cents:
+            try:
+                # Stripe charges the top-level amount and reports the fee to
+                # the network from amount_details; metadata carries it to the
+                # webhook, which is rendered in a version without the field.
+                pi = stripe.PaymentIntent.modify(
+                    pi.id,
+                    amount=amount_cents + surcharge_cents,
+                    amount_details={"surcharge": {"amount": surcharge_cents}},
+                    metadata={**metadata, "surcharge_cents": str(surcharge_cents)},
+                    stripe_version=_SURCHARGE_API_VERSION,
+                    **_stripe_extra(tenant),
+                )
+            except stripe.StripeError as exc:
+                logger.error("Stripe surcharge sizing error intent=%s: %s", pi.id, exc)
+                raise HTTPException(status_code=402, detail=str(exc)) from None
+        elif already:
+            surcharge_cents = already
+            surcharge_status = "applied"
+    if attached:
+        try:
+            pm = stripe.PaymentMethod.retrieve(pm_id, **_stripe_extra(tenant))
+            c = _field(pm, "card") or {}
+            card = {
+                "brand": str(_field(c, "brand") or ""),
+                "last4": str(_field(c, "last4") or ""),
+                "funding": str(_field(c, "funding") or ""),
+            }
+        except stripe.StripeError:
+            card = None
+
     return {
         "client_secret": pi.client_secret,
         "payment_intent_id": pi.id,
-        # What will actually be charged. The pay page renders the balance
-        # server-side and does not read this back — it is here so any API
-        # consumer (and anyone debugging a disputed charge) can see the
-        # server's figure rather than inferring it.
-        "amount": amount_cents,
+        # What will actually be charged: the balance owed plus the card fee
+        # (0 unless the office turned the surcharge on and Stripe said this
+        # card may carry it). The pay page shows both halves before the
+        # customer confirms; any API consumer sees the server's figure.
+        "amount": amount_cents + surcharge_cents,
+        "invoice_amount": amount_cents,
+        "surcharge_cents": surcharge_cents,
+        "surcharge_status": surcharge_status,
+        "surcharge_rate": str(rate) if probing else None,
+        "card": card,
         "method": method,
     }
 
@@ -1202,8 +1427,11 @@ def confirm_payment(
         # "card" here would book a bank payment as a card payment the day
         # that changes.
         method = _intent_method(pi, connect=_stripe_extra(tenant), strict=True)
+        received = int(getattr(pi, "amount_received", None) or pi.amount or 0)
+        fee = _split_surcharge(pi, received, connect=_stripe_extra(tenant))
         _mark_invoice_paid(
             invoice, db, external_ref=pi.id, method=method,
+            surcharge=fee / 100.0 if fee else None,
             # M17.3: `amount_received`, not `amount`. Identical under
             # auto-capture (every intent here — no mint site sets
             # capture_method="manual"), divergent the moment manual capture
@@ -1213,7 +1441,7 @@ def confirm_payment(
             # message arrives first is a books divergence waiting for a
             # capture flow. Fallback to `amount` keeps legacy/test intents
             # without the field recording exactly as before.
-            amount=(getattr(pi, "amount_received", None) or pi.amount or 0) / 100.0,
+            amount=(received - fee) / 100.0,
             source="stripe-confirm",
             connected_account=str(_stripe_extra(tenant).get("stripe_account", "") or ""),
         )
@@ -1291,6 +1519,7 @@ def pay_invoice(
             invoice, tenant=getattr(request.state, "tenant", {}) or {}
         )
 
+    rate = card_surcharge_rate(db, str((getattr(request.state, "tenant", {}) or {}).get("id", "")))
     return templates.TemplateResponse(
         request,
         "payment_form.html",
@@ -1301,6 +1530,10 @@ def pay_invoice(
             # Nacha requires the ACH mandate to name the business being
             # authorized; Stripe's recommended text names it five times.
             "company_name": _business_name(db),
+            # Card surcharge (2026-09-16): >0 switches the card tab to the
+            # two-step flow and puts the statutory notice on the page.
+            "surcharge_rate": float(rate),
+            "surcharge_percent_label": _percent_label(rate) if rate > 0 else "",
             # The photos the office attached to THIS invoice (Doug 2026-08-12:
             # photos are customer-facing). They already ride the PDF; showing
             # them on the page the customer actually opens is the same
@@ -1950,11 +2183,16 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
         # genuine payment on an already-paid invoice must still be recorded —
         # otherwise the customer's money sits at Stripe with no Payment row
         # and nothing to refund against.
+        received = int(data.get("amount_received") or 0)
+        fee = _split_surcharge(
+            data, received, connect={"stripe_account": connected_account} if connected_account else {}
+        )
         _mark_invoice_paid(
             invoice, db,
             external_ref=data.get("id"),
             method=method,
-            amount=(data.get("amount_received") or 0) / 100.0,
+            amount=(received - fee) / 100.0,
+            surcharge=fee / 100.0 if fee else None,
             source="stripe-webhook",
             # The same account the rest of this handler reads from: "any live
             # read we make has to look in the same place the object lives."

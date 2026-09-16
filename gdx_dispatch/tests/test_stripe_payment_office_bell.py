@@ -117,6 +117,28 @@ def test_card_payment_rings_the_office_bell(db):
     assert "still due" not in row.message
 
 
+def test_a_card_surcharge_is_named_on_the_bell_and_kept_off_the_invoice(db):
+    """The customer paid $514.50: $500 settles the invoice, $14.50 is the card
+    fee (2026-09-16). The bell says both, the Payment row carries the fee, and
+    the invoice is paid in full — the fee never touches its balance."""
+    inv = _invoice(db, total="500.00")
+    _mark_invoice_paid(
+        inv, db, external_ref="pi_bell_fee", method="card",
+        amount=500.0, surcharge=14.5, source="stripe-webhook",
+    )
+    rows = _bell_rows(db)
+    assert len(rows) == 1
+    assert "$500.00" in rows[0].message
+    assert "plus a $14.50 card fee" in rows[0].message
+    assert "still due" not in rows[0].message
+    pay = db.execute(select(Payment).where(Payment.reference == "pi_bell_fee")).scalar_one()
+    assert float(pay.amount) == 500.0
+    assert float(pay.surcharge_amount) == 14.5
+    db.refresh(inv)
+    assert float(inv.balance_due) == 0.0
+    assert inv.status == "paid"
+
+
 def test_ach_payment_says_bank_transfer_not_the_stripe_code(db):
     inv = _invoice(db, total="250.00", customer_name="Acme Storage LLC")
 

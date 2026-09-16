@@ -12,8 +12,9 @@ The fix is stateless, like M12 whose scan it reuses: a `processing` intent
 bound to the invoice by `metadata.invoice_id` IS the pending marker. Three
 surfaces honor it:
 
-- the mint sites (`create-intent` for card and for ACH, and the portal) refuse
-  with a 409 that tells the customer their transfer is already moving;
+- the mint site (`create-intent`, card and ACH — the portal's own card mint
+  was deleted 2026-09-16) refuses with a 409 that tells the customer their
+  transfer is already moving;
 - the pay page renders "Bank transfer processing" instead of a live form;
 - the webhook notes `payment_intent.processing` on the invoice's audit trail,
   so the office can answer "why is the pay page refusing?".
@@ -250,25 +251,17 @@ def test_ach_mint_is_gated_through_the_real_endpoint(invoice, db):
     assert "already processing" in exc.value.detail
 
 
-def test_portal_mint_is_gated():
-    """Presence, not behavior — the portal handler needs a full portal
-    principal to drive. `_refuse_if_ach_processing`'s behavior is proven
-    above; this pins that the portal actually calls it, and the deletion
-    counterfactual bites on exactly that."""
+def test_the_portal_no_longer_mints_card_intents():
+    """`POST /portal/invoices/{id}/pay` was deleted 2026-09-16: nothing called
+    it (the portal's Pay buttons open the public pay page), and a second card
+    mint site that could not carry the card surcharge would have breached the
+    networks' "surcharge consistently" rule. The public page's mint is gated
+    above; this pins that no other card mint exists in the portal."""
     src = __import__("pathlib").Path(
         __import__("gdx_dispatch.routers.portal", fromlist=["__file__"]).__file__
     ).read_text()
-    i = src.index("stripe.api_key = os.getenv")
-    j = src.index("payment_intent_id", i)
-    window = src[i:j]
-    # Assert the CALL, not the bare name (the import line satisfied the name
-    # with the call deleted), and assert it runs BEFORE the mint — a gate
-    # after `PaymentIntent.create` guards nothing.
-    gate = window.find('_refuse_if_ach_processing(invoice, op="portal-pay", db=db, actor=f"portal:{principal.user_id}")')
-    mint = window.find("stripe.PaymentIntent.create")
-    assert gate != -1, "the portal mints against the same balance and must honor the gate"
-    assert mint != -1, "portal mint site moved — retarget this test"
-    assert gate < mint, "the gate runs AFTER the mint — it guards nothing"
+    assert "stripe.PaymentIntent.create" not in src
+    assert '"/invoices/{invoice_id}/pay"' not in src
 
 
 # ── the pay page ───────────────────────────────────────────────────────────

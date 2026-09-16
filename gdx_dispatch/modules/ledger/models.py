@@ -64,6 +64,10 @@ ROLE_PAYROLL_TAX = "PAYROLL_TAX"
 # Fallback for expense categories with no (or a dangling) account mapping —
 # the expense-side twin of SALES_FALLBACK (spec §4: unknown → 6900 + memo flag).
 ROLE_EXPENSE_FALLBACK = "EXPENSE_FALLBACK"
+# Credit-card surcharge the customer paid on the pay page (2026-09-16). Income,
+# not a reduction of the processing-fee expense: the fee Stripe takes is
+# already booked on the expense side, and the two net on the P&L.
+ROLE_SURCHARGE_INCOME = "SURCHARGE_INCOME"
 
 # Every role the engine may resolve. The S2 seed guarantees exactly one active
 # system account per role; tests assert the two lists never drift.
@@ -81,6 +85,7 @@ ALL_ROLES = (
     ROLE_WAGES,
     ROLE_PAYROLL_TAX,
     ROLE_EXPENSE_FALLBACK,
+    ROLE_SURCHARGE_INCOME,
 )
 
 # Account classification — drives the balance sheet vs P&L split and the

@@ -210,6 +210,12 @@ class TenantSettings(Base):
     late_fee_flat_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
     late_fee_percent: Mapped[Decimal | None] = mapped_column(Numeric(5, 4), nullable=True)
     late_fee_grace_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # Credit-card surcharge on the customer pay page, as a FRACTION (0.029 =
+    # 2.9%). NULL/0 = no surcharge. Credit cards only — Stripe refuses it on
+    # debit — and never on bank transfer. Bounded 0–0.05 (Minn. Stat.
+    # § 325G.051's 5% cap); Stripe's own 3% network cap binds per payment.
+    # Migration 096. Turned on by the office only after Visa's 30-day notice.
+    card_surcharge_percent: Mapped[Decimal | None] = mapped_column(Numeric(5, 4), nullable=True)
     interest_rate_monthly_percent: Mapped[Decimal | None] = mapped_column(Numeric(5, 4), nullable=True)
     interest_grace_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     catalog_require_description: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))

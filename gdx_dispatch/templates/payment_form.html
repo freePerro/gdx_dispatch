@@ -206,6 +206,21 @@
     }
     .btn-link:hover { text-decoration: underline; }
 
+    /* Card surcharge (2026-09-16): the statutory notice and the fee breakdown */
+    .fee-notice {
+      font-size: 0.8rem;
+      color: #92400e;
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-radius: 8px;
+      padding: 0.6rem 0.875rem;
+      margin-bottom: 1rem;
+    }
+    .breakdown { margin-bottom: 1rem; }
+    .breakdown .invoice-row { padding: 0.15rem 0; }
+    .breakdown .total { font-weight: 700; color: #111827; border-top: 1px solid #e5e7eb; margin-top: 0.35rem; padding-top: 0.45rem; }
+    .tab-sub { font-size: 0.7rem; font-weight: 500; color: #15803d; margin-left: 0.25rem; }
+
     .form-label {
       display: block;
       font-size: 0.8rem;
@@ -384,6 +399,15 @@
   <div id="payment-errors" class="alert error" role="alert"></div>
   <div id="payment-success" class="alert success" role="alert"></div>
 
+  {% if surcharge_rate and surcharge_rate > 0 %}
+  <!-- Minn. Stat. § 325G.051 subd. 1(a)(2): the surcharge notice "conspicuously
+       posted ... on the checkout page". Credit only — Stripe refuses the fee on
+       debit — and never on bank transfer, which is what makes it avoidable. -->
+  <div class="fee-notice" data-testid="surcharge-notice">
+    Credit cards carry a {{ surcharge_percent_label }} processing fee. Debit cards and bank transfer (ACH): no fee.
+  </div>
+  {% endif %}
+
   <!-- Tabs -->
   <div class="tabs" role="tablist">
     <button class="tab-btn active" role="tab" data-tab="card" id="tab-card" aria-selected="true">
@@ -396,21 +420,43 @@
       <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" d="M8 14v3m4-3v3m4-3v3M3 21h18M3 10h18M3 7l9-4 9 4M4 10h16v11H4V10z"/>
       </svg>
-      Bank Transfer (ACH)
+      Bank Transfer (ACH){% if surcharge_rate and surcharge_rate > 0 %}<span class="tab-sub">no fee</span>{% endif %}
     </button>
   </div>
 
-  <!-- Card tab -->
+  <!-- Card tab. With the surcharge on, paying is two steps: the card is
+       collected first so Stripe can say whether it may carry the fee (credit)
+       or not (debit), then the fee and the total are shown and the customer
+       confirms — Stripe requires the disclosure before confirmation and a way
+       to pick another method. Without the surcharge it is the one step it
+       always was. -->
   <div id="panel-card" class="tab-panel active" role="tabpanel">
-    <form id="card-form">
+    <form id="card-form" data-testid="card-form">
       <div class="element-wrapper" id="card-element-wrapper">
         <div id="card-element"><!-- Stripe Elements mounts here --></div>
       </div>
-      <button type="submit" class="btn-pay" id="card-submit">
+      <button type="submit" class="btn-pay" id="card-submit" data-testid="card-submit">
         <span class="spinner"></span>
-        <span class="btn-text">Pay ${{ "%.2f"|format(invoice.balance_due) }}</span>
+        <span class="btn-text">{% if surcharge_rate and surcharge_rate > 0 %}Continue{% else %}Pay ${{ "%.2f"|format(invoice.balance_due) }}{% endif %}</span>
       </button>
     </form>
+
+    {% if surcharge_rate and surcharge_rate > 0 %}
+    <form id="card-confirm-form" data-testid="card-confirm-form" hidden>
+      <div class="breakdown" data-testid="card-breakdown">
+        <div class="invoice-row"><span id="card-desc">Card</span><span></span></div>
+        <div class="invoice-row"><span>Invoice {{ invoice.invoice_number }}</span><span id="card-invoice-amount">${{ "%.2f"|format(invoice.balance_due) }}</span></div>
+        <div class="invoice-row" id="card-fee-row"><span id="card-fee-label">Credit card processing fee ({{ surcharge_percent_label }})</span><span id="card-fee">$0.00</span></div>
+        <div class="invoice-row total"><span>Total charged to your card</span><span id="card-total">$0.00</span></div>
+      </div>
+      <button type="submit" class="btn-pay" id="card-confirm" data-testid="card-confirm">
+        <span class="spinner"></span>
+        <span class="btn-text" id="card-confirm-text">Pay</span>
+      </button>
+      <button type="button" class="btn-link" id="card-switch-ach" data-testid="card-switch-ach">Pay by bank transfer instead (no fee)</button>
+      <button type="button" class="btn-link" id="card-change" data-testid="card-change">Use a different card</button>
+    </form>
+    {% endif %}
   </div>
 
   <!-- ACH tab: Stripe's accept-a-payment flow for ACH Direct Debit, in two
@@ -477,6 +523,9 @@
   // payment calls below. AMOUNT_CENTS is gone on purpose: the server charges
   // the balance due and the client no longer gets a say.
   const INVOICE_TOKEN = "{{ invoice.public_token }}";
+  // Card surcharge (2026-09-16): >0 means the office turned it on; the
+  // server sizes the fee per card, this only drives the two-step display.
+  const SURCHARGE_RATE = {{ (surcharge_rate or 0)|float }};
 
   {% if invoice.status != "paid" and not ach_processing %}
 
@@ -539,11 +588,13 @@
     btn.classList.toggle("loading", loading);
   }
 
-  async function createIntent(method) {
+  async function createIntent(method, paymentMethodId) {
+    const payload = { invoice_token: INVOICE_TOKEN, method: method };
+    if (paymentMethodId) payload.payment_method_id = paymentMethodId;
     const resp = await fetch("/api/payments/create-intent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ invoice_token: INVOICE_TOKEN, method: method }),
+      body: JSON.stringify(payload),
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
@@ -561,6 +612,57 @@
   }
 
   // ── Card form submit ──────────────────────────────────────────────────────
+  const money = (cents) => "$" + (cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  let cardClientSecret = null;
+  let cardIntentId = null;
+  let cardPaymentMethodId = null;
+  let cardTotalCents = 0;
+  let cardFeeCents = 0;
+
+  function renderCardBreakdown(intent) {
+    cardClientSecret = intent.client_secret;
+    cardIntentId = intent.payment_intent_id;
+    cardTotalCents = intent.amount;
+    cardFeeCents = intent.surcharge_cents || 0;
+    const card = intent.card || {};
+    const brand = card.brand ? card.brand.charAt(0).toUpperCase() + card.brand.slice(1) : "Card";
+    const funding = card.funding === "debit" ? " debit" : (card.funding === "credit" ? " credit" : "");
+    document.getElementById("card-desc").textContent = brand + funding + (card.last4 ? " ending " + card.last4 : "");
+    const feeRow = document.getElementById("card-fee-row");
+    if (cardFeeCents > 0) {
+      document.getElementById("card-fee-label").textContent = "Credit card processing fee ({{ surcharge_percent_label }})";
+      document.getElementById("card-fee").textContent = money(cardFeeCents);
+    } else {
+      document.getElementById("card-fee-label").textContent = card.funding === "debit" ? "Debit card: no processing fee" : "No processing fee on this card";
+      document.getElementById("card-fee").textContent = "$0.00";
+    }
+    feeRow.hidden = false;
+    document.getElementById("card-invoice-amount").textContent = money(intent.invoice_amount);
+    document.getElementById("card-total").textContent = money(cardTotalCents);
+    document.getElementById("card-confirm-text").textContent = "Pay " + money(cardTotalCents);
+  }
+
+  function finishCard(message) {
+    showSuccess(message);
+    document.getElementById("card-form").style.display = "none";
+    const confirmForm = document.getElementById("card-confirm-form");
+    if (confirmForm) confirmForm.hidden = true;
+    document.querySelector(".tabs").style.display = "none";
+  }
+
+  async function settleCard(result) {
+    if (result.error) {
+      showError(result.error.message);
+      return;
+    }
+    if (result.paymentIntent.status === "succeeded") {
+      await confirmServer(result.paymentIntent.id);
+      finishCard(cardFeeCents > 0
+        ? "Payment successful! " + money(cardTotalCents) + " charged to your card, including a " + money(cardFeeCents) + " processing fee. Thank you."
+        : "Payment successful! Thank you. A receipt will be emailed to you shortly.");
+    }
+  }
+
   document.getElementById("card-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     clearMessages();
@@ -568,26 +670,77 @@
     setLoading(btn, true);
 
     try {
-      const { client_secret, payment_intent_id } = await createIntent("card");
+      if (SURCHARGE_RATE > 0) {
+        // Step 1: the card first, so the server can ask Stripe whether it
+        // may carry the fee. Nothing is charged here.
+        const created = await stripe.createPaymentMethod({ type: "card", card: cardElement });
+        if (created.error) { showError(created.error.message); return; }
+        cardPaymentMethodId = created.paymentMethod.id;
+        renderCardBreakdown(await createIntent("card", cardPaymentMethodId));
+        document.getElementById("card-form").hidden = true;
+        document.getElementById("card-confirm-form").hidden = false;
+        return;
+      }
 
+      const { client_secret } = await createIntent("card");
       const result = await stripe.confirmCardPayment(client_secret, {
         payment_method: { card: cardElement },
       });
-
-      if (result.error) {
-        showError(result.error.message);
-      } else if (result.paymentIntent.status === "succeeded") {
-        await confirmServer(result.paymentIntent.id);
-        showSuccess("Payment successful! Thank you. A receipt will be emailed to you shortly.");
-        document.getElementById("card-form").style.display = "none";
-        document.querySelector(".tabs").style.display = "none";
-      }
+      await settleCard(result);
     } catch (err) {
       showError(err.message || "An unexpected error occurred.");
     } finally {
       setLoading(btn, false);
     }
   });
+
+  if (SURCHARGE_RATE > 0) {
+    // Step 2: the customer has seen the fee and the total; confirm the card
+    // already attached to the intent.
+    document.getElementById("card-confirm-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      clearMessages();
+      const btn = document.getElementById("card-confirm");
+      if (!cardClientSecret) {
+        showError("This payment session is out of date. Please refresh the page and try again.");
+        return;
+      }
+      setLoading(btn, true);
+      try {
+        // The customer may have looked at this for a while. Ask the server
+        // again before charging: the same call replays the same intent when
+        // nothing changed (idempotent), refuses with 409 if a bank transfer
+        // for this invoice started meanwhile (M16), and hands back a fresh
+        // intent if the balance moved — in which case show it and stop.
+        const again = await createIntent("card", cardPaymentMethodId);
+        if (again.payment_intent_id !== cardIntentId || again.amount !== cardTotalCents) {
+          renderCardBreakdown(again);
+          showError("The amount changed since you last looked. Please review the total and confirm again.");
+          return;
+        }
+        await settleCard(await stripe.confirmCardPayment(cardClientSecret));
+      } catch (err) {
+        showError(err.message || "An unexpected error occurred.");
+      } finally {
+        setLoading(btn, false);
+      }
+    });
+    document.getElementById("card-change").addEventListener("click", () => {
+      clearMessages();
+      cardClientSecret = null;
+      cardPaymentMethodId = null;
+      document.getElementById("card-confirm-form").hidden = true;
+      document.getElementById("card-form").hidden = false;
+    });
+    document.getElementById("card-switch-ach").addEventListener("click", () => {
+      clearMessages();
+      cardClientSecret = null;
+      cardPaymentMethodId = null;
+      document.getElementById("card-confirm-form").hidden = true;
+      document.getElementById("card-form").hidden = false;
+      document.getElementById("tab-ach").click();
+    });
+  }
 
   // ── ACH: one PaymentIntent, completed in the browser ─────────────────────
   // Stripe's "Accept an ACH Direct Debit payment" flow

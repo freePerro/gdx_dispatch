@@ -757,6 +757,11 @@ class Payment(Base):
     invoice_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("invoices.id"), nullable=False)
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     method: Mapped[str] = mapped_column(String(50), nullable=False, default="cash")
+    # The credit-card processing fee the customer paid ON TOP of ``amount``
+    # (migration 096). ``amount`` is what settles the invoice; this posts to
+    # 4950 Card Surcharge Income. NULL = no surcharge (every row before 096,
+    # and every non-card payment since).
+    surcharge_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     payment_date: Mapped[date] = mapped_column(Date, nullable=False, default=date.today)
     # External reference: check #, transaction ID, Zelle/Venmo memo. The
     # Record Payment dialog has had this field forever, but pre-fix the

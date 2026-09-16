@@ -119,6 +119,7 @@ def notify_payment_received(
     amount: float,
     method: str,
     overpaid: float = 0.0,
+    surcharge: float = 0.0,
 ) -> None:
     """Bell alert for processor money landing on an invoice.
 
@@ -135,8 +136,8 @@ def notify_payment_received(
     immediately after `db.commit()`, which expires the invoice, so every
     attribute read is a lazy refresh SELECT that can raise. An earlier draft
     took `tenant_id` as a parameter, which put `invoice.company_id` on the
-    caller's line — outside this guard, in three call sites that do not wrap
-    it (`/confirm`, the ACH charge, the webhook). A transient DB hiccup there
+    caller's line — outside this guard, in the call sites that do not wrap
+    it (`/confirm` and the webhook). A transient DB hiccup there
     would have 500'd a request whose money was already committed: the pay page
     telling a customer their successful card charge failed, and on the webhook
     a Stripe retry that takes the idempotent early return and loses the bell
@@ -176,6 +177,11 @@ def notify_payment_received(
         number = getattr(invoice, "invoice_number", None) or "an invoice"
         label = _METHOD_LABEL.get((method or "").strip().lower(), "online")
         message = f"{who} paid ${float(amount or 0):,.2f} on {number} by {label}"
+        # The card surcharge (2026-09-16) is money that landed too, on 4950,
+        # not on the invoice — name it so the office can reconcile the Stripe
+        # settlement (amount + fee) against the payment it just heard about.
+        if float(surcharge or 0) > 0.009:
+            message += f" plus a ${float(surcharge):,.2f} card fee"
 
         # A partial payment is the case the office most needs to see, so say
         # what is left rather than letting "paid" imply settled in full.
