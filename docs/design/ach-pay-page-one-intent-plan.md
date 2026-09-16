@@ -1,7 +1,7 @@
 # ACH on the customer pay page: one intent, completed in the browser
 
 **Date:** 2026-09-16 (investigated, planned, built, adversarially audited and browser-verified the same day)
-**Status:** **PLAN** — built and verified on the branch as PR #742, not merged. Flip to `MERGED #742` when it lands, and to `RELEASED vX.Y.Z` after the prod walk.
+**Status:** **MERGED #742 · RELEASED v1.121.1** — deployed to prod 2026-09-16 (clean image bump, all containers healthy, deleted routes gone and the new `method` field validating at the edge). The customer-side prod walk — Stripe's picker and the mandate step, on a phone, on an invoice Doug owns — has not been done yet and is Doug's.
 **Branch:** `fix/ach-pay-page-one-intent`
 
 ## What already exists (do not rebuild)
