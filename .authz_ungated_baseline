@@ -66,8 +66,6 @@ GET /{full_path:path}
 POST /api/ai/pricing/suggest
 POST /api/ai/quote
 POST /api/feedback/client-error
-POST /api/payments/ach/charge
-POST /api/payments/ach/setup
 POST /api/payments/confirm
 POST /api/payments/create-intent
 # Group 2 (token IS the credential): the public estimate approval page.

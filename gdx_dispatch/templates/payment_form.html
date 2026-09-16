@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- minimum-scale=1: Stripe's Financial Connections picker (the ACH bank
+       link) requires it and warns in the console without it
+       (docs.stripe.com/payments/ach-direct-debit/accept-a-payment, read 2026-09-16). -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1" />
   <title>Pay Invoice {{ invoice.invoice_number }}</title>
   <script src="https://js.stripe.com/v3/"></script>
   <style>
@@ -164,7 +167,44 @@
     .element-wrapper.focused { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
 
     /* ACH form fields */
+    [hidden] { display: none !important; }
     .form-group { margin-bottom: 1rem; }
+    .hint { font-size: 0.8rem; color: #6b7280; margin-bottom: 0.75rem; }
+    .bank-summary {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: #f8fafc;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 0.875rem 1rem;
+      margin-bottom: 1rem;
+      font-weight: 600;
+      color: #111827;
+    }
+    .bank-summary .muted { font-weight: 400; color: #6b7280; }
+    .mandate {
+      font-size: 0.75rem;
+      color: #4b5563;
+      line-height: 1.45;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 0.75rem 0.875rem;
+      margin-bottom: 0.75rem;
+    }
+    .btn-link {
+      display: block;
+      width: 100%;
+      margin-top: 0.75rem;
+      background: none;
+      border: none;
+      color: #2563eb;
+      font-size: 0.85rem;
+      cursor: pointer;
+      text-align: center;
+    }
+    .btn-link:hover { text-decoration: underline; }
 
     .form-label {
       display: block;
@@ -285,7 +325,7 @@
     {% elif ach_processing %}
     <div class="invoice-row" style="color:#92400e; font-weight:600; margin-top:0.5rem;" data-testid="ach-processing-status">
       <span>Status</span>
-      <span>Bank transfer processing</span>
+      <span>{% if ach_processing.get("stage") == "verifying" %}Bank transfer awaiting verification{% else %}Bank transfer processing{% endif %}</span>
     </div>
     {% else %}
     <div class="invoice-total">${{ "%.2f"|format(invoice.balance_due) }}</div>
@@ -319,11 +359,25 @@
   <!-- M16: an ACH debit is in flight. Presenting a live payment form here is
        how a customer pays twice — the balance will not move until the bank
        acknowledges, which Stripe documents as up to 4 business days. -->
+  {% if ach_processing.get("stage") == "verifying" %}
+  <!-- Manual bank entry: Stripe sends a small deposit and emails a link; the
+       debit starts when the customer confirms it. Same double-payment window
+       as `processing`, but the customer DOES have a next step. -->
+  <div class="alert success visible" data-testid="ach-processing-banner">
+    A bank transfer for this invoice is waiting for you to confirm a small test
+    deposit. Stripe emailed you the link; your payment starts once you confirm
+    it &mdash; you don't need to pay again.
+    {% if ach_processing.get("hosted_verification_url") %}
+    <a href="{{ ach_processing.get("hosted_verification_url") }}" target="_blank" rel="noopener" style="display:block;margin-top:0.5rem;" data-testid="ach-verifying-link">Confirm the deposit</a>
+    {% endif %}
+  </div>
+  {% else %}
   <div class="alert success visible" data-testid="ach-processing-banner">
     A bank transfer for this invoice is already processing. Bank transfers take
     up to 4 business days to clear &mdash; you don't need to do anything else,
     and you don't need to pay again.
   </div>
+  {% endif %}
   {% else %}
 
   <!-- Error / success alerts -->
@@ -359,9 +413,13 @@
     </form>
   </div>
 
-  <!-- ACH tab -->
+  <!-- ACH tab: Stripe's accept-a-payment flow for ACH Direct Debit, in two
+       steps on one PaymentIntent. Step 1 collects who is paying and opens
+       Stripe's bank picker; step 2 shows the linked account and the debit
+       mandate, and the customer's click on "Confirm and pay" is the
+       authorization Nacha requires. -->
   <div id="panel-ach" class="tab-panel" role="tabpanel">
-    <form id="ach-form">
+    <form id="ach-form" data-testid="ach-form">
       <div class="form-group">
         <label class="form-label" for="ach-email">Email address</label>
         <input type="email" id="ach-email" class="form-input" placeholder="you@example.com" required autocomplete="email" />
@@ -370,16 +428,33 @@
         <label class="form-label" for="ach-name">Account holder name</label>
         <input type="text" id="ach-name" class="form-input" placeholder="Jane Smith" required autocomplete="name" />
       </div>
-      <div class="element-wrapper" id="ach-element-wrapper">
-        <div id="ach-element"><!-- ACH bank element mounts here --></div>
-      </div>
-      <p style="font-size:0.75rem;color:#6b7280;margin-bottom:0.75rem;">
-        By providing your bank account information and confirming this payment, you authorise this merchant to debit your bank account.
-      </p>
-      <button type="submit" class="btn-pay" id="ach-submit">
+      <p class="hint">Next, Stripe opens a secure window to link your bank account. Most banks verify instantly; the debit itself takes up to 4 business days to clear.</p>
+      <button type="submit" class="btn-pay" id="ach-submit" data-testid="ach-continue">
         <span class="spinner"></span>
-        <span class="btn-text">Pay ${{ "%.2f"|format(invoice.balance_due) }} via ACH</span>
+        <span class="btn-text">Link bank account</span>
       </button>
+    </form>
+
+    <form id="ach-confirm-form" data-testid="ach-confirm-form" hidden>
+      <div class="bank-summary" data-testid="ach-bank-summary">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M8 14v3m4-3v3m4-3v3M3 21h18M3 10h18M3 7l9-4 9 4M4 10h16v11H4V10z"/>
+        </svg>
+        <span id="ach-bank-name">Bank account</span>
+        <span id="ach-bank-last4" class="muted"></span>
+      </div>
+      <!-- Stripe's recommended one-time ACH mandate text, verbatim except the
+           business name (docs.stripe.com/payments/ach-direct-debit#mandates,
+           read 2026-09-16). No periodic-debit paragraph: this intent has no
+           setup_future_usage and the account is not saved. -->
+      <p class="mandate" data-testid="ach-mandate">
+        By clicking <strong>Confirm and pay</strong>, you authorize {{ company_name }} to debit the bank account specified above for any amount owed for charges arising from your use of {{ company_name }}'s services and/or purchase of products from {{ company_name }}, pursuant to {{ company_name }}'s website and terms, until this authorization is revoked. You may amend or cancel this authorization at any time by providing notice to {{ company_name }} with 30 (thirty) days notice.
+      </p>
+      <button type="submit" class="btn-pay" id="ach-confirm" data-testid="ach-confirm">
+        <span class="spinner"></span>
+        <span class="btn-text">Confirm and pay ${{ "%.2f"|format(invoice.balance_due) }}</span>
+      </button>
+      <button type="button" class="btn-link" id="ach-change" data-testid="ach-change">Use a different bank account</button>
     </form>
   </div>
 
@@ -424,17 +499,6 @@
   cardElement.on("focus",  () => document.getElementById("card-element-wrapper").classList.add("focused"));
   cardElement.on("blur",   () => document.getElementById("card-element-wrapper").classList.remove("focused"));
 
-  // ── ACH element ─────────────────────────────────────────────────────────
-  let achElement = null;
-  let achElementMounted = false;
-
-  function mountAchElement() {
-    if (achElementMounted) return;
-    achElement = elements.create("auBankAccount"); // falls back gracefully
-    // For US ACH we use collectBankAccountForSetup — element is for display only
-    achElementMounted = true;
-  }
-
   // ── Tab switching ────────────────────────────────────────────────────────
   document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -447,7 +511,6 @@
       btn.setAttribute("aria-selected", "true");
       document.getElementById("panel-" + btn.dataset.tab).classList.add("active");
       clearMessages();
-      if (btn.dataset.tab === "ach") mountAchElement();
     });
   });
 
@@ -476,11 +539,11 @@
     btn.classList.toggle("loading", loading);
   }
 
-  async function createIntent() {
+  async function createIntent(method) {
     const resp = await fetch("/api/payments/create-intent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ invoice_token: INVOICE_TOKEN }),
+      body: JSON.stringify({ invoice_token: INVOICE_TOKEN, method: method }),
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
@@ -505,7 +568,7 @@
     setLoading(btn, true);
 
     try {
-      const { client_secret, payment_intent_id } = await createIntent();
+      const { client_secret, payment_intent_id } = await createIntent("card");
 
       const result = await stripe.confirmCardPayment(client_secret, {
         payment_method: { card: cardElement },
@@ -526,8 +589,34 @@
     }
   });
 
-  // ── ACH form submit ───────────────────────────────────────────────────────
-  document.getElementById("ach-form").addEventListener("submit", async (e) => {
+  // ── ACH: one PaymentIntent, completed in the browser ─────────────────────
+  // Stripe's "Accept an ACH Direct Debit payment" flow
+  // (docs.stripe.com/payments/ach-direct-debit/accept-a-payment, read 2026-09-16):
+  //   1. the server mints a us_bank_account PaymentIntent (create-intent, method=ach);
+  //   2. stripe.collectBankAccountForPayment opens Stripe's bank picker and
+  //      attaches the linked account to THAT intent -> requires_confirmation;
+  //   3. we show the account and the mandate; on "Confirm and pay",
+  //      stripe.confirmUsBankAccountPayment records the authorization and the
+  //      intent moves to `processing` (or requires_action for micro-deposits).
+  // Until 2026-09-16 this tab minted a SetupIntent it never confirmed and asked
+  // the server to charge the same PaymentMethod on a second intent, which
+  // Stripe refuses without a Customer — no bank payment ever completed.
+  let achClientSecret = null;
+  const achForm = document.getElementById("ach-form");
+  const achConfirmForm = document.getElementById("ach-confirm-form");
+
+  function showAchStep(step) {
+    achForm.hidden = step !== "collect";
+    achConfirmForm.hidden = step !== "confirm";
+  }
+
+  function finishAch() {
+    achForm.hidden = true;
+    achConfirmForm.hidden = true;
+    document.querySelector(".tabs").style.display = "none";
+  }
+
+  achForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     clearMessages();
     const btn = document.getElementById("ach-submit");
@@ -540,22 +629,14 @@
     }
 
     setLoading(btn, true);
-
     try {
-      // Step 1: get SetupIntent client_secret
-      const setupResp = await fetch("/api/payments/ach/setup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customer_email: email, invoice_token: INVOICE_TOKEN }),
-      });
-      if (!setupResp.ok) {
-        const err = await setupResp.json().catch(() => ({}));
-        throw new Error(err.detail || "Failed to set up bank account.");
-      }
-      const { client_secret, setup_intent_id } = await setupResp.json();
+      const { client_secret } = await createIntent("ach");
+      achClientSecret = client_secret;
 
-      // Step 2: collect bank account via Stripe.js
-      const result = await stripe.collectBankAccountForSetup({
+      // Opens Stripe's hosted bank picker (instant verification, with manual
+      // entry + micro-deposits as the fallback) and attaches the result to
+      // this intent. Nothing is debited here.
+      const result = await stripe.collectBankAccountForPayment({
         clientSecret: client_secret,
         params: {
           payment_method_type: "us_bank_account",
@@ -570,43 +651,88 @@
         showError(result.error.message);
         return;
       }
-
-      // Step 3: charge the collected bank account
-      const pmId = result.setupIntent.payment_method;
-      const chargeResp = await fetch("/api/payments/ach/charge", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          payment_method_id: pmId,
-          // Proves this bank account was collected for THIS invoice.
-          setup_intent_id: setup_intent_id || result.setupIntent.id,
-          invoice_token: INVOICE_TOKEN,
-        }),
-      });
-
-      if (!chargeResp.ok) {
-        const err = await chargeResp.json().catch(() => ({}));
-        throw new Error(err.detail || "ACH charge failed.");
+      const pi = result.paymentIntent;
+      if (pi.status === "requires_payment_method") {
+        // The customer closed the picker without linking an account.
+        showError("No bank account was linked. You can try again, or pay by card.");
+        return;
       }
-
-      const { status } = await chargeResp.json();
-
-      if (status === "processing" || status === "requires_action") {
-        showSuccess("Bank transfer initiated. ACH payments typically settle in 1-2 business days. You will receive a confirmation email.");
-      } else if (status === "succeeded") {
-        showSuccess("Payment successful! Thank you. A receipt will be emailed to you shortly.");
-      } else {
-        showError("Payment status: " + status + ". Please contact support if you have questions.");
+      if (pi.status !== "requires_confirmation") {
+        showError("Unexpected payment status: " + pi.status + ". Please try again.");
+        return;
       }
-
-      document.getElementById("ach-form").style.display = "none";
-      document.querySelector(".tabs").style.display = "none";
-
+      const bank = (pi.payment_method && pi.payment_method.us_bank_account) || {};
+      document.getElementById("ach-bank-name").textContent = bank.bank_name || "Bank account";
+      document.getElementById("ach-bank-last4").textContent = bank.last4 ? "\u2022\u2022\u2022\u2022 " + bank.last4 : "";
+      showAchStep("confirm");
     } catch (err) {
       showError(err.message || "An unexpected error occurred.");
     } finally {
       setLoading(btn, false);
     }
+  });
+
+  achConfirmForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearMessages();
+    const btn = document.getElementById("ach-confirm");
+    if (!achClientSecret) {
+      showError("This payment session is out of date. Please refresh the page and try again.");
+      return;
+    }
+    setLoading(btn, true);
+    try {
+      // The click on "Confirm and pay" IS the mandate acceptance; Stripe
+      // records it (IP, user agent, timestamp) and emails the customer a copy.
+      const result = await stripe.confirmUsBankAccountPayment(achClientSecret);
+      if (result.error) {
+        showError(result.error.message);
+        return;
+      }
+      const pi = result.paymentIntent;
+      const next = pi.next_action || {};
+      if (pi.status === "processing") {
+        showSuccess("Bank transfer started. It takes up to 4 business days to clear, and you don't need to do anything else. Stripe has emailed you a copy of the authorization.");
+        finishAch();
+      } else if (pi.status === "requires_action" && next.type === "verify_with_microdeposits") {
+        // The bank could not be verified instantly. Stripe sends a small
+        // deposit within 1-2 business days and emails a verification link;
+        // the debit starts once the customer confirms it.
+        showSuccess("Your bank could not be verified instantly. Within 1-2 business days Stripe will send a small deposit to your account and email you a link to confirm it. Your payment starts once you do.");
+        const url = next.verify_with_microdeposits && next.verify_with_microdeposits.hosted_verification_url;
+        if (url) {
+          const a = document.createElement("a");
+          a.href = url; a.target = "_blank"; a.rel = "noopener";
+          a.textContent = "Open the verification page";
+          a.style.display = "block"; a.style.marginTop = "0.5rem";
+          document.getElementById("payment-success").appendChild(a);
+        }
+        finishAch();
+      } else if (pi.status === "succeeded") {
+        await confirmServer(pi.id);
+        showSuccess("Payment successful! Thank you. A receipt will be emailed to you shortly.");
+        finishAch();
+      } else if (pi.status === "requires_payment_method") {
+        showError("That bank account could not be used. Please link a different account or pay by card.");
+        showAchStep("collect");
+      } else {
+        showError("Payment status: " + pi.status + ". Please contact support if you have questions.");
+      }
+    } catch (err) {
+      showError(err.message || "An unexpected error occurred.");
+    } finally {
+      setLoading(btn, false);
+    }
+  });
+
+  document.getElementById("ach-change").addEventListener("click", () => {
+    // Back to step 1. create-intent never hands back an intent that already
+    // carries an account: the replayed one is cancelled (or, once cancelled,
+    // superseded) and a fresh intent is minted; the picker attaches the new
+    // account to that. An intent from an earlier press that still carries
+    // its account is left for the M12 sweep — its secret never left this tab.
+    clearMessages();
+    showAchStep("collect");
   });
 
   {% endif %}{# end if not paid #}

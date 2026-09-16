@@ -677,7 +677,7 @@ def portal_invoice_pay(
     # minted while their ACH debit is processing double-pays identically.
     from gdx_dispatch.core.payments import _refuse_if_ach_processing
 
-    _refuse_if_ach_processing(invoice, op="portal-pay")
+    _refuse_if_ach_processing(invoice, op="portal-pay", db=db, actor=f"portal:{principal.user_id}")
     amount_cents = int(amount_due * 100)
 
     intent = stripe.PaymentIntent.create(

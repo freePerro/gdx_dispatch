@@ -1042,8 +1042,6 @@ POST /api/parts/pricing
 POST /api/parts/pricing/bulk-update
 POST /api/parts/pricing/suggest-markup
 POST /api/payments
-POST /api/payments/ach/charge
-POST /api/payments/ach/setup
 POST /api/payments/confirm
 POST /api/payments/create-intent
 POST /api/payments/intent

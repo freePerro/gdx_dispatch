@@ -7,8 +7,10 @@
 - **17.3** `/confirm`, `ach/charge` and the portal charge recorded
   ``pi.amount`` (what was ASKED) while the webhook records ``amount_received``
   (what MOVED). Identical under auto-capture — no mint site here sets
-  ``capture_method="manual"`` — divergent the moment one does. All four
-  recording sites now agree on ``amount_received``.
+  ``capture_method="manual"`` — divergent the moment one does. All recording
+  sites now agree on ``amount_received``. (`ach/charge` was deleted
+  2026-09-16 — ACH completes in the browser and the webhook records it — so
+  three sites remain: `/confirm`, the portal charge, the webhook.)
 - **17.4** `_next_invoice_number` races: the generator is consolidated and the
   office create path retries on IntegrityError, but the mobile and deposit
   creators flushed bare — the loser of a same-instant race 500'd. They retry
@@ -223,50 +225,25 @@ def test_confirm_still_records_legacy_intents_without_the_field(db, invoice):
     assert float(row.amount) == 300.00
 
 
-def test_all_four_recording_sites_agree_on_amount_received():
-    """The webhook always recorded `amount_received`; /confirm, ach/charge and
-    the portal recorded `amount`. The books must not depend on which message
-    arrives first. Source-shape check across the three fixed sites — the
-    behavioral proof for /confirm is above."""
+def test_all_recording_sites_agree_on_amount_received():
+    """The webhook always recorded `amount_received`; /confirm and the portal
+    recorded `amount`. The books must not depend on which message arrives
+    first. Source-shape check across the fixed sites — the behavioral proof
+    for /confirm is above. (ach/charge, the third fixed site, was deleted
+    2026-09-16.)"""
     core = pathlib.Path(
         __import__("gdx_dispatch.core.payments", fromlist=["__file__"]).__file__
     ).read_text()
     portal = pathlib.Path(
         __import__("gdx_dispatch.routers.payments", fromlist=["__file__"]).__file__
     ).read_text()
-    for fn in ("def confirm_payment(", "def ach_charge("):
+    for fn in ("def confirm_payment(",):
         i = core.index(fn)
         j = core.index("\n@", i) if "\n@" in core[i:] else len(core)
         assert 'getattr(pi, "amount_received", None) or pi.amount' in core[i:j], (
             f"{fn} records the ASK, not what moved"
         )
     assert 'getattr(intent, "amount_received", None) or intent.amount' in portal
-
-
-def test_ach_charge_records_amount_received(db, invoice):
-    """The sweep's sibling of the confirm fix, proven behaviorally too."""
-    from gdx_dispatch.core.payments import ACHChargeRequest, ach_charge
-
-    pi = _pi("pi_ach_cap", amount=30000, amount_received=25000)
-    si = SimpleNamespace(
-        metadata={"invoice_id": str(invoice.id)}, payment_method="pm_b",
-        status="succeeded", customer="cus_x",
-    )
-    req = SimpleNamespace(state=SimpleNamespace(tenant={}))
-    with patch("gdx_dispatch.core.payments._init_stripe"), \
-            patch("gdx_dispatch.core.payments._resolve_public_invoice", return_value=invoice), \
-            patch("stripe.SetupIntent.retrieve", return_value=si), \
-            patch("stripe.PaymentIntent.create", return_value=pi), \
-            patch("stripe.PaymentIntent.list", return_value=SimpleNamespace(data=[], has_more=False)):
-        ach_charge(
-            ACHChargeRequest(invoice_token=invoice.public_token,
-                             setup_intent_id="seti_x", payment_method_id="pm_b",
-                             customer_email="c@example.com"),
-            req, db=db,
-        )
-
-    row = db.execute(select(Payment).where(Payment.reference == "pi_ach_cap")).scalar_one()
-    assert float(row.amount) == 250.00
 
 
 # ── 17.4: the same-instant sibling loses gracefully, not with a 500

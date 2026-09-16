@@ -5,10 +5,10 @@ required. An isolated SQLite in-memory tenant DB is used for invoice fixtures.
 
 A large share of these are ATTACK tests. These endpoints serve the anonymous
 /pay/{token} page, so authorization is structural rather than session-based:
-the token says which invoice you may touch, and the server decides the amount,
-the intent↔invoice binding and the ACH method↔invoice binding. Each of the
-"attack" tests below corresponds to something that was exploitable before
-2026-08-04 — keep them.
+the token says which invoice you may touch, and the server decides the amount
+and the intent↔invoice binding (for ACH the bank account is bound to that same
+intent by Stripe.js, in the browser). Each of the "attack" tests below
+corresponds to something that was exploitable before 2026-08-04 — keep them.
 """
 from __future__ import annotations
 
@@ -180,6 +180,43 @@ def test_create_intent_charges_balance_not_total(client, db_session):
     assert inv.id is not None
 
 
+def test_a_replayed_intent_carrying_a_bank_account_is_cancelled_and_reminted(client, invoice):
+    """A customer linked a bank and walked away at the mandate. Idempotency
+    would replay that intent — secret included — to the next holder of the
+    token, who could confirm it against the first person's account
+    (2026-09-16 audit, round 3). Cancel it, mint fresh."""
+    old = _pi("pi_old", status="requires_confirmation")
+    old.payment_method = "pm_someones_bank"
+    fresh = _pi("pi_fresh", status="requires_payment_method")
+    fresh.payment_method = None
+    with patch("stripe.PaymentIntent.create", side_effect=[old, fresh]) as create, \
+            patch("stripe.PaymentIntent.retrieve", return_value=old), \
+            patch("stripe.PaymentIntent.cancel") as cancel:
+        resp = client.post("/api/payments/create-intent", json={"invoice_token": TOKEN, "method": "ach"})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["payment_intent_id"] == "pi_fresh"
+    cancel.assert_called_once()
+    assert cancel.call_args[0][0] == "pi_old"
+    assert create.call_count == 2
+    keys = [c[1]["idempotency_key"] for c in create.call_args_list]
+    assert keys[0] != keys[1] and keys[1].startswith(keys[0])
+
+
+def test_a_replayed_intent_with_no_account_yet_is_reused(client, invoice):
+    """The customer merely reloaded before linking anything: same intent,
+    nothing to cancel."""
+    live = _pi("pi_same", status="requires_payment_method")
+    live.payment_method = None
+    with patch("stripe.PaymentIntent.create", return_value=live) as create, \
+            patch("stripe.PaymentIntent.retrieve", return_value=live), \
+            patch("stripe.PaymentIntent.cancel") as cancel:
+        resp = client.post("/api/payments/create-intent", json={"invoice_token": TOKEN, "method": "ach"})
+    assert resp.json()["payment_intent_id"] == "pi_same"
+    cancel.assert_not_called()
+    assert create.call_count == 1
+
+
 def test_create_intent_unknown_token_404(client):
     resp = client.post("/api/payments/create-intent", json={"invoice_token": "nope-not-a-token"})
     assert resp.status_code == 404
@@ -235,6 +272,43 @@ def test_confirm_payment_marks_paid(client, db_session, invoice):
     assert invoice.paid_at is not None
 
 
+def test_confirm_labels_a_bank_intent_as_ach(client, db_session, invoice):
+    """Stripe.js reports a bank debit as `processing`, so this branch is card
+    in practice — but a us_bank_account intent that ever arrives here
+    `succeeded` must not be booked as a card payment (2026-09-16 audit)."""
+    pi = _pi(invoice_id=invoice.id)
+    pi.payment_method_types = ["us_bank_account"]
+    with patch("stripe.PaymentIntent.retrieve", return_value=pi):
+        resp = client.post(
+            "/api/payments/confirm",
+            json={"payment_intent_id": "pi_test_123", "invoice_token": TOKEN},
+        )
+    assert resp.status_code == 200, resp.text
+    pay = db_session.query(Payment).filter(Payment.invoice_id == invoice.id).one()
+    assert pay.method == "ach"
+
+
+def test_confirm_labels_from_the_payment_method_not_the_allowed_list(client, db_session, invoice):
+    """Prod card intents are automatic-payment-method intents whose allowed
+    list will grow `us_bank_account` the day the Dashboard's ACH toggle goes
+    on. The rail is the PaymentMethod that paid, not the list (2026-09-16
+    audit)."""
+    from types import SimpleNamespace
+
+    pi = _pi(invoice_id=invoice.id)
+    pi.payment_method_types = ["card", "us_bank_account"]
+    pi.payment_method = SimpleNamespace(id="pm_card_1", type="card")
+    with patch("stripe.PaymentIntent.retrieve", return_value=pi) as retrieve:
+        resp = client.post(
+            "/api/payments/confirm",
+            json={"payment_intent_id": "pi_test_123", "invoice_token": TOKEN},
+        )
+    assert resp.status_code == 200, resp.text
+    assert retrieve.call_args[1].get("expand") == ["payment_method"]
+    pay = db_session.query(Payment).filter(Payment.invoice_id == invoice.id).one()
+    assert pay.method == "card"
+
+
 def test_confirm_rejects_intent_for_a_different_invoice(client, db_session, invoice, other_invoice):
     """ATTACK (the headline one): replay a succeeded PaymentIntent against an
     unrelated invoice.
@@ -283,102 +357,85 @@ def test_confirm_not_succeeded_records_nothing(client, db_session, invoice):
 
 
 # ---------------------------------------------------------------------------
-# ACH
+# ACH — one PaymentIntent, completed in the browser (2026-09-16)
 # ---------------------------------------------------------------------------
 
 
-def _si(sid="seti_test", *, invoice_id=None, pm="pm_bank_123"):
-    m = MagicMock()
-    m.id = sid
-    m.client_secret = f"{sid}_secret"
-    m.payment_method = pm
-    m.metadata = {"invoice_id": str(invoice_id)} if invoice_id else {}
-    return m
+def test_create_intent_ach_mints_a_us_bank_account_intent(client, invoice):
+    """The bank rail is the same endpoint with ``method="ach"``. Stripe.js
+    then attaches the linked account to THIS intent and records the mandate
+    against it. The server must name the type: a default (card) intent is one
+    collectBankAccountForPayment cannot attach a bank account to."""
+    with patch("stripe.PaymentIntent.create", return_value=_pi(status="requires_payment_method")) as mock_create:
+        resp = client.post(
+            "/api/payments/create-intent", json={"invoice_token": TOKEN, "method": "ach"}
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["method"] == "ach"
+    kwargs = mock_create.call_args[1]
+    assert kwargs["payment_method_types"] == ["us_bank_account"]
+    assert kwargs["amount"] == 16200
+    assert kwargs["metadata"]["invoice_id"] == str(invoice.id)
+    assert kwargs["idempotency_key"] == f"gdx-pi-{invoice.id}-ach-16200"
+    # No Customer and no server-side mandate: both live in the browser flow.
+    assert "customer" not in kwargs
+    assert "mandate_data" not in kwargs
 
 
-def test_ach_setup_requires_invoice_target(client):
-    """ATTACK: unlimited unauthenticated SetupIntent minting. ach/setup used to
-    take only an email, with no invoice at all."""
-    resp = client.post("/api/payments/ach/setup", json={"customer_email": "c@example.com"})
+def test_create_intent_card_is_the_default_and_names_no_bank_type(client, invoice):
+    with patch("stripe.PaymentIntent.create", return_value=_pi()) as mock_create:
+        resp = client.post("/api/payments/create-intent", json={"invoice_token": TOKEN})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["method"] == "card"
+    assert "payment_method_types" not in mock_create.call_args[1]
+
+
+def test_create_intent_rejects_an_unknown_method(client, invoice):
+    with patch("stripe.PaymentIntent.create") as mock_create:
+        resp = client.post(
+            "/api/payments/create-intent", json={"invoice_token": TOKEN, "method": "wire"}
+        )
     assert resp.status_code == 422
+    mock_create.assert_not_called()
 
 
-def test_ach_setup_binds_invoice_and_returns_id(client, invoice):
-    with patch("stripe.SetupIntent.create", return_value=_si()) as mock_create:
-        resp = client.post(
-            "/api/payments/ach/setup",
-            json={"customer_email": "c@example.com", "invoice_token": TOKEN},
+def test_ach_intent_ignores_the_client_amount_too(client, invoice):
+    with patch("stripe.PaymentIntent.create", return_value=_pi(status="requires_payment_method")) as mock_create:
+        client.post(
+            "/api/payments/create-intent",
+            json={"invoice_token": TOKEN, "method": "ach", "amount": 1},
         )
-
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["client_secret"] == "seti_test_secret"
-    assert body["setup_intent_id"] == "seti_test"
-    assert mock_create.call_args[1]["metadata"]["invoice_id"] == str(invoice.id)
+    assert mock_create.call_args[1]["amount"] == 16200
 
 
-def test_ach_charge_requires_setup_intent(client, invoice):
-    """Fail closed when the binding proof is absent (e.g. a pre-deploy tab)."""
-    resp = client.post(
+def test_the_old_ach_routes_are_gone(client):
+    """``ach/setup`` + ``ach/charge`` minted a SetupIntent the page never
+    confirmed, then charged its PaymentMethod on a second intent — which
+    Stripe refuses without a Customer. No bank payment ever completed through
+    them (reproduced in test mode 2026-09-16), so they were deleted, not
+    patched."""
+    assert client.post(
+        "/api/payments/ach/setup",
+        json={"customer_email": "c@example.com", "invoice_token": TOKEN},
+    ).status_code == 404
+    assert client.post(
         "/api/payments/ach/charge",
-        json={"payment_method_id": "pm_bank_123", "invoice_token": TOKEN},
-    )
-    assert resp.status_code == 409
-    assert "refresh" in resp.json()["detail"].lower()
+        json={"payment_method_id": "pm_x", "setup_intent_id": "seti_x", "invoice_token": TOKEN},
+    ).status_code == 404
 
 
-def test_ach_charge_rejects_setup_intent_for_another_invoice(client, invoice, other_invoice):
-    """ATTACK: use a SetupIntent minted for invoice B to charge invoice A."""
-    with patch("stripe.SetupIntent.retrieve", return_value=_si(invoice_id=other_invoice.id)), \
-         patch("stripe.PaymentIntent.create") as mock_charge:
-        resp = client.post(
-            "/api/payments/ach/charge",
-            json={
-                "payment_method_id": "pm_bank_123",
-                "setup_intent_id": "seti_test",
-                "invoice_token": TOKEN,
-            },
-        )
-
-    assert resp.status_code == 409, resp.text
-    mock_charge.assert_not_called()
-
-
-def test_ach_charge_rejects_unbound_payment_method(client, invoice):
-    """ATTACK (the unauthorized-debit one): charge an arbitrary saved bank
-    account whose pm_ id leaked. The SetupIntent names a DIFFERENT payment
-    method, so the requested one was never collected for this invoice."""
-    with patch("stripe.SetupIntent.retrieve", return_value=_si(invoice_id=invoice.id, pm="pm_someone_else")), \
-         patch("stripe.PaymentIntent.create") as mock_charge:
-        resp = client.post(
-            "/api/payments/ach/charge",
-            json={
-                "payment_method_id": "pm_victims_bank",
-                "setup_intent_id": "seti_test",
-                "invoice_token": TOKEN,
-            },
-        )
-
-    assert resp.status_code == 409, resp.text
-    mock_charge.assert_not_called()
-
-
-def test_ach_charge_success_uses_server_amount(client, invoice):
-    with patch("stripe.SetupIntent.retrieve", return_value=_si(invoice_id=invoice.id)), \
-         patch("stripe.PaymentIntent.create", return_value=_pi(status="processing")) as mock_charge:
-        resp = client.post(
-            "/api/payments/ach/charge",
-            json={
-                "payment_method_id": "pm_bank_123",
-                "setup_intent_id": "seti_test",
-                "invoice_token": TOKEN,
-                "amount": 1,  # ignored
-            },
-        )
-
+def test_the_pay_page_no_longer_ships_the_dead_ach_flow(client, invoice):
+    """Absence assertions only — a present string proves nothing; the browser
+    walk is the proof the new flow works."""
+    with patch("stripe.PaymentIntent.list", return_value=MagicMock(data=[], has_more=False)):
+        resp = client.get(f"/pay/{TOKEN}")
     assert resp.status_code == 200, resp.text
-    assert resp.json()["status"] == "processing"
-    assert mock_charge.call_args[1]["amount"] == 16200
+    html = resp.text
+    assert "/api/payments/ach/" not in html
+    assert "auBankAccount" not in html
+    assert "collectBankAccountForSetup" not in html
 
 
 # ---------------------------------------------------------------------------
@@ -417,15 +474,9 @@ def test_card_and_ach_keys_do_not_collide(client, invoice):
         client.post("/api/payments/create-intent", json={"invoice_token": TOKEN})
     card_key = mock_card.call_args[1]["idempotency_key"]
 
-    with patch("stripe.SetupIntent.retrieve", return_value=_si(invoice_id=invoice.id)), \
-         patch("stripe.PaymentIntent.create", return_value=_pi(status="processing")) as mock_ach:
+    with patch("stripe.PaymentIntent.create", return_value=_pi(status="requires_payment_method")) as mock_ach:
         client.post(
-            "/api/payments/ach/charge",
-            json={
-                "payment_method_id": "pm_bank_123",
-                "setup_intent_id": "seti_test",
-                "invoice_token": TOKEN,
-            },
+            "/api/payments/create-intent", json={"invoice_token": TOKEN, "method": "ach"}
         )
     ach_key = mock_ach.call_args[1]["idempotency_key"]
 
@@ -484,6 +535,179 @@ def test_webhook_labels_ach_payments_correctly(db_session, invoice):
     assert handle_payment_webhook(event, db_session)["status"] == "paid"
     pay = db_session.query(Payment).filter(Payment.invoice_id == invoice.id).one()
     assert pay.method == "ach"
+
+
+def test_webhook_labels_from_the_payment_method_when_the_list_is_ambiguous(db_session, invoice):
+    """Same audit finding on the webhook: an allowed list naming both rails
+    decides nothing; the PaymentMethod's type does. One retrieve, no more."""
+    from types import SimpleNamespace
+
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    def event(pid):
+        return {
+            "type": "payment_intent.succeeded",
+            "data": {"object": {
+                "id": pid,
+                "metadata": {"invoice_id": str(invoice.id)},
+                "payment_method_types": ["card", "us_bank_account"],
+                "payment_method": f"pm_for_{pid}",
+                "amount_received": 100,
+            }},
+        }
+
+    with patch("stripe.PaymentMethod.retrieve", return_value=SimpleNamespace(type="card")) as r1:
+        assert handle_payment_webhook(event("pi_amb_card"), db_session)["status"] == "paid"
+    assert r1.call_count == 1
+    with patch("stripe.PaymentMethod.retrieve", return_value=SimpleNamespace(type="us_bank_account")):
+        assert handle_payment_webhook(event("pi_amb_bank"), db_session)["status"] == "paid"
+    by_ref = {p.reference: p.method for p in db_session.query(Payment).filter(Payment.invoice_id == invoice.id)}
+    assert by_ref == {"pi_amb_card": "card", "pi_amb_bank": "ach"}
+
+
+def test_webhook_sets_the_stripe_key_before_reading_the_payment_method(db_session, invoice, monkeypatch):
+    """After a deploy, a cold worker's first request can be the webhook for a
+    debit that started four days earlier, and nothing upstream sets the key
+    (2026-09-16 audit, round 3). Prove the key is set AT THE MOMENT the live
+    read happens, not merely that the read was attempted."""
+    from types import SimpleNamespace
+
+    import stripe as stripe_mod
+
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_probe_key")
+    seen = {}
+    previous = stripe_mod.api_key
+    stripe_mod.api_key = None
+    try:
+        def retrieve(pm, **kw):
+            seen["key_at_call"] = stripe_mod.api_key
+            return SimpleNamespace(type="us_bank_account")
+
+        with patch("stripe.PaymentMethod.retrieve", side_effect=retrieve):
+            out = handle_payment_webhook(
+                {
+                    "type": "payment_intent.succeeded",
+                    "data": {"object": {
+                        "id": "pi_cold", "metadata": {"invoice_id": str(invoice.id)},
+                        "payment_method_types": ["card", "us_bank_account"],
+                        "payment_method": "pm_cold", "amount_received": 100,
+                    }},
+                },
+                db_session,
+            )
+    finally:
+        stripe_mod.api_key = previous
+    assert out["status"] == "paid"
+    assert seen["key_at_call"] == "sk_test_probe_key"
+    assert db_session.query(Payment).filter(Payment.reference == "pi_cold").one().method == "ach"
+
+
+def test_webhook_refuses_to_guess_the_rail_on_a_money_event(db_session, invoice):
+    """Ambiguous allowed list + unreadable PaymentMethod: raise, so the router
+    500s and Stripe retries. A payment booked on the wrong rail is a wrong
+    write; a retry is not."""
+    from gdx_dispatch.core.payments import RailUndeterminable, handle_payment_webhook
+
+    with patch("stripe.PaymentMethod.retrieve", side_effect=RuntimeError("no key")), \
+            pytest.raises(RailUndeterminable):
+        handle_payment_webhook(
+            {
+                "type": "payment_intent.succeeded",
+                "data": {"object": {
+                    "id": "pi_unknowable", "metadata": {"invoice_id": str(invoice.id)},
+                    "payment_method_types": ["card", "us_bank_account"],
+                    "payment_method": "pm_unreadable", "amount_received": 100,
+                }},
+            },
+            db_session,
+        )
+    assert db_session.query(Payment).filter(Payment.reference == "pi_unknowable").count() == 0
+
+
+def test_webhook_notes_a_failed_ach_on_the_trail_and_not_a_card_decline(db_session, invoice):
+    """The end of the story: a bounced debit or a timed-out micro-deposit
+    (2026-09-16 audit, round 4). Card declines stay off the trail — the
+    customer sees those on screen, and they would flood it."""
+    from gdx_dispatch.core.audit import AuditLog, ensure_audit_table
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    ensure_audit_table(db_session)
+    with patch("gdx_dispatch.core.payments._reverse_unless_superseded", return_value={"status": "no_payment_to_reverse"}):
+        out = handle_payment_webhook(
+            {
+                "type": "payment_intent.payment_failed",
+                "data": {"object": {
+                    "id": "pi_bounced", "amount": 16200, "payment_method_types": ["us_bank_account"],
+                    "metadata": {"invoice_id": str(invoice.id)},
+                    "last_payment_error": {"code": "payment_method_microdeposit_verification_timeout", "message": "Microdeposit timeout."},
+                }},
+            },
+            db_session,
+        )
+        assert out["status"] == "failed"
+        row = db_session.query(AuditLog).filter(AuditLog.action == "ach_payment_failed").one()
+        assert str(row.entity_id) == str(invoice.id)
+        assert row.details["code"] == "payment_method_microdeposit_verification_timeout"
+        assert row.details["reversal"] == "no_payment_to_reverse"
+
+        handle_payment_webhook(
+            {
+                "type": "payment_intent.payment_failed",
+                "data": {"object": {
+                    "id": "pi_declined", "amount": 16200, "payment_method_types": ["card"],
+                    "metadata": {"invoice_id": str(invoice.id)},
+                    "last_payment_error": {"code": "card_declined", "message": "Card declined"},
+                }},
+            },
+            db_session,
+        )
+    assert db_session.query(AuditLog).filter(AuditLog.action == "ach_payment_failed").count() == 1
+
+
+def test_webhook_notes_a_microdeposit_wait_on_the_trail(db_session, invoice):
+    """The micro-deposit wait can lock the pay page for 10 days; the office
+    must be able to read why (2026-09-16 audit). Card 3DS waits are not it."""
+    from gdx_dispatch.core.audit import AuditLog, ensure_audit_table
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    ensure_audit_table(db_session)
+    out = handle_payment_webhook(
+        {
+            "type": "payment_intent.requires_action",
+            "data": {"object": {
+                "id": "pi_md",
+                "amount": 16200,
+                "payment_method_types": ["us_bank_account"],
+                "metadata": {"invoice_id": str(invoice.id)},
+                "next_action": {
+                    "type": "verify_with_microdeposits",
+                    "verify_with_microdeposits": {"hosted_verification_url": "https://payments.stripe.com/verify/x", "arrival_date": 1}
+                },
+            }},
+        },
+        db_session,
+    )
+    assert out["status"] == "ach_verification_noted"
+    row = db_session.query(AuditLog).filter(AuditLog.action == "ach_payment_awaiting_verification").one()
+    assert str(row.entity_id) == str(invoice.id)
+    assert row.details["intent_id"] == "pi_md"
+    assert row.details["hosted_verification_url"] == "https://payments.stripe.com/verify/x"
+
+    out = handle_payment_webhook(
+        {
+            "type": "payment_intent.requires_action",
+            "data": {"object": {
+                "id": "pi_3ds", "amount": 16200, "payment_method_types": ["card"],
+                "metadata": {"invoice_id": str(invoice.id)},
+                "next_action": {"type": "use_stripe_sdk"},
+            }},
+        },
+        db_session,
+    )
+    assert out["status"] == "not_ach_verification"
+    assert db_session.query(AuditLog).filter(AuditLog.action == "ach_payment_awaiting_verification").count() == 1
 
 
 def test_webhook_payment_failed(db_session, invoice):
