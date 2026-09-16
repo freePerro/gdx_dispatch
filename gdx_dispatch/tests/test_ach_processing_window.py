@@ -12,8 +12,8 @@ The fix is stateless, like M12 whose scan it reuses: a `processing` intent
 bound to the invoice by `metadata.invoice_id` IS the pending marker. Three
 surfaces honor it:
 
-- the mint sites (`create-intent`, `ach/charge`, the portal) refuse with a 409
-  that tells the customer their transfer is already moving;
+- the mint sites (`create-intent` for card and for ACH, and the portal) refuse
+  with a 409 that tells the customer their transfer is already moving;
 - the pay page renders "Bank transfer processing" instead of a live form;
 - the webhook notes `payment_intent.processing` on the invoice's audit trail,
   so the office can answer "why is the pay page refusing?".
@@ -45,10 +45,17 @@ from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine
 TENANT = "tenant-m16"
 
 
-def _pi(pid, status, invoice_id, amount=20000):
+def _pi(pid, status, invoice_id, amount=20000, next_action=None):
     return SimpleNamespace(
-        id=pid, status=status, amount=amount, metadata={"invoice_id": str(invoice_id)}
+        id=pid, status=status, amount=amount, metadata={"invoice_id": str(invoice_id)},
+        next_action=next_action,
     )
+
+
+_MICRODEPOSIT_WAIT = {
+    "type": "verify_with_microdeposits",
+    "verify_with_microdeposits": {"hosted_verification_url": "https://payments.stripe.com/verify/x"},
+}
 
 
 def _page(rows, has_more=False):
@@ -98,7 +105,7 @@ def test_a_processing_debit_is_found(invoice):
         _pi("pi_moving", "processing", invoice.id),
     ])):
         got = _ach_in_flight(invoice)
-    assert got == {"intent_id": "pi_moving", "amount_cents": 20000}
+    assert got == {"intent_id": "pi_moving", "amount_cents": 20000, "stage": "processing"}
 
 
 @pytest.mark.parametrize("status", ["requires_payment_method", "succeeded", "canceled"])
@@ -126,6 +133,65 @@ def test_a_stripe_outage_reads_as_nothing_known(invoice):
 
 
 # ── the mint gates ─────────────────────────────────────────────────────────
+
+
+def test_a_microdeposit_wait_counts_as_in_flight(invoice):
+    """Manual bank entry parks the intent in `requires_action` for up to 10
+    days (2026-09-16 audit of the one-intent page). No money moves yet, but
+    the debit starts the moment the customer confirms the deposit — a second
+    collection here double-pays exactly like `processing`."""
+    with patch("stripe.PaymentIntent.list", return_value=_page([
+        _pi("pi_md", "requires_action", invoice.id, next_action=_MICRODEPOSIT_WAIT),
+    ])):
+        found = _ach_in_flight(invoice)
+    assert found and found["intent_id"] == "pi_md"
+    assert found["stage"] == "verifying"
+    assert found["hosted_verification_url"] == "https://payments.stripe.com/verify/x"
+
+
+def test_a_card_3ds_wait_is_not_in_flight(invoice):
+    """A card intent also transits `requires_action` (3DS). It is not a bank
+    transfer and must not lock the invoice."""
+    with patch("stripe.PaymentIntent.list", return_value=_page([
+        _pi("pi_3ds", "requires_action", invoice.id, next_action={"type": "use_stripe_sdk"}),
+    ])):
+        assert _ach_in_flight(invoice) is None
+
+
+def test_the_gate_tells_the_customer_to_confirm_the_deposit(invoice):
+    with patch("stripe.PaymentIntent.list", return_value=_page([
+        _pi("pi_md", "requires_action", invoice.id, next_action=_MICRODEPOSIT_WAIT),
+    ])), pytest.raises(HTTPException) as exc:
+        _refuse_if_ach_processing(invoice, op="test")
+    assert exc.value.status_code == 409
+    assert "confirm" in exc.value.detail.lower()
+    assert "don't need to pay again" in exc.value.detail
+
+
+def test_a_refusal_lands_on_the_invoices_trail(invoice, db):
+    """"Why is this customer's pay page refusing?" must be answerable from the
+    record — for the micro-deposit wait this row is the only trace, because
+    Stripe reports that state on an event prod is not subscribed to."""
+    from gdx_dispatch.core.audit import AuditLog
+
+    with patch("stripe.PaymentIntent.list", return_value=_page([
+        _pi("pi_md", "requires_action", invoice.id, next_action=_MICRODEPOSIT_WAIT),
+    ])), pytest.raises(HTTPException):
+        _refuse_if_ach_processing(invoice, op="create-intent:card", db=db)
+    row = db.query(AuditLog).filter(AuditLog.action == "ach_in_flight_blocked_new_payment").one()
+    assert str(row.entity_id) == str(invoice.id)
+    assert row.details["op"] == "create-intent:card"
+    assert row.details["stage"] == "verifying"
+    assert row.details["intent_id"] == "pi_md"
+    assert row.details["hosted_verification_url"] == "https://payments.stripe.com/verify/x"
+
+
+def test_a_refusal_without_a_session_still_refuses(invoice):
+    with patch("stripe.PaymentIntent.list", return_value=_page([
+        _pi("pi_moving", "processing", invoice.id),
+    ])), pytest.raises(HTTPException) as exc:
+        _refuse_if_ach_processing(invoice, op="test")
+    assert exc.value.status_code == 409
 
 
 def test_the_gate_refuses_while_a_debit_is_moving(invoice):
@@ -165,24 +231,21 @@ def test_card_mint_is_gated_through_the_real_endpoint(invoice, db):
 
 
 def test_ach_mint_is_gated_through_the_real_endpoint(invoice, db):
-    """Drive `ach_charge` itself: resolve succeeds, the gate fires first."""
-    from gdx_dispatch.core.payments import ACHChargeRequest, ach_charge
+    """The bank rail is `create_intent` with method="ach" (2026-09-16). Resolve
+    succeeds, the gate fires first, and no second intent is minted."""
+    from gdx_dispatch.core.payments import CreateIntentRequest, create_intent
 
     req = SimpleNamespace(state=SimpleNamespace(tenant={}))
     with patch("stripe.PaymentIntent.list", return_value=_page([
         _pi("pi_moving", "processing", invoice.id),
     ])), patch("gdx_dispatch.core.payments._resolve_public_invoice", return_value=invoice), \
-            pytest.raises(HTTPException) as exc:
-        ach_charge(
-            ACHChargeRequest(
-                invoice_token=invoice.public_token,
-                setup_intent_id="seti_x",
-                payment_method_id="pm_x",
-                customer_email="c@example.com",
-            ),
+            patch("stripe.PaymentIntent.create") as mint, pytest.raises(HTTPException) as exc:
+        create_intent(
+            CreateIntentRequest(invoice_token=invoice.public_token, method="ach"),
             req,
             db=db,
         )
+    mint.assert_not_called()
     assert exc.value.status_code == 409
     assert "already processing" in exc.value.detail
 
@@ -201,7 +264,7 @@ def test_portal_mint_is_gated():
     # Assert the CALL, not the bare name (the import line satisfied the name
     # with the call deleted), and assert it runs BEFORE the mint — a gate
     # after `PaymentIntent.create` guards nothing.
-    gate = window.find('_refuse_if_ach_processing(invoice, op="portal-pay")')
+    gate = window.find('_refuse_if_ach_processing(invoice, op="portal-pay", db=db, actor=f"portal:{principal.user_id}")')
     mint = window.find("stripe.PaymentIntent.create")
     assert gate != -1, "the portal mints against the same balance and must honor the gate"
     assert mint != -1, "portal mint site moved — retarget this test"
@@ -236,6 +299,21 @@ def test_the_pay_page_says_processing_instead_of_collecting(db, invoice):
     assert "you don't need to pay again" in r.text
     # The live form must be gone — a banner above a working Pay button is a
     # double-charge with extra reading.
+    assert 'id="card-form"' not in r.text
+    assert 'id="ach-form"' not in r.text
+
+
+def test_the_pay_page_says_awaiting_verification_with_the_link(db, invoice):
+    """The micro-deposit wait is the one in-flight state where the customer
+    DOES have a next step, so the banner names it and links Stripe's hosted
+    verification page. Still no live form."""
+    r = _render_pay_page(db, invoice, {"return_value": _page([
+        _pi("pi_md", "requires_action", invoice.id, next_action=_MICRODEPOSIT_WAIT),
+    ])})
+    assert r.status_code == 200
+    assert "Bank transfer awaiting verification" in r.text
+    assert "ach-verifying-link" in r.text
+    assert "https://payments.stripe.com/verify/x" in r.text
     assert 'id="card-form"' not in r.text
     assert 'id="ach-form"' not in r.text
 

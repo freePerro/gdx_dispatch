@@ -3,15 +3,15 @@
 These endpoints back the anonymous ``/pay/{token}`` page, so they have no user
 to authenticate. Authorization is structural instead — see the "Public-payment
 authorization" section below: the caller proves which invoice they may touch by
-presenting its token, and the amount, the intent↔invoice binding and the ACH
-method↔invoice binding are all decided server-side.
+presenting its token, and the amount and the intent↔invoice binding are
+decided server-side. For ACH the bank account is bound to that same intent by
+Stripe.js in the browser, where the customer also accepts the debit mandate.
 
 Endpoints (all take ``invoice_token``)
 --------------------------------------
-POST /api/payments/create-intent   — create PaymentIntent for an invoice
+POST /api/payments/create-intent   — create PaymentIntent for an invoice;
+                                     ``method`` picks the rail ("card" | "ach")
 POST /api/payments/confirm         — confirm payment after Stripe.js completes
-POST /api/payments/ach/setup       — create SetupIntent for ACH bank account
-POST /api/payments/ach/charge      — charge the bank account collected for it
 
 Saved-payment-method management lives on the AUTHENTICATED portal router
 (``gdx_dispatch/routers/payments.py``, ``/payments/methods``). This module's
@@ -29,8 +29,9 @@ import contextlib
 import logging
 import os
 import uuid as _uuid
-from datetime import datetime, timezone, time as dt_time, timedelta
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from datetime import time as dt_time
+from typing import Any, Literal
 from uuid import UUID
 
 import stripe
@@ -44,7 +45,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.customer_views import record_customer_view
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.models.tenant_models import Invoice, Payment
+from gdx_dispatch.models.tenant_models import AppSettings, Invoice, Payment
 
 logger = logging.getLogger(__name__)
 
@@ -111,29 +112,18 @@ class CreateIntentRequest(BaseModel):
     # so `currency: "idr"` settled a $500 invoice for about $3. Kept on the
     # model (ignored) for one release so an open /pay tab does not 422.
     currency: str = "usd"
+    # Which rail the customer picked on the pay page (2026-09-16). "card" is
+    # completed by stripe.confirmCardPayment; "ach" mints a us_bank_account
+    # intent that stripe.collectBankAccountForPayment + confirmUsBankAccountPayment
+    # complete in the browser, mandate included. One intent per attempt and no
+    # server-side charge step — see the NOTE where ach/setup + ach/charge were.
+    method: Literal["card", "ach"] = "card"
 
 
 class ConfirmPaymentRequest(BaseModel):
     payment_intent_id: str
     invoice_token: str | None = None
     invoice_id: str | None = None  # DEPRECATED — see NOTE ON SHAPE
-
-
-class ACHSetupRequest(BaseModel):
-    customer_email: str
-    invoice_token: str | None = None
-    invoice_id: str | None = None  # DEPRECATED — see NOTE ON SHAPE
-
-
-class ACHChargeRequest(BaseModel):
-    payment_method_id: str
-    # The SetupIntent that collected ``payment_method_id``. REQUIRED: it is
-    # what proves the bank account was collected for THIS invoice. Without it
-    # any caller could charge any saved payment method they knew the id of.
-    setup_intent_id: str | None = None
-    invoice_token: str | None = None
-    invoice_id: str | None = None  # DEPRECATED — see NOTE ON SHAPE
-    amount: int | None = None  # DEPRECATED + IGNORED — server derives from balance
 
 
 # ---------------------------------------------------------------------------
@@ -316,15 +306,33 @@ def _create_usable_intent(**kwargs) -> Any:
         return pi
 
     status = str(getattr(live, "status", "") or "")
-    if status not in _UNUSABLE_INTENT_STATUSES:
+    abandoned_with_account = status == "requires_confirmation" and bool(_field(live, "payment_method"))
+    if status not in _UNUSABLE_INTENT_STATUSES and not abandoned_with_account:
         return live
 
     key = kwargs.pop("idempotency_key", "") or ""
-    logger.warning(
-        "intent_idempotency_replayed_dead_intent intent=%s status=%s key=%s — minting a "
-        "fresh one so the customer does not get a pay page that cannot charge.",
-        pid, status, key,
-    )
+    if abandoned_with_account:
+        # 2026-09-16 audit, round 3. A customer linked a bank account and
+        # walked away at the mandate step: the replayed intent still carries
+        # THEIR PaymentMethod, and its client_secret is enough for anyone else
+        # holding this invoice's token (a forwarded email) to call
+        # confirmUsBankAccountPayment and debit that account with the mandate
+        # recorded from the wrong person. Cancel it — nothing has been
+        # authorized, so nothing is lost — and mint fresh. This is also what
+        # "Use a different bank account" relies on.
+        try:
+            stripe.PaymentIntent.cancel(pid, cancellation_reason="abandoned", **connect)
+        except Exception:
+            logger.exception("abandoned_intent_cancel_failed intent=%s — minting fresh anyway", pid)
+        logger.warning(
+            "intent_replay_carried_a_bank_account intent=%s key=%s — cancelled and re-minting", pid, key,
+        )
+    else:
+        logger.warning(
+            "intent_idempotency_replayed_dead_intent intent=%s status=%s key=%s — minting a "
+            "fresh one so the customer does not get a pay page that cannot charge.",
+            pid, status, key,
+        )
     return stripe.PaymentIntent.create(**kwargs, idempotency_key=f"{key}-r{_uuid.uuid4().hex[:8]}")
 
 
@@ -449,30 +457,156 @@ def _ach_in_flight(invoice, *, tenant: dict | None = None) -> dict | None:
     try:
         _init_stripe()
         for pi in _open_intents_for_invoice(invoice, connect=_stripe_extra(tenant or {})):
-            if str(getattr(pi, "status", "") or "") == "processing":
+            status = str(getattr(pi, "status", "") or "")
+            if status == "processing":
                 return {
                     "intent_id": str(getattr(pi, "id", "") or ""),
                     "amount_cents": int(getattr(pi, "amount", 0) or 0),
+                    "stage": "processing",
                 }
+            # 2026-09-16 (adversarial audit of the one-intent ACH page): a
+            # customer who typed their account number instead of signing in
+            # leaves the intent in `requires_action` / verify_with_microdeposits
+            # for up to 10 days. No money is moving yet, but the intent is live
+            # and the debit starts the moment they confirm the deposit — so a
+            # second collection here double-pays exactly like `processing`.
+            # Only that next_action counts: a card intent also transits
+            # `requires_action` (3DS) and must not read as a bank transfer.
+            if status == "requires_action":
+                next_action = _field(pi, "next_action") or {}
+                if str(_field(next_action, "type") or "") == "verify_with_microdeposits":
+                    detail = _field(next_action, "verify_with_microdeposits") or {}
+                    return {
+                        "intent_id": str(getattr(pi, "id", "") or ""),
+                        "amount_cents": int(getattr(pi, "amount", 0) or 0),
+                        "stage": "verifying",
+                        "hosted_verification_url": str(_field(detail, "hosted_verification_url") or ""),
+                    }
     except Exception:
         logger.exception("ach_in_flight_probe_failed invoice=%s", getattr(invoice, "id", "?"))
     return None
 
 
-def _refuse_if_ach_processing(invoice, *, tenant: dict | None = None, op: str) -> None:
+def _field(obj: Any, name: str) -> Any:
+    """Read ``name`` off a Stripe object, a dict, or a test stand-in."""
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+class RailUndeterminable(RuntimeError):
+    """The intent's allowed list names both rails and the PaymentMethod could
+    not be read. Raised only where a wrong answer would be a wrong write."""
+
+
+def _intent_method(intent: Any, *, connect: dict | None = None, strict: bool = False) -> str:
+    """``"ach"`` or ``"card"``: the rail that actually paid ``intent``.
+
+    ``strict=True`` (money events) raises ``RailUndeterminable`` instead of
+    guessing when the list is ambiguous and the PaymentMethod is unreadable —
+    the webhook router turns that into a 500 and Stripe retries with backoff,
+    which beats a payment booked on the wrong rail (2026-09-16 audit, round 3).
+    Trail-only callers pass ``strict=False`` and accept the list as a last
+    resort, with a warning.
+
+    Read the PaymentMethod's ``type``, never the intent's
+    ``payment_method_types`` alone — that is the ALLOWED list. Prod card
+    intents are automatic-payment-method intents carrying six types today,
+    and the day the Dashboard's ACH toggle goes on, ``us_bank_account`` joins
+    that list on every card intent, which would book every card payment as a
+    bank transfer (2026-09-16 audit). The list is trusted only when it names
+    exactly one rail; otherwise the PaymentMethod is read — expanded on the
+    object when the caller expanded it, else one retrieve — and only as a
+    last resort does the list decide.
+    """
+    pm = _field(intent, "payment_method")
+    pm_type: Any = _field(pm, "type") if pm is not None and not isinstance(pm, str) else None
+    if not isinstance(pm_type, str) or not pm_type:
+        pm_type = None
+        types = [t for t in (_field(intent, "payment_method_types") or []) if isinstance(t, str)]
+        if len(types) == 1:
+            pm_type = types[0]
+        elif isinstance(pm, str) and pm:
+            try:
+                fetched = stripe.PaymentMethod.retrieve(pm, **(connect or {}))
+                pm_type = str(_field(fetched, "type") or "") or None
+            except Exception as exc:
+                if strict:
+                    raise RailUndeterminable(
+                        f"intent {_field(intent, 'id')}: allowed list {types} is ambiguous and "
+                        f"PaymentMethod {pm} could not be read ({exc})"
+                    ) from exc
+                logger.warning(
+                    "intent_method_pm_retrieve_failed intent=%s pm=%s — falling back to the allowed list",
+                    _field(intent, "id"), pm,
+                )
+        if not pm_type:
+            if strict and len(types) > 1:
+                raise RailUndeterminable(
+                    f"intent {_field(intent, 'id')}: allowed list {types} is ambiguous and no PaymentMethod is readable"
+                )
+            pm_type = "us_bank_account" if "us_bank_account" in types else "card"
+    return "ach" if pm_type == "us_bank_account" else "card"
+
+
+def _refuse_if_ach_processing(
+    invoice, *, tenant: dict | None = None, op: str, db: Session | None = None, actor: str = "customer"
+) -> None:
     """409 when an ACH debit for ``invoice`` is already moving (M16).
 
     The double-payment window in one sentence: the customer pays by bank on
     Friday, nothing records until the debit settles, and on Monday the page
     still shows the full balance — so they pay again, the 24h idempotency key
     has expired, and both debits settle.
+
+    When the caller hands over a session, a refusal is also written to the
+    invoice's audit trail (2026-09-16 audit): the office must be able to
+    answer "why is this customer's pay page refusing?" from the record, and
+    for the micro-deposit wait — which can last 10 days and which Stripe only
+    reports on an event prod is not subscribed to — this row is the only trace.
+    Best-effort: a trail failure never turns into a 500 on a refusal.
     """
     pending = _ach_in_flight(invoice, tenant=tenant)
     if pending:
         logger.warning(
-            "ach_processing_blocks_new_payment invoice=%s op=%s intent=%s amount_cents=%s",
-            invoice.id, op, pending["intent_id"], pending["amount_cents"],
+            "ach_processing_blocks_new_payment invoice=%s op=%s intent=%s amount_cents=%s stage=%s",
+            invoice.id, op, pending["intent_id"], pending["amount_cents"], pending.get("stage"),
         )
+        if db is not None:
+            try:
+                from gdx_dispatch.core.audit import log_audit_event_sync  # noqa: PLC0415
+
+                log_audit_event_sync(
+                    db=db,
+                    tenant_id=None,
+                    user_id=actor,
+                    action="ach_in_flight_blocked_new_payment",
+                    entity_type="invoice",
+                    entity_id=str(invoice.id),
+                    details={
+                        "op": op,
+                        "stage": str(pending.get("stage") or "processing"),
+                        "intent_id": pending["intent_id"],
+                        "amount_cents": pending["amount_cents"],
+                        "hosted_verification_url": pending.get("hosted_verification_url", ""),
+                    },
+                )
+                db.commit()
+            except Exception:
+                with contextlib.suppress(Exception):
+                    db.rollback()
+                logger.exception("ach_in_flight_refusal_audit_failed invoice=%s", invoice.id)
+        if pending.get("stage") == "verifying":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A bank transfer for this invoice is waiting for you to confirm a "
+                    "small test deposit. Stripe emailed you the link; your payment "
+                    "starts once you confirm it — you don't need to pay again."
+                ),
+            )
         raise HTTPException(
             status_code=409,
             detail=(
@@ -953,16 +1087,33 @@ def create_intent(
     The amount is the invoice's balance due — the client's ``amount`` is
     ignored. ``metadata.invoice_id`` binds the intent to this invoice so
     ``confirm`` can refuse to credit it anywhere else.
+
+    ``method="ach"`` mints the same intent for ``us_bank_account``. Stripe's
+    accept-a-payment flow (<https://docs.stripe.com/payments/ach-direct-debit/
+    accept-a-payment>, read 2026-09-16) then finishes it entirely in the
+    browser: ``collectBankAccountForPayment`` attaches the linked account to
+    THIS intent and ``confirmUsBankAccountPayment`` records the customer's
+    mandate acceptance, after which the intent sits in ``processing`` until
+    the debit settles (up to 4 business days) and the webhook records it.
+    Nothing here needs a Stripe Customer or a server-side mandate.
     """
     _init_stripe()
     invoice = _resolve_public_invoice(
         db, invoice_token=body.invoice_token, invoice_id=body.invoice_id, op="create-intent"
     )
     tenant: dict = getattr(request.state, "tenant", {}) or {}
+    method = body.method
     # M16: a card payment while an ACH debit is processing double-pays just as
     # surely as a second ACH — the balance has not moved yet.
-    _refuse_if_ach_processing(invoice, tenant=tenant, op="create-intent")
+    _refuse_if_ach_processing(invoice, tenant=tenant, op=f"create-intent:{method}", db=db)
     amount_cents = _amount_cents(invoice)
+
+    rail: dict[str, Any] = {}
+    if method == "ach":
+        # Named explicitly, not via automatic_payment_methods: the Dashboard's
+        # ACH display preference is off (2026-09-16) and this must not depend
+        # on it. The type is what lets Stripe.js attach a bank account.
+        rail["payment_method_types"] = ["us_bank_account"]
 
     try:
         pi = _create_usable_intent(
@@ -972,11 +1123,14 @@ def create_intent(
                 "invoice_id": str(invoice.id),
                 "tenant_id": str(tenant.get("id", "")),
             },
-            idempotency_key=_idempotency_key(invoice, amount_cents, "card"),
+            # Keyed by method too: a customer who tries card, fails, then
+            # switches to bank for the same balance must not collide.
+            idempotency_key=_idempotency_key(invoice, amount_cents, method),
+            **rail,
             **_stripe_extra(tenant),
         )
     except stripe.StripeError as exc:
-        logger.error("Stripe create_intent error: %s", exc)
+        logger.error("Stripe create_intent error (method=%s): %s", method, exc)
         raise HTTPException(status_code=402, detail=str(exc)) from None
 
     return {
@@ -987,6 +1141,7 @@ def create_intent(
         # consumer (and anyone debugging a disputed charge) can see the
         # server's figure rather than inferring it.
         "amount": amount_cents,
+        "method": method,
     }
 
 
@@ -1021,7 +1176,7 @@ def confirm_payment(
 
     try:
         pi = stripe.PaymentIntent.retrieve(
-            body.payment_intent_id, **_stripe_extra(tenant)
+            body.payment_intent_id, expand=["payment_method"], **_stripe_extra(tenant)
         )
     except stripe.StripeError as exc:
         logger.error("Stripe retrieve error: %s", exc)
@@ -1041,8 +1196,14 @@ def confirm_payment(
         )
 
     if pi.status == "succeeded":
+        # Label the rail from the PaymentMethod that paid, exactly as the
+        # webhook does. This path is card in practice — Stripe.js reports a
+        # bank debit as `processing`, never `succeeded` — but a hard-coded
+        # "card" here would book a bank payment as a card payment the day
+        # that changes.
+        method = _intent_method(pi, connect=_stripe_extra(tenant), strict=True)
         _mark_invoice_paid(
-            invoice, db, external_ref=pi.id, method="card",
+            invoice, db, external_ref=pi.id, method=method,
             # M17.3: `amount_received`, not `amount`. Identical under
             # auto-capture (every intent here — no mint site sets
             # capture_method="manual"), divergent the moment manual capture
@@ -1060,151 +1221,15 @@ def confirm_payment(
     return {"status": pi.status, "invoice_id": str(invoice.id)}
 
 
-# ---------------------------------------------------------------------------
-# POST /api/payments/ach/setup
-# ---------------------------------------------------------------------------
-
-@router.post("/ach/setup")
-def ach_setup(
-    body: ACHSetupRequest,
-    request: Request,
-    db: Session = Depends(get_db),
-) -> dict:
-    """Create a SetupIntent so Stripe.js can collect ACH bank account details.
-
-    Scoped to an invoice: previously this took only an email, so anyone could
-    mint unlimited SetupIntents. The ``metadata.invoice_id`` stamped here is
-    what ``ach/charge`` later checks to prove the collected bank account was
-    gathered for THIS invoice.
-    """
-    _init_stripe()
-    invoice = _resolve_public_invoice(
-        db, invoice_token=body.invoice_token, invoice_id=body.invoice_id, op="ach-setup"
-    )
-    tenant: dict = getattr(request.state, "tenant", {}) or {}
-
-    try:
-        si = stripe.SetupIntent.create(
-            payment_method_types=["us_bank_account"],
-            metadata={
-                "email": body.customer_email,
-                "invoice_id": str(invoice.id),
-                "tenant_id": str(tenant.get("id", "")),
-            },
-            **_stripe_extra(tenant),
-        )
-    except stripe.StripeError as exc:
-        logger.error("Stripe ach_setup error: %s", exc)
-        raise HTTPException(status_code=402, detail=str(exc)) from None
-
-    return {"client_secret": si.client_secret, "setup_intent_id": si.id}
-
-
-# ---------------------------------------------------------------------------
-# POST /api/payments/ach/charge
-# ---------------------------------------------------------------------------
-
-@router.post("/ach/charge")
-def ach_charge(
-    body: ACHChargeRequest,
-    request: Request,
-    db: Session = Depends(get_db),
-) -> dict:
-    """Charge the bank account collected for this invoice.
-
-    Creates a PaymentIntent with ``confirm=True`` so the charge is initiated
-    immediately. ACH payments are typically pending for 1-2 business days.
-
-    ``setup_intent_id`` is required and must be a SetupIntent minted by
-    ``ach/setup`` for THIS invoice that collected THIS payment method. That
-    chain is the authorization: without it, knowing any ``pm_`` id was enough
-    to debit an unrelated person's bank account (an unauthorized ACH debit,
-    which is a NACHA violation regardless of where the money lands).
-    """
-    _init_stripe()
-    invoice = _resolve_public_invoice(
-        db, invoice_token=body.invoice_token, invoice_id=body.invoice_id, op="ach-charge"
-    )
-    # M16: THE double-payment window. Friday's debit is still processing on
-    # Monday, the 24h idempotency key has expired, and a second charge here
-    # would mint a fresh intent — both settle.
-    _refuse_if_ach_processing(
-        invoice, tenant=getattr(request.state, "tenant", {}) or {}, op="ach-charge"
-    )
-
-    if not body.setup_intent_id:
-        # Fail closed. An ACH tab opened before this deploy has no
-        # setup_intent_id; retrying from a fresh page costs the customer one
-        # reload, whereas charging an unverifiable bank account is a debit we
-        # cannot justify.
-        raise HTTPException(
-            status_code=409,
-            detail="This payment session is out of date. Please refresh the page and try again.",
-        )
-
-    try:
-        si = stripe.SetupIntent.retrieve(body.setup_intent_id)
-    except stripe.StripeError as exc:
-        logger.error("Stripe ach_charge setup-intent retrieve error: %s", exc)
-        raise HTTPException(status_code=402, detail=str(exc)) from None
-
-    si_invoice_id = str((getattr(si, "metadata", None) or {}).get("invoice_id") or "")
-    si_payment_method = str(getattr(si, "payment_method", "") or "")
-    if si_invoice_id != str(invoice.id) or si_payment_method != body.payment_method_id:
-        logger.warning(
-            "ach_charge_binding_mismatch si=%s si_invoice=%s si_pm=%s "
-            "requested_invoice=%s requested_pm=%s",
-            body.setup_intent_id,
-            si_invoice_id or "<none>",
-            si_payment_method or "<none>",
-            invoice.id,
-            body.payment_method_id,
-        )
-        raise HTTPException(
-            status_code=409,
-            detail="This bank account was not set up for this invoice.",
-        )
-
-    amount_cents = _amount_cents(invoice)
-    tenant: dict = getattr(request.state, "tenant", {}) or {}
-
-    try:
-        pi = _create_usable_intent(
-            amount=amount_cents,
-            currency="usd",
-            payment_method=body.payment_method_id,
-            payment_method_types=["us_bank_account"],
-            confirm=True,
-            metadata={
-                "invoice_id": str(invoice.id),
-                "tenant_id": str(tenant.get("id", "")),
-            },
-            idempotency_key=_idempotency_key(invoice, amount_cents, "ach"),
-            **_stripe_extra(tenant),
-        )
-    except stripe.StripeError as exc:
-        logger.error("Stripe ach_charge error: %s", exc)
-        raise HTTPException(status_code=402, detail=str(exc)) from None
-
-    # ACH payments may be processing (not yet succeeded); mark partial if needed
-    if pi.status == "succeeded":
-        _mark_invoice_paid(
-            invoice, db, external_ref=pi.id, method="ach",
-            # M17.3: `amount_received`, not `amount`. Identical under
-            # auto-capture (every intent here — no mint site sets
-            # capture_method="manual"), divergent the moment manual capture
-            # appears: `amount` is what was ASKED, `amount_received` is what
-            # MOVED, and the webhook already records the latter. Recording
-            # different figures for the same charge depending on which
-            # message arrives first is a books divergence waiting for a
-            # capture flow. Fallback to `amount` keeps legacy/test intents
-            # without the field recording exactly as before.
-            amount=(getattr(pi, "amount_received", None) or pi.amount or 0) / 100.0,
-            source="stripe-ach-charge",
-            connected_account=str(_stripe_extra(tenant).get("stripe_account", "") or ""),
-        )
-
-    return {"status": pi.status, "payment_intent_id": pi.id}
+# NOTE: ``POST /api/payments/ach/setup`` and ``POST /api/payments/ach/charge``
+# were removed 2026-09-16. They implemented ACH as a customer-less SetupIntent
+# the page never confirmed, followed by a server-side PaymentIntent on the same
+# PaymentMethod — which Stripe refuses ("The provided PaymentMethod cannot be
+# attached. To reuse a PaymentMethod, you must attach it to a Customer first"),
+# so no bank payment could ever complete. Reproduced in test mode against the
+# live account 2026-09-16; prod held one ACH SetupIntent (2026-08-19) that never
+# got a bank account and zero ACH PaymentIntents. The bank rail is now
+# ``create-intent`` with ``method="ach"``, finished in the browser.
 
 
 # NOTE: ``GET /api/payments/methods`` and ``DELETE /api/payments/methods/{pm_id}``
@@ -1273,6 +1298,9 @@ def pay_invoice(
             "invoice": invoice,
             "ach_processing": ach_processing,
             "stripe_publishable_key": os.getenv("STRIPE_PUBLISHABLE_KEY", ""),
+            # Nacha requires the ACH mandate to name the business being
+            # authorized; Stripe's recommended text names it five times.
+            "company_name": _business_name(db),
             # The photos the office attached to THIS invoice (Doug 2026-08-12:
             # photos are customer-facing). They already ride the PDF; showing
             # them on the page the customer actually opens is the same
@@ -1281,6 +1309,20 @@ def pay_invoice(
             "job_photos": _invoice_public_photos(invoice, db),
         },
     )
+
+
+def _business_name(db: Session) -> str:
+    """The business the ACH mandate authorizes to debit the account.
+
+    Same source and fallback as the portal's ``_company_name``
+    (``routers/portal.py``) — duplicated, not imported, because portal imports
+    this module.
+    """
+    row = db.execute(select(AppSettings).limit(1)).scalar_one_or_none()
+    name = str(getattr(row, "company_name", "") or "").strip()
+    if not name:
+        logger.warning("ach_mandate_business_name_unset — AppSettings.company_name is empty; the mandate will name the fallback")
+    return name or "Your Service Company"
 
 
 # How many attached photos the pay page will inline. The picker allows up to
@@ -1792,6 +1834,11 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
     # Connect: the envelope names the account the event belongs to. Any live
     # read we make has to look in the same place the object lives.
     connected_account: str = str(event.get("account") or "")
+    # 2026-09-16 audit, round 3: nothing upstream sets the Stripe key on the
+    # webhook path, and after a deploy a cold worker's first request can be
+    # the `succeeded` for a debit that started four business days earlier.
+    # Every live read below (the PaymentMethod behind the rail label) needs it.
+    _init_stripe()
 
     if event_type == "payment_intent.processing":
         # M16. Nothing to record as money — the debit has not settled — but a
@@ -1805,7 +1852,8 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
         # e.g. some 3DS flows). Writing "ach_payment_processing" for it would be
         # a trail row that lies about the method — and the M16 gate keys off
         # live status, not this event, so skipping costs nothing.
-        if "us_bank_account" not in (data.get("payment_method_types") or []):
+        connect = {"stripe_account": connected_account} if connected_account else {}
+        if _intent_method(data, connect=connect) != "ach":
             return {"status": "not_ach", "invoice_id": str(invoice_id)}
         try:
             from gdx_dispatch.core.audit import log_audit_event_sync
@@ -1829,6 +1877,46 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
             logger.exception("ach_processing_audit_failed invoice=%s", invoice_id)
         return {"status": "ach_processing_noted", "invoice_id": str(invoice_id)}
 
+    if event_type == "payment_intent.requires_action":
+        # 2026-09-16 audit: a bank account typed in by hand waits on a
+        # micro-deposit for up to 10 days, and for that whole time the pay page
+        # refuses to collect. The office needs the reason on the invoice's
+        # trail. NOTE: prod's webhook endpoint must be subscribed to
+        # `payment_intent.requires_action` for this to fire; the gate's own
+        # refusal row (`ach_in_flight_blocked_new_payment`) does not depend on it.
+        invoice_id = (data.get("metadata") or {}).get("invoice_id", "")
+        if not invoice_id:
+            return {"status": "no_invoice_id"}
+        next_action = data.get("next_action") or {}
+        connect = {"stripe_account": connected_account} if connected_account else {}
+        if (
+            str(next_action.get("type") or "") != "verify_with_microdeposits"
+            or _intent_method(data, connect=connect) != "ach"
+        ):
+            return {"status": "not_ach_verification", "invoice_id": str(invoice_id)}
+        detail = next_action.get("verify_with_microdeposits") or {}
+        try:
+            from gdx_dispatch.core.audit import log_audit_event_sync
+
+            log_audit_event_sync(
+                db=db,
+                tenant_id=None,
+                user_id="stripe-webhook",
+                action="ach_payment_awaiting_verification",
+                entity_type="invoice",
+                entity_id=str(invoice_id),
+                details={
+                    "intent_id": str(data.get("id") or ""),
+                    "amount_cents": int(data.get("amount") or 0),
+                    "hosted_verification_url": str(detail.get("hosted_verification_url") or ""),
+                    "arrival_date": detail.get("arrival_date"),
+                },
+            )
+            db.commit()
+        except Exception:
+            logger.exception("ach_verification_audit_failed invoice=%s", invoice_id)
+        return {"status": "ach_verification_noted", "invoice_id": str(invoice_id)}
+
     if event_type == "payment_intent.succeeded":
         invoice_id: str = (data.get("metadata") or {}).get("invoice_id", "")
         if not invoice_id:
@@ -1845,12 +1933,15 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
                 invoice_id, event_currency, data.get("id"),
             )
             return {"status": "currency_mismatch", "currency": event_currency}
-        # ACH settles asynchronously (1-2 business days), so this webhook —
-        # not /confirm — is how most bank payments get recorded. Label the
-        # method from the intent instead of assuming "card", or every ACH
-        # payment lands in the books as a card payment.
-        pm_types = data.get("payment_method_types") or []
-        method = "ach" if "us_bank_account" in pm_types else "card"
+        # ACH settles asynchronously (up to 4 business days), so this webhook —
+        # not /confirm — is how bank payments get recorded. Label the rail from
+        # the PaymentMethod that paid, not from the intent's allowed list: see
+        # `_intent_method` for why the list alone would book card payments as
+        # bank transfers the day the Dashboard's ACH toggle goes on.
+        # strict: an unreadable rail raises, the router 500s, Stripe retries.
+        method = _intent_method(
+            data, connect={"stripe_account": connected_account} if connected_account else {}, strict=True
+        )
         invoice = db.get(Invoice, UUID(invoice_id))
         if invoice is None or invoice.deleted_at is not None:
             return {"status": "no_invoice", "invoice_id": invoice_id}
@@ -1972,6 +2063,35 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
             failed_charge_id=str(data.get("latest_charge") or ""),
             connected_account=connected_account,
         )
+        # 2026-09-16 audit, round 4: a bounced debit (R01) or a hand-typed
+        # account that timed out on its micro-deposit arrives here, and until
+        # now the invoice's trail ended on "processing" while the pay page
+        # quietly unlocked. The office needs the end of the story too. ACH
+        # only — card declines already surface on the customer's screen and
+        # would flood the trail. Best-effort, like the other trail rows.
+        if invoice_id and _intent_method(data, strict=False) == "ach":
+            try:
+                from gdx_dispatch.core.audit import log_audit_event_sync
+
+                err = data.get("last_payment_error") or {}
+                log_audit_event_sync(
+                    db=db,
+                    tenant_id=None,
+                    user_id="stripe-webhook",
+                    action="ach_payment_failed",
+                    entity_type="invoice",
+                    entity_id=str(invoice_id),
+                    details={
+                        "intent_id": str(data.get("id") or ""),
+                        "amount_cents": int(data.get("amount") or 0),
+                        "code": str(err.get("code") or ""),
+                        "message": str(failure_msg or "")[:300],
+                        "reversal": reversal["status"],
+                    },
+                )
+                db.commit()
+            except Exception:
+                logger.exception("ach_failed_audit_failed invoice=%s", invoice_id)
         # Tenant notification placeholder — wire up notification service here
         # notify_tenant_payment_failed(invoice_id, failure_msg)
         return {

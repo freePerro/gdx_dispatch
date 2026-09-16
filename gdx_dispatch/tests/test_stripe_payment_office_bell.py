@@ -1,8 +1,8 @@
 """A Stripe payment must ring the office bell.
 
 Every surface that records processor money — the emailed pay page's
-`/confirm`, the portal charge, the ACH charge, and the signed webhook that
-settles a bank debit one to two business days later — funnels through
+`/confirm`, the portal charge, and the signed webhook that settles a bank
+debit up to four business days later — funnels through
 `_mark_invoice_paid`. Until 2026-08-26 that function wrote a `Payment` row, a
 ledger entry and an audit trail and rang **nothing**: prod carried five card
 payments and a `notifications` table holding only `lead` and `estimate` rows.
@@ -23,8 +23,8 @@ What these lock:
     settlement);
   - a broken notification path can never cost the payment — including a
     database failure on the expired-instance refresh, which is the raise that
-    would escape into `/confirm`, the ACH charge and the webhook, none of
-    which wrap this call.
+    would escape into `/confirm` and the webhook, neither of which wraps
+    this call.
 """
 from __future__ import annotations
 
@@ -220,8 +220,8 @@ def test_a_failed_post_commit_read_cannot_escape_into_the_caller(db, monkeypatch
 
     `db.commit()` expires the invoice, so every attribute read after it is a
     lazy SELECT that a dropped connection turns into an `OperationalError`.
-    Three of the four call sites — `/confirm`, the ACH charge, the webhook —
-    do not wrap `_mark_invoice_paid`, so a raise there 500s a request whose
+    Two of the three call sites — `/confirm` and the webhook — do not wrap
+    `_mark_invoice_paid`, so a raise there 500s a request whose
     money is already committed: the pay page telling a customer their good
     card charge failed, and on the webhook a Stripe retry that takes the
     idempotent early return and loses the bell for good.
