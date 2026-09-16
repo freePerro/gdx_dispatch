@@ -4,12 +4,10 @@ import logging
 import os
 import secrets
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
 import jwt
-import stripe
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordBearer
@@ -643,53 +641,11 @@ def portal_invoices(
     ]
 
 
-@router.post("/invoices/{invoice_id}/pay", response_model=None)
-def portal_invoice_pay(
-    invoice_id: UUID,
-    principal: PortalPrincipal = Depends(get_current_portal_customer),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    invoice = db.execute(
-        select(Invoice)
-        .join(Job, Invoice.job_id == Job.id)
-        .where(
-            Invoice.id == invoice_id,
-            Job.customer_id == principal.customer_id,
-            Invoice.deleted_at.is_(None),
-        )
-    ).scalar_one_or_none()
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-
-    # M5 (money audit 2026-08-04): this used to fall back to `invoice.total`
-    # when the balance was <= 0 — i.e. it charged the FULL total again on an
-    # already-settled invoice, and the webhook deliberately records second
-    # genuine payments, so the double collection landed and the balance clamp
-    # hid it. A zero balance means paid; there is nothing to charge.
-    if invoice.status == "void":
-        raise HTTPException(status_code=409, detail="This invoice has been cancelled.")
-    amount_due = Decimal(str(invoice.balance_due or 0))
-    if amount_due <= 0:
-        raise HTTPException(status_code=409, detail="This invoice has no balance due.")
-
-    stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "")
-    # M16: the portal is the same customer on a different door. A card payment
-    # minted while their ACH debit is processing double-pays identically.
-    from gdx_dispatch.core.payments import _refuse_if_ach_processing
-
-    _refuse_if_ach_processing(invoice, op="portal-pay", db=db, actor=f"portal:{principal.user_id}")
-    amount_cents = int(amount_due * 100)
-
-    intent = stripe.PaymentIntent.create(
-        amount=amount_cents,
-        currency="usd",
-        metadata={"invoice_id": str(invoice.id), "customer_id": str(principal.customer_id)},
-    )
-    return {
-        "payment_intent_id": intent.id,
-        "client_secret": intent.client_secret,
-        "status": getattr(intent, "status", None),
-    }
+# NOTE: ``POST /portal/invoices/{invoice_id}/pay`` was removed 2026-09-16. The
+# portal's Pay buttons open the public ``/pay/{token}`` page (``pay_url``), so
+# nothing called it — and a second card mint site that could not carry the
+# card surcharge would have breached the networks' "surcharge consistently"
+# rule the day the office turned the fee on.
 
 
 @router.get("/documents", response_model=None)

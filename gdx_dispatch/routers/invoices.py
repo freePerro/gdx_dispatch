@@ -237,6 +237,9 @@ def _serialize_payment(payment: Payment) -> dict[str, object]:
         "id": str(payment.id),
         "invoice_id": str(payment.invoice_id),
         "amount": _to_float(payment.amount),
+        # The card processing fee paid ON TOP of `amount` (migration 096);
+        # null on every non-surcharged payment.
+        "surcharge_amount": _to_float(payment.surcharge_amount) if getattr(payment, "surcharge_amount", None) is not None else None,
         "method": payment.method,
         "reference": getattr(payment, "reference", None),
         "date": payment.payment_date.isoformat(),
@@ -2348,6 +2351,18 @@ def _prepare_invoice_email(
         if invoice.public_token:
             pay_url = public_pay_url(invoice.public_token)
     link_line = f"Pay online: {pay_url}" if pay_url else ""
+    notice = ""
+    if pay_url:
+        # Minn. Stat. § 325G.051 wants the surcharge notice at the point of
+        # sale (the pay page carries it); saying it here too means nobody
+        # clicks through to a fee they were not told about. It goes BEFORE
+        # the link line: the HTML path strips a trailing link line to render
+        # the button, and anything after it would be stripped with it.
+        from gdx_dispatch.core.payments import card_surcharge_notice  # noqa: PLC0415
+
+        notice = card_surcharge_notice(db, str(invoice.company_id or ""))
+    if notice and notice not in body_text:
+        body_text = f"{body_text.rstrip()}\n\n{notice}\n"
     if pay_url and pay_url not in body_text:
         body_text = f"{body_text.rstrip()}\n\n{link_line}\n"
 

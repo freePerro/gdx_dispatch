@@ -15,6 +15,8 @@ def _mock_request(tenant_id="test-tenant"):
     r.client.host = "127.0.0.1"
     r.base_url = "http://testserver/"
     return r
+from uuid import uuid4
+
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -24,7 +26,6 @@ from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, I
 from gdx_dispatch.modules.customer_portal.models import CustomerUser
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers import portal as portal_router
-from uuid import uuid4
 
 
 @pytest.fixture()
@@ -246,27 +247,12 @@ def test_invoices_endpoint_includes_payment_status(tenant_db_session):
     assert row["payment_status"] == "unpaid"
 
 
-def test_pay_invoice_creates_payment_intent(tenant_db_session, monkeypatch):
-    seeded = _seed_customer_data(tenant_db_session)
-    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
-
-    calls: list[dict] = []
-
-    def _fake_create(**kwargs):
-        calls.append(kwargs)
-        return SimpleNamespace(id="pi_123", client_secret="secret_123", status="requires_payment_method")
-
-    monkeypatch.setattr("gdx_dispatch.routers.portal.stripe.PaymentIntent.create", _fake_create)
-
-    body = portal_router.portal_invoice_pay(
-        invoice_id=seeded["inv_a_id"],
-        principal=principal,
-        db=tenant_db_session,
-    )
-    assert body["payment_intent_id"] == "pi_123"
-    assert body["client_secret"] == "secret_123"
-    assert len(calls) == 1
-    assert calls[0]["amount"] == 10000
+def test_the_portal_has_no_card_mint_of_its_own():
+    """`POST /portal/invoices/{id}/pay` was deleted 2026-09-16. The portal's
+    Pay buttons open the public pay page (`pay_url`), which is the one mint
+    site that applies the card surcharge; a second mint site that could not
+    would have breached "surcharge consistently"."""
+    assert not hasattr(portal_router, "portal_invoice_pay")
 
 
 def test_message_creates_record(tenant_db_session):

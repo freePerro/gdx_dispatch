@@ -1201,7 +1201,6 @@ POST /portal/door-listings/{listing_id}/photos
 POST /portal/estimates/{estimate_id}/accept
 POST /portal/estimates/{estimate_id}/decline
 POST /portal/estimates/{estimate_id}/deposit/pay
-POST /portal/invoices/{invoice_id}/pay
 POST /portal/login
 POST /portal/login/password
 POST /portal/message

@@ -32,6 +32,7 @@ _COLS = (
     "late_fee_grace_days",
     "interest_rate_monthly_percent",
     "interest_grace_days",
+    "card_surcharge_percent",
 )
 
 
@@ -47,6 +48,10 @@ class TermsPayload(BaseModel):
     late_fee_grace_days: int = Field(0, ge=0, le=365)
     interest_rate_monthly_percent: Decimal | None = Field(None, ge=0, le=1)
     interest_grace_days: int = Field(0, ge=0, le=365)
+    # Credit-card surcharge on the customer pay page, as a fraction. Capped at
+    # Minnesota's 5% (Minn. Stat. § 325G.051); Stripe's 3% network cap and the
+    # cost-of-acceptance rule bind lower per payment. NULL/0 = off.
+    card_surcharge_percent: Decimal | None = Field(None, ge=0, le=Decimal("0.05"))
 
 
 def _tenant_uuid(request: Request) -> UUID:

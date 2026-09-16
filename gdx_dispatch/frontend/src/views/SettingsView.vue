@@ -1372,6 +1372,18 @@
                 </div>
               </div>
               <Divider />
+              <h3>Online card payments</h3>
+              <p class="muted">
+                Credit-card surcharge on the customer pay page. Credit cards only — Stripe refuses it on debit — and never on bank transfer (ACH).
+                Leave blank to charge nothing. Visa requires 30 days' written notice to Stripe before the first surcharge; the fee must not exceed your cost of acceptance.
+              </p>
+              <div class="form-grid" style="display:grid; grid-template-columns:repeat(3,minmax(180px,1fr)); gap:0.75rem;">
+                <div class="form-field">
+                  <label>Credit card surcharge (%)</label>
+                  <InputNumber v-model="billingTermsPct.card_surcharge_pct" :min="0" :max="5" :minFractionDigits="1" :maxFractionDigits="2" suffix="%" data-testid="card-surcharge-pct" />
+                </div>
+              </div>
+              <Divider />
               <h3>Interest on overdue balance</h3>
               <p class="muted" style="margin-top:0">
                 Monthly rate, applied N days after the due date.
@@ -2241,6 +2253,7 @@ const billingTerms = reactive({
 const billingTermsPct = reactive({
   early_pay_discount_pct: null,
   late_fee_pct: null,
+  card_surcharge_pct: null,
   interest_rate_monthly_pct: null,
 });
 const billingTermsSaving = ref(false);
@@ -2264,6 +2277,7 @@ async function loadBillingTerms() {
       billingTermsPct.early_pay_discount_pct = _toPercent(t.early_pay_discount_percent);
       billingTermsPct.late_fee_pct = _toPercent(t.late_fee_percent);
       billingTermsPct.interest_rate_monthly_pct = _toPercent(t.interest_rate_monthly_percent);
+      billingTermsPct.card_surcharge_pct = _toPercent(t.card_surcharge_percent);
     }
   } catch (_e) { /* module not deployed yet */ }
 }
@@ -2276,6 +2290,7 @@ async function saveBillingTerms() {
       early_pay_discount_percent: _toFraction(billingTermsPct.early_pay_discount_pct),
       late_fee_percent: _toFraction(billingTermsPct.late_fee_pct),
       interest_rate_monthly_percent: _toFraction(billingTermsPct.interest_rate_monthly_pct),
+      card_surcharge_percent: _toFraction(billingTermsPct.card_surcharge_pct),
     };
     const t = await api.patch("/api/billing/terms", payload, {
       successMessage: "Billing terms saved",
@@ -2285,6 +2300,7 @@ async function saveBillingTerms() {
       billingTermsPct.early_pay_discount_pct = _toPercent(t.early_pay_discount_percent);
       billingTermsPct.late_fee_pct = _toPercent(t.late_fee_percent);
       billingTermsPct.interest_rate_monthly_pct = _toPercent(t.interest_rate_monthly_percent);
+      billingTermsPct.card_surcharge_pct = _toPercent(t.card_surcharge_percent);
     }
   } finally {
     billingTermsSaving.value = false;

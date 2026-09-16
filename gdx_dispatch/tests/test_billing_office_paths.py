@@ -272,6 +272,44 @@ def test_send_invoice_email_includes_pay_link_when_configured(tenant_db_session,
     assert f"https://gdx.example.com/pay/{token}" in captured["html_body"]
 
 
+def test_send_invoice_email_carries_the_surcharge_notice_only_when_the_fee_is_on(tenant_db_session, monkeypatch):
+    """The notice must reach the HTML body the customer reads — an earlier
+    draft rode the plain-text link line, which the HTML path strips to render
+    the button (2026-09-16 audit). Off = not a word about fees."""
+    from decimal import Decimal
+    from unittest.mock import patch
+
+    from gdx_dispatch.models.tenant_models import Customer
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.example.com")
+
+    def _send_one(rate):
+        captured = _capture_send(monkeypatch)
+        cust = Customer(name="Fee Customer", email="fee@example.com", phone="555-0100", company_id="tenant-test")
+        tenant_db_session.add(cust)
+        tenant_db_session.commit()
+        tenant_db_session.refresh(cust)
+        job = _seed_job(tenant_db_session)
+        inv = create_invoice(payload=InvoiceCreateIn(job_id=job.id, customer_id=cust.id), _=_current_user(), db=tenant_db_session)
+        row = tenant_db_session.get(Invoice, UUID(inv["id"]))
+        row.verified_at = datetime.now(UTC)
+        tenant_db_session.commit()
+        add_invoice_line(invoice_id=UUID(inv["id"]), payload=InvoiceLineCreateIn(description="Opener install", quantity=1, unit_price=500.0),
+                         current_user=_current_user(), db=tenant_db_session)
+        with patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=Decimal(rate)):
+            sent = send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
+        assert sent["email_sent"] is True
+        return captured
+
+    on = _send_one("0.029")
+    assert "Credit cards carry a 2.9% processing fee" in on["html_body"]
+    assert "bank transfer (ACH): no fee" in on["html_body"]
+    assert "/pay/" in on["html_body"], "the link still renders"
+    off = _send_one("0")
+    assert "processing fee" not in off["html_body"]
+
+
 def test_send_invoice_email_omits_pay_link_when_unconfigured(tenant_db_session, monkeypatch):
     from gdx_dispatch.models.tenant_models import Customer
 

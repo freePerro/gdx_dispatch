@@ -28,6 +28,7 @@ from gdx_dispatch.modules.ledger.models import (
     ROLE_ROUNDING,
     ROLE_SALES_FALLBACK,
     ROLE_SALES_TAX_PAYABLE,
+    ROLE_SURCHARGE_INCOME,
     ROLE_UNDEPOSITED,
     ROLE_WAGES,
     GlAccount,
@@ -66,6 +67,10 @@ DEFAULT_COA: tuple[tuple[str, str, str, str | None, bool], ...] = (
     # credits misstates the discounts line (spec §4). [CPA] review the split.
     ("4900", "Discounts Given", "revenue", ROLE_DISCOUNTS, True),
     ("4910", "Refunds & Allowances", "revenue", ROLE_REFUNDS, True),
+    # Card surcharges the customer paid on the pay page (2026-09-16). A system
+    # row keyed by role, so `seed_coa` adds it to existing installs at the next
+    # seed run; nothing posts here until the office turns the rate on.
+    ("4950", "Card Surcharge Income", "revenue", ROLE_SURCHARGE_INCOME, True),
     # -- COGS ------------------------------------------------------------------
     ("5000", "Parts & Materials", "expense", None, False),
     ("5100", "Subcontractors", "expense", None, False),
@@ -179,3 +184,25 @@ def resolve_role_account(session: Session, company_id: str, role: str) -> GlAcco
             f"accounts claim it ({codes}); fix on the Accounting Settings page"
         )
     return accounts[0]
+
+
+def ensure_role_account(session: Session, company_id: str, role: str) -> GlAccount:
+    """``resolve_role_account`` for a role this install may never have seen.
+
+    A release that adds a role to ``ALL_ROLES`` reaches an existing install
+    only through ``seed_coa``, and nothing runs the seed between a deploy and
+    the next accounting mutation — so the first posting that needs the new
+    role would raise inside whatever recorded the money (2026-09-16 audit,
+    round 2 of the card surcharge: prod's CoA predated 4950, and a surcharged
+    receipt would have crashed the recorder with the card already charged and
+    no Payment row). This tops the role up at first use instead. The seed
+    keys on role across active AND inactive rows, so a deliberately
+    deactivated owner is never resurrected here — that case, and an
+    ambiguous one, stay as loud as ``resolve_role_account`` makes them.
+    """
+    try:
+        return resolve_role_account(session, company_id, role)
+    except LedgerConfigError:
+        if role not in ALL_ROLES or seed_coa(session, company_id) == 0:
+            raise
+        return resolve_role_account(session, company_id, role)

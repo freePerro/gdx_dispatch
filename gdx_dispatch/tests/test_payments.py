@@ -439,6 +439,307 @@ def test_the_pay_page_no_longer_ships_the_dead_ach_flow(client, invoice):
 
 
 # ---------------------------------------------------------------------------
+# Card surcharge (2026-09-16) — credit only, Stripe decides per card, off by default
+# ---------------------------------------------------------------------------
+
+from decimal import Decimal as _D  # noqa: E402
+
+_PREVIEW = "2026-03-25.preview"
+
+
+def _probe_pi(status="available", maximum=486, pm="pm_credit", surcharge_meta=None):
+    """A card intent as Stripe returns it from the surcharge probe."""
+    m = _pi("pi_card", status="requires_confirmation")
+    m.payment_method = pm
+    m.amount_details = {"surcharge": {"status": status, "maximum_amount": maximum, "enforce_validation": "enabled"}}
+    m.metadata = {"invoice_id": "x", **({"surcharge_cents": str(surcharge_meta)} if surcharge_meta else {})}
+    return m
+
+
+def _card(funding="credit"):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(card=SimpleNamespace(brand="visa", last4="4242", funding=funding))
+
+
+def test_surcharge_arithmetic():
+    from gdx_dispatch.core.payments import _percent_label, _surcharge_cents
+
+    assert _surcharge_cents(16200, _D("0.029"), None) == 470     # 469.8 → 470
+    assert _surcharge_cents(16200, _D("0.029"), 300) == 300      # Stripe's per-payment cap wins
+    assert _surcharge_cents(100, _D("0.029"), None) == 3         # 2.9 → 3, half up
+    assert _surcharge_cents(16200, _D("0"), None) == 0
+    assert _percent_label(_D("0.029")) == "2.9%"
+    assert _percent_label(_D("0.03")) == "3%"
+
+
+def test_create_intent_with_a_rate_probes_stripe_for_this_card_and_sizes_the_fee(client, invoice):
+    """Two-step card flow: the card's PaymentMethod is attached at mint time
+    with Stripe's surcharge probe on (preview API version, per request).
+    Stripe says the card may carry a fee and names the maximum
+    the server
+    sizes the fee at the office's rate, then updates the intent so the
+    top-level amount includes it, `amount_details` reports it to the network,
+    and `metadata` carries it to the webhook."""
+    pi = _probe_pi()
+    with patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0.029")), \
+            patch("stripe.PaymentIntent.create", return_value=pi) as create, \
+            patch("stripe.PaymentIntent.retrieve", return_value=pi), \
+            patch("stripe.PaymentIntent.modify", return_value=_probe_pi(surcharge_meta=470)) as modify, \
+            patch("stripe.PaymentMethod.retrieve", return_value=_card("credit")):
+        resp = client.post(
+            "/api/payments/create-intent",
+            json={"invoice_token": TOKEN, "method": "card", "payment_method_id": "pm_credit"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    kw = create.call_args[1]
+    assert kw["payment_method"] == "pm_credit"
+    assert kw["amount_details"] == {"surcharge": {"enforce_validation": "enabled"}}
+    assert kw["stripe_version"] == _PREVIEW
+    assert kw["amount"] == 16200, "the probe is sized at the balance; the fee comes after Stripe answers"
+    assert kw["idempotency_key"].endswith("-card-16200-pm_credit"), "a second card is a new attempt"
+    mk = modify.call_args[1]
+    assert modify.call_args[0][0] == "pi_card"
+    assert mk["amount"] == 16200 + 470
+    assert mk["amount_details"] == {"surcharge": {"amount": 470}}
+    assert mk["metadata"]["surcharge_cents"] == "470"
+    assert mk["stripe_version"] == _PREVIEW
+    assert body["amount"] == 16670
+    assert body["invoice_amount"] == 16200
+    assert body["surcharge_cents"] == 470
+    assert body["surcharge_status"] == "applied"
+    assert body["card"] == {"brand": "visa", "last4": "4242", "funding": "credit"}
+
+
+def test_create_intent_debit_card_gets_no_fee_because_stripe_says_so(client, invoice):
+    """Visa and Mastercard forbid surcharging debit; Stripe's probe returns; `unavailable` and we never size a fee, never touch the amount."""
+    pi = _probe_pi(status="unavailable", maximum=0, pm="pm_debit")
+    with patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0.029")), \
+            patch("stripe.PaymentIntent.create", return_value=pi), \
+            patch("stripe.PaymentIntent.retrieve", return_value=pi), \
+            patch("stripe.PaymentIntent.modify") as modify, \
+            patch("stripe.PaymentMethod.retrieve", return_value=_card("debit")):
+        resp = client.post(
+            "/api/payments/create-intent",
+            json={"invoice_token": TOKEN, "method": "card", "payment_method_id": "pm_debit"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    modify.assert_not_called()
+    assert body["amount"] == 16200
+    assert body["surcharge_cents"] == 0
+    assert body["surcharge_status"] == "unavailable"
+    assert body["card"]["funding"] == "debit"
+
+
+def test_create_intent_never_exceeds_stripes_per_card_maximum(client, invoice):
+    pi = _probe_pi(maximum=300)
+    with patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0.05")), \
+            patch("stripe.PaymentIntent.create", return_value=pi), \
+            patch("stripe.PaymentIntent.retrieve", return_value=pi), \
+            patch("stripe.PaymentIntent.modify", return_value=_probe_pi(surcharge_meta=300)) as modify, \
+            patch("stripe.PaymentMethod.retrieve", return_value=_card()):
+        resp = client.post(
+            "/api/payments/create-intent",
+            json={"invoice_token": TOKEN, "method": "card", "payment_method_id": "pm_credit"},
+        )
+    assert resp.json()["surcharge_cents"] == 300
+    assert modify.call_args[1]["amount"] == 16500
+
+
+def test_create_intent_without_a_rate_is_the_one_step_card_flow(client, invoice):
+    """The fee ships OFF. With no rate the page never sends a PaymentMethod; and the mint is exactly what it was: no probe, no preview version, no fee."""
+    with patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0")), \
+            patch("stripe.PaymentIntent.create", return_value=_pi()) as create, \
+            patch("stripe.PaymentIntent.modify") as modify:
+        resp = client.post("/api/payments/create-intent", json={"invoice_token": TOKEN, "method": "card"})
+    assert resp.status_code == 200
+    kw = create.call_args[1]
+    assert "payment_method" not in kw and "amount_details" not in kw and "stripe_version" not in kw
+    assert kw["idempotency_key"] == f"gdx-pi-{invoice.id}-card-16200"
+    modify.assert_not_called()
+    assert resp.json()["surcharge_cents"] == 0
+    assert resp.json()["surcharge_status"] == "not_applicable"
+
+
+def test_create_intent_with_a_rate_but_no_payment_method_gets_no_fee(client, invoice):
+    """An old tab, or a client that never learned the two-step flow: a card
+    intent without a PaymentMethod cannot be probed, so it carries no fee.
+    Under-collecting is the safe failure
+    a fee nobody was shown is not."""
+    with patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0.029")), \
+            patch("stripe.PaymentIntent.create", return_value=_pi()) as create, \
+            patch("stripe.PaymentIntent.modify") as modify:
+        resp = client.post("/api/payments/create-intent", json={"invoice_token": TOKEN, "method": "card"})
+    assert "payment_method" not in create.call_args[1]
+    modify.assert_not_called()
+    assert resp.json()["amount"] == 16200
+
+
+def test_create_intent_ach_never_carries_the_fee(client, invoice):
+    with patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0.029")) as rate, \
+            patch("stripe.PaymentIntent.create", return_value=_pi(status="requires_payment_method")) as create:
+        resp = client.post("/api/payments/create-intent", json={"invoice_token": TOKEN, "method": "ach"})
+    rate.assert_not_called()
+    assert "amount_details" not in create.call_args[1]
+    assert resp.json()["surcharge_cents"] == 0
+
+
+def test_webhook_splits_the_surcharge_out_of_the_receipt(db_session, invoice):
+    """Stripe settles amount + fee in one receipt. The payment is the amount;; the fee lands on the row and never on the invoice."""
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    out = handle_payment_webhook(
+        {
+            "type": "payment_intent.succeeded",
+            "data": {"object": {
+                "id": "pi_fee_wh", "amount": 16670, "amount_received": 16670, "currency": "usd",
+                "payment_method_types": ["card"],
+                "metadata": {"invoice_id": str(invoice.id), "surcharge_cents": "470"},
+            }},
+        },
+        db_session,
+    )
+    assert out["status"] == "paid"
+    pay = db_session.query(Payment).filter(Payment.reference == "pi_fee_wh").one()
+    assert float(pay.amount) == 162.00
+    assert float(pay.surcharge_amount) == 4.70
+    db_session.refresh(invoice)
+    assert invoice.status == "paid"
+    assert float(invoice.balance_due) == 0.0
+    # The fee never touches the invoice: nothing was added to it, and the
+    # payment that settled it is the amount alone. (The fixture invoice has no
+    # lines, so its total is whatever the recalculation derives — asserting a
+    # figure there would test the fixture, not the fee.)
+    assert not any(float(p.amount) == 166.70 for p in db_session.query(Payment).filter(Payment.invoice_id == invoice.id))
+
+
+def test_confirm_splits_the_surcharge_the_same_way(client, db_session, invoice):
+    pi = _pi("pi_fee_confirm", amount=16670, invoice_id=invoice.id)
+    pi.metadata["surcharge_cents"] = "470"
+    pi.payment_method_types = ["card"]
+    with patch("stripe.PaymentIntent.retrieve", return_value=pi):
+        resp = client.post("/api/payments/confirm", json={"payment_intent_id": "pi_fee_confirm", "invoice_token": TOKEN})
+    assert resp.status_code == 200, resp.text
+    pay = db_session.query(Payment).filter(Payment.reference == "pi_fee_confirm").one()
+    assert float(pay.amount) == 162.00
+    assert float(pay.surcharge_amount) == 4.70
+
+
+def _live_with_fee(fee):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(id="pi_live", amount_details={"surcharge": {"amount": fee, "status": "available"}})
+
+
+def test_settlement_books_the_fee_stripe_collected_not_the_stamp(db_session, invoice):
+    """The stamp says what was sized at Continue; Stripe says what was
+    collected at Pay. When they differ, the money wins (audit, round 1)."""
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    def event(pid, received, stamp):
+        return {"type": "payment_intent.succeeded", "data": {"object": {
+            "id": pid, "amount": received, "amount_received": received, "currency": "usd",
+            "payment_method_types": ["card"],
+            "metadata": {"invoice_id": str(invoice.id), "surcharge_cents": str(stamp)},
+        }}}
+
+    with patch("stripe.PaymentIntent.retrieve", return_value=_live_with_fee(300)) as live:
+        handle_payment_webhook(event("pi_stripe_says_300", 16500, 470), db_session)
+    assert live.call_args[1]["stripe_version"] == _PREVIEW
+    pay = db_session.query(Payment).filter(Payment.reference == "pi_stripe_says_300").one()
+    assert (float(pay.amount), float(pay.surcharge_amount)) == (162.00, 3.00)
+
+    # Stripe says no fee was collected at all: the whole receipt is payment.
+    with patch("stripe.PaymentIntent.retrieve", return_value=_live_with_fee(0)):
+        handle_payment_webhook(event("pi_stripe_says_0", 16200, 470), db_session)
+    pay = db_session.query(Payment).filter(Payment.reference == "pi_stripe_says_0").one()
+    assert (float(pay.amount), pay.surcharge_amount) == (162.00, None)
+
+
+def test_settlement_falls_back_to_the_stamp_when_stripe_is_unreadable(db_session, invoice):
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    with patch("stripe.PaymentIntent.retrieve", side_effect=RuntimeError("down")):
+        handle_payment_webhook({"type": "payment_intent.succeeded", "data": {"object": {
+            "id": "pi_stamp_only", "amount": 16670, "amount_received": 16670, "currency": "usd",
+            "payment_method_types": ["card"],
+            "metadata": {"invoice_id": str(invoice.id), "surcharge_cents": "470"},
+        }}}, db_session)
+    pay = db_session.query(Payment).filter(Payment.reference == "pi_stamp_only").one()
+    assert (float(pay.amount), float(pay.surcharge_amount)) == (162.00, 4.70)
+
+
+def test_a_fee_larger_than_the_receipt_is_booked_as_payment_only(db_session, invoice):
+    """A stamp that cannot be right must never produce a negative payment."""
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    handle_payment_webhook(
+        {
+            "type": "payment_intent.succeeded",
+            "data": {"object": {
+                "id": "pi_bad_stamp", "amount": 16200, "amount_received": 16200, "currency": "usd",
+                "payment_method_types": ["card"],
+                "metadata": {"invoice_id": str(invoice.id), "surcharge_cents": "99999"},
+            }},
+        },
+        db_session,
+    )
+    pay = db_session.query(Payment).filter(Payment.reference == "pi_bad_stamp").one()
+    assert float(pay.amount) == 162.00
+    assert pay.surcharge_amount is None
+
+
+def test_the_pay_page_carries_the_notice_and_the_two_step_flow_only_when_the_rate_is_set(client, invoice):
+    with patch("stripe.PaymentIntent.list", return_value=MagicMock(data=[], has_more=False)), \
+            patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0.029")):
+        on = client.get(f"/pay/{TOKEN}").text
+    with patch("stripe.PaymentIntent.list", return_value=MagicMock(data=[], has_more=False)), \
+            patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0")):
+        off = client.get(f"/pay/{TOKEN}").text
+    # Minn. Stat. § 325G.051: the notice on the checkout page, and the way out.
+    assert 'data-testid="surcharge-notice"' in on
+    assert "2.9% processing fee" in on and "bank transfer (ACH): no fee" in on
+    assert 'id="card-confirm-form"' in on and ">Continue<" in on
+    # Off: no notice, no second step, the one-step button. (The script always
+    # mentions the confirm form by id; the MARKUP is what must be absent.)
+    assert 'data-testid="surcharge-notice"' not in off
+    assert "Credit cards carry a" not in off
+    assert 'id="card-confirm-form"' not in off
+    assert "Pay $162.00" in off
+
+
+def test_the_pay_link_email_names_the_fee_only_when_it_is_on(db_session, invoice):
+    from gdx_dispatch.core.payments import card_surcharge_notice
+
+    with patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0.029")):
+        assert card_surcharge_notice(db_session, "t") == (
+            "Credit cards carry a 2.9% processing fee. Debit cards and bank transfer (ACH): no fee."
+        )
+    with patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0")):
+        assert card_surcharge_notice(db_session, "t") == ""
+
+
+def test_the_serializer_exposes_the_fee(db_session, invoice):
+    from gdx_dispatch.routers.invoices import _serialize_payment
+
+    pay = Payment(company_id="tenant-test", invoice_id=invoice.id, amount=162.0, method="card",
+                  reference="pi_s", surcharge_amount=4.70)
+    db_session.add(pay)
+    db_session.commit()
+    db_session.refresh(pay)
+    out = _serialize_payment(pay)
+    assert out["surcharge_amount"] == 4.70
+    plain = Payment(company_id="tenant-test", invoice_id=invoice.id, amount=10.0, method="check", reference="c")
+    db_session.add(plain)
+    db_session.commit()
+    db_session.refresh(plain)
+    assert _serialize_payment(plain)["surcharge_amount"] is None
+
+
+# ---------------------------------------------------------------------------
 # Idempotency keys
 # ---------------------------------------------------------------------------
 
@@ -1191,3 +1492,73 @@ def test_the_overcharge_detail_survives_intact(db_session):
     assert float(row.details["charged"]) == pytest.approx(500.00)
     assert float(row.details["excess"]) == pytest.approx(338.00)
     assert row.user_id == "stripe-webhook"
+
+
+def test_card_surcharge_rate_reads_the_settings_row_on_sqlite_too():
+    """Every other test patches the lookup, so this one does not. It goes by
+    ORM primary key: raw SQL on the dashed id matched on Postgres and never on
+    SQLite (the CLAUDE.md sharp edge; audit round 2 stored 0.029 and read 0),
+    which no patched test could catch."""
+    from gdx_dispatch.core.payments import card_surcharge_rate  # noqa: PLC0415
+    from gdx_dispatch.core.tenant_settings import Base as ControlBase  # noqa: PLC0415
+    from gdx_dispatch.core.tenant_settings import TenantSettings  # noqa: PLC0415
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    ControlBase.metadata.create_all(engine)
+    tid = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    with sessionmaker(bind=engine, autoflush=False)() as db:
+        db.add(TenantSettings(tenant_id=tid, card_surcharge_percent=_D("0.029")))
+        db.commit()
+        assert card_surcharge_rate(db, str(tid)) == _D("0.029"), "dashed, as request.state.tenant carries it"
+        assert card_surcharge_rate(db, tid.hex) == _D("0.029")
+        assert card_surcharge_rate(db, str(uuid.uuid4())) == _D("0"), "no row: no fee"
+        assert card_surcharge_rate(db, "not-a-uuid") == _D("0")
+        assert card_surcharge_rate(db, "") == _D("0")
+    engine.dispose()
+
+
+def test_a_payment_method_sent_without_a_rate_mints_the_same_intent_with_no_fee(client, invoice):
+    """The office turns the fee off while a customer sits on the breakdown,
+    and the Pay step re-posts the same PaymentMethod. The mint is identical to
+    the rated one — attached, probed, preview version, keyed by the card — so
+    Stripe replays rather than refusing a different request under the same
+    key; and a card that was never sized gains no fee (audit round 2)."""
+    with patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0")), \
+            patch("stripe.PaymentIntent.create", return_value=_probe_pi()) as create, \
+            patch("stripe.PaymentIntent.modify") as modify, \
+            patch("stripe.PaymentMethod.retrieve", return_value=_card("credit")):
+        resp = client.post(
+            "/api/payments/create-intent",
+            json={"invoice_token": TOKEN, "method": "card", "payment_method_id": "pm_credit"},
+        )
+    assert resp.status_code == 200
+    kw = create.call_args[1]
+    assert kw["payment_method"] == "pm_credit"
+    assert kw["amount_details"] == {"surcharge": {"enforce_validation": "enabled"}}
+    assert kw["stripe_version"] == "2026-03-25.preview"
+    assert kw["idempotency_key"] == f"gdx-pi-{invoice.id}-card-16200-pm_credit"
+    modify.assert_not_called()  # a credit card Stripe would surcharge is still not sized without a rate
+    body = resp.json()
+    assert (body["amount"], body["surcharge_cents"], body["surcharge_status"]) == (16200, 0, "not_applicable")
+    assert body["card"]["funding"] == "credit"
+
+
+def test_a_sized_intent_replayed_after_the_rate_was_turned_off_keeps_the_agreed_fee(client, invoice):
+    """The other half of that race: the customer was shown $16,200.00 plus a
+    $469.80 fee and pressed Pay; the rate went off in between. The re-POST
+    replays the sized intent, and the fee the customer agreed to stays on it —
+    the disclosure and the charge match — with nothing re-sized."""
+    with patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0")), \
+            patch("stripe.PaymentIntent.create", return_value=_probe_pi(surcharge_meta=470)), \
+            patch("stripe.PaymentIntent.modify") as modify, \
+            patch("stripe.PaymentMethod.retrieve", return_value=_card("credit")):
+        resp = client.post(
+            "/api/payments/create-intent",
+            json={"invoice_token": TOKEN, "method": "card", "payment_method_id": "pm_credit"},
+        )
+    assert resp.status_code == 200
+    modify.assert_not_called()
+    body = resp.json()
+    assert (body["amount"], body["invoice_amount"], body["surcharge_cents"], body["surcharge_status"]) == (
+        16670, 16200, 470, "applied",
+    )
