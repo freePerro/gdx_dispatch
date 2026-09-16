@@ -226,6 +226,8 @@ GET /api/customers/{customer_id}/activity
 GET /api/customers/{customer_id}/contacts
 GET /api/customers/{customer_id}/custom-fields
 GET /api/customers/{customer_id}/locations
+GET /api/customers/{customer_id}/statement
+GET /api/customers/{customer_id}/statement/pdf
 GET /api/customers/{customer_id}/tags
 GET /api/dealer/orders
 GET /api/dealer/orders/{order_id}
@@ -855,6 +857,7 @@ POST /api/customers/{customer_id}/contacts
 POST /api/customers/{customer_id}/contacts/{contact_id}/make-primary
 POST /api/customers/{customer_id}/locations
 POST /api/customers/{customer_id}/optout
+POST /api/customers/{customer_id}/statement/send
 POST /api/customers/{customer_id}/tags
 POST /api/customers/{parent_id}/absorb
 POST /api/dealer/orders

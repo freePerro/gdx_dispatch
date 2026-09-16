@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  {#- Customer statement. Rendered from
+     services/customer_statements.build_statement. Warnings are for the
+     office and are deliberately absent here. -#}
+  {%- set accent = branding.primary_color %}
+  <title>Statement {{ s.range.start }} to {{ s.range.end }}</title>
+  <style>
+    @page { size: A4; margin: 24px; }
+    body { color: #1f2937; font-size: 11px; }
+    .header { border-bottom: 2px solid {{ accent }}; padding-bottom: 10px; margin-bottom: 14px; }
+    .brand { display: flex; align-items: center; justify-content: space-between; }
+    .brand h1 { margin: 0; color: {{ accent }}; font-size: 22px; }
+    .logo { max-height: 48px; max-width: 200px; }
+    .title { font-size: 16px; font-weight: 700; margin-top: 8px; }
+    .meta { color: #4b5563; margin-top: 4px; }
+    .parties { display: flex; justify-content: space-between; margin-top: 10px; }
+    h2 { font-size: 13px; margin: 18px 0 4px; color: #111827; }
+    table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+    th { text-align: left; background: #f3f4f6; padding: 6px; font-size: 10px; }
+    td { padding: 6px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+    .num { text-align: right; white-space: nowrap; }
+    .muted { color: #6b7280; }
+    .summary { width: 100%; margin-top: 6px; }
+    .summary td { border: none; padding: 3px 0; }
+    .due { font-size: 18px; font-weight: 800; color: {{ branding.secondary_color }}; }
+    .aging td, .aging th { text-align: right; }
+    .ending td { border-top: 1px solid #d1d5db; font-weight: 700; }
+    a { color: {{ accent }}; }
+    .empty { color: #6b7280; font-style: italic; padding: 6px 0; }
+  </style>
+</head>
+<body style="font-family: Arial, sans-serif">
+  <div class="header">
+    <div class="brand">
+      <div>
+        <h1>{{ branding.company_name }}</h1>
+        <div>{{ branding.address }}</div>
+      </div>
+      {% if branding.logo %}
+      <img class="logo" src="{{ branding.logo }}" alt="Company logo">
+      {% endif %}
+    </div>
+    <div class="title">Statement of account</div>
+    <div class="meta">{{ s.range.start }} to {{ s.range.end }} &middot; produced {{ s.produced_on }}</div>
+    <div class="parties">
+      <div>
+        <strong>{{ s.customer.name }}</strong><br>
+        {{ s.customer.address }}
+      </div>
+    </div>
+  </div>
+
+  <h2>Total unpaid balance</h2>
+  <table class="summary">
+    <tr>
+      <td class="due">{{ s.total_unpaid|money }}</td>
+      {% if s.credit_on_account > 0 %}
+      <td class="num">Credit on account: {{ s.credit_on_account|money }}</td>
+      {% endif %}
+    </tr>
+  </table>
+  <table class="aging">
+    <tr><th>Current</th><th>1–30 days</th><th>31–60 days</th><th>61–90 days</th><th>Over 90 days</th></tr>
+    <tr>
+      <td>{{ s.aging.current|money }}</td>
+      <td>{{ s.aging.days_1_30|money }}</td>
+      <td>{{ s.aging.days_31_60|money }}</td>
+      <td>{{ s.aging.days_61_90|money }}</td>
+      <td>{{ s.aging.over_90|money }}</td>
+    </tr>
+  </table>
+
+  <h2>Open invoices</h2>
+  {% if s.open_invoices %}
+  <table>
+    <tr><th>Date</th><th>Invoice</th><th>Job</th><th class="num">Total</th><th class="num">Balance</th><th class="num">Days past due</th><th>Pay</th></tr>
+    {% for r in s.open_invoices %}
+    <tr>
+      <td>{{ r.date }}</td>
+      <td>{{ r.invoice_number }}</td>
+      <td>{{ r.job_title }}</td>
+      <td class="num">{{ r.total|money }}</td>
+      <td class="num">{{ r.balance|money }}</td>
+      <td class="num">{{ r.days_past_due if r.days_past_due else '' }}</td>
+      <td>{% if r.pay_url %}<a href="{{ r.pay_url }}">Pay online</a>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="empty">Nothing is unpaid. Thank you.</div>
+  {% endif %}
+
+  <h2>Activity, {{ s.range.start }} to {{ s.range.end }}</h2>
+  <table class="summary">
+    <tr><td>Previous balance (before {{ s.range.start }})</td><td class="num">{{ s.previous_balance|money }}</td></tr>
+  </table>
+
+  <table>
+    <tr><th>Date</th><th>Invoice</th><th>Job</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Balance today</th></tr>
+    {% for r in s.invoices %}
+    <tr>
+      <td>{{ r.date }}</td>
+      <td>{{ r.invoice_number }}</td>
+      <td>{{ r.job_title }}</td>
+      <td class="num">{{ r.total|money }}</td>
+      <td class="num">{{ r.paid|money }}</td>
+      <td class="num">{{ r.balance|money }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="empty">No invoices in this period.</td></tr>
+    {% endfor %}
+  </table>
+
+  <table>
+    <tr><th>Date</th><th>Payment or credit</th><th>Invoice</th><th class="num">Amount</th></tr>
+    {% for r in s.payments_and_credits %}
+    <tr>
+      <td>{{ r.date }}</td>
+      <td>{{ r.label }}{% if r.method %} <span class="muted">({{ r.method }})</span>{% endif %}{% if r.note %}<br><span class="muted">{{ r.note }}</span>{% endif %}</td>
+      <td>{{ r.invoice_number }}</td>
+      <td class="num">{{ r.amount|money }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="empty">No payments or credits in this period.</td></tr>
+    {% endfor %}
+  </table>
+
+  {% if s.refunds %}
+  <table>
+    <tr><th>Date</th><th>Refund issued (does not change the balance)</th><th>Invoice</th><th class="num">Amount</th></tr>
+    {% for r in s.refunds %}
+    <tr>
+      <td>{{ r.date }}</td>
+      <td>Refund{% if r.method %} <span class="muted">({{ r.method }})</span>{% endif %}</td>
+      <td>{{ r.invoice_number }}</td>
+      <td class="num">{{ r.amount|money }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  <table class="summary">
+    <tr><td>Previous balance</td><td class="num">{{ s.previous_balance|money }}</td></tr>
+    <tr><td>Invoiced in this period</td><td class="num">{{ s.invoiced|money }}</td></tr>
+    <tr><td>Payments and credits in this period</td><td class="num">{% if s.payments_and_credits_total > 0 %}-{% endif %}{{ s.payments_and_credits_total|money }}</td></tr>
+    {% if s.ends_today %}
+    <tr class="ending"><td>Ending balance</td><td class="num">{{ s.ending_balance|money }}</td></tr>
+    {% else %}
+    <tr class="ending"><td>Balance at end of period ({{ s.range.end }})</td><td class="num">{{ s.ending_balance|money }}</td></tr>
+    <tr><td>Unpaid today</td><td class="num">{{ s.total_unpaid|money }}</td></tr>
+    {% endif %}
+  </table>
+</body>
+</html>

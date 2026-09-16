@@ -110,6 +110,12 @@ except Exception:
     customers_router = APIRouter(prefix="/api/customers", tags=["customers"])
 
 try:
+    from gdx_dispatch.routers import customer_statements as customer_statements_router
+except Exception:
+    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: customer_statements_router")
+    customer_statements_router = APIRouter(prefix="/api/customers", tags=["customer-statements"])
+
+try:
     from gdx_dispatch.routers import segments as segments_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: segments_router")
@@ -1430,6 +1436,11 @@ def create_app() -> FastAPI:
     app.include_router(payments_gdx_router.router if hasattr(payments_gdx_router, "router") else payments_gdx_router)
     app.include_router(expenses_router.router if hasattr(expenses_router, "router") else expenses_router)
     app.include_router(customers_router.router if hasattr(customers_router, "router") else customers_router)
+    app.include_router(
+        customer_statements_router.router
+        if hasattr(customer_statements_router, "router")
+        else customer_statements_router
+    )
     app.include_router(segments_router.router if hasattr(segments_router, "router") else segments_router)
     app.include_router(invoices_router.router if hasattr(invoices_router, "router") else invoices_router)
     app.include_router(uploads_router.router if hasattr(uploads_router, "router") else uploads_router)

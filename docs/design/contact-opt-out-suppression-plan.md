@@ -5,6 +5,11 @@ decision). Nothing built. No rival plan — every other "suppress" in
 `docs/design/` is about reminder idempotency, pay-link hiding, or GL match
 candidacy.
 
+Amended 2026-09-15: customer statements (`customer-statements-plan.md`) add a new
+send kind, `kind="statement"`, through `send_transactional_email`. It reads no
+opt-out today, like every other send; this plan's taxonomy must classify it — the
+natural class is payment reminders.
+
 Amended 2026-09-14: step 3's campaigns send path no longer exists. `routers/campaigns.py` <!-- link-ok: retired (#638) -->
 and `modules/campaigns/` were retired (#638); the send route never delivered anything.
 Winback's send (`routers/winback.py`) is the remaining bulk path, and whether it delivers

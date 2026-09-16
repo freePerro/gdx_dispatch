@@ -45,7 +45,14 @@ Unpaid invoices get automatic reminders on a schedule you set (Settings → Remi
 
 ## Statements and balances
 
-The dashboard widget **Open balances** shows total receivable, broken down by age. Click through to see a list of every unpaid invoice with one-click resend.
+Open a customer and click **Statement** to see everything that customer owes and what happened on their account over a period.
+
+- **Period** — last 30, 60 or 90 days (the default), year to date, a finished calendar year, or a custom range. Statements start from January 1, 2026: payment records imported from QuickBooks before then are still being repaired.
+- **What's on it** — the total unpaid balance split by age, every open invoice with its **Pay online** link, the balance before the period, every invoice and payment in the period, and the ending balance.
+- **Warnings** — if an invoice's payment records don't add up, or a payment sits on a draft invoice, the preview says so above the statement. Warnings never appear on the customer's copy. Check the invoice before sending.
+- **Download PDF** or **Email statement**. Emailing needs the *Send invoices* permission and a connected email account; if it can't be sent, the dialog says why. Every send — and every attempt that didn't go out — is recorded in the audit log, and every email that was attempted appears in the **Email Log** under *Statements*.
+
+The statement is worked out fresh each time you open it, so a payment recorded today shows up the next time you look.
 
 ## Refunds
 
