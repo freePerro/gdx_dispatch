@@ -1,7 +1,7 @@
 # ACH on the customer pay page: one intent, completed in the browser
 
 **Date:** 2026-09-16 (investigated, planned, built, adversarially audited and browser-verified the same day)
-**Status:** **PLAN** — built and verified on the branch, not merged. Flip to `MERGED #N` in the PR that lands it, and to `RELEASED vX.Y.Z` after the prod walk.
+**Status:** **PLAN** — built and verified on the branch as PR #742, not merged. Flip to `MERGED #742` when it lands, and to `RELEASED vX.Y.Z` after the prod walk.
 **Branch:** `fix/ach-pay-page-one-intent`
 
 ## What already exists (do not rebuild)
