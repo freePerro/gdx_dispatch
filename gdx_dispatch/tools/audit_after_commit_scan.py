@@ -107,10 +107,6 @@ ALLOWED: dict[tuple[str, str], str] = {
         "no caller: the live pull is modules/quickbooks/sync.pull_accounts; "
         "this legacy SDK copy is dead code (#700 close-out)"
     ),
-    ("core/quickbooks.py", "pull_bank_transactions"): (
-        "no caller: the live pull is modules/quickbooks/sync.pull_bank_transactions; "
-        "dead code (#700 close-out)"
-    ),
     ("routers/commission.py", "set_rules"): "commission is leaving core for a plugin; not fixed in core (#700)",
     ("routers/commission.py", "update_rule"): "commission is leaving core for a plugin; not fixed in core (#700)",
     ("routers/commission.py", "calculate_commission"): (
