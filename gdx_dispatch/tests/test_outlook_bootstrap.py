@@ -11,7 +11,9 @@ from gdx_dispatch.modules.outlook.bootstrap import (
 
 
 def _tenant():
-    t = MagicMock(); t.id = uuid4(); t.slug = "gdx"
+    t = MagicMock()
+    t.id = uuid4()
+    t.slug = "gdx"
     return t
 
 

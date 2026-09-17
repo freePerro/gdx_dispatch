@@ -51,7 +51,8 @@ def test_auto_match_finds_customer_by_from_address():
 def test_auto_match_falls_through_to_to_addresses():
     msg = _msg(from_address="random@example.com",
                to_addresses=["doug@gdx", "alice@x.com"])
-    customer = MagicMock(); customer.id = uuid4()
+    customer = MagicMock()
+    customer.id = uuid4()
     tdb = MagicMock()
     # First two queries return None, third matches alice@x.com
     tdb.query.return_value.filter.return_value.first.side_effect = [None, None, customer]
@@ -72,7 +73,8 @@ def test_auto_match_returns_none_when_no_match():
 def test_auto_match_lowercases_and_strips():
     """Email match must be case-insensitive."""
     msg = _msg(from_address="  ALICE@X.COM  ")
-    customer = MagicMock(); customer.id = uuid4()
+    customer = MagicMock()
+    customer.id = uuid4()
     tdb = MagicMock()
 
     captured_filters = []
@@ -96,7 +98,9 @@ def test_job_thread_matches_bracketed_pattern():
     """Job.id is a UUID; the regex matches UUID-shaped tokens in the subject."""
     job_uuid = uuid4()
     msg = _msg(subject=f"Re: [Job #{job_uuid}] water heater repair")
-    job = MagicMock(); job.id = job_uuid; job.customer_id = uuid4()
+    job = MagicMock()
+    job.id = job_uuid
+    job.customer_id = uuid4()
     tdb = MagicMock()
     tdb.query.return_value.filter.return_value.first.return_value = job
     result = job_thread_strategy(msg, tdb)
@@ -169,7 +173,8 @@ def test_job_thread_returns_none_when_job_lookup_fails():
 
 def test_tag_message_runs_first_enabled_strategy():
     msg = _msg(from_address="alice@x.com", subject="hi")
-    customer = MagicMock(); customer.id = uuid4()
+    customer = MagicMock()
+    customer.id = uuid4()
     tdb = MagicMock()
     tdb.query.return_value.filter.return_value.first.return_value = customer
     # Settings query returns None → use defaults
@@ -198,7 +203,9 @@ def test_tag_message_skips_disabled_strategies():
     settings.tag_strategy_order = ["auto_match", "job_thread"]
     settings.tag_strategy_enabled = {"auto_match": False, "job_thread": True}
     settings.ai_tag_threshold = Decimal("0.85")
-    job = MagicMock(); job.id = job_uuid; job.customer_id = uuid4()
+    job = MagicMock()
+    job.id = job_uuid
+    job.customer_id = uuid4()
     tdb = MagicMock()
     # 1st query: settings; 2nd query: job lookup
     tdb.query.return_value.filter.return_value.first.side_effect = [settings, job]

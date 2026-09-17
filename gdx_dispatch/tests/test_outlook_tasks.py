@@ -32,7 +32,8 @@ def test_parse_iso_returns_none_for_garbage():
 def test_persist_messages_inserts_new_row():
     tdb = MagicMock()
     tdb.query.return_value.filter.return_value.one_or_none.return_value = None
-    account = MagicMock(); account.id = uuid4()
+    account = MagicMock()
+    account.id = uuid4()
     n = _persist_messages(tdb, account, [
         {"id": "g1", "subject": "Re: estimate",
          "from": {"emailAddress": {"address": "alice@x.com"}}},
@@ -45,7 +46,8 @@ def test_persist_messages_updates_existing():
     tdb = MagicMock()
     existing = MagicMock()
     tdb.query.return_value.filter.return_value.one_or_none.return_value = existing
-    account = MagicMock(); account.id = uuid4()
+    account = MagicMock()
+    account.id = uuid4()
     n = _persist_messages(tdb, account, [{"id": "g1", "subject": "updated"}])
     assert n == 1
     tdb.add.assert_not_called()
@@ -54,7 +56,8 @@ def test_persist_messages_updates_existing():
 
 def test_persist_messages_skips_when_no_id():
     tdb = MagicMock()
-    account = MagicMock(); account.id = uuid4()
+    account = MagicMock()
+    account.id = uuid4()
     assert _persist_messages(tdb, account, [{"subject": "no id"}]) == 0
 
 
@@ -66,7 +69,8 @@ def test_persist_messages_dedupes_repeated_graph_id_in_one_batch():
     2026-07-30 → 08-04: Inbox frozen for 5 days)."""
     tdb = MagicMock()
     tdb.query.return_value.filter.return_value.one_or_none.return_value = None
-    account = MagicMock(); account.id = uuid4()
+    account = MagicMock()
+    account.id = uuid4()
     n = _persist_messages(tdb, account, [
         {"id": "g1", "subject": "first pass"},
         {"id": "g1", "subject": "second pass", "isRead": True},
@@ -244,7 +248,8 @@ def test_persist_new_partial_item_without_gc_persists_partial():
 def test_sync_outlook_mailbox_skips_when_no_account():
     from gdx_dispatch.modules.outlook import tasks
     aid, tid = uuid4(), uuid4()
-    tdb = MagicMock(); tdb.get.return_value = None
+    tdb = MagicMock()
+    tdb.get.return_value = None
     with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", return_value=tdb):
         result = tasks.sync_outlook_mailbox.run(str(aid), str(tid))
     assert result["messages_upserted"] == 0
@@ -256,10 +261,16 @@ def test_sync_outlook_mailbox_walks_folders_and_returns_aggregate():
     aggregate counters in the return value."""
     from gdx_dispatch.modules.outlook import tasks
     aid, tid = uuid4(), uuid4()
-    account = MagicMock(); account.id = aid; account.user_id = uuid4()
+    account = MagicMock()
+    account.id = aid
+    account.user_id = uuid4()
     cdb = MagicMock()
-    folder_a = MagicMock(); folder_a.graph_folder_id = "fA"; folder_a.display_name = "Inbox"
-    folder_b = MagicMock(); folder_b.graph_folder_id = "fB"; folder_b.display_name = "SentItems"
+    folder_a = MagicMock()
+    folder_a.graph_folder_id = "fA"
+    folder_a.display_name = "Inbox"
+    folder_b = MagicMock()
+    folder_b.graph_folder_id = "fB"
+    folder_b.display_name = "SentItems"
     tdb = MagicMock()
     tdb.get.return_value = account
     tdb.query.return_value.filter.return_value.all.return_value = [folder_a, folder_b]
@@ -286,9 +297,15 @@ def test_sync_outlook_mailbox_integrity_error_costs_one_folder_not_the_rest():
 
     from gdx_dispatch.modules.outlook import tasks
     aid, tid = uuid4(), uuid4()
-    account = MagicMock(); account.id = aid; account.user_id = uuid4()
-    poisoned = MagicMock(); poisoned.graph_folder_id = "fA"; poisoned.display_name = "Poisoned"
-    inbox = MagicMock(); inbox.graph_folder_id = "fB"; inbox.display_name = "Inbox"
+    account = MagicMock()
+    account.id = aid
+    account.user_id = uuid4()
+    poisoned = MagicMock()
+    poisoned.graph_folder_id = "fA"
+    poisoned.display_name = "Poisoned"
+    inbox = MagicMock()
+    inbox.graph_folder_id = "fB"
+    inbox.display_name = "Inbox"
     tdb = MagicMock()
     tdb.get.return_value = account
     tdb.query.return_value.filter.return_value.all.return_value = [poisoned, inbox]
@@ -325,11 +342,22 @@ def test_backfill_walks_all_folders_and_filters_by_date():
     folders (Junk, Deleted) are never queried."""
     from gdx_dispatch.modules.outlook import tasks
     aid, tid = uuid4(), uuid4()
-    account = MagicMock(); account.id = aid; account.user_id = uuid4()
+    account = MagicMock()
+    account.id = aid
+    account.user_id = uuid4()
     cdb = MagicMock()
-    inbox = MagicMock(); inbox.graph_folder_id = "fInbox"; inbox.display_name = "Inbox"; inbox.well_known_name = "inbox"
-    junk = MagicMock(); junk.graph_folder_id = "fJunk"; junk.display_name = "Junk"; junk.well_known_name = "junkemail"
-    custom = MagicMock(); custom.graph_folder_id = "fCustom"; custom.display_name = "Receipts"; custom.well_known_name = None
+    inbox = MagicMock()
+    inbox.graph_folder_id = "fInbox"
+    inbox.display_name = "Inbox"
+    inbox.well_known_name = "inbox"
+    junk = MagicMock()
+    junk.graph_folder_id = "fJunk"
+    junk.display_name = "Junk"
+    junk.well_known_name = "junkemail"
+    custom = MagicMock()
+    custom.graph_folder_id = "fCustom"
+    custom.display_name = "Receipts"
+    custom.well_known_name = None
     tdb = MagicMock()
     tdb.get.return_value = account
     tdb.query.return_value.filter.return_value.all.return_value = [inbox, junk, custom]
@@ -378,7 +406,8 @@ def _renew_tdb(expiring, subless=()):
 
 def test_renew_all_renews_expiring_subscription():
     from gdx_dispatch.modules.outlook import tasks
-    sub_a = MagicMock(); sub_a.id = uuid4()
+    sub_a = MagicMock()
+    sub_a.id = uuid4()
     tdb = _renew_tdb([sub_a])
 
     with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", return_value=tdb), \
@@ -410,7 +439,9 @@ def test_renew_all_creates_missing_subscription():
     # row gets one created (nothing else ever calls create_subscription
     # once the connect-time attempt fails).
     from gdx_dispatch.modules.outlook import tasks
-    account = MagicMock(); account.id = uuid4(); account.user_id = uuid4()
+    account = MagicMock()
+    account.id = uuid4()
+    account.user_id = uuid4()
     tdb = _renew_tdb([], subless=[account])
 
     with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", return_value=tdb), \
@@ -424,7 +455,9 @@ def test_renew_all_creates_missing_subscription():
 def test_renew_all_create_failure_is_counted_not_fatal():
     from gdx_dispatch.modules.outlook import tasks
     from gdx_dispatch.modules.outlook.subscriptions import SubscriptionError
-    account = MagicMock(); account.id = uuid4(); account.user_id = uuid4()
+    account = MagicMock()
+    account.id = uuid4()
+    account.user_id = uuid4()
     tdb = _renew_tdb([], subless=[account])
 
     with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", return_value=tdb), \
@@ -439,7 +472,8 @@ def test_renew_all_create_failure_is_counted_not_fatal():
 
 
 def _account(connected=True, last_sync_minutes_ago=5):
-    a = MagicMock(); a.id = uuid4()
+    a = MagicMock()
+    a.id = uuid4()
     a.access_token_enc = "fernet" if connected else None
     # Real datetime, not an auto-Mock: the poller now compares last_sync_at
     # against the FALLBACK_STALE_MINUTES cutoff.

@@ -173,7 +173,8 @@ def test_detects_captured_door_without_source_tag(db):
         id=uuid4(), job_id=job_id, estimate_number=f"EST-{uuid4().hex[:8]}",
         company_id="tenant-test", public_token=uuid4().hex, status="accepted", total=0,
     )
-    db.add(est); db.flush()
+    db.add(est)
+    db.flush()
     db.add(EstimateLine(
         id=uuid4(), estimate_id=est.id, company_id="tenant-test",
         description="Timeless Collection, Raised Panel", quantity=1, unit_price=2000,
@@ -201,7 +202,8 @@ def test_multiple_doors_returned_each_with_size(db):
         id=uuid4(), job_id=job_id, estimate_number=f"EST-{uuid4().hex[:8]}",
         company_id="tenant-test", public_token=uuid4().hex, status="accepted", total=0,
     )
-    db.add(est); db.flush()
+    db.add(est)
+    db.flush()
     for size, w, h in (('14\'0" x 12\'0"', "168", "144"), ('10\'0" x 10\'0"', "120", "120")):
         md = {k: v for k, v in CHI_SPEC.items() if not k.startswith("_")}
         md.update({"Size": size, "Width": w, "Height": h})
@@ -270,7 +272,8 @@ def install_client():
     ):
         setup.execute(text(ddl))
     setup.execute(text("INSERT OR IGNORE INTO company_module_grants (id, company_id, module_key, granted_at, created_at) VALUES ('g2','tenant-test','jobs',datetime('now'),datetime('now'))"))
-    setup.commit(); setup.close()
+    setup.commit()
+    setup.close()
 
     def _override_db():
         s = Session()
@@ -340,7 +343,8 @@ def po_client():
     ):
         setup.execute(text(ddl))
     setup.execute(text("INSERT OR IGNORE INTO company_module_grants (id, company_id, module_key, granted_at, created_at) VALUES ('g2','tenant-test','inventory',datetime('now'),datetime('now'))"))
-    setup.commit(); setup.close()
+    setup.commit()
+    setup.close()
 
     def _override_db():
         s = Session()
@@ -433,7 +437,9 @@ def test_po_door_snapshot_frozen_against_quote_revision(po_client):
     try:
         lines = db.execute(_sel(EstimateLine).where(EstimateLine.company_id == "tenant-test")).scalars().all()
         chi = next(l for l in lines if isinstance(l.line_metadata, dict) and l.line_metadata.get("source") == "chi_hubx")
-        md = dict(chi.line_metadata); md["Color"] = "Almond"; chi.line_metadata = md
+        md = dict(chi.line_metadata)
+        md["Color"] = "Almond"
+        chi.line_metadata = md
         db.commit()
     finally:
         db.close()
@@ -471,7 +477,9 @@ def test_po_snapshot_survives_a_status_patch(po_client):
     try:
         lines = db.execute(_sel(EstimateLine).where(EstimateLine.company_id == "tenant-test")).scalars().all()
         chi = next(l for l in lines if isinstance(l.line_metadata, dict) and l.line_metadata.get("source") == "chi_hubx")
-        md = dict(chi.line_metadata); md["Color"] = "Almond"; chi.line_metadata = md
+        md = dict(chi.line_metadata)
+        md["Color"] = "Almond"
+        chi.line_metadata = md
         db.commit()
     finally:
         db.close()

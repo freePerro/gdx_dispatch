@@ -103,7 +103,9 @@ def _seed_customer(client: TestClient) -> str:
     db = client._sessionmaker()
     try:
         c = Customer(name="Test Cust", email="x@y.z", company_id="tenant-test")
-        db.add(c); db.commit(); db.refresh(c)
+        db.add(c)
+        db.commit()
+        db.refresh(c)
         return str(c.id)
     finally:
         db.close()
@@ -120,7 +122,8 @@ def _seed_labor_row(client: TestClient) -> str:
             flat_price=Decimal("700.00"),
             assumed_man_hours=Decimal("7.00"),
         )
-        db.add(row); db.commit()
+        db.add(row)
+        db.commit()
         return str(row.id)
     finally:
         db.close()

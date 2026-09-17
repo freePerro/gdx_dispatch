@@ -626,7 +626,9 @@ def test_accept_estimate_auto_creates_job(client: TestClient):
             color="#3b82f6",
             sort_order=3,
         )
-        db.add(area); db.commit(); db.refresh(area)
+        db.add(area)
+        db.commit()
+        db.refresh(area)
         area_id = area.id
     finally:
         db.close()

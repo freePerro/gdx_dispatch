@@ -361,13 +361,17 @@ def test_invariant_holds_across_event_sequence(db):
     db.commit()
     _assert_invariant(db, inv)
 
-    _pay(db, inv, 50.0); _assert_invariant(db, inv)
-    _pay(db, inv, 170.0, allow_overpayment=True); _assert_invariant(db, inv)
+    _pay(db, inv, 50.0)
+    _assert_invariant(db, inv)
+    _pay(db, inv, 170.0, allow_overpayment=True)
+    _assert_invariant(db, inv)
     first = db.scalars(
         select(Payment).where(Payment.invoice_id == inv.id).order_by(Payment.created_at)
     ).first()
-    void_payment(inv.id, first.id, _=USER, db=db); _assert_invariant(db, inv)
-    _pay(db, inv, 30.0); _assert_invariant(db, inv)
+    void_payment(inv.id, first.id, _=USER, db=db)
+    _assert_invariant(db, inv)
+    _pay(db, inv, 30.0)
+    _assert_invariant(db, inv)
 
 
 # ---------------------------------------------------------------------------
