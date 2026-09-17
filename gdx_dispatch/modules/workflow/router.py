@@ -64,7 +64,7 @@ def _tenant_uuid(request: Request) -> UUID:
 def _read(db: Session, tid: UUID) -> dict[str, bool]:
     cols = ", ".join(_FLAG_COLUMNS)
     row = db.execute(
-        text(f"SELECT {cols} FROM tenant_settings WHERE tenant_id = :tid"),
+        text(f"SELECT {cols} FROM tenant_settings WHERE tenant_id = :tid"),  # noqa: S608 — column list is the module constant tuple; the tenant id is bound
         {"tid": str(tid)},
     ).first()
     if row is None:
@@ -74,7 +74,7 @@ def _read(db: Session, tid: UUID) -> dict[str, bool]:
         )
         db.commit()
         row = db.execute(
-            text(f"SELECT {cols} FROM tenant_settings WHERE tenant_id = :tid"),
+            text(f"SELECT {cols} FROM tenant_settings WHERE tenant_id = :tid"),  # noqa: S608 — column list is the module constant tuple; the tenant id is bound
             {"tid": str(tid)},
         ).first()
     if row is None:

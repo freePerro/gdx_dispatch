@@ -52,7 +52,7 @@ def upgrade() -> None:
     # are empty on dev/prod today, so this is insurance, not surgery.
     for tbl in ("quote_templates", "job_templates"):
         bind.exec_driver_sql(
-            f"UPDATE {tbl} SET job_type = 'Service Call' "
+            f"UPDATE {tbl} SET job_type = 'Service Call' "  # noqa: S608 — table name from the hardcoded tuple above; no input
             "WHERE job_type IN ('Service', 'service')"
         )
 

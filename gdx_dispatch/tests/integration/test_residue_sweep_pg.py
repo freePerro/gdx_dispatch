@@ -71,7 +71,7 @@ def seed_users(pg_engine):
                 ('u2', 'someone@example.com', NULL),
                 ('u3', 'real@user.com',       NULL),
                 ('u4', 'owner@example.com', 'gdx')
-        """))
+        """))  # noqa: S608 — table name is a module constant
     yield
     with pg_engine.begin() as conn:
         conn.execute(text(f'DROP TABLE IF EXISTS "{_USERS}"'))
@@ -95,7 +95,7 @@ def seed_audit(pg_engine):
                 ('a2', NULL, 'invoice_sent',     '2026-04-08T23:00:00+00:00'),
                 ('a3', NULL, 'recent_event',     '2026-04-15T08:00:00+00:00'),
                 ('a4', 'gdx', 'scoped_event',    '2026-04-08T12:00:00+00:00')
-        """))
+        """))  # noqa: S608 — table name is a module constant
     yield
     with pg_engine.begin() as conn:
         conn.execute(text(f'DROP TABLE IF EXISTS "{_AUDIT}"'))
@@ -190,7 +190,7 @@ def test_delete_residue_survives_real_pg_transaction(
 
     with pg_engine.connect() as conn:
         rows = conn.execute(
-            text(f'SELECT id, email FROM "{_USERS}" ORDER BY id')
+            text(f'SELECT id, email FROM "{_USERS}" ORDER BY id')  # noqa: S608 — table name is a module constant
         ).fetchall()
     # Only u3 (unattributed) and u4 (scoped) survive — residue rows gone.
     assert sorted(r[0] for r in rows) == ["u3", "u4"]
@@ -219,6 +219,6 @@ def test_delete_rolls_back_on_count_mismatch_pg(
     # PG should have rolled back — all 4 seed rows still present
     with pg_engine.connect() as conn:
         count = conn.execute(
-            text(f'SELECT COUNT(*) FROM "{_USERS}"')
+            text(f'SELECT COUNT(*) FROM "{_USERS}"')  # noqa: S608 — table name is a module constant
         ).scalar()
     assert count == 4

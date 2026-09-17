@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -946,7 +947,7 @@ async def update_customer_location(
             raise HTTPException(status_code=400, detail="no fields to update")
         set_sql = ", ".join(f"{col} = :{col}" for col in updates)
         db.execute(
-            text(f"UPDATE customer_locations SET {set_sql} WHERE id = :location_id"),
+            text(f"UPDATE customer_locations SET {set_sql} WHERE id = :location_id"),  # noqa: S608 — SET keys are the hardcoded column names above; values are bound
             {"location_id": location_id, **updates},
         )
         db.commit()
@@ -1462,7 +1463,7 @@ def absorb_subcustomers(
             try:
                 ids_moving = [
                     str(r[0]) for r in db.execute(
-                        text(f"SELECT id FROM {table} WHERE {column} IN :ids")
+                        text(f"SELECT id FROM {table} WHERE {column} IN :ids")  # noqa: S608 — table/column are catalog names passed through _sql_identifier in _discover_customer_fk_tables; ids are bound
                         .bindparams(bindparam("ids", expanding=True)),
                         {"ids": sub_ids},
                     ).all()
@@ -1473,7 +1474,7 @@ def absorb_subcustomers(
                 db.rollback()
                 ids_moving = []
             result = db.execute(
-                text(f"UPDATE {table} SET {column} = :keep WHERE {column} IN :ids")
+                text(f"UPDATE {table} SET {column} = :keep WHERE {column} IN :ids")  # noqa: S608 — table/column are catalog names passed through _sql_identifier in _discover_customer_fk_tables; ids are bound
                 .bindparams(bindparam("ids", expanding=True)),
                 {"keep": str(parent.id), "ids": sub_ids},
             )
@@ -1592,6 +1593,21 @@ class MergeOut(BaseModel):
 # Tables whose customer_id column should be rewritten during merge. Discovered
 # at startup via information_schema — cached so we don't pay it per-request.
 _MERGE_TABLES_CACHE: dict[str, list[tuple[str, str]]] = {}
+
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _sql_identifier(name: str) -> str:
+    """The one gate between a catalog-supplied table/column name and the SQL
+    it is interpolated into (merge, absorb). The names come from
+    information_schema or the SQLAlchemy inspector, never a request — but the
+    three `UPDATE {table} SET {column}` sites carry `# noqa: S608` on the
+    strength of THIS check, so it has to be a real refusal, not a promise
+    (same shape as routers/reports.py::_alias_prefix)."""
+    # fullmatch, not match: `$` accepts a trailing newline ("jobs\n" passed).
+    if not isinstance(name, str) or not _IDENTIFIER.fullmatch(name):
+        raise ValueError(f"unsafe SQL identifier from catalog: {name!r}")
+    return name
 
 
 def _id_spellings(ids: list[str]) -> list[str]:
@@ -1716,6 +1732,7 @@ def _discover_customer_fk_tables(db: Session) -> list[tuple[str, str]]:
                 if str(col.get("name")) in wanted:
                     tables.append((table_name, str(col["name"])))
         tables = sorted(set(tables))
+    tables = [(_sql_identifier(t), _sql_identifier(c)) for t, c in tables]
     _MERGE_TABLES_CACHE["tables"] = tables
     return tables
 
@@ -1784,7 +1801,7 @@ def merge_customers(
         fk_tables = _discover_customer_fk_tables(db)
         for table, column in fk_tables:
             stmt = text(
-                f"UPDATE {table} SET {column} = :keep WHERE {column} IN :ids"
+                f"UPDATE {table} SET {column} = :keep WHERE {column} IN :ids"  # noqa: S608 — table/column are catalog names passed through _sql_identifier in _discover_customer_fk_tables; ids are bound
             ).bindparams(bindparam("ids", expanding=True))
             result = db.execute(
                 stmt,

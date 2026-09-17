@@ -1047,7 +1047,7 @@ async def list_anomalies(
         params["aid"] = account_id
     anomaly_rows = db.execute(
         text(
-            "SELECT qb_account_id, MAX(account_name) AS account_name, "
+            "SELECT qb_account_id, MAX(account_name) AS account_name, "  # noqa: S608 — where_acct is a literal clause; account_id and year are bound
             "MAX(account_type) AS account_type, SUM(amount) AS total "
             "FROM qb_pnl_monthly "
             f"WHERE year = :y {where_acct} "

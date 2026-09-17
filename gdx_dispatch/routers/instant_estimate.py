@@ -169,7 +169,7 @@ def instant_estimate(
                               AND cci.deleted_at IS NULL AND {custom_where}
                     ) AS doors
                     LIMIT 5
-                """),
+                """),  # noqa: S608 — both WHEREs are joined from literal clauses; parsed values are bound
                 params,
             ).mappings().all()
 

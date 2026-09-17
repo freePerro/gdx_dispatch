@@ -65,7 +65,7 @@ def list_entries(
     where_sql = " AND ".join(where)
     rows = db.execute(
         text(
-            "SELECT id, tech_user_id, period_start, period_end, hours_paid, "
+            "SELECT id, tech_user_id, period_start, period_end, hours_paid, "  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
             "       gross_pay, source, external_ref, notes, created_at "
             f"FROM payroll_entries WHERE {where_sql} "
             "ORDER BY period_end DESC LIMIT :lim OFFSET :off"
@@ -73,7 +73,7 @@ def list_entries(
         {**params, "lim": page_size, "off": (page - 1) * page_size},
     ).mappings().all()
     total = db.execute(
-        text(f"SELECT COUNT(*) FROM payroll_entries WHERE {where_sql}"),
+        text(f"SELECT COUNT(*) FROM payroll_entries WHERE {where_sql}"),  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
         params,
     ).scalar() or 0
     return {

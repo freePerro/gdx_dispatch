@@ -154,7 +154,7 @@ def variance_summary(
                 HAVING COALESCE(SUM(ABS(vil.quantity_change)), 0) > 0
                 ORDER BY actual_qty DESC
                 LIMIT :limit
-            """),
+            """),  # noqa: S608 — date_filter is joined from literal clauses; dates are bound
             params,
         ).mappings().all()
 

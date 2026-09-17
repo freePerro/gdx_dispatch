@@ -154,12 +154,12 @@ def list_errors(
     where_sql = " AND ".join(where)
 
     total = db.execute(
-        text(f"SELECT COUNT(*) FROM server_errors WHERE {where_sql}"),
+        text(f"SELECT COUNT(*) FROM server_errors WHERE {where_sql}"),  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
         params,
     ).scalar() or 0
     rows = db.execute(
         text(
-            f"SELECT id, tenant_id, method, path, status_code, exception_class, "
+            f"SELECT id, tenant_id, method, path, status_code, exception_class, "  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
             f"exception_message, user_id, user_email, git_sha, group_fingerprint, "
             f"occurred_at, resolved_at, resolved_by "
             f"FROM server_errors WHERE {where_sql} "
@@ -192,21 +192,21 @@ def stats(
 
     by_class = db.execute(
         text(
-            f"SELECT exception_class, COUNT(*) AS n FROM server_errors WHERE {where_sql} "
+            f"SELECT exception_class, COUNT(*) AS n FROM server_errors WHERE {where_sql} "  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
             f"GROUP BY exception_class ORDER BY n DESC LIMIT 20"
         ),
         params,
     ).mappings().all()
     by_path = db.execute(
         text(
-            f"SELECT path, COUNT(*) AS n FROM server_errors WHERE {where_sql} "
+            f"SELECT path, COUNT(*) AS n FROM server_errors WHERE {where_sql} "  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
             f"GROUP BY path ORDER BY n DESC LIMIT 20"
         ),
         params,
     ).mappings().all()
     by_group = db.execute(
         text(
-            f"SELECT group_fingerprint, "
+            f"SELECT group_fingerprint, "  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
             f"  MIN(exception_class) AS exception_class, "
             f"  MIN(path) AS path, "
             f"  COUNT(*) AS n, "
@@ -217,7 +217,7 @@ def stats(
         params,
     ).mappings().all()
     open_total = db.execute(
-        text(f"SELECT COUNT(*) FROM server_errors WHERE {where_sql}"),
+        text(f"SELECT COUNT(*) FROM server_errors WHERE {where_sql}"),  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
         params,
     ).scalar() or 0
     return {
@@ -243,7 +243,7 @@ def get_error(
         where += " AND tenant_id = :tid"
         params["tid"] = tid
     row = db.execute(
-        text(f"SELECT * FROM server_errors WHERE {where}"),
+        text(f"SELECT * FROM server_errors WHERE {where}"),  # noqa: S608 — WHERE is literal; id and tenant id are bound
         params,
     ).mappings().first()
     if not row:
@@ -283,7 +283,7 @@ def resolve_error(
         base_where += " AND tenant_id = :tid"
         params["tid"] = tid
     row = db.execute(
-        text(f"SELECT id, group_fingerprint FROM server_errors WHERE {base_where}"),
+        text(f"SELECT id, group_fingerprint FROM server_errors WHERE {base_where}"),  # noqa: S608 — WHERE is literal; id and tenant id are bound
         params,
     ).mappings().first()
     if not row:

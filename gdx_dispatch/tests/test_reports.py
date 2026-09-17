@@ -972,7 +972,7 @@ def test_m8_shared_revenue_definition_is_actually_applied(tenant_db_session):
 
     got = tenant_db_session.execute(
         text(
-            f"SELECT COALESCE(SUM({reports._revenue_amount_sql()}), 0) "
+            f"SELECT COALESCE(SUM({reports._revenue_amount_sql()}), 0) "  # noqa: S608 — interpolation is the module's constant SQL helpers; no input
             f"FROM invoices WHERE {reports._revenue_where_sql()}"
         )
     ).scalar()

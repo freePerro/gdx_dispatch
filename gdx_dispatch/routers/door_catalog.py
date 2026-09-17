@@ -93,10 +93,10 @@ def list_doors(
     chi_where_sql = " AND ".join(where_chi)
     custom_where_sql = " AND ".join(where_custom)
 
-    total_chi = db.execute(text(f"SELECT count(*) FROM chi_door_catalog WHERE {chi_where_sql}"), params).scalar() or 0
+    total_chi = db.execute(text(f"SELECT count(*) FROM chi_door_catalog WHERE {chi_where_sql}"), params).scalar() or 0  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
     total_custom = db.execute(
         text(
-            f"SELECT count(*) FROM custom_catalog_items cci "
+            f"SELECT count(*) FROM custom_catalog_items cci "  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
             f"LEFT JOIN door_specs ds ON ds.catalog_item_id = cci.id "
             f"WHERE {custom_where_sql}"
         ),
@@ -141,7 +141,7 @@ def list_doors(
         ) AS doors
         ORDER BY sort_brand NULLS LAST, sort_model NULLS LAST
         LIMIT :lim OFFSET :off
-    """
+    """  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
     rows = db.execute(text(union_sql), {**params, "lim": page_size, "off": offset}).mappings().all()
 
     items = [
@@ -206,7 +206,7 @@ def list_parts(
         params["brand"] = f"%{brand}%"
 
     where_sql = " AND ".join(where)
-    total = db.execute(text(f"SELECT count(*) FROM chi_parts_catalog WHERE {where_sql}"), params).scalar() or 0
+    total = db.execute(text(f"SELECT count(*) FROM chi_parts_catalog WHERE {where_sql}"), params).scalar() or 0  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
 
     offset = (page - 1) * page_size
     rows = db.execute(text(f"""
@@ -215,7 +215,7 @@ def list_parts(
         FROM chi_parts_catalog WHERE {where_sql}
         ORDER BY part_type, name
         LIMIT :lim OFFSET :off
-    """), {**params, "lim": page_size, "off": offset}).mappings().all()
+    """), {**params, "lim": page_size, "off": offset}).mappings().all()  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
 
     items = [
         {

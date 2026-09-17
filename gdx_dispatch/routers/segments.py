@@ -340,7 +340,7 @@ def _customer_stats_sql(has_customer_type: bool, has_metadata: bool) -> str:
             WHERE c.deleted_at IS NULL
             GROUP BY c.id
             ORDER BY c.created_at DESC
-            """
+            """  # noqa: S608 — the two selects are literals chosen by column-presence flags; nothing from a request
 
 
 def _customer_stats(db: Session) -> list[dict[str, Any]]:

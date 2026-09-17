@@ -286,3 +286,18 @@ def test_the_keeper_id_is_stored_canonically(db):
     ).scalar()
     assert uuid.UUID(stored) == keep.id
     assert stored == stored.lower(), f"stored non-canonical: {stored}"
+
+
+def test_sql_identifier_is_the_gate_the_merge_noqa_leans_on():
+    """merge/absorb interpolate catalog-supplied table and column names into
+    `UPDATE {table} SET {column} …`, and those sites carry `# noqa: S608` on
+    the strength of `_sql_identifier` in `_discover_customer_fk_tables`.
+    The names come from information_schema / the inspector, never a request —
+    this pins the gate as a real refusal so the noqa stays a guarantee."""
+    from gdx_dispatch.routers.customers import _sql_identifier
+
+    for good in ("jobs", "customer_id", "_x", "Table9", "related_customer_id"):
+        assert _sql_identifier(good) == good
+    for bad in ("", "jobs; DROP TABLE users", "a b", 'x"y', "9abc", "cust-id", None, "jobs\n"):
+        with pytest.raises(ValueError, match="unsafe SQL identifier"):
+            _sql_identifier(bad)

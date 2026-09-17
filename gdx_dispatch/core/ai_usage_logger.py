@@ -186,7 +186,7 @@ def _usage_stats(db: Session, tenant_id: str) -> dict[str, Any]:
             WHERE tenant_id = :tenant_id
             GROUP BY {day_expr}
             ORDER BY day DESC
-            """
+            """  # noqa: S608 — day_expr is one of two literals picked by dialect; tenant_id is bound
         ),
         {"tenant_id": tenant_id},
     ).mappings().all()

@@ -81,7 +81,7 @@ def _build_user_stats(db: Session, tid: str, user_id: str, period: str | None) -
                 WHERE company_id = :tid AND assigned_to = :user_id
                   AND status IN ('Complete', 'Completed', 'complete', 'completed')
                   {period_filter}
-            """),
+            """),  # noqa: S608 — period_filter is a literal clause; dates are bound
             params,
         ).mappings().first()
         stats["jobs_completed"] = _safe_int(row["cnt"]) if row else 0
@@ -97,7 +97,7 @@ def _build_user_stats(db: Session, tid: str, user_id: str, period: str | None) -
                 JOIN jobs j ON i.job_id = j.id
                 WHERE j.company_id = :tid AND j.assigned_to = :user_id
                   {period_filter.replace('created_at', 'i.created_at')}
-            """),
+            """),  # noqa: S608 — period_filter is a literal clause (column renamed by a literal replace); dates are bound
             params,
         ).mappings().first()
         revenue = _safe_float(row["revenue"]) if row else 0.0
@@ -117,7 +117,7 @@ def _build_user_stats(db: Session, tid: str, user_id: str, period: str | None) -
                 FROM estimates
                 WHERE company_id = :tid AND created_by = :user_id
                   {period_filter}
-            """),
+            """),  # noqa: S608 — period_filter is a literal clause; dates are bound
             params,
         ).mappings().first()
         if row:
@@ -134,7 +134,7 @@ def _build_user_stats(db: Session, tid: str, user_id: str, period: str | None) -
                 FROM timeclock_entries
                 WHERE company_id = :tid AND user_id = :user_id
                   {period_filter.replace('created_at', 'clock_in')}
-            """),
+            """),  # noqa: S608 — period_filter is a literal clause (column renamed by a literal replace); dates are bound
             params,
         ).mappings().first()
         stats["hours_worked"] = _safe_float(row["total_hours"]) if row else 0.0
@@ -149,7 +149,7 @@ def _build_user_stats(db: Session, tid: str, user_id: str, period: str | None) -
                 WHERE company_id = :tid AND assigned_to = :user_id
                   AND status = 'done'
                   {period_filter}
-            """),
+            """),  # noqa: S608 — period_filter is a literal clause; dates are bound
             params,
         ).mappings().first()
         stats["tasks_completed"] = _safe_int(row["cnt"]) if row else 0
@@ -187,7 +187,7 @@ def _build_user_stats(db: Session, tid: str, user_id: str, period: str | None) -
                 WHERE company_id = :tid AND technician_id = :user_id
                   AND completed = true AND deleted_at IS NULL
                   {period_filter}
-            """),
+            """),  # noqa: S608 — period_filter is a literal clause; dates are bound
             params,
         ).mappings().first()
         stats["safety_checklists"] = _safe_int(row["cnt"]) if row else 0

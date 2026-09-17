@@ -32,8 +32,8 @@ _SPELLINGS = "('super_admin', 'superadmin', 'super-admin')"
 def upgrade() -> None:
     bind = op.get_bind()
     if inspect(bind).has_table("users"):
-        bind.exec_driver_sql(  # noqa: S608 — the IN list is a module constant, no user input
-            f"UPDATE users SET role = 'owner' WHERE LOWER(TRIM(role)) IN {_SPELLINGS};"
+        bind.exec_driver_sql(
+            f"UPDATE users SET role = 'owner' WHERE LOWER(TRIM(role)) IN {_SPELLINGS};"  # noqa: S608 — the IN list is a module constant, no user input
         )
 
 

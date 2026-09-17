@@ -139,7 +139,7 @@ def _list_virtual_catalogs(db: Session) -> list[dict[str, object]]:
     ):
         try:
             count = db.execute(
-                text(f"SELECT count(*) FROM {table} WHERE is_active = true")
+                text(f"SELECT count(*) FROM {table} WHERE is_active = true")  # noqa: S608 — table from the hardcoded tuple above; no input
             ).scalar() or 0
         except Exception:
             count = 0
@@ -201,10 +201,10 @@ def _virtual_catalog_items(virtual_id: str, search: str | None,
     where_sql = " AND ".join(where)
 
     total = int(db.execute(
-        text(f"SELECT count(*) FROM {table} WHERE {where_sql}"), params
+        text(f"SELECT count(*) FROM {table} WHERE {where_sql}"), params  # noqa: S608 — table and WHERE are literals chosen by virtual_id; search is bound
     ).scalar() or 0)
     rows = db.execute(
-        text(f"SELECT {spec_select} FROM {table} WHERE {where_sql} "
+        text(f"SELECT {spec_select} FROM {table} WHERE {where_sql} "  # noqa: S608 — table, spec_select and WHERE are literals chosen by virtual_id; search is bound
              f"ORDER BY sku LIMIT :lim OFFSET :off"),
         {**params, "lim": per_page, "off": (page - 1) * per_page},
     ).mappings().all()
@@ -873,7 +873,7 @@ def items_needing_pricing(
     if include_cost:
         where.append("(cost IS NULL OR cost <= 0)")
     sql = (
-        "SELECT id, catalog_id, sku, name, description, cost, price, category "
+        "SELECT id, catalog_id, sku, name, description, cost, price, category "  # noqa: S608 — WHERE is joined from literal clauses; nothing from the request is in the string
         "FROM custom_catalog_items "
         f"WHERE {' AND '.join(where)} "
         "ORDER BY name ASC LIMIT :lim OFFSET :off"
@@ -883,7 +883,7 @@ def items_needing_pricing(
         {"lim": page_size, "off": (page - 1) * page_size},
     ).mappings().all()
     total = db.execute(
-        text(f"SELECT COUNT(*) FROM custom_catalog_items WHERE {' AND '.join(where)}")
+        text(f"SELECT COUNT(*) FROM custom_catalog_items WHERE {' AND '.join(where)}")  # noqa: S608 — WHERE is joined from literal clauses; nothing from the request is in the string
     ).scalar() or 0
     return {
         "items": [dict(r) for r in rows],

@@ -1158,7 +1158,7 @@ def mobile_open_invoices(
         placeholders = ", ".join(f":{k}" for k in binds)
         rows = db.execute(
             _text(
-                "SELECT CAST(i.id AS TEXT) AS id, i.invoice_number, i.total, "
+                "SELECT CAST(i.id AS TEXT) AS id, i.invoice_number, i.total, "  # noqa: S608 — placeholders is a list of :jN bind names; every id is bound
                 "       i.balance_due, i.status, i.billing_type, i.due_date "
                 "FROM invoices i "
                 "LEFT JOIN estimates e ON CAST(e.id AS TEXT) = CAST(i.estimate_id AS TEXT) "

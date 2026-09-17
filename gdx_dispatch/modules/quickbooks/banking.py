@@ -245,7 +245,7 @@ async def pull_deposits(
     date window that was NOT in the QBO response gets soft-deleted
     (deleted_at = now). The unified-feed read filters these out.
     """
-    where = _build_date_where(start_date, end_date)
+    where = qbo_date_where(start_date, end_date)
     try:
         rows = await qb.query("Deposit", where=where, max_results=500)
     except QBAPIError:
@@ -457,7 +457,7 @@ def _reconcile_entries_for(
         params["ed"] = end_date
 
     rows = db.execute(
-        text("SELECT qb_txn_id, qb_line_index FROM qb_banking_entries WHERE " + " AND ".join(where)),
+        text("SELECT qb_txn_id, qb_line_index FROM qb_banking_entries WHERE " + " AND ".join(where)),  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
         params,
     ).all()
     to_tombstone = [(r[0], int(r[1])) for r in rows if (r[0], int(r[1])) not in seen_keys]
@@ -484,7 +484,7 @@ async def _pull_simple_entity(
     """Generic pull for single-row-per-doc entities (BillPayment, SalesReceipt,
     RefundReceipt, CreditCardCredit). JournalEntry has its own loop.
     """
-    where = _build_date_where(start_date, end_date)
+    where = qbo_date_where(start_date, end_date)
     try:
         rows = await qb.query(qb_entity, where=where, max_results=500)
     except QBAPIError:
@@ -608,7 +608,7 @@ async def pull_customer_payments(
             "error": "skipped: qb_accounts empty — run accounts sync first to identify bank accounts",
         }]}
 
-    where = _build_date_where(start_date, end_date)
+    where = qbo_date_where(start_date, end_date)
     try:
         rows = await qb.query("Payment", where=where, max_results=500)
     except QBAPIError:
@@ -672,7 +672,7 @@ async def pull_vendor_credits(
     any future sum/roll-up over the unified feed. The credit amount is
     captured in the memo as "Credit: $X.XX" for display visibility.
     """
-    where = _build_date_where(start_date, end_date)
+    where = qbo_date_where(start_date, end_date)
     try:
         rows = await qb.query("VendorCredit", where=where, max_results=500)
     except QBAPIError:
@@ -724,7 +724,7 @@ async def pull_journal_entries(tenant_id: str, db: Session, qb: QBClient, start_
     Filters down to lines whose AccountRef points to an account we
     already know is a Bank or Credit Card (via qb_accounts).
     """
-    where = _build_date_where(start_date, end_date)
+    where = qbo_date_where(start_date, end_date)
     try:
         rows = await qb.query("JournalEntry", where=where, max_results=500)
     except QBAPIError:
@@ -816,7 +816,7 @@ async def pull_journal_entries(tenant_id: str, db: Session, qb: QBClient, start_
 async def pull_transfers(
     tenant_id: str, db: Session, qb: QBClient, start_date: str = "", end_date: str = "",
 ) -> dict[str, Any]:
-    where = _build_date_where(start_date, end_date)
+    where = qbo_date_where(start_date, end_date)
     try:
         rows = await qb.query("Transfer", where=where, max_results=500)
     except QBAPIError:
@@ -1506,14 +1506,20 @@ import re as _re
 _DATE_PATTERN = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def _validate_date(value: str, label: str) -> str:
+def validate_qbo_date(value: str, label: str) -> str:
     """Strictly accept YYYY-MM-DD before interpolating into a QBO query.
     QBO's query string is string-only (no bound params); a malformed value
     would either inject (commas, single quotes) or fail mid-query.
+
+    Public on purpose: this and `qbo_date_where` are the ONLY way a date may
+    reach `QBClient.query`. `sync.pull_bank_transactions` built the identical
+    `TxnDate >= '{start_date}'` without it until 2026-09-16 — the one caller
+    that took the dates straight from the request query string.
     """
     if not value:
         return ""
-    if not _DATE_PATTERN.match(value):
+    # fullmatch, not match: `$` accepts a trailing newline ("2026-05-01\n" passed).
+    if not _DATE_PATTERN.fullmatch(value):
         raise ValueError(f"{label} must be YYYY-MM-DD")
     return value
 
@@ -1547,7 +1553,7 @@ def _reconcile_tombstones(
         where.append("(txn_date <= :ed OR txn_date IS NULL)")
         params["ed"] = end_date
 
-    sql = f"UPDATE {table} SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE " + " AND ".join(where)
+    sql = f"UPDATE {table} SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE " + " AND ".join(where)  # noqa: S608 — table is checked against the two-name set above and raises otherwise; values are bound
     stmt = text(sql)
     if "seen" in params:
         from sqlalchemy import bindparam
@@ -1557,10 +1563,10 @@ def _reconcile_tombstones(
     return int(result.rowcount or 0)
 
 
-def _build_date_where(start_date: str, end_date: str) -> str:
+def qbo_date_where(start_date: str, end_date: str) -> str:
     parts: list[str] = []
-    s = _validate_date(start_date, "start_date")
-    e = _validate_date(end_date, "end_date")
+    s = validate_qbo_date(start_date, "start_date")
+    e = validate_qbo_date(end_date, "end_date")
     if s:
         parts.append(f"TxnDate >= '{s}'")
     if e:

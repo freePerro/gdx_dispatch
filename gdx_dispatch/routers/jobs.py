@@ -764,7 +764,7 @@ def list_jobs(
     try:
         total = db.execute(
             _text(
-                f"SELECT COUNT(*) FROM jobs j "
+                f"SELECT COUNT(*) FROM jobs j "  # noqa: S608 — WHERE is joined from literal fragments and order_sql is one of two literals; values are bound
                 f"LEFT JOIN customers c ON c.id = j.customer_id AND c.deleted_at IS NULL "
                 f"WHERE {where_sql}"
             ),
@@ -774,7 +774,7 @@ def list_jobs(
         # so the frontend stat cards and status tabs can show global totals.
         count_rows = db.execute(
             _text(
-                "SELECT COALESCE(CAST(j.lifecycle_stage AS text), j.status) AS st, COUNT(*) AS n "
+                "SELECT COALESCE(CAST(j.lifecycle_stage AS text), j.status) AS st, COUNT(*) AS n "  # noqa: S608 — WHERE is joined from literal fragments and order_sql is one of two literals; values are bound
                 "FROM jobs j LEFT JOIN customers c ON c.id = j.customer_id AND c.deleted_at IS NULL "
                 f"WHERE {where_sql} "
                 "GROUP BY COALESCE(CAST(j.lifecycle_stage AS text), j.status)"
@@ -787,7 +787,7 @@ def list_jobs(
             status_counts[key] = status_counts.get(key, 0) + int(cr.get("n") or 0)
         rows = db.execute(
             _text(
-                "SELECT j.id, j.job_number, j.title, j.description, j.status, j.lifecycle_stage, "
+                "SELECT j.id, j.job_number, j.title, j.description, j.status, j.lifecycle_stage, "  # noqa: S608 — WHERE is joined from literal fragments and order_sql is one of two literals; values are bound
                 "j.dispatch_status, j.billing_status, j.scheduled_at, j.completed_at, "
                 "j.priority, j.job_type, j.customer_id, j.assigned_to, j.holding_area_id, "
                 "j.scheduled_duration_hours, j.location_id, j.is_return_visit, "

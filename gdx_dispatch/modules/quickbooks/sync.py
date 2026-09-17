@@ -31,6 +31,7 @@ from gdx_dispatch.models.tenant_models import (
     Job,
     Payment,
 )
+from gdx_dispatch.modules.quickbooks.banking import qbo_date_where
 from gdx_dispatch.modules.quickbooks.client import QBAPIError, QBClient
 
 log = logging.getLogger(__name__)
@@ -2156,12 +2157,12 @@ async def pull_bank_transactions(
     # add deleted_at, swap the unique constraint.
     _ensure_bank_tx_schema(db)
 
-    where_parts: list[str] = []
-    if start_date:
-        where_parts.append(f"TxnDate >= '{start_date}'")
-    if end_date:
-        where_parts.append(f"TxnDate <= '{end_date}'")
-    where = " AND ".join(where_parts)
+    # Dates are interpolated into QBO's query string (it has no bind params),
+    # and this endpoint takes them straight from the request query string.
+    # `qbo_date_where` refuses anything but YYYY-MM-DD — the same guard every
+    # banking.py pull has had; this one built the string by hand without it.
+    # Raises ValueError; the router turns that into a 422.
+    where = qbo_date_where(start_date, end_date)
 
     created = 0
     updated = 0
