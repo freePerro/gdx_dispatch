@@ -4,8 +4,9 @@ GET  /api/session-policy  — any signed-in user (the frontend reads this to
                             enforce the timeout for everyone in the tenant).
 PATCH /api/session-policy — admin/owner only (sets the tenant-wide value).
 
-Mirrors gdx_dispatch/modules/dispatch_settings/router.py (raw SQL on
-tenant_settings, tenant from request context, INSERT-on-missing).
+Mirrors gdx_dispatch/modules/dispatch_settings/router.py: tenant from request
+context, the read (create-on-read) through core/settings_row.read_settings_row,
+raw SQL for the write.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.settings_row import read_settings_row
 from gdx_dispatch.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/session-policy", tags=["session-policy"])
@@ -45,21 +47,8 @@ def _tenant_uuid(request: Request) -> UUID:
 
 
 def _read(db: Session, tid: UUID) -> dict[str, Any]:
-    row = db.execute(
-        text(f"SELECT {_COL} FROM tenant_settings WHERE tenant_id = :tid"),  # noqa: S608 — _COL is a module constant; tenant id and value are bound
-        {"tid": str(tid)},
-    ).first()
-    if row is None:
-        db.execute(
-            text("INSERT INTO tenant_settings (tenant_id) VALUES (:tid) ON CONFLICT (tenant_id) DO NOTHING"),
-            {"tid": str(tid)},
-        )
-        db.commit()
-        row = db.execute(
-            text(f"SELECT {_COL} FROM tenant_settings WHERE tenant_id = :tid"),  # noqa: S608 — _COL is a module constant; tenant id and value are bound
-            {"tid": str(tid)},
-        ).first()
-    return {"idle_timeout_minutes": int(row[0]) if row and row[0] is not None else 0}
+    row = read_settings_row(db, tid, (_COL,))
+    return {"idle_timeout_minutes": int(row[0]) if row[0] is not None else 0}
 
 
 @router.get("", response_model=None)

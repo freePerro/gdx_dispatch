@@ -11,11 +11,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.settings_audit import audited_settings_upsert
+from gdx_dispatch.core.settings_row import read_settings_row
 from gdx_dispatch.modules.numbering.service import preview as render_preview
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -44,31 +44,11 @@ def _tenant_uuid(request: Request) -> UUID:
         raise HTTPException(status_code=400, detail="invalid tenant context") from exc
 
 
+_COLS = ("job_number_format", "job_number_next_seq", "job_number_year_seen")
+
+
 def _read_row(db: Session, tid: UUID) -> dict[str, Any]:
-    row = db.execute(
-        text(
-            "SELECT job_number_format, job_number_next_seq, job_number_year_seen "
-            "FROM tenant_settings WHERE tenant_id = :tid"
-        ),
-        {"tid": str(tid)},
-    ).first()
-    if row is None:
-        # Create-on-read so admins always see a usable default.
-        db.execute(
-            text(
-                "INSERT INTO tenant_settings (tenant_id) VALUES (:tid) "
-                "ON CONFLICT (tenant_id) DO NOTHING"
-            ),
-            {"tid": str(tid)},
-        )
-        db.commit()
-        row = db.execute(
-            text(
-                "SELECT job_number_format, job_number_next_seq, job_number_year_seen "
-                "FROM tenant_settings WHERE tenant_id = :tid"
-            ),
-            {"tid": str(tid)},
-        ).first()
+    row = read_settings_row(db, tid, _COLS)
     fmt = row[0] or "JOB-{year}-{seq:03d}"
     seq = int(row[1] or 1)
     yr = row[2]
