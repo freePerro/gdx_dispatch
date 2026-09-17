@@ -4,11 +4,10 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
-from unittest.mock import MagicMock
-
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.mcp_error_schema import (

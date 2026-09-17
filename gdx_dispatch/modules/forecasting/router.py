@@ -2,16 +2,15 @@
 from __future__ import annotations
 
 import logging
+from datetime import date as _date
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi import Request as FastAPIRequest
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
-from datetime import date as _date
-from uuid import UUID
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
@@ -538,7 +537,8 @@ def soft_delete_recurring_stream(
     tenant_id = _tenant_id(request, current_user)
     ensure_audit_table(db)
     s = _get_stream_or_404(db, stream_id)
-    from datetime import UTC, datetime as _dt
+    from datetime import UTC
+    from datetime import datetime as _dt
     s.deleted_at = _dt.now(UTC)
     log_audit_event_sync(
         db, tenant_id=tenant_id, user_id=resolve_audit_actor(current_user, request),

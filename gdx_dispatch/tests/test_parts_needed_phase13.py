@@ -20,7 +20,6 @@ from gdx_dispatch.models import tenant_models  # noqa: F401  (register models)
 from gdx_dispatch.modules.inventory import models as _inv  # noqa: F401  (register Part)
 from gdx_dispatch.routers import parts_needed as pr
 
-
 _TENANT_ID = "tenant-a"
 _JOB_ID = uuid4().hex
 _TECH = {"user_id": "tech-1", "role": "technician"}

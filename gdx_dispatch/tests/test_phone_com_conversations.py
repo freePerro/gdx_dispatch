@@ -35,6 +35,7 @@ def test_upsert_message_captures_conversation_id():
     """Webhook payload with conversation_id lands on the message row."""
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
     from gdx_dispatch.core.audit import TenantBase
     from gdx_dispatch.modules.phone_com import upserts as u
     from gdx_dispatch.modules.phone_com.models import PhoneComMessage

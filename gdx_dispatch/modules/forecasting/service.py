@@ -25,7 +25,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.models.tenant_models import Invoice, Job
-from gdx_dispatch.modules.proposals.models import Estimate
 from gdx_dispatch.modules.forecasting.models import (
     CADENCE_ANNUAL,
     CADENCE_BIWEEKLY,
@@ -44,6 +43,8 @@ from gdx_dispatch.modules.forecasting.models import (
     QBRecurringTransaction,
     RecurringStream,
 )
+from gdx_dispatch.modules.proposals.models import Estimate
+
 
 # Cadence-aware step. Calendar-month variants use dateutil.relativedelta so a
 # monthly stream anchored on the 25th lands on the 25th every month

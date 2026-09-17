@@ -257,8 +257,9 @@ def test_unpaid_deposit_voided_on_final(db):
     """Accept-then-abandon: a wholly-unpaid deposit is VOIDED at final-create
     (implementation-audit catch: the credit-memo settle showed a never-paid
     invoice as 'paid', and record_payment would take a late check onto it)."""
-    from gdx_dispatch.routers.invoices import PaymentCreateIn, record_payment
     from fastapi import HTTPException
+
+    from gdx_dispatch.routers.invoices import PaymentCreateIn, record_payment
 
     cust = _seed_customer(db)
     job = _seed_job(db, cust)
@@ -287,8 +288,9 @@ def test_unpaid_deposit_voided_on_final(db):
 
 
 def test_partially_paid_deposit_nets_paid_and_credits_rest(db):
-    from gdx_dispatch.routers.invoices import PaymentCreateIn, record_payment
     from fastapi import HTTPException
+
+    from gdx_dispatch.routers.invoices import PaymentCreateIn, record_payment
 
     cust = _seed_customer(db)
     job = _seed_job(db, cust)
@@ -447,6 +449,7 @@ def test_second_final_requires_force_and_deposit_not_applied_twice(db):
 
 def test_netting_line_cannot_be_deleted_or_edited(db):
     from fastapi import HTTPException
+
     from gdx_dispatch.routers.invoices import (
         InvoiceLinePatchIn,
         delete_invoice_line,
@@ -515,6 +518,7 @@ def test_request_deposit_invoice_after_acceptance(db):
     estimates accepted before the feature): explicit request endpoint,
     accepted-only, idempotent per estimate."""
     from fastapi import HTTPException
+
     from gdx_dispatch.routers.estimates import DepositInvoiceIn, request_deposit_invoice
 
     cust = _seed_customer(db)

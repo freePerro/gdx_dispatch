@@ -25,7 +25,6 @@ from gdx_dispatch.routers import mobile as mobile_router
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.tests.conftest import make_fresh_db
 
-
 TENANT = "tenant-a"
 USER = "user-1"
 TECH = "tech-1"

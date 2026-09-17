@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
+
 # Import RecurringStream so its table registers on TenantBase.metadata before create_all.
 from gdx_dispatch.modules.forecasting.models import (
     STREAM_STATUS_ACTIVE,

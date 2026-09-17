@@ -5,7 +5,6 @@ from typing import Any
 
 from gdx_dispatch.core.mcp_registry import ToolDescriptor, register_tool
 
-
 DESCRIPTOR = ToolDescriptor(
     name="schedule.lookup",
     description="List jobs scheduled in a date window, ordered by scheduled_at.",

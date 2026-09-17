@@ -25,10 +25,11 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.modules.forecasting import qb_recurring as qb_recurring_helper
+
 # Side-effect imports: register the models onto TenantBase.metadata so
 # create_all picks them up. Without these the tables don't exist.
 from gdx_dispatch.modules.forecasting.models import QBRecurringTransaction  # noqa: F401
-from gdx_dispatch.modules.forecasting import qb_recurring as qb_recurring_helper
 from gdx_dispatch.modules.quickbooks.oauth import QBTokenStore, save_tokens  # noqa: F401
 
 
@@ -97,8 +98,9 @@ def test_legacy_qb_connections_path_does_not_shadow_token_store(tenant_db, monke
     """Belt-and-braces: even if a row exists in the legacy qb_connections
     table (e.g., during a migration window), the token_store row must
     take precedence. The 2026-05-20 bug was the opposite — legacy won."""
+    from datetime import UTC, datetime, timedelta
+
     from gdx_dispatch.core.quickbooks import QBConnection
-    from datetime import datetime, timedelta, UTC
 
     now = datetime.now(UTC)
     tenant_db.add(QBConnection(

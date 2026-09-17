@@ -1,9 +1,11 @@
 """Sprint 1.x-S42 — technicians.activity contract."""
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import uuid4
+
 import pytest
 
 import gdx_dispatch.core.mcp_tools.technicians_activity  # noqa: F401

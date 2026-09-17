@@ -571,7 +571,8 @@ def get_timeclock_status(
         open_elapsed_hours = 0.0
         if entry is not None:
             try:
-                from datetime import datetime as _dt, timezone as _tz
+                from datetime import datetime as _dt
+                from datetime import timezone as _tz
                 ci = entry.clock_in_at
                 # clock_in_at is stored as Text — parse defensively. Modern
                 # writes are ISO-8601 with tz; older rows may be naive UTC.
@@ -610,7 +611,9 @@ def get_timeclock_status(
         auto_clockout_at_iso: str | None = None
         if entry is not None:
             try:
-                from datetime import datetime as _dt2, timezone as _tz2, timedelta
+                from datetime import datetime as _dt2
+                from datetime import timedelta
+                from datetime import timezone as _tz2
                 ci = entry.clock_in_at
                 if isinstance(ci, str):
                     parsed = _dt2.fromisoformat(ci.replace("Z", "+00:00"))

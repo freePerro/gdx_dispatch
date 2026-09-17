@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 import pytest
 
 from gdx_dispatch.core.api_version import (
-    APIVersionError,
     SUPPORTED_VERSIONS,
+    APIVersionError,
     format_deprecation_header,
     format_sunset_header,
     latest_version,

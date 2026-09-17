@@ -10,8 +10,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from gdx_dispatch.routers.ai import get_current_principal_for_ai, get_db_for_ai
 from gdx_dispatch.routers.ai import router as ai_router
-from gdx_dispatch.routers.ai import get_current_principal_for_ai, get_db_for_ai, get_db_for_ai
 
 
 @dataclass

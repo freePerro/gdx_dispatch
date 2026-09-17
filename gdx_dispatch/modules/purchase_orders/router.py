@@ -11,10 +11,10 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event, resolve_audit_actor, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.modules.purchase_orders.models import InventoryPurchaseOrder as PurchaseOrder
 from gdx_dispatch.modules.purchase_orders.models import InventoryPurchaseOrderLine as PurchaseOrderLine
 from gdx_dispatch.modules.purchase_orders.service import create_po, receive_po
+from gdx_dispatch.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api", tags=["purchase_orders"], dependencies=[Depends(require_module("purchase_orders")), Depends(get_current_user)])
 

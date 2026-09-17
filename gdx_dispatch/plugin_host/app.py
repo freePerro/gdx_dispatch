@@ -223,7 +223,9 @@ def create_plugin_host(plugins=None, degraded=None, stale=None, dists=None) -> F
         encrypted (see browser_stream.save_state). Internal-only: no host port;
         the core proxy enforces auth + owner role + consent before calling."""
         from gdx_dispatch.plugin_host.browser_stream import (
-            creds_file_for, load_state, save_state,
+            creds_file_for,
+            load_state,
+            save_state,
         )
 
         path = creds_file_for(str(body.get("key", "")))

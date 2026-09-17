@@ -4,10 +4,10 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from conftest import make_fresh_db
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
+from conftest import make_fresh_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.routers import checklists, notifications, timeclock
 

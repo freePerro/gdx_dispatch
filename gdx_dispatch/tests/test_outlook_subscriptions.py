@@ -16,7 +16,6 @@ from gdx_dispatch.modules.outlook.subscriptions import (
     renew_subscription,
 )
 
-
 TID, UID = uuid4(), uuid4()
 
 

@@ -131,8 +131,8 @@ def test_removing_a_real_registry_row_still_works_and_still_audits(db_session):
 
 
 def test_deleting_an_artifact_that_does_not_exist_404s(db_session):
-    from gdx_dispatch.routers.admin_plugins import delete_artifact
     from gdx_dispatch.plugin_host.reconcile import ensure_artifact_table
+    from gdx_dispatch.routers.admin_plugins import delete_artifact
 
     ensure_artifact_table(db_session)
     ghost = f"never-uploaded-{uuid.uuid4().hex[:8]}-0.1.0-py3-none-any.whl"
@@ -156,8 +156,8 @@ def test_deleting_an_artifact_that_does_not_exist_404s(db_session):
 
 
 def test_deleting_a_real_artifact_still_works_and_still_audits(db_session):
-    from gdx_dispatch.routers.admin_plugins import delete_artifact
     from gdx_dispatch.plugin_host.reconcile import ensure_artifact_table
+    from gdx_dispatch.routers.admin_plugins import delete_artifact
 
     ensure_artifact_table(db_session)
     name = f"real-{uuid.uuid4().hex[:8]}-0.1.0-py3-none-any.whl"

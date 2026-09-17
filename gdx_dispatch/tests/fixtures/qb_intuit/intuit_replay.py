@@ -23,7 +23,6 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-
 SANDBOX_BASE = "https://sandbox-quickbooks.api.intuit.com"
 PROD_BASE = "https://quickbooks.api.intuit.com"
 TOKEN_ENDPOINT = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"

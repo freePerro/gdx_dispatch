@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from typing import Any
-from gdx_dispatch.core.mcp_registry import ToolDescriptor, register_tool
 
+from gdx_dispatch.core.mcp_registry import ToolDescriptor, register_tool
 
 DESCRIPTOR = ToolDescriptor(
     name="customers.lifetime_analysis",

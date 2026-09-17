@@ -42,7 +42,6 @@ from gdx_dispatch.core.tenant_mobile_settings import load_tenant_mobile_settings
 from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.routers.auth import get_current_user
 
-
 log = logging.getLogger(__name__)
 
 router = APIRouter(

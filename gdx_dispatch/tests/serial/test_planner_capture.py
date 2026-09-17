@@ -9,9 +9,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from conftest import make_fresh_db
 from sqlalchemy.orm import sessionmaker
 
+from conftest import make_fresh_db
 from gdx_dispatch.models.tenant_models import Customer, PlannerTask
 from gdx_dispatch.routers.planner import (
     LinkCustomerIn,

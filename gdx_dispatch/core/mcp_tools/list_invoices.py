@@ -4,9 +4,9 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
+
 from gdx_dispatch.core.mcp_registry import ToolDescriptor, register_tool
 from gdx_dispatch.models.tenant_models import Invoice
-
 
 DESCRIPTOR = ToolDescriptor(
     name="invoices.list",

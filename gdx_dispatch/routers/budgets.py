@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import date, datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -35,13 +35,12 @@ from gdx_dispatch.modules.quickbooks.pnl import (
     pull_profit_and_loss,
 )
 from gdx_dispatch.modules.quickbooks.recategorize import (
-    RecategorizeError,
     SUPPORTED_TYPES,
+    RecategorizeError,
     recategorize_transaction,
     suggest_target_account,
 )
 from gdx_dispatch.routers.auth import get_current_user
-
 
 log = logging.getLogger(__name__)
 

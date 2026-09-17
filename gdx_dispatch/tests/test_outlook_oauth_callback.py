@@ -11,17 +11,18 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
 
-from gdx_dispatch.core.database import get_db, get_db
+from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.outlook_oauth import (
     _state_signer,
-    get_db_for_oauth_start,
     get_db_for_oauth_callback,
+    get_db_for_oauth_start,
     get_user_for_oauth_start,
+)
+from gdx_dispatch.routers.outlook_oauth import (
     router as oauth_router,
 )
-
 
 TID = uuid4()
 UID = uuid4()

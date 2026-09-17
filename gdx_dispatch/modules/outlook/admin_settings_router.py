@@ -33,13 +33,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.audit import (
     audit_or_rollback,
     ensure_audit_table,
     log_audit_event_sync,
     resolve_audit_actor,
 )
+from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.tenant_settings import TenantSettings
 from gdx_dispatch.modules.outlook import key_storage
 from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookSettings

@@ -11,7 +11,6 @@ from gdx_dispatch.modules.outlook.graph_client import (
     OutlookGraphClient,
 )
 
-
 GRAPH = "https://graph.microsoft.com/v1.0"
 
 

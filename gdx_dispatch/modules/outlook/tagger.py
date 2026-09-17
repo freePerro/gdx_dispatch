@@ -31,7 +31,6 @@ from gdx_dispatch.core.pii import HashColumn
 from gdx_dispatch.models.tenant_models import Customer, Job
 from gdx_dispatch.modules.outlook.models import OutlookMessage, OutlookSettings
 
-
 log = logging.getLogger("gdx_dispatch.modules.outlook.tagger")
 
 

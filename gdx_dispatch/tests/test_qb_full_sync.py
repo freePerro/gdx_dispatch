@@ -11,9 +11,10 @@ import hashlib
 import hmac
 import json
 from datetime import UTC, date, datetime, timedelta, timezone
-from typing import Any
 from decimal import Decimal
+from typing import Any
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -24,9 +25,16 @@ from starlette.requests import Request
 
 from gdx_dispatch.core.audit import AuditLog, TenantBase
 from gdx_dispatch.core.quickbooks import QBConnection, QBEntityMap, QBVendor
-from gdx_dispatch.models.tenant_models import CustomCatalog, CustomCatalogItem, Customer, Expense, Invoice, InvoiceLine, Job
+from gdx_dispatch.models.tenant_models import (
+    CustomCatalog,
+    CustomCatalogItem,
+    Customer,
+    Expense,
+    Invoice,
+    InvoiceLine,
+    Job,
+)
 from gdx_dispatch.modules.quickbooks.client import QBClient
-from uuid import uuid4
 
 
 @pytest.fixture()
@@ -301,8 +309,9 @@ def test_legacy_push_invoice_counter_sale_uses_invoice_customer(
 
 
 def test_push_expense_creates_in_qb(db_session: Session, qb_connection, mock_qb):
-    from sqlalchemy import text as _text
     from uuid import uuid4 as _uuid4
+
+    from sqlalchemy import text as _text
 
     from gdx_dispatch.modules.quickbooks import sync
 
@@ -1544,8 +1553,9 @@ def test_s122_19_default_expense_account_prefers_expense_over_cogs(db_session):
     pick the Expense one. Falls back to COGS only when no Expense account is
     active.
     """
-    from sqlalchemy import text as _text
     from uuid import uuid4
+
+    from sqlalchemy import text as _text
 
     from gdx_dispatch.modules.quickbooks.sync import _QB_ACCOUNTS_DDL, _default_expense_account_qb_id
 
@@ -1571,8 +1581,9 @@ def test_s122_19_default_expense_account_prefers_expense_over_cogs(db_session):
 
 def test_s122_19_default_expense_account_falls_back_to_cogs(db_session):
     """No Expense account active → fall back to COGS."""
-    from sqlalchemy import text as _text
     from uuid import uuid4
+
+    from sqlalchemy import text as _text
 
     from gdx_dispatch.modules.quickbooks.sync import _QB_ACCOUNTS_DDL, _default_expense_account_qb_id
 
@@ -1613,8 +1624,9 @@ def test_s122_19_default_expense_account_skips_inactive(db_session):
     """An inactive Expense account is NOT selected — falls through to the
     next candidate.
     """
-    from sqlalchemy import text as _text
     from uuid import uuid4
+
+    from sqlalchemy import text as _text
 
     from gdx_dispatch.modules.quickbooks.sync import _QB_ACCOUNTS_DDL, _default_expense_account_qb_id
 
@@ -1659,7 +1671,8 @@ def test_s122_17_customer_qb_dirty_flips_on_any_field_change(db_session):
     updates (qb_dirty, qb_synced_at) do NOT trigger the re-flip — otherwise
     push_customer would bounce its own clear.
     """
-    from datetime import datetime as dt_type, timezone as tz_type
+    from datetime import datetime as dt_type
+    from datetime import timezone as tz_type
     from uuid import uuid4
 
     from gdx_dispatch.models.tenant_models import Customer
@@ -1838,7 +1851,9 @@ def test_s122_14_invoice_qb_dirty_flips_on_any_field_change(db_session):
     sync re-pushes. Internal columns (qb_dirty, qb_synced_at) don't trigger
     a re-flip — otherwise the clear-after-push would loop.
     """
-    from datetime import date as date_type, datetime as dt_type, timezone as tz_type
+    from datetime import date as date_type
+    from datetime import datetime as dt_type
+    from datetime import timezone as tz_type
     from uuid import uuid4
 
     from gdx_dispatch.models.tenant_models import Customer, Invoice
@@ -2195,8 +2210,8 @@ def test_qb_client_url_with_entity_id():
 def test_pull_payments_uses_qb_txn_date_not_today(db_session: Session, qb_connection, mock_qb):
     """Regression: 263 prod payments stamped date.today() because pull_payments
     ignored TxnDate. Verify the QB TxnDate becomes payment_date."""
-    from gdx_dispatch.modules.quickbooks import sync
     from gdx_dispatch.models.tenant_models import Payment
+    from gdx_dispatch.modules.quickbooks import sync
 
     customer = _seed_customer(db_session)
     invoice = _seed_invoice(db_session, customer)
@@ -2215,8 +2230,8 @@ def test_pull_payments_uses_qb_txn_date_not_today(db_session: Session, qb_connec
 
 
 def test_pull_payments_falls_back_to_today_when_txndate_missing(db_session: Session, qb_connection, mock_qb):
-    from gdx_dispatch.modules.quickbooks import sync
     from gdx_dispatch.models.tenant_models import Payment
+    from gdx_dispatch.modules.quickbooks import sync
 
     customer = _seed_customer(db_session)
     invoice = _seed_invoice(db_session, customer)
@@ -2235,8 +2250,8 @@ def test_pull_payments_falls_back_to_today_when_txndate_missing(db_session: Sess
 def test_pull_payments_update_branch_actually_updates_amount_and_date(db_session: Session, qb_connection, mock_qb):
     """Regression: pre-fix update branch incremented counter but did nothing —
     QB-side edits never propagated."""
-    from gdx_dispatch.modules.quickbooks import sync
     from gdx_dispatch.models.tenant_models import Payment
+    from gdx_dispatch.modules.quickbooks import sync
 
     customer = _seed_customer(db_session)
     invoice = _seed_invoice(db_session, customer)
@@ -2284,8 +2299,8 @@ def test_pull_payments_idempotent_second_sync_is_noop(db_session: Session, qb_co
 def test_pull_invoices_adoption_imports_lines(db_session: Session, qb_connection, mock_qb):
     """Regression: adoption branch wrote totals but skipped lines, leaving 282
     line-less invoices in GDX prod (~$615k)."""
-    from gdx_dispatch.modules.quickbooks import sync
     from gdx_dispatch.models.tenant_models import InvoiceLine as IL
+    from gdx_dispatch.modules.quickbooks import sync
 
     customer = _seed_customer(db_session)
     # Existing local invoice with the same number QB will return — this is what
@@ -2320,8 +2335,8 @@ def test_pull_invoices_adoption_imports_lines(db_session: Session, qb_connection
 def test_pull_invoices_update_branch_resyncs_lines(db_session: Session, qb_connection, mock_qb):
     """Regression: update branch refreshed totals but never re-synced lines on
     edit — local lines drifted from QB source-of-truth forever."""
-    from gdx_dispatch.modules.quickbooks import sync
     from gdx_dispatch.models.tenant_models import InvoiceLine as IL
+    from gdx_dispatch.modules.quickbooks import sync
 
     customer = _seed_customer(db_session)
     invoice = _seed_invoice(db_session, customer)
@@ -2350,8 +2365,8 @@ def test_pull_invoices_skips_subtotal_and_group_lines(db_session: Session, qb_co
     GroupLineDetail rows DO carry an Amount (the running subtotal), so they
     were being inserted as additional InvoiceLine rows and inflating the
     line sum past the persisted invoice.subtotal."""
-    from gdx_dispatch.modules.quickbooks import sync
     from gdx_dispatch.models.tenant_models import InvoiceLine as IL
+    from gdx_dispatch.modules.quickbooks import sync
 
     customer = _seed_customer(db_session)
     invoice = _seed_invoice(db_session, customer)
@@ -2380,7 +2395,9 @@ def test_qb_client_query_paginates(monkeypatch):
     """Regression: ``query`` had a hardcoded MAXRESULTS 1000 and dropped any
     rows past the first page silently."""
     import json as _json
+
     import httpx
+
     from gdx_dispatch.modules.quickbooks.client import QBClient
 
     qb = QBClient.__new__(QBClient)
@@ -2650,6 +2667,7 @@ def test_set_delete_sync_endpoint_writes_column_and_audit(db_session: Session, q
 def test_set_delete_sync_rejects_non_admin(db_session: Session, qb_connection):
     """Only admin/owner can flip a destructive flag."""
     from fastapi import HTTPException
+
     from gdx_dispatch.modules.quickbooks import router as qb_router_mod
 
     req = _request(tenant_id="tenant-1")

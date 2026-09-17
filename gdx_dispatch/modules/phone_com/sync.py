@@ -31,9 +31,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import SessionLocal
+from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.modules.phone_com import key_storage, upserts
 from gdx_dispatch.modules.phone_com.client import PhoneComAPIError, PhoneComClient
-from gdx_dispatch.models.tenant_models import AppSettings
 
 log = logging.getLogger("gdx_dispatch.modules.phone_com.sync")
 

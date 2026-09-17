@@ -2,15 +2,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-import pytest
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
+
+import pytest
 
 from gdx_dispatch.modules.outlook.tasks import (
     _parse_iso,
     _persist_messages,
 )
-
 
 # ── helpers ────────────────────────────────────────────────────────────
 

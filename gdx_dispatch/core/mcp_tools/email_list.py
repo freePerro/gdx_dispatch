@@ -8,7 +8,6 @@ from sqlalchemy import desc, select
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
 
-
 DESCRIPTOR = ToolDescriptor(
     name="email.list",
     description=(

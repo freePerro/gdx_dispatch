@@ -253,6 +253,7 @@ def test_settings_columns_round_trip_as_decimal_compatible():
     Postgres NUMERIC columns don't DataError on commit. SQLite is lax;
     this asserts the coercion happens at the boundary."""
     from decimal import Decimal
+
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import StaticPool

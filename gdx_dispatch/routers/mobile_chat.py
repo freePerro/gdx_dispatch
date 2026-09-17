@@ -29,14 +29,13 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy import text as _text
-
-from gdx_dispatch.core.pii import decrypt_if_ciphertext
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.pii import decrypt_if_ciphertext
 from gdx_dispatch.core.user_display import resolve_author_name
 from gdx_dispatch.models.tenant_models import JobChatMessage
 

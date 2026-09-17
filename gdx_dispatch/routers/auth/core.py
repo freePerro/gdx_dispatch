@@ -856,6 +856,7 @@ def _db_verify_user(request: Request, principal_subject: str, actor_kind: str | 
 
     try:
         import uuid as _uuid_mod
+
         from gdx_dispatch.core.database import app_engine
         from gdx_dispatch.models.tenant_models import User as _RTUser
 

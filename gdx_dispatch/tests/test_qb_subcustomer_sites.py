@@ -31,8 +31,8 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import UTC, datetime
 from collections.abc import Generator
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import create_engine, text

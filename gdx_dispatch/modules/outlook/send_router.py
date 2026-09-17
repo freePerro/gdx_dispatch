@@ -32,7 +32,6 @@ from gdx_dispatch.modules.outlook.token_refresh import OutlookReconnectRequired,
 from gdx_dispatch.modules.outlook.visibility import can_view, mailbox_owner_id
 from gdx_dispatch.routers.auth import get_current_user
 
-
 log = logging.getLogger("gdx_dispatch.modules.outlook.send_router")
 
 router = APIRouter(

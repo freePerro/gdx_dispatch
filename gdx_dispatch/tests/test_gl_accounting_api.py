@@ -18,6 +18,7 @@ from sqlalchemy import select
 from gdx_dispatch.core.audit import AuditLog
 from gdx_dispatch.modules.ledger.coa import DEFAULT_COA
 from gdx_dispatch.modules.ledger.engine import PostingEvent, PostingLine, post_for_event
+from gdx_dispatch.modules.ledger.models import GlAccount
 from gdx_dispatch.modules.ledger.router import (
     ENABLE_CONFIRM_PHRASE,
     AccountCreateIn,
@@ -34,7 +35,6 @@ from gdx_dispatch.modules.ledger.router import (
     patch_accounting_settings,
     stamp_cpa_review,
 )
-from gdx_dispatch.modules.ledger.models import GlAccount
 from gdx_dispatch.modules.ledger.service import ensure_gl_seed
 
 COMPANY = "11111111-1111-1111-1111-111111111111"

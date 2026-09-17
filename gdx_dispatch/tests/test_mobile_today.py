@@ -31,7 +31,6 @@ from gdx_dispatch.routers import mobile as mobile_router
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.tests.conftest import make_fresh_db
 
-
 TENANT = "tenant-a"
 USER = "user-1"
 TECH = "tech-1"
@@ -418,6 +417,7 @@ class TestPartsSummary:
 
     def test_card_counts_parts_by_status(self, app_and_db):
         from datetime import datetime, timezone
+
         from sqlalchemy import text as _sql_text
         client, db = app_and_db
         _seed_tech(db)

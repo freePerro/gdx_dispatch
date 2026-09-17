@@ -30,18 +30,18 @@ for the canonical test pattern.
 # over the entire gdx_dispatch/ tree before this commit; any addition here
 # should be paired with a comment naming the importer.
 from gdx_dispatch.routers.auth.core import (
-    ALG,                       # tests/test_auth_router.py + app.py
-    SIGN_KEY,                  # tests/test_auth_router.py
-    VERIFY_KEY,                # app.py (`VERIFY_KEY as _VERIFY`)
-    RevokeTokenBody,           # tests/test_auth_router.py
-    _db_verify_user,           # tests/test_auth_identity_invariants.py
-    _denylist_redis_client,    # app.py (idempotency factory + health probe)
-    _enforce_tenant_match,     # app.py (tenant-cross-check middleware seam)
-    _get_app_denylist,         # tests/test_auth_router.py
-    _issue,                    # app.py (tests assert via auth_router)
-    admin_revoke_token,        # tests/test_auth_router.py
-    get_current_user,          # 50+ routers (the primary auth dep)
-    router,                    # app.py (`include_router(auth.router)`)
+    ALG,  # tests/test_auth_router.py + app.py
+    SIGN_KEY,  # tests/test_auth_router.py
+    VERIFY_KEY,  # app.py (`VERIFY_KEY as _VERIFY`)
+    RevokeTokenBody,  # tests/test_auth_router.py
+    _db_verify_user,  # tests/test_auth_identity_invariants.py
+    _denylist_redis_client,  # app.py (idempotency factory + health probe)
+    _enforce_tenant_match,  # app.py (tenant-cross-check middleware seam)
+    _get_app_denylist,  # tests/test_auth_router.py
+    _issue,  # app.py (tests assert via auth_router)
+    admin_revoke_token,  # tests/test_auth_router.py
+    get_current_user,  # 50+ routers (the primary auth dep)
+    router,  # app.py (`include_router(auth.router)`)
 )
 
 __all__ = [

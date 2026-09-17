@@ -42,8 +42,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.celery_app import celery_app
-from gdx_dispatch.core.next_action import NextAction
 from gdx_dispatch.core.database import SessionLocal
+from gdx_dispatch.core.next_action import NextAction
 from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError
 from gdx_dispatch.modules.outlook.models import (
     OutlookAccount,

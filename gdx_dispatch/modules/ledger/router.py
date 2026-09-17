@@ -26,7 +26,6 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import AuditLog, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
-from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.modules.ledger.coa import LedgerConfigError
 from gdx_dispatch.modules.ledger.models import (
     ACCOUNT_TYPES,
@@ -40,6 +39,7 @@ from gdx_dispatch.modules.ledger.service import (
     validate_payment_method_map,
     validate_role_map,
 )
+from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
 

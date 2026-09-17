@@ -21,9 +21,10 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.modules import require_module
+
 # One currency constant for every money path on this router (M4).
 from gdx_dispatch.core.payments import CURRENCY
-from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.stripe_payments import (
     charge_saved_method,
     create_ach_verification,

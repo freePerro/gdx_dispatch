@@ -9,15 +9,15 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from gdx_dispatch.core.database import get_db, get_db
+from gdx_dispatch.core.database import get_db
 from gdx_dispatch.modules.outlook.admin_settings_router import (
     get_admin_principal,
     get_db_for_admin,
-    get_db_for_admin,
+)
+from gdx_dispatch.modules.outlook.admin_settings_router import (
     router as admin_router,
 )
 from gdx_dispatch.routers.auth import get_current_user
-
 
 TID = uuid4()
 

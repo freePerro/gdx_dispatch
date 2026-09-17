@@ -8,7 +8,7 @@ Pins:
 """
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -25,7 +25,6 @@ from gdx_dispatch.routers.change_orders import (
     get_change_order,
     update_change_order,
 )
-from uuid import UUID
 
 
 @pytest.fixture

@@ -19,11 +19,11 @@ from gdx_dispatch.modules.bank_feeds.statement_models import (
     BankStatementImport,
 )
 from gdx_dispatch.modules.ledger.models import (
+    ROLE_OPENING_EQUITY,
     GlAccount,
     GlJournalEntry,
     GlJournalLine,
     GlPeriodLock,
-    ROLE_OPENING_EQUITY,
 )
 from gdx_dispatch.modules.ledger.opening import (
     OpeningDerivationError,

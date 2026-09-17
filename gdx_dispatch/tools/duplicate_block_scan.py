@@ -56,6 +56,7 @@ import tokenize
 from collections import defaultdict
 from pathlib import Path
 from typing import Iterable
+
 from gdx_dispatch.tools.tracked_files import tracked_or_none
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

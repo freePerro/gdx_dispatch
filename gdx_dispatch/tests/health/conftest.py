@@ -22,6 +22,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 import pytest
 
+
 # 2026-04-20: orchestrator package extracted to ../gdx-orchestrator.
 # alert_bus was tied to the legacy autonomous-loop's health-alert
 # routing; without the loop running there's no consumer for these

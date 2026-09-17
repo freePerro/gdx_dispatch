@@ -15,7 +15,6 @@ from gdx_dispatch.modules.outlook.token_refresh import (
     with_outlook_client,
 )
 
-
 TID = uuid4()
 UID = uuid4()
 

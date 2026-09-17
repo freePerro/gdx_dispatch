@@ -70,6 +70,7 @@ def test_upsert_fax_idempotent_in_memory():
     """Use a per-test in-memory sqlite tenant DB to confirm upsert keys on phone_com_fax_id."""
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
     from gdx_dispatch.core.audit import TenantBase
     from gdx_dispatch.modules.phone_com import upserts as u
     from gdx_dispatch.modules.phone_com.models import PhoneComFax

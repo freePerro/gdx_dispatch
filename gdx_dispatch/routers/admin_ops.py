@@ -8,7 +8,8 @@ import logging
 import os
 import re
 from datetime import UTC, datetime
-from uuid import UUID as _UUID, uuid4
+from uuid import UUID as _UUID
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder

@@ -28,7 +28,6 @@ from gdx_dispatch.core.auth_dispatcher import (
     get_current_principal,
 )
 
-
 # ── Fake Request helper ─────────────────────────────────────────────────
 
 
@@ -339,6 +338,7 @@ async def test_only_access_token_cookie_is_recognized() -> None:
     (`session`, `sid`, or future invented names) is ignored.
     """
     import os as _os
+
     import jwt as _real_jwt
     tenant = "acme-corp"
     identity = uuid4()
@@ -367,6 +367,7 @@ async def test_session_jwt_cookie_extracts_sub_and_tenant() -> None:
     was a P0 forgery hole. Post-fix the cookie path is identical to the
     bearer path."""
     import os as _os
+
     import jwt as _real_jwt
     tenant = "acme-corp"
     identity = uuid4()
@@ -411,8 +412,8 @@ async def test_empty_bearer_token_raises_401() -> None:
 
 @pytest.mark.asyncio
 async def test_require_role_allows_matching_role() -> None:
-    from gdx_dispatch.core.unified_principal import Principal
     from gdx_dispatch.core.auth_dispatcher import require_role
+    from gdx_dispatch.core.unified_principal import Principal
 
     dep = require_role("owner", "admin")
     principal = Principal.from_session(
@@ -429,8 +430,8 @@ async def test_require_role_allows_matching_role() -> None:
 
 @pytest.mark.asyncio
 async def test_require_role_rejects_wrong_role() -> None:
-    from gdx_dispatch.core.unified_principal import Principal
     from gdx_dispatch.core.auth_dispatcher import require_role
+    from gdx_dispatch.core.unified_principal import Principal
 
     dep = require_role("owner", "admin")
     principal = Principal.from_session(
@@ -454,6 +455,7 @@ async def test_session_dispatch_uses_default_role_caps() -> None:
     # path runs the same gates as the bearer path, so we mint a real HS256
     # signature here (legacy decode) instead of the unsigned _make_jwt shape.
     import os as _os
+
     import jwt as _real_jwt
     tenant = "acme-corp"
     identity = uuid4()
@@ -825,6 +827,7 @@ def _mint_legacy_login_jwt(
     Returns (token, jti).
     """
     import os as _os
+
     import jwt as _real_jwt
     _jti = jti or str(uuid4())
     payload = {
@@ -973,6 +976,7 @@ async def test_legacy_bearer_jwt_without_jti_does_not_crash() -> None:
     tenant_uuid = str(uuid4())
     # Mint manually without a jti claim.
     import os as _os
+
     import jwt as _real_jwt
     payload = {
         "sub": sub_uuid,

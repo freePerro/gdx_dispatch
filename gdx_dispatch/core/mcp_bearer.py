@@ -35,7 +35,6 @@ from typing import Any
 import jwt
 from jwt.exceptions import InvalidTokenError
 
-
 # ── exceptions ──────────────────────────────────────────────────────────────
 
 

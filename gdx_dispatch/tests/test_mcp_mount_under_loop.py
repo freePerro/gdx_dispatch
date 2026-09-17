@@ -17,18 +17,16 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
 from fastmcp import FastMCP
-
-from gdx_dispatch.core.mcp_fastmcp_bridge import _fastmcp_tool_names
-from gdx_dispatch.core.mcp_mount import build_mcp_subapp
-from gdx_dispatch.core.mcp_registry import _DESCRIPTORS, _HANDLERS, register_tool
-from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
 
 # Trigger the canonical tool-set registration (the same side-effect import
 # gdx_dispatch.app uses at startup). Other tests in this suite rely on this state,
 # so we add a probe tool without clearing what's already registered.
 import gdx_dispatch.core.mcp_tools  # noqa: F401, E402
+from gdx_dispatch.core.mcp_fastmcp_bridge import _fastmcp_tool_names
+from gdx_dispatch.core.mcp_mount import build_mcp_subapp
+from gdx_dispatch.core.mcp_registry import _DESCRIPTORS, _HANDLERS, register_tool
+from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
 
 
 @pytest.fixture()

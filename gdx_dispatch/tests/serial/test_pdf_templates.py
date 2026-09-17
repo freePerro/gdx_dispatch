@@ -4,11 +4,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from conftest import make_fresh_db
 from fastapi import HTTPException
 from sqlalchemy import text as sa_text
 from sqlalchemy.orm import sessionmaker
 
+from conftest import make_fresh_db
 from gdx_dispatch.routers.pdf_templates import (
     BlockConfig,
     TemplateConfigIn,

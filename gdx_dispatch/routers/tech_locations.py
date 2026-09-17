@@ -22,7 +22,8 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select, text as _text
+from sqlalchemy import select
+from sqlalchemy import text as _text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 

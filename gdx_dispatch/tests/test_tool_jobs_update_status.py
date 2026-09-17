@@ -1,10 +1,12 @@
 """Sprint 1.x-S46 — jobs.update_status Yellow contract."""
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import uuid4
+
 import pytest
 
 import gdx_dispatch.core.mcp_tools.jobs_update_status  # noqa: F401

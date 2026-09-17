@@ -15,20 +15,18 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.auth_capabilities import derive_ai_worker_caps
-from gdx_dispatch.core.auth_capabilities import caps_for_role
+# Side-effect import: registers all built-in MCP tools so list_tools_for_principal
+# sees a populated registry. Without this the AI loop has nothing to call.
+import gdx_dispatch.core.mcp_tools  # noqa: F401
+from gdx_dispatch.core.auth_capabilities import caps_for_role, derive_ai_worker_caps
 from gdx_dispatch.core.auth_dispatcher import get_current_principal
-from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.llm.anthropic_client import get_client
 from gdx_dispatch.core.llm.key_storage import get_key
 from gdx_dispatch.core.mcp_invoke import invoke_tool
 from gdx_dispatch.core.mcp_registry import list_tools_for_principal
-# Side-effect import: registers all built-in MCP tools so list_tools_for_principal
-# sees a populated registry. Without this the AI loop has nothing to call.
-import gdx_dispatch.core.mcp_tools  # noqa: F401
 from gdx_dispatch.core.unified_principal import Principal, principal_tenant_uuid
-
+from gdx_dispatch.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 

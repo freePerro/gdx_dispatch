@@ -15,7 +15,6 @@ import pytest
 
 from gdx_dispatch.tools import pave_tenant_db
 
-
 DB_INFO = {
     "host": "localhost",
     "port": "5432",

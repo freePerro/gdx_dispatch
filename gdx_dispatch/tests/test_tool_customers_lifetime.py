@@ -1,9 +1,11 @@
 """Sprint 1.x-S43 — customers.lifetime_analysis contract."""
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import uuid4
+
 import pytest
 
 import gdx_dispatch.core.mcp_tools.customers_lifetime  # noqa: F401

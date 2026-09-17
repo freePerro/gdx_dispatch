@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from gdx_dispatch.tests.test_estimates import client, _create_customer, _create_job, _create_estimate  # noqa: F401
+from gdx_dispatch.tests.test_estimates import _create_customer, _create_estimate, _create_job, client  # noqa: F401
 
 
 def _add_line(client: TestClient, estimate_id: str, **overrides) -> dict:

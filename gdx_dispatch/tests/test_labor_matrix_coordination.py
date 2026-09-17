@@ -26,7 +26,6 @@ from gdx_dispatch.models.tenant_models import Job, JobAssignment
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.appointments import compute_man_hour_duration_minutes
 
-
 # ---- fixture helpers (centralized per feedback_centralized_test_identifiers.md)
 
 
@@ -171,7 +170,10 @@ def test_pricing_engine_rejects_labor_category():
     """Belt-on-belt: even if frontend regresses and sends pricing_category='labor',
     the engine refuses rather than silently re-pricing."""
     from gdx_dispatch.services.pricing_engine import (
-        CustomerView, PricingConfigError, PricingSettingsView, price_line,
+        CustomerView,
+        PricingConfigError,
+        PricingSettingsView,
+        price_line,
     )
     customer = CustomerView(pricing_class="retail", margin_override_pct=None)
     settings = PricingSettingsView(

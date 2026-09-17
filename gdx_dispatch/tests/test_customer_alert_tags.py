@@ -27,7 +27,6 @@ from gdx_dispatch.routers.admin_customer_tags import router as tags_router
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.tests.conftest import make_fresh_db
 
-
 TENANT = str(uuid4())
 USER = str(uuid4())
 

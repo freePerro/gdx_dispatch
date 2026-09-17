@@ -7,7 +7,6 @@ from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
 from gdx_dispatch.models.tenant_models import Customer
 
-
 DESCRIPTOR = ToolDescriptor(
     name="customers.mark_contacted",
     description="Marks a customer as contacted by updating last_contacted_at and optionally appending a note.",

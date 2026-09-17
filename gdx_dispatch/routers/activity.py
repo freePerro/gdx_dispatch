@@ -15,8 +15,8 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import AuditLog, ensure_audit_table
 from gdx_dispatch.core.activity_feed import collapse_runs, feed_filter, wanted_fetch_size
+from gdx_dispatch.core.audit import AuditLog, ensure_audit_table
 from gdx_dispatch.core.audit_labels import decorate_rows
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module

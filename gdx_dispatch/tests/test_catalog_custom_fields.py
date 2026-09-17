@@ -260,6 +260,7 @@ def test_bulk_import_folds_flat_columns_into_attributes(db_session):
 
 def test_ai_import_preserves_attributes(db_session, monkeypatch):
     import asyncio
+
     import gdx_dispatch.core.ai_router as ai_router
 
     catalog = _make_custom_catalog(db_session)

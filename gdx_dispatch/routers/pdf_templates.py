@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+
 # default_blocks lives in pdf_generator (the consumer) so editor defaults and
 # rendered defaults can never drift. Per-type: estimate defaults signature ON
 # (the estimate PDF always printed a signature line), everything else OFF.

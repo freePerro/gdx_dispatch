@@ -1,11 +1,14 @@
 from __future__ import annotations
+
 import time
-from fastapi import Request, HTTPException
+
+from fastapi import HTTPException, Request
 from fastmcp import FastMCP
+
 from gdx_dispatch.core.auth_dispatcher import get_current_principal
-from gdx_dispatch.core.unified_principal import Principal
-from gdx_dispatch.core.mcp_registry import list_tools_for_principal
 from gdx_dispatch.core.mcp_invoke import invoke_tool
+from gdx_dispatch.core.mcp_registry import list_tools_for_principal
+from gdx_dispatch.core.unified_principal import Principal
 
 mcp = FastMCP(
     name="gdx-mcp",

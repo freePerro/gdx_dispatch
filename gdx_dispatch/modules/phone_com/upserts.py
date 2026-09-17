@@ -31,7 +31,6 @@ from gdx_dispatch.modules.phone_com.models import (
     PhoneComVoicemail,
 )
 
-
 _DIAL_OUT_RE = re.compile(r"^\s*dial[_\s]?out\s+(\+?\d+)\s*$", re.IGNORECASE)
 _TYPE_PREFIX_RE = re.compile(r"^\s*type\s+", re.IGNORECASE)
 

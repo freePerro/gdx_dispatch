@@ -14,7 +14,6 @@ from gdx_dispatch.core.modules import require_permission
 from gdx_dispatch.core.permissions import WILDCARD
 from gdx_dispatch.models.tenant_models import TenantRole, UserRoleAssignment
 
-
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 
 
@@ -186,6 +185,7 @@ def _seed_user(db, user_id, role: str) -> None:
     Returns the user_id as the original string so callers can pass it
     unchanged to require_permission's `sub` claim."""
     from uuid import UUID
+
     from gdx_dispatch.models.tenant_models import User
     uid_obj = user_id if not isinstance(user_id, str) else UUID(user_id)
     db.add(User(

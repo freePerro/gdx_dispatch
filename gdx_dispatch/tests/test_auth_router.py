@@ -34,6 +34,7 @@ from fastapi import HTTPException
 
 from gdx_dispatch.core.denylist import Denylist
 from gdx_dispatch.routers.auth import core as auth_router  # patch target post Slice 8 Phase A —
+
 # the package shim at gdx_dispatch.routers.auth re-exports these names but functions
 # in core.py resolve them via core's globals; monkeypatch must target core.
 

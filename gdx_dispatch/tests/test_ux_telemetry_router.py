@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.ux_telemetry import router
 
-
 _TEST_USER_ID = str(uuid4())
 _TEST_TENANT_ID = str(uuid4())
 
