@@ -136,7 +136,7 @@ def get_webhook_deliveries(
             WHERE {' AND '.join(where_parts)}
             ORDER BY created_at DESC
             LIMIT 500
-            """
+            """  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
         ),
         params,
     ).mappings().all()

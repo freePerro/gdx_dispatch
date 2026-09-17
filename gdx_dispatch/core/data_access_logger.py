@@ -207,7 +207,7 @@ def get_access_log(
         params["user_id"] = user_id
 
     where_sql = " AND ".join(where)
-    total = int(db.execute(text(f"SELECT COUNT(*) FROM gdpr_data_access_logs WHERE {where_sql}"), params).scalar() or 0)
+    total = int(db.execute(text(f"SELECT COUNT(*) FROM gdpr_data_access_logs WHERE {where_sql}"), params).scalar() or 0)  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
     offset = (page - 1) * page_size
     params.update({"limit": page_size, "offset": offset})
     rows = db.execute(
@@ -219,7 +219,7 @@ def get_access_log(
             WHERE {where_sql}
             ORDER BY created_at DESC
             LIMIT :limit OFFSET :offset
-            """
+            """  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
         ),
         params,
     ).mappings().all()

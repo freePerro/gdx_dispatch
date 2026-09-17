@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
+import pytest
 from sqlalchemy import text
 
 from gdx_dispatch.modules.quickbooks import sync
@@ -37,6 +38,32 @@ def _purchase(qb_id, amount=100.0):
 
 def _run_pull(db, rows):
     return asyncio.run(sync.pull_bank_transactions("tenant-test", db, _FakeQB(rows)))
+
+
+def test_malformed_dates_never_reach_qbo(tenant_db):
+    """The Purchase pull interpolates start/end dates into QBO's query string
+    (no bind params exist there) and the router hands it the request's query
+    string verbatim. It used to build the string by hand with no validation
+    while every banking.py pull went through `qbo_date_where`. Now it uses the
+    same guard: a non-YYYY-MM-DD value raises BEFORE `QBClient.query` runs."""
+    class _Recorder(_FakeQB):
+        def __init__(self):
+            super().__init__([])
+            self.calls = 0
+
+        async def query(self, entity, where="", max_results=1000):
+            self.calls += 1
+            return []
+
+    for bad in ("2026-05-01'; DROP TABLE x;--", "yesterday", "2026/05/01"):
+        qb = _Recorder()
+        with pytest.raises(ValueError, match="must be YYYY-MM-DD"):
+            asyncio.run(sync.pull_bank_transactions("tenant-test", tenant_db, qb, bad, ""))
+        assert qb.calls == 0, "the query must never be sent with a rejected date"
+
+    ok = _Recorder()
+    asyncio.run(sync.pull_bank_transactions("tenant-test", tenant_db, ok, "2026-05-01", "2026-05-31"))
+    assert ok.calls == 1
 
 
 def test_fresh_insert_supplies_synced_at(tenant_db):

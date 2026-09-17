@@ -499,6 +499,14 @@ async def sync_bank_transactions(
 ) -> dict[str, Any]:
     """Pull bank/credit-card transactions (Purchase entity) from QB."""
     tenant_id = _tenant_id(request)
+    # Validate the dates HERE, before the audit row and before the pull: the
+    # query string is interpolated into QBO's query (no bind params), and a
+    # rejected request must not leave an audit row saying a sync ran, nor
+    # let an unrelated ValueError from inside the pull read as a 422.
+    try:
+        _banking.qbo_date_where(start_date, end_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     _audit(db, request, current_user, "sync_bank_transactions", "bank_transaction")
     async with await get_qb_client(tenant_id, db) as qb:
         return await sync.pull_bank_transactions(tenant_id, db, qb, start_date, end_date)
@@ -561,14 +569,14 @@ def list_bank_transactions(
                 SELECT qb_txn_id, txn_date, txn_type, account_name, payee, amount, memo, synced_at
                 FROM qb_bank_transactions WHERE deleted_at IS NULL AND {' AND '.join(where)}
                 ORDER BY txn_date DESC LIMIT :lim
-            """), params).mappings().all()
+            """), params).mappings().all()  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
         except Exception:
             db.rollback()
             rows = db.execute(_text(f"""
                 SELECT qb_txn_id, txn_date, txn_type, account_name, payee, amount, memo, synced_at
                 FROM qb_bank_transactions WHERE {' AND '.join(where)}
                 ORDER BY txn_date DESC LIMIT :lim
-            """), params).mappings().all()
+            """), params).mappings().all()  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
     except Exception:
         log.exception("qb_list_bank_transactions_failed tenant=%s", tenant_id)
         db.rollback()
@@ -776,13 +784,13 @@ def qb_dashboard(
             if table_name == "qb_bank_transactions":
                 try:
                     count = db.execute(_text(
-                        f"SELECT COUNT(*) FROM {table_name} WHERE deleted_at IS NULL"
+                        f"SELECT COUNT(*) FROM {table_name} WHERE deleted_at IS NULL"  # noqa: S608 — table_name from the hardcoded tuple above; no input
                     )).scalar() or 0
                 except Exception:
                     db.rollback()
-                    count = db.execute(_text(f"SELECT COUNT(*) FROM {table_name}")).scalar() or 0
+                    count = db.execute(_text(f"SELECT COUNT(*) FROM {table_name}")).scalar() or 0  # noqa: S608 — table_name from the hardcoded tuple above; no input
             else:
-                count = db.execute(_text(f"SELECT COUNT(*) FROM {table_name}")).scalar() or 0
+                count = db.execute(_text(f"SELECT COUNT(*) FROM {table_name}")).scalar() or 0  # noqa: S608 — table_name from the hardcoded tuple above; no input
             if count or key not in entity_counts:
                 entity_counts[key] = int(count)
         except Exception:
@@ -800,7 +808,7 @@ def qb_dashboard(
     for tbl in ("qb_deposits", "qb_transfers", "qb_banking_entries"):
         try:
             n = db.execute(_text(
-                f"SELECT COUNT(*) FROM {tbl} WHERE deleted_at IS NULL"
+                f"SELECT COUNT(*) FROM {tbl} WHERE deleted_at IS NULL"  # noqa: S608 — tbl from the hardcoded tuple above; no input
             )).scalar() or 0
             extra_banking_total += int(n)
         except Exception:

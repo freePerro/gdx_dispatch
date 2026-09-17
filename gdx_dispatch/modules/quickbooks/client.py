@@ -157,7 +157,7 @@ class QBClient:
         out: list[dict[str, Any]] = []
         start = 1
         while True:
-            stmt = f"SELECT * FROM {entity}"
+            stmt = f"SELECT * FROM {entity}"  # noqa: S608 — QBO's query API has no bind parameters; every caller passes a literal entity, and every WHERE is either a literal or built by qbo_date_where, which accepts only YYYY-MM-DD
             if where:
                 stmt += f" WHERE {where}"
             stmt += f" STARTPOSITION {start} MAXRESULTS {page_size}"

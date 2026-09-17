@@ -301,7 +301,7 @@ def classify_table(
 
     with engine.connect() as conn:
         total = conn.execute(
-            text_fn(f'SELECT COUNT(*) FROM "{table}" WHERE {clause}')
+            text_fn(f'SELECT COUNT(*) FROM "{table}" WHERE {clause}')  # noqa: S608 — table is a catalog name, double-quoted; clause is built from module constants; operator tool
         ).scalar() or 0
     if total == 0:
         return None
@@ -313,7 +313,7 @@ def classify_table(
         with engine.connect() as conn:
             residue_count = conn.execute(
                 text_fn(
-                    f'SELECT COUNT(*) FROM "{table}" '
+                    f'SELECT COUNT(*) FROM "{table}" '  # noqa: S608 — table is a catalog name, double-quoted; clauses are built from module constants; operator tool
                     f'WHERE {clause} AND {residue_clause}'
                 ),
                 params,
@@ -326,7 +326,7 @@ def classify_table(
         with engine.connect() as conn:
             acknowledged_count = conn.execute(
                 text_fn(
-                    f'SELECT COUNT(*) FROM "{table}" '
+                    f'SELECT COUNT(*) FROM "{table}" '  # noqa: S608 — table is a catalog name, double-quoted; clause is built from module constants; operator tool
                     f'WHERE {clause} AND created_at BETWEEN :lo AND :hi'
                 ),
                 {"lo": lo, "hi": hi},
@@ -425,7 +425,7 @@ def snapshot_before_delete(
             with engine.connect() as conn:
                 rows = conn.execute(
                     text_fn(
-                        f'SELECT * FROM "{f.table}" '
+                        f'SELECT * FROM "{f.table}" '  # noqa: S608 — table is a catalog name, double-quoted; clauses are built from module constants; operator tool
                         f'WHERE {scope_clause} AND {residue_clause}'
                     ),
                     params,
@@ -481,7 +481,7 @@ def delete_residue_in_transaction(engine, text_fn, findings: list[Finding]) -> i
             residue_clause, params = residue_info
             result = conn.execute(
                 text_fn(
-                    f'DELETE FROM "{f.table}" '
+                    f'DELETE FROM "{f.table}" '  # noqa: S608 — table is a catalog name, double-quoted; clauses are built from module constants; operator tool
                     f'WHERE {scope_clause} AND {residue_clause}'
                 ),
                 params,

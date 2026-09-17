@@ -115,7 +115,7 @@ def _entry(session, *, status="posted", with_txid=True) -> str:
     txid = "txid_current()" if with_txid else "NULL"
     return session.execute(
         text(
-            "INSERT INTO gl_journal_entries "
+            "INSERT INTO gl_journal_entries "  # noqa: S608 — txid is one of two literals; status and company are bound
             "(id, entry_no, effective_at, posted_at, status, created_txid, company_id, created_at) "
             f"VALUES (gen_random_uuid(), nextval('gl_journal_entry_no_seq'), CURRENT_DATE, now(), "
             f":status, {txid}, :co, now()) RETURNING id"

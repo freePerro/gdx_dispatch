@@ -238,7 +238,7 @@ def list_jobs(
 
     try:
         total_row = db.execute(
-            text(f"SELECT COUNT(*) AS cnt FROM jobs WHERE {where}"),
+            text(f"SELECT COUNT(*) AS cnt FROM jobs WHERE {where}"),  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
             params,
         ).mappings().first()
         total = int((total_row or {}).get("cnt", 0))
@@ -252,7 +252,7 @@ def list_jobs(
                 WHERE {where}
                 ORDER BY created_at DESC
                 LIMIT :limit OFFSET :offset
-                """
+                """  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
             ),
             params,
         ).mappings().all()
@@ -363,7 +363,7 @@ def update_job(
                    AND deleted_at IS NULL
                 RETURNING id, title, lifecycle_stage AS status,
                           customer_id, scheduled_at, created_at
-                """
+                """  # noqa: S608 — SET keys are the hardcoded column names above; values are bound
             ),
             params,
         ).mappings().first()
@@ -508,7 +508,7 @@ def list_invoices(
 
     try:
         total_row = db.execute(
-            text(f"SELECT COUNT(*) AS cnt FROM invoices WHERE {where}"),
+            text(f"SELECT COUNT(*) AS cnt FROM invoices WHERE {where}"),  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
             params,
         ).mappings().first()
         total = int((total_row or {}).get("cnt", 0))
@@ -521,7 +521,7 @@ def list_invoices(
                 WHERE {where}
                 ORDER BY created_at DESC
                 LIMIT :limit OFFSET :offset
-                """
+                """  # noqa: S608 — WHERE is joined from literal fragments; every filter value is a bound :param
             ),
             params,
         ).mappings().all()

@@ -224,15 +224,15 @@ def test_date_filter_rejects_injection_payloads(db):
     reaching QBO so we don't ship a query like
         TxnDate >= ''; DROP TABLE; --'
     """
-    from gdx_dispatch.modules.quickbooks.banking import _build_date_where
+    from gdx_dispatch.modules.quickbooks.banking import qbo_date_where
 
     # Valid passes through.
-    assert "TxnDate >= '2026-05-01'" in _build_date_where("2026-05-01", "")
+    assert "TxnDate >= '2026-05-01'" in qbo_date_where("2026-05-01", "")
 
     # Injection attempts fail loudly.
-    for bad in ("2026-05-01'; DROP TABLE x;--", "yesterday", "2026/05/01", "2026-5-1"):
+    for bad in ("2026-05-01'; DROP TABLE x;--", "yesterday", "2026/05/01", "2026-5-1", "2026-05-01\n"):
         with pytest.raises(ValueError):
-            _build_date_where(bad, "")
+            qbo_date_where(bad, "")
 
 
 def test_get_or_create_schedule_survives_duplicate_rows(db):
@@ -274,6 +274,18 @@ def test_reconcile_tombstones_marks_missing_deposits_deleted(db):
     feed = unified_banking_transactions(db)
     ids = sorted(r["qb_txn_id"] for r in feed)
     assert ids == ["D1", "D3"]
+
+
+def test_reconcile_tombstones_refuses_a_table_outside_its_whitelist(db):
+    """`_reconcile_tombstones` interpolates `table` into an UPDATE and carries
+    `# noqa: S608` on the strength of the membership check above it. Keep
+    that check a real refusal: a name outside the set must raise before any
+    SQL is built, whatever it looks like."""
+    from gdx_dispatch.modules.quickbooks.banking import _reconcile_tombstones
+
+    for bad in ("qb_bank_transactions", "qb_deposits; DROP TABLE users", "", "users"):
+        with pytest.raises(ValueError, match="unexpected table"):
+            _reconcile_tombstones(db, bad, {"D1"}, "", "")
 
 
 def test_reconcile_tombstones_idempotent(db):

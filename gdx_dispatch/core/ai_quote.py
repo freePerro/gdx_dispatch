@@ -958,7 +958,7 @@ def api_quote_history(
         params["jt"] = job_type
 
     count_row = db.execute(
-        text(f"SELECT COUNT(*) FROM ai_quote_log {where}"), params
+        text(f"SELECT COUNT(*) FROM ai_quote_log {where}"), params  # noqa: S608 — WHERE is a literal with one optional literal clause; job_type is bound
     ).scalar()
 
     rows = db.execute(
@@ -969,7 +969,7 @@ def api_quote_history(
             FROM ai_quote_log {where}
             ORDER BY created_at DESC
             LIMIT :limit OFFSET :offset
-            """
+            """  # noqa: S608 — WHERE is a literal with one optional literal clause; job_type is bound
         ),
         params,
     ).mappings().all()

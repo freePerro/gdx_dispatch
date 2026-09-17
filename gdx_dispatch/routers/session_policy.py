@@ -46,7 +46,7 @@ def _tenant_uuid(request: Request) -> UUID:
 
 def _read(db: Session, tid: UUID) -> dict[str, Any]:
     row = db.execute(
-        text(f"SELECT {_COL} FROM tenant_settings WHERE tenant_id = :tid"),
+        text(f"SELECT {_COL} FROM tenant_settings WHERE tenant_id = :tid"),  # noqa: S608 — _COL is a module constant; tenant id and value are bound
         {"tid": str(tid)},
     ).first()
     if row is None:
@@ -56,7 +56,7 @@ def _read(db: Session, tid: UUID) -> dict[str, Any]:
         )
         db.commit()
         row = db.execute(
-            text(f"SELECT {_COL} FROM tenant_settings WHERE tenant_id = :tid"),
+            text(f"SELECT {_COL} FROM tenant_settings WHERE tenant_id = :tid"),  # noqa: S608 — _COL is a module constant; tenant id and value are bound
             {"tid": str(tid)},
         ).first()
     return {"idle_timeout_minutes": int(row[0]) if row and row[0] is not None else 0}
@@ -84,7 +84,7 @@ def update_policy(
     tid = _tenant_uuid(request)
     db.execute(
         text(
-            f"INSERT INTO tenant_settings (tenant_id, {_COL}) VALUES (:tid, :v) "
+            f"INSERT INTO tenant_settings (tenant_id, {_COL}) VALUES (:tid, :v) "  # noqa: S608 — _COL is a module constant; tenant id and value are bound
             f"ON CONFLICT (tenant_id) DO UPDATE SET {_COL} = :v"
         ),
         {"tid": str(tid), "v": payload.idle_timeout_minutes},

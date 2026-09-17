@@ -311,7 +311,7 @@ def update_tc_permissions(
         return {"ok": True, "changed": 0}
     try:
         db.execute(
-            _text(f"UPDATE users SET {', '.join(sets)} WHERE id = :uid AND company_id = :tid"),
+            _text(f"UPDATE users SET {', '.join(sets)} WHERE id = :uid AND company_id = :tid"),  # noqa: S608 — SET keys come from the hardcoded field tuple above; values are bound
             params,
         )
         db.commit()

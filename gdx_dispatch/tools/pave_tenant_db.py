@@ -57,7 +57,7 @@ def get_row_counts(engine) -> dict[str, int]:
     with engine.connect() as conn:
         for table in sorted(insp.get_table_names()):
             try:
-                row = conn.execute(text(f'SELECT COUNT(*) FROM "{table}"'))
+                row = conn.execute(text(f'SELECT COUNT(*) FROM "{table}"'))  # noqa: S608 — name comes from the database catalog (inspector), double-quoted; operator tool, no request path
                 counts[table] = row.scalar()
             except Exception as e:
                 log.warning("Could not count %s: %s", table, e)
@@ -215,7 +215,7 @@ def fix_sequences(engine) -> None:
 
             try:
                 result = conn.execute(
-                    text(f'SELECT MAX("{col}") FROM "{table}"')
+                    text(f'SELECT MAX("{col}") FROM "{table}"')  # noqa: S608 — names come from the database catalog (pg_sequences), double-quoted; operator tool, no request path
                 )
                 max_val = result.scalar()
                 if max_val is not None:
