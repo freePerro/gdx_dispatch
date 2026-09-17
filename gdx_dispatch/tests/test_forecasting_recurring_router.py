@@ -179,7 +179,8 @@ def test_confirm_suggested_to_active(client):
     db = SessionLocal()
     s = RecurringStream(label="Sub", source="observed", status="suggested",
                         payee_pattern="SUB", amount_min=10, amount_max=20, cadence="monthly")
-    db.add(s); db.commit()
+    db.add(s)
+    db.commit()
     sid = str(s.id)
     db.close()
 
@@ -193,7 +194,8 @@ def test_confirm_rejects_already_active(client):
     db = SessionLocal()
     s = RecurringStream(label="Sub", source="manual", status="active",
                         payee_pattern="SUB", amount_min=10, amount_max=20, cadence="monthly")
-    db.add(s); db.commit()
+    db.add(s)
+    db.commit()
     sid = str(s.id)
     db.close()
     r = tc.post(f"/api/forecast/recurring/streams/{sid}/confirm")
@@ -208,7 +210,8 @@ def test_end_paid_off_preserves_hits(client):
     s = RecurringStream(label="Loan", source="manual", status="active",
                         payee_pattern="LOAN", amount_min=300, amount_max=400, cadence="monthly",
                         term_total_occurrences=36, occurrences_seen=14)
-    db.add(s); db.commit()
+    db.add(s)
+    db.commit()
     sid = s.id
     db.add(RecurringStreamHit(stream_id=sid, qb_txn_id="t1",
                               txn_date=date(2025, 1, 1), amount=376.56, confirmed=True))
@@ -230,7 +233,8 @@ def test_end_then_edit_blocked(client):
     db = SessionLocal()
     s = RecurringStream(label="X", source="manual", status="active",
                         payee_pattern="X", amount_min=1, amount_max=2, cadence="monthly")
-    db.add(s); db.commit()
+    db.add(s)
+    db.commit()
     sid = str(s.id)
     db.close()
 
@@ -244,7 +248,8 @@ def test_end_idempotency_guard(client):
     db = SessionLocal()
     s = RecurringStream(label="X", source="manual", status="active",
                         payee_pattern="X", amount_min=1, amount_max=2, cadence="monthly")
-    db.add(s); db.commit()
+    db.add(s)
+    db.commit()
     sid = str(s.id)
     db.close()
     tc.post(f"/api/forecast/recurring/streams/{sid}/end", json={"reason": "cancelled"})
@@ -257,8 +262,10 @@ def test_end_rejects_invalid_reason(client):
     db = SessionLocal()
     s = RecurringStream(label="X", source="manual", status="active",
                         payee_pattern="X", amount_min=1, amount_max=2, cadence="monthly")
-    db.add(s); db.commit()
-    sid = str(s.id); db.close()
+    db.add(s)
+    db.commit()
+    sid = str(s.id)
+    db.close()
     r = tc.post(f"/api/forecast/recurring/streams/{sid}/end", json={"reason": "abducted_by_aliens"})
     assert r.status_code == 422
 
@@ -270,7 +277,10 @@ def test_patch_changes_label_and_term(client):
     db = SessionLocal()
     s = RecurringStream(label="Old", source="manual", status="active",
                         payee_pattern="X", amount_min=1, amount_max=2, cadence="monthly")
-    db.add(s); db.commit(); sid = str(s.id); db.close()
+    db.add(s)
+    db.commit()
+    sid = str(s.id)
+    db.close()
 
     r = tc.patch(f"/api/forecast/recurring/streams/{sid}", json={
         "label": "New",
@@ -289,7 +299,10 @@ def test_patch_rejects_dual_term_via_existing_plus_incoming(client):
     s = RecurringStream(label="X", source="manual", status="active",
                         payee_pattern="X", amount_min=1, amount_max=2, cadence="monthly",
                         term_end_date=date(2028, 1, 1))
-    db.add(s); db.commit(); sid = str(s.id); db.close()
+    db.add(s)
+    db.commit()
+    sid = str(s.id)
+    db.close()
     r = tc.patch(f"/api/forecast/recurring/streams/{sid}", json={"term_total_occurrences": 12})
     assert r.status_code == 400
 
@@ -307,7 +320,8 @@ def test_create_from_transaction(client):
         txn_type="Cash",
         account_name="Operating Checking",
     ))
-    db.commit(); db.close()
+    db.commit()
+    db.close()
 
     r = tc.post("/api/forecast/recurring/streams/from-transaction", json={
         "qb_txn_id": "txn-abc",
@@ -336,7 +350,8 @@ def test_create_from_transaction_zero_amount_rejected(client):
     tc, SessionLocal = client
     db = SessionLocal()
     db.add(QBBankTransaction(qb_txn_id="zero", payee="Test", amount=0.00, txn_date=date(2025, 1, 1)))
-    db.commit(); db.close()
+    db.commit()
+    db.close()
     r = tc.post("/api/forecast/recurring/streams/from-transaction", json={
         "qb_txn_id": "zero", "cadence": "monthly",
     })
@@ -350,7 +365,8 @@ def test_create_from_transaction_double_click_rejected(client):
     db = SessionLocal()
     db.add(QBBankTransaction(qb_txn_id="phone-dbl", payee="Phone.com",
                              amount=44.94, txn_date=date(2025, 11, 10)))
-    db.commit(); db.close()
+    db.commit()
+    db.close()
     r1 = tc.post("/api/forecast/recurring/streams/from-transaction", json={
         "qb_txn_id": "phone-dbl", "cadence": "monthly",
     })
@@ -388,11 +404,15 @@ def test_unlink_hit_decrements_occurrences(client):
     s = RecurringStream(label="X", source="observed", status="suggested",
                         payee_pattern="X", amount_min=1, amount_max=2, cadence="monthly",
                         occurrences_seen=2)
-    db.add(s); db.commit()
+    db.add(s)
+    db.commit()
     h = RecurringStreamHit(stream_id=s.id, qb_txn_id="t1",
                            txn_date=date(2025, 1, 1), amount=1.5, confirmed=False)
-    db.add(h); db.commit()
-    sid = str(s.id); hid = str(h.id); db.close()
+    db.add(h)
+    db.commit()
+    sid = str(s.id)
+    hid = str(h.id)
+    db.close()
 
     r = tc.post(f"/api/forecast/recurring/streams/{sid}/hits/{hid}/unlink")
     assert r.status_code == 200
@@ -411,11 +431,15 @@ def test_unlink_hit_from_wrong_stream_404(client):
                          payee_pattern="A", amount_min=1, amount_max=2, cadence="monthly")
     s2 = RecurringStream(label="B", source="manual", status="active",
                          payee_pattern="B", amount_min=1, amount_max=2, cadence="monthly")
-    db.add_all([s1, s2]); db.commit()
+    db.add_all([s1, s2])
+    db.commit()
     h = RecurringStreamHit(stream_id=s1.id, qb_txn_id="t",
                            txn_date=date(2025, 1, 1), amount=1.5)
-    db.add(h); db.commit()
-    sid2 = str(s2.id); hid = str(h.id); db.close()
+    db.add(h)
+    db.commit()
+    sid2 = str(s2.id)
+    hid = str(h.id)
+    db.close()
 
     r = tc.post(f"/api/forecast/recurring/streams/{sid2}/hits/{hid}/unlink")
     assert r.status_code == 404
@@ -435,7 +459,8 @@ def test_detect_now_returns_counts(client):
             txn_date=date(2025, 1, 9) + timedelta(days=i * 30),
             txn_type="Cash",
         ))
-    db.commit(); db.close()
+    db.commit()
+    db.close()
 
     r = tc.post("/api/forecast/recurring/detect")
     assert r.status_code == 200

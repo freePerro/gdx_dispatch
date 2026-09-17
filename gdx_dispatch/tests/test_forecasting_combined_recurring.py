@@ -158,7 +158,8 @@ def test_soft_deleted_stream_excluded(db):
         payee_pattern="X", amount_min=1, amount_max=2, cadence=CADENCE_MONTHLY,
         next_expected_date=date(2026, 6, 1),
     )
-    db.add(s); db.commit()
+    db.add(s)
+    db.commit()
     s.deleted_at = datetime.now(UTC)
     db.commit()
     out = _observed_stream_projection(db, today=date(2026, 5, 20), window_days=60)

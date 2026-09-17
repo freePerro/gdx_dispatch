@@ -26,8 +26,10 @@ def _tdb_with_account(owner_user_id, role="technician"):
     """Build a tenant_db mock that resolves message.account_id → user_id +
     user.role for visibility queries."""
     tdb = MagicMock()
-    account = MagicMock(); account.user_id = owner_user_id
-    user = MagicMock(); user.role = role
+    account = MagicMock()
+    account.user_id = owner_user_id
+    user = MagicMock()
+    user.role = role
     # `tenant_db.get(OutlookAccount, account_id)` → account
     # `tenant_db.get(User, user_id)` → user
     tdb.get.side_effect = lambda model, pk: (
@@ -154,8 +156,10 @@ def test_admin_only_rule_blocks_dispatcher_from_tagged():
         "above_tech_scope": "all_tagged",
         "untagged_visibility": "only_owner",
     }
-    account = MagicMock(); account.user_id = sender
-    user = MagicMock(); user.role = "technician"
+    account = MagicMock()
+    account.user_id = sender
+    user = MagicMock()
+    user.role = "technician"
     tdb = MagicMock()
     tdb.get.side_effect = lambda model, pk: account if model.__name__ == "OutlookAccount" else user
     tdb.query.return_value.filter.return_value.first.return_value = settings
@@ -212,8 +216,10 @@ def test_owner_only_rule_hides_tagged_from_every_other_role():
     sender = uuid4()
     other = uuid4()
     msg = _msg(linked_customer_id=uuid4())
-    account = MagicMock(); account.user_id = sender
-    user = MagicMock(); user.role = "technician"
+    account = MagicMock()
+    account.user_id = sender
+    user = MagicMock()
+    user.role = "technician"
     tdb = MagicMock()
     tdb.get.side_effect = lambda model, pk: account if model.__name__ == "OutlookAccount" else user
     tdb.query.return_value.filter.return_value.first.return_value = _owner_only_settings()
@@ -224,8 +230,10 @@ def test_owner_only_rule_hides_tagged_from_every_other_role():
 def test_owner_only_rule_owner_still_sees_tagged():
     sender = uuid4()
     msg = _msg(linked_customer_id=uuid4())
-    account = MagicMock(); account.user_id = sender
-    user = MagicMock(); user.role = "admin"
+    account = MagicMock()
+    account.user_id = sender
+    user = MagicMock()
+    user.role = "admin"
     tdb = MagicMock()
     tdb.get.side_effect = lambda model, pk: account if model.__name__ == "OutlookAccount" else user
     tdb.query.return_value.filter.return_value.first.return_value = _owner_only_settings()

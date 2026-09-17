@@ -86,8 +86,10 @@ def test_post_enqueues_one_per_valid_event(app):
     cdb_sess = MagicMock()
     cdb_sess.query.return_value.filter.return_value.one_or_none.return_value = tenant
 
-    sub = MagicMock(); sub.account_id = uuid4()
-    account = MagicMock(); account.id = uuid4()
+    sub = MagicMock()
+    sub.account_id = uuid4()
+    account = MagicMock()
+    account.id = uuid4()
     tdb = MagicMock()
     tdb.query.return_value.filter.return_value.one_or_none.return_value = sub
     tdb.get.return_value = account

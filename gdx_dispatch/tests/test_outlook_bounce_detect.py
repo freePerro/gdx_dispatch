@@ -231,7 +231,8 @@ def test_time_correlation_refuses_ambiguity(db, account):
     totals = process_bounces(db, account)
 
     assert totals["estimates_rejected"] == 0
-    db.refresh(est_a); db.refresh(est_b)
+    db.refresh(est_a)
+    db.refresh(est_b)
     assert est_a.status == "sent"
     assert est_b.status == "sent"
 

@@ -322,10 +322,14 @@ def test_invariant_across_credit_refund_sequence(db):
         assert _live_ar_cents(db) == round(float(inv.balance_due) * 100)
 
     check()
-    _pay(db, inv, 150.0); check()
-    _credit(db, inv, 100.0); check()          # AR 150 == balance 150
-    _refund(db, inv, 50.0); check()           # refund: balance unchanged
-    _credit(db, inv, 150.0); check()          # settle → paid, AR 0
+    _pay(db, inv, 150.0)
+    check()
+    _credit(db, inv, 100.0)
+    check()  # AR 150 == balance 150
+    _refund(db, inv, 50.0)
+    check()  # refund: balance unchanged
+    _credit(db, inv, 150.0)
+    check()  # settle → paid, AR 0
     db.refresh(inv)
     assert inv.status == "paid"
 

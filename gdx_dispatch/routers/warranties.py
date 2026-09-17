@@ -73,9 +73,12 @@ def create_warranty(request: Request, payload: dict[str, Any] = Body(...), user:
     job_id = str(payload.get("job_id") or "").strip()
     customer_id = str(payload.get("customer_id") or "").strip()
     description = str(payload.get("description") or "").strip()
-    if not job_id: raise HTTPException(status_code=422, detail="job_id is required")
-    if not customer_id: raise HTTPException(status_code=422, detail="customer_id is required")
-    if not description: raise HTTPException(status_code=422, detail="description is required")
+    if not job_id:
+        raise HTTPException(status_code=422, detail="job_id is required")
+    if not customer_id:
+        raise HTTPException(status_code=422, detail="customer_id is required")
+    if not description:
+        raise HTTPException(status_code=422, detail="description is required")
 
     start_date = _parse_iso_date(payload.get("start_date"), "start_date")
     end_date = _parse_iso_date(payload.get("end_date"), "end_date")
@@ -144,12 +147,22 @@ def update_warranty(warranty_id: str, request: Request, payload: dict[str, Any] 
     changed = False
     if "description" in payload:
         desc = str(payload["description"] or "").strip()
-        if not desc: raise HTTPException(status_code=422, detail="description cannot be blank")
-        w.description = desc; changed = True
-    if "terms" in payload: w.terms = payload["terms"]; changed = True
-    if "status" in payload: w.status = payload["status"]; changed = True
-    if "start_date" in payload: w.start_date = start_d; changed = True
-    if "end_date" in payload: w.end_date = end_d; changed = True
+        if not desc:
+            raise HTTPException(status_code=422, detail="description cannot be blank")
+        w.description = desc
+        changed = True
+    if "terms" in payload:
+        w.terms = payload["terms"]
+        changed = True
+    if "status" in payload:
+        w.status = payload["status"]
+        changed = True
+    if "start_date" in payload:
+        w.start_date = start_d
+        changed = True
+    if "end_date" in payload:
+        w.end_date = end_d
+        changed = True
 
     if not changed:
         raise HTTPException(status_code=400, detail="No updatable fields provided")
