@@ -7,11 +7,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.settings_audit import audited_settings_upsert
+from gdx_dispatch.core.settings_row import read_settings_row
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -62,25 +62,7 @@ def _tenant_uuid(request: Request) -> UUID:
 
 
 def _read(db: Session, tid: UUID) -> dict[str, bool]:
-    cols = ", ".join(_FLAG_COLUMNS)
-    row = db.execute(
-        text(f"SELECT {cols} FROM tenant_settings WHERE tenant_id = :tid"),  # noqa: S608 — column list is the module constant tuple; the tenant id is bound
-        {"tid": str(tid)},
-    ).first()
-    if row is None:
-        db.execute(
-            text("INSERT INTO tenant_settings (tenant_id) VALUES (:tid) ON CONFLICT (tenant_id) DO NOTHING"),
-            {"tid": str(tid)},
-        )
-        db.commit()
-        row = db.execute(
-            text(f"SELECT {cols} FROM tenant_settings WHERE tenant_id = :tid"),  # noqa: S608 — column list is the module constant tuple; the tenant id is bound
-            {"tid": str(tid)},
-        ).first()
-    if row is None:
-        # Unreachable — the upsert above guarantees the row — but the guard
-        # narrows Row|None for every row[N] read below (9 mypy errors gone).
-        raise HTTPException(status_code=500, detail="tenant_settings seed failed")
+    row = read_settings_row(db, tid, _FLAG_COLUMNS)
     return {
         "lock_schedule_on_start": bool(row[0]),
         "post_arrival_event": bool(row[1]),

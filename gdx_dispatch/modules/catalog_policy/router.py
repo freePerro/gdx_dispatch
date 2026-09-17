@@ -6,11 +6,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.settings_audit import audited_settings_upsert
+from gdx_dispatch.core.settings_row import read_settings_row
 from gdx_dispatch.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/catalog-policy", tags=["catalog-policy"])
@@ -46,21 +46,7 @@ def _tenant_uuid(request: Request) -> UUID:
 
 
 def _read(db: Session, tid: UUID) -> dict[str, Any]:
-    cols = ", ".join(_COLS)
-    row = db.execute(
-        text(f"SELECT {cols} FROM tenant_settings WHERE tenant_id = :tid"),  # noqa: S608 — column list is the module constant tuple; the tenant id is bound
-        {"tid": str(tid)},
-    ).first()
-    if row is None:
-        db.execute(
-            text("INSERT INTO tenant_settings (tenant_id) VALUES (:tid) ON CONFLICT (tenant_id) DO NOTHING"),
-            {"tid": str(tid)},
-        )
-        db.commit()
-        row = db.execute(
-            text(f"SELECT {cols} FROM tenant_settings WHERE tenant_id = :tid"),  # noqa: S608 — column list is the module constant tuple; the tenant id is bound
-            {"tid": str(tid)},
-        ).first()
+    row = read_settings_row(db, tid, _COLS)
     return {col: bool(row[i]) for i, col in enumerate(_COLS)}
 
 

@@ -8,12 +8,13 @@ an audit row, so "who changed this setting, and to what" had no answer at all.
 That is invariant #1 in `ARCHITECTURAL_INVARIANTS.md`, and issue #558.
 
 The "when" comes from the audit row's own `created_at`, which is what
-invariant #1 asks for. It is NOT taken from `tenant_settings.updated_at`:
-the ORM model declares that column, but it is absent from the live table
-(checked 2026-09-12 against the dev database, where `tenant_settings` does not
-exist at all — see FOUND_NOT_FILED). Writing a column this code cannot confirm
-is there would risk breaking endpoints that work today, to improve a timestamp
-the audit row already carries.
+invariant #1 asks for. It is NOT taken from `tenant_settings.updated_at`. An
+earlier version of this note said that column was absent from the live table;
+that was read off a dev database with no `tenant_settings` at all. Prod has it
+(`updated_at`, NOT NULL, default `now()`, read 2026-09-16) and some write path
+maintains it — not this one. The audit row already carries the timestamp the
+record needs; making this upsert also maintain `updated_at` would be a second
+clock to keep right for no gain in the record.
 
 **Atomicity.** `core/audit.py::audit_or_rollback` states the contract: stage
 the audit row inside the caller's transaction so the change and its trail land
@@ -23,7 +24,8 @@ accurate without giving up atomicity. Verified: make the audit write raise
 under the real dependency wiring and the settings column reads back unchanged.
 
 Precisely: **no commit happens between the upsert and the audit row.** This is
-NOT "exactly one commit per request" — callers' `_read` has a create-on-read
+NOT "exactly one commit per request" — callers' `_read` (now
+`core/settings_row.read_settings_row`, one copy for all seven) has a create-on-read
 branch that commits, and `ensure_audit_table` commits on first use per engine,
 so a PATCH can issue three. Both of those land BEFORE anything is staged, which
 is what makes them harmless. If you add a `read()` AFTER the upsert that can
