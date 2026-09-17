@@ -21,12 +21,12 @@ from gdx_dispatch.modules.ledger.models import GlAccount, GlJournalEntry, GlJour
 from gdx_dispatch.modules.ledger.service import ensure_gl_seed, transition_invoice_status
 from gdx_dispatch.routers.invoices import (
     PaymentCreateIn,
+    RefundIn,
     process_refund,
     record_payment,
     void_invoice,
     void_payment,
 )
-from gdx_dispatch.routers.invoices import RefundIn
 
 COMPANY = "11111111-1111-1111-1111-111111111111"
 USER = {"tenant_id": COMPANY, "sub": "tester"}

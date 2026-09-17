@@ -29,7 +29,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 # Default service-preset catalog. Industry-standard garage-door services.
 # Prices are illustrative; tenants override via tech_mobile.service_presets.
 DEFAULT_SERVICE_PRESETS: list[dict[str, Any]] = [

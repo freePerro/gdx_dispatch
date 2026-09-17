@@ -1,6 +1,7 @@
 """Sprint 1.x-S21 — MCP bearer-token auth dependency."""
 from __future__ import annotations
-from fastapi import FastAPI, Depends
+
+from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 

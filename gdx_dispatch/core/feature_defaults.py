@@ -29,7 +29,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 # Tech-mobile settings catalog. Every key is namespaced "tech_mobile.*".
 # Sprint refs map to the sprint plan (sprint_tech_mobile.md).
 TECH_MOBILE_SETTINGS: dict[str, dict[str, Any]] = {

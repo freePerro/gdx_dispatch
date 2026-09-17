@@ -41,7 +41,6 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
-
 # Slug constants — keep in sync with docs/mcp-quickstart.md and tests.
 ERROR_INPUT_INVALID = "input_invalid"
 ERROR_TOOL_NOT_FOUND = "tool_not_found"

@@ -1319,7 +1319,8 @@ def inbound_stats(
     user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
 ) -> dict[str, Any]:
     """Calls + SMS by inbound DID + campaign_tag. Marketing attribution."""
-    from datetime import datetime, timedelta, timezone as _tz
+    from datetime import datetime, timedelta
+    from datetime import timezone as _tz
     since = datetime.now(_tz.utc) - timedelta(days=max(1, min(int(days), 365)))
     rows = tenant_db.execute(
         _text(

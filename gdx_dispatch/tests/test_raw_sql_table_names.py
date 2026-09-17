@@ -31,10 +31,9 @@ from pathlib import Path
 
 import pytest
 
-from gdx_dispatch.core.audit import TenantBase
-
 # Import the full model registry so metadata is populated.
 import gdx_dispatch.models  # noqa: F401  (side-effect registration)
+from gdx_dispatch.core.audit import TenantBase
 
 ROUTERS_DIR = Path(__file__).resolve().parents[1] / "routers"
 

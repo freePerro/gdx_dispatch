@@ -18,7 +18,6 @@ from gdx_dispatch.modules.forecasting import qb_recurring as qb_recurring_helper
 from gdx_dispatch.modules.forecasting import router as forecasting_router
 from gdx_dispatch.modules.forecasting.models import QBRecurringTransaction
 
-
 SAMPLE_QBO_RESPONSE = [
     {
         "Invoice": {

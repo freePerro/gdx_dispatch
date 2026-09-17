@@ -14,6 +14,10 @@ from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.expense_categories import (
+    EXPENSE_CATEGORIES,
+    canonicalize_expense_category,
+)
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import Expense, ExpenseLine, JobReceipt
 from gdx_dispatch.modules.ledger.engine import PeriodLockedError
@@ -22,10 +26,6 @@ from gdx_dispatch.modules.ledger.rules import (
     ExpenseCompositionError,
     post_expense_recorded,
     repost_expense,
-)
-from gdx_dispatch.core.expense_categories import (
-    EXPENSE_CATEGORIES,
-    canonicalize_expense_category,
 )
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -174,7 +174,7 @@ def _annotate_gl_accounts(db: Session, rows: list[Expense], payloads: list[dict]
         return
     try:
         from gdx_dispatch.modules.ledger import service as ledger_service
-        from gdx_dispatch.modules.ledger.models import GlAccount, ROLE_EXPENSE_FALLBACK
+        from gdx_dispatch.modules.ledger.models import ROLE_EXPENSE_FALLBACK, GlAccount
         from gdx_dispatch.modules.ledger.rules import _expense_account_id
 
         company_id = rows[0].company_id

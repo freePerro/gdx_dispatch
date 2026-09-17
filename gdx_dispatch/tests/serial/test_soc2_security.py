@@ -6,12 +6,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from conftest import make_fresh_db
 from pydantic import ValidationError
 from sqlalchemy import Text
 from sqlalchemy import text as sa_text
 from sqlalchemy.orm import sessionmaker
 
+from conftest import make_fresh_db
 from gdx_dispatch.models.tenant_models import SafetyChecklist
 from gdx_dispatch.routers.safety_checklist import (
     ChecklistCompleteIn,

@@ -238,6 +238,7 @@ def test_job_create_pydantic_round_trip_accepts_scheduled_duration_hours():
     actually parses the field and round-trips it through model_dump.
     """
     from decimal import Decimal
+
     from gdx_dispatch.routers.jobs import JobCreate, JobUpdate
 
     create = JobCreate(title="Spring repair", scheduled_duration_hours="2.5")

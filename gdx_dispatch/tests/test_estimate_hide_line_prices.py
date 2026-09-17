@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 from gdx_dispatch.core.pdf_generator import _render_template as _render_pdf_html
 from gdx_dispatch.modules.estimates_features import effective_hide_line_prices
-from gdx_dispatch.modules.estimates_features.router import FeaturesPayload, _COLS
+from gdx_dispatch.modules.estimates_features.router import _COLS, FeaturesPayload
 from gdx_dispatch.routers.install_sheet import _load_template
 from gdx_dispatch.routers.pdf import _estimate_payload, _invoice_payload
 
@@ -191,9 +191,9 @@ def test_features_expose_hide_line_prices_column():
 from fastapi.testclient import TestClient  # noqa: E402
 
 from gdx_dispatch.tests.test_estimates import (  # noqa: E402,F401
-    client,
     _create_customer,
     _create_estimate,
+    client,
 )
 
 

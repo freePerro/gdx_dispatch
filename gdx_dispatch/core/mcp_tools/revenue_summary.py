@@ -5,7 +5,6 @@ from typing import Any
 
 from gdx_dispatch.core.mcp_registry import ToolDescriptor, register_tool
 
-
 DESCRIPTOR = ToolDescriptor(
     name="revenue.summary",
     description="Sum paid invoice totals over a window (default last 30 days).",

@@ -29,7 +29,6 @@ from gdx_dispatch.services.pricing_engine import (
     sell_from_cost,
 )
 
-
 # ---------------------------------------------------------------------------
 # Test fixtures (plain data — no DB)
 # ---------------------------------------------------------------------------

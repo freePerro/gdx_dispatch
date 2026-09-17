@@ -232,8 +232,9 @@ def test_m11_overpayment_is_detectable(db):
 
 def test_m37_cannot_delete_a_draft_that_has_payments(db):
     """void_invoice refuses while payments exist; delete must too."""
-    from fastapi import HTTPException
     from uuid import UUID as _U
+
+    from fastapi import HTTPException
 
     inv = _create_invoice(db, lines=[{"description": "Door", "quantity": 1, "unit_price": 500.0}])
     record_payment(

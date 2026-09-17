@@ -26,7 +26,6 @@ from gdx_dispatch.modules.deposits.service import (
 )
 from gdx_dispatch.modules.estimates_features import effective_hide_line_prices, get_features
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine, ProposalTier
-from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
 from gdx_dispatch.modules.proposals.service import (
     accept_tier,
     add_proposal_tier,
@@ -38,6 +37,7 @@ from gdx_dispatch.modules.proposals.service import (
     update_proposal_tier,
     update_tier_line,
 )
+from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)

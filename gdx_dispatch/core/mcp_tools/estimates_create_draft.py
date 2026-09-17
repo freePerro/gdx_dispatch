@@ -5,7 +5,6 @@ import secrets
 from typing import Any
 from uuid import UUID
 
-
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
 from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid

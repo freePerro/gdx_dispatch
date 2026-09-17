@@ -1,9 +1,11 @@
 """Sprint 1.x-S24 — MCP rate limit."""
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import patch
 from uuid import uuid4
+
 import pytest
 
 

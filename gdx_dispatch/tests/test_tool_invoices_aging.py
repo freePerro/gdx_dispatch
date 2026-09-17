@@ -1,11 +1,13 @@
 """Sprint 1.x-S40 — invoices.aging_summary contract."""
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import uuid4
+
 import pytest
 
 import gdx_dispatch.core.mcp_tools.invoices_aging  # noqa: F401

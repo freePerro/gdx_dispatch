@@ -1,6 +1,6 @@
 from gdx_dispatch.modules.vendor_statements.parsers.midwest import (
-    MidwestParseResult,
     MidwestParsedLine,
+    MidwestParseResult,
     parse_midwest_statement,
 )
 

@@ -21,8 +21,9 @@ rewritten to target the real router.
 """
 from __future__ import annotations
 
-import pytest
 from uuid import uuid4
+
+import pytest
 
 pytest.skip(
     "gdx_dispatch.core.gdpr_router does not exist — tests must be rewritten for gdx_dispatch.routers.gdpr",

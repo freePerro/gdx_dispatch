@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
+
 # Force model registration so create_all picks the new tables up.
 from gdx_dispatch.modules.quickbooks.banking import (  # noqa: F401
     FREQ_DAILY,
@@ -756,6 +757,7 @@ def test_pull_bill_payments_extracts_check_bank_account_ref(db):
     """BillPayment's bank account is nested under CheckPayment.BankAccountRef
     OR CreditCardPayment.CCAccountRef. The pull must find either."""
     import asyncio
+
     from gdx_dispatch.modules.quickbooks import banking as _b
 
     qb = _FakeQB({"BillPayment": [{
@@ -782,6 +784,7 @@ def test_pull_bill_payments_extracts_check_bank_account_ref(db):
 def test_pull_bill_payments_falls_back_to_credit_card_account(db):
     """CC-paid bill: account ref nested under CreditCardPayment.CCAccountRef."""
     import asyncio
+
     from gdx_dispatch.modules.quickbooks import banking as _b
 
     qb = _FakeQB({"BillPayment": [{
@@ -802,6 +805,7 @@ def test_pull_bill_payments_falls_back_to_credit_card_account(db):
 
 def test_pull_sales_receipts_signs_positive_and_uses_deposit_to(db):
     import asyncio
+
     from gdx_dispatch.modules.quickbooks import banking as _b
 
     qb = _FakeQB({"SalesReceipt": [{
@@ -823,6 +827,7 @@ def test_pull_sales_receipts_signs_positive_and_uses_deposit_to(db):
 
 def test_pull_refund_receipts_signs_negative(db):
     import asyncio
+
     from gdx_dispatch.modules.quickbooks import banking as _b
 
     qb = _FakeQB({"RefundReceipt": [{
@@ -844,10 +849,11 @@ def test_pull_journal_entries_emits_only_bank_lines_with_correct_sign(db):
     a non-bank account. Pull emits TWO rows (the bank lines), with sign
     flipped per PostingType."""
     import asyncio
-    from gdx_dispatch.modules.quickbooks import banking as _b
 
     # Seed qb_accounts so the bank filter can do its job.
     from uuid import uuid4
+
+    from gdx_dispatch.modules.quickbooks import banking as _b
     db.execute(text(
         "INSERT INTO qb_accounts (id, tenant_id, qb_account_id, name, account_type, current_balance, active) "
         "VALUES (:i, 't', 'BANK1', 'Operating', 'Bank', 0, 1)"
@@ -895,6 +901,7 @@ def test_pull_deposits_serializes_raw_json_for_psycopg2(db):
     tolerated it, Postgres 500'd. This test pins that the bind value
     is a string, by inspecting the stored value's type after the pull."""
     import asyncio
+
     from gdx_dispatch.modules.quickbooks import banking as _b
 
     qb = _FakeQB({"Deposit": [{
@@ -928,6 +935,7 @@ def test_pull_deposits_serializes_raw_json_for_psycopg2(db):
 
 def test_pull_transfers_serializes_raw_json_for_psycopg2(db):
     import asyncio
+
     from gdx_dispatch.modules.quickbooks import banking as _b
 
     qb = _FakeQB({"Transfer": [{
@@ -951,6 +959,7 @@ def test_pull_customer_payments_only_includes_direct_to_bank(db):
     move that cash to the bank."""
     import asyncio
     from uuid import uuid4
+
     from gdx_dispatch.modules.quickbooks import banking as _b
 
     # Seed qb_accounts: one Bank, one Undeposited-Funds-style other-current-asset.
@@ -1007,6 +1016,7 @@ def test_pull_customer_payments_skips_when_bank_ids_unknown(db):
     surfaces a warning in the response so the UI can flag it (covered
     in test_pull_customer_payments_surfaces_warning_when_accounts_empty)."""
     import asyncio
+
     from gdx_dispatch.modules.quickbooks import banking as _b
 
     qb = _FakeQB({"Payment": [{
@@ -1024,6 +1034,7 @@ def test_pull_vendor_credits_is_info_only_zero_amount(db):
     never contribute phantom cash to any sum over the unified feed.
     The credit value goes in the memo for display."""
     import asyncio
+
     from gdx_dispatch.modules.quickbooks import banking as _b
 
     qb = _FakeQB({"VendorCredit": [{
@@ -1052,6 +1063,7 @@ def test_pull_customer_payments_surfaces_warning_when_accounts_empty(db):
     indistinguishable from `no customer payments`. Now it returns
     a real error in the response so the toast warns."""
     import asyncio
+
     from gdx_dispatch.modules.quickbooks import banking as _b
 
     qb = _FakeQB({"Payment": [{
@@ -1067,6 +1079,7 @@ def test_pull_customer_payments_surfaces_warning_when_accounts_empty(db):
 def test_pull_journal_entries_surfaces_warning_when_accounts_empty(db):
     """Same audit follow-up applied to JournalEntry's bank-only filter."""
     import asyncio
+
     from gdx_dispatch.modules.quickbooks import banking as _b
 
     qb = _FakeQB({"JournalEntry": [{
@@ -1088,6 +1101,7 @@ def test_pull_journal_entries_skips_when_bank_ids_unknown(db):
     surfaces a warning in the response so the UI can flag it (covered
     in test_pull_journal_entries_surfaces_warning_when_accounts_empty)."""
     import asyncio
+
     from gdx_dispatch.modules.quickbooks import banking as _b
 
     qb = _FakeQB({"JournalEntry": [{

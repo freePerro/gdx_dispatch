@@ -761,10 +761,10 @@ def test_invoice_install_lane_flat_price_no_double_labor(session_factory):
     """Plan §8 install lane end-to-end (audit: the router install branch had
     no test). Install job + matrix pick + hours>0 → ONE flat labor line
     (never flat + hourly — the lanes are mutually exclusive), draft."""
+    import datetime as _dt
+    from decimal import Decimal as _D
     from uuid import UUID as _U
     from uuid import uuid4 as _u4
-    from decimal import Decimal as _D
-    import datetime as _dt
 
     from gdx_dispatch.models.labor_pricing import LaborPriceItem
     from gdx_dispatch.models.tenant_models import JobCloseout

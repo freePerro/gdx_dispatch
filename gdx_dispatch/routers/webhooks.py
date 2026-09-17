@@ -36,13 +36,13 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync, utcnow
+from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.modules import require_module, require_role
 from gdx_dispatch.core.ssrf_guard import (
     OutboundURLBlocked,
     validate_outbound_url,
     webhook_allow_hosts,
 )
-from gdx_dispatch.core.database import get_db
-from gdx_dispatch.core.modules import require_module, require_role
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)

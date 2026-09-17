@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from typing import Any
+
 from sqlalchemy import select
+
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
 from gdx_dispatch.models.tenant_models import Customer

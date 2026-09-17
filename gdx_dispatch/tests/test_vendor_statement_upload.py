@@ -19,7 +19,6 @@ from gdx_dispatch.modules.vendor_statements.service import (
     upload_midwest_statement,
 )
 
-
 SAMPLE_PDF = Path("/path/to/sample-files/cs_master (41).PDF")
 
 

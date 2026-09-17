@@ -33,7 +33,6 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.models.tenant_models import Tag
 
-
 log = logging.getLogger(__name__)
 
 

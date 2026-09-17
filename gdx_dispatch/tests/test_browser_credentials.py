@@ -22,7 +22,6 @@ from gdx_dispatch.plugin_host.app import create_plugin_host
 from gdx_dispatch.routers import browser_proxy
 from gdx_dispatch.routers.auth import get_current_user
 
-
 # ── plugin-host internal store ───────────────────────────────────────────────
 
 def _host_client(tmp_path, monkeypatch) -> TestClient:

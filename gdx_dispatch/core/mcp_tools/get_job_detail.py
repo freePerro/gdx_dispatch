@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+
 from gdx_dispatch.core.mcp_registry import ToolDescriptor, register_tool
 
 # Note: Job model is used in the handler, but we don't import it directly

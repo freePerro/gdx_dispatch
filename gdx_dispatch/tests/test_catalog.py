@@ -282,11 +282,14 @@ def test_virtual_catalog_chi_doors_computed_retail_matches_engine(tenant_db):
     drift, causing real money mistakes. Closes
     D-S111-catalog-retail-engine-mismatch-test (full version)."""
     from decimal import Decimal as _D
+
     from gdx_dispatch.models.pricing_engine import seed_default_pricing
     from gdx_dispatch.models.tenant_models import ChiDoorCatalog
     from gdx_dispatch.routers.catalog import VIRTUAL_CHI_DOORS_ID, _virtual_catalog_items
     from gdx_dispatch.services.pricing_engine import (
-        CustomerView, hydrate_settings_from_db, price_line,
+        CustomerView,
+        hydrate_settings_from_db,
+        price_line,
     )
 
     seed_default_pricing(tenant_db)

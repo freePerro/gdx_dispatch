@@ -21,7 +21,6 @@ from starlette.requests import Request
 
 from gdx_dispatch.core.email_norm import normalize_email
 
-
 # ─────────────────────────── Slice 4: email normalization ───────────────────────────
 
 

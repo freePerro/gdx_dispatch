@@ -21,14 +21,13 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-
-from gdx_dispatch.core.inbound_email_auth import verify_inbound_email_secret
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.inbound_email_auth import verify_inbound_email_secret
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.tenant import get_company_id
 from gdx_dispatch.routers.auth import get_current_user

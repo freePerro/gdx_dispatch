@@ -41,7 +41,6 @@ from gdx_dispatch.core.modules import require_permission
 from gdx_dispatch.models.tenant_models import Tag, TagAssignment
 from gdx_dispatch.routers.auth import get_current_user
 
-
 log = logging.getLogger(__name__)
 
 router = APIRouter(

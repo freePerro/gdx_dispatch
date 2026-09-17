@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.routers.auth import get_current_user
+from gdx_dispatch.core.modules import require_role
 from gdx_dispatch.models.pricing_engine import (
     CustomerVolumeDiscountTier,
     MarginTier,
@@ -47,7 +47,7 @@ from gdx_dispatch.models.pricing_engine import (
     PricingTierSet,
     seed_default_pricing,
 )
-from gdx_dispatch.core.modules import require_role
+from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
 

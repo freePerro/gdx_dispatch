@@ -11,7 +11,7 @@ import logging
 import os
 from typing import Any
 
-from fastapi import Request, APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 

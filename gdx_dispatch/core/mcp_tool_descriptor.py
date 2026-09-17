@@ -36,7 +36,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-
 SensitivityClass = Literal["public", "internal", "restricted"]
 VALID_SENSITIVITY: frozenset[str] = frozenset({"public", "internal", "restricted"})
 

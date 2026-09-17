@@ -12,7 +12,6 @@ from sqlalchemy import bindparam, func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.core.audit import (
     audit_or_rollback,
     ensure_audit_table,
@@ -26,6 +25,7 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.log_redact import redact_email
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.name_normalize import humanize_name
+from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.models.tenant_models import Customer, Job
 
 log = logging.getLogger(__name__)
@@ -345,7 +345,8 @@ async def list_customers(
         # search-UX constraint) decrypt cleanly via process_result_value.
         # The pre-S122-9 raw-SQL form rendered ciphertext to the UI for 269
         # customer pages — see ``feedback_research_first_encryption_rollout.md``.
-        from sqlalchemy import func as _func, or_  # noqa: PLC0415
+        from sqlalchemy import func as _func  # noqa: PLC0415
+        from sqlalchemy import or_
 
         base_filters = [
             Customer.deleted_at.is_(None),
@@ -395,7 +396,8 @@ async def list_customers(
         page_ids = [str(r.id) for r in rows]
         location_counts: dict[str, int] = {}
         if page_ids:
-            from sqlalchemy import bindparam, text as _text  # noqa: PLC0415
+            from sqlalchemy import bindparam  # noqa: PLC0415
+            from sqlalchemy import text as _text
             stmt = _text(
                 "SELECT customer_id, COUNT(*) AS n FROM customer_locations "
                 "WHERE deleted_at IS NULL AND customer_id IN :ids "

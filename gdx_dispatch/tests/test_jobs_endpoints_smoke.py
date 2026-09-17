@@ -37,8 +37,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from conftest import make_fresh_db
-from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.jobs import router as jobs_router
 
 # A real UUID: next_job_number / tenant-gate paths parse tenant_id as a

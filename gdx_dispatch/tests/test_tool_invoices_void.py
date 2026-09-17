@@ -1,9 +1,11 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import uuid4
+
 import pytest
 
 import gdx_dispatch.core.mcp_tools.invoices_void  # noqa: F401

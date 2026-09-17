@@ -39,7 +39,6 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookMessage, OutlookSettings
 
-
 log = logging.getLogger("gdx_dispatch.modules.outlook.visibility")
 
 

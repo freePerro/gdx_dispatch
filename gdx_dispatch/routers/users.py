@@ -7,17 +7,14 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import time
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
-
-from gdx_dispatch.core.roles import is_role_admin_actor, normalize_role
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from typing import Literal
 from werkzeug.security import generate_password_hash
 
 from gdx_dispatch.core.audit import AuditLog, log_audit_event_sync, utcnow
@@ -26,6 +23,7 @@ from gdx_dispatch.core.log_redact import redact_email
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.name_normalize import humanize_name
 from gdx_dispatch.core.permissions import assert_can_assign_role
+from gdx_dispatch.core.roles import is_role_admin_actor, normalize_role
 from gdx_dispatch.core.tenant_ctx import bind_tenant_context
 from gdx_dispatch.models.tenant_models import User
 from gdx_dispatch.routers.auth import get_current_user
@@ -384,8 +382,9 @@ def _sync_user_role_assignment(db: Session, tenant_id: str, user_id: str, legacy
     row is rewritten. This wipes the user's current assignments and inserts
     a single assignment pointing at the matching builtin TenantRole.
     """
-    from gdx_dispatch.models.tenant_models import TenantRole, UserRoleAssignment
     from sqlalchemy import select as _select
+
+    from gdx_dispatch.models.tenant_models import TenantRole, UserRoleAssignment
 
     target_name = _LEGACY_ROLE_MAP.get(legacy_role, legacy_role)
     role_row = db.execute(

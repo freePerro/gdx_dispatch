@@ -396,6 +396,7 @@ def list_customers(
     # decrypt cleanly. Pre-S122-9 raw SQL bypassed process_result_value
     # and would render ciphertext to public API consumers.
     from sqlalchemy import func as _func  # noqa: PLC0415
+
     from gdx_dispatch.models.tenant_models import Customer  # noqa: PLC0415
 
     filters = [Customer.deleted_at.is_(None)]

@@ -8,20 +8,20 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from gdx_dispatch.core.database import get_db, get_db
+from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError
 from gdx_dispatch.modules.outlook.send_router import (
-    _build_graph_body,
     SendMailIn,
-    get_db_for_send,
+    _build_graph_body,
     get_db_for_send,
     get_user_for_send,
+)
+from gdx_dispatch.modules.outlook.send_router import (
     router as send_router,
 )
 from gdx_dispatch.modules.outlook.token_refresh import OutlookReconnectRequired
 from gdx_dispatch.routers.auth import get_current_user
-
 
 UID, TID = uuid4(), uuid4()
 

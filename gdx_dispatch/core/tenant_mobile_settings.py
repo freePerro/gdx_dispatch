@@ -35,7 +35,6 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.feature_defaults import TECH_MOBILE_SETTINGS
 from gdx_dispatch.models.tenant_models import AppSettings
 
-
 _UNSET = object()
 
 

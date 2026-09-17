@@ -18,7 +18,6 @@ from gdx_dispatch.modules.vendor_statements.parsers.midwest import (
     parse_midwest_statement,
 )
 
-
 SAMPLE_PDF = Path("/path/to/sample-files/cs_master (41).PDF")
 
 

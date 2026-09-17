@@ -15,8 +15,8 @@ from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db, get_tenant_db
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.modules.phone_com.models import PhoneComCall, PhoneComVoicemail
 from gdx_dispatch.models.tenant_models import Job
+from gdx_dispatch.modules.phone_com.models import PhoneComCall, PhoneComVoicemail
 from gdx_dispatch.modules.phone_com.router import router as phone_com_router
 
 

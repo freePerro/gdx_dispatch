@@ -26,7 +26,6 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-
 from fastapi.testclient import TestClient
 
 from gdx_dispatch.routers.service_agreements import (

@@ -230,8 +230,8 @@ def test_endpoints_registered():
 
 
 def test_sales_funnel_empty(kpi_db):
-    from fastapi.testclient import TestClient
     from fastapi import FastAPI
+    from fastapi.testclient import TestClient
     app = FastAPI()
     app.include_router(reports.router)
     _override_deps(app, kpi_db)
@@ -249,8 +249,8 @@ def test_sales_funnel_empty(kpi_db):
 
 
 def test_sales_funnel_with_accepted_estimate(kpi_db):
-    from fastapi.testclient import TestClient
     from fastapi import FastAPI
+    from fastapi.testclient import TestClient
     app = FastAPI()
     app.include_router(reports.router)
     _override_deps(app, kpi_db)
@@ -280,8 +280,8 @@ def test_sales_funnel_with_accepted_estimate(kpi_db):
 
 
 def test_operations_first_time_fix(kpi_db):
-    from fastapi.testclient import TestClient
     from fastapi import FastAPI
+    from fastapi.testclient import TestClient
     app = FastAPI()
     app.include_router(reports.router)
     _override_deps(app, kpi_db)
@@ -314,8 +314,8 @@ def test_operations_first_time_fix(kpi_db):
 
 
 def test_cash_risk_aging_buckets(kpi_db):
-    from fastapi.testclient import TestClient
     from fastapi import FastAPI
+    from fastapi.testclient import TestClient
     app = FastAPI()
     app.include_router(reports.router)
     _override_deps(app, kpi_db)
@@ -340,8 +340,8 @@ def test_cash_risk_aging_buckets(kpi_db):
 
 
 def test_cash_risk_gross_margin_and_warranty(kpi_db):
-    from fastapi.testclient import TestClient
     from fastapi import FastAPI
+    from fastapi.testclient import TestClient
     app = FastAPI()
     app.include_router(reports.router)
     _override_deps(app, kpi_db)
@@ -400,8 +400,8 @@ def test_operations_avg_job_duration_from_attested_closeouts(kpi_db):
     closeouts began attesting hours_worked on every completion. Average is
     over CURRENT closeout rows only (supersede model): a re-closed job must
     not count twice, and a restated attestation must not count at all."""
-    from fastapi.testclient import TestClient
     from fastapi import FastAPI
+    from fastapi.testclient import TestClient
     app = FastAPI()
     app.include_router(reports.router)
     _override_deps(app, kpi_db)
@@ -429,8 +429,8 @@ def test_operations_avg_job_duration_from_attested_closeouts(kpi_db):
 
 
 def test_operations_avg_job_duration_empty_window_stays_dark(kpi_db):
-    from fastapi.testclient import TestClient
     from fastapi import FastAPI
+    from fastapi.testclient import TestClient
     app = FastAPI()
     app.include_router(reports.router)
     _override_deps(app, kpi_db)
@@ -458,8 +458,8 @@ def test_cash_risk_collected_window(kpi_db):
     """Collected (30d) — keyed on payment_date (backdatable receipt date),
     voided payments excluded, outside-window payments excluded, today's
     subtotal split out."""
-    from fastapi.testclient import TestClient
     from fastapi import FastAPI
+    from fastapi.testclient import TestClient
     app = FastAPI()
     app.include_router(reports.router)
     _override_deps(app, kpi_db)
@@ -489,8 +489,8 @@ def test_cash_risk_collected_nets_office_refunds(kpi_db):
     refunds are append-only InvoiceAdjustment kind='refund' with the payment
     left standing. 'Collected' must be NET CASH both ways — a $2K manual
     check refund must not leave the tile overstated by $2K."""
-    from fastapi.testclient import TestClient
     from fastapi import FastAPI
+    from fastapi.testclient import TestClient
     app = FastAPI()
     app.include_router(reports.router)
     _override_deps(app, kpi_db)
@@ -513,8 +513,8 @@ def test_cash_risk_collected_nets_office_refunds(kpi_db):
 
 
 def test_cash_risk_collected_empty(kpi_db):
-    from fastapi.testclient import TestClient
     from fastapi import FastAPI
+    from fastapi.testclient import TestClient
     app = FastAPI()
     app.include_router(reports.router)
     _override_deps(app, kpi_db)

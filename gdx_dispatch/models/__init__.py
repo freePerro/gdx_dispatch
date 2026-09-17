@@ -27,13 +27,13 @@ from gdx_dispatch.models.tenant_models import (  # noqa: F401
     CustomCatalog,
     CustomCatalogItem,
     Customer,
-    DoorSpec,
     # New models for blocked tables
     CustomerLocation,
     CustomerReview,
     Document,
     DocumentFolder,
     DocumentSignature,
+    DoorSpec,
     EmailSetting,
     EquipmentAsset,
     EquipmentAssetHistory,
@@ -164,7 +164,11 @@ try:
 except ImportError:
     pass
 try:
-    from gdx_dispatch.modules.notifications.models import DeviceToken, NotificationLog, NotificationPreference  # noqa: F401
+    from gdx_dispatch.modules.notifications.models import (  # noqa: F401
+        DeviceToken,
+        NotificationLog,
+        NotificationPreference,
+    )
 except ImportError:
     pass
 try:
@@ -335,12 +339,10 @@ try:
 except ImportError:
     pass
 
-from gdx_dispatch.models.tenant_models import (  # noqa: F401
-    # Transitions
-    BILLING_TRANSITIONS,
-    DISPATCH_TRANSITIONS,
-    LIFECYCLE_TRANSITIONS,
-    validate_job_transition,
+# Labor pricing matrix — Sprint S97. Tenant-configurable size/SKU-keyed
+# flat-rate labor with assumed man-hours. Tenant-plane (no tenant_id columns).
+from gdx_dispatch.models.labor_pricing import (  # noqa: F401
+    LaborPriceItem,
 )
 
 # Pricing engine — single source of truth for cost→sell margin math.
@@ -355,9 +357,10 @@ from gdx_dispatch.models.pricing_engine import (  # noqa: F401
     PricingTierSet,
     seed_default_pricing,
 )
-
-# Labor pricing matrix — Sprint S97. Tenant-configurable size/SKU-keyed
-# flat-rate labor with assumed man-hours. Tenant-plane (no tenant_id columns).
-from gdx_dispatch.models.labor_pricing import (  # noqa: F401
-    LaborPriceItem,
+from gdx_dispatch.models.tenant_models import (  # noqa: F401
+    # Transitions
+    BILLING_TRANSITIONS,
+    DISPATCH_TRANSITIONS,
+    LIFECYCLE_TRANSITIONS,
+    validate_job_transition,
 )

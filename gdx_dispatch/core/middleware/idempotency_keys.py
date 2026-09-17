@@ -18,7 +18,6 @@ different path do NOT collide in the shared Redis namespace.
 
 import hashlib
 
-
 IDEMPOTENCY_TTL_SECONDS = 86400  # 24h — default TTL for cached responses
 REDIS_DB = 7                      # dedicated Redis logical DB for idempotency
 

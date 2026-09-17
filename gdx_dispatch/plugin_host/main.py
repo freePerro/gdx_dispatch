@@ -32,8 +32,8 @@ from gdx_dispatch.plugin_api.discovery import discover_with_dists
 from gdx_dispatch.plugin_host.app import create_plugin_host
 from gdx_dispatch.plugin_host.reconcile import (
     INSTALL_DIR,
-    detect_stale,
     desired_versions,
+    detect_stale,
     reconcile,
     running_dists,
 )

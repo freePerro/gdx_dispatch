@@ -33,12 +33,11 @@ from gdx_dispatch.modules.outlook.models import (
     OutlookAccount,
     OutlookFolder,
     OutlookFolderPrefs,
-    OutlookMessage,
     OutlookFolderSyncState,
+    OutlookMessage,
 )
 from gdx_dispatch.modules.outlook.token_refresh import OutlookReconnectRequired, with_outlook_client
 from gdx_dispatch.routers.auth import get_current_user
-
 
 log = logging.getLogger("gdx_dispatch.modules.outlook.folders_router")
 

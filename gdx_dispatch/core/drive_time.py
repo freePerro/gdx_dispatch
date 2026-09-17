@@ -34,7 +34,6 @@ from typing import Any
 
 from gdx_dispatch.core.cache import cached
 
-
 log = logging.getLogger(__name__)
 
 

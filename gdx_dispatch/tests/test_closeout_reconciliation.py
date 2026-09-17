@@ -140,8 +140,8 @@ def test_supplemental_invoice_clears_the_discrepancy(db, monkeypatch):
 def test_credit_memo_clears_the_discrepancy(db, monkeypatch):
     """A down-revision reconciles via a credit memo (invoice_adjustments), which
     is never a new Invoice row — the clear must see it too."""
-    from gdx_dispatch.models.tenant_models import InvoiceAdjustment
     import gdx_dispatch.core.closeout_reconciliation as m
+    from gdx_dispatch.models.tenant_models import InvoiceAdjustment
     monkeypatch.setattr(m, "closeout_reconciliation_enabled", lambda _tid: True)
     job, inv = _seed_revised_and_billed(db)
     assert len(m.find_closeout_billing_discrepancies(db, "t")["items"]) == 1

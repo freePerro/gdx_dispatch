@@ -124,6 +124,7 @@ def test_create_contact_client_payload_shape():
     """Sanity-check the v4 contact body shape we send."""
     import httpx
     import respx
+
     from gdx_dispatch.modules.phone_com.client import BASE_URL, PhoneComClient
 
     with respx.mock:

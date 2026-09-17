@@ -17,7 +17,9 @@ from starlette.requests import Request
 
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.models import tenant_models  # noqa: F401  register all tenant models
-from gdx_dispatch.modules.proposals import models as proposals_models  # noqa: F401  register Estimate/EstimateLine/ProposalTier
+from gdx_dispatch.modules.proposals import (
+    models as proposals_models,  # noqa: F401  register Estimate/EstimateLine/ProposalTier
+)
 from gdx_dispatch.routers import mobile_quoting
 
 _TEST_USER = {"user_id": "user-1", "role": "technician", "tenant_id": "tenant-a"}
