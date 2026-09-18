@@ -114,6 +114,36 @@
             <Button label="Save" size="small" :loading="savingSettings" @click="saveSettings(screen)" />
           </div>
 
+          <!-- Upload screen: one file, POSTed multipart to the plugin's endpoint
+               (field name `file`). The server's summary renders as key/value so
+               the user sees exactly what was — and was not — imported. Optional
+               `secondary_action` = one extra POST button (no body). -->
+          <div v-if="screen.type === 'upload'" class="plugin-screen__upload">
+            <p v-for="(b, j) in screen.help || []" :key="j" class="plugin-screen__hint">{{ b }}</p>
+            <div class="plugin-screen__upload-row">
+              <input
+                :key="uploadInputKeys[i] || 0"
+                type="file"
+                :accept="screen.accept"
+                :aria-label="screen.title || 'Choose file'"
+                @change="onUploadPick(i, $event)"
+              />
+              <Button :label="screen.button || 'Upload'" size="small"
+                :disabled="!uploadPicks[i] || loading" :loading="loading"
+                @click="onUpload(i, screen)" />
+              <Button v-if="screen.secondary_action" :label="screen.secondary_action.label"
+                outlined size="small" :disabled="loading"
+                @click="onScreenAction(i, screen.secondary_action.endpoint)" />
+            </div>
+            <table v-if="uploadResults[i]" class="plugin-screen__kv" data-testid="upload-result">
+              <tbody>
+                <tr v-for="r in _kvRows(uploadResults[i])" :key="r.k">
+                  <th>{{ r.k }}</th><td>{{ r.v }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
           <!-- Help screen: documentation as sections of headings + text/bullets.
                Plain text only (no raw HTML) — safe + theme-aware. -->
           <div v-if="screen.type === 'help'" class="plugin-screen__help">
@@ -245,7 +275,39 @@ function onStreamCaptured(payload) {
 const { isMobileViewport } = useViewMode();
 
 const api = useApiWithToast();
-const { screens, rows, rowsFor, loading, error, load, create, fetchOptions, searchList } = usePluginScreen(props.pluginKey, api);
+const {
+  screens, rows, rowsFor, loading, error, load, create, fetchOptions, searchList,
+  uploadTo, runAction,
+} = usePluginScreen(props.pluginKey, api);
+
+// Upload screens — picked file / server summary / input remount key, per tab
+// index (a plugin may declare more than one upload screen).
+const uploadPicks = reactive({});
+const uploadResults = reactive({});
+const uploadInputKeys = reactive({});
+function onUploadPick(i, ev) {
+  uploadPicks[i] = ev.target?.files?.[0] || null;
+}
+async function onUpload(i, screen) {
+  const result = await uploadTo(screen, uploadPicks[i]);
+  if (result) {
+    uploadResults[i] = result;
+    uploadPicks[i] = null;
+    uploadInputKeys[i] = (uploadInputKeys[i] || 0) + 1; // remount = clear the input
+  }
+}
+async function onScreenAction(i, endpoint) {
+  const result = await runAction(endpoint);
+  if (result) uploadResults[i] = result;
+}
+// Server summary object → renderable key/value rows (nested objects stringified,
+// so nothing the plugin reports is hidden).
+function _kvRows(obj) {
+  if (!obj || typeof obj !== 'object') return [];
+  return Object.entries(obj)
+    .filter(([, v]) => v !== null && v !== undefined && v !== '')
+    .map(([k, v]) => ({ k, v: typeof v === 'object' ? JSON.stringify(v) : String(v) }));
+}
 
 // Search term per screen index, debounced so typing does not fire a request per
 // keystroke against the plugin host.
@@ -446,6 +508,9 @@ onMounted(async () => {
 .plugin-screen__detail-sec { margin-bottom: 1rem; }
 .plugin-screen__detail-sec h4 { margin: 0 0 0.25rem; color: var(--p-text-color, #1f2937); }
 .plugin-screen__hint { color: var(--p-text-color-secondary, #6b7280); font-size: 0.85rem; }
+.plugin-screen__upload { display: flex; flex-direction: column; gap: 0.75rem; max-width: 42rem; }
+.plugin-screen__upload-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.plugin-screen__upload input[type='file'] { color: var(--p-text-color, #1f2937); }
 .plugin-screen__kv { width: 100%; border-collapse: collapse; }
 .plugin-screen__kv th { text-align: left; vertical-align: top; padding: 2px 12px 2px 0; white-space: nowrap; color: var(--p-text-color-secondary, #6b7280); font-weight: 600; }
 .plugin-screen__kv td { padding: 2px 0; color: var(--p-text-color, #1f2937); }

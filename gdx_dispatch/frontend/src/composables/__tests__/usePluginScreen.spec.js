@@ -179,3 +179,65 @@ describe('searchList — server-side search for list screens', () => {
     expect(api.get).not.toHaveBeenCalled();
   });
 });
+
+describe('uploadTo / runAction — upload screens', () => {
+  const listScreen = { type: 'list', endpoint: '/api/plugins/cellcomms/messages', columns: [] };
+  const uploadScreen = { type: 'upload', endpoint: '/api/plugins/cellcomms/backfill' };
+
+  function api(uploadResult) {
+    return {
+      get: vi.fn(async (url) => (url.endsWith('/ui') ? { screens: [listScreen, uploadScreen] } : [])),
+      post: vi.fn(async () => uploadResult),
+    };
+  }
+
+  it('POSTs the file as multipart FormData under the field name `file`, then refreshes lists', async () => {
+    const a = api({ status: 'ok', messages_added: 3 });
+    const s = usePluginScreen('cellcomms', a);
+    await s.load();
+    a.get.mockClear();
+    const file = new File(['<smses/>'], 'sms.xml', { type: 'text/xml' });
+    const result = await s.uploadTo(uploadScreen, file);
+
+    expect(result).toEqual({ status: 'ok', messages_added: 3 });
+    const [url, body] = a.post.mock.calls[0];
+    expect(url).toBe('/api/plugins/cellcomms/backfill');
+    expect(body).toBeInstanceOf(FormData);
+    expect(body.get('file')).toBe(file); // FastAPI UploadFile's default field name
+    // the list screen refetched so the import is visible without a reload
+    expect(a.get).toHaveBeenCalledWith('/api/plugins/cellcomms/messages');
+  });
+
+  it('refuses an upload endpoint outside the plugin namespace', async () => {
+    const a = api({});
+    const s = usePluginScreen('cellcomms', a);
+    const file = new File(['x'], 'x.xml');
+    const result = await s.uploadTo({ type: 'upload', endpoint: '/api/customers' }, file);
+    expect(result).toBeNull();
+    expect(a.post).not.toHaveBeenCalled();
+    expect(s.error.value).toMatch(/refused upload endpoint/);
+  });
+
+  it('surfaces an upload failure through error and returns null', async () => {
+    const a = {
+      get: vi.fn(async () => ({ screens: [uploadScreen] })),
+      post: vi.fn(async () => { throw new Error('413'); }),
+    };
+    const s = usePluginScreen('cellcomms', a);
+    const result = await s.uploadTo(uploadScreen, new File(['x'], 'x.xml'));
+    expect(result).toBeNull();
+    expect(s.error.value).toBe('413');
+  });
+
+  it('runAction POSTs to a same-plugin endpoint and refuses others', async () => {
+    const a = api({ status: 'ok', linked: 2 });
+    const s = usePluginScreen('cellcomms', a);
+    const ok = await s.runAction('/api/plugins/cellcomms/rematch');
+    expect(ok).toEqual({ status: 'ok', linked: 2 });
+    expect(a.post).toHaveBeenCalledWith('/api/plugins/cellcomms/rematch', {});
+
+    const refused = await s.runAction('/api/plugins/otherplugin/rematch');
+    expect(refused).toBeNull();
+    expect(s.error.value).toMatch(/refused action endpoint/);
+  });
+});

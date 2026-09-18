@@ -143,6 +143,62 @@ describe('PluginScreen.vue', () => {
     expect(emitted[0][0]).toEqual({ id: 42, qcd: 'QCD123' });
   });
 
+  // Upload screen: the way in for file-fed plugins (cellcomms backfill). The
+  // button stays disabled until a file is picked; a successful upload renders
+  // the server's summary so the user sees what was — and was not — imported.
+  it('renders an upload screen, uploads the picked file, and shows the summary', async () => {
+    apiMock.manifest = {
+      screens: [{
+        type: 'upload',
+        title: 'Import phone backup',
+        endpoint: '/api/plugins/example/backfill',
+        accept: '.xml',
+        button: 'Import backup file',
+        help: ['Imports an SMS Backup & Restore XML file.'],
+        secondary_action: { label: 'Re-match customers now', endpoint: '/api/plugins/example/rematch' },
+      }],
+    };
+    apiMock.post = vi.fn(async () => ({ status: 'ok', messages_added: 5, mms_skipped: 1 }));
+    // Real <button> so :disabled and clicks behave like the DOM, not a stub.
+    const wrapper = mount(PluginScreen, {
+      props: { pluginKey: 'example' },
+      global: { stubs: { ...stubs, Button: { template: '<button :disabled="disabled" :label="label">{{ label }}</button>', props: ['disabled', 'label', 'loading'] } } },
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Imports an SMS Backup & Restore XML file.');
+    const input = wrapper.find('input[type="file"]');
+    expect(input.attributes('accept')).toBe('.xml');
+    const uploadBtn = wrapper.findAll('button').find((b) => b.text() === 'Import backup file');
+    expect(uploadBtn.attributes('disabled')).toBeDefined();
+
+    // jsdom won't let us set input.files directly via setValue; drive the handler.
+    const file = new File(['<smses/>'], 'sms.xml', { type: 'text/xml' });
+    Object.defineProperty(input.element, 'files', { value: [file] });
+    await input.trigger('change');
+    expect(uploadBtn.attributes('disabled')).toBeUndefined();
+
+    await uploadBtn.trigger('click');
+    await flushPromises();
+    const [url, body] = apiMock.post.mock.calls[0];
+    expect(url).toBe('/api/plugins/example/backfill');
+    expect(body).toBeInstanceOf(FormData);
+    expect(body.get('file')).toBe(file);
+
+    const summary = wrapper.find('[data-testid="upload-result"]');
+    expect(summary.exists()).toBe(true);
+    expect(summary.text()).toContain('messages_added');
+    expect(summary.text()).toContain('5');
+
+    // secondary action POSTs its endpoint
+    const actionBtn = wrapper.findAll('button').find((b) => b.text() === 'Re-match customers now');
+    apiMock.post.mockClear();
+    apiMock.post = vi.fn(async () => ({ status: 'ok', linked: 2 }));
+    await actionBtn.trigger('click');
+    await flushPromises();
+    expect(apiMock.post).toHaveBeenCalledWith('/api/plugins/example/rematch', {});
+  });
+
   // The scoping rule from the plan's audit: create-form submissions must NOT
   // emit — a configurator plugin's other create forms (e.g. settings rows)
   // are not insertable things.

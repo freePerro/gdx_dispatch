@@ -22,36 +22,13 @@ signature schemes, and it is strictly more than the nothing that was there.
 """
 from __future__ import annotations
 
-import hmac
-import os
+from fastapi import Request
 
-from fastapi import HTTPException, Request
+from gdx_dispatch.core.webhook_auth import verify_shared_secret
 
 # noqa S105: these are the *names* of the header and env var, not a secret.
 SECRET_HEADER = "X-GDX-Webhook-Secret"  # noqa: S105
 SECRET_ENV = "INBOUND_EMAIL_WEBHOOK_SECRET"  # noqa: S105
-
-
-# Environments where the gate is deliberately off, so a fresh clone and the
-# test suite work with no secret set. Everything else — including an
-# unrecognised value like "prod-eu" — enforces. An allowlist of prod-like
-# names (the shape the retired Twilio gate used) silently disables the check
-# for any value nobody thought to list, which is the same fail-open bug this
-# module exists to close.
-_NON_ENFORCING_ENVS = frozenset({"", "dev", "development", "test", "testing", "local", "ci"})
-
-
-def _enforced() -> bool:
-    """True when the shared secret must be presented.
-
-    Enforced when the environment is anything other than a known dev/test
-    name, and also whenever a secret is configured at all — setting one is an
-    explicit request to have it checked, whatever the environment says.
-    """
-    env = os.getenv("GDX_ENV", "").strip().lower()
-    if env not in _NON_ENFORCING_ENVS:
-        return True
-    return bool(os.getenv(SECRET_ENV, ""))
 
 
 async def verify_inbound_email_secret(request: Request) -> None:
@@ -59,16 +36,9 @@ async def verify_inbound_email_secret(request: Request) -> None:
 
     No-op in dev/test. In prod: require ``INBOUND_EMAIL_WEBHOOK_SECRET`` and a
     matching ``X-GDX-Webhook-Secret`` header, else 403.
+
+    The check itself moved to core/webhook_auth.py 2026-09-18 when the
+    cell-gateway webhook became its second consumer; the policy above is
+    unchanged and this module keeps the rationale.
     """
-    if not _enforced():
-        return
-    secret = os.getenv(SECRET_ENV, "")
-    if not secret:
-        # Fail closed. An unset secret is a misconfiguration, not permission
-        # to accept anonymous mail into the staff inbox.
-        raise HTTPException(status_code=403, detail="Webhook verification not configured")
-    presented = request.headers.get(SECRET_HEADER, "")
-    # Compare as bytes: hmac.compare_digest raises TypeError on str operands
-    # containing non-ASCII, and Starlette latin-1-decodes header values.
-    if not hmac.compare_digest(presented.encode("utf-8"), secret.encode("utf-8")):
-        raise HTTPException(status_code=403, detail="Invalid webhook secret")
+    verify_shared_secret(request, header=SECRET_HEADER, secret_env=SECRET_ENV)

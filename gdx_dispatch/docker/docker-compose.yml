@@ -52,6 +52,9 @@ x-app-env: &app-env
   # a var absent from this block never reaches the container no matter what
   # .env says, and the gate that reads it then behaves as "not configured".
   INBOUND_EMAIL_WEBHOOK_SECRET: ${INBOUND_EMAIL_WEBHOOK_SECRET:-}
+  # Personal-cell webhook (android-nomad-gateway → routers/cell_gateway.py →
+  # cellcomms plugin). Blank = the gate fails closed and the feed is off.
+  CELL_GATEWAY_WEBHOOK_SECRET: ${CELL_GATEWAY_WEBHOOK_SECRET:-}
   # Shared secret gating plugin-host's /internal/* routes — including the
   # WebSocket that streams a headless browser and autofills the operator's
   # stored login (ADR-014). plugin-host FAILS CLOSED on this outside dev
