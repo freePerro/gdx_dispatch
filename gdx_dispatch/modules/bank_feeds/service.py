@@ -85,10 +85,19 @@ def tenant_zoneinfo(db: Session) -> ZoneInfo:
         if row and row[0]:
             tz_name = str(row[0])
     except Exception:  # noqa: BLE001
-        pass
+        # Never silent: the fallback below is the MODEL default, which is not
+        # prod's zone (app_settings.timezone is America/Chicago there), so a
+        # swallowed read shifts every day boundary computed from this helper.
+        # Was a bare ``except: pass`` until 2026-09-17.
+        log.exception("bank_feeds_tenant_timezone_read_failed — falling back to %s", tz_name)
     try:
         return ZoneInfo(tz_name)
     except Exception:  # noqa: BLE001
+        # Same consequence as the failed read above, four lines later: a bad
+        # zone NAME in app_settings would shift every day boundary silently.
+        # One line, no traceback: this is persistent config, so it repeats on
+        # every 5-minute beat tick and every status request until fixed.
+        log.warning("bank_feeds_tenant_timezone_invalid tz=%r — falling back to America/New_York", tz_name)
         return ZoneInfo("America/New_York")
 
 

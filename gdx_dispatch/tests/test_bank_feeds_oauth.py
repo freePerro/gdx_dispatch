@@ -412,3 +412,32 @@ def test_reconnect_same_sub_reuses_row(respx_mock, tenant_db, callback_app, test
     assert rows[0].id == old_id
     assert rows[0].auth_state == AUTH_HEALTHY
     assert oauth._decrypt(rows[0].refresh_token_enc) == "rt-1"
+
+
+@respx.mock
+def test_callback_grant_check_crash_is_logged_not_silent(
+    respx_mock, tenant_db, callback_app, test_app_keypair, monkeypatch, caplog  # noqa: F811
+):
+    """A NON-database failure while evaluating the module grant is, by the
+    audited plan's policy, not revocation: the connect proceeds. It may not
+    proceed silently. (A database failure never reaches that handler —
+    is_module_enabled fails closed on SQLAlchemyError.) Until 2026-09-17 the
+    handler was a bare ``except Exception: pass``."""
+    from gdx_dispatch.modules.bank_feeds import router as bf_router
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("grant evaluator crashed")
+
+    monkeypatch.setattr(bf_router, "is_module_enabled", _boom)
+    inst = _make_institution(tenant_db)
+    state, nonce = oauth.make_state(user_id="u1", tenant_id=TENANT_ID, institution_id=str(inst.id))
+    _mock_banno(respx_mock, test_app_keypair, nonce=nonce)
+
+    with caplog.at_level("ERROR", logger="gdx_dispatch.modules.bank_feeds.router"):
+        resp = callback_app.get(f"/api/bank-feeds/oauth/callback?code=abc&state={state}")
+
+    assert resp.status_code == 200  # policy unchanged: evaluation failure is not revocation
+    assert tenant_db.execute(select(BannoConnection)).scalar_one().banno_user_id == SUB
+    assert any("bank_feeds_callback_grant_check_failed" in r.message for r in caplog.records), [
+        r.message for r in caplog.records
+    ]

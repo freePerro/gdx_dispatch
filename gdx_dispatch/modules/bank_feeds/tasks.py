@@ -43,7 +43,11 @@ def _aware(dt: datetime | None) -> datetime | None:
 def _tables_present(db) -> bool:
     try:
         names = set(sa_inspect(db.get_bind()).get_table_names())
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # A failed INSPECT is not "no tables": the sync then returns
+        # skipped_no_tables and nothing says why. Same return-shape swallow
+        # as the breaker helpers below — policy kept, silence removed.
+        _task_log.warning("bank_feeds_tables_check_failed — treating as absent: %s", exc)
         return False
     return {"banno_institutions", "banno_connections", "bank_feed_accounts"} <= names
 
@@ -63,7 +67,13 @@ def breaker_state(institution_id: str) -> str:
     unavailable (dev/tests) — the breaker is then a no-op anyway."""
     try:
         return str(asyncio.run(_institution_breaker(institution_id).get_state()).value)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # /status is the one surface a human reads; "CLOSED" on an unreadable
+        # breaker must at least leave a line behind.
+        _task_log.warning(
+            "bank_feeds_breaker_state_unavailable institution=%s — reporting CLOSED: %s",
+            institution_id, exc,
+        )
         return "CLOSED"
 
 
@@ -72,7 +82,14 @@ def _breaker_open(institution_id: str) -> bool:
         from gdx_dispatch.core.circuit_breaker import CircuitState  # noqa: PLC0415
 
         return asyncio.run(_institution_breaker(institution_id).get_state()) == CircuitState.OPEN
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # Twin of _breaker_record below: fail open (treat as CLOSED) by
+        # design, but say so — a breaker that cannot be READ never gates a
+        # sync either. One line, no traceback (see _breaker_record).
+        _task_log.warning(
+            "bank_feeds_breaker_state_unavailable institution=%s — treating as CLOSED: %s",
+            institution_id, exc,
+        )
         return False
 
 
@@ -83,8 +100,16 @@ def _breaker_record(institution_id: str, *, success: bool) -> None:
             asyncio.run(breaker.record_success())
         else:
             asyncio.run(breaker.record_failure())
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        # Best-effort by design (no Redis → no breaker, see breaker_state),
+        # but not silent: a breaker that cannot record never OPENS, so a
+        # failing bank API keeps getting hit. One line, no traceback: while
+        # Redis is unreachable this repeats on every sync. Was ``pass`` until
+        # 2026-09-17.
+        _task_log.warning(
+            "bank_feeds_breaker_record_failed institution=%s success=%s: %s",
+            institution_id, success, exc,
+        )
 
 
 def _sync_one_institution(

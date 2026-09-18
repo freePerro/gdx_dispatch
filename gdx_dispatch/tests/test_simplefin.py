@@ -1026,3 +1026,46 @@ def test_status_configured_is_provider_aware(tenant_db):
     assert row["configured"] is True
     assert row["connected"] is True
     assert row["auth_state"] == "healthy"
+
+
+def test_tenant_zoneinfo_failed_read_is_logged_not_silent(caplog):
+    """A failed AppSettings read falls back to the MODEL default zone — which
+    is not prod's zone — so it must leave a trace. Until 2026-09-17 this was
+    a bare ``except Exception: pass``."""
+
+    class _BrokenDb:
+        def execute(self, *_a, **_k):
+            raise RuntimeError("connection lost")
+
+    with caplog.at_level("ERROR", logger="gdx_dispatch.modules.bank_feeds.service"):
+        tz = service.tenant_zoneinfo(_BrokenDb())
+
+    assert str(tz) == "America/New_York"  # fallback unchanged
+    assert any("bank_feeds_tenant_timezone_read_failed" in r.message for r in caplog.records), [
+        r.message for r in caplog.records
+    ]
+
+
+def test_tenant_zoneinfo_invalid_zone_name_is_logged_not_silent(caplog):
+    """The sibling four lines below the failed-read fallback: a bad zone NAME
+    stored in app_settings also fell back to New York with no trace."""
+
+    class _Row:
+        def __getitem__(self, _i):
+            return "Not/AZone"
+
+    class _Db:
+        def execute(self, *_a, **_k):
+            class _R:
+                def first(self_inner):
+                    return _Row()
+            return _R()
+
+    with caplog.at_level("WARNING", logger="gdx_dispatch.modules.bank_feeds.service"):
+        tz = service.tenant_zoneinfo(_Db())
+
+    assert str(tz) == "America/New_York"  # fallback unchanged
+    assert any(
+        "bank_feeds_tenant_timezone_invalid" in r.message and "Not/AZone" in r.message
+        for r in caplog.records
+    ), [r.message for r in caplog.records]

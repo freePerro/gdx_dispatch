@@ -157,3 +157,79 @@ def test_dispatcher_skips_manual_and_not_due(task_db, monkeypatch):
     out2 = bf_tasks.bank_feeds_schedule_dispatcher.apply().get()
     assert out2["queued"] == []
     assert called["n"] == 0
+
+
+# Captured at import time, before the autouse _no_redis_breakers fixture
+# replaces bf_tasks._breaker_record with a no-op lambda.
+_REAL_BREAKER_RECORD = bf_tasks._breaker_record
+_REAL_BREAKER_OPEN = bf_tasks._breaker_open
+
+
+def test_breaker_record_failure_is_logged_not_silent(monkeypatch, caplog):
+    """The breaker is best-effort (no Redis → no breaker), but a breaker that
+    cannot record never OPENS, so a failing bank API keeps getting hit. That
+    has to be visible. Until 2026-09-17 this was a bare ``except: pass``."""
+
+    def _boom(_inst_id):
+        raise RuntimeError("redis down")
+
+    monkeypatch.setattr(bf_tasks, "_institution_breaker", _boom)
+    with caplog.at_level("WARNING", logger="gdx_dispatch.modules.bank_feeds.tasks"):
+        _REAL_BREAKER_RECORD("inst-1", success=False)  # must not raise
+
+    assert any(
+        "bank_feeds_breaker_record_failed" in r.message and "inst-1" in r.message
+        for r in caplog.records
+    ), [r.message for r in caplog.records]
+
+
+def test_breaker_open_failure_is_logged_not_silent(monkeypatch, caplog):
+    """Twin of the record test: a breaker whose state cannot be READ is
+    treated as CLOSED (sync proceeds) by design — and says so."""
+
+    def _boom(_inst_id):
+        raise RuntimeError("redis down")
+
+    monkeypatch.setattr(bf_tasks, "_institution_breaker", _boom)
+    with caplog.at_level("WARNING", logger="gdx_dispatch.modules.bank_feeds.tasks"):
+        assert _REAL_BREAKER_OPEN("inst-2") is False  # policy unchanged
+
+    assert any(
+        "bank_feeds_breaker_state_unavailable" in r.message and "inst-2" in r.message
+        for r in caplog.records
+    ), [r.message for r in caplog.records]
+
+
+def test_breaker_state_failure_is_logged_not_silent(monkeypatch, caplog):
+    """/status reports CLOSED when the breaker cannot be read — by design,
+    but it is the one surface a human looks at, so it must leave a line."""
+
+    def _boom(_inst_id):
+        raise RuntimeError("redis down")
+
+    monkeypatch.setattr(bf_tasks, "_institution_breaker", _boom)
+    with caplog.at_level("WARNING", logger="gdx_dispatch.modules.bank_feeds.tasks"):
+        assert bf_tasks.breaker_state("inst-3") == "CLOSED"  # policy unchanged
+
+    assert any(
+        "bank_feeds_breaker_state_unavailable" in r.message
+        and "inst-3" in r.message
+        and "reporting CLOSED" in r.message
+        for r in caplog.records
+    ), [r.message for r in caplog.records]
+
+
+def test_tables_present_inspect_failure_is_logged_not_silent(caplog):
+    """A failed schema INSPECT used to read as "no tables" and the sync task
+    returned skipped_no_tables with nothing saying why."""
+
+    class _BrokenDb:
+        def get_bind(self):
+            raise RuntimeError("bind gone")
+
+    with caplog.at_level("WARNING", logger="gdx_dispatch.modules.bank_feeds.tasks"):
+        assert bf_tasks._tables_present(_BrokenDb()) is False  # policy unchanged
+
+    assert any("bank_feeds_tables_check_failed" in r.message for r in caplog.records), [
+        r.message for r in caplog.records
+    ]

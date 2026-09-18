@@ -13,7 +13,9 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import sys
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
@@ -158,3 +160,50 @@ def test_a_tech_removed_from_the_job_is_not_notified(chat_db):
     _send(db, job_id, _DISPATCHER, "Heads up")
 
     assert "user-9" not in {s["user_id"] for s in sent}
+
+
+def test_a_failed_dispatcher_lookup_reaches_the_callers_log(chat_db, monkeypatch, caplog):
+    """The tech→dispatcher push used to wrap its role lookup in a bare
+    ``except Exception: pass`` under a stale comment ("role tables not
+    present in this tenant DB" — both are ORM tables). Since 2026-09-17 the
+    failure propagates to send_job_chat, which logs it AFTER the message is
+    committed, exactly as the dispatcher→tech branch always has."""
+    db, job_id, sent = chat_db
+
+    class _BrokenDb:
+        def execute(self, *_a, **_k):
+            raise RuntimeError("role lookup failed")
+
+    msg = SimpleNamespace(id="m1", body="hi", sender_role="technician")
+    with pytest.raises(RuntimeError, match="role lookup failed"):
+        mobile_chat._push_other_party(_BrokenDb(), job_id=job_id, msg=msg, user=_TECH, request=_req())
+    assert sent == []
+
+    # …and the caller's net is what catches it: message saved (201), failure logged.
+    def _push_boom(*_a, **_k):
+        raise RuntimeError("push exploded")
+
+    monkeypatch.setattr(mobile_chat, "_push_other_party", _push_boom)
+    with caplog.at_level("ERROR", logger="gdx_dispatch.routers.mobile_chat"):
+        _send(db, job_id, _TECH, "still delivered")
+    assert any("mobile_chat_push_failed" in r.message for r in caplog.records), [
+        r.message for r in caplog.records
+    ]
+
+
+def test_a_missing_push_module_is_logged_not_silent(chat_db, monkeypatch, caplog):
+    """If the push module itself cannot be imported, chat keeps working
+    in-app (unchanged) — but "no push, ever" now leaves a trace instead of a
+    bare ``return``."""
+    db, job_id, sent = chat_db
+    # A None entry in sys.modules makes the import raise ImportError.
+    monkeypatch.setitem(sys.modules, "gdx_dispatch.core.push_subscriptions", None)
+
+    msg = SimpleNamespace(id="m2", body="hi", sender_role="technician")
+    with caplog.at_level("ERROR", logger="gdx_dispatch.routers.mobile_chat"):
+        mobile_chat._push_other_party(db, job_id=job_id, msg=msg, user=_TECH, request=_req())  # must not raise
+
+    assert sent == []
+    assert any("mobile_chat_push_unavailable" in r.message for r in caplog.records), [
+        r.message for r in caplog.records
+    ]

@@ -518,7 +518,13 @@ def oauth_callback(
                 _callback_html("error", "Bank Feeds module is not enabled."), status_code=403
             )
     except Exception:  # noqa: BLE001
-        pass
+        # Deliberate fail-open per the comment above — but not a silent one.
+        # Only a NON-database error lands here: is_module_enabled already
+        # fails CLOSED on SQLAlchemyError (logs, rolls back, returns False →
+        # 403). Was a bare ``except: pass`` until 2026-09-17.
+        log.exception(
+            "bank_feeds_callback_grant_check_failed — proceeding; an evaluation failure is not revocation"
+        )
 
     inst = db.get(BannoInstitution, UUID(str(payload["institution_id"])))
     if inst is None:

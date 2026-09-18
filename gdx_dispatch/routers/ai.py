@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ from gdx_dispatch.core.unified_principal import Principal, principal_tenant_uuid
 from gdx_dispatch.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
+log = logging.getLogger(__name__)
 
 # --- Rate Limiting ---
 
@@ -242,8 +244,13 @@ async def ask(
                 }
             )
     except Exception:
-        # If tool enumeration fails, we proceed with no tools.
-        pass
+        # Tool enumeration failed: still answer (with no tools) rather than
+        # 500 — but say so. An answer that looks data-backed and is not must
+        # leave a trace; this was a bare ``except: pass`` until 2026-09-17.
+        log.exception(
+            "ai_tool_enumeration_failed principal=%s — answering with no tools",
+            principal.identity_id,
+        )
 
     # Compose a date-aware system prompt. Without this the model would
     # (and did) ask the user for today's date before calling tools

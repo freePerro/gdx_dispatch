@@ -163,3 +163,30 @@ def test_disabled_when_no_key_still_works(app_and_client):
     body = r.json()
     assert body["disabled"] is True
     assert body["reason"] == "no_key"
+
+
+def test_tool_enumeration_failure_is_logged_not_silent(app_and_client, caplog):
+    """If enumerating the principal's tools raises, the loop still answers
+    (with no tools) — but it must say so. Until 2026-09-17 this was a bare
+    ``except Exception: pass``: an answer that looked data-backed and was
+    not, with no trace anywhere."""
+    client, admin = app_and_client
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("registry exploded")
+
+    with patch("gdx_dispatch.routers.ai.get_key", return_value="sk-ant-test"), \
+         patch("gdx_dispatch.routers.ai.get_client") as mock_get_client, \
+         patch("gdx_dispatch.routers.ai.list_tools_for_principal", side_effect=_boom), \
+         caplog.at_level("ERROR", logger="gdx_dispatch.routers.ai"):
+        fake_client = MagicMock()
+        fake_client.messages.create.return_value = _fake_anthropic_response_text_only("No idea.")
+        mock_get_client.return_value = fake_client
+
+        r = client.post("/api/ai/ask", json={"question": "list customers"})
+
+    assert r.status_code == 200
+    assert r.json()["tools_used"] == []
+    assert any("ai_tool_enumeration_failed" in rec.message for rec in caplog.records), [
+        rec.message for rec in caplog.records
+    ]
