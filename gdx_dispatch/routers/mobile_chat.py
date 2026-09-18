@@ -301,7 +301,11 @@ def _push_other_party(db: Session, *, job_id: str, msg: JobChatMessage, user: di
     try:
         from gdx_dispatch.core.push_subscriptions import send_push  # type: ignore[attr-defined]
     except Exception:
-        return  # push infra not configured; chat still works in-app
+        # Chat still works in-app without push — but "no push, ever" must not
+        # be silent. core/push_subscriptions.py exists, so this only fires
+        # when that import itself is broken.
+        log.exception("mobile_chat_push_unavailable — push module failed to import")
+        return
 
     title = "Job message"
     body = (msg.body or "").strip()[:140]
@@ -339,27 +343,28 @@ def _push_other_party(db: Session, *, job_id: str, msg: JobChatMessage, user: di
             except Exception:
                 log.exception("send_push failed user=%s", r[0])
     else:
-        # Tech sent → notify dispatcher(s): look up users whose role is
-        # dispatcher in the user_roles table if it exists.
-        try:
-            rows = db.execute(
-                _text(
-                    """
-                    SELECT DISTINCT user_id FROM user_role_assignments ura
-                    JOIN tenant_roles r ON r.id = ura.role_id
-                    WHERE r.name IN ('dispatcher','admin','owner')
-                    """
-                )
-            ).all()
-            for r in rows:
-                try:
-                    send_push(db, user_id=r[0], title=title, body=body, url=dispatcher_url,
-                              data={"type": "chat_message", "job_id": job_id})
-                except Exception:
-                    log.exception("send_push failed user=%s", r[0])
-        except Exception:
-            # role tables not present in this tenant DB — silently skip.
-            pass
+        # Tech sent → notify every dispatcher/admin/owner. tenant_roles and
+        # user_role_assignments are ORM tables that always exist (single
+        # tenant), so a failed lookup is a real failure and propagates to
+        # send_job_chat, which logs it AFTER the message is committed — the
+        # same net the dispatcher→tech branch above has always used. Until
+        # 2026-09-17 this was wrapped in ``except Exception: pass`` with a
+        # stale "role tables not present in this tenant DB" comment.
+        rows = db.execute(
+            _text(
+                """
+                SELECT DISTINCT user_id FROM user_role_assignments ura
+                JOIN tenant_roles r ON r.id = ura.role_id
+                WHERE r.name IN ('dispatcher','admin','owner')
+                """
+            )
+        ).all()
+        for r in rows:
+            try:
+                send_push(db, user_id=r[0], title=title, body=body, url=dispatcher_url,
+                          data={"type": "chat_message", "job_id": job_id})
+            except Exception:
+                log.exception("send_push failed user=%s", r[0])
 
 
 # ---------------------------------------------------------------------------
