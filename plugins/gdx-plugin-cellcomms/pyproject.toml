@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gdx-plugin-cellcomms"
+version = "0.1.0"
+description = "Personal-cell texts and calls in GDX: live incoming feed via android-nomad-gateway, plus SMS Backup & Restore XML backfill."
+requires-python = ">=3.11"
+dependencies = []
+
+# Registers under the gdx.modules entry-point group so plugin-host discovery
+# finds `manifest` after `pip install`.
+[project.entry-points."gdx.modules"]
+cellcomms = "gdx_plugin_cellcomms:manifest"
+
+[tool.setuptools]
+packages = ["gdx_plugin_cellcomms"]

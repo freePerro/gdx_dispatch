@@ -187,6 +187,11 @@ POST /api/appointments/{appt_id}/on-my-way
 POST /api/audit/ux-event
 POST /api/catalogs
 POST /api/catalogs/save-from-estimate-line
+# Machine caller (2026-09-18): the personal-cell webhook. The shared secret
+# (verify_cell_secret → core/webhook_auth.py) IS the whole credential — there
+# is no user whose permission could be checked, same class as the
+# inbound-email webhook below. See routers/cell_gateway.py.
+POST /api/cell-gateway/webhook
 POST /api/catalogs/{catalog_id}/ai-import
 POST /api/catalogs/{catalog_id}/import
 POST /api/catalogs/{catalog_id}/items

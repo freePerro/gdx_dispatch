@@ -374,6 +374,12 @@ except Exception:
     inbound_comms_router = None
 
 try:
+    from gdx_dispatch.routers import cell_gateway as cell_gateway_router
+except Exception:
+    logging.getLogger("gdx_dispatch.app").exception("cell_gateway_router_load_failed")
+    cell_gateway_router = None
+
+try:
     from gdx_dispatch.routers import surveys as surveys_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("surveys_router_load_failed")
@@ -1490,6 +1496,8 @@ def create_app() -> FastAPI:
     if inbound_comms_router is not None:
         app.include_router(inbound_comms_router.public_router)
         app.include_router(inbound_comms_router.admin_router)
+    if cell_gateway_router is not None:
+        app.include_router(cell_gateway_router.public_router)
     if surveys_router is not None:
         app.include_router(surveys_router.public_router)
         app.include_router(surveys_router.admin_router)
