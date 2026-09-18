@@ -1,7 +1,7 @@
 # Cell Comms — Android texts & calls into GDX via Nomad Gateway, as a plugin
 
 **Date:** 2026-09-18
-**Status:** PLAN — approved to build (Doug, 2026-09-18): store-all ingest, and the phase-2 XML backfill ships in the same build
+**Status:** PLAN — BUILT, PR #752 open (2026-09-18). Store-all ingest + XML backfill in one build per Doug's ruling. Owed before prod use: AVD nomad-payload verification, browser walk, the two deploy checks
 **Decision (Doug, 2026-09-18):** get his Android cell's texts and call log into the app; packaging preference is a plugin; forwarder choice is android-nomad-gateway (chosen after the incoming-only limitation was flagged).
 
 ---

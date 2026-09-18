@@ -1,6 +1,6 @@
 # gdx-plugin-cellcomms — personal-cell texts & calls in GDX
 
-**Status:** PLAN — built with PR pending. The cell-comms nomad-gateway plan
+**Status:** BUILT — PR #752 open (2026-09-18). The cell-comms nomad-gateway plan
 (in the design records) holds the reasoning; update both status lines when
 this merges/releases.
 
