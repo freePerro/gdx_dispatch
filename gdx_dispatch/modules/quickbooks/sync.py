@@ -136,13 +136,21 @@ def _assert_money_pull_allowed(tenant_id: str, db: Session, operation: str) -> N
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _parse_qb_date(value: Any) -> date | None:
-    """Parse a QB date field (accepts 'YYYY-MM-DD' or longer ISO strings). Returns None on miss."""
+def _parse_qb_date(value: Any, *, field: str = "", qb_id: str = "") -> date | None:
+    """Parse a QB date field (accepts 'YYYY-MM-DD' or longer ISO strings). Returns None on miss.
+
+    An EMPTY value is a quiet None (routine). An UNPARSEABLE value is logged:
+    a swallowed bad date on the invoice path is how invoices go invisible to
+    every period-filtered money metric (the pre-D99 outage this file's own
+    comments record), and prod has no Sentry — an unlogged swallow is
+    invisible (#751 class).
+    """
     if not value:
         return None
     try:
         return date.fromisoformat(str(value)[:10])
     except (TypeError, ValueError):
+        log.warning("qb_sync_unparseable_date field=%s qb_id=%s value=%r", field, qb_id, value)
         return None
 
 
@@ -1087,18 +1095,12 @@ async def pull_invoices(tenant_id: str, db: Session, qb: QBClient) -> dict[str, 
                         # and every period-filtered metric read $0. Refresh the
                         # date triple from QB on every sync — TxnDate is the
                         # business date, never created_at (S69 lesson).
-                        txn_date_raw = raw.get("TxnDate")
-                        if txn_date_raw:
-                            try:
-                                invoice.invoice_date = date.fromisoformat(str(txn_date_raw)[:10])
-                            except (TypeError, ValueError):
-                                pass
-                        due_date_raw = raw.get("DueDate")
-                        if due_date_raw:
-                            try:
-                                invoice.due_date = date.fromisoformat(str(due_date_raw)[:10])
-                            except (TypeError, ValueError):
-                                pass
+                        parsed_txn = _parse_qb_date(raw.get("TxnDate"), field="TxnDate", qb_id=qb_id)
+                        if parsed_txn:
+                            invoice.invoice_date = parsed_txn
+                        parsed_due = _parse_qb_date(raw.get("DueDate"), field="DueDate", qb_id=qb_id)
+                        if parsed_due:
+                            invoice.due_date = parsed_due
                         is_paid_now = balance <= 0
                         if invoice.invoice_date and not invoice.sent_at:
                             invoice.sent_at = datetime.combine(
@@ -1134,18 +1136,12 @@ async def pull_invoices(tenant_id: str, db: Session, qb: QBClient) -> dict[str, 
                         # Same date-refresh logic as the mapped-update path —
                         # adoption hits invoices that already existed locally
                         # but never got a TxnDate from QB.
-                        txn_date_raw = raw.get("TxnDate")
-                        if txn_date_raw:
-                            try:
-                                existing.invoice_date = date.fromisoformat(str(txn_date_raw)[:10])
-                            except (TypeError, ValueError):
-                                pass
-                        due_date_raw = raw.get("DueDate")
-                        if due_date_raw:
-                            try:
-                                existing.due_date = date.fromisoformat(str(due_date_raw)[:10])
-                            except (TypeError, ValueError):
-                                pass
+                        parsed_txn = _parse_qb_date(raw.get("TxnDate"), field="TxnDate", qb_id=qb_id)
+                        if parsed_txn:
+                            existing.invoice_date = parsed_txn
+                        parsed_due = _parse_qb_date(raw.get("DueDate"), field="DueDate", qb_id=qb_id)
+                        if parsed_due:
+                            existing.due_date = parsed_due
                         if existing.invoice_date and not existing.sent_at:
                             existing.sent_at = datetime.combine(
                                 existing.invoice_date, datetime.min.time(), tzinfo=UTC
@@ -1200,19 +1196,9 @@ async def pull_invoices(tenant_id: str, db: Session, qb: QBClient) -> dict[str, 
                     # as due_date. Pre-fix QB-imported invoices landed with both
                     # null, so every period-filtered metric read $0 against real revenue.
                     txn_date_raw = raw.get("TxnDate")
-                    invoice_date_value = None
-                    if txn_date_raw:
-                        try:
-                            invoice_date_value = date.fromisoformat(str(txn_date_raw)[:10])
-                        except (TypeError, ValueError):
-                            invoice_date_value = None
+                    invoice_date_value = _parse_qb_date(txn_date_raw, field="TxnDate", qb_id=qb_id)
                     due_date_raw = raw.get("DueDate")
-                    due_date_value = None
-                    if due_date_raw:
-                        try:
-                            due_date_value = date.fromisoformat(str(due_date_raw)[:10])
-                        except (TypeError, ValueError):
-                            due_date_value = None
+                    due_date_value = _parse_qb_date(due_date_raw, field="DueDate", qb_id=qb_id)
                     # P1-6 fix 2026-04-27: stamp ``sent_at`` (always — QB invoices
                     # are necessarily ``sent`` at minimum) and ``paid_at`` (when
                     # balance=0). Best-available source is ``invoice_date`` (the
@@ -1480,7 +1466,7 @@ async def pull_payments(tenant_id: str, db: Session, qb: QBClient) -> dict[str, 
                     # cash-flow / aging / commission report that bucketed by
                     # payment_date was wrong by months. Always source from QB.
                     qb_amount = Decimal(str(raw.get("TotalAmt") or 0))
-                    qb_payment_date = _parse_qb_date(raw.get("TxnDate")) or date.today()
+                    qb_payment_date = _parse_qb_date(raw.get("TxnDate"), field="TxnDate", qb_id=qb_id) or date.today()
 
                     payment_map = db.execute(
                         select(QBEntityMap).where(
@@ -2184,7 +2170,7 @@ async def pull_bank_transactions(
         if not qb_id:
             continue
         seen_qb_ids.add(qb_id)
-        txn_date = _parse_qb_date(raw.get("TxnDate"))
+        txn_date = _parse_qb_date(raw.get("TxnDate"), field="TxnDate", qb_id=qb_id)
         total = float(raw.get("TotalAmt") or 0)
         payment_type = str(raw.get("PaymentType") or "")
         memo = str(raw.get("PrivateNote") or "")
