@@ -7,7 +7,6 @@ steps run the real path end-to-end.
 """
 from __future__ import annotations
 
-import os
 from unittest import mock
 from uuid import uuid4
 

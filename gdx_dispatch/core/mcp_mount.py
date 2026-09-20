@@ -35,8 +35,7 @@ from gdx_dispatch.core.mcp_protocol_adapter import get_mcp
 from gdx_dispatch.core.mcp_registry import list_tools, repopulate_from_cache
 
 if TYPE_CHECKING:
-    from fastapi import FastAPI, Request
-    from fastapi.responses import RedirectResponse
+    from fastapi import FastAPI
     from fastmcp import FastMCP
     from fastmcp.server.http import StarletteWithLifespan
 

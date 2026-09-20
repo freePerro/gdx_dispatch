@@ -14,7 +14,6 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
-from sqlalchemy.orm import sessionmaker
 
 from gdx_dispatch.models.pricing_engine import MarginTier, PricingTierSet, seed_default_pricing
 from gdx_dispatch.models.tenant_models import Customer

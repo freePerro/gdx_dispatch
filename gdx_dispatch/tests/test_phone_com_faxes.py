@@ -71,7 +71,6 @@ def test_upsert_fax_idempotent_in_memory():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
-    from gdx_dispatch.core.audit import TenantBase
     from gdx_dispatch.modules.phone_com import upserts as u
     from gdx_dispatch.modules.phone_com.models import PhoneComFax
 

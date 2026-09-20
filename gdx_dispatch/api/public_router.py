@@ -14,7 +14,6 @@ Response envelope for single items / mutations:
     {"data": {...}}
 """
 import logging
-import os
 import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Any

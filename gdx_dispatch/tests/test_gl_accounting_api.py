@@ -35,7 +35,6 @@ from gdx_dispatch.modules.ledger.router import (
     patch_accounting_settings,
     stamp_cpa_review,
 )
-from gdx_dispatch.modules.ledger.service import ensure_gl_seed
 
 COMPANY = "11111111-1111-1111-1111-111111111111"
 USER = {"tenant_id": COMPANY, "sub": "tester"}

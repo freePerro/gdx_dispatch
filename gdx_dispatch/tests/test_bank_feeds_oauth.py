@@ -25,7 +25,6 @@ from gdx_dispatch.modules.bank_feeds.models import (
     BannoConnection,
     BannoInstitution,
 )
-from gdx_dispatch.modules.bank_feeds.router import oauth_callback
 from gdx_dispatch.modules.bank_feeds.router import router as bank_feeds_router
 from gdx_dispatch.tests.fixtures.keypairs import test_app_keypair  # noqa: F401
 

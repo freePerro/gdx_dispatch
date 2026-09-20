@@ -36,7 +36,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from gdx_dispatch.core.audit import TenantBase, audit_ready_db, ensure_audit_table
+from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.permissions import WILDCARD

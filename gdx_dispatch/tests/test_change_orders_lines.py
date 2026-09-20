@@ -8,7 +8,7 @@ Pins:
 """
 from __future__ import annotations
 
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -19,7 +19,6 @@ from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.models import tenant_models  # noqa: F401 — register ChangeOrderLine
 from gdx_dispatch.models.tenant_models import ChangeOrderLine
 from gdx_dispatch.routers.change_orders import (
-    ChangeOrder,
     ChangeOrderIn,
     create_change_order,
     get_change_order,

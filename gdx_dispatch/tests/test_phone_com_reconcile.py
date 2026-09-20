@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -10,7 +9,6 @@ import respx
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.modules.phone_com.client import BASE_URL, PhoneComClient
 from gdx_dispatch.modules.phone_com.models import PhoneComStatsDaily
 from gdx_dispatch.modules.phone_com.reconcile import reconcile_recent

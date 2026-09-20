@@ -12,16 +12,14 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from uuid import UUID, uuid4
-
-import pytest
+from uuid import uuid4
 
 from gdx_dispatch.models.pricing_engine import (
     CustomerVolumeDiscountTier,
     PricingSettings,
     seed_default_pricing,
 )
-from gdx_dispatch.models.tenant_models import Customer, Invoice, InvoiceLine, Job, Payment
+from gdx_dispatch.models.tenant_models import Customer, Invoice, Job, Payment
 from gdx_dispatch.services.customer_rolling_volume import (
     ROLLING_WINDOW_DAYS,
     STALE_REFRESH_AFTER,

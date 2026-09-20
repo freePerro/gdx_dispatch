@@ -10,8 +10,6 @@ E5 — fallback-mode endpoint reads the tenant setting; default is
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker

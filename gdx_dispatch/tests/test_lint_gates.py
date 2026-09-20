@@ -12,9 +12,6 @@ also redirected so tests don't clobber the committed baselines.
 """
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
 from gdx_dispatch.tools import (

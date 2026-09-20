@@ -18,22 +18,17 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 from starlette.requests import Request
 
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.models import tenant_models  # noqa: F401  (register models)
 from gdx_dispatch.models.tenant_models import (
-    Appointment,
-    Customer,
-    Job,
     JobAssignment,
-    Technician,
     TimeEntry,
 )
 from gdx_dispatch.modules.inventory import models as _inv  # noqa: F401
 from gdx_dispatch.routers import job_assignments as ja
-from gdx_dispatch.routers import mobile as mobile_router
 
 _TENANT = "tenant-a"
 _DISP = {"user_id": "disp-1", "role": "dispatcher"}

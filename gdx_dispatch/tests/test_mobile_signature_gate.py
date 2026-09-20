@@ -13,7 +13,7 @@ with a clear next-step.
 from __future__ import annotations
 
 import base64
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.models.tenant_models import Appointment, AppSettings, Customer, Job, Technician
+from gdx_dispatch.models.tenant_models import AppSettings, Customer, Job, Technician
 from gdx_dispatch.routers import mobile as mobile_router
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.tests.conftest import make_fresh_db

@@ -14,7 +14,6 @@ from fastapi import HTTPException
 from gdx_dispatch.models.pricing_engine import (
     CustomerVolumeDiscountTier,
     MarginTier,
-    PricingClassSettings,
     PricingSettings,
     PricingTierSet,
     seed_default_pricing,

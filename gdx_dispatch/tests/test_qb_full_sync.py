@@ -2394,9 +2394,7 @@ def test_pull_invoices_skips_subtotal_and_group_lines(db_session: Session, qb_co
 def test_qb_client_query_paginates(monkeypatch):
     """Regression: ``query`` had a hardcoded MAXRESULTS 1000 and dropped any
     rows past the first page silently."""
-    import json as _json
 
-    import httpx
 
     from gdx_dispatch.modules.quickbooks.client import QBClient
 

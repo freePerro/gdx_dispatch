@@ -16,7 +16,6 @@ from gdx_dispatch.core.branding_logo import BRANDING_LOGO_RE, LOGO_URL_PREFIX
 from gdx_dispatch.core.cache import invalidate_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import (
-    MODULES,
     normalize_module_key,
     require_role,
 )

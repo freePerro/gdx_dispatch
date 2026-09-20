@@ -24,7 +24,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import (
     select,
-    text,
 )
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session

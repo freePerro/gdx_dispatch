@@ -14,7 +14,6 @@ Covers:
 from __future__ import annotations
 
 from datetime import date
-from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine, event
@@ -28,7 +27,6 @@ from gdx_dispatch.modules.forecasting.models import (
     STREAM_SOURCE_OBSERVED,
     STREAM_STATUS_ACTIVE,
     STREAM_STATUS_SUGGESTED,
-    QBRecurringTransaction,
     RecurringStream,
 )
 from gdx_dispatch.modules.forecasting.service import (

@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-import pytest
 from starlette.applications import Starlette
 from starlette.datastructures import State
 from starlette.middleware import Middleware

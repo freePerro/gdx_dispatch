@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import NAMESPACE_URL, uuid5
 
 from fastmcp import Context, FastMCP
 from fastmcp.tools import FunctionTool

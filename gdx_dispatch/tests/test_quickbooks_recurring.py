@@ -4,7 +4,7 @@ The fetch call to QBO is monkeypatched — we don't make real network calls.
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 
 import pytest
 from fastapi import FastAPI

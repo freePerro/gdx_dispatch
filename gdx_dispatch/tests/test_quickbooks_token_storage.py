@@ -17,8 +17,6 @@ test fails before it ships.
 """
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -151,7 +149,6 @@ def test_sync_table_absent_raises_qbautherror_not_500(monkeypatch):
         poolclass=StaticPool,
     )
     # Deliberately DO NOT create the qb_token_store table.
-    from gdx_dispatch.models.tenant_models import Base as _TB
     # Create only the tables qb_recurring needs (NOT qb_token_store).
     QBRecurringTransaction.__table__.create(engine, checkfirst=True)
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)

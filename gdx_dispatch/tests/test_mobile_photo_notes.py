@@ -11,8 +11,7 @@ from the calling user's display fields (name / full_name / email).
 """
 from __future__ import annotations
 
-import io
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -22,7 +21,6 @@ from sqlalchemy.orm import sessionmaker
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.models.tenant_models import (
-    Appointment,
     AppSettings,
     Customer,
     Job,

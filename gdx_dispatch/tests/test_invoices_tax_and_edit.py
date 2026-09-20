@@ -30,7 +30,6 @@ from gdx_dispatch.routers.invoices import (
     InvoiceLineCreateIn,
     InvoiceLinePatchIn,
     InvoicePatchIn,
-    add_invoice_line,
     create_invoice,
     delete_invoice_line,
     patch_invoice,

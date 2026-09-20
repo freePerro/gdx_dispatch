@@ -45,7 +45,7 @@ from gdx_dispatch.modules.dispatch_settings import require_tech_for_scheduled_jo
 from gdx_dispatch.modules.numbering import next_job_number
 
 try:
-    from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
+    from gdx_dispatch.modules.proposals.models import Estimate
     _HAS_ESTIMATE_ORM = True
 except ImportError:
     logging.getLogger(__name__).warning("jobs_estimate_orm_import_failed")
