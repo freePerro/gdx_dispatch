@@ -236,3 +236,25 @@ if [ "$CURRENT" -lt "$BASELINE" ]; then
         echo "   Commit .ruff_baseline with this change, or the gain is not kept."
     fi
 fi
+
+# Zero-gate for families a sweep has driven to zero (Doug, 2026-09-20).
+#
+# The aggregate ratchet is composition-blind: the #758 audit caught a lint PR
+# whose −108 net drop concealed 12 reintroduced I001 + 4 F401 — the exact two
+# families #748 and #755 had just zeroed. A single number can get greener
+# while a retired defect family quietly regrows. Each family below therefore
+# fails on ANY instance, independent of the baseline.
+#
+#   I001 — import-block sorting, zeroed by #748
+#   F401 — unused imports, zeroed by #755 (full read: zero re-exports, zero
+#          load-bearing side-effect imports; deletions are always safe to ask)
+#
+# Add a family here the day its sweep lands at zero; remove one only with a
+# ruling. Output captured so a ruff failure (exit >= 2) fails closed.
+ZEROED_FAMILIES="I001,F401"
+ZF_RC=0
+ZF_OUT=$(ruff check "$TARGET" --select "$ZEROED_FAMILIES" --quiet 2>&1) || ZF_RC=$?
+if [ "$ZF_RC" -ne 0 ]; then
+    OUT="$ZF_OUT"
+    _fail "a zeroed ruff family ($ZEROED_FAMILIES) has regrown — these were swept to zero and must stay there (fix, don't baseline):"
+fi
