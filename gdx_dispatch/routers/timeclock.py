@@ -12,7 +12,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event, log_audit_event_sync
+from gdx_dispatch.core.audit import AuditLog, ensure_audit_table, log_audit_event, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pay_periods import (
@@ -1605,6 +1605,65 @@ def submit_day(
         db.rollback()
         log.exception("submit_day_failed", extra={"tenant_id": tenant_id, "user_id": user_id})
         raise HTTPException(status_code=500, detail="Submit day failed") from None
+
+
+class SubmittedDayItem(BaseModel):
+    technician_id: str
+    date: str
+    submitted_at: str
+
+
+@router.get("/submitted-days", response_model=list[SubmittedDayItem])
+def list_submitted_days(
+    request: Request,
+    date_start: date | None = Query(default=None),
+    date_end: date | None = Query(default=None),
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[SubmittedDayItem]:
+    """The office read of the tech's end-of-day attestations (Doug ruled
+    2026-09-20: the badge, read-only, no workflow lock-in).
+
+    submit_day records `timeclock_day_submitted` audit rows — user_id is the
+    tech, entity_id is the submitted day. This surfaces them crew-wide for
+    the /timesheets page; latest submit per (tech, day) wins. The day key is
+    the same server day submit_day counted entries against, so the office
+    badge and the tech's confirmation can never disagree about which day was
+    attested.
+    """
+    _ = _tenant_id(request)
+    # Crew-wide read — same gate as /entries?all_technicians, /exceptions.
+    if not is_dispatch_manager(current_user):
+        raise HTTPException(status_code=403, detail="dispatcher or admin role required")
+    start_iso = (date_start or date(1970, 1, 1)).isoformat()
+    end_iso = (date_end or date(2999, 12, 31)).isoformat()
+    try:
+        ensure_audit_table(db)
+        rows = db.execute(
+            select(
+                AuditLog.user_id,
+                AuditLog.entity_id,
+                func.max(AuditLog.created_at),
+            )
+            .where(
+                AuditLog.action == "timeclock_day_submitted",
+                AuditLog.entity_id >= start_iso,
+                AuditLog.entity_id <= end_iso,
+            )
+            .group_by(AuditLog.user_id, AuditLog.entity_id)
+        ).all()
+    except SQLAlchemyError:
+        db.rollback()
+        log.exception("list_submitted_days_failed")
+        raise HTTPException(status_code=500, detail="Submitted days lookup failed") from None
+    return [
+        SubmittedDayItem(
+            technician_id=str(user_id),
+            date=str(day),
+            submitted_at=str(submitted_at),
+        )
+        for user_id, day, submitted_at in rows
+    ]
 
 
 # ---------------------------------------------------------------------------

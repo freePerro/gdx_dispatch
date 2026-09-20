@@ -577,6 +577,7 @@ GET /api/timeclock/payroll
 GET /api/timeclock/report
 GET /api/timeclock/roster
 GET /api/timeclock/status
+GET /api/timeclock/submitted-days
 GET /api/users
 GET /api/users/me
 GET /api/users/me/permissions
