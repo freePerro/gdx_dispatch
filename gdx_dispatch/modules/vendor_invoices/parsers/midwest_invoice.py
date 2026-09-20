@@ -305,8 +305,11 @@ def _parse_line_items(text: str) -> list[ParsedInvoiceLine]:
                 line_total=_money(m.group("total")),
             )
         except (InvalidOperation, MidwestInvoiceParseError) as exc:
+            # {raw!r} is the user's own PDF line (useful feedback); the wrapped
+            # exception text stays server-side.
+            log.exception("midwest_invoice_line_parse_failed line=%d", i)
             raise MidwestInvoiceParseError(
-                f"failed to parse line item at physical line {i}: {raw!r} ({exc})"
+                f"failed to parse line item at physical line {i}: {raw!r}"
             ) from exc
 
         lines.append(parsed)
@@ -328,13 +331,15 @@ def parse_midwest_invoice(pdf_bytes: bytes) -> ParsedInvoice:
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
     except Exception as exc:  # noqa: BLE001
-        raise MidwestInvoiceParseError(f"could not read PDF: {exc}") from exc
+        log.exception("midwest_invoice_pdf_unreadable")
+        raise MidwestInvoiceParseError("could not read the PDF — see server logs") from exc
 
     text = ""
     for page in reader.pages:
         try:
             text += page.extract_text(extraction_mode="layout") + "\n"
         except Exception as exc:  # noqa: BLE001
-            raise MidwestInvoiceParseError(f"layout extraction failed: {exc}") from exc
+            log.exception("midwest_invoice_layout_extraction_failed")
+            raise MidwestInvoiceParseError("layout extraction failed — see server logs") from exc
 
     return parse_invoice_text(text)

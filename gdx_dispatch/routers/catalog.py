@@ -1752,10 +1752,11 @@ def _extract_import_text(content_bytes: bytes, filename: str | None) -> str:
             from pypdf import PdfReader
             reader = PdfReader(BytesIO(content_bytes))
             return "\n".join((page.extract_text() or "") for page in reader.pages)
-        except Exception as exc:
+        except Exception:
+            log.exception("catalog_pdf_text_extraction_failed")
             raise HTTPException(
                 status_code=422,
-                detail=f"Could not extract text from the PDF: {exc}. Try exporting it as CSV/text.",
+                detail="Could not extract text from the PDF. Try exporting it as CSV/text.",
             ) from None
     return content_bytes.decode("utf-8", errors="replace")
 

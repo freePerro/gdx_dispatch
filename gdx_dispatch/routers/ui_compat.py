@@ -411,8 +411,9 @@ def create_payment(
             reference=(payload.reference or payload.processor_ref or None),
             **({"date": payload.date} if payload.date else {}),
         )
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except Exception:
+        log.exception("ui_compat_record_payment_failed")
+        raise HTTPException(status_code=422, detail="could not record the payment — see server logs") from None
 
     return _record_payment(invoice_id=invoice.id, payload=body, _=user, db=db)
 

@@ -229,7 +229,7 @@ def bulk_update(
     except Exception as exc:
         logger.exception("parts bulk update failed")
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Bulk update failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Bulk update failed — see server logs") from exc
 
     return {"updated": updated, "created": created}
 
@@ -341,7 +341,7 @@ def create_part(
     except Exception as exc:
         logger.exception("part create failed")
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to create part: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Failed to create part — see server logs") from exc
 
     return _part_to_dict(part, include_history=True)
 

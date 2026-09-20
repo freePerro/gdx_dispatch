@@ -352,8 +352,9 @@ def place_order(
             idempotency_key=idempotency_key,
             db=db,
         )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except Exception:
+        logging.getLogger(__name__).exception("distributor_order_create_failed")
+        raise HTTPException(status_code=500, detail="order creation failed — see server logs") from None
 
     return JSONResponse(status_code=201, content=jsonable_encoder(_order_dict(order)))
 

@@ -275,7 +275,7 @@ def login(body: LoginBody, request: Request, db: Session = Depends(get_db)) -> J
                 ok = check_password_hash(pw_hash, body.password)
     except (ImportError, RuntimeError, ValueError) as e:
         log.exception("password_verifier_unavailable")
-        raise HTTPException(status_code=500, detail=f"Password verifier unavailable: {e}") from e
+        raise HTTPException(status_code=500, detail="Password verifier unavailable") from e
     if not ok:
         # Failed login attempt — audit BEFORE raising so the forensic trail
         # captures the attempted email and source IP even on invalid creds.

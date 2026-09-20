@@ -276,13 +276,13 @@ async def create_resource(
         )
         db.add(resource)
         db.commit()
-    except SQLAlchemyError as exc:
+    except SQLAlchemyError:
         db.rollback()
         # Clean up uploaded file on DB failure
         if os.path.exists(file_dest):
             os.remove(file_dest)
         log.exception("create_resource_failed")
-        raise HTTPException(status_code=500, detail=f"Database error: {exc}") from None
+        raise HTTPException(status_code=500, detail="A database error occurred") from None
 
     await log_audit_event(
         db=db,
