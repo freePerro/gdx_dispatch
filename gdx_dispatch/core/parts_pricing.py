@@ -227,6 +227,7 @@ def bulk_update(
     try:
         db.commit()
     except Exception as exc:
+        logger.exception("parts bulk update failed")
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Bulk update failed: {exc}") from exc
 
@@ -340,6 +341,7 @@ def create_part(
         db.commit()
         db.refresh(part)
     except Exception as exc:
+        logger.exception("part create failed")
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to create part: {exc}") from exc
 
