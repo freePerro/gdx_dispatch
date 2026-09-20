@@ -323,6 +323,18 @@ buttons wired to stubs. Before calling anything done:
 - **Playwright MCP autofills the production password.** Never open a prod
   login page with it — inject a token instead; headed snapshots have written
   that password to disk.
+- **A CONFLICTING PR runs no `pull_request` CI at all — silently.** GitHub
+  cannot build the merge ref, so no run is created: not queued, not failed,
+  nothing. A PR showing zero checks is DIRTY, not pending (cost a full CI
+  cycle on #757/#758, 2026-09-20). Check `gh pr view N --json mergeable`
+  before reading absent checks as anything.
+- **With squash-merges, a stacked PR always goes CONFLICTING the moment its
+  parent merges** if they touch the same files (the baselines guarantee they
+  do). Not a merge mistake — the child still carries the parent's pre-squash
+  commits. The fix is always the same two minutes: `git checkout -B <branch>
+  origin/main && git cherry-pick <child's own commit>` and force-push; do
+  NOT `git rebase origin/main`, which replays the whole pre-squash stack
+  into conflicts (2026-09-20, three rounds of #753–#758).
 
 ## Domain rules that shape code
 
