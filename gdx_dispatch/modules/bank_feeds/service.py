@@ -500,10 +500,15 @@ def sync_documents(
         row.document_type = str(doc.get("documentType") or "statement")[:20]
         row.title = str(doc.get("documentTitle") or "")[:300] or row.title
         row.filename = str(doc.get("documentFilename") or "")[:200] or row.filename
-        try:
-            row.document_date = date.fromisoformat(str(doc.get("date") or "")[:10])
-        except ValueError:
-            pass
+        raw_doc_date = str(doc.get("date") or "")[:10]
+        if raw_doc_date:  # a missing date is routine; only an UNPARSEABLE one is worth a trace
+            try:
+                row.document_date = date.fromisoformat(raw_doc_date)
+            except ValueError:
+                log.warning(
+                    "bank_document_date_unparseable ext_id=%s value=%r — document_date left as-is",
+                    ext_id, doc.get("date"),
+                )
         raw_accounts = doc.get("accountIds")
         row.account_ids = [str(a) for a in raw_accounts] if isinstance(raw_accounts, list) else []
         row.updated_at = now
