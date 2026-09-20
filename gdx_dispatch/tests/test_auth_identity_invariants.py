@@ -52,15 +52,15 @@ class _FakePipeline:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple]] = []
 
-    def sadd(self, key: str, value: str) -> "_FakePipeline":
+    def sadd(self, key: str, value: str) -> _FakePipeline:
         self.calls.append(("sadd", (key, value)))
         return self
 
-    def expire(self, key: str, ttl: int) -> "_FakePipeline":
+    def expire(self, key: str, ttl: int) -> _FakePipeline:
         self.calls.append(("expire", (key, ttl)))
         return self
 
-    def delete(self, key: str) -> "_FakePipeline":
+    def delete(self, key: str) -> _FakePipeline:
         self.calls.append(("delete", (key,)))
         return self
 

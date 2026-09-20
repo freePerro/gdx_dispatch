@@ -51,7 +51,7 @@ class PageParams(BaseModel):
         description=f"Max rows to return (capped at {MAX_LIMIT}).",
     )
 
-    def clamped(self) -> "PageParams":
+    def clamped(self) -> PageParams:
         """Return a copy with limit clamped to [1, MAX_LIMIT].
 
         Pydantic ``Field(le=MAX_LIMIT)`` already rejects >MAX; this is a

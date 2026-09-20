@@ -28,10 +28,10 @@ lifecycle.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import format_datetime
-from typing import Iterable
 
 # The supported major versions, newest last. When you add v2 you extend
 # this tuple; the resolver falls back to ``SUPPORTED_VERSIONS[-1]`` when

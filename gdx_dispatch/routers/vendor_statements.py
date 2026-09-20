@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -53,16 +52,16 @@ class VendorStatementLineOut(BaseModel):
     id: UUID
     line_no: int
     vendor_invoice_no: str
-    vendor_job_no: Optional[str]
-    line_date: Optional[date]
+    vendor_job_no: str | None
+    line_date: date | None
     amount: Decimal
     balance: Decimal
-    description: Optional[str]
-    po_ref: Optional[str]
-    aging_bucket: Optional[str]
-    classification: Optional[str]
-    matched_job_id: Optional[UUID]
-    notes: Optional[str] = None
+    description: str | None
+    po_ref: str | None
+    aging_bucket: str | None
+    classification: str | None
+    matched_job_id: UUID | None
+    notes: str | None = None
 
 
 class VendorStatementSummaryOut(BaseModel):
@@ -70,16 +69,16 @@ class VendorStatementSummaryOut(BaseModel):
 
     id: UUID
     vendor_name: str
-    vendor_code: Optional[str]
-    statement_date: Optional[date]
-    document_id: Optional[UUID]
+    vendor_code: str | None
+    statement_date: date | None
+    document_id: UUID | None
     parser_name: str
     parser_version: int
     raw_total: Decimal
     line_count: int
     status: str
     source: str = "upload"
-    uploaded_by: Optional[str]
+    uploaded_by: str | None
     created_at: datetime
 
 
@@ -88,14 +87,14 @@ class VendorStatementDetailOut(VendorStatementSummaryOut):
 
 
 class LinePatch(BaseModel):
-    classification: Optional[str] = None
-    notes: Optional[str] = None
+    classification: str | None = None
+    notes: str | None = None
 
 
 class DuplicateOut(BaseModel):
     detail: str
     existing_document_id: str
-    original_name: Optional[str] = None
+    original_name: str | None = None
 
 
 # ── vendor account (what is actually owed) ─────────────────────────────

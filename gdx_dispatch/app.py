@@ -1097,10 +1097,9 @@ def _check_encryption_at_rest() -> None:
         )
         if is_prod:
             raise SystemExit(
-                "REFUSING TO BOOT: pii.encryption_status() scan failed: %s. "
+                f"REFUSING TO BOOT: pii.encryption_status() scan failed: {status.scan_error}. "
                 "An EncryptedString column may exist on an unimported base. "
                 "Fix the import error or override with GDX_ENV=dev."
-                % status.scan_error
             )
     if status.key_loaded:
         # Key is loaded — the manual _encrypt paths work. If any

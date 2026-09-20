@@ -33,9 +33,9 @@ else derives from existing fields.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +194,7 @@ def derive_job_display_state(
         # --- 4. Paid (won) — every live billing-real invoice settled. ---
         all_paid = all(
             s == "paid" or _num(i.get("balance_due")) <= 0
-            for s, i in zip(statuses, live_invoices)
+            for s, i in zip(statuses, live_invoices, strict=True)
         )
         if all_paid:
             return DisplayState("paid", TYPE_WON, "Paid", deposit_paid)

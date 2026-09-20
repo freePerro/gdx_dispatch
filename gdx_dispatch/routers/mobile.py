@@ -222,7 +222,7 @@ class PartUsageItem(BaseModel):
     qty: int = Field(ge=0, le=1_000_000)
 
     @model_validator(mode="after")
-    def _require_identity(self) -> "PartUsageItem":
+    def _require_identity(self) -> PartUsageItem:
         if not (self.part_id or (self.name or "").strip()):
             raise ValueError("part_id or name is required")
         return self

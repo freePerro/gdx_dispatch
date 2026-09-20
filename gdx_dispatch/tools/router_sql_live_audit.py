@@ -483,7 +483,7 @@ def main() -> int:
         except (OSError, json.JSONDecodeError) as e:
             print(f"D35: ⚠ could not read acknowledged-file {ack_path}: {e}", file=sys.stderr)
 
-    def _is_acknowledged(v: "Violation") -> bool:
+    def _is_acknowledged(v: Violation) -> bool:
         # canonical_but_empty is always eligible.
         # column_missing is eligible ONLY when table == "(none)" — that is
         # exclusively the regex-extractor false-positive case (where the

@@ -265,7 +265,7 @@ def bridge_registry_to_fastmcp(mcp: FastMCP) -> list[str]:
     return registered
 
 
-def _fastmcp_tool_names(mcp: "FastMCP") -> set[str]:
+def _fastmcp_tool_names(mcp: FastMCP) -> set[str]:
     """Return the set of tool names currently registered on ``mcp``.
 
     FastMCP's public ``list_tools()`` is async; calling it from sync

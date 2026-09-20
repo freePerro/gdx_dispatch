@@ -59,7 +59,7 @@ class VendorStatement(TenantBase):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    lines: Mapped[list["VendorStatementLine"]] = relationship(
+    lines: Mapped[list[VendorStatementLine]] = relationship(
         back_populates="statement",
         cascade="all, delete-orphan",
         order_by="VendorStatementLine.line_no",

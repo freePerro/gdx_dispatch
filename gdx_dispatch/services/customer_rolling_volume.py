@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -33,7 +32,7 @@ ROLLING_WINDOW_DAYS = 365
 STALE_REFRESH_AFTER = timedelta(hours=1)
 
 
-def _now_utc(now: Optional[datetime] = None) -> datetime:
+def _now_utc(now: datetime | None = None) -> datetime:
     return now or datetime.now(timezone.utc)
 
 
@@ -41,7 +40,7 @@ def compute_paid_volume(
     customer_id: UUID,
     db: Session,
     *,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
 ) -> Decimal:
     """Live SUM — sum of payments against this customer's non-void invoices
     where payment_date is within the trailing window.
@@ -65,7 +64,7 @@ def refresh_cached_volume(
     customer_id: UUID,
     db: Session,
     *,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
 ) -> Decimal:
     """Recompute volume + write back to Customer row. Returns the new value.
 
@@ -86,7 +85,7 @@ def refresh_cached_volume(
 
 
 def is_cache_stale(
-    cached_at: Optional[datetime], *, now: Optional[datetime] = None
+    cached_at: datetime | None, *, now: datetime | None = None
 ) -> bool:
     """True if the cache is missing or older than STALE_REFRESH_AFTER."""
     if cached_at is None:
@@ -103,7 +102,7 @@ def get_or_refresh(
     customer_id: UUID,
     db: Session,
     *,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
 ) -> Decimal:
     """Return cached value if fresh, else recompute. Used by estimate-create.
 

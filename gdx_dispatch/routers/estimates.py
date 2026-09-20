@@ -417,10 +417,7 @@ def _labor_cost_snapshot(
     hours = Decimal(str(estimated_man_hours)) if estimated_man_hours is not None else Decimal("0")
     cost = (rate * hours).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     sell = Decimal(str(unit_price or 0))
-    if sell > 0:
-        margin = ((sell - cost) / sell).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-    else:
-        margin = Decimal("0")
+    margin = ((sell - cost) / sell).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP) if sell > 0 else Decimal("0")
     return cost, margin, "labor_matrix"
 
 

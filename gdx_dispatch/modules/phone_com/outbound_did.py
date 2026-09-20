@@ -25,7 +25,7 @@ labels in the marketing-attribution dashboard.
 from __future__ import annotations
 
 import logging
-from typing import Iterable
+from collections.abc import Iterable
 from uuid import UUID
 
 from sqlalchemy import desc, select

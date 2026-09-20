@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 REFRESH_TTL = int(os.environ.get("REFRESH_TTL_SECONDS", str(60 * 60 * 24 * 7)))
 
 
-def _redis_client() -> "Redis":
+def _redis_client() -> Redis:
     """Lazy-import the redis client so unit tests that don't touch the
     revoke path don't have to spin up a fake redis."""
     from redis import from_url

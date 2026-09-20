@@ -116,7 +116,7 @@ def test_allocate_sum_preserving_and_fair(total, weights):
     assert sum(parts) == total                          # the invariant
     assert len(parts) == len(weights)
     wsum = sum(weights)
-    for part, w in zip(parts, weights):
+    for part, w in zip(parts, weights, strict=True):
         exact = Decimal(total) * w / wsum
         assert abs(Decimal(part) - exact) < 1           # within one cent of exact
     assert allocate(total, weights) == parts            # deterministic

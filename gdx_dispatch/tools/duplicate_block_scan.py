@@ -54,8 +54,8 @@ import re
 import sys
 import tokenize
 from collections import defaultdict
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from gdx_dispatch.tools.tracked_files import tracked_or_none
 

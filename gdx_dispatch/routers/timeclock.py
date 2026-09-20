@@ -189,10 +189,7 @@ def _minutes_between(start_iso: str, end_iso: str) -> int:
 
 def _elapsed_hours_since(iso: str | datetime) -> float:
     """Hours between an ISO/datetime clock-in stamp and now (UTC)."""
-    if isinstance(iso, str):
-        parsed = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-    else:
-        parsed = iso
+    parsed = datetime.fromisoformat(iso.replace("Z", "+00:00")) if isinstance(iso, str) else iso
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return (datetime.now(UTC) - parsed).total_seconds() / 3600.0
@@ -233,10 +230,7 @@ def _enforce_self_service_limits(
         if stamp is None:
             continue
         try:
-            if isinstance(stamp, str):
-                value = _as_aware(stamp)
-            else:
-                value = stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
+            value = _as_aware(stamp) if isinstance(stamp, str) else stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
         except ValueError:
             # An unreadable stored stamp can't be windowed — only the office
             # should be rewriting a corrupt row.
@@ -576,10 +570,7 @@ def get_timeclock_status(
                 ci = entry.clock_in_at
                 # clock_in_at is stored as Text — parse defensively. Modern
                 # writes are ISO-8601 with tz; older rows may be naive UTC.
-                if isinstance(ci, str):
-                    parsed = _dt.fromisoformat(ci.replace("Z", "+00:00"))
-                else:
-                    parsed = ci
+                parsed = _dt.fromisoformat(ci.replace("Z", "+00:00")) if isinstance(ci, str) else ci
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=_tz.utc)
                 now = _dt.now(_tz.utc)
@@ -615,10 +606,7 @@ def get_timeclock_status(
                 from datetime import timedelta
                 from datetime import timezone as _tz2
                 ci = entry.clock_in_at
-                if isinstance(ci, str):
-                    parsed = _dt2.fromisoformat(ci.replace("Z", "+00:00"))
-                else:
-                    parsed = ci
+                parsed = _dt2.fromisoformat(ci.replace("Z", "+00:00")) if isinstance(ci, str) else ci
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=_tz2.utc)
                 auto_clockout_at_iso = (parsed + timedelta(hours=MAX_SHIFT_HOURS)).isoformat()

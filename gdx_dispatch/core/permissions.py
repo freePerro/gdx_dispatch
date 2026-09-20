@@ -294,10 +294,7 @@ def assert_can_assign_role(actor: object, target_role: str | None, current_role:
     current = (current_role or "").strip().lower()
     if target not in _OWNER_ASSIGNABLE_ROLES and current not in _OWNER_ASSIGNABLE_ROLES:
         return  # non-privileged role change — admins may do it
-    if isinstance(actor, dict):
-        actor_role = str(actor.get("role") or "")
-    else:
-        actor_role = str(getattr(actor, "role", "") or "")
+    actor_role = str(actor.get("role") or "") if isinstance(actor, dict) else str(getattr(actor, "role", "") or "")
     if _roles.is_role_admin_actor(actor_role):
         return
     from fastapi import HTTPException

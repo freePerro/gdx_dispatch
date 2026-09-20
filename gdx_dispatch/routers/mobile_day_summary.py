@@ -126,8 +126,10 @@ def day_summary(
         ).scalar() or 0)
     except Exception:
         log.exception("day_summary_hours_unavailable user=%s", user_id)
-        try: db.rollback()
-        except Exception: pass
+        try:
+            db.rollback()
+        except Exception:
+            pass
         labor_hours = 0.0
 
     # Parts requested today by this user.
@@ -148,8 +150,10 @@ def day_summary(
         ).scalar() or 0)
     except Exception:
         log.exception("day_summary_parts_unavailable user=%s", user_id)
-        try: db.rollback()
-        except Exception: pass
+        try:
+            db.rollback()
+        except Exception:
+            pass
         parts_requested = 0
 
     # Invoices generated from this user's mobile actions today.
@@ -173,8 +177,10 @@ def day_summary(
         ).scalar() or 0)
     except Exception:
         log.exception("day_summary_invoices_unavailable user=%s", user_id)
-        try: db.rollback()
-        except Exception: pass
+        try:
+            db.rollback()
+        except Exception:
+            pass
         invoices_count = 0
 
     revenue_invoiced = 0.0
@@ -198,8 +204,10 @@ def day_summary(
         ).scalar() or 0)
     except Exception:
         log.exception("day_summary_revenue_unavailable user=%s", user_id)
-        try: db.rollback()
-        except Exception: pass
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
     # Tomorrow's first stop (peek-ahead — small affordance).
     # DATE(...) = :tomorrow, not a datetime-range compare: SQLAlchemy binds

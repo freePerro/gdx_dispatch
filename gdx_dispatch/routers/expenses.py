@@ -162,7 +162,7 @@ def _annotate_receipt_counts(db: Session, rows: list[Expense], payloads: list[di
             .group_by(ExpenseReceipt.expense_id)
         ).all()
     )
-    for row, payload in zip(rows, payloads):
+    for row, payload in zip(rows, payloads, strict=True):
         payload["receipt_count"] = int(counts.get(row.id, 0))
 
 
@@ -189,7 +189,7 @@ def _annotate_gl_accounts(db: Session, rows: list[Expense], payloads: list[dict]
             )
         ).scalar_one_or_none()
         cache: dict = {}
-        for row, payload in zip(rows, payloads):
+        for row, payload in zip(rows, payloads, strict=True):
             key = row.category or ""
             if key not in cache:
                 account_id = _expense_account_id(db, settings, company_id, row.category)

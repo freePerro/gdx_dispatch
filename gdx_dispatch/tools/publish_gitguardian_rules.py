@@ -24,8 +24,9 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 log = logging.getLogger(__name__)
 

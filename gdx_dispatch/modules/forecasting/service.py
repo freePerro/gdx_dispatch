@@ -381,7 +381,7 @@ def _combined_recurring(qbo: dict[str, Any], observed: dict[str, Any]) -> dict[s
     qbo_kept: list[dict[str, Any]] = []
 
     for q in qbo["items"]:
-        q_name = ((q.get("name") or q.get("customer_name") or "")).upper()
+        q_name = (q.get("name") or q.get("customer_name") or "").upper()
         q_amt = float(q.get("amount") or 0)
         q_month = (q.get("next_date") or "")[:7]
         matched = False

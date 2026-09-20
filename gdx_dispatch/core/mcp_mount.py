@@ -51,7 +51,7 @@ class MCPMountError(RuntimeError):
     """
 
 
-def build_mcp_subapp(mcp: "FastMCP | None" = None) -> "StarletteWithLifespan":
+def build_mcp_subapp(mcp: FastMCP | None = None) -> StarletteWithLifespan:
     """Bridge the registry onto FastMCP and build the Streamable-HTTP sub-app.
 
     Idempotent across multiple ``create_app()`` calls (test harness
@@ -167,7 +167,7 @@ def build_mcp_subapp(mcp: "FastMCP | None" = None) -> "StarletteWithLifespan":
     )
 
 
-def mount_mcp(app: "FastAPI", mcp: "FastMCP | None" = None) -> "StarletteWithLifespan":
+def mount_mcp(app: FastAPI, mcp: FastMCP | None = None) -> StarletteWithLifespan:
     """Mount the MCP Streamable-HTTP sub-app at ``/mcp`` on ``app``.
 
     Stores the sub-app on ``app.state.mcp_subapp`` so the parent's
@@ -222,7 +222,7 @@ def mount_mcp(app: "FastAPI", mcp: "FastMCP | None" = None) -> "StarletteWithLif
 
 
 @contextlib.asynccontextmanager
-async def mcp_subapp_lifespan(app: "FastAPI"):
+async def mcp_subapp_lifespan(app: FastAPI):
     """Async context manager the parent ``lifespan`` enters on startup.
 
     Hard-fails if ``mount_mcp`` was not called (the sub-app would 500
