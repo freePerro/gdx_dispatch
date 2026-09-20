@@ -1,11 +1,20 @@
 # Guided Onboarding Service — "Get Your Own GDX Dispatch Server"
 
-**Status:** PARTIALLY BUILT (verified on main 2026-08-21). Build-order items
-1 and 2 shipped: `gdx_dispatch/docker/docker-compose.customer.yml` and
+**Status:** PARTIALLY BUILT (verified on main 2026-08-21; staging E2E run
+2026-09-20). Build-order items 1 and 2 shipped:
+`gdx_dispatch/docker/docker-compose.customer.yml` and
 `gdx_dispatch/tools/mint_runtime_env.py` (+ `tests/test_mint_runtime_env.py`).
-**Not done:** items 3-8 — stage on our own VPS, the throwaway-VPS E2E, the
-handover-guide template, the landing page with the Deploy button, the first
-paying customer, and the Partner Program application.
+Item 3 done 2026-09-20: fresh-VPS E2E on the idle staging box (Hostinger
+Docker template, Ubuntu 24.04) — release-asset URL fetch, zero-env
+`up -d`, 9/9 healthy, full migration chain, Let's Encrypt cert issued by the
+bundled Caddy at test.tgdplatform.com (test.gdxdispatch.com blocked: the
+Cloudflare API token on prod is invalid), admin banner + login 200 + browser
+walk to the dashboard, and the `pull && up -d` update path with secrets
+surviving. README self-host section now leads with this path (same PR).
+**Not done:** item 4's Hostinger *purchase funnel* variant (button → checkout
+→ preloaded Docker Manager deploy) and items 5-8 — the handover-guide
+template, the landing page with the Deploy button, the first paying customer,
+and the Partner Program application.
 **North star (Doug, 2026-08-17): ADOPTION, not revenue.** Monetization gets
 figured out later; every decision below optimizes for the lowest-friction path
 to a stranger running GDX Dispatch. Referral code stays on the button (it's a

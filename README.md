@@ -97,13 +97,61 @@ plus an **initial admin user** so you can log in right away:
 The admin is created with `must_change_password` set — change it after your
 first login.
 
-## Self-hosting (running a published release)
+## Self-hosting on your own VPS (one command, no configuration)
 
-The Quick start above builds the image locally. To instead run a pre-built,
-pinned release from GitHub Container Registry, layer the self-host overlay on
-top of the base compose file and pin the version in `.env`:
+The easiest way to run GDX Dispatch is the standalone customer compose file
+published with every release. It needs **no `.env`, no cloned repo, and no
+secret to fill in** — a `secrets-init` container mints strong secrets on first
+boot and persists them in a volume, so restarts and updates keep your logins
+and encrypted data.
+
+Requirements: a Linux VPS with [Docker + Compose v2](https://get.docker.com)
+(any Hostinger/DigitalOcean "Docker" image works), ports 80/443 reachable,
+and — optionally — a domain with an A record pointing at the server.
 
 ```bash
+mkdir gdx && cd gdx
+curl -fsSL https://github.com/freePerro/gdx_dispatch/releases/latest/download/docker-compose.customer.yml -o docker-compose.customer.yml
+echo 'GDX_DOMAIN=dispatch.example.com' > .env   # optional — enables automatic HTTPS via Let's Encrypt
+docker compose -p gdx -f docker-compose.customer.yml up -d
+```
+
+That's the whole install. On first boot the stack mints its secrets, runs all
+database migrations, seeds your admin account, and (with `GDX_DOMAIN` set)
+obtains a real TLS certificate automatically. Without a domain it serves plain
+HTTP on the server's IP. Read your one-time admin password from the app log:
+
+```bash
+docker compose -p gdx logs app | grep -A5 "initial admin"
+```
+
+Optional settings go in the same `.env` (all documented in the compose file's
+header): `GDX_TENANT_NAME`, `GDX_ADMIN_EMAIL`, `GDX_ADMIN_PASSWORD`,
+`APP_VERSION` to pin a release, and integration keys (Stripe, QuickBooks,
+Google Maps, SMTP) — every integration is optional and its feature simply
+stays off while blank. A backup sidecar dumps the database daily to the
+`gdx_backups` volume (30-day retention). To update:
+
+```bash
+docker compose -p gdx -f docker-compose.customer.yml pull
+docker compose -p gdx -f docker-compose.customer.yml up -d
+```
+
+Data lives in named volumes (`gdx_db_data`, `gdx_uploads`, `gdx_backups`,
+`gdx_secrets`); `docker compose down` without `-v` never touches them.
+
+## Self-hosting from a checkout (overlay on the base compose)
+
+Alternatively, run a pre-built, pinned release from GitHub Container Registry
+by layering the self-host overlay on top of the base compose file. This path
+uses the full `.env.template` and expects you to manage your own reverse
+proxy/TLS. The base file declares its data volumes `external`, so create them
+once before the first `up`:
+
+```bash
+docker volume create docker_db_data
+docker volume create docker_gdx_uploads
+
 cp .env.template .env          # fill in [REQUIRED] values
 echo 'APP_VERSION=1.0.0' >> .env   # or leave unset to track :latest
 
