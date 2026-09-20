@@ -52,9 +52,10 @@ error.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Iterable, Literal, Optional
+from typing import Literal
 
 # Type aliases for readability
 PricingClass = Literal["retail", "contractor", "wholesale"]
@@ -82,14 +83,14 @@ class PricingConfigError(Exception):
 @dataclass(frozen=True)
 class TierRow:
     cost_min: Decimal
-    cost_max: Optional[Decimal]  # None = open-ended top
+    cost_max: Decimal | None  # None = open-ended top
     margin_pct: Decimal
 
 
 @dataclass(frozen=True)
 class VolumeTierRow:
     volume_min_12mo: Decimal
-    volume_max_12mo: Optional[Decimal]
+    volume_max_12mo: Decimal | None
     discount_pct: Decimal
 
 
@@ -114,8 +115,8 @@ class PricingSettingsView:
 class CustomerView:
     """Engine input. Pull only what the engine needs from the ORM Customer."""
 
-    pricing_class: Optional[PricingClass]  # None → engine uses 'retail'
-    margin_override_pct: Optional[Decimal]
+    pricing_class: PricingClass | None  # None → engine uses 'retail'
+    margin_override_pct: Decimal | None
     # Sprint 1.0.6 — denormalized 365d paid-volume cache, used by the
     # rolling-volume discount lookup. Default 0 means no discount applies.
     cached_rolling_volume: Decimal = Decimal("0")
@@ -135,7 +136,7 @@ class EstimateLineInput:
     cost: Decimal
     pricing_category: str
     quantity: Decimal = Decimal("1")
-    margin_pct_override: Optional[Decimal] = None
+    margin_pct_override: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -264,7 +265,7 @@ def price_line(
     customer: CustomerView,
     settings: PricingSettingsView,
     *,
-    line_margin_override: Optional[Decimal] = None,
+    line_margin_override: Decimal | None = None,
 ) -> LinePrice:
     """Resolve sell price + profit + which input won."""
     if not isinstance(cost, Decimal):

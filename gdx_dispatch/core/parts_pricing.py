@@ -254,10 +254,8 @@ def suggest_markup(
     )
 
     count = len(parts)
-    if count > 0:
-        avg_margin = sum(float(p.margin_pct) for p in parts) / count
-    else:
-        avg_margin = 0.35  # default 35% if no history
+    # default 35% margin when there is no history
+    avg_margin = sum(float(p.margin_pct) for p in parts) / count if count > 0 else 0.35
 
     # Prevent division by zero or nonsensical suggestions
     if avg_margin >= 1.0:

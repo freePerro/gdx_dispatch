@@ -142,11 +142,7 @@ def _arg_is_reassigned(func: ast.AST, argname: str) -> bool:
                     return True
         elif isinstance(n, (ast.AnnAssign, ast.AugAssign)) and isinstance(
             getattr(n, "target", None), ast.Name
-        ) and n.target.id == argname:
-            return True
-        elif isinstance(n, ast.NamedExpr) and isinstance(n.target, ast.Name) and n.target.id == argname:
-            return True
-        elif isinstance(n, ast.For) and isinstance(n.target, ast.Name) and n.target.id == argname:
+        ) and n.target.id == argname or isinstance(n, ast.NamedExpr) and isinstance(n.target, ast.Name) and n.target.id == argname or isinstance(n, ast.For) and isinstance(n.target, ast.Name) and n.target.id == argname:
             return True
     return False
 

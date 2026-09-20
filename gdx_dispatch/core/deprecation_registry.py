@@ -32,10 +32,10 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ class DeprecationRegistry:
     # ── factories ──────────────────────────────────────────────────────────
 
     @classmethod
-    def from_entries(cls, raw: Iterable[Mapping[str, object]]) -> "DeprecationRegistry":
+    def from_entries(cls, raw: Iterable[Mapping[str, object]]) -> DeprecationRegistry:
         """Build from an iterable of raw dicts (e.g. loaded from JSON)."""
         parsed: list[DeprecationEntry] = []
         for row in raw:
@@ -118,7 +118,7 @@ class DeprecationRegistry:
         return cls(parsed)
 
     @classmethod
-    def from_json_file(cls, path: Path | str) -> "DeprecationRegistry":
+    def from_json_file(cls, path: Path | str) -> DeprecationRegistry:
         """Load from a JSON file. Missing file → empty registry (not an error).
 
         An empty or missing registry is the normal steady state for a

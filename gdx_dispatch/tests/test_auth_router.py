@@ -1332,7 +1332,7 @@ class _FakeRefreshRedis:
         self.kv[key] = value
         return True
 
-    def pipeline(self) -> "_FakeRefreshRedis":
+    def pipeline(self) -> _FakeRefreshRedis:
         return self
 
     def execute(self) -> list[Any]:

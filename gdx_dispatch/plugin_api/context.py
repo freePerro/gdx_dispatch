@@ -15,8 +15,8 @@ plugin_api/__init__ (kept stdlib-only for host-side discovery tests).
 """
 from __future__ import annotations
 
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
-from typing import Callable, Generator
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session

@@ -179,7 +179,7 @@ class RecurringStream(TenantBase):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
-    hits: Mapped[list["RecurringStreamHit"]] = relationship(
+    hits: Mapped[list[RecurringStreamHit]] = relationship(
         "RecurringStreamHit", back_populates="stream", cascade="all, delete-orphan"
     )
 
@@ -229,7 +229,7 @@ class RecurringStreamHit(TenantBase):
     confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
-    stream: Mapped["RecurringStream"] = relationship("RecurringStream", back_populates="hits")
+    stream: Mapped[RecurringStream] = relationship("RecurringStream", back_populates="hits")
 
     __table_args__ = (
         Index("ix_recurring_stream_hits_stream_date", "stream_id", "txn_date"),
@@ -283,7 +283,7 @@ class ForecastSnapshot(TenantBase):
     # Per-bucket results, {bucket: {face, collected_in_window, observed_window_rate, assumed_lifetime_rate}}.
     bucket_results: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
-    invoices: Mapped[list["ForecastSnapshotInvoice"]] = relationship(
+    invoices: Mapped[list[ForecastSnapshotInvoice]] = relationship(
         "ForecastSnapshotInvoice", back_populates="snapshot", cascade="all, delete-orphan"
     )
 
@@ -314,7 +314,7 @@ class ForecastSnapshotInvoice(TenantBase):
     bucket: Mapped[str] = mapped_column(String(10), nullable=False)
     face_at_snapshot: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
 
-    snapshot: Mapped["ForecastSnapshot"] = relationship("ForecastSnapshot", back_populates="invoices")
+    snapshot: Mapped[ForecastSnapshot] = relationship("ForecastSnapshot", back_populates="invoices")
 
     __table_args__ = (
         Index("ix_forecast_snapshot_invoices_snap_bucket", "snapshot_id", "bucket"),

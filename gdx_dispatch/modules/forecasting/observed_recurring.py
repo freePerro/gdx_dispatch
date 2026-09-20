@@ -25,9 +25,9 @@ import logging
 import re
 import statistics
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session

@@ -19,7 +19,6 @@ import os
 from dataclasses import dataclass
 from json import dumps
 from pathlib import Path
-from typing import Optional
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -78,7 +77,7 @@ def compute_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def find_existing_document(db: Session, content_hash: str) -> Optional[Document]:
+def find_existing_document(db: Session, content_hash: str) -> Document | None:
     """Return a non-deleted Document in the tenant matching the hash, if any."""
     stmt = (
         select(Document)

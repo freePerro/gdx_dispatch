@@ -290,7 +290,7 @@ def cash_revenue_by_account(
             parts = prorate_event_cents(
                 [c.cents for c in components], delta, total_cents
             )
-            for component, part in zip(components, parts):
+            for component, part in zip(components, parts, strict=True):
                 if part == 0:
                     continue
                 if component.account_id is not None:

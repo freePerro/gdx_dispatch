@@ -88,9 +88,6 @@ def test_all_endpoints_respond_successfully_from_platform_directory():
     for name, url in data["directory_endpoints"].items():
         # gdx_platform points at itself; others are the absolute public URL.
         # Tests exercise only the local path portion.
-        if "://" in url:
-            path = "/" + url.split("/", 3)[-1] if url.count("/") >= 3 else url
-        else:
-            path = url
+        path = ("/" + url.split("/", 3)[-1] if url.count("/") >= 3 else url) if "://" in url else url
         resp = client.get(path)
         assert resp.status_code == 200, f"{name} {path} -> {resp.status_code}"

@@ -22,8 +22,8 @@ proration tests so the cutover math is pinned before any report renders it.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -80,10 +80,7 @@ def prorate_event_cents(
     """
     if invoice_total_cents <= 0 or not components:
         return [0] * len(components)
-    if event_cents >= 0:
-        recognized = min(event_cents, invoice_total_cents)
-    else:
-        recognized = max(event_cents, -invoice_total_cents)
+    recognized = min(event_cents, invoice_total_cents) if event_cents >= 0 else max(event_cents, -invoice_total_cents)
     if recognized == 0:
         return [0] * len(components)
     return allocate(recognized, list(components))
@@ -97,7 +94,7 @@ def prorate_components(
     parts = prorate_event_cents(
         [c.cents for c in components], event_cents, invoice_total_cents
     )
-    return list(zip(components, parts))
+    return list(zip(components, parts, strict=True))
 
 
 __all__ = [

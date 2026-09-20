@@ -262,10 +262,7 @@ class OutlookGraphClient:
         folders ("inbox", "sentitems", "drafts", "deleteditems", "junkemail",
         "archive", "outbox"). Custom folders return None.
         """
-        if parent_id:
-            path = f"/me/mailFolders/{parent_id}/childFolders"
-        else:
-            path = "/me/mailFolders"
+        path = f"/me/mailFolders/{parent_id}/childFolders" if parent_id else "/me/mailFolders"
         params: dict[str, Any] = {"$top": top, "$select": self._FOLDER_SELECT}
         if include_hidden:
             params["includeHiddenFolders"] = "true"

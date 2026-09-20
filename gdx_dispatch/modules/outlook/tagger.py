@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 from decimal import Decimal
-from typing import Iterable
 
 from sqlalchemy.orm import Session
 

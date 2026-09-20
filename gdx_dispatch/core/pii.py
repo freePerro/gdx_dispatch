@@ -5,7 +5,8 @@ import dataclasses
 import hashlib
 import logging
 import os
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes

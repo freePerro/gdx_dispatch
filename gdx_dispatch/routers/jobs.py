@@ -372,10 +372,7 @@ def _set_job_assignments(
 
     resolved_lead: str | None = None
     if tech_ids:
-        if lead_tech_id and lead_tech_id in desired:
-            resolved_lead = lead_tech_id
-        else:
-            resolved_lead = tech_ids[0]
+        resolved_lead = lead_tech_id if lead_tech_id and lead_tech_id in desired else tech_ids[0]
 
     if resolved_lead is None:
         db.execute(

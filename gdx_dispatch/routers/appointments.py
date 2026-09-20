@@ -316,10 +316,7 @@ def list_appointments(
     # in the user's local "today" once UTC midnight rolled over — at 8pm
     # EDT all of "today's" jobs vanished from the calendar (Doug, S109).
     now = datetime.now(timezone.utc)
-    if start:
-        start_dt = _parse_iso_date(start, "start")
-    else:
-        start_dt = now - timedelta(days=30)
+    start_dt = _parse_iso_date(start, "start") if start else now - timedelta(days=30)
     if end:
         end_dt = _parse_iso_date(end, "end")
     elif start:

@@ -147,10 +147,7 @@ def test_pagination_overlap_offset(respx_mock, tenant_db, setup):
     def responder(request):
         offset = int(request.url.params.get("offset") or 0)
         offsets.append(offset)
-        if offset == 0:
-            txns = [_txn(i) for i in range(500)]
-        else:
-            txns = [_txn(600)]
+        txns = [_txn(i) for i in range(500)] if offset == 0 else [_txn(600)]
         return Response(200, json={"transactions": txns, "inactivatedTransactionIds": []})
 
     respx_mock.get(TXN_URL).mock(side_effect=responder)

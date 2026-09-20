@@ -516,7 +516,7 @@ def _root_customer_qb_id(
             return parent_id, list(reversed(chain))
         chain.append(parent)
         current = parent
-    raise ValueError("ParentRef chain deeper than %d — refusing to guess" % max_depth)
+    raise ValueError(f"ParentRef chain deeper than {max_depth} — refusing to guess")
 
 
 def _leaf_name(raw: dict[str, Any], parent_name: str) -> str:

@@ -65,7 +65,7 @@ class PricingTierSet(TenantBase):
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )
 
-    tiers: Mapped[list["MarginTier"]] = relationship(
+    tiers: Mapped[list[MarginTier]] = relationship(
         back_populates="tier_set",
         cascade="all, delete-orphan",
         order_by="MarginTier.sort_order",
@@ -153,7 +153,7 @@ class PricingSettings(TenantBase):
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )
 
-    volume_tiers: Mapped[list["CustomerVolumeDiscountTier"]] = relationship(
+    volume_tiers: Mapped[list[CustomerVolumeDiscountTier]] = relationship(
         back_populates="settings",
         cascade="all, delete-orphan",
         order_by="CustomerVolumeDiscountTier.sort_order",

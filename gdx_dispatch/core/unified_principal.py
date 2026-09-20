@@ -90,19 +90,17 @@ def _coerce_caps(
     for idx, item in enumerate(caps):
         if not isinstance(item, (tuple, list)) or len(item) != 2:
             raise TypeError(
-                "capabilities[%d] must be a 2-tuple of (action, resource_type), "
-                "got %r" % (idx, item)
+                f"capabilities[{idx}] must be a 2-tuple of (action, resource_type), "
+                f"got {item!r}"
             )
         action, resource_type = item
         if not isinstance(action, str) or not action:
             raise TypeError(
-                "capabilities[%d] action must be a non-empty str, got %r"
-                % (idx, action)
+                f"capabilities[{idx}] action must be a non-empty str, got {action!r}"
             )
         if not isinstance(resource_type, str) or not resource_type:
             raise TypeError(
-                "capabilities[%d] resource_type must be a non-empty str, got %r"
-                % (idx, resource_type)
+                f"capabilities[{idx}] resource_type must be a non-empty str, got {resource_type!r}"
             )
         out.append((action, resource_type))
     return tuple(out)

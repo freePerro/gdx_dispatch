@@ -119,7 +119,7 @@ def test_test_the_key_no_key_set(session_with_tenant, silent_audit):
 
     assert result["ok"] is False
     assert result["error"] == "no key set"
-    
+
     # Check audit
     actions = [c.kwargs["action"] for c in silent_audit.call_args_list]
     assert "ai_settings.key_tested" in actions

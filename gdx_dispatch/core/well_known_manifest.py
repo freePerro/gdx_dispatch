@@ -54,7 +54,7 @@ def _base_url() -> str:
     return url
 
 
-def request_base_url(request: "Request") -> str:
+def request_base_url(request: Request) -> str:
     """Per-tenant issuer derived from the inbound request host.
 
     The MCP plan requires the OAuth issuer to equal the host the client
