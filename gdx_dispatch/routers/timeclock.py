@@ -12,7 +12,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pay_periods import (
@@ -1566,8 +1566,12 @@ def submit_day(
     db: Session = Depends(get_db),
 ) -> SubmitDayResponse:
     """Tech-confirmed end-of-day submit. Aggregates today's TimeclockEntry
-    rows for this user and stamps each with `submitted_for_payroll_at`
-    (idempotent — re-submit is fine, only flips NULL → now).
+    rows for this user and records the attestation as a
+    `timeclock_day_submitted` audit event (who, which day, how many entries,
+    total minutes). The entries themselves are not mutated — there is no
+    `submitted_for_payroll_at` column; the audit trail IS the record.
+    Re-submitting writes another attestation row, which is intended: each
+    submit is a distinct claim by the tech.
     """
     tenant_id = _tenant_id(request)
     user_id = _user_id(current_user)
@@ -1587,6 +1591,22 @@ def submit_day(
         ).scalars().all()
 
         total_minutes = sum(int(e.minutes or 0) for e in entries)
+        ensure_audit_table(db)
+        log_audit_event_sync(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            action="timeclock_day_submitted",
+            entity_type="timeclock_day",
+            entity_id=target,
+            details={
+                "date": target,
+                "entries": len(entries),
+                "total_minutes": total_minutes,
+            },
+            request=request,
+        )
+        db.commit()
         return SubmitDayResponse(
             submitted=True,
             date=target,

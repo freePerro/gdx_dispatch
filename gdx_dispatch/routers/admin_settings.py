@@ -9,18 +9,19 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import text as _text
+from sqlalchemy import update as _update
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
 from gdx_dispatch.core.tenant_ctx import bind_tenant_context
+from gdx_dispatch.models.tenant_models import User
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -43,6 +44,14 @@ def _tid(request: Request) -> str:
 
 def _uid(user: dict) -> str:
     return str(user.get("sub") or user.get("user_id") or "system")
+
+
+def _user_uuid(user_id: str) -> UUID:
+    """Parse a path user id; an unparseable id can't name a row → 404."""
+    try:
+        return UUID(user_id)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=404, detail="User not found") from exc
 
 
 def _audit(db: Session, *, request: Request, user: dict, action: str,
@@ -95,9 +104,18 @@ def update_email_settings(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    _audit(db, request=request, user=user, action="email_settings_updated",
-           entity_type="settings", details=payload.model_dump(exclude_unset=True))
-    return {"ok": True}
+    # Honesty fix (silent-success sweep 2026-09-19): this config is env-var
+    # backed (see the GET above) — there is nowhere to write it. The old body
+    # persisted nothing, yet wrote an `email_settings_updated` audit row and
+    # returned ok, manufacturing a false trail. Same treatment as the
+    # sibling /settings/email/test below.
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Not implemented — SMTP settings come from environment variables. "
+            "Tenant email settings live at PUT /api/settings/email."
+        ),
+    )
 
 
 @router.post("/settings/email/test", response_model=None)
@@ -176,9 +194,12 @@ def create_tax_jurisdiction(
         )
         db.commit()
     except Exception:
+        # Silent-success sweep 2026-09-19: this used to roll back and still
+        # answer {"ok": true, "id": ..., "note": "table may not exist yet"} —
+        # a fabricated create. Fail loudly instead.
         log.exception("create_tax_jurisdiction_failed")
         db.rollback()
-        return {"ok": True, "id": new_id, "note": "table may not exist yet"}
+        raise HTTPException(status_code=500, detail="Failed to create tax jurisdiction") from None
     _audit(db, request=request, user=user, action="tax_jurisdiction_created",
            entity_type="tax_jurisdiction", entity_id=new_id, details=payload.model_dump())
     return {"ok": True, "id": new_id}
@@ -194,7 +215,7 @@ def update_tax_jurisdiction(
 ) -> dict:
     tid = _tid(request)
     try:
-        db.execute(
+        result = db.execute(
             _text("""
                 UPDATE tax_jurisdictions
                 SET name = :name, rate = :rate, is_default = :is_default,
@@ -207,6 +228,9 @@ def update_tax_jurisdiction(
     except Exception:
         log.exception("update_tax_jurisdiction_failed")
         db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to update tax jurisdiction") from None
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Tax jurisdiction not found")
     _audit(db, request=request, user=user, action="tax_jurisdiction_updated",
            entity_type="tax_jurisdiction", entity_id=jid, details=payload.model_dump())
     return {"ok": True}
@@ -222,14 +246,20 @@ def delete_tax_jurisdiction(
     tid = _tid(request)
     now = datetime.now(timezone.utc)
     try:
-        db.execute(
-            _text("UPDATE tax_jurisdictions SET deleted_at = :now WHERE id = :jid AND company_id = :tid"),
+        result = db.execute(
+            _text(
+                "UPDATE tax_jurisdictions SET deleted_at = :now "
+                "WHERE id = :jid AND company_id = :tid AND deleted_at IS NULL"
+            ),
             {"jid": jid, "tid": tid, "now": now},
         )
         db.commit()
     except Exception:
         log.exception("delete_tax_jurisdiction_failed")
         db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to delete tax jurisdiction") from None
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Tax jurisdiction not found")
     _audit(db, request=request, user=user, action="tax_jurisdiction_deleted",
            entity_type="tax_jurisdiction", entity_id=jid)
     return {"ok": True}
@@ -248,16 +278,22 @@ def unlock_user(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    tid = _tid(request)
+    uid = _user_uuid(user_id)
     try:
-        db.execute(
-            _text("UPDATE users SET failed_login_count = 0 WHERE id = :uid AND company_id = :tid"),
-            {"uid": user_id, "tid": tid},
+        # ORM update: users.id is a Uuid column, which SQLite stores dashless
+        # — a raw `id = :dashed` can never match there (CLAUDE.md sharp edge).
+        result = db.execute(
+            _update(User)
+            .where(User.id == uid)  # tenant isolation is the connection (B1); no company_id filter
+            .values(failed_login_count=0)
         )
         db.commit()
     except Exception:
         log.exception("unlock_user_failed")
         db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to unlock user") from None
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="User not found")
     _audit(db, request=request, user=user, action="user_unlocked",
            entity_type="user", entity_id=user_id)
     return {"ok": True}
@@ -270,16 +306,20 @@ def google_unlink(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    tid = _tid(request)
+    uid = _user_uuid(user_id)
     try:
-        db.execute(
-            _text("UPDATE users SET google_id = NULL WHERE id = :uid AND company_id = :tid"),
-            {"uid": user_id, "tid": tid},
+        result = db.execute(
+            _update(User)
+            .where(User.id == uid)  # tenant isolation is the connection (B1); no company_id filter
+            .values(google_id=None)
         )
         db.commit()
     except Exception:
         log.exception("google_unlink_failed")
         db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to unlink Google account") from None
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="User not found")
     _audit(db, request=request, user=user, action="google_unlinked",
            entity_type="user", entity_id=user_id)
     return {"ok": True}
@@ -299,25 +339,28 @@ def update_tc_permissions(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    tid = _tid(request)
-    sets: list[str] = []
-    params: dict[str, Any] = {"uid": user_id, "tid": tid}
     data = payload.model_dump(exclude_unset=True)
-    for field in ("tc_can_view_others", "tc_can_edit", "tc_can_approve"):
-        if field in data:
-            sets.append(f"{field} = :{field}")
-            params[field] = data[field]
-    if not sets:
+    values = {
+        field: data[field]
+        for field in ("tc_can_view_others", "tc_can_edit", "tc_can_approve")
+        if field in data
+    }
+    if not values:
         return {"ok": True, "changed": 0}
+    uid = _user_uuid(user_id)
     try:
-        db.execute(
-            _text(f"UPDATE users SET {', '.join(sets)} WHERE id = :uid AND company_id = :tid"),  # noqa: S608 — SET keys come from the hardcoded field tuple above; values are bound
-            params,
+        result = db.execute(
+            _update(User)
+            .where(User.id == uid)  # tenant isolation is the connection (B1); no company_id filter
+            .values(**values)
         )
         db.commit()
     except Exception:
         log.exception("update_tc_permissions_failed")
         db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to update timeclock permissions") from None
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="User not found")
     _audit(db, request=request, user=user, action="tc_permissions_updated",
-           entity_type="user", entity_id=user_id, details=data)
+           entity_type="user", entity_id=user_id, details=values)
     return {"ok": True}

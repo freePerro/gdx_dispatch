@@ -67,7 +67,6 @@ const VendorsView = () => import('../views/VendorsView.vue');
 const PurchaseOrdersView = () => import('../views/PurchaseOrdersView.vue');
 const ChangeOrdersView = () => import('../views/ChangeOrdersView.vue');
 const ReferralsView = () => import('../views/ReferralsView.vue');
-const AdminOpsView = () => import('../views/AdminOpsView.vue');
 const ServerErrorsView = () => import('../views/ServerErrorsView.vue');
 const DatabaseAdminView = () => import('../views/DatabaseAdminView.vue');
 const NotFoundView = () => import('../views/NotFoundView.vue');
@@ -319,7 +318,6 @@ export const routes = [
   { path: '/purchase-orders', name: 'purchase-orders', component: PurchaseOrdersView },
   { path: '/change-orders', name: 'change-orders', component: ChangeOrdersView },
   { path: '/warranties', name: 'warranties', component: WarrantiesView },
-  { path: '/admin-ops', name: 'admin-ops', component: AdminOpsView, meta: { requiresPermission: 'settings.write' } },
   { path: '/server-errors', name: 'server-errors', component: ServerErrorsView, meta: { requiresPermission: 'settings.write' } },
   { path: '/admin/database', name: 'admin-database', component: DatabaseAdminView, meta: { requiresPermission: 'settings.write' } },
   // /admin-settings → /settings (deduped). Bookmark redirect.

@@ -838,11 +838,12 @@ except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: safety_checklist_router")
     safety_checklist_router = APIRouter(prefix="/api/safety", tags=["safety"])
 
-try:
-    from gdx_dispatch.routers import estimate_nurture as estimate_nurture_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: estimate_nurture_router")
-    estimate_nurture_router = APIRouter(prefix="/api/estimate-nurture", tags=["estimate-nurture"])
+# estimate_nurture removed 2026-09-19 (silent-success sweep): its /run
+# endpoint counted "sent" nurture emails while sending nothing, and no UI,
+# beat schedule or task ever called any of its four routes. The
+# EstimateNurtureRule/Log tables stay (a drop is its own migration+ruling);
+# note run's fake log rows would suppress a real send via the already-sent
+# dedup if the feature is ever rebuilt — clear the log table first.
 
 try:
     from gdx_dispatch.routers import performance as user_performance_router
@@ -1677,7 +1678,6 @@ def create_app() -> FastAPI:
     app.include_router(variance_report_router.router if hasattr(variance_report_router, "router") else variance_report_router)
     app.include_router(warranty_claims_router.router if hasattr(warranty_claims_router, "router") else warranty_claims_router)
     app.include_router(safety_checklist_router.router if hasattr(safety_checklist_router, "router") else safety_checklist_router)
-    app.include_router(estimate_nurture_router.router if hasattr(estimate_nurture_router, "router") else estimate_nurture_router)
     app.include_router(user_performance_router.router if hasattr(user_performance_router, "router") else user_performance_router)
     app.include_router(email_settings_router.router if hasattr(email_settings_router, "router") else email_settings_router)
     app.include_router(parts_needed_router.router if hasattr(parts_needed_router, "router") else parts_needed_router)

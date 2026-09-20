@@ -496,23 +496,52 @@ function isoDate(value) {
   return parsed ? parsed.toISOString().split('T')[0] : null;
 }
 
+function csvCell(value) {
+  let text = value === null || value === undefined ? '' : String(value);
+  // Spreadsheet formula-injection guard: a customer name starting with
+  // = + - @ would execute as a formula when the CSV is opened in Excel.
+  if (/^[=+\-@]/.test(text)) text = `'${text}`;
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
 function exportCollectionsCsv() {
-  const params = new URLSearchParams();
-  const start = isoDate(agingFilterStart.value);
-  const end = isoDate(agingFilterEnd.value);
-  if (start) params.set('start_date', start);
-  if (end) params.set('end_date', end);
-  const query = params.toString();
-  const url = `/api/collections/export${query ? `?${query}` : ''}`;
-  if (typeof window !== 'undefined') {
-    window.open(url, '_blank');
-    toast.add({
-      severity: 'info',
-      summary: 'Export started',
-      detail: 'Your CSV will download shortly.',
-      life: 3000,
-    });
+  // Client-side CSV of the rows on screen (current status tab + aging
+  // filters). The old handler window.open'ed a collections export API route
+  // that has never existed, landing a 404 tab under an "Export started"
+  // toast (silent-success class, fixed 2026-09-19).
+  const rows = filtered.value;
+  if (!rows.length) {
+    toast.add({ severity: 'info', summary: 'Nothing to export', detail: 'No rows match the current filters.', life: 3000 });
+    return;
   }
+  const header = ['Customer', 'Invoice #', 'Amount Due', 'Days Overdue', 'Due Date', 'Last Contact', 'Status'];
+  const lines = [header.join(',')];
+  rows.forEach((entry) => {
+    lines.push([
+      csvCell(entry.customer || entry.customer_name || ''),
+      csvCell(entry.invoice_number || String(entry.invoice_id || '').slice(0, 8)),
+      csvCell(toNum(entry.amount_due).toFixed(2)),
+      csvCell(entry.days_overdue ?? ''),
+      csvCell(isoDate(entry.due_date) || ''),
+      csvCell(isoDate(entry.last_contact) || ''),
+      csvCell(normalizeStatus(entry.status)),
+    ].join(','));
+  });
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `collections-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  toast.add({
+    severity: 'success',
+    summary: 'Exported',
+    detail: `${rows.length} row${rows.length === 1 ? '' : 's'} exported to CSV.`,
+    life: 3000,
+  });
 }
 
 // Server AR aging (PR1-billing-capture). Null on failure → client fallback.

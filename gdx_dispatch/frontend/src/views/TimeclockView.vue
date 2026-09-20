@@ -538,15 +538,13 @@ async function saveInspection() {
 async function confirmSubmitDay() {
   if (!todayEntries.value.length) return;
   if (!(await confirmAsync({ header: 'Confirm', message: `Submit ${todayTotalHours.value?.toFixed?.(2) || todayTotalHours.value}h to payroll for today?` }))) return;
-  // Marks today as submitted client-side. Server endpoint can be wired
-  // when payroll-export is finalized; payroll summary already aggregates
-  // entries via /api/timeclock/payroll, so this is a UX confirmation.
+  // Success state only after the server records the attestation
+  // (timeclock_day_submitted audit event). The old body flipped the flag
+  // BEFORE the request and swallowed every error, so "Day submitted" could
+  // show over a failed call — silent-success class, fixed 2026-09-19.
+  // A failed request surfaces through useApi's error toast.
+  await api.post('/api/timeclock/submit-day', { date: new Date().toISOString().slice(0, 10) }, { successMessage: 'Day submitted to payroll' });
   todaySubmitted.value = true;
-  try {
-    await api.post('/api/timeclock/submit-day', { date: new Date().toISOString().slice(0, 10) }, { successMessage: 'Day submitted to payroll' });
-  } catch {
-    // Endpoint may not exist yet; UI state still progresses for the tech.
-  }
 }
 
 let elapsedTimer = null;

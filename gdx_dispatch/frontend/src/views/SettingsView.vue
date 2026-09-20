@@ -248,6 +248,20 @@
               </div>
             </form>
           </Dialog>
+
+          <Dialog v-model:visible="showInviteLinkDialog" header="User invited" data-testid="invite-link-dialog" :style="{ width: '32rem' }">
+            <p class="invite-link-hint">
+              No email is sent automatically — copy this one-time reset link and
+              send it to them yourself. It expires in 7 days.
+            </p>
+            <div class="invite-link-row">
+              <InputText :model-value="inviteResultLink" readonly class="invite-link-input" data-testid="invite-link-input" @focus="$event.target.select()" />
+              <Button icon="pi pi-copy" :label="inviteLinkCopied ? 'Copied' : 'Copy'" data-testid="invite-link-copy" @click="copyInviteLink" />
+            </div>
+            <div class="form-actions">
+              <Button type="button" label="Done" @click="showInviteLinkDialog = false" />
+            </div>
+          </Dialog>
         </TabPanel>
 
         <!-- Integrations Tab -->
@@ -1748,10 +1762,17 @@ const users = ref([]);
 const usersLoading = ref(false);
 const userSearch = ref("");
 const showInviteDialog = ref(false);
+const showInviteLinkDialog = ref(false);
+const inviteResultLink = ref("");
+const inviteLinkCopied = ref(false);
 const inviteSaving = ref(false);
 const inviteError = ref("");
 const inviteForm = ref({ email: "", role: "Technician" });
-const roleOptions = ["Admin", "Dispatcher", "Technician", "Sales"];
+// Values the backend actually accepts (invite 422s anything else). The old
+// list was capitalized and included "Sales", which the backend has never
+// accepted — every invite from this dialog failed (fixed 2026-09-19; the
+// server now also lowercases defensively).
+const roleOptions = ["Admin", "Dispatcher", "Technician", "Viewer"];
 
 const filteredUsers = computed(() => {
   const q = userSearch.value.trim().toLowerCase();
@@ -1790,17 +1811,36 @@ async function submitInvite() {
   }
   inviteSaving.value = true;
   try {
-    await api.post("/api/admin/users/invite", {
+    const res = await api.post("/api/admin/users/invite", {
       email: inviteForm.value.email.trim(),
       role: inviteForm.value.role,
     });
     showInviteDialog.value = false;
     inviteForm.value = { email: "", role: "Technician" };
+    // The response's reset link used to be discarded here, so the admin had
+    // no way to deliver it (and until 2026-09-19 it was dead anyway — the
+    // token was never stored). Show it once, copyable.
+    if (res?.invite_token) {
+      inviteResultLink.value = `${window.location.origin}/reset-password?token=${res.invite_token}`;
+      inviteLinkCopied.value = false;
+      showInviteLinkDialog.value = true;
+    } else if (res?.message) {
+      toast.add({ severity: "warn", summary: "Invite created", detail: res.message, life: 8000 });
+    }
     await loadUsers();
   } catch (err) {
     inviteError.value = err.message || "Failed to send invite.";
   } finally {
     inviteSaving.value = false;
+  }
+}
+
+async function copyInviteLink() {
+  try {
+    await navigator.clipboard.writeText(inviteResultLink.value);
+    inviteLinkCopied.value = true;
+  } catch {
+    // Clipboard unavailable — the input stays selectable for a manual copy.
   }
 }
 
@@ -2890,6 +2930,22 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   gap: 0.5rem;
   margin-top: 0.5rem;
+}
+
+.invite-link-hint {
+  margin-bottom: 0.75rem;
+  color: var(--p-text-muted-color, #6b7280);
+}
+
+.invite-link-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.invite-link-input {
+  flex: 1;
 }
 
 .spinner-wrap {

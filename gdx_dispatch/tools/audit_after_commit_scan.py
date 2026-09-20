@@ -112,10 +112,8 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("routers/commission.py", "calculate_commission"): (
         "commission is leaving core for a plugin; not fixed in core (#700)"
     ),
-    ("routers/ui_compat.py", "run_admin_op"): (
-        "not this class: the audit call is disabled outright (`if False`) on a "
-        "stub that returns success without doing anything — raised separately (#700 close-out)"
-    ),
+    # ("routers/ui_compat.py", "run_admin_op") allowance removed 2026-09-19:
+    # the stub itself was deleted by the silent-success sweep.
 }
 
 

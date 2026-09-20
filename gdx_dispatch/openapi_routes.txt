@@ -110,7 +110,6 @@ GET /api/accounting/reports/pnl
 GET /api/accounting/reports/trial-balance
 GET /api/accounting/settings
 GET /api/activity/recent
-GET /api/admin-ops
 GET /api/admin/ai-settings
 GET /api/admin/ai-settings/audit
 GET /api/admin/audit-log
@@ -248,8 +247,6 @@ GET /api/documents/{document_id}
 GET /api/documents/{document_id}/download
 GET /api/door-listings
 GET /api/door-listings/{listing_id}
-GET /api/estimate-nurture/pending
-GET /api/estimate-nurture/rules
 GET /api/estimates
 GET /api/estimates-features
 GET /api/estimates/analytics/conversion-rate
@@ -763,7 +760,6 @@ POST /api/accounting/settings/cpa-review
 POST /api/accounting/settings/disable-posting
 POST /api/accounting/settings/enable-posting
 POST /api/accounting/settings/initialize
-POST /api/admin-ops/actions
 POST /api/admin/customer-tags
 POST /api/admin/db/backup
 POST /api/admin/db/migrate
@@ -878,8 +874,6 @@ POST /api/door-listings/{listing_id}/publish
 POST /api/door-listings/{listing_id}/reject
 POST /api/door-listings/{listing_id}/sold
 POST /api/door-listings/{listing_id}/unpublish
-POST /api/estimate-nurture/rules
-POST /api/estimate-nurture/run
 POST /api/estimates
 POST /api/estimates/expire-stale
 POST /api/estimates/{estimate_id}/accept
