@@ -17,12 +17,15 @@ auth — the token is the capability.
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -50,13 +53,29 @@ admin_router = APIRouter(
 
 public_router = APIRouter(tags=["surveys_public"])
 
+_TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "..", "templates")
+templates = Jinja2Templates(directory=_TEMPLATES_DIR)
+
+# Per-kind score bounds and scale labels for the public survey page.
+# The POST validator below enforces the same bounds server-side.
+_KIND_SCALE = {
+    "nps": (0, 10, "Not at all likely", "Extremely likely"),
+    "csat": (1, 5, "Very dissatisfied", "Very satisfied"),
+    "custom": (0, 10, "Low", "High"),
+}
+
 
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
 
 
-from gdx_dispatch.models.tenant_models import SurveyResponse, SurveySend, SurveyTemplate  # noqa: E402
+from gdx_dispatch.models.tenant_models import (  # noqa: E402
+    AppSettings,
+    SurveyResponse,
+    SurveySend,
+    SurveyTemplate,
+)
 
 # ---------------------------------------------------------------------------
 # Pydantic schemas
@@ -392,7 +411,10 @@ def send_survey(
         db,
         tenant_id=tenant_id,
         user=user,
-        action="survey_sent",
+        # "survey_link_created", not "survey_sent": this endpoint mints the
+        # token + URL and transmits nothing (see module docstring). The old
+        # action name recorded sends that never happened.
+        action="survey_link_created",
         entity_type="survey_send",
         entity_id=str(send.id),
         details={
@@ -544,6 +566,59 @@ def _load_send_by_token(db: Session, token: str) -> SurveySend:
     if exp is not None and exp < now:
         raise HTTPException(status_code=404, detail="Survey not found")
     return row
+
+
+@public_router.get("/survey/{token}", include_in_schema=False, response_model=None)
+def public_survey_page(
+    token: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    """The customer-facing survey page — the target of every minted
+    `public_url`. Before this route existed, `/survey/{token}` fell through
+    to the SPA catch-all and rendered nothing (silent-success ledger,
+    2026-09-13). Registered routes win over the catch-all, so this serves.
+    """
+    company_row = db.execute(select(AppSettings).limit(1)).scalar_one_or_none()
+    company_name = str(getattr(company_row, "company_name", "") or "").strip() or "Your Service Company"
+    try:
+        send = _load_send_by_token(db, token)
+        tpl = db.execute(
+            # tenant isolation is the connection (B1); no company_id filter
+            select(SurveyTemplate).where(
+                SurveyTemplate.id == send.template_id,
+                SurveyTemplate.deleted_at.is_(None),
+            )
+        ).scalar_one_or_none()
+        if not tpl:
+            raise HTTPException(status_code=404, detail="Survey not found")
+    except HTTPException:
+        # Expired / answered / unknown token: a friendly page, not JSON —
+        # the person opening this is a customer on a phone.
+        return templates.TemplateResponse(
+            request,
+            "survey_form.html",
+            {"unavailable": True, "company_name": company_name},
+            status_code=404,
+        )
+    score_min, score_max, low_label, high_label = _KIND_SCALE.get(
+        tpl.kind, _KIND_SCALE["custom"]
+    )
+    return templates.TemplateResponse(
+        request,
+        "survey_form.html",
+        {
+            "unavailable": False,
+            "company_name": company_name,
+            "token": token,
+            "question": tpl.question,
+            "follow_up_question": tpl.follow_up_question,
+            "score_min": score_min,
+            "score_max": score_max,
+            "low_label": low_label,
+            "high_label": high_label,
+        },
+    )
 
 
 @public_router.get("/api/surveys/public/{token}", response_model=None)

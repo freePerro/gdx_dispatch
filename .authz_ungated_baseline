@@ -61,6 +61,7 @@ GET /public/door-listings.json
 GET /public/door-listings/{photo_id}.jpg
 GET /pwa/manifest.json
 GET /pwa/version
+GET /survey/{token}
 GET /sw.js
 GET /{full_path:path}
 POST /api/ai/pricing/suggest

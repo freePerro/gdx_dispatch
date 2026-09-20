@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ company_name }} — Feedback</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f3f4f6;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+
+    .card {
+      background: #ffffff;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+      max-width: 480px;
+      width: 100%;
+      padding: 2rem;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .brand-icon {
+      width: 36px;
+      height: 36px;
+      background: #2563eb;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-weight: 700;
+    }
+
+    .brand-name { font-size: 1rem; font-weight: 700; color: #1f2937; }
+
+    h1 { font-size: 1.15rem; color: #1f2937; margin-bottom: 1.25rem; line-height: 1.4; }
+
+    .scores {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .score-btn {
+      flex: 1 0 3ch;
+      min-width: 2.6rem;
+      min-height: 2.8rem;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #fff;
+      font-size: 1rem;
+      color: #1f2937;
+      cursor: pointer;
+    }
+
+    .score-btn.selected { background: #2563eb; border-color: #2563eb; color: #fff; }
+
+    .scale-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.75rem;
+      color: #6b7280;
+      margin-bottom: 1.25rem;
+    }
+
+    label { display: block; font-size: 0.85rem; color: #374151; margin-bottom: 0.4rem; }
+
+    textarea {
+      width: 100%;
+      min-height: 5.5rem;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 0.6rem 0.75rem;
+      font: inherit;
+      color: #1f2937;
+      resize: vertical;
+      margin-bottom: 1.25rem;
+    }
+
+    .submit-btn {
+      width: 100%;
+      min-height: 2.9rem;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .submit-btn:disabled { opacity: 0.6; cursor: default; }
+
+    .error { color: #b91c1c; font-size: 0.85rem; margin-bottom: 0.75rem; display: none; }
+
+    .done, .unavailable { text-align: center; padding: 1rem 0; }
+    .done h2, .unavailable h2 { font-size: 1.15rem; color: #1f2937; margin-bottom: 0.5rem; }
+    .done p, .unavailable p { color: #6b7280; font-size: 0.9rem; }
+    .done .check { font-size: 2.2rem; margin-bottom: 0.5rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand">
+      <div class="brand-icon">{{ company_name | first | upper }}</div>
+      <div class="brand-name">{{ company_name }}</div>
+    </div>
+
+    {% if unavailable %}
+    <div class="unavailable">
+      <h2>This survey link is no longer available</h2>
+      <p>It may have expired or already been answered. Thanks for your time!</p>
+    </div>
+    {% else %}
+    <form id="survey-form">
+      <h1>{{ question }}</h1>
+      <div class="scores" id="scores" role="radiogroup" aria-label="Score"></div>
+      <div class="scale-labels">
+        <span>{{ low_label }}</span>
+        <span>{{ high_label }}</span>
+      </div>
+      {% if follow_up_question %}
+      <label for="comment">{{ follow_up_question }}</label>
+      {% else %}
+      <label for="comment">Anything you'd like to add? (optional)</label>
+      {% endif %}
+      <textarea id="comment" maxlength="5000"></textarea>
+      <p class="error" id="error"></p>
+      <button type="submit" class="submit-btn" id="submit" disabled>Send feedback</button>
+    </form>
+    <div class="done" id="done" style="display:none">
+      <div class="check">&#10003;</div>
+      <h2>Thank you!</h2>
+      <p>Your feedback was sent to {{ company_name }}.</p>
+    </div>
+
+    <script>
+      (function () {
+        var MIN = {{ score_min }};
+        var MAX = {{ score_max }};
+        var selected = null;
+        var scores = document.getElementById("scores");
+        var submit = document.getElementById("submit");
+        var errorEl = document.getElementById("error");
+
+        for (var i = MIN; i <= MAX; i++) {
+          var b = document.createElement("button");
+          b.type = "button";
+          b.className = "score-btn";
+          b.textContent = String(i);
+          b.setAttribute("data-score", String(i));
+          b.setAttribute("role", "radio");
+          b.setAttribute("aria-checked", "false");
+          scores.appendChild(b);
+        }
+
+        scores.addEventListener("click", function (ev) {
+          var t = ev.target.closest(".score-btn");
+          if (!t) return;
+          selected = parseInt(t.getAttribute("data-score"), 10);
+          var btns = scores.querySelectorAll(".score-btn");
+          for (var j = 0; j < btns.length; j++) {
+            var on = btns[j] === t;
+            btns[j].classList.toggle("selected", on);
+            btns[j].setAttribute("aria-checked", on ? "true" : "false");
+          }
+          submit.disabled = false;
+        });
+
+        document.getElementById("survey-form").addEventListener("submit", function (ev) {
+          ev.preventDefault();
+          if (selected === null) return;
+          submit.disabled = true;
+          submit.textContent = "Sending…";
+          errorEl.style.display = "none";
+          fetch("/api/surveys/public/{{ token }}", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              score: selected,
+              comment: document.getElementById("comment").value || null,
+            }),
+          })
+            .then(function (r) {
+              if (!r.ok) {
+                return r.json().catch(function () { return {}; }).then(function (body) {
+                  throw new Error(body.detail || "Something went wrong. Please try again.");
+                });
+              }
+              document.getElementById("survey-form").style.display = "none";
+              document.getElementById("done").style.display = "block";
+            })
+            .catch(function (e) {
+              errorEl.textContent = e.message;
+              errorEl.style.display = "block";
+              submit.disabled = false;
+              submit.textContent = "Send feedback";
+            });
+        });
+      })();
+    </script>
+    {% endif %}
+  </div>
+</body>
+</html>

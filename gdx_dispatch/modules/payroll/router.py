@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -17,9 +17,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import text
+from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.models.tenant_models import PayrollEntry
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -96,27 +99,41 @@ def create_entry(
         raise HTTPException(status_code=422, detail="period_end must be >= period_start")
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
     new_id = uuid.uuid4()
-    db.execute(
-        text(
-            "INSERT INTO payroll_entries ("
-            "  id, company_id, tech_user_id, period_start, period_end, "
-            "  hours_paid, gross_pay, source, external_ref, notes"
-            ") VALUES ("
-            "  :id, :cid, :tid, :ps, :pe, :hp, :gp, :src, :ref, :notes"
-            ")"
-        ),
-        {
-            "id": str(new_id),
-            "cid": tenant_id,
-            "tid": payload.tech_user_id,
-            "ps": payload.period_start,
-            "pe": payload.period_end,
-            "hp": payload.hours_paid,
-            "gp": payload.gross_pay,
-            "src": payload.source[:40],
-            "ref": (payload.external_ref or None) and payload.external_ref[:100],
-            "notes": payload.notes,
+    # ORM insert on purpose: the previous raw INSERT omitted `created_at`,
+    # whose NOT NULL default is Python-side only, so on any ORM-built
+    # Postgres schema the endpoint had never once succeeded (ledger
+    # 2026-09-12). The ORM applies the default.
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
+    entry = PayrollEntry(
+        id=new_id,
+        company_id=tenant_id,
+        tech_user_id=payload.tech_user_id,
+        period_start=payload.period_start,
+        period_end=payload.period_end,
+        hours_paid=payload.hours_paid,
+        gross_pay=payload.gross_pay,
+        source=payload.source[:40],
+        external_ref=(payload.external_ref or None) and payload.external_ref[:100],
+        notes=payload.notes,
+    )
+    db.add(entry)
+    # Money-adjacent mutation: record the acting user (invariant #1).
+    log_audit_event_sync(
+        db,
+        tenant_id=tenant_id,
+        user_id=str(user.get("sub") or user.get("user_id") or ""),
+        action="payroll_entry_created",
+        entity_type="payroll_entry",
+        entity_id=str(new_id),
+        details={
+            "tech_user_id": payload.tech_user_id,
+            "period_start": payload.period_start.isoformat(),
+            "period_end": payload.period_end.isoformat(),
+            "hours_paid": str(payload.hours_paid),
+            "gross_pay": str(payload.gross_pay),
+            "source": payload.source[:40],
         },
+        request=request,
     )
     db.commit()
     return {"id": str(new_id)}
@@ -130,10 +147,34 @@ def delete_entry(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _require_admin(user)
-    _ = request
-    db.execute(
-        text("UPDATE payroll_entries SET deleted_at = NOW() WHERE id = :id"),
-        {"id": entry_id},
+    tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    try:
+        entry_uuid = UUID(entry_id)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=404, detail="Payroll entry not found") from exc
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
+    # ORM update, not raw SQL: PayrollEntry.id is a Uuid column, which SQLite
+    # stores dashless — a raw `id = :dashed` never matches there. rowcount
+    # gate: without it a missing or already-deleted id answered {"ok": true}
+    # and the UI toasted "Entry deleted" over nothing (silent-success class;
+    # an audit row here would have been false).
+    result = db.execute(
+        sa_update(PayrollEntry)
+        .where(PayrollEntry.id == entry_uuid, PayrollEntry.deleted_at.is_(None))
+        .values(deleted_at=datetime.now(timezone.utc))
+    )
+    if result.rowcount == 0:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Payroll entry not found")
+    log_audit_event_sync(
+        db,
+        tenant_id=tenant_id,
+        user_id=str(user.get("sub") or user.get("user_id") or ""),
+        action="payroll_entry_deleted",
+        entity_type="payroll_entry",
+        entity_id=entry_id,
+        details={},
+        request=request,
     )
     db.commit()
     return {"ok": True}

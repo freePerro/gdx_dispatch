@@ -162,7 +162,6 @@ PATCH /api/vendors/{vendor_id}
 PATCH /api/warranties/{warranty_id}
 PATCH /api/warranty-claims/{claim_id}
 PATCH /api/workflow/flags
-POST /api/admin-ops/actions
 POST /api/admin/db/backup
 POST /api/admin/db/migrate
 POST /api/ai/analyze-photo
@@ -209,8 +208,6 @@ POST /api/dispatch/geocode-missing
 POST /api/dispatch/optimize
 POST /api/document-folders
 POST /api/documents
-POST /api/estimate-nurture/rules
-POST /api/estimate-nurture/run
 POST /api/estimates
 POST /api/estimates/expire-stale
 POST /api/estimates/{estimate_id}/accept

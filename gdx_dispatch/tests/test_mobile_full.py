@@ -133,7 +133,7 @@ def _seed_job_bundle(db: Session, scheduled_dt: datetime | None = None) -> dict[
     return {"job_id": _JOB_ID, "today": now.date().isoformat()}
 
 
-def test_en_route_updates_status_and_notifies(session_factory):
+def test_en_route_updates_status_without_claiming_notification(session_factory):
     db = session_factory()
     try:
         r = mobile_router.mobile_job_en_route(
@@ -146,7 +146,9 @@ def test_en_route_updates_status_and_notifies(session_factory):
         assert r.status_code == 200
         body = _as_json(r)
         assert body["dispatch_status"] == "en_route"
-        assert body["customer_notified"] is True
+        # Silent-success sweep 2026-09-19: the handler sends the customer
+        # nothing (no mail, SMS or task call), so it must not say it did.
+        assert body["customer_notified"] is False
 
         status = db.execute(text("SELECT dispatch_status FROM jobs WHERE id = :jid"), {"jid": _JOB_ID})
         assert status.scalar_one() == "en_route"

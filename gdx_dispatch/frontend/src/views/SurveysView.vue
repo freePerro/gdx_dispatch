@@ -29,7 +29,7 @@
           <Column field="name" header="Template" />
           <Column field="template_type" header="Type" />
           <Column field="send_channel" header="Channel" />
-          <Column header="Last Sent">
+          <Column header="Last Link">
             <template #body="slotProps">
               {{ formatDateValue(slotProps.data.last_sent_at) }}
             </template>
@@ -37,11 +37,12 @@
           <Column header="Actions" style="width:230px">
             <template #body="slotProps">
               <Button
-                label="Send"
-                icon="pi pi-paper-plane"
+                label="Create link"
+                icon="pi pi-link"
                 size="small"
                 class="mr-1"
                 :loading="sendingTemplateId === slotProps.data.id"
+                data-testid="survey-create-link-btn"
                 @click="sendTemplate(slotProps.data.id)"
               />
               <Button v-tooltip="'Edit'" icon="pi pi-pencil" aria-label="Edit" text size="small" class="mr-1" @click.stop="openEditTemplate(slotProps.data)" />
@@ -101,7 +102,7 @@
           </div>
           <div class="metric-row compact">
             <Card class="metric-card">
-              <div class="metric-label">Total Sent</div>
+              <div class="metric-label">Links Created</div>
               <div class="metric-value">{{ metrics.total_sent ?? '—' }}</div>
             </Card>
             <Card class="metric-card">
@@ -145,6 +146,26 @@
           <Button label="Save" icon="pi pi-check" :loading="templateSaving" @click="saveTemplate" />
         </template>
       </Dialog>
+
+      <Dialog
+        v-model:visible="linkDialogVisible"
+        header="Survey link created"
+        modal
+        :style="{ width: '520px' }"
+        data-testid="survey-link-dialog"
+      >
+        <p class="survey-link-hint">
+          Nothing was sent — copy this link and text or email it to the customer.
+          It works once and expires in 30 days.
+        </p>
+        <div class="survey-link-row">
+          <InputText :model-value="createdLink" readonly class="w-full" data-testid="survey-link-input" @focus="$event.target.select()" />
+          <Button icon="pi pi-copy" :label="linkCopied ? 'Copied' : 'Copy'" @click="copyCreatedLink" data-testid="survey-link-copy" />
+        </div>
+        <template #footer>
+          <Button label="Done" @click="linkDialogVisible = false" />
+        </template>
+      </Dialog>
     </section>
 </template>
 
@@ -177,6 +198,9 @@ const responsesFilter = ref('all');
 const metrics = ref({});
 const metricsLoading = ref(false);
 const templateDialogVisible = ref(false);
+const linkDialogVisible = ref(false);
+const createdLink = ref('');
+const linkCopied = ref(false);
 const editingTemplate = ref(null);
 const templateSaving = ref(false);
 const sendingTemplateId = ref(null);
@@ -291,11 +315,27 @@ async function deleteTemplate(template) {
 }
 
 async function sendTemplate(templateId) {
+  // Honest labeling (silent-success sweep 2026-09-19): the endpoint mints a
+  // single-use link and sends nothing — the old success toast claimed a
+  // send that never happened. Show the link so the office can deliver it.
   sendingTemplateId.value = templateId;
   try {
-    await api.post('/api/surveys/send', { template_id: templateId }, { successMessage: 'Survey sent' });
+    const res = await api.post('/api/surveys/send', { template_id: templateId });
+    createdLink.value = `${window.location.origin}${res.public_url}`;
+    linkCopied.value = false;
+    linkDialogVisible.value = true;
   } finally {
     sendingTemplateId.value = null;
+  }
+}
+
+async function copyCreatedLink() {
+  try {
+    await navigator.clipboard.writeText(createdLink.value);
+    linkCopied.value = true;
+  } catch {
+    // Clipboard can be unavailable (http, permissions); the input stays
+    // selectable for a manual copy, so no fake "Copied" state.
   }
 }
 
@@ -308,3 +348,16 @@ const loadAll = async () => {
 onMounted(loadAll);
 watch(responsesFilter, loadResponses);
 </script>
+
+<style scoped>
+.survey-link-hint {
+  margin-bottom: 0.75rem;
+  color: var(--p-text-muted-color, #6b7280);
+}
+
+.survey-link-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+</style>

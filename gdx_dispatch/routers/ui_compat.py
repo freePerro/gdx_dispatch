@@ -97,13 +97,11 @@ from __future__ import annotations
 
 import logging
 from typing import Any, NoReturn
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session as _Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.tenant_ctx import bind_tenant_context
@@ -138,12 +136,11 @@ def _empty_list() -> dict[str, Any]:
 # `_ok()` — which returned a bare {"ok": True} — is deliberately gone. It was
 # the vehicle for the fake-success class: a mutation handler whose whole body
 # returned it did no work while the frontend read success and popped a toast.
-# Its last three callers became `_not_implemented(...)` on 2026-08-21. Do not
-# reintroduce it; if a handler genuinely has nothing to do, say so loudly.
-
-
-def _ok_with_id() -> dict[str, Any]:
-    return {"ok": True, "id": str(uuid4())}
+# Its last three callers became `_not_implemented(...)` on 2026-08-21.
+# `_ok_with_id()` — the same thing plus a fabricated uuid — followed on
+# 2026-09-19 when its last caller (the Admin Ops actions stub) was deleted.
+# Do not reintroduce either; if a handler genuinely has nothing to do, say
+# so loudly.
 
 
 def _not_implemented(
@@ -189,29 +186,12 @@ class _GenericPayload(BaseModel):
 
 
 # ── Admin Ops ─────────────────────────────────────────────────────────────
-
-@router.get("/api/admin-ops", response_model=None)
-def list_admin_ops(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-@router.post("/api/admin-ops/actions", response_model=None)
-def run_admin_op(
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    log_audit_event_sync(
-        None,  # no DB dependency; audit wrapper will no-op if db is None
-        tenant_id=_tenant_id(request),
-        user_id=_user_id(user),
-        action="admin_op_run",
-        entity_type="admin_op",
-        entity_id="",
-        details=payload.model_dump(),
-        request=request,
-    ) if False else None  # audit hook disabled for shim; real router should implement
-    return _ok_with_id()
+# Removed with the Admin Operations page (silent-success sweep, 2026-09-19).
+# GET /api/admin-ops returned a hardcoded empty list, and POST
+# /api/admin-ops/actions was the last live `_ok_with_id()` — four buttons
+# ("Run maintenance", "Rebuild indexes", "Clear cache", "Export audit log")
+# fabricated success with a random uuid and a deliberately-disabled audit
+# call. The audit-log need is served by AuditLogViewer / admin_ops.py.
 
 
 # ── Collections ────────────────────────────────────────────────────────────

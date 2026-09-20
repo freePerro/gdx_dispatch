@@ -25,8 +25,13 @@ from gdx_dispatch.core.upload_limits import assert_body_within_limit, assert_upl
 from gdx_dispatch.core.user_display import resolve_author_name
 from gdx_dispatch.models.tenant_models import Customer, Invoice, Job, RolePermission, User
 from gdx_dispatch.routers.auth import get_current_user
+from gdx_dispatch.routers.auth.core import redis as _auth_redis
 
 log = logging.getLogger(__name__)
+
+# Invite reset links outlive the 1-hour forgot-password window on purpose:
+# an admin mints one and hands it over out-of-band, which can take days.
+_INVITE_TOKEN_TTL_SECONDS = 7 * 24 * 3600
 
 router = APIRouter(
     prefix="/api/admin",
@@ -183,7 +188,11 @@ def invite_user(
     email = body.email.strip().lower()
     if not email or "@" not in email:
         raise HTTPException(status_code=422, detail="valid email required")
-    if body.role not in ("admin", "owner", "dispatcher", "technician", "viewer", "user"):
+    # Normalize case: the Settings invite dialog has always sent capitalized
+    # roles ("Technician"), so every UI invite 422ed here (silent-success
+    # sweep 2026-09-19 — same broken surface as the dead reset link).
+    role = (body.role or "").strip().lower()
+    if role not in ("admin", "owner", "dispatcher", "technician", "viewer", "user"):
         raise HTTPException(status_code=422, detail="invalid role")
 
     tenant_id = str((getattr(getattr(request, "state", None), "tenant", {}) or {}).get("id", ""))
@@ -203,12 +212,29 @@ def invite_user(
     placeholder_pw = _hash_password(_secrets.token_urlsafe(32)[:72])
     username = (body.full_name or email.split("@")[0]).strip()[:50]
 
-    assert_can_assign_role(_, body.role)
+    assert_can_assign_role(_, role)
     u = User(id=user_id, username=username, email=email, password_hash=placeholder_pw,
-             role=body.role, company_id=tenant_id, active=True, must_change_password=True,
+             role=role, company_id=tenant_id, active=True, must_change_password=True,
              created_at=now, updated_at=now)
     db.add(u)
     db.commit()
+    # Store the token where POST /reset-password actually looks (silent-success
+    # sweep 2026-09-19): before this, the token lived only in the response and
+    # the audit row, so every returned "Reset link" 400ed as invalid — and a
+    # comment here claimed a "downstream worker" that has never existed.
+    link_ok = True
+    try:
+        _auth_redis.setex(
+            f"pw_reset:{invite_token}",
+            _INVITE_TOKEN_TTL_SECONDS,
+            f"{user_id}|{tenant_id}",
+        )
+    except Exception:
+        # The user row exists either way; without Redis the link cannot work,
+        # so say that instead of handing out a dead URL. Forgot-password is
+        # the fallback once Redis is back.
+        log.exception("invite_reset_token_store_failed user=%s", user_id)
+        link_ok = False
     log_audit_event_sync(
         db=db,
         tenant_id=str(getattr(getattr(request, "state", None), "tenant", {}).get("id", "")) if request else None,
@@ -218,18 +244,30 @@ def invite_user(
         entity_id=user_id,
         # invited_by from the users row (#701): the login dict carries no email,
         # so this detail was always null.
-        details={"email": email, "role": body.role, "invited_by": resolve_author_name(db, _), "invite_token": invite_token},
+        # token PREFIX only — the immutable audit log is no place for a live
+        # credential (same convention as password_reset_requested).
+        details={"email": email, "role": role, "invited_by": resolve_author_name(db, _), "invite_token_prefix": invite_token[:8], "reset_link_stored": link_ok},
         ip_address=(request.client.host if request and request.client else None),
         request=request,
     )
     db.commit()
-    # Email delivery is handled by a downstream worker that picks up the
-    # invite token from audit_log.details. The token is also returned so an
-    # admin can hand-deliver the reset link if needed.
+    if not link_ok:
+        return {
+            "id": user_id,
+            "email": email,
+            "role": role,
+            "status": "invited",
+            "invite_token": None,
+            "message": (
+                "User invited, but the reset link could not be generated "
+                "(token store unavailable). They can use Forgot Password on "
+                "the login page instead."
+            ),
+        }
     return {
         "id": user_id,
         "email": email,
-        "role": body.role,
+        "role": role,
         "status": "invited",
         "invite_token": invite_token,
         "message": f"User invited. Reset link: /reset-password?token={invite_token}",

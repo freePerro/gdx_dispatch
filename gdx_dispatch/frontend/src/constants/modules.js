@@ -237,7 +237,9 @@ export const MODULE_CATEGORIES = [
       { key: 'gdpr', label: 'GDPR & Compliance', icon: 'pi pi-shield', to: '/gdpr', type: 'Admin', permission: 'settings.write' },
       { key: 'activity', label: 'Activity', icon: 'pi pi-history', to: '/activity', type: 'Admin', permission: 'nav.admin' },
       { key: 'onboarding', label: 'Onboarding', icon: 'pi pi-flag', to: '/onboarding', type: 'Admin', permission: 'nav.admin' },
-      { key: 'admin_ops', label: 'Admin Operations', icon: 'pi pi-server', to: '/admin-ops', type: 'Admin', permission: 'settings.write' },
+      // admin_ops ('Admin Operations', /admin-ops) removed 2026-09-19: all
+      // four action buttons hit a ui_compat stub that fabricated success and
+      // its list endpoint was hardcoded empty — the page could never do work.
       { key: 'server_errors', label: 'Server Logs', icon: 'pi pi-exclamation-triangle', to: '/server-errors', type: 'Admin', permission: 'settings.write' },
       // Tier-8 (2026-07-24): the hash-chained audit log had a live backend
       // and a working route but its ONLY in-app link lived inside the dead

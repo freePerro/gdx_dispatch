@@ -2166,7 +2166,10 @@ def mobile_job_en_route(
             "job_id": job_id,
             "dispatch_status": "en_route",
             "eta_minutes": payload.eta_minutes,
-            "customer_notified": True,
+            # Honest: this handler sends the customer nothing (no mail, SMS
+            # or task call anywhere in it). It said True for its whole life;
+            # nothing in frontend/src reads the field, so no UI changes.
+            "customer_notified": False,
         }
     )
 
