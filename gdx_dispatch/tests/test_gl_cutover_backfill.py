@@ -10,7 +10,6 @@ proration primitive passes the Intuit worked example.
 """
 from __future__ import annotations
 
-import datetime as dt
 import secrets
 from datetime import date, datetime, timedelta
 from decimal import Decimal

@@ -8,7 +8,6 @@ the pave on any reload error so the pre-pave full backup can be restored.
 from __future__ import annotations
 
 import subprocess
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest

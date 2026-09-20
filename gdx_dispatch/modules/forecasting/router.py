@@ -6,7 +6,7 @@ from datetime import date as _date
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi import Request as FastAPIRequest
 from pydantic import BaseModel, Field
 from sqlalchemy import select

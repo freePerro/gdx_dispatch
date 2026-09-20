@@ -12,7 +12,6 @@ import pytest
 
 import gdx_dispatch.core.mcp_tools.documents_read  # noqa: F401
 from gdx_dispatch.core.mcp_invoke import invoke_tool
-from gdx_dispatch.core.mcp_registry import get_tool
 
 
 @dataclass

@@ -11,7 +11,6 @@ Role model:
 from __future__ import annotations
 
 import logging
-import re
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any

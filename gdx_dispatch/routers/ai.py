@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session
 # sees a populated registry. Without this the AI loop has nothing to call.
 import gdx_dispatch.core.mcp_tools  # noqa: F401
 from gdx_dispatch.core.auth_capabilities import caps_for_role, derive_ai_worker_caps
-from gdx_dispatch.core.auth_dispatcher import get_current_principal
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.llm.anthropic_client import get_client
 from gdx_dispatch.core.llm.key_storage import get_key

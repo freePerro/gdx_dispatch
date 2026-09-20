@@ -38,7 +38,6 @@ def test_upsert_message_captures_conversation_id():
 
     from gdx_dispatch.core.audit import TenantBase
     from gdx_dispatch.modules.phone_com import upserts as u
-    from gdx_dispatch.modules.phone_com.models import PhoneComMessage
     # Tenant-plane has FKs to customers/jobs/users; create the full schema.
     engine = create_engine("sqlite:///:memory:")
     TenantBase.metadata.create_all(engine)

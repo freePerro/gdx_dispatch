@@ -21,7 +21,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import JSON, Boolean, DateTime, Index, String, Text, select
+from sqlalchemy import JSON, Boolean, DateTime, Index, String, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 from sqlalchemy.types import Uuid
 

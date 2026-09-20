@@ -29,7 +29,7 @@ from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.permissions import is_dispatch_manager
-from gdx_dispatch.models.tenant_models import Job, JobAssignment, Technician
+from gdx_dispatch.models.tenant_models import JobAssignment, Technician
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)

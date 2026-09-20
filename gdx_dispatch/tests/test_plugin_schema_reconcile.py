@@ -6,7 +6,7 @@ adds the missing column additively. This locks that behavior.
 """
 from __future__ import annotations
 
-from sqlalchemy import Column, Integer, MetaData, String, Table, create_engine, inspect, text
+from sqlalchemy import Column, Integer, MetaData, String, Table, create_engine, inspect
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.plugin_host.schema_reconcile import reconcile_plugin_columns

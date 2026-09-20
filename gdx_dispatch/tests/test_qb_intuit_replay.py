@@ -33,7 +33,6 @@ from gdx_dispatch.modules.quickbooks.oauth import refresh_access_token
 from gdx_dispatch.modules.quickbooks.sync import _extract_line_subtotal, _extract_tax_amount
 from gdx_dispatch.tests.fixtures.qb_intuit.intuit_replay import (
     REALM_ID,
-    SANDBOX_BASE,
     TOKEN_ENDPOINT,
     IdempotencyTracker,
     entity_url,

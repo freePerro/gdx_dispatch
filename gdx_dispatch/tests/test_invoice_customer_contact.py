@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from decimal import Decimal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from sqlalchemy import create_engine

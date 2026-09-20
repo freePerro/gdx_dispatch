@@ -15,7 +15,6 @@ import logging
 from datetime import UTC, datetime, timedelta
 from datetime import date as _date
 from typing import Any
-from uuid import UUID as _UUID
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import text as _text

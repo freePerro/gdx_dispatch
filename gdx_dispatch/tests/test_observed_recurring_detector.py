@@ -279,7 +279,6 @@ def test_multiple_overlapping_streams_does_not_crash(db):
     """User can manually create overlapping streams. find/upsert must pick
     one deterministically (most recently created) rather than crashing
     with MultipleResultsFound."""
-    from gdx_dispatch.modules.forecasting.observed_recurring import StreamCandidate
 
     # Two overlapping manual streams
     db.add(RecurringStream(

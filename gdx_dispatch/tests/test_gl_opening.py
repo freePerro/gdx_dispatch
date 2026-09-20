@@ -9,7 +9,6 @@ accounts, post the opening entry, lock the pre-ledger era, attest.
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal
 
 import pytest
 from sqlalchemy import select

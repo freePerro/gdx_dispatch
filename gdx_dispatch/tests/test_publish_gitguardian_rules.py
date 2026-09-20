@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import re
 
-import pytest
-
 from gdx_dispatch.tools.publish_gitguardian_rules import (
     PAT_DETECTORS,
     DetectorRule,

@@ -61,7 +61,6 @@ import argparse
 import os
 import posixpath
 import re
-import subprocess
 import sys
 from pathlib import Path
 

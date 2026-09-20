@@ -1,18 +1,18 @@
 """Tests for /api/forecast/* — settings GET/PUT and revenue projection."""
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
-from gdx_dispatch.models.tenant_models import Customer, Invoice, Job
+from gdx_dispatch.models.tenant_models import Customer, Invoice
 from gdx_dispatch.modules.forecasting import router as forecasting_router
 from gdx_dispatch.modules.forecasting.models import QBRecurringTransaction
 
