@@ -57,7 +57,9 @@ def test_the_split_is_a_partition_not_a_rename() -> None:
         assert name in AUTHN_DEPENDENCIES, f"{name} must stay authentication"
     for name in ("require_permission.<locals>._dependency", "require_role.<locals>._dependency"):
         assert name in AUTHZ_DEPENDENCIES, f"{name} must stay authorization"
-    assert len(AUTH_DEPENDENCIES) == 23, (
+    # 23 → 24 (2026-09-18): verify_cell_secret, AUTHN side — a shared secret
+    # authenticates the phone-side caller; it grants no per-user rights.
+    assert len(AUTH_DEPENDENCIES) == 24, (
         "the auth dependency set changed size. That is fine — but decide which "
         "side of the authn/authz seam the new dependency sits on, then update "
         f"this pin. Currently {len(AUTH_DEPENDENCIES)}: "

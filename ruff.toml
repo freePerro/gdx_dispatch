@@ -34,6 +34,7 @@ known-first-party = ["gdx_dispatch"]
 # B008: FastAPI dependency injection idiom — `Depends(...)` in defaults is
 # the documented pattern, not a mutable-default bug.
 "gdx_dispatch/routers/**" = ["B008"]
+"plugins/**" = ["B008"]  # plugin routers are FastAPI routers too
 "gdx_dispatch/app.py" = ["B008"]
 "gdx_dispatch/core/middleware/**" = ["B008"]
 # S608 in mobile.py: all sites build SQL from code-controlled column name lists

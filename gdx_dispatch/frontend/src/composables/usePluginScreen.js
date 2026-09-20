@@ -156,8 +156,66 @@ export function usePluginScreen(pluginKey, api) {
     }
   }
 
+  // Upload one file to an `upload` screen's endpoint as multipart FormData
+  // (field name `file` — FastAPI UploadFile's default). Same same-plugin guard
+  // as every other manifest-declared endpoint, then refresh the list screens —
+  // an import lands rows the tables should show without a manual reload.
+  // Returns the server's summary object, or null when refused/failed (the
+  // error ref carries why).
+  async function uploadTo(screen, file) {
+    const ep = screen?.endpoint;
+    if (!file || !ep) return null;
+    if (!safePluginEndpoint(ep)) {
+      error.value = `plugin ${pluginKey}: refused upload endpoint ${ep}`;
+      return null;
+    }
+    const form = new FormData();
+    form.append('file', file);
+    loading.value = true;
+    error.value = null;
+    try {
+      const result = await api.post(ep, form);
+      const next = { ...rowsByEndpoint.value };
+      for (const s of _lists()) {
+        next[s.endpoint] = (await api.get(s.endpoint)) || [];
+      }
+      rowsByEndpoint.value = next;
+      return result;
+    } catch (e) {
+      error.value = e?.message || 'upload failed';
+      return null;
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  // POST (no body) to a screen-declared action endpoint, e.g. the upload
+  // screen's optional `secondary_action`. Same guard, same list refresh.
+  async function runAction(endpoint) {
+    if (!safePluginEndpoint(endpoint)) {
+      error.value = `plugin ${pluginKey}: refused action endpoint ${endpoint}`;
+      return null;
+    }
+    loading.value = true;
+    error.value = null;
+    try {
+      const result = await api.post(endpoint, {});
+      const next = { ...rowsByEndpoint.value };
+      for (const s of _lists()) {
+        next[s.endpoint] = (await api.get(s.endpoint)) || [];
+      }
+      rowsByEndpoint.value = next;
+      return result;
+    } catch (e) {
+      error.value = e?.message || 'action failed';
+      return null;
+    } finally {
+      loading.value = false;
+    }
+  }
+
   return {
     screens, rows, rowsFor, loading, error, load, create, searchList,
-    fetchOptions, safePluginEndpoint, interpolateEndpoint,
+    fetchOptions, safePluginEndpoint, interpolateEndpoint, uploadTo, runAction,
   };
 }

@@ -83,6 +83,9 @@ AUTHN_DEPENDENCIES = frozenset(
         "_require_api_key",
         # Signature- / secret-verified webhook callers
         "verify_inbound_email_secret",
+        # Personal-cell webhook (2026-09-18): same fail-closed shared-secret
+        # gate, factored into core/webhook_auth.py — routers/cell_gateway.py.
+        "verify_cell_secret",
     }
 )
 

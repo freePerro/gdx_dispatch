@@ -839,6 +839,7 @@ POST /api/catalogs/{catalog_id}/items
 POST /api/catalogs/{catalog_id}/sync/qb/pull
 POST /api/catalogs/{catalog_id}/sync/qb/push
 POST /api/ccpa/opt-out/{customer_id}
+POST /api/cell-gateway/webhook
 POST /api/change-orders
 POST /api/change-orders/{co_id}/approve
 POST /api/change-orders/{co_id}/decline

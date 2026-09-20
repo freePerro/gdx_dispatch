@@ -82,6 +82,9 @@ x-app-env: &app-env
   VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
   VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
   # ── optional integrations (features disable when blank) ──
+  # Personal-cell webhook (cellcomms plugin's live feed) — blank = gate
+  # fails closed, feed off. Only useful with the plugin installed.
+  CELL_GATEWAY_WEBHOOK_SECRET: ${CELL_GATEWAY_WEBHOOK_SECRET:-}
   STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
   STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
   STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
