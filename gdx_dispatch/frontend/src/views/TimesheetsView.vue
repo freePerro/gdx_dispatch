@@ -230,7 +230,17 @@
             :data-testid="`timecard-table-${card.technicianId}`"
           >
             <Column header="Date" style="width: 8rem">
-              <template #body="{ data }">{{ formatDay(data.clock_in_at) }}</template>
+              <template #body="{ data }">
+                {{ formatDay(data.clock_in_at) }}
+                <Tag
+                  v-if="isSubmittedDay(data)"
+                  value="Submitted"
+                  severity="success"
+                  class="submitted-day-tag"
+                  v-tooltip="'The tech pressed Submit Day to Payroll for this clock day (the day the time clock counted the shift under)'"
+                  data-testid="submitted-day-tag"
+                />
+              </template>
             </Column>
             <Column header="Type" style="width: 6rem">
               <template #body="{ data }">
@@ -857,7 +867,35 @@ async function load() {
   } finally {
     loading.value = false;
   }
+  loadSubmittedDays();
   consumeDeepLink();
+}
+
+// Submit-day office badge (Doug ruled 2026-09-20): read-only view of the
+// techs' end-of-day attestations. Best-effort — a failure here must never
+// blank the timesheet, so it degrades to "no badges" with a console-only
+// error (suppressErrorToast).
+const submittedDays = ref(new Set());
+
+async function loadSubmittedDays() {
+  try {
+    const params = new URLSearchParams();
+    if (startDate.value) params.set('date_start', localDateString(addDays(startDate.value, -1)));
+    if (endDate.value) params.set('date_end', localDateString(addDays(endDate.value, 1)));
+    const rows = await api.get(`/api/timeclock/submitted-days?${params.toString()}`, { suppressErrorToast: true });
+    submittedDays.value = new Set(
+      (Array.isArray(rows) ? rows : []).map((r) => `${r.technician_id}|${r.date}`),
+    );
+  } catch (e) {
+    submittedDays.value = new Set();
+  }
+}
+
+function isSubmittedDay(entry) {
+  // submit_day keys the attestation on the server day it counted entries
+  // against (the clock_in_at prefix), so the same prefix is the match key.
+  const day = String(entry.clock_in_at || '').slice(0, 10);
+  return submittedDays.value.has(`${entry.technician_id}|${day}`);
 }
 
 // --- Dispatch "Fix" deep link -----------------------------------------------
@@ -1129,5 +1167,11 @@ onMounted(async () => {
   font-size: 2rem;
   display: block;
   margin-bottom: 0.5rem;
+}
+
+.submitted-day-tag {
+  margin-left: 0.4rem;
+  font-size: 0.65rem;
+  vertical-align: middle;
 }
 </style>
