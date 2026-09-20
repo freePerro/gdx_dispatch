@@ -247,8 +247,9 @@ def _parse_statement_lines(lines: list[str]) -> tuple[list[MidwestParsedLine], D
                 raw_text=line.strip() + "\n" + line_b.strip(),
             )
         except Exception as exc:  # noqa: BLE001
+            log.exception("midwest_statement_line_build_failed invoice=%s", m_a.group("invoice"))
             raise MidwestStatementStructureError(
-                f"failed to build parsed line for invoice {m_a.group('invoice')}: {exc}"
+                f"failed to build parsed line for invoice {m_a.group('invoice')} — see server logs"
             ) from exc
 
         parsed.append(parsed_line)
@@ -272,14 +273,16 @@ def parse_midwest_statement(pdf_bytes: bytes) -> MidwestParseResult:
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
     except Exception as exc:  # noqa: BLE001
-        raise MidwestParseError(f"could not read PDF: {exc}") from exc
+        log.exception("midwest_statement_pdf_unreadable")
+        raise MidwestParseError("could not read the PDF — see server logs") from exc
 
     text = ""
     for page in reader.pages:
         try:
             text += page.extract_text(extraction_mode="layout") + "\n"
         except Exception as exc:  # noqa: BLE001
-            raise MidwestParseError(f"layout extraction failed: {exc}") from exc
+            log.exception("midwest_statement_layout_extraction_failed")
+            raise MidwestParseError("layout extraction failed — see server logs") from exc
 
     if VENDOR_LETTERHEAD not in text:
         raise MidwestParseError("PDF does not appear to be from this supplier")

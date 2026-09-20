@@ -530,7 +530,8 @@ def post_oauth_exchange(
             redirect_uri=payload.redirect_uri,
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"oauth exchange failed: {exc}") from exc
+        log.exception("phone_com_oauth_exchange_failed")
+        raise HTTPException(status_code=400, detail="oauth exchange failed — see server logs") from exc
 
     token = result.get("access_token") or result.get("token")
     if not token:

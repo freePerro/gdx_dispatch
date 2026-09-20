@@ -179,9 +179,9 @@ def _status_payload() -> dict:
 def status() -> dict:
     try:
         return _status_payload()
-    except Exception as exc:  # noqa: BLE001 — surface a clean error to the UI
+    except Exception:  # noqa: BLE001 — surface a clean error to the UI
         log.exception("db_admin_status_failed")
-        raise HTTPException(status_code=500, detail=f"status error: {exc}") from None
+        raise HTTPException(status_code=500, detail="status error — see server logs") from None
 
 
 @router.get("/preview")
@@ -254,7 +254,7 @@ def migrate(body: MigrateBody, request: Request,
         log_audit_event_sync(db, action="db_migrate_failed", entity_type="database", entity_id="gdx",
                              details={"error": str(exc)[:400], "from": s["current"]}, request=request)
         db.commit()
-        raise HTTPException(status_code=500, detail=f"migration failed (rolled back): {exc}") from None
+        raise HTTPException(status_code=500, detail="migration failed (rolled back) — see server logs and the db_migrate_failed audit row") from None
 
     after = _status_payload()
     log_audit_event_sync(db, action="db_migrate", entity_type="database", entity_id="gdx",

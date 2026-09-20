@@ -714,7 +714,7 @@ def learn_from_job(
     except Exception as exc:
         logger.exception("quote template save failed")
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to save template: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Failed to save template — see server logs") from exc
 
     return {"status": "ok", "job_type": body.job_type, "use_count": template.use_count}
 

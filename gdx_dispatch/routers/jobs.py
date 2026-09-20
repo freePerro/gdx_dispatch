@@ -801,9 +801,9 @@ def list_jobs(
             ),
             {**params, "page_size": page_size, "offset": offset},
         ).mappings().all()
-    except SQLAlchemyError as exc:
+    except SQLAlchemyError:
         log.exception("list_jobs_failed", extra={"tenant_id": tenant_id})
-        return jsonable_response({"detail": f"Database error: {exc}"}, 500)
+        return jsonable_response({"detail": "A database error occurred"}, 500)
 
     # Batched fetch of multi-tech assignments for the page's jobs — single
     # query, attached to each item below. The Dispatch board needs every
@@ -1047,10 +1047,10 @@ def create_job(payload: JobCreate, request: Request, current_user: Any = Depends
         db.commit()
         log.info("job_created", extra={"tenant_id": tenant_id, "job_id": str(job.id)})
         return jsonable_response(result, 201)
-    except SQLAlchemyError as exc:
+    except SQLAlchemyError:
         db.rollback()
         log.exception("create_job_failed", extra={"tenant_id": tenant_id})
-        return jsonable_response({"detail": f"Database error: {exc}"}, 500)
+        return jsonable_response({"detail": "A database error occurred"}, 500)
 
 # Canonical PG enum values for jobs.lifecycle_stage. Anything else is
 # rejected on write so we don't silently accept "Sold" or "Invoiced"
@@ -1272,10 +1272,10 @@ def update_job(
         db.commit()
         log.info("job_updated", extra={"tenant_id": tenant_id, "job_id": job_id, "fields": list(updates.keys())})
         return jsonable_response(result)
-    except SQLAlchemyError as exc:
+    except SQLAlchemyError:
         db.rollback()
         log.exception("update_job_failed", extra={"tenant_id": tenant_id, "job_id": job_id})
-        return jsonable_response({"detail": f"Database error: {exc}"}, 500)
+        return jsonable_response({"detail": "A database error occurred"}, 500)
 
 
 @router.delete("/{job_id}", response_model=None, dependencies=[Depends(require_permission("jobs.write"))])
@@ -1338,10 +1338,10 @@ def delete_job(
         db.commit()
         log.info("job_deleted", extra={"tenant_id": tenant_id, "job_id": job_id})
         return jsonable_response({"ok": True, "id": str(job.id)})
-    except SQLAlchemyError as exc:
+    except SQLAlchemyError:
         db.rollback()
         log.exception("delete_job_failed", extra={"tenant_id": tenant_id, "job_id": job_id})
-        return jsonable_response({"detail": f"Database error: {exc}"}, 500)
+        return jsonable_response({"detail": "A database error occurred"}, 500)
 
 
 # --- Job lifecycle: start / complete (UX audit F-8 / 2026-04-29) ---
@@ -1470,10 +1470,10 @@ def start_job(
             "lifecycle_stage": job.lifecycle_stage,
             "schedule_locked": flags["lock_schedule_on_start"],
         })
-    except SQLAlchemyError as exc:
+    except SQLAlchemyError:
         db.rollback()
         log.exception("start_job_failed", extra={"tenant_id": tenant_id, "job_id": job_id})
-        return jsonable_response({"detail": f"Database error: {exc}"}, 500)
+        return jsonable_response({"detail": "A database error occurred"}, 500)
 
 
 class JobCompletePayload(BaseModel):
@@ -1581,10 +1581,10 @@ def complete_job(
             "ok": True, "id": str(job.id),
             "completed_at": job.completed_at, "lifecycle_stage": job.lifecycle_stage,
         })
-    except SQLAlchemyError as exc:
+    except SQLAlchemyError:
         db.rollback()
         log.exception("complete_job_failed", extra={"tenant_id": tenant_id, "job_id": job_id})
-        return jsonable_response({"detail": f"Database error: {exc}"}, 500)
+        return jsonable_response({"detail": "A database error occurred"}, 500)
 
 
 # --- Phase 2 closeout sheet ---
@@ -2762,11 +2762,11 @@ def closeout_job(
                 409,
             )
         log.exception("closeout_job_failed", extra={"tenant_id": tenant_id, "job_id": job_id})
-        return jsonable_response({"detail": f"Database error: {exc}"}, 500)
-    except SQLAlchemyError as exc:
+        return jsonable_response({"detail": "A database error occurred"}, 500)
+    except SQLAlchemyError:
         db.rollback()
         log.exception("closeout_job_failed", extra={"tenant_id": tenant_id, "job_id": job_id})
-        return jsonable_response({"detail": f"Database error: {exc}"}, 500)
+        return jsonable_response({"detail": "A database error occurred"}, 500)
 
 
 @router.get("/ready-for-billing", response_model=None, dependencies=[Depends(require_permission("invoices.read_all"))])
@@ -3142,10 +3142,10 @@ def mark_job_not_billable(
         db.commit()
         log.info("job_marked_not_billable", extra={"tenant_id": tenant_id, "job_id": job_id})
         return jsonable_response({"ok": True, "id": str(job.id), "not_billable_at": now.isoformat()})
-    except SQLAlchemyError as exc:
+    except SQLAlchemyError:
         db.rollback()
         log.exception("mark_job_not_billable_failed", extra={"tenant_id": tenant_id, "job_id": job_id})
-        return jsonable_response({"detail": f"Database error: {exc}"}, 500)
+        return jsonable_response({"detail": "A database error occurred"}, 500)
 
 
 @router.delete("/{job_id}/not-billable", response_model=None, dependencies=[Depends(require_permission("invoices.write"))])
@@ -3194,10 +3194,10 @@ def unmark_job_not_billable(
             db.commit()
             log.info("job_not_billable_cleared", extra={"tenant_id": tenant_id, "job_id": job_id})
         return jsonable_response({"ok": True, "id": str(job.id)})
-    except SQLAlchemyError as exc:
+    except SQLAlchemyError:
         db.rollback()
         log.exception("unmark_job_not_billable_failed", extra={"tenant_id": tenant_id, "job_id": job_id})
-        return jsonable_response({"detail": f"Database error: {exc}"}, 500)
+        return jsonable_response({"detail": "A database error occurred"}, 500)
 
 
 @router.get("/return-visits-unscheduled", response_model=None, dependencies=[Depends(require_permission("jobs.read_all"))])
@@ -3481,9 +3481,9 @@ def get_job(job_id: str, request: Request, current_user: Any = Depends(get_curre
             except SQLAlchemyError:
                 log.exception("callback_detection_failed", extra={"job_id": job_id})
         return jsonable_response(d)
-    except SQLAlchemyError as exc:
+    except SQLAlchemyError:
         log.exception("get_job_failed", extra={"tenant_id": tenant_id, "job_id": job_id})
-        return jsonable_response({"detail": f"Database error: {exc}"}, 500)
+        return jsonable_response({"detail": "A database error occurred"}, 500)
 
 
 # ---------------------------------------------------------------------------
