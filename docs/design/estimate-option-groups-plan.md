@@ -53,7 +53,7 @@ opportunities. But today:
   **1-of-3 = 33%** when the true close rate is **100%**.
 - `GET /api/estimates/pipeline-summary` sums all open option estimates —
   **3× pipeline dollars** for one opportunity.
-- Estimate nurture (`routers/estimate_nurture.py`) follows up on `draft`,
+- Estimate nurture (`routers/estimate_nurture.py`) follows up on `draft`, <!-- router deleted 2026-09-19 (silent-success sweep, PR #753): its /run never sent anything and had no caller; link-ok -->
   `sent`, **and `declined`** — it will nag a customer who already bought.
 
 - The "outstanding estimates" aging tile counts un-closed siblings as
@@ -144,7 +144,7 @@ Status-enumeration touch list (all must learn the new value):
   (they only touch `sent`/`draft`/`rejected`), but tests must pin that
   `not_selected` is never expired over.
 
-- Nurture (`routers/estimate_nurture.py:134,233`) — `not_selected` is already
+- Nurture (`routers/estimate_nurture.py:134,233`) — `not_selected` is already <!-- router deleted 2026-09-19 (PR #753); link-ok -->
   excluded by not being in the include-list; **additionally** exclude any
   estimate whose group has an accepted member (fixes today's bug where `sent`
   siblings keep getting reminders after the sale, and `declined` win-back

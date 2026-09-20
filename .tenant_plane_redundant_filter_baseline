@@ -114,7 +114,7 @@
   "gdx_dispatch/routers/admin_customer_tags.py:T2:Tag.company_id:202",
   "gdx_dispatch/routers/admin_customer_tags.py:T2:Tag.company_id:256",
   "gdx_dispatch/routers/admin_customer_tags.py:T2:TagAssignment.company_id:265",
-  "gdx_dispatch/routers/admin_ops.py:T6:User.company_id:196",
+  "gdx_dispatch/routers/admin_ops.py:T6:User.company_id:200",
   "gdx_dispatch/routers/appointments.py:T6:Appointment.company_id:244",
   "gdx_dispatch/routers/checklists.py:T5:Checklist.tenant_id:133",
   "gdx_dispatch/routers/checklists.py:T5:ChecklistItem.tenant_id:192",

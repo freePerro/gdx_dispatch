@@ -154,7 +154,7 @@ L113) and there is no `rotate_public_token` today.
 URL is computed at send (`_public_proposal_url` L1476) and persisted only inside
 `outbound_emails.html_body`, which rotation is meant to invalidate. The re-send
 detector matches the literal `"/proposals/"`, never the token
-(`gdx_dispatch/modules/outlook/resend_detect.py` L94, L115). `estimate_nurture.py`
+(`gdx_dispatch/modules/outlook/resend_detect.py` L94, L115). `estimate_nurture.py` <!-- deleted 2026-09-19 (silent-success sweep, PR #753); historical reference; link-ok -->
 touches neither.
 
 **Size:** ~5 lines + the helper.
