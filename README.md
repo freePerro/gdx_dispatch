@@ -140,6 +140,11 @@ docker compose -p gdx -f docker-compose.customer.yml up -d
 Data lives in named volumes (`gdx_db_data`, `gdx_uploads`, `gdx_backups`,
 `gdx_secrets`); `docker compose down` without `-v` never touches them.
 
+Full guides on the wiki:
+[Getting Started](https://github.com/freePerro/gdx_dispatch/wiki/Getting-Started) ·
+[Updating](https://github.com/freePerro/gdx_dispatch/wiki/Updating) ·
+[Backup & Restore](https://github.com/freePerro/gdx_dispatch/wiki/Backup-and-Restore)
+
 ## Self-hosting from a checkout (overlay on the base compose)
 
 Alternatively, run a pre-built, pinned release from GitHub Container Registry
