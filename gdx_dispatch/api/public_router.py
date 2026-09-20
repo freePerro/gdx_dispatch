@@ -13,6 +13,7 @@ Response envelope for lists:
 Response envelope for single items / mutations:
     {"data": {...}}
 """
+import contextlib
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -257,7 +258,8 @@ def list_jobs(
         ).mappings().all()
 
         return _list_ok([dict(r) for r in rows], page, per_page, total)
-    except Exception as exc:
+    except Exception:
+        logging.getLogger(__name__).exception("public api list_jobs failed")
         raise HTTPException(status_code=500, detail="A database error occurred") from None
 
 
@@ -281,7 +283,8 @@ def get_job(
             ),
             {"job_id": job_id},
         ).mappings().first()
-    except Exception as exc:
+    except Exception:
+        logging.getLogger(__name__).exception("public api get_job failed")
         raise HTTPException(status_code=500, detail="A database error occurred") from None
 
     if not row:
@@ -323,8 +326,13 @@ def create_job(
             },
         ).mappings().first()
         db.commit()
-    except Exception as exc:
-        db.rollback()
+    except Exception:
+        logging.getLogger(__name__).exception("public api create_job failed")
+        # rollback on a dead session can itself raise; the real error is
+        # already logged above, so a rollback failure must not replace the
+        # opaque 500 with an unhandled crash (repo pattern per #751).
+        with contextlib.suppress(Exception):
+            db.rollback()
         raise HTTPException(status_code=500, detail="A database error occurred") from None
 
     return _ok(dict(row), status_code=201)
@@ -367,8 +375,13 @@ def update_job(
             params,
         ).mappings().first()
         db.commit()
-    except Exception as exc:
-        db.rollback()
+    except Exception:
+        logging.getLogger(__name__).exception("public api update_job failed")
+        # rollback on a dead session can itself raise; the real error is
+        # already logged above, so a rollback failure must not replace the
+        # opaque 500 with an unhandled crash (repo pattern per #751).
+        with contextlib.suppress(Exception):
+            db.rollback()
         raise HTTPException(status_code=500, detail="A database error occurred") from None
 
     if not row:
@@ -426,7 +439,8 @@ def list_customers(
             for c in rows
         ]
         return _list_ok(items, page, per_page, int(total))
-    except Exception as exc:
+    except Exception:
+        logging.getLogger(__name__).exception("public api list_customers failed")
         raise HTTPException(status_code=500, detail="A database error occurred") from None
 
 
@@ -461,8 +475,13 @@ def create_customer(
         db.add(customer)
         db.commit()
         db.refresh(customer)
-    except Exception as exc:
-        db.rollback()
+    except Exception:
+        logging.getLogger(__name__).exception("public api create_customer failed")
+        # rollback on a dead session can itself raise; the real error is
+        # already logged above, so a rollback failure must not replace the
+        # opaque 500 with an unhandled crash (repo pattern per #751).
+        with contextlib.suppress(Exception):
+            db.rollback()
         raise HTTPException(status_code=500, detail="A database error occurred") from None
 
     return _ok(
@@ -527,7 +546,8 @@ def list_invoices(
         ).mappings().all()
 
         return _list_ok([dict(r) for r in rows], page, per_page, total)
-    except Exception as exc:
+    except Exception:
+        logging.getLogger(__name__).exception("public api list_invoices failed")
         raise HTTPException(status_code=500, detail="A database error occurred") from None
 
 
@@ -589,8 +609,13 @@ async def create_public_landing_lead(
         db.add(ll)
         db.commit()
         db.refresh(ll)
-    except Exception as exc:
-        db.rollback()
+    except Exception:
+        logging.getLogger(__name__).exception("public api create_public_landing_lead failed")
+        # rollback on a dead session can itself raise; the real error is
+        # already logged above, so a rollback failure must not replace the
+        # opaque 500 with an unhandled crash (repo pattern per #751).
+        with contextlib.suppress(Exception):
+            db.rollback()
         raise HTTPException(status_code=500, detail="A database error occurred") from None
 
     try:
@@ -693,8 +718,13 @@ def register_webhook(
         db.add(endpoint)
         db.commit()
         db.refresh(endpoint)
-    except Exception as exc:
-        db.rollback()
+    except Exception:
+        logging.getLogger(__name__).exception("public api register_webhook failed")
+        # rollback on a dead session can itself raise; the real error is
+        # already logged above, so a rollback failure must not replace the
+        # opaque 500 with an unhandled crash (repo pattern per #751).
+        with contextlib.suppress(Exception):
+            db.rollback()
         raise HTTPException(status_code=500, detail="A database error occurred") from None
 
     return _ok(

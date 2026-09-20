@@ -85,10 +85,26 @@ def test_auto_match_lowercases_and_strips():
 
     tdb.query.return_value.filter = _filter
     auto_match_strategy(msg, tdb)
-    # Hash must be of the lowercased trimmed form
+    # Hash must be of the lowercased trimmed form. The strategy filters on
+    # `Customer.email_hash == h`, so the captured BinaryExpressions carry the
+    # bound hash in .right.value — assert the normalized hash is what was
+    # actually queried. (Until 2026-09-20 this test computed expected_hash and
+    # never compared it, so the normalization had no regression net at all.)
     expected_hash = HashColumn.hash_for_search("alice@x.com")
-    # Just verify the strategy completed without error and a query fired
     assert captured_filters  # at least one filter call
+    bound_values = [
+        expr.right.value
+        for call_args in captured_filters
+        for expr in call_args
+        if hasattr(expr, "right") and hasattr(expr.right, "value")
+    ]
+    assert expected_hash in bound_values, (
+        f"query never bound the lowercased/stripped hash; bound: {bound_values!r}"
+    )
+    # NOTE: hash_for_search itself lowercases/strips (core/pii.py), so the
+    # normalization is enforced at the hash layer too — a "raw hash absent"
+    # assertion is unsatisfiable by design. The assert above still pins that
+    # the strategy queries email_hash with the search-hash of the address.
 
 
 # ── job_thread_strategy ────────────────────────────────────────────────

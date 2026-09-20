@@ -452,3 +452,89 @@ class TestPublicListingsAPI:
         assert resp.status_code == 200, resp.text[:2000]
         titles = [r["title"] for r in resp.json()["data"]]
         assert titles == ["live door"], titles
+
+
+class TestDbErrorsLeaveATrace:
+    """Silent-500 regression net (2026-09-20).
+
+    Until this date the nine public-API DB-error handlers caught
+    ``Exception as exc`` and raised an opaque 500 ``from None`` with NO log
+    call — on a prod box with no Sentry, a failing external integration was
+    invisible and undebuggable. Pin, per handler, that a DB failure now
+    (a) still answers the opaque 500 (no internals leak to API-key callers)
+    and (b) leaves a ``log.exception`` record naming the handler.
+
+    Covers 8 of the 9 handlers. The ninth, create_public_landing_lead, has
+    the identical log-then-raise shape (hand-verified) but sits behind
+    scope/turnstile gates this file's API key doesn't carry; its own flows
+    live in test_public_landing_leads.py.
+    """
+
+    _headers = {"X-API-Key": RAW_API_KEY, "x-tenant-id": TENANT_ID}
+
+    _JOB_ID = "00000000-0000-0000-0000-000000000001"
+
+    @pytest.mark.parametrize(
+        ("seam", "method", "path", "payload", "handler"),
+        [
+            ("text", "GET", "/api/v1/jobs", None, "list_jobs"),
+            ("text", "GET", f"/api/v1/jobs/{_JOB_ID}", None, "get_job"),
+            ("text", "POST", "/api/v1/jobs", {"title": "boom probe"}, "create_job"),
+            ("text", "PATCH", f"/api/v1/jobs/{_JOB_ID}", {"title": "boom probe"}, "update_job"),
+            # the customers pair queries via the ORM with function-local
+            # imports, out of reach of the module seams — hand them a session
+            # whose every attribute access raises, via the get_db override.
+            ("db", "GET", "/api/v1/customers", None, "list_customers"),
+            ("db", "POST", "/api/v1/customers", {"name": "boom probe"}, "create_customer"),
+            ("text", "GET", "/api/v1/invoices", None, "list_invoices"),
+            # register_webhook writes via the ORM, not text(); break the model
+            # instead — db.add(<unmapped object>) raises inside its try.
+            ("webhook_model", "POST", "/api/v1/webhooks", {"url": "https://example.com/hook"}, "register_webhook"),
+        ],
+    )
+    def test_a_db_error_logs_and_answers_an_opaque_500(
+        self, client: TestClient, monkeypatch, caplog, seam, method, path, payload, handler
+    ):
+        import logging as _logging
+
+        from gdx_dispatch.api import public_router as pr
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("simulated database failure")
+
+        restore_override = None
+        if seam == "text":
+            # Every raw-SQL statement goes through the module's `text(...)`,
+            # so this fails inside the handler's try — the same place a real
+            # DB error (bad column, PG outage) lands.
+            monkeypatch.setattr(pr, "text", _boom)
+        elif seam == "webhook_model":
+            monkeypatch.setattr(pr, "WebhookEndpoint", lambda **kw: object())
+        else:  # seam == "db"
+            class _BrokenDB:
+                def __getattr__(self, name):
+                    raise RuntimeError("simulated database failure")
+
+            def _broken_db():
+                yield _BrokenDB()
+
+            app = client.app
+            restore_override = (app, app.dependency_overrides.get(pr.get_db))
+            app.dependency_overrides[pr.get_db] = _broken_db
+
+        try:
+            with caplog.at_level(_logging.ERROR, logger="gdx_dispatch.api.public_router"):
+                resp = client.request(method, path, headers=self._headers, json=payload)
+        finally:
+            if restore_override is not None:
+                app, prev = restore_override
+                if prev is None:
+                    app.dependency_overrides.pop(pr.get_db, None)
+                else:
+                    app.dependency_overrides[pr.get_db] = prev
+        assert resp.status_code == 500, f"{handler}: expected 500, got {resp.status_code}: {resp.text[:300]}"
+        assert resp.json()["detail"] == "A database error occurred"
+        assert "simulated database failure" not in resp.text  # opaque to callers
+        matching = [r for r in caplog.records if f"public api {handler} failed" in r.getMessage()]
+        assert matching, f"{handler}: no log record; records: {[r.getMessage() for r in caplog.records]!r}"
+        assert matching[0].exc_info is not None  # full traceback captured
