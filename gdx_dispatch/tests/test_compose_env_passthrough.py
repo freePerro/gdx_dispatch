@@ -50,6 +50,14 @@ SHARED_ENV = [
     ("SECRET_KEY", _PLUGIN_HOST_CALLERS),
 ]
 
+#: The host version that plugin discovery compares a plugin's `requires`
+#: ("gdx>=X.Y.Z") against. app *reports* it (/pwa/version); plugin-host
+#: *enforces* with it — a plugin-host that never receives it reads as version 0
+#: and skips every version-pinned plugin with nothing but a log line. Found
+#: 2026-09-20 on prod: app had it, plugin-host did not, and the gate had never
+#: been exercisable.
+VERSION_READERS = ["app", "plugin-host"]
+
 #: Containers that must NOT be able to compute the internal token. n8n runs
 #: untrusted workflow code on the same compose network; keeping it out of the
 #: GDX secret set is the whole reason the token exists.
@@ -112,6 +120,19 @@ def test_an_unset_knob_falls_back_rather_than_blanking(filename, var, what):
     value = str(_app_environment(filename)[var])
     assert value.startswith("${") and ":-" in value, (
         f"{filename}: {var} should be `${{{var}:-...}}` so an unset value is handled"
+    )
+
+
+@pytest.mark.parametrize("filename", DEPLOY_COMPOSE)
+def test_plugin_host_receives_the_host_version(filename):
+    """`plugin_api/discovery.py` reads APP_VERSION (default "0") to decide whether
+    a plugin's `requires` floor is met. Only the app block carried it, so the
+    compat gate could never pass on a real deploy — a pinned plugin installed
+    fine and then silently did not load."""
+    missing = [s for s in VERSION_READERS if "APP_VERSION" not in _service_environment(filename, s)]
+    assert not missing, (
+        f"{filename}: APP_VERSION never reaches {missing}; plugin-host would read its "
+        "host version as 0 and skip every plugin that declares `requires`"
     )
 
 
