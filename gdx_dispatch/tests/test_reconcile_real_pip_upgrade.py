@@ -318,6 +318,13 @@ def test_a_plugin_nobody_desires_is_gone_after_reconcile(tmp_path, target, monke
     assert rc.plugin_dists_on_volume(str(target)) == {"goneplug": "goneplug", "keptplug": "keptplug"}
 
     monkeypatch.setattr(rc, "INSTALL_DIR", str(target))
+    # reconcile() calls install_artifact with its DEFAULT target, which bound
+    # /plugins at import time (pre-existing; on the CI runner /plugins does not
+    # exist). Route the real installer at this test's volume.
+    real_install = rc.install_artifact
+    monkeypatch.setattr(rc, "install_artifact",
+                        lambda filename, content, expected_sha256=None, **k:
+                        real_install(filename, content, expected_sha256, target=str(target)))
     monkeypatch.setattr(rc, "ensure_registry_table", lambda db: None)
     monkeypatch.setattr(rc, "ensure_artifact_table", lambda db: None)
     monkeypatch.setattr(rc, "db_is_the_apps", lambda db: True)
