@@ -57,8 +57,11 @@ def build_app():
     # 0. reconcile (best-effort): pip-install desired-state. Idempotent +
     #    fail-fast (no network hang); wrapped so even an unexpected error (DB
     #    down, bad DDL) degrades rather than aborts boot.
+    removed: list[str] = []
     try:
-        degraded.extend(reconcile().failed)
+        outcome = reconcile()
+        degraded.extend(outcome.failed)
+        removed = list(outcome.removed)
     except Exception as exc:  # noqa: BLE001 - boot must survive any reconcile error
         log.exception("plugin reconcile crashed — serving already-installed plugins only")
         degraded.append(f"reconcile-error: {exc!r}")
@@ -106,6 +109,7 @@ def build_app():
         degraded=degraded,
         stale=stale,
         dists=running_dists(discovered),
+        removed=removed,
     )
 
 

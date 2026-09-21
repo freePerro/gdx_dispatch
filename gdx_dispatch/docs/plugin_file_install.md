@@ -43,7 +43,21 @@ anywhere) is installed by **uploading its built artifact** instead.
 - `POST /api/admin/plugins/upload` — multipart `file=` → stores the artifact.
 - `GET /api/admin/plugins/artifacts` — list (metadata only, never the bytes).
 - `DELETE /api/admin/plugins/artifacts/{filename}` — remove (installed copy stays
-  until the next plugin-host restart).
+  until the next plugin-host restart, whose reconcile deletes the installed copy
+  because this endpoint's `plugin.artifact_deleted` audit row records the
+  removal, and writes a best-effort `plugin.removed_from_volume` row for the
+  act naming that intent and who recorded it; the removal also shows as
+  `removed` on plugin-host's `/ready` for that boot, which nothing in the app
+  reads — PR #765; before it the copy stayed loaded forever). Rows are per
+  file: if an OLDER version's row of the same plugin remains, the restart
+  installs that older file instead — a downgrade, not a removal — so delete
+  every row of the plugin to remove it. Three consequences
+  of "intent, not absence": a plugin whose row vanished any other way (by hand,
+  by SQL, by a restore older than its upload) has no recorded removal and is
+  left on the volume with a boot-log warning — re-upload, restart, delete,
+  restart is the recovery; the public demo drops its database nightly, so a
+  demo-day delete only takes effect on a restart the same day; and a copy
+  installed AFTER the recorded removal is never removed by it.
 
 ## Note on the CHI plugin
 

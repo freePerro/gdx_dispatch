@@ -238,3 +238,15 @@ def test_restart_endpoint_schedules_sigterm_without_dying(monkeypatch):
     assert r.status_code == 200
     assert r.json() == {"status": "restarting"}
     assert armed.get("started") is True
+
+
+def test_ready_reports_what_reconcile_removed_this_boot():
+    # The DELETE endpoint recorded the intent; /ready shows the act — and only
+    # when there is one, so a clean boot's payload is byte-for-byte unchanged
+    # (the exact-equality assertions above stay valid).
+    c = TestClient(create_plugin_host(plugins=[_demo_plugin()], removed=["gdx_plugin_old"]))
+    r = c.get("/ready")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok", "plugins": ["demo"], "removed": ["gdx_plugin_old"]}
+    d = TestClient(create_plugin_host(plugins=[_demo_plugin()], degraded=["x==1"], removed=["gdx_plugin_old"]))
+    assert d.get("/ready").json()["removed"] == ["gdx_plugin_old"]

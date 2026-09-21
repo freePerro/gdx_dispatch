@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
+import time
 import zipfile
 
 import pytest
@@ -36,15 +38,19 @@ from gdx_dispatch.plugin_host import reconcile as rc
 DIST = "demoplug"
 
 
-def _build_wheel(tmp_path, version: str, marker: str):
-    """A minimal but genuine wheel: package code + dist-info with a RECORD."""
-    info = f"{DIST}-{version}.dist-info"
+def _build_wheel(tmp_path, version: str, marker: str, *, dist: str = DIST, plugin: bool = False):
+    """A minimal but genuine wheel: package code + dist-info with a RECORD.
+    `plugin=True` adds the gdx.modules entry point that marks a distribution as
+    a plugin (what reconcile's removal step keys on)."""
+    info = f"{dist}-{version}.dist-info"
     files = {
-        f"{DIST}/__init__.py": f'CODE_VERSION = "{marker}"\n',
-        f"{info}/METADATA": f"Metadata-Version: 2.1\nName: {DIST}\nVersion: {version}\n",
+        f"{dist}/__init__.py": f'CODE_VERSION = "{marker}"\n',
+        f"{info}/METADATA": f"Metadata-Version: 2.1\nName: {dist}\nVersion: {version}\n",
         f"{info}/WHEEL": ("Wheel-Version: 1.0\nGenerator: test\n"
                           "Root-Is-Purelib: true\nTag: py3-none-any\n"),
     }
+    if plugin:
+        files[f"{info}/entry_points.txt"] = f"[gdx.modules]\n{dist} = {dist}:manifest\n"
     records = []
     for name, body in files.items():
         raw = body.encode()
@@ -53,7 +59,7 @@ def _build_wheel(tmp_path, version: str, marker: str):
     records.append(f"{info}/RECORD,,")
     files[f"{info}/RECORD"] = "\n".join(records) + "\n"
 
-    whl = tmp_path / f"{DIST}-{version}-py3-none-any.whl"
+    whl = tmp_path / f"{dist}-{version}-py3-none-any.whl"
     with zipfile.ZipFile(whl, "w") as z:
         for name, body in files.items():
             z.writestr(name, body)
@@ -295,3 +301,48 @@ def test_artifacts_sort_by_version_not_filename():
     ordered = sorted(names, key=rc._artifact_sort_key)
     # Last one wins the install, so the newest version must sort last.
     assert ordered[-1] == f"{DIST}-0.10.0-py3-none-any.whl"
+
+
+
+def test_a_plugin_nobody_desires_is_gone_after_reconcile(tmp_path, target, monkeypatch):
+    """Real pip, real volume layout: install two plugins and a library, drop one
+    plugin from desired state, reconcile — that plugin's code and metadata are
+    gone, the other plugin and the library are untouched. This is the demo-stack
+    failure of 2026-09-21 (a removed plugin kept running) with the fix in."""
+    assert _install(tmp_path, target, "1.0", "keep-me") is True  # DIST, not a plugin: a library
+    gone_whl = _build_wheel(tmp_path, "1.0", "gone", dist="goneplug", plugin=True)
+    kept_whl = _build_wheel(tmp_path, "1.0", "kept", dist="keptplug", plugin=True)
+    for whl in (gone_whl, kept_whl):
+        assert rc.install_artifact(whl.name, whl.read_bytes(), None, target=str(target)) is True
+    assert (target / "goneplug" / "__init__.py").exists()
+    assert rc.plugin_dists_on_volume(str(target)) == {"goneplug": "goneplug", "keptplug": "keptplug"}
+
+    monkeypatch.setattr(rc, "INSTALL_DIR", str(target))
+    # reconcile() calls install_artifact with its DEFAULT target, which bound
+    # /plugins at import time (pre-existing; on the CI runner /plugins does not
+    # exist). Route the real installer at this test's volume.
+    real_install = rc.install_artifact
+    monkeypatch.setattr(rc, "install_artifact",
+                        lambda filename, content, expected_sha256=None, **k:
+                        real_install(filename, content, expected_sha256, target=str(target)))
+    monkeypatch.setattr(rc, "ensure_registry_table", lambda db: None)
+    monkeypatch.setattr(rc, "ensure_artifact_table", lambda db: None)
+    monkeypatch.setattr(rc, "db_is_the_apps", lambda db: True)
+    monkeypatch.setattr(rc, "desired_packages", lambda db: [])
+    # The operator deleted goneplug's artifact through the UI just now: the audit
+    # trail says so, and its row is gone. keptplug's row survives.
+    monkeypatch.setattr(rc, "recorded_removals", lambda db: {"goneplug": {"1.0": rc.RemovalIntent(
+        time.time() + 60, "plugin.artifact_deleted", gone_whl.name, "owner")}})
+    monkeypatch.setattr(rc, "_audit_removals", lambda db, names, applied: None)
+    monkeypatch.setattr(rc, "desired_artifacts",
+                        lambda db: [(kept_whl.name, hashlib.sha256(kept_whl.read_bytes()).hexdigest(),
+                                     kept_whl.read_bytes())])
+    result = rc.reconcile(db=object())
+
+    assert result.removed == ("goneplug",)
+    assert result.failed == []
+    assert not (target / "goneplug").exists()
+    assert not any(e.startswith("goneplug-") for e in os.listdir(target))
+    assert (target / "keptplug" / "__init__.py").exists()
+    assert _code_marker(target) == 'CODE_VERSION = "keep-me"'  # the library survived
+    assert rc.plugin_dists_on_volume(str(target)) == {"keptplug": "keptplug"}
