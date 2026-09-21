@@ -48,7 +48,7 @@ anywhere) is installed by **uploading its built artifact** instead.
   removal, and writes a best-effort `plugin.removed_from_volume` row for the
   act naming that intent and who recorded it; the removal also shows as
   `removed` on plugin-host's `/ready` for that boot, which nothing in the app
-  reads — PR #TBD; before it the copy stayed loaded forever). Rows are per
+  reads — PR #765; before it the copy stayed loaded forever). Rows are per
   file: if an OLDER version's row of the same plugin remains, the restart
   installs that older file instead — a downgrade, not a removal — so delete
   every row of the plugin to remove it. Three consequences
