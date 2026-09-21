@@ -62,7 +62,7 @@ _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 # string literal in this file, differing from the caller's only in case.
 
 
-def create_plugin_host(plugins=None, degraded=None, stale=None, dists=None) -> FastAPI:
+def create_plugin_host(plugins=None, degraded=None, stale=None, dists=None, removed=None) -> FastAPI:
     """Build the plugin-host app. `plugins` is injectable for tests; in
     production it defaults to live entry-point discovery.
 
@@ -83,6 +83,10 @@ def create_plugin_host(plugins=None, degraded=None, stale=None, dists=None) -> F
         dists = dists or running_dists(discovered)
     degraded = list(degraded or [])
     stale = dict(stale or {})
+    # Plugin distributions reconcile deleted from the volume this boot because
+    # nothing desired them any more. Reported on /ready (only when non-empty,
+    # so a clean boot's payload is unchanged) — the act, not just the intent.
+    removed = sorted(removed or [])
     dists = dict(dists or {})
     # Only NON-stale plugins are served; a stale plugin is withheld so it can't
     # emit possibly-wrong data (pricing!) under an authoritative 200.
@@ -124,10 +128,15 @@ def create_plugin_host(plugins=None, degraded=None, stale=None, dists=None) -> F
                 return JSONResponse(status_code=401, content={"detail": REFUSAL_DETAIL})
         return await call_next(request)
 
+    def _with_removed(payload: dict) -> dict:
+        if removed:
+            payload["removed"] = list(removed)
+        return payload
+
     def _degraded_payload() -> dict:
-        return {"status": "degraded", "plugins": sorted(catalog),
+        return _with_removed({"status": "degraded", "plugins": sorted(catalog),
                 "missing": sorted(degraded),
-                "stale": {k: stale[k] for k in sorted(stale)}}
+                "stale": {k: stale[k] for k in sorted(stale)}})
 
     # --- reserved host routes (registered first so plugins can't shadow them) ---
     @app.get("/health")
@@ -140,7 +149,7 @@ def create_plugin_host(plugins=None, degraded=None, stale=None, dists=None) -> F
         # Readiness — 503 when a desired plugin is missing or was withheld stale.
         if degraded or stale:
             return JSONResponse(status_code=503, content=_degraded_payload())
-        return {"status": "ok", "plugins": sorted(catalog)}
+        return _with_removed({"status": "ok", "plugins": sorted(catalog)})
 
     @app.get("/api/plugins")
     def list_plugins():

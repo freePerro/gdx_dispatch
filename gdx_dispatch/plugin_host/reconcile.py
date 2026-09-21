@@ -12,6 +12,7 @@ separated so they unit-test with a fake DB / mocked subprocess.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -19,9 +20,10 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import SessionLocal
@@ -41,9 +43,11 @@ class ReconcileResult(NamedTuple):
     """Outcome of a reconcile pass. `installed` are specs newly pip-installed
     this boot; `failed` are desired specs that neither were already present nor
     installed cleanly — the caller surfaces these so a half-loaded host is loud,
-    not silent."""
+    not silent. `removed` are plugin distributions deleted from the volume
+    because nothing desired them any more (see remove_undesired_plugins)."""
     installed: list[str]
     failed: list[str]
+    removed: tuple[str, ...] = ()
 
 # Raw DDL, not Alembic (tiny aux tables both core and plugin-host touch). But
 # the repo rule that schema must run on BOTH SQLite and Postgres still applies.
@@ -284,6 +288,270 @@ def prune_other_versions(distribution: str | None, keep_version: str | None,
 
 #: Where a version-changing install is built before it replaces the live one.
 _STAGING = "_staging"
+
+
+_PLUGIN_ENTRY_POINT_GROUP = "[gdx.modules]"
+
+
+def plugin_dists_on_volume(target: str = INSTALL_DIR) -> dict[str, str]:
+    """{canonical distribution: distribution name} for every distribution
+    installed under `target` that declares a `gdx.modules` entry point — a
+    plugin, in other words. Read from each dist-info's entry_points.txt, never
+    by importing anything. Libraries that also live in the volume (playwright,
+    greenlet, pyee, ...) declare no such group and never appear here, so a
+    cleanup keyed on this map cannot touch them."""
+    out: dict[str, str] = {}
+    try:
+        entries = os.listdir(target)
+    except OSError:
+        return out
+    for entry in entries:
+        if not entry.endswith(".dist-info"):
+            continue
+        ep = os.path.join(target, entry, "entry_points.txt")
+        try:
+            with open(ep, encoding="utf-8", errors="replace") as fh:
+                declares_plugin = any(line.strip() == _PLUGIN_ENTRY_POINT_GROUP for line in fh)
+        except OSError:
+            continue
+        if not declares_plugin:
+            continue
+        name, _ = artifact_name_version(entry[: -len(".dist-info")] + ".whl")
+        if name:
+            out[_canon(name)] = name
+    return out
+
+
+_SPEC_NAME = re.compile(r"\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)")
+
+#: The audit actions the two owner-only DELETE endpoints write (routers/admin_plugins.py):
+#: an artifact row removed (entity_id = wheel filename) and a registry row removed
+#: (entity_id = package). These rows ARE the operator's recorded intent to remove a
+#: plugin; reconcile removes nothing without one.
+REMOVAL_INTENT_ACTIONS = ("plugin.artifact_deleted", "plugin.unregistered")
+
+
+class RemovalIntent(NamedTuple):
+    """One recorded operator removal: when, which audit action, what it named,
+    and who did it — copied onto the act's own audit row so the trail answers
+    who / what / when without a join."""
+    at: float
+    action: str
+    entity_id: str
+    by: str | None
+
+
+def spec_distribution(spec: str) -> str | None:
+    """The distribution name a pip requirement spec refers to: `demoplug[browser]`,
+    `demoplug>=1.0`, `demoplug == 1.0` all name `demoplug`. A registry row is
+    meant to hold a bare name, but nothing enforces that, and a row that installs
+    fine must never be read as "some other distribution" when desired state is
+    compared with the volume."""
+    m = _SPEC_NAME.match(spec or "")
+    return m.group(1) if m else None
+
+
+def db_is_the_apps(db: Session) -> bool:
+    """True when `db` is the application's migrated database. The SQLite
+    fallback (`DATABASE_URL` unset) or any other empty database answers the
+    desired-state queries with zero rows; nothing below may act on zero rows
+    from a database that is not the app's."""
+    try:
+        return db.execute(text("SELECT version_num FROM alembic_version LIMIT 1")).first() is not None
+    except Exception:  # noqa: BLE001 - any failure means "cannot vouch for this DB"
+        with contextlib.suppress(Exception):  # a failed probe may leave the tx aborted
+            db.rollback()
+        return False
+
+
+def recorded_removals(db: Session) -> dict[str, dict[str | None, RemovalIntent]]:
+    """{canonical distribution: {version: the LATEST recorded removal}} from the
+    audit trail — the rows the DELETE endpoints write. An artifact deletion
+    names a wheel, so it is keyed by that wheel's version and applies only to a
+    running copy of that version: tidying an old wheel's row while the current
+    version stays must never become a licence to delete the current copy later.
+    A registry unregister names a package with no version (key None) and
+    applies to whatever copy is running.
+
+    This, not the absence of a desired-state row, is what licenses deleting a
+    plugin from the volume: absence also describes a hand-installed plugin (the
+    local dev stack, 2026-09-21: two plugins on the volume, both tables empty),
+    a paved database, or a restore older than an upload — none of which is an
+    operator saying "remove it". Unreadable trail → empty dict → nothing removed."""
+    try:
+        from gdx_dispatch.core.audit import AuditLog
+        rows = db.execute(
+            select(AuditLog.action, AuditLog.entity_id, AuditLog.created_at, AuditLog.user_id)
+            .where(AuditLog.action.in_(REMOVAL_INTENT_ACTIONS))
+        ).all()
+    except Exception:  # noqa: BLE001 - no trail, no intent, no removal
+        log.exception("could not read the audit trail for recorded plugin removals — removing nothing")
+        with contextlib.suppress(Exception):
+            db.rollback()
+        return {}
+    out: dict[str, dict[str | None, RemovalIntent]] = {}
+    for action, entity_id, created_at, user_id in rows:
+        # Keyed exactly as the desired-state loops key the same values: a wheel
+        # filename (artifact rows, and the filename-shaped registry rows of
+        # issue #100) by its distribution AND version, a package spec by name.
+        version: str | None = None
+        if action == "plugin.artifact_deleted" or looks_like_artifact_filename(entity_id or ""):
+            name, version = artifact_name_version(entity_id or "")
+            if not version:
+                continue
+        else:
+            name = spec_distribution(entity_id or "")
+        if not name or not isinstance(created_at, datetime):
+            continue
+        when = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+        intent = RemovalIntent(when.timestamp(), action, entity_id or "", user_id)
+        per_version = out.setdefault(_canon(name), {})
+        if version not in per_version or intent.at > per_version[version].at:  # the latest row wins
+            per_version[version] = intent
+    return out
+
+
+def _applicable_removal(intents: dict[str | None, RemovalIntent], running: str | None) -> RemovalIntent | None:
+    """The latest recorded removal that applies to the copy the host runs: a
+    version-less unregister always does; an artifact deletion only when it names
+    the RUNNING version (`effective_version`), never a stale dist-info that
+    `pip --target` left lingering beside it — tidying an old wheel's row must not
+    reach the current code through its leftover metadata."""
+    hits = [i for v, i in intents.items()
+            if v is None or (running is not None and _versions_equal(v, running))]
+    return max(hits, key=lambda i: i.at) if hits else None
+
+
+def _dist_info_installed_at(dist_info: str, target: str) -> float:
+    """When this copy landed on the volume (the dist-info directory's mtime).
+    A recorded removal must be NEWER than the copy it is applied to: a
+    deletion recorded months ago must not eat a plugin someone put back since."""
+    try:
+        return os.path.getmtime(os.path.join(target, dist_info))
+    except OSError:
+        return float("inf")  # unreadable → treat as newest → no recorded removal can post-date it
+
+
+def _drop_staged_wheels(canon: str, target: str, versions: set[str] | None) -> list[str]:
+    """Delete the uploaded-wheel copies in `_artifacts/` that the applied
+    removal actually covers: the running version when an artifact deletion
+    applied, or every version of the distribution when `versions` is None (a
+    registry unregister names the whole package). Wheels of versions nobody
+    named stay — prod's `_artifacts/` holds seven chi_pricing wheels the
+    database knows two of, and a row deletion is not a licence to erase the
+    other five."""
+    staged = os.path.join(target, "_artifacts")
+    gone: list[str] = []
+    try:
+        entries = os.listdir(staged)
+    except OSError:
+        return gone
+    for entry in entries:
+        name, version = artifact_name_version(entry)
+        if not name or _canon(name) != canon:
+            continue
+        if versions is not None and not any(_versions_equal(version or "", v) for v in versions):
+            continue
+        try:
+            os.remove(os.path.join(staged, entry))
+            gone.append(entry)
+        except OSError:
+            continue
+    return gone
+
+
+def _audit_removals(db: Session, removed: list[str], applied: dict[str, RemovalIntent]) -> None:
+    """One audit row per distribution deleted from the volume. The DELETE
+    endpoint recorded the operator's *intent*; this records the *act* and
+    copies the intent it applied (action, what it named, who, when) onto the
+    row, so who / what / when stays reconstructable without a join and after
+    the container log rotates. Best-effort: a failed audit write is logged and
+    never aborts the boot."""
+    try:
+        from gdx_dispatch.core.audit import log_audit_event_sync
+        try:
+            from gdx_dispatch.core.tenant import company_id
+            tenant = company_id()
+        except Exception:  # noqa: BLE001 - tenant resolution is not worth failing the trail over
+            tenant = None
+        for name in removed:
+            intent = applied.get(name)
+            log_audit_event_sync(
+                db,
+                tenant_id=tenant,
+                user_id="plugin-host",
+                action="plugin.removed_from_volume",
+                entity_type="plugin",
+                entity_id=name,
+                details={
+                    "reason": "operator removal recorded; no desired-state row",
+                    "intent_action": intent.action if intent else None,
+                    "intent_entity_id": intent.entity_id if intent else None,
+                    "intent_by": intent.by if intent else None,
+                    "intent_recorded_at": datetime.fromtimestamp(intent.at, tz=UTC).isoformat() if intent else None,
+                    "when": "reconcile at plugin-host boot",
+                },
+            )
+        db.commit()
+    except Exception:  # noqa: BLE001 - the trail must never take the host down
+        log.exception("could not write audit row(s) for removed plugin(s) %s", ", ".join(removed))
+        with contextlib.suppress(Exception):
+            db.rollback()
+
+
+def remove_undesired_plugins(desired: set[str], intents: dict[str, dict[str | None, RemovalIntent]],
+                             target: str = INSTALL_DIR,
+                             applied: dict[str, RemovalIntent] | None = None) -> list[str]:
+    """Delete every plugin distribution on the volume that (a) no desired-state
+    row names any more AND (b) an operator recorded removing (`intents`, from
+    recorded_removals) AFTER this copy was installed. Returns the names removed.
+
+    Until 2026-09-21 nothing did this. reconcile installed what was desired and
+    pruned other *versions* of it, but never subtracted what was removed — so
+    DELETE on an artifact or a registry row left the package on the persistent
+    volume, discovery kept finding its entry point, and the plugin ran on
+    (routes mounted, event handler subscribed) while the admin page said it was
+    gone. Proven on the demo stack with gdx-plugin-cellcomms.
+
+    Why intent and not absence: a plugin on the volume with no row is also what
+    a hand install, a paved database or a stale restore look like. Those are
+    left in place with a warning. Ownership rules are remove_installed_dist's:
+    a top-level another installed dist-info also claims is left alone.
+    """
+    removed: list[str] = []
+    for canon, name in sorted(plugin_dists_on_volume(target).items()):
+        if canon in desired:
+            continue
+        running = effective_version(name, target)
+        intent = _applicable_removal(intents.get(canon, {}), running)
+        if intent is None:
+            log.warning("plugin %s is on the volume with no desired-state row and no recorded removal of "
+                        "this copy — left in place (installed by hand, paved DB, restored from before its "
+                        "upload, or only an older version's row was ever deleted?)", name)
+            continue
+        # The NEWEST dist-info is the copy that counts: a stale older dist-info
+        # lingering beside it (the pip --target trap this repo has met on prod)
+        # must not make a months-old deletion look newer than the current copy.
+        dist_infos = _dist_info_dirs(name, target)
+        installed_at = max((_dist_info_installed_at(d, target) for d in dist_infos), default=float("inf"))
+        if intent.at < installed_at:
+            log.warning("plugin %s: the recorded removal predates this copy of it — left in place", name)
+            continue
+        gone = remove_installed_dist(name, target)
+        if gone:
+            # Scoped by the intent that APPLIED, not by every intent ever
+            # recorded: a spent year-old unregister must not widen a fresh
+            # single-file deletion into "erase every staged wheel".
+            versions = None if intent.action == "plugin.unregistered" else {running}
+            staged = _drop_staged_wheels(canon, target, versions)
+            log.info("removed plugin %s — operator removal recorded, no desired-state row (%s%s)",
+                     name, ", ".join(gone), f"; staged wheels: {', '.join(staged)}" if staged else "")
+            removed.append(name)
+            if applied is not None:
+                applied[name] = intent
+        else:
+            log.warning("plugin %s is no longer desired but nothing under %s could be removed", name, target)
+    return removed
 
 
 def _within(target_real: str, path: str) -> bool:
@@ -683,6 +951,13 @@ def reconcile(db: Session | None = None) -> ReconcileResult:
     db = db or SessionLocal()
     installed: list[str] = []
     failed: list[str] = []
+    removed: list[str] = []
+    # Canonical names of every distribution the operator wants on the volume.
+    # Collected across BOTH loops below; anything installed that is not in here
+    # afterwards was removed by the operator and gets deleted (see
+    # remove_undesired_plugins). A failed install stays desired — it is retried
+    # next boot, not thrown away.
+    desired: set[str] = set()
     try:
         ensure_registry_table(db)
         ensure_artifact_table(db)
@@ -702,6 +977,8 @@ def reconcile(db: Session | None = None) -> ReconcileResult:
             # install offline still (correctly) surfaces as a failed spec.
             if looks_like_artifact_filename(package):
                 fdist, fver = artifact_name_version(package)
+                if fdist:
+                    desired.add(_canon(fdist))
                 if fdist and fver and is_installed(fdist, fver):
                     log.info("registry row %r resolves to installed %s %s — skipping",
                              package, fdist, fver)
@@ -712,6 +989,7 @@ def reconcile(db: Session | None = None) -> ReconcileResult:
                         "skipping (upload the file via the artifact installer; this row "
                         "is ignored, not installed)", package)
                 continue
+            desired.add(_canon(spec_distribution(package) or package))
             spec = f"{package}=={version}" if version else package
             if version and is_installed(package, version):
                 log.info("registry package %s already installed — skipping", spec)
@@ -745,6 +1023,7 @@ def reconcile(db: Session | None = None) -> ReconcileResult:
         newest = {}
         for filename, sha256, content in artifacts:
             adist, _ = artifact_name_version(filename)
+            desired.add(_canon(adist or filename))
             newest[_canon(adist or filename)] = (filename, sha256, content)
         superseded = len(artifacts) - len(newest)
         if superseded:
@@ -755,6 +1034,20 @@ def reconcile(db: Session | None = None) -> ReconcileResult:
                 installed.append(filename)
             else:
                 failed.append(filename)
+        # Both desired-state reads succeeded and this is the app's database.
+        # Even then, "no row" alone never licenses a delete: only a recorded
+        # operator removal (the DELETE endpoints' audit rows) newer than the
+        # installed copy does. Runs last so a plugin just upgraded in place is
+        # never mistaken for an orphan.
+        if db_is_the_apps(db):
+            applied: dict[str, RemovalIntent] = {}
+            removed = remove_undesired_plugins(desired, recorded_removals(db), target=INSTALL_DIR,
+                                               applied=applied)
+            if removed:
+                _audit_removals(db, removed, applied)
+        else:
+            log.error("not removing plugins: this database has no alembic_version, so it is not the app's "
+                      "(DATABASE_URL unset → SQLite fallback?)")
     finally:
         if own:
             db.close()
@@ -763,4 +1056,4 @@ def reconcile(db: Session | None = None) -> ReconcileResult:
     if failed:
         log.error("plugin reconcile finished with %d failed spec(s): %s",
                   len(failed), ", ".join(failed))
-    return ReconcileResult(installed=installed, failed=failed)
+    return ReconcileResult(installed=installed, failed=failed, removed=tuple(removed))
