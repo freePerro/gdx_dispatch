@@ -222,6 +222,12 @@ services:
       <<: *app-env
       GDX_SKIP_MIGRATIONS: "1"
       GDX_SKIP_BOOTSTRAP: "1"
+      # Discovery compares a plugin's `requires` ("gdx>=X.Y.Z") against THIS
+      # value; a plugin-host without it reads as version 0 and skips every
+      # version-pinned plugin with a log line (found 2026-09-20: prod's had
+      # none). Same source as app's. An unpinned host ("latest"/"dev") also
+      # reads as 0 — pin APP_VERSION to load a pinned plugin.
+      APP_VERSION: ${APP_VERSION:-latest}
     volumes:
       - gdx_plugins:/plugins
       - gdx_secrets:/secrets:ro
