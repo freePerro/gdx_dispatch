@@ -30,8 +30,23 @@
                endpoint does), so this bound an always-empty field and the
                header showed no customer at all. The picker's own list already
                has the name — use it, and fall back to the API value. -->
-          <span class="customer-name" data-testid="estimate-customer">{{ headerCustomerName }}</span>
+          <!-- The name opens the customer record and "Edit" edits it in place
+               (the shared CustomerFormDialog, as on the invoice page); "Change"
+               moves the estimate to a DIFFERENT customer. Until 2026-09-21 the
+               name was a plain span and the picker below is disabled once the
+               estimate exists, so a wrong phone number meant /customers and a
+               search — the estimate was the only document page with no way to
+               its customer at all. -->
+          <!-- Name-guarded: a customer soft-deleted after the estimate was written
+               is off the picker list, and an empty anchor has no accessible name. -->
+          <router-link v-if="form.customer_id && headerCustomerName" :to="`/customers/${form.customer_id}`"
+            class="customer-name customer-link" data-testid="estimate-customer">{{ headerCustomerName }}</router-link>
+          <span v-else class="customer-name" data-testid="estimate-customer">{{ headerCustomerName }}</span>
+          <Button v-if="form.customer_id" label="Edit customer" icon="pi pi-pencil" text size="small"
+            v-tooltip.bottom="'Edit contact details for this customer'"
+            data-testid="estimate-edit-customer-btn" @click="openCustomerEdit" />
           <Button v-if="canChangeCustomer" label="Change" icon="pi pi-user-edit" text size="small"
+            v-tooltip.bottom="'Move this estimate to a different customer'"
             data-testid="estimate-change-customer-btn" @click="openReassign" />
           <span class="meta-sep">·</span>
           <span>Created: {{ formatDate(estimate.created_at) }}</span>
@@ -254,8 +269,8 @@
                 <span class="toggle-label">Create new customer instead</span>
               </div>
               <!-- Selected-customer contact panel — shows phone/email/address
-                   pulled from the customer record. Read-only; click name to
-                   open detail. -->
+                   pulled from the customer record. Read-only here: the header's
+                   name link opens the record and its Edit button edits it. -->
               <div v-if="selectedCustomer && !form.new_customer" class="customer-contact" data-testid="estimate-customer-contact">
                 <div v-if="selectedCustomer.phone" class="contact-row">
                   <i class="pi pi-phone" /> {{ formatPhone(selectedCustomer.phone) }}
@@ -1144,6 +1159,16 @@
         </template>
       </Dialog>
 
+      <!-- Edit the current customer in place — the shared dialog the invoice
+           page uses. On save the saved row is upserted into the picker list
+           (the header name and the contact panel read it) and the list reloads. -->
+      <CustomerFormDialog
+        v-model:visible="showCustomerEdit"
+        mode="edit"
+        :customer="customerForEdit"
+        @saved="onCustomerSaved"
+      />
+
       <!-- Save a one-time typed address onto the customer, on purpose and by
            name. The contact endpoint audits it (field names only). -->
       <Dialog v-model:visible="showSaveContact" header="Save to customer" modal
@@ -1187,6 +1212,7 @@ import {
   typedAddress,
 } from "../utils/composerRecipient";
 import EstimateStatusContext from "../components/EstimateStatusContext.vue";
+import CustomerFormDialog from "../components/CustomerFormDialog.vue";
 import PluginScreen from "../components/PluginScreen.vue";
 import PhoneInput from "../components/PhoneInput.vue";
 import { useApi } from "../composables/useApi";
@@ -3207,6 +3233,53 @@ function openReassign() {
   showReassign.value = true;
 }
 
+// Edit the CURRENT customer's record from the estimate (2026-09-21). Same
+// shape as InvoiceDetailView.openCustomerEdit: read the row fresh so the
+// dialog edits what the server holds now, not the picker list loaded at page
+// open. The read is quiet (suppressErrorToast — useApi toasts by default) and
+// falls back to the picker's row, which carries every field the dialog edits.
+// It never opens on an empty shell: a save from {id, name} would blank the
+// record, so with nothing to edit from, the record page is the way in.
+const showCustomerEdit = ref(false);
+const customerForEdit = ref(null);
+
+async function openCustomerEdit() {
+  const cid = form.value.customer_id;
+  if (!cid) return;
+  let record = null;
+  try {
+    const result = await apiRaw.get(
+      `/api/customers/${encodeURIComponent(cid)}`, { suppressErrorToast: true },
+    );
+    if (result?.id) record = result;
+  } catch {
+    // quiet by design — the fallbacks below decide what happens
+  }
+  if (!record && selectedCustomer.value) record = { ...selectedCustomer.value };
+  if (!record) {
+    router.push(`/customers/${cid}`);
+    return;
+  }
+  customerForEdit.value = record;
+  showCustomerEdit.value = true;
+}
+
+async function onCustomerSaved(saved) {
+  // The header name and the contact panel both read the picker list. Upsert
+  // the row the dialog just saved FIRST: loadCustomers() empties the list when
+  // its read fails, and a successful PATCH followed by a failed reload must
+  // not render the customer as gone. Then reload, so the list matches what the
+  // server holds — and keep the upserted list if that reload comes back empty.
+  if (saved?.id) {
+    const i = customers.value.findIndex((c) => String(c.id) === String(saved.id));
+    if (i >= 0) customers.value.splice(i, 1, { ...customers.value[i], ...saved });
+    else customers.value.push(saved);
+  }
+  const kept = customers.value;
+  await loadCustomers();
+  if (!customers.value.length && kept.length) customers.value = kept;
+}
+
 async function confirmReassign() {
   if (!reassignCustomerId.value || !reassignReason.value.trim()) return;
   reassignBusy.value = true;
@@ -3942,6 +4015,9 @@ onUnmounted(() => {
   margin-top: 0.4rem;
 }
 .header-meta .customer-name { color: var(--text-primary, inherit); font-weight: 600; }
+.header-meta a.customer-link { text-decoration: none; }
+.header-meta a.customer-link:hover,
+.header-meta a.customer-link:focus-visible { color: var(--p-primary-color); text-decoration: underline; }
 .meta-sep { opacity: 0.5; }
 
 /* Banner shown when the estimate has already been converted to a job.
