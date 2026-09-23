@@ -22,6 +22,16 @@ import { createApiClient } from '../composables/useApi';
 export const useEmailUnreadStore = defineStore('emailUnread', () => {
   const count = ref(0);
   const _pollTimer = ref(null);
+  // Subscriptions (2026-09-22). The sidebar and the mobile bottom nav both
+  // poll this store, and on a phone the sidebar lives inside a lazy Drawer:
+  // it mounts when the hamburger opens and UNMOUNTS when it closes. A bare
+  // stopPolling() from that unmount killed the bottom nav's poll and froze
+  // the Email tab badge. One contract across the three polling stores
+  // (emailUnread, smsUnread, notifications): startPolling() hands back the
+  // release for that one subscription, and the timer runs while any is live.
+  // A forgotten release cannot silence anyone else, and a double release is
+  // a no-op.
+  const _subscribers = new Set();
   const _seeded = ref(false);
   const _listeners = [];
 
@@ -74,18 +84,33 @@ export const useEmailUnreadStore = defineStore('emailUnread', () => {
     _seeded.value = true;
   }
 
-  function startPolling(intervalMs = 60000) {
-    stopPolling();
-    fetchCount();
-    _pollTimer.value = setInterval(fetchCount, intervalMs);
-  }
-
-  function stopPolling() {
+  function _clearTimer() {
     if (_pollTimer.value) {
       clearInterval(_pollTimer.value);
       _pollTimer.value = null;
     }
   }
 
-  return { count, fetchCount, startPolling, stopPolling, onIncrease };
+  /**
+   * Subscribe to the poll. Returns the release() for THIS subscription. It is
+   * idempotent, so a caller may release on every exit path (a watch turning
+   * off, unmount) without ever under-counting anyone else. The timer runs
+   * while any subscription is live and stops with the last release; every
+   * new subscriber gets a fresh count immediately (deduped in-flight). The
+   * first subscriber's intervalMs sets the timer — later ones join it.
+   */
+  function startPolling(intervalMs = 60000) {
+    const token = Symbol('poll');
+    _subscribers.add(token);
+    fetchCount();
+    if (!_pollTimer.value) {
+      _pollTimer.value = setInterval(fetchCount, intervalMs);
+    }
+    return () => {
+      if (!_subscribers.delete(token)) return;
+      if (_subscribers.size === 0) _clearTimer();
+    };
+  }
+
+  return { count, fetchCount, startPolling, onIncrease };
 });

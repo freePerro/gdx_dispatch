@@ -4,7 +4,7 @@
  * remove() is optimistic (row drops immediately, restored on failure);
  * clearAll() wipes list + badge. Both hit the new DELETE endpoints.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
 const apiMock = {
@@ -70,5 +70,65 @@ describe('notifications store — remove / clearAll', () => {
     await expect(store.clearAll()).rejects.toThrow('nope');
     expect(store.items.map((n) => n.id)).toEqual(['n1']);
     expect(store.unreadCount).toBe(1);
+  });
+});
+
+describe('notifications store — polling contract (2026-09-22)', () => {
+  // Same subscriber-counted contract as emailUnread / smsUnread: the timer
+  // runs while anyone is subscribed, and one consumer's stop cannot silence
+  // another. AppTopbar is the only consumer today (a watch that pairs each
+  // start with a stop), so this pins the contract, not a live defect.
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('startPolling fetches now and on the interval; its release clears it', async () => {
+    const store = useNotificationsStore();
+    apiMock.get.mockResolvedValue({ count: 1 });
+    const release = store.startPolling(60000);
+    expect(apiMock.get).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(apiMock.get).toHaveBeenCalledTimes(2);
+    release();
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(apiMock.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('releasing one subscription does not stop the poll for another', async () => {
+    const store = useNotificationsStore();
+    apiMock.get.mockResolvedValue({ count: 1 });
+    const releaseA = store.startPolling(60000);
+    await vi.advanceTimersByTimeAsync(0);
+    const releaseB = store.startPolling(60000);
+    expect(apiMock.get).toHaveBeenCalledTimes(2);
+    releaseA();
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(apiMock.get).toHaveBeenCalledTimes(3);
+    releaseB();
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(apiMock.get).toHaveBeenCalledTimes(3);
+  });
+
+  it('logout → login: the second subscription can still be stopped by its own release', async () => {
+    // The audit's scenario: AppTopbar subscribed, the shell unmounted on
+    // logout, a re-login subscribed again. With a bare counter the module-off
+    // stop then under-counted and the poll ran forever. Each subscription now
+    // owns its release, and the top bar releases on unmount.
+    const store = useNotificationsStore();
+    apiMock.get.mockResolvedValue({ count: 1 });
+    const first = store.startPolling(60000);
+    await vi.advanceTimersByTimeAsync(0);
+    first(); // AppTopbar unmounts on logout
+    const second = store.startPolling(60000); // re-login
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(apiMock.get).toHaveBeenCalledTimes(3);
+    second(); // admin turns communications off
+    await vi.advanceTimersByTimeAsync(180000);
+    expect(apiMock.get).toHaveBeenCalledTimes(3);
   });
 });

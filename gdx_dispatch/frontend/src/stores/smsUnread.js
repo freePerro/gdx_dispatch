@@ -14,6 +14,12 @@ import { createApiClient } from '../composables/useApi';
 export const useSmsUnreadStore = defineStore('smsUnread', () => {
   const count = ref(0);
   const _pollTimer = ref(null);
+  // Subscriptions — one contract across the three polling stores
+  // (emailUnread, smsUnread, notifications), adopted 2026-09-22 when the
+  // mobile bottom nav became a second consumer of emailUnread: startPolling()
+  // hands back the release for that one subscription, and the timer runs
+  // while any is live. Only the sidebar polls this store today.
+  const _subscribers = new Set();
 
   // In-flight dedup — same rationale as the email store: the dashboard's
   // load now runs concurrently with the sidebar poll, and out-of-order
@@ -38,18 +44,33 @@ export const useSmsUnreadStore = defineStore('smsUnread', () => {
     }
   }
 
-  function startPolling(intervalMs = 60000) {
-    stopPolling();
-    fetchCount();
-    _pollTimer.value = setInterval(fetchCount, intervalMs);
-  }
-
-  function stopPolling() {
+  function _clearTimer() {
     if (_pollTimer.value) {
       clearInterval(_pollTimer.value);
       _pollTimer.value = null;
     }
   }
 
-  return { count, fetchCount, startPolling, stopPolling };
+  /**
+   * Subscribe to the poll. Returns the release() for THIS subscription. It is
+   * idempotent, so a caller may release on every exit path (a watch turning
+   * off, unmount) without ever under-counting anyone else. The timer runs
+   * while any subscription is live and stops with the last release; every
+   * new subscriber gets a fresh count immediately (deduped in-flight). The
+   * first subscriber's intervalMs sets the timer — later ones join it.
+   */
+  function startPolling(intervalMs = 60000) {
+    const token = Symbol('poll');
+    _subscribers.add(token);
+    fetchCount();
+    if (!_pollTimer.value) {
+      _pollTimer.value = setInterval(fetchCount, intervalMs);
+    }
+    return () => {
+      if (!_subscribers.delete(token)) return;
+      if (_subscribers.size === 0) _clearTimer();
+    };
+  }
+
+  return { count, fetchCount, startPolling };
 });

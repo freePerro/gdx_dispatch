@@ -77,7 +77,12 @@ export const MODULE_CATEGORIES = [
       // 2026-07-01 UX audit: four messaging destinations are genuinely different
       // channels (different backends) but the labels didn't say so — descriptions
       // disambiguate in the sidebar tooltip.
-      { key: 'inbox', label: 'Inbox', icon: 'pi pi-inbox', to: '/inbox', type: 'Operations', description: 'Outlook-synced email inbox' },
+      // `requires: 'email'` (2026-09-22): the backend registry key is `email`
+      // (core/modules.py; every Outlook route is require_module("email")) and
+      // there has never been an `inbox` key, so this entry — and with it the
+      // sidebar pin, the More-drawer row and the mobile Email tab — stayed
+      // visible with the module switched off. Found by the /audit of the tab.
+      { key: 'inbox', requires: 'email', label: 'Inbox', icon: 'pi pi-inbox', to: '/inbox', type: 'Operations', description: 'Outlook-synced email inbox' },
       { key: 'phone_com_calls', label: 'Phone.com Calls', icon: 'pi pi-phone', to: '/phone-com/calls', type: 'Customers', requires: 'phone_com', permission: 'nav.office', cluster: 'phone_hub', tabLabel: 'Calls', description: 'Call log from the Phone.com line' },
       { key: 'phone_com_messages', label: 'Phone.com SMS', icon: 'pi pi-comment', to: '/phone-com/messages', type: 'Customers', requires: 'phone_com', permission: 'nav.office', cluster: 'phone_hub', tabLabel: 'SMS', description: 'SMS threads on the Phone.com line' },
       { key: 'phone_com_cold_leads', label: 'Phone.com Cold Leads', icon: 'pi pi-user-plus', to: '/phone-com/cold-leads', type: 'Customers', requires: 'phone_com', permission: 'nav.office', cluster: 'phone_hub', tabLabel: 'Cold Leads', description: 'Missed/unreturned callers to follow up on' },

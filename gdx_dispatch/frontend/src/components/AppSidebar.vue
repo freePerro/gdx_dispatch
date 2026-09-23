@@ -450,13 +450,15 @@ const smsUnread = useSmsUnreadStore();
 const emailUnread = useEmailUnreadStore();
 const toast = useToast();
 let _stopEmailListener = null;
+let _releaseSmsPoll = null;
+let _releaseEmailPoll = null;
 
 onMounted(() => {
   loadFavorites();
   window.addEventListener('keydown', onKeydown);
   // SMS unread badge — polls even when the pin is module-gated off; the
   // store collapses errors to 0 so a phone.com-less tenant never badges.
-  smsUnread.startPolling();
+  _releaseSmsPoll = smsUnread.startPolling();
   // Email badge + new-mail toast (P2.6). The toast fires only on a RISE after
   // the first poll seeds a baseline — otherwise every page load with unread
   // mail would announce week-old messages as new.
@@ -468,12 +470,17 @@ onMounted(() => {
       life: 4000,
     });
   });
-  emailUnread.startPolling();
+  _releaseEmailPoll = emailUnread.startPolling();
 });
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown);
-  smsUnread.stopPolling();
-  emailUnread.stopPolling();
+  // Release OUR subscriptions only. On a phone this sidebar lives in a lazy
+  // Drawer and unmounts whenever it closes, while AppBottomNav keeps its own
+  // email subscription for the Email tab badge (2026-09-22).
+  if (_releaseSmsPoll) _releaseSmsPoll();
+  if (_releaseEmailPoll) _releaseEmailPoll();
+  _releaseSmsPoll = null;
+  _releaseEmailPoll = null;
   if (_stopEmailListener) _stopEmailListener();
 });
 
