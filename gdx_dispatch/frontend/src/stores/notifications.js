@@ -7,6 +7,13 @@ export const useNotificationsStore = defineStore('notifications', () => {
   const items = ref([]);
   const loading = ref(false);
   const _pollTimer = ref(null);
+  // Subscriptions — one contract across the three polling stores
+  // (emailUnread, smsUnread, notifications): startPolling() hands back the
+  // release for that one subscription, and the timer runs while any is live.
+  // AppTopbar holds its release and lets go
+  // on unmount — the shell unmounts on logout, and before this the poll
+  // outlived the session (audit 2026-09-22).
+  const _subscribers = new Set();
 
   const badgeCount = computed(() => unreadCount.value);
 
@@ -67,21 +74,36 @@ export const useNotificationsStore = defineStore('notifications', () => {
     unreadCount.value = 0;
   }
 
-  function startPolling(intervalMs = 60000) {
-    stopPolling();
-    fetchCount();
-    _pollTimer.value = setInterval(fetchCount, intervalMs);
-  }
-
-  function stopPolling() {
+  function _clearTimer() {
     if (_pollTimer.value) {
       clearInterval(_pollTimer.value);
       _pollTimer.value = null;
     }
   }
 
+  /**
+   * Subscribe to the poll. Returns the release() for THIS subscription. It is
+   * idempotent, so a caller may release on every exit path (a watch turning
+   * off, unmount) without ever under-counting anyone else. The timer runs
+   * while any subscription is live and stops with the last release; every
+   * new subscriber gets a fresh count immediately (deduped in-flight). The
+   * first subscriber's intervalMs sets the timer — later ones join it.
+   */
+  function startPolling(intervalMs = 60000) {
+    const token = Symbol('poll');
+    _subscribers.add(token);
+    fetchCount();
+    if (!_pollTimer.value) {
+      _pollTimer.value = setInterval(fetchCount, intervalMs);
+    }
+    return () => {
+      if (!_subscribers.delete(token)) return;
+      if (_subscribers.size === 0) _clearTimer();
+    };
+  }
+
   return {
     unreadCount, badgeCount, items, loading,
-    fetchCount, fetchList, markRead, remove, clearAll, startPolling, stopPolling,
+    fetchCount, fetchList, markRead, remove, clearAll, startPolling,
   };
 });

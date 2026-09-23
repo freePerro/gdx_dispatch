@@ -168,7 +168,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useRouter } from 'vue-router';
 import Toolbar from 'primevue/toolbar';
@@ -253,10 +253,23 @@ const aiAssistantEnabled = computed(() => {
 // silently — the lie just moved from the bell to the server logs. Poll
 // only while the module is on (immediate covers the default-enabled
 // pre-fetch state; the watcher stops it if the payload lands disabled).
+let _releaseNotificationsPoll = null;
 watch(notificationsEnabled, (on) => {
-  if (on) notifications.startPolling();
-  else notifications.stopPolling();
+  if (on) {
+    if (!_releaseNotificationsPoll) _releaseNotificationsPoll = notifications.startPolling();
+  } else if (_releaseNotificationsPoll) {
+    _releaseNotificationsPoll();
+    _releaseNotificationsPoll = null;
+  }
 }, { immediate: true });
+// The shell (and this bar) unmounts on logout — App.vue `noShell`. Without
+// this the poll outlived the session and a re-login stacked a second
+// subscription the module-off watcher could no longer stop (audit
+// 2026-09-22).
+onUnmounted(() => {
+  if (_releaseNotificationsPoll) _releaseNotificationsPoll();
+  _releaseNotificationsPoll = null;
+});
 
 // Flash the bell + badge briefly when the count *increases* (i.e. a new
 // notification arrived between polls — e.g. a public lead-form submission).

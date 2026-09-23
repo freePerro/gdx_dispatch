@@ -63,15 +63,35 @@ describe('smsUnread store', () => {
     expect(store.count).toBe(0);
   });
 
-  it('startPolling() fetches immediately and again on the interval', async () => {
+  it('startPolling() fetches immediately and again on the interval; its release stops it', async () => {
     const store = useSmsUnreadStore();
     apiMock.get.mockResolvedValue({ count: 1 });
-    store.startPolling(60000);
+    const release = store.startPolling(60000);
     expect(apiMock.get).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(60000);
     expect(apiMock.get).toHaveBeenCalledTimes(2);
-    store.stopPolling();
+    release();
     await vi.advanceTimersByTimeAsync(120000);
     expect(apiMock.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('releasing one subscription does not stop the poll for another', async () => {
+    // Same contract as the email store: on a phone the sidebar unmounts with
+    // its Drawer, and releasing its own subscription must not silence another.
+    const store = useSmsUnreadStore();
+    apiMock.get.mockResolvedValue({ count: 1 });
+    const releaseA = store.startPolling(60000);
+    expect(apiMock.get).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(0); // settle the in-flight dedup
+    const releaseB = store.startPolling(60000);
+    expect(apiMock.get).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(0);
+    releaseA();
+    releaseA(); // idempotent
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(apiMock.get).toHaveBeenCalledTimes(3);
+    releaseB();
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(apiMock.get).toHaveBeenCalledTimes(3);
   });
 });

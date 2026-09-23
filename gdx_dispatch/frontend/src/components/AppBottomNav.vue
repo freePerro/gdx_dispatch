@@ -9,10 +9,20 @@
       :disabled="!item.available"
       :title="item.available ? null : 'Coming soon'"
       :aria-disabled="!item.available"
+      :aria-label="item.badge ? `${item.label}, ${item.badge} unread` : null"
+      :data-testid="`tab-${item.key}`"
       @click="handleTab(item)"
     >
-      <i :class="item.icon" aria-hidden="true" />
-      <span>{{ item.label }}</span>
+      <span class="tab-icon">
+        <i :class="item.icon" aria-hidden="true" />
+        <span
+          v-if="item.badge"
+          class="tab-badge"
+          aria-hidden="true"
+          data-testid="email-unread-badge-mobile"
+        >{{ item.badge }}</span>
+      </span>
+      <span class="tab-label">{{ item.label }}</span>
     </button>
 
     <Drawer v-model:visible="moreOpen" position="bottom" header="More Modules" class="more-drawer">
@@ -94,13 +104,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useToast } from 'primevue/usetoast';
 import Drawer from 'primevue/drawer';
 import InputText from 'primevue/inputtext';
 import { useTenantModules } from '../composables/useTenantModules';
 import { useAuthStore } from '../stores/auth';
+import { useEmailUnreadStore } from '../stores/emailUnread';
 import { groupModules } from '../composables/useModuleSections';
 import { isTechnician } from '../constants/roles';
 import QuickCaptureSheet from './QuickCaptureSheet.vue';
@@ -108,8 +119,16 @@ import QuickCaptureSheet from './QuickCaptureSheet.vue';
 const route = useRoute();
 const router = useRouter();
 const toast = useToast();
-const { allEnabledModules } = useTenantModules();
+const { allEnabledModules, isEnabled } = useTenantModules();
 const auth = useAuthStore();
+const emailUnread = useEmailUnreadStore();
+// Role for shaping the strip: the persisted /api/users/me snapshot, else the
+// JWT claim, which exists the instant a token does. A cold load with a token
+// but no cached user painted the office strip — and, once the Email tab
+// existed, polled the mailbox once — for a tech until /auth/me landed. The
+// router learned the same lesson on 2026-08-28 (router/index.js, tech
+// redirect block).
+const effectiveRole = computed(() => auth.user?.role || auth.role);
 
 const moreOpen = ref(false);
 const moreSearch = ref('');
@@ -117,7 +136,7 @@ const moreSearch = ref('');
 const captureOpen = ref(false);
 // Office roles run the planner + field the calls; techs get a lean strip and
 // don't. Gate the quick-capture FAB to the same non-tech population.
-const showCapture = computed(() => !isTechnician(auth.user?.role));
+const showCapture = computed(() => !isTechnician(effectiveRole.value));
 
 function onCaptureSaved() {
   // Nudge the planner to reload if it's mounted (e.g. Doug captured from the
@@ -180,6 +199,43 @@ function closeDrawer() {
   moreSearch.value = '';
 }
 
+// ── Email tab (Doug, 2026-09-22: "office roles should have an easy access
+// point to it from mobile") ──
+// /mobile/inbox has existed since the first release, but the only way in was
+// the More drawer: the office row's tabs were Jobs / Customers / Clock /
+// Planner / Dispatch, and the Outlook inbox sat behind two taps and a scroll.
+// Office roles get it as a tab, with the same unread badge the desktop
+// sidebar pin carries. Techs keep it in the drawer (their strip is lean by
+// design and the drawer entry is unchanged). Hidden when the tenant has the
+// `email` module switched off — that is the backend registry key the Outlook
+// routes gate on (there is no `inbox` module; the catalog entry carries
+// `requires: 'email'` for the same reason). A tab into a disabled module is
+// a dead end. Signed-in only: with no session there is no role to shape by,
+// and the poll would just 401.
+const showEmailTab = computed(
+  () => auth.isAuthenticated && !isTechnician(effectiveRole.value) && isEnabled('email'),
+);
+const emailBadge = computed(() => {
+  const n = emailUnread.count;
+  if (!n || n <= 0) return '';
+  return n > 99 ? '99+' : String(n);
+});
+
+// Poll only while the tab is showing. startPolling() hands back the release
+// for OUR subscription: on a phone the sidebar (inside a lazy Drawer) mounts
+// and unmounts with the hamburger, and releasing its own cannot touch ours.
+let _releaseEmailPoll = null;
+function _syncEmailPolling(show) {
+  if (show && !_releaseEmailPoll) {
+    _releaseEmailPoll = emailUnread.startPolling();
+  } else if (!show && _releaseEmailPoll) {
+    _releaseEmailPoll();
+    _releaseEmailPoll = null;
+  }
+}
+watch(showEmailTab, _syncEmailPolling, { immediate: true });
+onUnmounted(() => _syncEmailPolling(false));
+
 function routeExists(path) {
   if (!path) return false;
   try {
@@ -196,7 +252,7 @@ const tabItems = computed(() => {
   // (dispatcher / admin / owner / sales) keep the original strip.
   // isTechnician accepts both the short 'tech' (DB / VALID_ROLES) and long
   // 'technician' (role-permissions UI) spellings of the role.
-  const isTech = isTechnician(auth.user?.role);
+  const isTech = isTechnician(effectiveRole.value);
   const items = isTech
     ? [
         // MH-9b (Doug 2026-05-19): Photos is a per-job action techs do
@@ -220,6 +276,12 @@ const tabItems = computed(() => {
         { key: 'timeclock', label: 'Clock', icon: 'pi pi-clock', to: '/mobile/timeclock' },
         { key: 'planner', label: 'Planner', icon: 'pi pi-calendar-plus', to: '/mobile/planner' },
         { key: 'dispatch', label: 'Dispatch', icon: 'pi pi-map', to: '/mobile/dispatch' },
+        // Appended rather than inserted so the five existing tabs keep their
+        // positions (muscle memory). 7 tabs at 360px = 51px columns; the
+        // 10px label rule below still fits "Customers" (48px).
+        ...(showEmailTab.value
+          ? [{ key: 'inbox', label: 'Email', icon: 'pi pi-envelope', to: '/mobile/inbox', badge: emailBadge.value }]
+          : []),
         { key: 'more', label: 'More', icon: 'pi pi-ellipsis-h', to: '' },
       ];
   return items.map((item) => ({
@@ -228,7 +290,15 @@ const tabItems = computed(() => {
   }));
 });
 
-const reservedKeys = new Set(['jobs', 'dispatch', 'customers', 'gps']);
+// Modules that already have a bottom-nav tab stay out of the More drawer.
+// Role-aware on purpose: 'inbox' is a tab for office roles only, and
+// reserving it for techs too would take away their only way in (the exact
+// Customers mistake of 2026-07-22, in reverse).
+const reservedKeys = computed(() => {
+  const keys = new Set(['jobs', 'dispatch', 'customers', 'gps']);
+  if (showEmailTab.value) keys.add('inbox');
+  return keys;
+});
 
 // Modules whose canonical `to` is desktop-shaped but a mobile-shaped view
 // exists. Rewrite for the More drawer so a tap from the bottom nav lands
@@ -294,9 +364,9 @@ const PROFILE_DRAWER_ENTRY = {
 };
 
 const moreModules = computed(() => {
-  const isTech = isTechnician(auth.user?.role);
+  const isTech = isTechnician(effectiveRole.value);
   const base = allEnabledModules.value
-    .filter((module) => !reservedKeys.has(module.key))
+    .filter((module) => !reservedKeys.value.has(module.key))
     .map((module) => {
       const resolvedTo = MOBILE_ROUTE_OVERRIDES[module.to] || module.to;
       return {
@@ -375,12 +445,47 @@ function handleTab(item) {
   gap: 0.125rem;
   font-size: 0.6875rem;
   cursor: pointer;
-  /* 6 tabs at 360px = 60px each; "Customers" must ellipsize, not wrap
-     or blow the column width. */
+  /* 6 tabs at 360px = 60px each (7 with the office Email tab = 51px);
+     "Customers" must ellipsize, not wrap or blow the column width. */
   min-width: 0;
+  /* The UA stylesheet gives a <button> 6px of side padding. At 7 columns
+     that took the 55.7px column down to a 44px label box and "Customers"
+     (48px at 10px) ellipsized again — measured in the rendered DOM
+     2026-09-22. The label gets the whole column. */
+  padding: 0;
 }
 
-.tab-btn span {
+/* Unread badge on the Email tab: pinned to the icon's top-right corner so
+   the label row keeps its ellipsis math. Same colour as the sidebar pin
+   badge; the ring in the nav surface colour keeps it legible when the
+   active-tab icon is the same blue. */
+.tab-icon {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+}
+.tab-badge {
+  position: absolute;
+  top: -0.4rem;
+  right: -0.7rem;
+  min-width: 1rem;
+  height: 1rem;
+  padding: 0 0.25rem;
+  border-radius: 0.5rem;
+  background: var(--interactive-primary, #2563eb);
+  /* Text in the nav surface colour: white on brand blue in light mode,
+     navy on the lighter dark-mode blue — white there measured ~2.3:1 on a
+     16px badge (throwaway walk 2026-09-22). */
+  color: var(--surface-header, #fff);
+  font-size: 0.6rem;
+  font-weight: 700;
+  line-height: 1rem;
+  text-align: center;
+  box-shadow: 0 0 0 1.5px var(--surface-header);
+  pointer-events: none;
+}
+
+.tab-btn .tab-label {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -389,7 +494,9 @@ function handleTab(item) {
 
 /* 6 tabs on a narrow phone: 390px/6 = 65px columns. "Customers" at the
    default 11px measures ~72px and ellipsizes ("Custom…"); at 10px it
-   measures 48px and fits. Verified against the rendered DOM 2026-07-22. */
+   measures 48px and fits. Verified against the rendered DOM 2026-07-22.
+   Office roles now have 7 (Email, 2026-09-22): 390px/7 = 55px and
+   360px/7 = 51px, both still clear of the 48px label. */
 @media (max-width: 430px) {
   .tab-btn {
     font-size: 0.625rem;

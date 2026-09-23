@@ -102,10 +102,10 @@ describe('emailUnread store', () => {
     expect(seen).not.toHaveBeenCalled();
   });
 
-  it('startPolling fetches immediately and stopPolling clears the timer', async () => {
+  it('startPolling fetches immediately and its release clears the timer', async () => {
     const store = useEmailUnreadStore();
     apiMock.get.mockResolvedValue({ count: 0 });
-    store.startPolling(60000);
+    const release = store.startPolling(60000);
     expect(apiMock.get).toHaveBeenCalledTimes(1);
     // Let the first fetch settle (releases the in-flight dedup guard) the
     // way it always does in real time before a 60s tick can fire.
@@ -113,9 +113,45 @@ describe('emailUnread store', () => {
     await Promise.resolve();
     vi.advanceTimersByTime(60000);
     expect(apiMock.get).toHaveBeenCalledTimes(2);
-    store.stopPolling();
+    release();
     vi.advanceTimersByTime(180000);
     expect(apiMock.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('releasing one subscription does not stop the poll for another', async () => {
+    // The mobile layout: AppBottomNav subscribes for its Email tab badge, and
+    // the sidebar (inside a lazy Drawer) mounts and unmounts every time the
+    // hamburger opens and closes. Its unmount used to kill the nav's poll.
+    const store = useEmailUnreadStore();
+    apiMock.get.mockResolvedValue({ count: 0 });
+    const releaseNav = store.startPolling(60000); // bottom nav
+    expect(apiMock.get).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(0); // settle the in-flight dedup
+    const releaseSidebar = store.startPolling(60000); // drawer opens — fresh count, no second timer
+    expect(apiMock.get).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(0);
+    releaseSidebar(); // drawer closes
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(apiMock.get).toHaveBeenCalledTimes(3); // still polling for the nav
+    releaseNav(); // bottom nav unmounts — last subscription
+    await vi.advanceTimersByTimeAsync(180000);
+    expect(apiMock.get).toHaveBeenCalledTimes(3);
+  });
+
+  it('a release is idempotent — releasing twice cannot take out someone else', async () => {
+    const store = useEmailUnreadStore();
+    apiMock.get.mockResolvedValue({ count: 0 });
+    const releaseA = store.startPolling(60000);
+    await vi.advanceTimersByTimeAsync(0);
+    const releaseB = store.startPolling(60000);
+    await vi.advanceTimersByTimeAsync(0);
+    releaseA();
+    releaseA(); // a watch turning off AND an unmount both firing
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(apiMock.get).toHaveBeenCalledTimes(3); // B still polls
+    releaseB();
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(apiMock.get).toHaveBeenCalledTimes(3);
   });
 
   it('a throwing listener cannot break polling', async () => {
