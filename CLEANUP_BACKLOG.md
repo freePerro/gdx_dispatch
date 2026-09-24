@@ -1,5 +1,7 @@
 # Repo TODO / cleanup backlog
 
+**Status:** `HISTORICAL` — retired 2026-09-23 on Doug's ruling. Last refreshed 2026-06-27, last reconciled 2026-09-06 (#615); no longer the source of truth for outstanding work — the GitHub tracker and the maintainer's local findings ledger are. Kept for the audit reasoning and dispositions recorded below. Verify any file it names against the tree before acting.
+
 Single source of truth for outstanding work markers in the repo. Two parts:
 
 - **Part A — Cleanup backlog**: over-engineering-audit items that are judgment
