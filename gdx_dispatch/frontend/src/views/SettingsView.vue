@@ -1271,6 +1271,141 @@
             </template>
           </Card>
 
+          <!-- Time off and holidays (2026-09-23). Vacation days and paid
+               holidays are timeclock entries: a tech asks from their Time
+               Clock, the office approves on Timesheets, and holidays are
+               posted from this calendar (here, or from the Timesheets notice).
+               Decided in the 2026-09-23 time-off and holiday pay plan. -->
+          <Card style="margin-top:1rem" data-testid="time-off-card">
+            <template #title>Time off and holidays</template>
+            <template #content>
+              <p class="muted" style="margin-top:0">
+                Vacation days and paid holidays land on the timesheet as their
+                own entry type, apart from worked hours. A tech asks for time
+                off from their Time Clock and the office approves it on
+                Timesheets; holidays are posted from the calendar below.
+                Nothing is posted automatically.
+              </p>
+              <div style="display:flex; flex-direction:column; gap:0.75rem; max-width:760px;">
+                <div style="display:flex; align-items:center; gap:1rem; flex-wrap:wrap;">
+                  <label style="min-width:170px;">Hours per day off</label>
+                  <InputNumber
+                    v-model="timeOff.default_hours"
+                    :min="0.5"
+                    :max="16"
+                    :step="0.5"
+                    :minFractionDigits="0"
+                    :maxFractionDigits="2"
+                    showButtons
+                    style="max-width:170px;"
+                    data-testid="time-off-default-hours"
+                  />
+                  <span class="muted">what a vacation day pays unless the request says less</span>
+                </div>
+                <div style="display:flex; align-items:center; gap:1rem; flex-wrap:wrap;">
+                  <label style="min-width:170px;">Counts toward overtime</label>
+                  <ToggleSwitch v-model="timeOff.counts_toward_overtime" data-testid="time-off-counts-ot" />
+                  <span class="muted" style="flex:1; min-width:16rem;">
+                    Stated on the emailed timesheet and the PDF beside the time-off hours.
+                    Overtime itself is applied by whoever runs payroll, not computed here.
+                  </span>
+                </div>
+
+                <Divider />
+                <strong>Holiday calendar</strong>
+                <table class="holiday-table" data-testid="holiday-table">
+                  <thead>
+                    <tr>
+                      <th style="text-align:left;">Date</th>
+                      <th style="text-align:left;">Name</th>
+                      <th style="text-align:left;">Hours</th>
+                      <th style="text-align:left;">Posted</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(h, i) in timeOff.holidays" :key="h.key" :data-testid="`holiday-row-${i}`">
+                      <td>
+                        <InputText v-model="h.date" type="date" style="max-width:170px;" :data-testid="`holiday-date-${i}`" />
+                      </td>
+                      <td>
+                        <InputText v-model="h.name" placeholder="e.g. Christmas Day" :data-testid="`holiday-name-${i}`" />
+                      </td>
+                      <td>
+                        <InputNumber
+                          v-model="h.hours"
+                          :min="0.5"
+                          :max="16"
+                          :step="0.5"
+                          :minFractionDigits="0"
+                          :maxFractionDigits="2"
+                          style="max-width:120px;"
+                          :data-testid="`holiday-hours-${i}`"
+                        />
+                      </td>
+                      <td>
+                        <Tag
+                          v-if="postedFor(h.date) > 0"
+                          :value="`${postedFor(h.date)} ${postedFor(h.date) === 1 ? 'person' : 'people'}`"
+                          severity="success"
+                          :data-testid="`holiday-posted-${i}`"
+                        />
+                        <span v-else class="muted">not yet</span>
+                      </td>
+                      <td style="white-space:nowrap;">
+                        <Button
+                          label="Post"
+                          icon="pi pi-users"
+                          size="small"
+                          text
+                          :disabled="!isSavedHoliday(h)"
+                          v-tooltip="isSavedHoliday(h) ? 'Give the people you pick this holiday\'s hours' : 'Save the calendar first — the hours paid are the saved ones'"
+                          :data-testid="`holiday-post-${i}`"
+                          @click="openHolidayPost(h)"
+                        />
+                        <Button
+                          icon="pi pi-trash"
+                          size="small"
+                          text
+                          severity="danger"
+                          aria-label="Remove holiday"
+                          :data-testid="`holiday-remove-${i}`"
+                          @click="removeHoliday(i)"
+                        />
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p v-if="!timeOff.holidays.length" class="muted" style="margin:0" data-testid="holiday-empty">
+                  No holidays on the calendar yet.
+                </p>
+                <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
+                  <Button
+                    label="Add holiday"
+                    icon="pi pi-plus"
+                    size="small"
+                    severity="secondary"
+                    outlined
+                    data-testid="holiday-add"
+                    @click="addHoliday"
+                  />
+                  <Button
+                    label="Save time off settings"
+                    icon="pi pi-save"
+                    :loading="timeOffSaving"
+                    data-testid="time-off-save"
+                    @click="saveTimeOff"
+                  />
+                </div>
+              </div>
+              <HolidayPostDialog
+                v-model:visible="holidayPostVisible"
+                :holiday="holidayToPost"
+                @posted="loadHolidayPosted"
+              />
+            </template>
+          </Card>
+
           <Card style="margin-top:1rem">
             <template #title>Dispatch</template>
             <template #content>
@@ -1487,6 +1622,7 @@ import OutlookIntegrationCard from "../components/OutlookIntegrationCard.vue";
 import SimpleFINCard from "../components/SimpleFINCard.vue";
 import OutlookConnectButton from "../components/OutlookConnectButton.vue";
 import MarginTiersPanel from "../components/MarginTiersPanel.vue";
+import HolidayPostDialog from "../components/HolidayPostDialog.vue";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
 import { getIdleTimeoutMin, setIdleTimeoutMin } from "../composables/useIdleLogout";
 import { useQBSync } from "../composables/useQBSync";
@@ -2548,6 +2684,127 @@ async function savePayPeriod() {
   }
 }
 
+// ── Time off and holidays (2026-09-23) ────────────────────────────────
+// Per the 2026-09-23 time-off and holiday pay plan. Hours are edited here;
+// MINUTES go on the wire (the server stores minutes — a half day is 240,
+// never 4.0). Posting needs the date to be on the SAVED calendar, so the
+// Post button is disabled on a row that has not been saved yet.
+const timeOff = reactive({ default_hours: 8, counts_toward_overtime: false, holidays: [] });
+const timeOffSaving = ref(false);
+const holidayPosted = ref({});           // 'YYYY-MM-DD' → people already holding the day
+const savedHolidayDates = ref(new Set());
+const holidayPostVisible = ref(false);
+const holidayToPost = ref(null);
+let holidayRowKey = 0;
+
+function applyTimeOff(s) {
+  if (!s) return;
+  timeOff.default_hours = Number(s.time_off_default_minutes || 480) / 60;
+  timeOff.counts_toward_overtime = Boolean(s.time_off_counts_toward_overtime);
+  timeOff.holidays = (Array.isArray(s.holiday_calendar) ? s.holiday_calendar : []).map((h) => ({
+    key: `h${(holidayRowKey += 1)}`,
+    date: h.date,
+    name: h.name,
+    hours: Number(h.minutes || 480) / 60,
+  }));
+  // The SAVED rows, keyed on everything the server pays from. Post is
+  // enabled only while a row still matches its saved copy: the server pays
+  // the stored calendar's minutes for the date, so a row edited but not
+  // saved would let the dialog promise hours the server does not pay.
+  savedHolidayDates.value = new Set(timeOff.holidays.map(holidayKey));
+}
+
+function holidayKey(h) {
+  return `${h.date}|${String(h.name || "").trim()}|${Math.round(Number(h.hours) * 60)}`;
+}
+
+async function loadHolidayPosted() {
+  const dates = timeOff.holidays.map((h) => h.date).filter(Boolean).sort();
+  if (!dates.length) {
+    holidayPosted.value = {};
+    return;
+  }
+  try {
+    const rows = await api.get(
+      `/api/timeclock/time-off/holidays?start=${dates[0]}&end=${dates[dates.length - 1]}`,
+      { suppressErrorToast: true },
+    );
+    const map = {};
+    for (const r of Array.isArray(rows) ? rows : []) map[r.date] = Number(r.posted || 0);
+    holidayPosted.value = map;
+  } catch (_e) {
+    // The timeclock module may be off; the calendar still edits and saves.
+    holidayPosted.value = {};
+  }
+}
+
+async function loadTimeOff() {
+  try {
+    applyTimeOff(await api.get("/api/settings"));
+  } catch (_e) {
+    // leave defaults
+  }
+  await loadHolidayPosted();
+}
+
+function postedFor(date) {
+  return holidayPosted.value[date] || 0;
+}
+
+function isSavedHoliday(h) {
+  return Boolean(h.date) && savedHolidayDates.value.has(holidayKey(h));
+}
+
+function addHoliday() {
+  timeOff.holidays.push({
+    key: `h${(holidayRowKey += 1)}`,
+    date: "",
+    name: "",
+    hours: Number(timeOff.default_hours) || 8,
+  });
+}
+
+function removeHoliday(i) {
+  timeOff.holidays.splice(i, 1);
+}
+
+function openHolidayPost(h) {
+  holidayToPost.value = { date: h.date, name: h.name, minutes: Math.round(Number(h.hours) * 60) };
+  holidayPostVisible.value = true;
+}
+
+async function saveTimeOff() {
+  // Courtesy copy of the server's rule so the operator hears it at the row,
+  // not as a 422 naming a date. The server still validates (and rejects a
+  // duplicate date, which this does not check).
+  for (const [i, h] of timeOff.holidays.entries()) {
+    if (!h.date || !String(h.name || "").trim()) {
+      toast.add({ severity: "error", summary: `Holiday ${i + 1} needs a date and a name`, life: 5000 });
+      return;
+    }
+  }
+  timeOffSaving.value = true;
+  try {
+    const saved = await api.patch(
+      "/api/settings",
+      {
+        time_off_default_minutes: Math.round(Number(timeOff.default_hours) * 60),
+        time_off_counts_toward_overtime: Boolean(timeOff.counts_toward_overtime),
+        holiday_calendar: timeOff.holidays.map((h) => ({
+          date: h.date,
+          name: String(h.name).trim(),
+          minutes: Math.round(Number(h.hours) * 60),
+        })),
+      },
+      { successMessage: "Time off settings saved" },
+    );
+    applyTimeOff(saved);
+    await loadHolidayPosted();
+  } finally {
+    timeOffSaving.value = false;
+  }
+}
+
 // ── Time Clock (S92) — tenant-local timezone for clock display ──
 const TIMEZONE_OPTIONS = [
   { label: "Eastern (America/New_York)",  value: "America/New_York" },
@@ -2692,7 +2949,7 @@ function formatDate(value) {
 onMounted(async () => {
   window.addEventListener("message", onOAuthMessage);
   window.addEventListener("beforeunload", onBeforeUnload);
-  await Promise.allSettled([loadBrandingForm(), loadModules(), loadUsers(), loadIntegrations(), loadEmailConfig(), loadTaxConfig(), loadNumbering(), loadWorkflowFlags(), loadBillingTerms(), loadCatalogPolicy(), loadEstimatesFeatures(), loadDispatchSettings(), loadTimeClockSettings(), loadShopHours(), loadPayPeriod(), loadIdleTimeout(), loadDebugLogging(), loadAutomationEmail(), loadPaymentPlans()]);
+  await Promise.allSettled([loadBrandingForm(), loadModules(), loadUsers(), loadIntegrations(), loadEmailConfig(), loadTaxConfig(), loadNumbering(), loadWorkflowFlags(), loadBillingTerms(), loadCatalogPolicy(), loadEstimatesFeatures(), loadDispatchSettings(), loadTimeClockSettings(), loadShopHours(), loadPayPeriod(), loadTimeOff(), loadIdleTimeout(), loadDebugLogging(), loadAutomationEmail(), loadPaymentPlans()]);
 });
 
 onBeforeUnmount(() => {

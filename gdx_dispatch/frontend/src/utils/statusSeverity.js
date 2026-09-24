@@ -107,9 +107,44 @@ export function timeclockStatusSeverity({ clockedIn, onBreak }) {
   return 'success'
 }
 
-/** Timeclock entry rows: break entries stand out from work entries. */
+/**
+ * Paid time off as timeclock entry types — mirrors TIME_OFF_TYPES in
+ * gdx_dispatch/core/time_off.py. A vacation day or a posted holiday is a
+ * closed entry with a synthetic span, so every surface that sums or labels
+ * entries checks here before treating one as a worked shift.
+ */
+export const TIME_OFF_TYPES = Object.freeze({ vacation: 'Vacation', holiday: 'Holiday' })
+
+export function isTimeOffType(entryType) {
+  return Object.prototype.hasOwnProperty.call(TIME_OFF_TYPES, String(entryType || '').toLowerCase())
+}
+
+/** Human label for an entry type: "Vacation", "Holiday", else the raw type. */
+export function timeclockEntryLabel(entryType) {
+  const key = String(entryType || 'work').toLowerCase()
+  return TIME_OFF_TYPES[key] || key
+}
+
+/** Timeclock entry rows: break entries stand out from work entries, and paid
+ *  time off from both. */
 export function timeclockEntrySeverity(entryType) {
-  return String(entryType || 'work').toLowerCase() === 'break' ? 'warn' : 'info'
+  const key = String(entryType || 'work').toLowerCase()
+  if (key === 'break') return 'warn'
+  if (key === 'vacation') return 'success'
+  if (key === 'holiday') return 'contrast'
+  return 'info'
+}
+
+/** Time-off request lifecycle → severity (core/time_off.py STATUSES). */
+export function timeOffStatusSeverity(status) {
+  const map = {
+    pending: 'warn',
+    approved: 'success',
+    denied: 'danger',
+    cancelled: 'secondary',
+    revoked: 'secondary',
+  }
+  return map[String(status || '').toLowerCase()] || 'secondary'
 }
 
 /** Lead pipeline stage → severity (LeadsView). */

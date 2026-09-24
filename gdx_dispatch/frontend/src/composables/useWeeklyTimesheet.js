@@ -21,6 +21,7 @@
  *    reads as a day that already happened.
  */
 import { computed, ref } from 'vue';
+import { isTimeOffType } from '../utils/statusSeverity';
 import { useApi } from './useApi';
 import { localDateString } from './useFormatters';
 import { dateKeyInZone, useTenantTimezone } from './useTenantTimezone';
@@ -91,10 +92,25 @@ export function useWeeklyTimesheet() {
     return iso ? dateKeyInZone(String(iso).replace(' ', 'T'), tenantTimezone.value) : '';
   }
 
-  /** Worked minutes for one entry: gross elapsed less its break time. */
+  /** Worked minutes for one entry: gross elapsed less its break time.
+   *  Paid time off is never "worked" — same rule as `Shift.worked_minutes` in
+   *  core/timesheet_hours.py, so this card and the emailed file agree. */
   function workedMinutes(entry) {
     if (entry.minutes == null) return null;
+    if (isTimeOffType(entry.entry_type)) return 0;
     return Math.max(0, entry.minutes - (entry.break_minutes || 0));
+  }
+
+  /** Paid minutes of a vacation day or holiday; 0 for a shift. */
+  function timeOffMinutes(entry) {
+    if (!isTimeOffType(entry.entry_type) || entry.minutes == null) return 0;
+    return Math.max(0, entry.minutes);
+  }
+
+  /** What the row is worth: worked hours for a shift, the day's value for time off. */
+  function paidMinutes(entry) {
+    if (entry.minutes == null) return null;
+    return isTimeOffType(entry.entry_type) ? timeOffMinutes(entry) : workedMinutes(entry);
   }
 
   /** Entries whose SHOP day falls inside the viewed week. */
@@ -129,6 +145,7 @@ export function useWeeklyTimesheet() {
         isToday: key === todayKey,
         entries,
         workedMinutes: entries.reduce((s, e) => s + (workedMinutes(e) || 0), 0),
+        timeOffMinutes: entries.reduce((s, e) => s + timeOffMinutes(e), 0),
         breakMinutes: entries.reduce((s, e) => s + (e.break_minutes || 0), 0),
       });
     }
@@ -147,6 +164,7 @@ export function useWeeklyTimesheet() {
         isToday: false,
         entries: stray,
         workedMinutes: stray.reduce((s, e) => s + (workedMinutes(e) || 0), 0),
+        timeOffMinutes: stray.reduce((s, e) => s + timeOffMinutes(e), 0),
         breakMinutes: stray.reduce((s, e) => s + (e.break_minutes || 0), 0),
       });
     }
@@ -155,6 +173,9 @@ export function useWeeklyTimesheet() {
 
   const weekWorkedHours = computed(
     () => days.value.reduce((s, d) => s + d.workedMinutes, 0) / 60,
+  );
+  const weekTimeOffHours = computed(
+    () => days.value.reduce((s, d) => s + d.timeOffMinutes, 0) / 60,
   );
   const weekBreakHours = computed(
     () => days.value.reduce((s, d) => s + d.breakMinutes, 0) / 60,
@@ -229,9 +250,9 @@ export function useWeeklyTimesheet() {
   return {
     tenantTimezone,
     weekStart, weekLoading, weekEntries, days,
-    weekWorkedHours, weekBreakHours, weekLabel,
+    weekWorkedHours, weekTimeOffHours, weekBreakHours, weekLabel,
     isCurrentWeek, canGoNext,
     init, reload, prevWeek, nextWeek, thisWeek,
-    canSelfEdit, workedMinutes, formatClock, shopToday,
+    canSelfEdit, workedMinutes, timeOffMinutes, paidMinutes, formatClock, shopToday,
   };
 }

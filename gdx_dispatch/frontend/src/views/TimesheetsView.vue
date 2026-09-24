@@ -174,6 +174,13 @@
             after {{ crewBreakHours.toFixed(2) }}h of breaks
           </span>
         </div>
+        <div class="summary-tile" data-testid="timesheets-time-off-tile">
+          <span class="summary-label">Time off</span>
+          <strong class="summary-value">{{ crewTimeOffHours.toFixed(2) }}h</strong>
+          <span v-if="crewTimeOffHours > 0 && overtimeStatement" class="summary-sub" data-testid="timesheets-ot-statement">
+            {{ overtimeStatement }}
+          </span>
+        </div>
         <div class="summary-tile">
           <span class="summary-label">People</span>
           <strong class="summary-value">{{ timecards.length }}</strong>
@@ -198,6 +205,128 @@
         Payroll figures are kept separately.
       </p>
 
+      <!-- Holidays on the calendar, inside this range, that nobody has been
+           paid for yet. The Post button is here so the calendar in Settings
+           cannot be forgotten on the day the file gets sent. -->
+      <Message
+        v-for="h in unpostedHolidays"
+        :key="h.date"
+        severity="info"
+        :closable="false"
+        class="holiday-notice"
+        :data-testid="`holiday-unposted-${h.date}`"
+      >
+        <div class="holiday-notice-body">
+          <span>
+            <strong>{{ h.name }}</strong> ({{ formatDayOnly(h.date) }}) is on the holiday calendar
+            and nobody has holiday pay for it yet.
+          </span>
+          <Button
+            label="Post holiday pay"
+            icon="pi pi-users"
+            size="small"
+            :data-testid="`holiday-post-${h.date}`"
+            @click="openHolidayPost(h)"
+          />
+        </div>
+      </Message>
+
+      <!-- Time off requests: pending first, the office rules here. An
+           approval writes vacation entries into the cards below. -->
+      <Card class="time-off-card" data-testid="time-off-requests">
+        <template #title>
+          <div class="time-off-head">
+            <i class="pi pi-calendar-plus" aria-hidden="true" />
+            <span class="time-off-title">Time off requests</span>
+            <Tag
+              v-if="pendingRequests.length"
+              :value="`${pendingRequests.length} pending`"
+              severity="warn"
+              rounded
+              data-testid="time-off-pending-count"
+            />
+            <Button
+              :label="showDecided ? 'Hide decided' : 'Show decided'"
+              size="small"
+              text
+              class="time-off-toggle"
+              data-testid="time-off-toggle-decided"
+              @click="showDecided = !showDecided"
+            />
+          </div>
+        </template>
+        <template #content>
+          <div
+            v-for="r in visibleRequests"
+            :key="r.id"
+            class="request-row"
+            :data-testid="`time-off-request-${r.id}`"
+          >
+            <div class="request-main">
+              <strong>{{ requestName(r) }}</strong>
+              <span class="muted">· {{ r.entry_type_label || 'Vacation' }} · {{ requestRange(r) }}</span>
+              <span class="muted">
+                · {{ r.workday_count ?? '?' }} {{ r.workday_count === 1 ? 'workday' : 'workdays' }} × {{ requestHours(r) }}h
+              </span>
+              <Tag :value="r.status" :severity="timeOffStatusSeverity(r.status)" />
+              <span class="request-actions">
+                <template v-if="r.status === 'pending'">
+                  <Button
+                    label="Approve"
+                    icon="pi pi-check"
+                    size="small"
+                    :loading="ruling === r.id"
+                    :disabled="ruling !== '' && ruling !== r.id"
+                    :data-testid="`time-off-approve-${r.id}`"
+                    @click="approveRequest(r)"
+                  />
+                  <Button
+                    label="Deny"
+                    icon="pi pi-times"
+                    size="small"
+                    severity="secondary"
+                    :disabled="ruling !== ''"
+                    :data-testid="`time-off-deny-${r.id}`"
+                    @click="openDeny(r)"
+                  />
+                </template>
+                <Button
+                  v-else-if="r.status === 'approved'"
+                  :label="revoking === r.id ? 'Confirm revoke' : 'Revoke'"
+                  size="small"
+                  text
+                  severity="danger"
+                  :loading="ruling === r.id"
+                  :data-testid="`time-off-revoke-${r.id}`"
+                  @click="revokeRequest(r)"
+                />
+              </span>
+            </div>
+            <div v-if="r.notes" class="muted request-note">“{{ r.notes }}”</div>
+            <div v-if="r.review_note" class="muted request-note">Office: {{ r.review_note }}</div>
+            <div v-if="denying === r.id" class="deny-box" :data-testid="`time-off-deny-box-${r.id}`">
+              <Textarea
+                v-model="denyNote"
+                rows="2"
+                placeholder="Why — the tech sees this"
+                :data-testid="`time-off-deny-note-${r.id}`"
+              />
+              <Button
+                label="Confirm deny"
+                size="small"
+                severity="danger"
+                :loading="ruling === r.id"
+                :data-testid="`time-off-deny-confirm-${r.id}`"
+                @click="denyRequest(r)"
+              />
+            </div>
+          </div>
+          <p v-if="!visibleRequests.length" class="muted request-empty" data-testid="time-off-requests-empty">
+            No pending requests. Techs ask from their Time Clock; the office can also add time off with <em>Add Entry</em>.
+          </p>
+        </template>
+      </Card>
+
       <Card
         v-for="card in timecards"
         :key="card.technicianId"
@@ -217,6 +346,11 @@
             />
             <span class="timecard-total" :data-testid="`timecard-total-${card.technicianId}`">
               {{ card.hours.toFixed(2) }}h
+              <span
+                v-if="card.timeOffHours > 0"
+                class="timecard-off"
+                :data-testid="`timecard-time-off-${card.technicianId}`"
+              >+ {{ card.timeOffHours.toFixed(2) }}h off</span>
             </span>
           </div>
         </template>
@@ -244,15 +378,20 @@
             </Column>
             <Column header="Type" style="width: 6rem">
               <template #body="{ data }">
-                <Tag :value="data.entry_type || 'work'" :severity="timeclockEntrySeverity(data.entry_type)" />
+                <Tag :value="timeclockEntryLabel(data.entry_type)" :severity="timeclockEntrySeverity(data.entry_type)" />
               </template>
             </Column>
+            <!-- A day off carries a synthetic span (core/time_off.py). Printing
+                 "8:00 AM / 4:00 PM" on it would read as a shift somebody clocked. -->
             <Column header="In" style="width: 7rem">
-              <template #body="{ data }">{{ formatClock(data.clock_in_at) }}</template>
+              <template #body="{ data }">
+                <span v-if="isTimeOffType(data.entry_type)" class="muted">—</span>
+                <template v-else>{{ formatClock(data.clock_in_at) }}</template>
+              </template>
             </Column>
             <Column header="Out" style="width: 7rem">
               <template #body="{ data }">
-                <span v-if="data.clock_out_at">{{ formatClock(data.clock_out_at) }}</span>
+                <span v-if="data.clock_out_at && !isTimeOffType(data.entry_type)">{{ formatClock(data.clock_out_at) }}</span>
                 <span v-else class="muted">—</span>
               </template>
             </Column>
@@ -262,9 +401,12 @@
                 <span v-else class="muted">—</span>
               </template>
             </Column>
-            <Column header="Worked" style="width: 9rem">
+            <Column header="Hours" style="width: 9rem">
               <template #body="{ data }">
-                <span v-if="data.minutes != null" :class="{ 'hours-implausible': isImplausible(data) }">
+                <span v-if="isTimeOffType(data.entry_type) && data.minutes != null" class="hours-off">
+                  {{ (timeOffMinutes(data) / 60).toFixed(2) }}
+                </span>
+                <span v-else-if="data.minutes != null" :class="{ 'hours-implausible': isImplausible(data) }">
                   {{ (workedMinutes(data) / 60).toFixed(2) }}
                 </span>
                 <Tag v-else-if="!data.clock_out_at" value="Still clocked in" severity="info" />
@@ -333,6 +475,20 @@
             </button>
           </li>
         </ul>
+        <!-- An unposted holiday holds the send the way a flagged shift does.
+             The fix is one click away rather than a trip to Settings. -->
+        <ul v-if="(sendBlocked.holidays || []).length" class="flag-list" data-testid="send-blocked-holidays">
+          <li v-for="h in sendBlocked.holidays" :key="h.date" class="holiday-hold">
+            <span>{{ h.name }} — {{ formatDayOnly(h.date) }}</span>
+            <Button
+              label="Post holiday pay"
+              icon="pi pi-users"
+              size="small"
+              :data-testid="`send-post-holiday-${h.date}`"
+              @click="postFromSendHold(h)"
+            />
+          </li>
+        </ul>
       </div>
 
       <!-- Confirm -->
@@ -383,6 +539,14 @@
       :anchor-date="startDate"
       @saved="load"
     />
+
+    <!-- Holiday pay: who gets the calendar's hours for the date. Shared with
+         Settings, so posting is reachable from wherever the office is. -->
+    <HolidayPostDialog
+      v-model:visible="holidayPostVisible"
+      :holiday="holidayToPost"
+      @posted="onHolidayPosted"
+    />
   </section>
 </template>
 
@@ -400,14 +564,18 @@ import Message from 'primevue/message';
 import ProgressSpinner from 'primevue/progressspinner';
 import Select from 'primevue/select';
 import Tag from 'primevue/tag';
+import Textarea from 'primevue/textarea';
 import Toolbar from 'primevue/toolbar';
 import { useToast } from 'primevue/usetoast';
+import HolidayPostDialog from '../components/HolidayPostDialog.vue';
 import TimeEntryDialog from '../components/TimeEntryDialog.vue';
 import { useApi } from '../composables/useApi';
 import { downloadAuthedFile } from '../composables/useAuthedFile';
-import { formatDate, formatTime, localDateString } from '../composables/useFormatters';
+import { formatDate, formatTime, localDateString, parseLocalDateString } from '../composables/useFormatters';
 import { dateKeyInZone, useTenantTimezone } from '../composables/useTenantTimezone';
-import { timeclockEntrySeverity } from '../utils/statusSeverity';
+import {
+  isTimeOffType, timeOffStatusSeverity, timeclockEntryLabel, timeclockEntrySeverity,
+} from '../utils/statusSeverity';
 
 // Mirrors MAX_SHIFT_HOURS in routers/timeclock.py. Display-only — the server
 // is the authority on what counts as an exception; this just paints the row.
@@ -457,6 +625,23 @@ const deepLinkMiss = ref(false);
 // Consumed once on the first load after a Dispatch "Fix" click, then cleared so
 // a later refresh doesn't reopen the dialog under the user.
 const pendingEntryId = ref('');
+
+// ── Time off (2026-09-23) ───────────────────────────────────────────────────
+// Per the 2026-09-23 time-off and holiday pay plan. Requests are the workflow;
+// an approval writes vacation entries into the same rows this page lists,
+// so every ruling reloads the timesheet. Holidays in range that nobody has
+// been paid for yet are surfaced here with the Post button, so the calendar
+// in Settings cannot be forgotten on payroll day.
+const timeOffRequests = ref([]);
+const showDecided = ref(false);
+const denying = ref('');      // request id whose deny note is open
+const denyNote = ref('');
+const revoking = ref('');     // request id awaiting a second click
+const ruling = ref('');       // request id with a call in flight
+const holidays = ref([]);
+const timeOffOptions = ref(null);
+const holidayPostVisible = ref(false);
+const holidayToPost = ref(null);
 
 const dialogTechName = computed(() =>
   dialogEntry.value ? techName(dialogEntry.value.technician_id) : '',
@@ -514,7 +699,15 @@ function isImplausible(entry) {
  * other; change both or neither. */
 function workedMinutes(entry) {
   if (entry.minutes == null) return null;
+  // Paid time off is never worked (core/time_off.py); it is summed apart.
+  if (isTimeOffType(entry.entry_type)) return 0;
   return Math.max(0, entry.minutes - (entry.break_minutes || 0));
+}
+
+/** Paid minutes of a vacation/holiday row; 0 for a shift. */
+function timeOffMinutes(entry) {
+  if (!isTimeOffType(entry.entry_type) || entry.minutes == null) return 0;
+  return Math.max(0, entry.minutes);
 }
 
 /**
@@ -585,6 +778,7 @@ const allTimecards = computed(() => {
       // WORKED hours — gross elapsed less break time. `minutes` alone is what
       // the clock recorded end-to-end, so totalling it pays out every lunch.
       hours: rows.reduce((sum, r) => sum + (workedMinutes(r) || 0), 0) / 60,
+      timeOffHours: rows.reduce((sum, r) => sum + timeOffMinutes(r), 0) / 60,
       breakHours: rows.reduce((sum, r) => sum + (r.break_minutes || 0), 0) / 60,
       flagged: rows.filter(isFlagged).length,
     });
@@ -600,7 +794,45 @@ const timecards = computed(() =>
 );
 
 const crewHours = computed(() => timecards.value.reduce((s, c) => s + c.hours, 0));
+const crewTimeOffHours = computed(() => timecards.value.reduce((s, c) => s + c.timeOffHours, 0));
 const crewBreakHours = computed(() => timecards.value.reduce((s, c) => s + c.breakHours, 0));
+
+// Stated, not applied: the app computes no overtime (core/timesheet_hours.py).
+const overtimeStatement = computed(() => {
+  if (!timeOffOptions.value) return '';
+  return timeOffOptions.value.time_off_counts_toward_overtime
+    ? 'counts toward overtime'
+    : 'not counted toward overtime';
+});
+
+const pendingRequests = computed(() => timeOffRequests.value.filter((r) => r.status === 'pending'));
+const decidedRequests = computed(() => timeOffRequests.value.filter((r) => r.status !== 'pending'));
+const visibleRequests = computed(() =>
+  showDecided.value ? [...pendingRequests.value, ...decidedRequests.value] : pendingRequests.value,
+);
+const unpostedHolidays = computed(() => holidays.value.filter((h) => !(Number(h.posted) > 0)));
+
+function requestName(r) {
+  return r.technician_name || techName(r.technician_id);
+}
+
+function formatDayOnly(day, withYear = true) {
+  const d = parseLocalDateString(day);
+  if (!d) return String(day || '');
+  return formatDate(d, {
+    options: { weekday: 'short', month: 'short', day: 'numeric', ...(withYear ? { year: 'numeric' } : {}) },
+  });
+}
+
+function requestRange(r) {
+  if (r.start_date === r.end_date) return formatDayOnly(r.start_date);
+  return `${formatDayOnly(r.start_date, false)} – ${formatDayOnly(r.end_date)}`;
+}
+
+function requestHours(r) {
+  const h = Number(r.minutes_per_day || 0) / 60;
+  return h.toFixed(Number.isInteger(h) ? 0 : 2);
+}
 const flaggedCount = computed(() => timecards.value.reduce((s, c) => s + c.flagged, 0));
 // Rows actually ON SCREEN. `entries` is the raw fetch and includes the ±1 day
 // of slack the shop-day boundary needs, so counting it reported rows the page
@@ -868,7 +1100,124 @@ async function load() {
     loading.value = false;
   }
   loadSubmittedDays();
+  loadTimeOffRequests();
+  loadHolidays();
   consumeDeepLink();
+}
+
+// ── Time off loaders + rulings ─────────────────────────────────────────────
+// Best-effort reads, like the submitted-day badge: a failure must never blank
+// the timesheet. The writes toast normally — a ruling that fails must say so.
+async function loadTimeOffRequests() {
+  try {
+    const rows = await api.get('/api/timeclock/time-off/requests?all_technicians=true', { suppressErrorToast: true });
+    timeOffRequests.value = Array.isArray(rows) ? rows : [];
+  } catch {
+    timeOffRequests.value = [];
+  }
+}
+
+async function loadHolidays() {
+  if (!startDate.value || !endDate.value) {
+    holidays.value = [];
+    return;
+  }
+  try {
+    const params = new URLSearchParams({
+      start: localDateString(startDate.value),
+      end: localDateString(endDate.value),
+    });
+    const rows = await api.get(`/api/timeclock/time-off/holidays?${params.toString()}`, { suppressErrorToast: true });
+    holidays.value = Array.isArray(rows) ? rows : [];
+  } catch {
+    holidays.value = [];
+  }
+}
+
+async function loadTimeOffOptions() {
+  try {
+    timeOffOptions.value = await api.get('/api/timeclock/time-off/options', { suppressErrorToast: true });
+  } catch {
+    timeOffOptions.value = null;
+  }
+}
+
+async function approveRequest(r) {
+  ruling.value = r.id;
+  try {
+    const out = await api.post(`/api/timeclock/time-off/requests/${r.id}/approve`, {}, { suppressErrorToast: false });
+    const created = Number(out?.created || 0);
+    const skipped = out?.skipped_days || [];
+    toast.add({
+      severity: 'success',
+      summary: `Approved — ${created} ${created === 1 ? 'day' : 'days'} added for ${requestName(r)}`,
+      detail: skipped.length ? `Already off, skipped: ${skipped.join(', ')}` : undefined,
+      life: 5000,
+    });
+    // The approval wrote timeclock rows: reload the sheet, not just the list.
+    await load();
+  } finally {
+    ruling.value = '';
+  }
+}
+
+function openDeny(r) {
+  denying.value = denying.value === r.id ? '' : r.id;
+  denyNote.value = '';
+}
+
+async function denyRequest(r) {
+  ruling.value = r.id;
+  try {
+    await api.post(
+      `/api/timeclock/time-off/requests/${r.id}/deny`,
+      { note: denyNote.value.trim() || null },
+      { successMessage: `Denied — ${requestName(r)} will see why` },
+    );
+    denying.value = '';
+    denyNote.value = '';
+    await loadTimeOffRequests();
+  } finally {
+    ruling.value = '';
+  }
+}
+
+async function revokeRequest(r) {
+  // Two clicks: revoke removes the days the approval created.
+  if (revoking.value !== r.id) {
+    revoking.value = r.id;
+    return;
+  }
+  ruling.value = r.id;
+  try {
+    const out = await api.post(`/api/timeclock/time-off/requests/${r.id}/revoke`, {}, { suppressErrorToast: false });
+    toast.add({
+      severity: 'success',
+      summary: `Revoked — ${Number(out?.removed || 0)} ${Number(out?.removed || 0) === 1 ? 'day' : 'days'} removed`,
+      life: 5000,
+    });
+    revoking.value = '';
+    await load();
+  } finally {
+    ruling.value = '';
+  }
+}
+
+function openHolidayPost(h) {
+  holidayToPost.value = h;
+  holidayPostVisible.value = true;
+}
+
+function postFromSendHold(h) {
+  // Close the refusal so the post dialog is the only thing on screen; the
+  // operator presses Send again afterwards, and this time it goes.
+  sendDialog.value = false;
+  openHolidayPost(h);
+}
+
+async function onHolidayPosted() {
+  // Holiday entries are timeclock rows too.
+  await load();
 }
 
 // Submit-day office badge (Doug ruled 2026-09-20): read-only view of the
@@ -975,6 +1324,7 @@ onMounted(async () => {
   // under the office's name. Awaiting here closes that race.
   await ensureTimezone();
   await loadRoster();
+  loadTimeOffOptions();
   await load();
 });
 </script>
@@ -1173,5 +1523,87 @@ onMounted(async () => {
   margin-left: 0.4rem;
   font-size: 0.65rem;
   vertical-align: middle;
+}
+
+/* Time off */
+.timecard-off {
+  margin-left: 0.4rem;
+  font-weight: 400;
+  color: var(--p-text-muted-color);
+}
+.hours-off {
+  color: var(--p-text-muted-color);
+  font-variant-numeric: tabular-nums;
+}
+.holiday-notice {
+  margin-bottom: 0.75rem;
+}
+.holiday-notice-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.time-off-toggle {
+  margin-left: auto;
+}
+.time-off-card {
+  margin-bottom: 1rem;
+}
+.time-off-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.time-off-head i {
+  color: var(--p-text-muted-color);
+}
+.time-off-title {
+  font-weight: 600;
+}
+.request-row {
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--p-content-border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.request-row:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.request-main {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.request-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 0.4rem;
+}
+.request-note {
+  font-size: 0.85rem;
+}
+.request-empty {
+  margin: 0;
+}
+.deny-box {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  margin-top: 0.25rem;
+}
+.deny-box textarea {
+  flex: 1;
+}
+.holiday-hold {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 </style>

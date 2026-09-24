@@ -51,7 +51,10 @@
     </div>
     <div class="totals">
       <span class="big">{{ '%.2f'|format(total_hours) }}</span>
-      <span class="sub">hours &middot; {{ people }} {{ 'person' if people == 1 else 'people' }}</span>
+      <span class="sub">hours worked &middot; {{ people }} {{ 'person' if people == 1 else 'people' }}</span>
+      {% if total_time_off_hours %}
+      <span class="sub" style="display:block">+ {{ '%.2f'|format(total_time_off_hours) }} paid time off</span>
+      {% endif %}
     </div>
   </div>
 </div>
@@ -72,7 +75,9 @@
 <div class="person">
   <div class="person-head">
     <h2>{{ card.name }}</h2>
-    <span class="person-hours">{{ '%.2f'|format(card.hours) }} hours</span>
+    <span class="person-hours">
+      {{ '%.2f'|format(card.hours) }} hours worked{% if card.time_off_hours %} &middot; {{ '%.2f'|format(card.time_off_hours) }} paid time off{% endif %}
+    </span>
   </div>
   <table>
     <thead>
@@ -81,15 +86,15 @@
         <th style="width:16%">In</th>
         <th style="width:16%">Out</th>
         <th class="num" style="width:13%">Break</th>
-        <th class="num" style="width:13%">Worked</th>
+        <th class="num" style="width:13%">Hours</th>
         <th>Note</th>
       </tr>
     </thead>
     <tbody>
       {% for row in card.rows %}
       <tr class="{{ 'flagged' if row.flag_label else '' }}">
-        <td>{{ row.date }}</td>
-        <td>{{ row.clock_in }}</td>
+        <td>{{ row.date }}{% if row.is_time_off %} &middot; {{ row.type_label }}{% endif %}</td>
+        <td>{{ row.clock_in or '—' }}</td>
         <td>{{ row.clock_out or '—' }}</td>
         <td class="num">{{ row.break_minutes or '—' }}</td>
         <td class="num">{{ '%.2f'|format(row.hours) }}</td>
@@ -107,8 +112,9 @@
 {% endfor %}
 
 <div class="foot">
-  Worked hours are clocked time less recorded breaks. This sheet reports hours
-  only — no rates and no pay are calculated here.
+  Worked hours are clocked time less recorded breaks. Vacation and holiday
+  rows are paid time off, listed apart from worked hours.{% if time_off_statement %} {{ time_off_statement }}{% endif %}
+  This sheet reports hours only — no rates and no pay are calculated here.
 </div>
 
 </body>

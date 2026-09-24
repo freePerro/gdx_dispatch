@@ -26,6 +26,15 @@ from gdx_dispatch.core.pay_periods import (
     normalize_cadence,
 )
 from gdx_dispatch.core.payments import stripe_configured
+from gdx_dispatch.core.time_off import (
+    DEFAULT_MINUTES as DEFAULT_TIME_OFF_MINUTES,
+)
+from gdx_dispatch.core.time_off import (
+    MAX_MINUTES_PER_DAY,
+    MIN_MINUTES_PER_DAY,
+    holiday_calendar,
+    normalize_holiday_calendar,
+)
 from gdx_dispatch.models.tenant_models import AppSettings, CompanyModuleGrant
 
 log = logging.getLogger(__name__)
@@ -102,6 +111,14 @@ class SettingsPatchIn(BaseModel):
     payroll_recipient_emails: str | None = Field(default=None, max_length=1000)
     payroll_autosend_enabled: bool | None = None
     payroll_autosend_hour: int | None = Field(default=None, ge=0, le=23)
+    # Time off and holiday pay (2026-09-23). The calendar is validated and
+    # canonicalised by core/time_off.normalize_holiday_calendar in
+    # patch_settings; a bad entry is a 422 with the entry named.
+    holiday_calendar: list[dict[str, Any]] | None = None
+    time_off_default_minutes: int | None = Field(
+        default=None, ge=MIN_MINUTES_PER_DAY, le=MAX_MINUTES_PER_DAY
+    )
+    time_off_counts_toward_overtime: bool | None = None
 
     @field_validator("google_review_url")
     @classmethod
@@ -227,6 +244,13 @@ def _settings_dict(row: AppSettings) -> dict[str, Any]:
         "payroll_recipient_emails": getattr(row, "payroll_recipient_emails", None) or "",
         "payroll_autosend_enabled": bool(getattr(row, "payroll_autosend_enabled", False)),
         "payroll_autosend_hour": int(getattr(row, "payroll_autosend_hour", 7) or 0),
+        "holiday_calendar": holiday_calendar(row),
+        "time_off_default_minutes": int(
+            getattr(row, "time_off_default_minutes", None) or DEFAULT_TIME_OFF_MINUTES
+        ),
+        "time_off_counts_toward_overtime": bool(
+            getattr(row, "time_off_counts_toward_overtime", False)
+        ),
     }
 
 
@@ -349,6 +373,12 @@ def patch_settings(
     audit_updates = payload.model_dump(exclude_unset=True, mode="json")
     updates = payload.model_dump(exclude_unset=True)
     _validate_pay_period(row, updates)
+    if "holiday_calendar" in updates:
+        try:
+            updates["holiday_calendar"] = normalize_holiday_calendar(updates["holiday_calendar"])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        audit_updates["holiday_calendar"] = updates["holiday_calendar"]
     for key in (
         "company_name", "address", "phone", "email", "logo", "timezone",
         "primary_color", "secondary_color", "google_review_url",
@@ -360,6 +390,8 @@ def patch_settings(
         "pay_period_cadence", "pay_period_anchor_start",
         "pay_period_pay_lag_days", "payroll_recipient_emails",
         "payroll_autosend_enabled", "payroll_autosend_hour",
+        "holiday_calendar", "time_off_default_minutes",
+        "time_off_counts_toward_overtime",
     ):
         if key in updates:
             setattr(row, key, updates[key])
