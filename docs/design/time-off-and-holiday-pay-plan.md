@@ -1,7 +1,7 @@
 # Time off and holiday pay — Plan
 
 **Date:** 2026-09-23
-**Status:** BUILT — every section below is implemented on `feat/time-off-requests` and browser-walked on a throwaway container 2026-09-23 (`frontend/e2e/time-off.spec.js`); PR pending, not merged, not released
+**Status:** BUILT — every section below is implemented on `feat/time-off-requests` and browser-walked on a throwaway container 2026-09-23 (`frontend/e2e/time-off.spec.js`); PR #770 open, not merged, not released
 **Ask (Doug, 2026-09-23):** "there is nothing that lets anyone put down a
 vacation day or holiday pay." Shape decisions, all Doug's, same day:
 
