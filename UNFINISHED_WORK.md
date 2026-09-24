@@ -1,5 +1,7 @@
 # Unfinished Work — GDX Dispatch (v2)
 
+**Status:** `HISTORICAL` — retired 2026-09-23 on Doug's ruling. Compiled 2026-08-23 against v1.75.0; last corrected 2026-09-06 (#633); prod and demo were on v1.123.0 when it was retired. Its 16 open rows were carried to the maintainer's local findings ledger on 2026-09-23 (11 still open, 5 closed on re-check) so they stay counted; nothing below is current state, and no row should be acted on without re-checking the code.
+
 **Compiled 2026-08-23** against `origin/main @ eb5559f`, prod + demo on **v1.75.0**.
 Supersedes the 2026-07-19 edition, which had gone stale in almost every section.
 

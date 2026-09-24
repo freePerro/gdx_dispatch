@@ -1,6 +1,6 @@
 # UI/UX Audit — Action Plan
 
-**STATUS: ALL ITEMS COMPLETED 2026-07-01** — implemented, unit-tested (838/838 green,
+**Status:** `HISTORICAL` — all items completed 2026-07-01 (marked HISTORICAL 2026-09-23); implemented, unit-tested (838/838 green,
 production build clean), and visually verified in a headed browser in both light and
 dark mode on branch `feat/measurement-diagram`. Deliberate scope decisions are noted
 inline (photos `capture` attr rejected, timeclock/quote-build not offline-queued,
