@@ -43,6 +43,11 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+# Module import on purpose — see the note above the same import in
+# routers/timeclock.py: core.time_off → models → celery_app → the sweep task
+# → routers.timeclock → here, and a from-import of a not-yet-defined name
+# breaks that cycle loudly when core.time_off happens to load first.
+from gdx_dispatch.core import time_off as time_off_rules
 from gdx_dispatch.core.pay_periods import PayPeriod, shop_day_of
 from gdx_dispatch.models.tenant_models import TimeclockBreak, TimeclockEntry
 
@@ -86,17 +91,46 @@ class Shift:
     flag: str | None
 
     @property
+    def is_time_off(self) -> bool:
+        """A vacation day or a paid holiday (core/time_off.py). Paid, but
+        not worked — the two are kept apart everywhere they are summed, so a
+        bookkeeper applying the shop's overtime rule can see which is which."""
+        return time_off_rules.is_time_off(self.entry_type)
+
+    @property
+    def type_label(self) -> str:
+        return time_off_rules.type_label(self.entry_type) if self.is_time_off else "Shift"
+
+    @property
     def worked_minutes(self) -> int:
-        """Minutes to pay for. An unknown duration counts as zero, and is
-        flagged — a guessed number would be indistinguishable from a real
-        one once it is in a spreadsheet."""
-        if self.minutes is None:
+        """Minutes clocked, to pay for. An unknown duration counts as zero,
+        and is flagged — a guessed number would be indistinguishable from a
+        real one once it is in a spreadsheet. Time off is never "worked"."""
+        if self.is_time_off or self.minutes is None:
             return 0
         return max(0, int(self.minutes) - int(self.break_minutes or 0))
 
     @property
     def worked_hours(self) -> float:
         return round(self.worked_minutes / 60.0, 2)
+
+    @property
+    def time_off_minutes(self) -> int:
+        if not self.is_time_off or self.minutes is None:
+            return 0
+        return max(0, int(self.minutes))
+
+    @property
+    def time_off_hours(self) -> float:
+        return round(self.time_off_minutes / 60.0, 2)
+
+    @property
+    def paid_minutes(self) -> int:
+        return self.worked_minutes + self.time_off_minutes
+
+    @property
+    def paid_hours(self) -> float:
+        return round(self.paid_minutes / 60.0, 2)
 
 
 @dataclass
@@ -114,6 +148,22 @@ class Timecard:
     @property
     def worked_hours(self) -> float:
         return round(self.worked_minutes / 60.0, 2)
+
+    @property
+    def time_off_minutes(self) -> int:
+        return sum(s.time_off_minutes for s in self.shifts)
+
+    @property
+    def time_off_hours(self) -> float:
+        return round(self.time_off_minutes / 60.0, 2)
+
+    @property
+    def time_off_days(self) -> int:
+        return sum(1 for s in self.shifts if s.is_time_off)
+
+    @property
+    def paid_hours(self) -> float:
+        return round((self.worked_minutes + self.time_off_minutes) / 60.0, 2)
 
     @property
     def break_minutes(self) -> int:
@@ -137,10 +187,35 @@ class PeriodTimesheet:
     period: PayPeriod
     timezone: str
     timecards: list[Timecard] = field(default_factory=list)
+    # The per-company option (AppSettings.time_off_counts_toward_overtime).
+    # The files STATE it beside the time-off hours; nothing here applies it,
+    # because nothing here computes overtime.
+    time_off_counts_toward_overtime: bool = False
 
     @property
     def worked_hours(self) -> float:
         return round(sum(t.worked_minutes for t in self.timecards) / 60.0, 2)
+
+    @property
+    def time_off_hours(self) -> float:
+        return round(sum(t.time_off_minutes for t in self.timecards) / 60.0, 2)
+
+    @property
+    def paid_hours(self) -> float:
+        return round(
+            sum(t.worked_minutes + t.time_off_minutes for t in self.timecards) / 60.0, 2
+        )
+
+    @property
+    def time_off_statement(self) -> str:
+        """One sentence for a human reader of the PDF or the email."""
+        if self.time_off_hours <= 0:
+            return ""
+        return (
+            "Paid time off counts toward overtime."
+            if self.time_off_counts_toward_overtime
+            else "Paid time off does not count toward overtime."
+        )
 
     @property
     def people(self) -> int:
@@ -214,6 +289,7 @@ def build_timesheet(
     names: dict[str, str] | None = None,
     tech_id: str | None = None,
     now: datetime | None = None,
+    time_off_counts_toward_overtime: bool = False,
 ) -> PeriodTimesheet:
     """Every shift worked in `period`, grouped by person, in shop time.
 
@@ -290,7 +366,12 @@ def build_timesheet(
         )
 
     ordered = sorted(cards.values(), key=lambda c: (c.name.lower(), c.tech_id))
-    return PeriodTimesheet(period=period, timezone=str(tz_name), timecards=ordered)
+    return PeriodTimesheet(
+        period=period,
+        timezone=str(tz_name),
+        timecards=ordered,
+        time_off_counts_toward_overtime=bool(time_off_counts_toward_overtime),
+    )
 
 
 def _short_id(tech_id: str) -> str:
@@ -467,6 +548,14 @@ def break_minutes_by_entry(
     hours — the same rule that makes an auto-closed shift report "unknown"
     rather than its elapsed time.
     """
+    if not entries:
+        return {}
+    # A vacation day or a posted holiday is a synthetic closed span, not a
+    # shift anyone took a lunch in. Left in, its window competes with a real
+    # shift on the same day (a tech who worked the holiday) and the first
+    # window in clock-in order wins the break — netting a lunch off the
+    # holiday hours instead of the worked ones.
+    entries = [e for e in entries if not time_off_rules.is_time_off(e.entry_type)]
     if not entries:
         return {}
     tech_ids = {str(e.technician_id) for e in entries if e.technician_id}

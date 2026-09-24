@@ -578,6 +578,9 @@ GET /api/timeclock/report
 GET /api/timeclock/roster
 GET /api/timeclock/status
 GET /api/timeclock/submitted-days
+GET /api/timeclock/time-off/holidays
+GET /api/timeclock/time-off/options
+GET /api/timeclock/time-off/requests
 GET /api/users
 GET /api/users/me
 GET /api/users/me/permissions
@@ -1147,6 +1150,13 @@ POST /api/timeclock/clock-out/{timeclock_id}
 POST /api/timeclock/entries
 POST /api/timeclock/pay-period/send
 POST /api/timeclock/submit-day
+POST /api/timeclock/time-off/entries
+POST /api/timeclock/time-off/holidays/post
+POST /api/timeclock/time-off/requests
+POST /api/timeclock/time-off/requests/{request_id}/approve
+POST /api/timeclock/time-off/requests/{request_id}/cancel
+POST /api/timeclock/time-off/requests/{request_id}/deny
+POST /api/timeclock/time-off/requests/{request_id}/revoke
 POST /api/users
 POST /api/users/invite
 POST /api/users/me/change-password

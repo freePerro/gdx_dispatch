@@ -31,6 +31,9 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+# Module import — same cycle note as routers/timeclock.py: core.time_off →
+# models → celery_app → the sweep task → routers.timeclock → here.
+from gdx_dispatch.core import time_off as time_off_rules
 from gdx_dispatch.core.pay_periods import (
     PayPeriod,
     parse_recipient_emails,
@@ -52,6 +55,10 @@ log = logging.getLogger(__name__)
 #: turns them into a notification. Never a bare boolean — "it didn't send"
 #: with no reason is the shape that gets ignored.
 BLOCKED_FLAGGED = "flagged_shifts"
+#: A calendar holiday inside the period that nobody has been paid for. The
+#: scheduled send has no human in front of it, so the Timesheets notice alone
+#: would let the file leave short of a day for every person on it.
+BLOCKED_HOLIDAY = "unposted_holiday"
 BLOCKED_NO_RECIPIENT = "no_recipient"
 BLOCKED_EMPTY = "no_hours"
 #: A background send with nobody's mailbox to send FROM. Outlook Graph
@@ -71,6 +78,9 @@ class SendOutcome:
     delivered_to: list[str] = field(default_factory=list)
     failed_to: list[str] = field(default_factory=list)
     flagged: list[dict[str, str]] = field(default_factory=list)
+    #: Calendar holidays in the period nobody has been paid for — the list
+    #: the office can act on (post it, or take it off the calendar).
+    holidays: list[dict[str, Any]] = field(default_factory=list)
     period: dict[str, str] = field(default_factory=dict)
     hours: float = 0.0
     people: int = 0
@@ -84,6 +94,7 @@ class SendOutcome:
             "delivered_to": self.delivered_to,
             "failed_to": self.failed_to,
             "flagged": self.flagged,
+            "holidays": self.holidays,
             "period": self.period,
             "hours": self.hours,
             "people": self.people,
@@ -126,13 +137,20 @@ def _body_html(
 ) -> str:
     from gdx_dispatch.core.email_layout import esc, render_email
 
+    def _time_off(card_or_sheet) -> str:
+        hours = card_or_sheet.time_off_hours
+        if not hours:
+            return ""
+        return f'<span style="color:#475569;font-weight:400;"> + {hours:.2f} time off</span>'
+
     rows = "".join(
         f'<tr><td style="padding:6px 0;">{esc(card.name)}</td>'
         f'<td style="padding:6px 0;text-align:right;font-weight:600;">'
-        f"{card.worked_hours:.2f}</td></tr>"
+        f"{card.worked_hours:.2f}{_time_off(card)}</td></tr>"
         for card in sheet.timecards
     )
     company = esc(branding.get("company_name") or "")
+    statement = esc(sheet.time_off_statement)
     body = f"""
       <p style="margin:0 0 14px;">Hours for {esc(sheet.period.label())}
       {f"— to be paid {esc(paid_on)}" if paid_on else ""}.</p>
@@ -143,13 +161,15 @@ def _body_html(
         <tr>
           <td style="padding:8px 0;font-weight:700;">Total</td>
           <td style="padding:8px 0;text-align:right;font-weight:700;">
-            {sheet.worked_hours:.2f}</td>
+            {sheet.worked_hours:.2f}{_time_off(sheet)}</td>
         </tr>
       </table>
       <p style="margin:16px 0 0;font-size:14px;color:#475569;">
         Attached: a printable timesheet (PDF) and the same hours as a
         spreadsheet (CSV). Worked hours are clocked time less recorded
-        breaks. Hours only — no rates or pay are calculated here.
+        breaks; vacation and holiday hours are listed apart as paid time
+        off.{f" {statement}" if statement else ""} Hours only — no rates or
+        pay are calculated here.
       </p>
     """
     return render_email(
@@ -240,6 +260,30 @@ def send_period_timesheet(
             f"{'' if len(outcome.flagged) == 1 else 's'} still need"
             f"{'s' if len(outcome.flagged) == 1 else ''} a look. "
             "Correct them on Timesheets and the hold clears itself."
+        )
+        return outcome
+
+    # A holiday on the calendar with nobody paid for it is the same shape as
+    # a flagged shift: the hours are not ready, and a file that leaves now
+    # reads as complete while short a day for every person. Second, after
+    # flags, because a flagged shift is the one the office is already
+    # looking at.
+    try:
+        outcome.holidays = time_off_rules.unposted_holidays(
+            db, settings, period.start, period.end
+        )
+    except Exception:  # noqa: BLE001 — a calendar read must not decide a send by crashing
+        log.exception("timesheet_holiday_check_failed", extra={"tenant_id": tenant_id})
+        outcome.holidays = []
+    if outcome.holidays:
+        outcome.blocked = BLOCKED_HOLIDAY
+        names = ", ".join(f"{h['name']} ({h['date']})" for h in outcome.holidays)
+        outcome.detail = (
+            f"{names} {'is' if len(outcome.holidays) == 1 else 'are'} on the "
+            "holiday calendar and nobody has holiday pay for "
+            f"{'it' if len(outcome.holidays) == 1 else 'them'} yet. Post the "
+            "holiday on Timesheets — or take it off the calendar in Settings if "
+            "the shop worked that day — and the hold clears itself."
         )
         return outcome
 

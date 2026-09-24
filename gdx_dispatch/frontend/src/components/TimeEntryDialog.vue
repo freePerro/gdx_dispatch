@@ -24,7 +24,7 @@
 <template>
   <Dialog
     :visible="visible"
-    :header="isNew ? 'Add a time entry' : 'Correct this shift'"
+    :header="headerText"
     modal
     class="entry-dialog"
     :style="{ width: 'min(30rem, 95vw)' }"
@@ -47,6 +47,66 @@
         />
         <InputText v-else id="entry-tech" :value="techName" readonly data-testid="entry-tech-readonly" />
       </div>
+      <!-- Office create only: a shift, or paid time off (vacation / holiday).
+           Time off is a date RANGE plus hours per day — the server expands it
+           to one closed entry per workday (core/time_off.py), so the office
+           never types synthetic clock stamps for a day nobody clocked. -->
+      <div v-if="!selfMode && isNew" class="form-field">
+        <label for="entry-kind">Type</label>
+        <Select
+          id="entry-kind"
+          v-model="editing.kind"
+          :options="KIND_OPTIONS"
+          optionLabel="label"
+          optionValue="value"
+          data-testid="entry-kind-select"
+        />
+      </div>
+      <template v-if="isTimeOff">
+        <div class="form-row">
+          <div class="form-field">
+            <label for="entry-off-start">First day</label>
+            <DatePicker
+              id="entry-off-start"
+              v-model="editing.offStart"
+              showIcon
+              :showOnFocus="false"
+              dateFormat="yy-mm-dd"
+              data-testid="entry-off-start"
+            />
+          </div>
+          <div class="form-field">
+            <label for="entry-off-end">Last day</label>
+            <DatePicker
+              id="entry-off-end"
+              v-model="editing.offEnd"
+              showIcon
+              :showOnFocus="false"
+              dateFormat="yy-mm-dd"
+              :minDate="editing.offStart"
+              data-testid="entry-off-end"
+            />
+          </div>
+        </div>
+        <div class="form-field">
+          <label for="entry-off-hours">Hours per day</label>
+          <InputNumber
+            id="entry-off-hours"
+            v-model="editing.offHours"
+            :min="0.5"
+            :max="16"
+            :step="0.5"
+            :minFractionDigits="0"
+            :maxFractionDigits="2"
+            showButtons
+            data-testid="entry-off-hours"
+          />
+          <small class="field-hint">
+            One {{ kindLabel.toLowerCase() }} entry per workday in the range. A day this
+            person already has off is skipped, not doubled.
+          </small>
+        </div>
+      </template>
       <!-- showOnFocus=false is deliberate, and was found in the browser: with
            the default (panel opens on focus), a showTime picker's panel stays
            open after you pick a date so you can set the time — and inside a
@@ -54,8 +114,8 @@
            Escape dismisses the whole dialog rather than just the panel, so the
            correction you just typed is gone. Opening the panel only from the
            calendar icon keeps both paths: type the time, or click to pick. -->
-      <div class="form-field">
-        <label for="entry-in">Clocked in</label>
+      <div v-if="!isTimeOff" class="form-field">
+        <label for="entry-in">{{ entryIsTimeOff ? 'Paid from' : 'Clocked in' }}</label>
         <DatePicker
           id="entry-in"
           v-model="editing.clockIn"
@@ -67,8 +127,8 @@
           data-testid="entry-clock-in"
         />
       </div>
-      <div class="form-field">
-        <label for="entry-out">Clocked out</label>
+      <div v-if="!isTimeOff" class="form-field">
+        <label for="entry-out">{{ entryIsTimeOff ? 'Paid to' : 'Clocked out' }}</label>
         <DatePicker
           id="entry-out"
           v-model="editing.clockOut"
@@ -79,6 +139,10 @@
           dateFormat="yy-mm-dd"
           data-testid="entry-clock-out"
         />
+        <small v-if="entryIsTimeOff" class="field-hint" data-testid="entry-time-off-hint">
+          A {{ entryTypeLabel.toLowerCase() }} day. Nobody clocked these times — the span is
+          what the day pays. Shorten it for a half day; the tech cannot change it themselves.
+        </small>
         <small v-if="editing.wasOpen" class="field-hint">
           <template v-if="selfMode">
             This shift was never clocked out. Set the time you actually finished.
@@ -106,7 +170,7 @@
            row it was opened from — a shift with an hour's lunch read 7.00 in
            the table and "8.00h" here. Say which number this is, and show the
            worked figure alongside it whenever a break applies. -->
-      <div v-if="editing.hours != null" class="form-preview" data-testid="entry-hours-preview">
+      <div v-if="!isTimeOff && editing.hours != null" class="form-preview" data-testid="entry-hours-preview">
         Elapsed: <strong>{{ editing.hours.toFixed(2) }}h</strong>
         <span v-if="editing.breakMinutes" class="preview-sub" data-testid="entry-worked-preview">
           − {{ editing.breakMinutes }}m break = <strong>{{ editingWorkedHours.toFixed(2) }}h</strong> worked
@@ -135,12 +199,23 @@ import { computed, reactive, ref, watch } from 'vue';
 import Button from 'primevue/button';
 import DatePicker from 'primevue/datepicker';
 import Dialog from 'primevue/dialog';
+import InputNumber from 'primevue/inputnumber';
 import InputText from 'primevue/inputtext';
 import Message from 'primevue/message';
 import Select from 'primevue/select';
 import Textarea from 'primevue/textarea';
+import { useToast } from 'primevue/usetoast';
 import { useApi } from '../composables/useApi';
+import { localDateString } from '../composables/useFormatters';
 import { shopWallClockToIso, toShopWallClock, useTenantTimezone } from '../composables/useTenantTimezone';
+import { TIME_OFF_TYPES, isTimeOffType, timeclockEntryLabel } from '../utils/statusSeverity';
+
+// Office create: a shift, or one of the paid time-off types. Mirrors
+// TIME_OFF_TYPES in core/time_off.py through utils/statusSeverity.
+const KIND_OPTIONS = [
+  { label: 'Shift', value: 'shift' },
+  ...Object.entries(TIME_OFF_TYPES).map(([value, label]) => ({ label, value })),
+];
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -162,6 +237,11 @@ const emit = defineEmits(['update:visible', 'saved']);
 
 const api = useApi();
 const { tenantTimezone, ensureLoaded: ensureTimezone } = useTenantTimezone();
+// Only the time-off create path needs a dynamic message (how many days were
+// added, which were skipped). Optional: a parent without a ToastService still
+// gets the save; it just does not get the count.
+let toast = null;
+try { toast = useToast(); } catch { toast = null; }
 
 const saving = ref(false);
 const editError = ref('');
@@ -171,7 +251,37 @@ const editing = reactive({
   id: '', technicianId: '',
   clockIn: null, clockOut: null, notes: '', wasOpen: false,
   hours: null, breakMinutes: 0,
+  kind: 'shift', offStart: null, offEnd: null, offHours: 8,
 });
+
+/** Creating paid time off (office mode, Type ≠ Shift). */
+const isTimeOff = computed(() => isNew.value && !props.selfMode && editing.kind !== 'shift');
+/** Correcting a row that IS a vacation/holiday day. */
+const entryIsTimeOff = computed(() => !!props.entry && isTimeOffType(props.entry.entry_type));
+const kindLabel = computed(() => TIME_OFF_TYPES[editing.kind] || 'Shift');
+const entryTypeLabel = computed(() => (props.entry ? timeclockEntryLabel(props.entry.entry_type) : ''));
+const headerText = computed(() => {
+  if (isNew.value) return isTimeOff.value ? `Add ${kindLabel.value.toLowerCase()}` : 'Add a time entry';
+  return entryIsTimeOff.value ? `Correct this ${entryTypeLabel.value.toLowerCase()} day` : 'Correct this shift';
+});
+
+// The shop's day length, read once the office first picks a time-off type.
+// Not guessed: the server caps a day at its own default and a preset that
+// disagrees would be a 422 with no field to point at.
+let optionsLoaded = false;
+watch(
+  () => editing.kind,
+  async (kind) => {
+    if (kind === 'shift' || optionsLoaded) return;
+    optionsLoaded = true;
+    try {
+      const opts = await api.get('/api/timeclock/time-off/options', { suppressErrorToast: true });
+      if (opts?.default_minutes) editing.offHours = Number(opts.default_minutes) / 60;
+    } catch {
+      // 8 stands; the server still enforces its own bounds.
+    }
+  },
+);
 
 // Snapshot ON OPEN, not reactively while open: the parent may reload its rows
 // underneath a half-typed correction, and yanking the fields out from under
@@ -206,10 +316,13 @@ watch(
       anchor.setHours(8, 0, 0, 0);
       const out = new Date(anchor);
       out.setHours(16, 0, 0, 0);
+      const day = new Date(anchor);
+      day.setHours(0, 0, 0, 0);
       Object.assign(editing, {
         id: '', technicianId: props.defaultTechnicianId || '',
         clockIn: anchor, clockOut: out, notes: '', wasOpen: false,
         breakMinutes: 0,
+        kind: 'shift', offStart: day, offEnd: new Date(day), offHours: editing.offHours || 8,
       });
     }
   },
@@ -243,6 +356,10 @@ const canSave = computed(() => {
   if (props.selfMode && !editing.notes.trim()) return false;
   if (isNew.value) {
     if (!props.selfMode && !editing.technicianId) return false;
+    if (isTimeOff.value) {
+      return !!editing.offStart && !!editing.offEnd
+        && editing.offEnd >= editing.offStart && Number(editing.offHours) > 0;
+    }
     return !!editing.clockIn && !!editing.clockOut && editing.clockOut > editing.clockIn;
   }
   if (!editing.clockIn) return false;
@@ -263,7 +380,30 @@ async function save() {
     // The picker's fields are a SHOP wall clock; the wire is UTC. Sending
     // .toISOString() directly would book the office laptop's zone instead —
     // "5:00 pm" typed in Denver would land as 4:00 pm shop time.
-    if (isNew.value) {
+    if (isTimeOff.value) {
+      // Calendar dates, not instants: the server places each workday at the
+      // person's shift start in shop time (core/time_off.py).
+      const out = await api.post(
+        '/api/timeclock/time-off/entries',
+        {
+          technician_id: editing.technicianId,
+          entry_type: editing.kind,
+          start_date: localDateString(editing.offStart),
+          end_date: localDateString(editing.offEnd),
+          minutes_per_day: Math.round(Number(editing.offHours) * 60),
+          notes: editing.notes || null,
+        },
+        { suppressErrorToast: true },
+      );
+      const created = Number(out?.created || 0);
+      const skipped = out?.skipped_days || [];
+      toast?.add({
+        severity: created ? 'success' : 'warn',
+        summary: `${created} ${kindLabel.value.toLowerCase()} ${created === 1 ? 'day' : 'days'} added`,
+        detail: skipped.length ? `Already off, skipped: ${skipped.join(', ')}` : undefined,
+        life: 5000,
+      });
+    } else if (isNew.value) {
       const body = {
         clock_in_at: shopWallClockToIso(editing.clockIn, tenantTimezone.value),
         clock_out_at: shopWallClockToIso(editing.clockOut, tenantTimezone.value),
@@ -289,7 +429,8 @@ async function save() {
     emit('update:visible', false);
     emit('saved');
   } catch (e) {
-    editError.value = e?.message || 'Save failed';
+    const detail = e?.body?.detail;
+    editError.value = (typeof detail === 'string' && detail) || e?.message || 'Save failed';
   } finally {
     saving.value = false;
   }
@@ -299,6 +440,11 @@ async function save() {
 <style scoped>
 .form-grid {
   display: grid;
+  gap: 0.75rem;
+}
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 0.75rem;
 }
 .form-field {

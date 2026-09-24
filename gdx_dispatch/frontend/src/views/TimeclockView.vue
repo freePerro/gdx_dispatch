@@ -122,8 +122,20 @@
                 />
               </template>
             </Column>
-            <Column field="clock_in_display" header="Time In" />
-            <Column field="clock_out_display" header="Time Out" />
+            <!-- A day off carries a synthetic span (core/time_off.py); printing
+                 its stamps would read as a shift the tech clocked. -->
+            <Column header="Time In">
+              <template #body="{ data }">
+                <span v-if="isTimeOffType(data.entry_type)" class="ts-muted">Paid day off</span>
+                <template v-else>{{ data.clock_in_display }}</template>
+              </template>
+            </Column>
+            <Column header="Time Out">
+              <template #body="{ data }">
+                <span v-if="isTimeOffType(data.entry_type)" class="ts-muted">—</span>
+                <template v-else>{{ data.clock_out_display }}</template>
+              </template>
+            </Column>
             <Column header="Duration">
               <template #body="{ data }">
                 {{ data.duration || '--' }}
@@ -238,20 +250,31 @@
                 <strong>{{ day.dayName }}</strong>
                 <span class="ts-muted">{{ day.dateLabel }}</span>
                 <span v-if="day.entries.length" class="ts-day-hours">
-                  {{ (day.workedMinutes / 60).toFixed(2) }}h
+                  {{ ((day.workedMinutes + (day.timeOffMinutes || 0)) / 60).toFixed(2) }}h
                 </span>
                 <span v-else class="ts-muted ts-day-none">No hours recorded</span>
               </div>
               <div v-for="e in day.entries" :key="e.id" class="ts-entry" data-testid="ts-entry">
                 <span class="ts-times">
-                  {{ formatShopClock(e.clock_in_at) }} →
-                  <template v-if="e.clock_out_at">{{ formatShopClock(e.clock_out_at) }}</template>
-                  <template v-else>now</template>
+                  <!-- A day off carries a synthetic span (core/time_off.py); the
+                       clock stamps are not something anyone punched. -->
+                  <template v-if="isTimeOffType(e.entry_type)">Paid day off</template>
+                  <template v-else>
+                    {{ formatShopClock(e.clock_in_at) }} →
+                    <template v-if="e.clock_out_at">{{ formatShopClock(e.clock_out_at) }}</template>
+                    <template v-else>now</template>
+                  </template>
                 </span>
                 <Tag v-if="e.entry_type === 'manual'" value="manual" severity="warn" />
+                <Tag
+                  v-else-if="isTimeOffType(e.entry_type)"
+                  :value="timeclockEntryLabel(e.entry_type)"
+                  :severity="timeclockEntrySeverity(e.entry_type)"
+                  data-testid="ts-time-off-tag"
+                />
                 <span v-if="e.break_minutes" class="ts-muted ts-break">−{{ e.break_minutes }}m break</span>
                 <span class="ts-worked">
-                  <template v-if="e.minutes != null">{{ ((workedMinutes(e) || 0) / 60).toFixed(2) }}h</template>
+                  <template v-if="e.minutes != null">{{ ((paidMinutes(e) || 0) / 60).toFixed(2) }}h</template>
                   <Tag v-else-if="!e.clock_out_at" value="In progress" severity="info" />
                   <Tag
                     v-else
@@ -261,7 +284,7 @@
                   />
                 </span>
                 <Button
-                  v-if="canSelfEdit(e)"
+                  v-if="canSelfEdit(e) && !isTimeOffType(e.entry_type)"
                   icon="pi pi-pencil"
                   text
                   rounded
@@ -291,6 +314,10 @@
                 <strong>Week total:</strong>
                 <span class="total-hours" data-testid="week-total">{{ weekWorkedHours.toFixed(2) }}h</span>
               </div>
+              <div v-if="weekTimeOffHours > 0" class="week-total" data-testid="week-time-off">
+                <span class="ts-muted">time off</span>
+                <span class="total-hours">{{ weekTimeOffHours.toFixed(2) }}h</span>
+              </div>
               <div v-if="weekBreakHours > 0" class="week-total">
                 <span class="ts-muted">breaks</span>
                 <span class="total-break">{{ weekBreakHours.toFixed(2) }}h</span>
@@ -302,6 +329,14 @@
               Clock record — corrections are audit-logged with your name. Payroll figures are kept separately.
             </p>
           </template>
+        </template>
+      </Card>
+
+      <!-- Time off: ask for days off, see what the office decided. Approved
+           days appear in My Timesheet as paid days off. -->
+      <Card class="timecard-card" data-testid="time-off-card">
+        <template #content>
+          <TimeOffRequestPanel @changed="onEntrySaved" />
         </template>
       </Card>
 
@@ -435,7 +470,9 @@
 </template>
 
 <script setup>
-import { timeclockEntrySeverity, timeclockStatusSeverity } from '../utils/statusSeverity';
+import {
+  isTimeOffType, timeclockEntryLabel, timeclockEntrySeverity, timeclockStatusSeverity,
+} from '../utils/statusSeverity';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useToast } from 'primevue/usetoast';
 import { useApiWithToast as useApi } from '../composables/useApiWithToast';
@@ -453,6 +490,7 @@ import ProgressSpinner from 'primevue/progressspinner';
 import Tag from 'primevue/tag';
 import Toast from 'primevue/toast';
 import TimeEntryDialog from '../components/TimeEntryDialog.vue';
+import TimeOffRequestPanel from '../components/TimeOffRequestPanel.vue';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { useWeeklyTimesheet } from '../composables/useWeeklyTimesheet';
 const { confirmAsync } = useDestructiveConfirm();
@@ -720,10 +758,10 @@ const todayEntries = computed(() => {
 // backend never writes (the Break column was ALWAYS 0.00).
 
 const {
-  days, weekLabel, weekLoading, weekWorkedHours, weekBreakHours,
+  days, weekLabel, weekLoading, weekWorkedHours, weekTimeOffHours, weekBreakHours,
   isCurrentWeek, canGoNext,
   init: initWeek, reload: reloadWeek, prevWeek, nextWeek, thisWeek,
-  canSelfEdit, workedMinutes, formatClock: formatShopClock, shopToday,
+  canSelfEdit, paidMinutes, formatClock: formatShopClock, shopToday,
 } = useWeeklyTimesheet();
 
 const showEntryDialog = ref(false);

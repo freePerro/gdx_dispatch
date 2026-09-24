@@ -188,6 +188,20 @@ class AppSettings(Base):
     payroll_autosend_hour: Mapped[int] = mapped_column(
         SmallInteger, nullable=False, default=7, server_default=text("7")
     )
+    # Time off and holiday pay (2026-09-23, migration 097). The calendar is
+    # a list of {date, name, minutes} the office posts holiday entries from;
+    # nothing posts it automatically. `time_off_counts_toward_overtime` is a
+    # per-company option read by the pay-period export, which states it on
+    # every time-off row — the app computes no overtime itself.
+    holiday_calendar: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list, server_default=text("'[]'")
+    )
+    time_off_default_minutes: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=480, server_default=text("480")
+    )
+    time_off_counts_toward_overtime: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
@@ -2787,6 +2801,41 @@ class TimeclockBreak(Base):
     ended_at: Mapped[str] = mapped_column(Text, nullable=True)
     duration_minutes: Mapped[int] = mapped_column(Integer, nullable=True)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class TimeOffRequest(Base):
+    """A request for paid days off and the office's ruling on it.
+
+    The workflow record only. Approval writes ordinary closed
+    `TimeclockEntry` rows (entry_type `vacation` / `holiday`) and remembers
+    their ids in `entry_ids`, so a revoke can find exactly what it created.
+    A pending request never appears in the timeclock table — no hours reader
+    has to know this table exists (the 2026-09-23 time-off and holiday pay plan).
+    """
+
+    __tablename__ = "time_off_requests"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    # A USER id, the timeclock convention (`timeclock_entries_router.technician_id`).
+    technician_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    entry_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    minutes_per_day: Mapped[int] = mapped_column(Integer, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    requested_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    reviewed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    entry_ids: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list, server_default=text("'[]'")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class VanInventoryItem(Base):

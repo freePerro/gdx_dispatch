@@ -12,6 +12,13 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+# Module import, not `from … import is_time_off`: core.time_off imports the
+# models, the models pull in celery_app, celery_app imports the sweep task,
+# and the sweep task imports THIS module. When core.time_off is the first
+# thing loaded that chain re-enters here while it is half-initialised, and a
+# from-import of a name it has not defined yet raises. Binding the module and
+# resolving the attribute at call time is the standard way through.
+from gdx_dispatch.core import time_off as time_off_rules
 from gdx_dispatch.core.audit import AuditLog, ensure_audit_table, log_audit_event, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
@@ -864,6 +871,14 @@ def update_time_entry(
         own = str((current_user or {}).get("user_id") or (current_user or {}).get("sub") or "")
         if str(entry.technician_id) != own and not is_dispatch_manager(current_user):
             raise HTTPException(status_code=403, detail="cannot edit another technician's entry")
+        if time_off_rules.is_time_off(entry.entry_type) and not is_dispatch_manager(current_user):
+            # An approved day off is the office's ruling, not the tech's row
+            # to stretch: the self-service window would otherwise let a
+            # vacation day be edited into a 16-hour one. Cancel and re-request.
+            raise HTTPException(
+                status_code=403,
+                detail="time off is changed by cancelling the request and asking again, or by the office",
+            )
 
         updates = payload.model_dump(exclude_unset=True, mode="json")
         # Self-service guardrails: the row's current clock-in and every new
@@ -1049,6 +1064,9 @@ def _export_context(
             tz_name=tz_name,
             names=names,
             tech_id=tech_id,
+            time_off_counts_toward_overtime=bool(
+                getattr(row, "time_off_counts_toward_overtime", False)
+            ),
         )
     except SQLAlchemyError:
         # Deliberately NOT an empty timesheet. A payroll file reporting zero

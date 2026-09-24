@@ -476,6 +476,12 @@ except Exception:
     timeclock_router = APIRouter(prefix="/api/timeclock", tags=["timeclock-router"])
 
 try:
+    from gdx_dispatch.routers import time_off as time_off_router
+except Exception:
+    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: time_off_router")
+    time_off_router = APIRouter(prefix="/api/timeclock/time-off", tags=["time-off"])
+
+try:
     from gdx_dispatch.routers import checklists as checklists_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: checklists_router")
@@ -1564,6 +1570,9 @@ def create_app() -> FastAPI:
     # (modules/equipment, routers/equipment_tracking, routers/fleet,
     # modules/fleet) are gone. The models stay registered in models/__init__.
     app.include_router(timeclock_router.router if hasattr(timeclock_router, "router") else timeclock_router)
+    # Time off requests + holiday pay (2026-09-23): same module gate as the
+    # timeclock, its own file (the 2026-09-23 time-off and holiday pay plan).
+    app.include_router(time_off_router.router if hasattr(time_off_router, "router") else time_off_router)
     app.include_router(checklists_router.router if hasattr(checklists_router, "router") else checklists_router)
     # Sub-resource endpoints (customer opt-out and bulk-tag, job line-items)
     # — real DB-backed implementations replacing shims.

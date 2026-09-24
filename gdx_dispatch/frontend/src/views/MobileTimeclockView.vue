@@ -152,10 +152,15 @@
               />
               <span class="entry-hours" v-if="e.hours != null">{{ Number(e.hours).toFixed(2) }}h</span>
             </div>
+            <!-- A day off carries a synthetic span (core/time_off.py); "7:00 AM →
+                 3:00 PM" on it would read as a shift the tech clocked. -->
             <div class="entry-meta muted">
-              <span v-if="e.clock_in">{{ formatTime(e.clock_in) }}</span>
-              <span v-if="e.clock_out">→ {{ formatTime(e.clock_out) }}</span>
-              <span v-if="!e.clock_out && e.entry_type !== 'break'">→ now</span>
+              <template v-if="isTimeOffType(e.entry_type)">Paid day off</template>
+              <template v-else>
+                <span v-if="e.clock_in">{{ formatTime(e.clock_in) }}</span>
+                <span v-if="e.clock_out">→ {{ formatTime(e.clock_out) }}</span>
+                <span v-if="!e.clock_out && e.entry_type !== 'break'">→ now</span>
+              </template>
             </div>
           </li>
         </ol>
@@ -207,7 +212,7 @@
               <strong>{{ day.dayName }}</strong>
               <span class="muted">{{ day.dateLabel }}</span>
               <span v-if="day.entries.length" class="day-hours">
-                {{ (day.workedMinutes / 60).toFixed(2) }}h
+                {{ ((day.workedMinutes + (day.timeOffMinutes || 0)) / 60).toFixed(2) }}h
               </span>
               <span v-else class="muted day-none">—</span>
             </div>
@@ -218,22 +223,33 @@
               :key="e.id"
               type="button"
               class="week-entry"
-              :disabled="!canSelfEdit(e)"
+              :disabled="!canSelfEdit(e) || isTimeOffType(e.entry_type)"
               data-test="mt-week-entry"
               @click="openEntryEdit(e)"
             >
               <span class="week-entry-times">
-                {{ formatShopClock(e.clock_in_at) }} →
-                <template v-if="e.clock_out_at">{{ formatShopClock(e.clock_out_at) }}</template>
-                <template v-else>now</template>
+                <!-- A day off carries a synthetic span (core/time_off.py); printing
+                     "8:00 AM → 4:00 PM" would read as a shift somebody clocked. -->
+                <template v-if="isTimeOffType(e.entry_type)">Paid day off</template>
+                <template v-else>
+                  {{ formatShopClock(e.clock_in_at) }} →
+                  <template v-if="e.clock_out_at">{{ formatShopClock(e.clock_out_at) }}</template>
+                  <template v-else>now</template>
+                </template>
               </span>
               <Tag v-if="e.entry_type === 'manual'" value="manual" severity="warn" />
+              <Tag
+                v-else-if="isTimeOffType(e.entry_type)"
+                :value="timeclockEntryLabel(e.entry_type)"
+                :severity="timeclockEntrySeverity(e.entry_type)"
+                data-test="mt-time-off-tag"
+              />
               <span class="week-entry-worked">
-                <template v-if="e.minutes != null">{{ ((workedMinutes(e) || 0) / 60).toFixed(2) }}h</template>
+                <template v-if="e.minutes != null">{{ ((paidMinutes(e) || 0) / 60).toFixed(2) }}h</template>
                 <Tag v-else-if="!e.clock_out_at" value="In progress" severity="info" />
                 <Tag v-else value="Unknown" severity="danger" />
               </span>
-              <i v-if="canSelfEdit(e)" class="pi pi-pencil week-entry-edit" aria-hidden="true" />
+              <i v-if="canSelfEdit(e) && !isTimeOffType(e.entry_type)" class="pi pi-pencil week-entry-edit" aria-hidden="true" />
             </button>
           </div>
 
@@ -249,6 +265,9 @@
             />
             <div class="week-total" data-test="mt-week-total">
               Week total <strong>{{ weekWorkedHours.toFixed(2) }}h</strong>
+              <span v-if="weekTimeOffHours > 0" class="muted" data-test="mt-week-time-off">
+                · {{ weekTimeOffHours.toFixed(2) }}h time off
+              </span>
               <span v-if="weekBreakHours > 0" class="muted"> · {{ weekBreakHours.toFixed(2) }}h breaks</span>
             </div>
           </div>
@@ -257,6 +276,10 @@
           </p>
         </template>
       </section>
+
+      <!-- Time off: ask for days off, see what the office decided. The
+           approved days show up in This Week as paid days off. -->
+      <TimeOffRequestPanel mobile class="entries-section" @changed="onEntrySaved" />
 
       <!-- Self-service correction dialog (shared with /timesheets). -->
       <TimeEntryDialog
@@ -270,7 +293,9 @@
 </template>
 
 <script setup>
-import { timeclockEntrySeverity, timeclockStatusSeverity } from '../utils/statusSeverity'
+import {
+  isTimeOffType, timeclockEntryLabel, timeclockEntrySeverity, timeclockStatusSeverity,
+} from '../utils/statusSeverity'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useApi } from '../composables/useApi'
 import { useToast } from 'primevue/usetoast'
@@ -280,6 +305,7 @@ import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import MobileReceiptCapture from '../components/MobileReceiptCapture.vue'
 import TimeEntryDialog from '../components/TimeEntryDialog.vue'
+import TimeOffRequestPanel from '../components/TimeOffRequestPanel.vue'
 import { useWeeklyTimesheet } from '../composables/useWeeklyTimesheet'
 import { dateKeyInZone } from '../composables/useTenantTimezone'
 
@@ -290,9 +316,9 @@ const toast = useToast()
 // Shared with the desktop card; Monday-based shop-time weeks, break-netted
 // totals. See useWeeklyTimesheet for the rules.
 const {
-  days, weekLabel, weekLoading, weekWorkedHours, weekBreakHours, canGoNext,
+  days, weekLabel, weekLoading, weekWorkedHours, weekTimeOffHours, weekBreakHours, canGoNext,
   init: initWeek, reload: reloadWeek, prevWeek, nextWeek,
-  canSelfEdit, workedMinutes, formatClock: formatShopClock, shopToday, tenantTimezone,
+  canSelfEdit, paidMinutes, formatClock: formatShopClock, shopToday, tenantTimezone,
 } = useWeeklyTimesheet()
 
 const showEntryDialog = ref(false)

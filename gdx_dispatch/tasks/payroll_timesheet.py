@@ -160,6 +160,9 @@ def send_closed_period() -> dict:
             period=period,
             tz_name=tz_name,
             names=names,
+            time_off_counts_toward_overtime=bool(
+                getattr(settings, "time_off_counts_toward_overtime", False)
+            ),
         )
 
         # A blocked period is evaluated on every tick — deliberately. The
