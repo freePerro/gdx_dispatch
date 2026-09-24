@@ -91,6 +91,14 @@ this — the budget governs sweeps, not repairs.
 - **A foreground `sleep` is blocked and a background Bash dies at 600s.** Long
   runs go through `nohup`, watched by ONE `Monitor` or a single until-loop —
   never a poll loop.
+- **A monitor's poll command is proven once in the foreground before it is
+  armed, and it never swallows its own failure** — emit the error as an event
+  and exit, so silence can only mean "still waiting". On 2026-09-23 a
+  `gh pr checks --json` loop written with `|| continue` sat silent for its
+  whole 30 minutes: the distro's gh 2.46.0 had no `--json` on `pr checks`
+  (added in gh 2.50.0). gh has come from GitHub's own apt repository
+  (`/etc/apt/sources.list.d/github-cli.list`) since 2026-09-23; plain
+  `gh pr checks` output carries the verdict in column 2 regardless.
 - The frontend lockfile can only be regenerated on **npm 11**: 10.8.2 (what
   CI's `setup-node` 20 and `node:20-slim` ship) and 9.2.0 both crash in
   arborist with `Cannot read properties of null (reading 'edgesOut')`. Prove
