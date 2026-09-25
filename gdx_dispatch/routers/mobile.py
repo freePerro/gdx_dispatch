@@ -1797,6 +1797,17 @@ def get_mobile_job_detail(
                     "address": c_obj.address,
                     "notes": c_obj.notes,
                     "tags": _tags,
+                    # This load deliberately does NOT filter deleted_at — the
+                    # job keeps naming its customer, with the phone number the
+                    # tech may still need, after the office deletes or merges
+                    # the record (customers.py delete_customer/merge soft-delete
+                    # with no referential check; 4 live jobs point at one today).
+                    # But GET /api/customers/{id} DOES filter it and 404s, so a
+                    # screen that turns the name into a link to the record must
+                    # not offer that link here. Flag it rather than dropping the
+                    # customer: the name as text is information, a link to a
+                    # 404 is a dead end.
+                    "deleted": c_obj.deleted_at is not None,
                 }
                 # Same derivation as _job_card: the seeded tag taxonomy uses
                 # short codes as names, so the alert surface IS the tag names.

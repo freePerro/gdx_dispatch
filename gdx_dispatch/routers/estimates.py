@@ -1070,7 +1070,38 @@ def get_estimate(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     estimate = _get_estimate_or_404(estimate_id, db, include_lines=True)
-    return _serialize_estimate(estimate, include_lines=True)
+    out = _serialize_estimate(estimate, include_lines=True)
+    # customer_name, resolved here rather than in _serialize_estimate, which has
+    # no db handle. Without it this payload carries an id and no name, so every
+    # consumer that prints the customer has had to re-derive it: the mobile
+    # estimate dialog rendered "—" outright, and EstimateView.vue's header
+    # reaches into its picker list. Same shape get_invoice fixes in its own
+    # handler, for the same reason.
+    #
+    # Estimate.customer_id ONLY — deliberately NOT the Job.customer_id fallback
+    # the LIST endpoint uses (list_estimates, ~line 742). The list may pair a
+    # job-derived name with an unrelated Estimate.customer_id; a screen that
+    # renders the name as a LINK to that id would then name one customer and
+    # navigate to another. Here the name is the id's own name or nothing.
+    #
+    # A soft-deleted customer still gets NAMED here, and is flagged instead.
+    # Withholding the name to suppress a link would be the wrong lever: this
+    # payload is shared with surfaces that guard on customer_id alone, so
+    # dropping the name there would print "Unknown" and keep the dead link —
+    # losing the information and keeping the dead end. GET /api/customers/{id}
+    # does 404 on a deleted record (customers.py _ensure_customer_exists filters
+    # deleted_at), so `customer_deleted` is what a UI withholds the LINK on,
+    # while the name stays readable.
+    cid = getattr(estimate, "customer_id", None)
+    out["customer_deleted"] = False
+    if cid:
+        row = db.execute(
+            select(Customer.name, Customer.deleted_at).where(Customer.id == cid)
+        ).first()
+        if row and row[0]:
+            out["customer_name"] = row[0]
+            out["customer_deleted"] = row[1] is not None
+    return out
 
 
 @router.patch("/{estimate_id}", response_model=None)

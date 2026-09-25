@@ -26,10 +26,12 @@
             @click="showAiDialog = true" data-testid="ai-quick-estimate-btn" />
         </div>
         <div v-if="isExisting" class="header-meta">
-          <!-- GET /estimates/{id} does not serialize customer_name (the LIST
-               endpoint does), so this bound an always-empty field and the
+          <!-- GET /estimates/{id} did NOT serialize customer_name (only the
+               LIST endpoint did), so this bound an always-empty field and the
                header showed no customer at all. The picker's own list already
-               has the name — use it, and fall back to the API value. -->
+               has the name — use it, and fall back to the API value, which
+               since 2026-09-24 carries the name as well (estimates.py
+               get_estimate, resolved from Estimate.customer_id). -->
           <!-- The name opens the customer record and "Edit" edits it in place
                (the shared CustomerFormDialog, as on the invoice page); "Change"
                moves the estimate to a DIFFERENT customer. Until 2026-09-21 the

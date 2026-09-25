@@ -2013,18 +2013,50 @@ def get_invoice(
     # view shows the real customer name (sourced via the Job).
     from gdx_dispatch.models.tenant_models import Customer
     cn = payload.get("customer_name") or ""
-    if not cn and invoice.job_id:
+    # Flagged, never blanked. A soft-deleted customer keeps its name in this
+    # payload and is marked here instead: InvoiceDetailView.vue:65 guards its
+    # customer link on customer_id ALONE and normalizes a missing name to
+    # "Unknown", so withholding the name would lose the information AND keep
+    # the dead link. `customer_deleted` is the half a UI withholds the LINK on
+    # — GET /api/customers/{id} 404s on a deleted record.
+    payload["customer_deleted"] = False
+    if not cn:
         try:
-            row = db.execute(
-                select(Job.customer_id).where(Job.id == invoice.job_id)
-            ).first()
-            if row and row[0]:
-                cust = db.execute(
-                    select(Customer.id, Customer.name).where(Customer.id == row[0])
+            # The invoice's OWN customer first. `invoices` has no customer_name
+            # column — _serialize_invoice's getattr always yields "" — so before
+            # this, an invoice carrying a customer_id but NO job produced an id
+            # with no name at all, and every consumer rendered "Unknown"/"—" for
+            # a customer it could name. Measured 2026-09-24 on the local book:
+            # 43 of 415 invoices are in exactly that state.
+            if invoice.customer_id:
+                own = db.execute(
+                    select(Customer.name, Customer.deleted_at).where(
+                        Customer.id == invoice.customer_id
+                    )
                 ).first()
-                if cust and cust[1]:
-                    payload["customer_id"] = str(cust[0])
-                    payload["customer_name"] = cust[1]
+                if own and own[0]:
+                    payload["customer_name"] = own[0]
+                    payload["customer_deleted"] = own[1] is not None
+                    cn = own[0]
+            # Then the Job → Customer fallback (2026-04-29), for QB-imported
+            # invoices with a NULL Invoice.customer_id: the bare serializer
+            # returns "" even though the same invoice in the LIST view shows the
+            # real name, sourced via the Job. This branch sets the id too, so
+            # the pair it writes always describes one customer.
+            if not cn and invoice.job_id:
+                row = db.execute(
+                    select(Job.customer_id).where(Job.id == invoice.job_id)
+                ).first()
+                if row and row[0]:
+                    cust = db.execute(
+                        select(Customer.id, Customer.name, Customer.deleted_at).where(
+                            Customer.id == row[0]
+                        )
+                    ).first()
+                    if cust and cust[1]:
+                        payload["customer_id"] = str(cust[0])
+                        payload["customer_name"] = cust[1]
+                        payload["customer_deleted"] = cust[2] is not None
         except Exception:
             logging.getLogger(__name__).exception("get_invoice customer enrichment failed")
     # Surface customer contact on the invoice detail payload so the Bill-To

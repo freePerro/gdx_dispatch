@@ -8,7 +8,7 @@
  * @media (max-width: 768px)).
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { mount, flushPromises } from '@vue/test-utils';
+import { mount, flushPromises, RouterLinkStub } from '@vue/test-utils';
 
 const apiGet = vi.fn();
 const push = vi.fn();
@@ -36,6 +36,9 @@ vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }));
 import MobileEstimatesView from '../MobileEstimatesView.vue';
 
 const stubs = {
+  // The customer name on these screens is a router-link to /mobile/customers/:id.
+  // These specs mock vue-router wholesale, so RouterLink is not registered.
+  RouterLink: RouterLinkStub,
   SelectButton: { props: ['modelValue', 'options'], template: '<div />' },
   Tag: { props: ['value', 'severity'], template: '<span>{{ value }}</span>' },
   InputText: { props: ['modelValue'], template: '<input />' },
