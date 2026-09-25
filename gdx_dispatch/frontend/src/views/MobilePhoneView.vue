@@ -112,7 +112,29 @@
             <div><strong>{{ prettyDirection(detail.direction) }}</strong> · {{ friendlyStatus(detail) }}</div>
             <div>{{ detail.direction === 'out' ? detail.to_number : detail.from_number }}</div>
             <div class="muted">{{ formatDateTime(detail.started_at) }}<span v-if="detail.duration_s"> · {{ formatDuration(detail.duration_s) }}</span></div>
-            <div v-if="detail.customer_name"><strong>Customer:</strong> {{ detail.customer_name }}</div>
+            <!-- The name is the route to the record. A tech looking at a
+                 missed call already knows who rang; what they need next is the
+                 gate code or a second number, and before this the only way
+                 there was to leave the call, open Customers and search for a
+                 name already on screen.
+                 Guarded on id, name AND not-deleted: an anchor with no
+                 accessible name is worse than plain text, and a soft-deleted
+                 customer still arrives NAMED (get_call_detail keeps the name
+                 deliberately), so the flag is what withholds a link that
+                 /api/customers/{id} would 404 on. -->
+            <!-- &nbsp; is load-bearing: Vue's `condense` whitespace mode drops a
+                 whitespace-only text node that contains a newline, so putting the
+                 link on its own line renders "Customer:Acme Doors" with no gap
+                 (seen on the Pixel 8, 2026-09-24). -->
+            <div v-if="detail.customer_name"><strong>Customer:</strong>&nbsp;
+              <router-link
+                v-if="detail.customer_id && !detail.customer_deleted"
+                :to="`/mobile/customers/${detail.customer_id}`"
+                class="customer-link"
+                data-test="mp-customer-link"
+              >{{ detail.customer_name }}</router-link>
+              <span v-else>{{ detail.customer_name }}</span>
+            </div>
           </div>
 
           <!-- Transcript renders even when the audio fetch fails — an expired
@@ -480,6 +502,23 @@ onUnmounted(() => {
 .detail-meta {
   display: grid;
   gap: 0.25rem;
+}
+/* The 44px HIG floor — the tap target is a name inside a line of body text and
+   a gloved thumb gets one try. Underlined because colour alone is not enough at
+   this size, and because the primary token's light-mode contrast is low app-wide
+   (2.53:1, recorded in main.js) — a separately-owned theming issue matched here,
+   not re-themed. Same treatment as MobileEstimatesView / MobileBillingView.
+   NOTE: this is a MINIMUM HEIGHT only, and nothing enforces it. The repo's tap
+   audit (e2e/mobile-touch-targets.spec.js) never walks /mobile/phone, and even
+   on the routes it does walk it measures one pass per page load — every link
+   this change adds lives behind a tap, so that spec cannot fail for it. The
+   floor here is held by the device walk, not by a regression net. */
+.detail-meta .customer-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--p-primary-color, #3b82f6);
+  text-decoration: underline;
 }
 .muted {
   color: var(--text-muted);

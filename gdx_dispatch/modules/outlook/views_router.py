@@ -70,6 +70,12 @@ class MessageOut(BaseModel):
     # _link_labels), never per row.
     linked_customer_name: str | None = None
     linked_job_label: str | None = None
+    # True when the linked customer is soft-deleted. The name above stays set —
+    # this flag is what a UI withholds the LINK to /customers/{id} on, since
+    # that endpoint 404s on a deleted record. Never blank the name to suppress
+    # a link: the reader loses who the mail was from AND still gets the dead
+    # end.
+    linked_customer_deleted: bool = False
     conversation_id: str | None = None
     tag_strategy: str | None = None
     is_personal: bool
@@ -144,30 +150,43 @@ class AttachmentsOut(BaseModel):
 
 def _link_labels(
     tenant_db: Session, rows: list[OutlookMessage],
-) -> tuple[dict[str, str], dict[str, str]]:
-    """Batch-resolve (customer_id → name) and (job_id → label) for a page.
+) -> tuple[dict[str, str], dict[str, str], set[str]]:
+    """Batch-resolve (customer_id → name), (job_id → label) and which of those
+    customers are soft-deleted, for a page.
 
     Two queries for the whole page, never one per row. Best-effort: a lookup
     failure costs the badge its label, never the mail list — so it degrades to
-    "linked, unnamed" instead of 500ing the inbox.
+    "linked, unnamed" instead of 500ing the inbox. That degradation is also why
+    the customer link is guarded on the NAME as well as the id: with no label
+    there is nothing to put inside the anchor.
+
+    A soft-deleted customer is still named and reported in `deleted_customers`
+    instead of being dropped. GET /api/customers/{id} 404s on a deleted record,
+    so the flag is what withholds the LINK; the name stays readable, because an
+    email attributed to a since-deleted customer is exactly when an operator
+    most needs to see who it was. Same contract as get_estimate / get_invoice
+    (#777).
     """
     cust_ids = {m.linked_customer_id for m in rows if m.linked_customer_id}
     job_ids = {m.linked_job_id for m in rows if m.linked_job_id}
     customers: dict[str, str] = {}
     jobs: dict[str, str] = {}
+    deleted_customers: set[str] = set()
     if not cust_ids and not job_ids:
-        return customers, jobs
+        return customers, jobs, deleted_customers
     try:
         from gdx_dispatch.models.tenant_models import Customer, Job  # noqa: PLC0415
 
         if cust_ids:
-            for cid, name in (
-                tenant_db.query(Customer.id, Customer.name)
+            for cid, name, deleted_at in (
+                tenant_db.query(Customer.id, Customer.name, Customer.deleted_at)
                 .filter(Customer.id.in_(cust_ids))
                 .all()
             ):
                 if name:
                     customers[str(cid)] = name
+                if deleted_at is not None:
+                    deleted_customers.add(str(cid))
         if job_ids:
             for jid, number, title in (
                 tenant_db.query(Job.id, Job.job_number, Job.title)
@@ -179,7 +198,7 @@ def _link_labels(
                 jobs[str(jid)] = number or title or f"Job {str(jid)[:8]}"
     except Exception:  # noqa: BLE001
         log.warning("views_router: link-label lookup failed — badges render unlabeled", exc_info=True)
-    return customers, jobs
+    return customers, jobs, deleted_customers
 
 
 def _to_out(
@@ -187,6 +206,7 @@ def _to_out(
     *,
     customers: dict[str, str] | None = None,
     jobs: dict[str, str] | None = None,
+    deleted_customers: set[str] | None = None,
 ) -> MessageOut:
     return MessageOut(
         id=m.id,
@@ -204,6 +224,10 @@ def _to_out(
         linked_job_id=m.linked_job_id,
         linked_customer_name=(customers or {}).get(str(m.linked_customer_id)),
         linked_job_label=(jobs or {}).get(str(m.linked_job_id)),
+        linked_customer_deleted=(
+            bool(m.linked_customer_id)
+            and str(m.linked_customer_id) in (deleted_customers or set())
+        ),
         conversation_id=m.conversation_id,
         tag_strategy=m.tag_strategy,
         is_personal=m.is_personal,
@@ -212,8 +236,11 @@ def _to_out(
 
 def _to_out_all(tenant_db: Session, rows: list[OutlookMessage]) -> list[MessageOut]:
     """Serialize a page WITH link labels (one batched lookup for the page)."""
-    customers, jobs = _link_labels(tenant_db, rows)
-    return [_to_out(m, customers=customers, jobs=jobs) for m in rows]
+    customers, jobs, deleted = _link_labels(tenant_db, rows)
+    return [
+        _to_out(m, customers=customers, jobs=jobs, deleted_customers=deleted)
+        for m in rows
+    ]
 
 
 def _mailbox_address(tenant_db: Session, msg: OutlookMessage) -> str | None:
@@ -242,8 +269,12 @@ def _to_detail(
     viewer_is_owner: bool = False,
     tenant_db: Session | None = None,
 ) -> MessageDetailOut:
-    customers, jobs = _link_labels(tenant_db, [m]) if tenant_db is not None else ({}, {})
-    base = _to_out(m, customers=customers, jobs=jobs).model_dump()
+    customers, jobs, deleted = (
+        _link_labels(tenant_db, [m]) if tenant_db is not None else ({}, {}, set())
+    )
+    base = _to_out(
+        m, customers=customers, jobs=jobs, deleted_customers=deleted
+    ).model_dump()
     return MessageDetailOut(
         **base,
         cc_addresses=m.cc_addresses,

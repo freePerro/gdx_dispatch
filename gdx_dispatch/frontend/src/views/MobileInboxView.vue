@@ -117,8 +117,23 @@
             :linked-job-label="detail.linked_job_label"
           />
 
+          <!-- The customer chip was a <span> wearing a link's border and
+               colour: it looked tappable and did nothing, which is worse than
+               plain text because the reader spends a tap finding out. It is now
+               the route to the record.
+               Guarded on the NAME too, not just the id: _link_labels degrades
+               to "linked, unnamed" when the label lookup fails, and the
+               fallback text 'Customer' is not an accessible name for an anchor
+               — that case stays an unclickable chip. A soft-deleted customer
+               keeps its name and loses only the link. -->
           <div v-if="detail.linked_customer_id || detail.linked_job_id" class="msg-links" data-test="mi-detail-links">
-            <span v-if="detail.linked_customer_id" class="link-chip">{{ detail.linked_customer_name || 'Customer' }}</span>
+            <router-link
+              v-if="detail.linked_customer_id && detail.linked_customer_name && !detail.linked_customer_deleted"
+              :to="`/mobile/customers/${detail.linked_customer_id}`"
+              class="link-chip chip-link"
+              data-test="mi-detail-customer-link"
+            >{{ detail.linked_customer_name }}</router-link>
+            <span v-else-if="detail.linked_customer_id" class="link-chip">{{ detail.linked_customer_name || 'Customer' }}</span>
             <span v-if="detail.linked_job_id" class="link-chip job">{{ detail.linked_job_label || 'Job' }}</span>
           </div>
 
@@ -921,8 +936,28 @@ onMounted(() => {
 .msg-links {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 0.3rem;
   margin-top: 0.15rem;
+}
+/* Only the detail chip is a real link, and a real link on a phone has to clear
+   44×44. A 0.7rem chip is ~18px tall, so the anchor gets the floor on BOTH axes
+   while keeping the chip's border and colour; `align-items: center` above keeps
+   the shorter job chip centred beside it instead of top-aligned against a taller
+   pill. Underlined on top of the border because the border alone is what made
+   the old inert <span> read as clickable — the link now has something the
+   non-link chips do not.
+   The floor is NOT guarded: e2e/mobile-touch-targets.spec.js does walk
+   /mobile/inbox, but it measures once per page load and this chip only exists
+   after a message is opened, so that spec cannot fail for this rule. Held by
+   the device walk instead. */
+.link-chip.chip-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  min-width: 44px;
+  text-decoration: underline;
 }
 .link-chip {
   font-size: 0.7rem;

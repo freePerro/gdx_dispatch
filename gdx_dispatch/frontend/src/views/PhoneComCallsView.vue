@@ -175,7 +175,21 @@
         <div class="detail-row"><span class="label">Status</span>
           <Tag :value="friendlyStatus(detail)" :severity="statusSeverity(detail)" />
         </div>
-        <div v-if="detail.customer_name" class="detail-row"><span class="label">Customer</span><span>{{ detail.customer_name }}</span></div>
+        <!-- The name is the route to the record. The Customer COLUMN in the
+             table behind this dialog already offers "+ Add" for an unknown
+             caller, so a known customer's name being the one unclickable thing
+             in that cell's vocabulary was the odd case out. Guarded on
+             not-deleted: /api/customers/{id} 404s on a soft-deleted record and
+             get_call_detail keeps naming it regardless. -->
+        <div v-if="detail.customer_name" class="detail-row"><span class="label">Customer</span>
+          <router-link
+            v-if="detail.customer_id && !detail.customer_deleted"
+            :to="`/customers/${detail.customer_id}`"
+            class="customer-link"
+            data-test="pc-customer-link"
+          >{{ detail.customer_name }}</router-link>
+          <span v-else>{{ detail.customer_name }}</span>
+        </div>
         <div v-if="detail.job_title" class="detail-row">
           <span class="label">Job</span>
           <span>
@@ -608,6 +622,15 @@ onMounted(() => {
   width: 90px;
   color: var(--p-text-muted-color);
   font-weight: 500;
+}
+/* Underlined, not colour alone: this dialog's rows are otherwise all plain
+   values, so one of them becoming navigable has to look different in a way
+   that does not depend on the primary token's light-mode contrast, which is low
+   app-wide (this repo records 2.53:1 for it in main.js) — a separately-owned
+   theming issue this change matches rather than re-themes. */
+.detail-row .customer-link {
+  color: var(--p-primary-color, #3b82f6);
+  text-decoration: underline;
 }
 .audio-block {
   margin-top: 1rem;

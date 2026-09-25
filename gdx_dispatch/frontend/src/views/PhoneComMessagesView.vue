@@ -46,7 +46,19 @@
           <Card>
             <template #title>
               <div class="pane-header">
-                <span>{{ selectedThread.customer_name || selectedThread.other_party_number }}</span>
+                <!-- The conversation's title is the route to the record. Falls
+                     back to the phone number when the thread has no customer —
+                     an SMS from an unknown number has nothing to link to — and
+                     to plain text when the customer is soft-deleted, since
+                     /api/customers/{id} 404s on one while the thread payload
+                     keeps naming it. -->
+                <router-link
+                  v-if="selectedThread.customer_id && selectedThread.customer_name && !selectedThread.customer_deleted"
+                  :to="`/customers/${selectedThread.customer_id}`"
+                  class="customer-link"
+                  data-test="pcm-customer-link"
+                >{{ selectedThread.customer_name }}</router-link>
+                <span v-else>{{ selectedThread.customer_name || selectedThread.other_party_number }}</span>
                 <div class="pane-header-actions">
                   <Button
                     label="Mark read"
@@ -393,6 +405,14 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+/* This sits in a Card #title slot, which sets the size and weight — the link
+   only has to inherit those and declare itself a link. Underlined for the same
+   reason as the call dialog: the primary token's light-mode contrast is low
+   app-wide (2.53:1, recorded in main.js), so colour alone is not enough. */
+.pane-header .customer-link {
+  color: var(--p-primary-color, #3b82f6);
+  text-decoration: underline;
 }
 .pane-header-actions {
   display: flex;

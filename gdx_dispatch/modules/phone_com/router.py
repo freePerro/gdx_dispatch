@@ -258,10 +258,19 @@ def get_call_detail(
         .filter(PhoneComVoicemail.call_id == call_id)
         .first()
     )
+    # A soft-deleted customer is still NAMED here and flagged instead. The
+    # caller of a call still has a name worth showing — that is the whole point
+    # of the field — and GET /api/customers/{id} 404s on a deleted record, so
+    # `customer_deleted` is what a UI withholds the LINK on while the name
+    # stays readable. Blanking the name to suppress a link loses the
+    # information and keeps the dead end; same contract as get_estimate /
+    # get_invoice (#777).
     customer_name = None
+    customer_deleted = False
     if call.customer_id:
         customer = tenant_db.get(Customer, call.customer_id)
         customer_name = customer.name if customer else None
+        customer_deleted = customer is not None and customer.deleted_at is not None
     job_title = None
     if call.job_id:
         job = tenant_db.get(Job, call.job_id)
@@ -281,6 +290,7 @@ def get_call_detail(
         "extension_id": call.extension_id,
         "customer_id": str(call.customer_id) if call.customer_id else None,
         "customer_name": customer_name,
+        "customer_deleted": customer_deleted,
         "job_id": str(call.job_id) if call.job_id else None,
         "job_title": job_title,
         "has_recording": bool(call.recording_url) and rec_on,
@@ -697,15 +707,23 @@ def list_message_threads(
         # Without a definitive list of own-numbers we use direction heuristic:
         # for inbound, other=from_number; for outbound, other=to_number.
         other = latest.from_number if latest.direction == "in" else latest.to_number
+        # Named even when soft-deleted, flagged instead — see get_call_detail
+        # for why the flag and not a blank name. This row is what the thread
+        # HEADER renders (both the desktop and the mobile conversation sheet
+        # read selectedThread), so the flag has to travel with the thread, not
+        # only with a per-message payload.
         customer_name = None
+        customer_deleted = False
         if latest.customer_id:
             cust = tenant_db.get(Customer, latest.customer_id)
             customer_name = cust.name if cust else None
+            customer_deleted = cust is not None and cust.deleted_at is not None
         items.append({
             "thread_key": row.thread_key,
             "other_party_number": other,
             "customer_id": str(latest.customer_id) if latest.customer_id else None,
             "customer_name": customer_name,
+            "customer_deleted": customer_deleted,
             "last_message_at": latest.sent_at.isoformat() if latest.sent_at else None,
             "last_message_body": latest.body,
             "last_message_direction": latest.direction,
