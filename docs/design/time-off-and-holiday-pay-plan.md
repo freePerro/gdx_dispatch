@@ -1,7 +1,8 @@
 # Time off and holiday pay — Plan
 
 **Date:** 2026-09-23
-**Status:** BUILT — every section below is implemented on `feat/time-off-requests` and browser-walked on a throwaway container 2026-09-23 (`frontend/e2e/time-off.spec.js`); PR #770 open, not merged, not released
+**Status:** MERGED #770 (2026-09-24) — every section below is implemented and browser-walked on a throwaway container 2026-09-23 (`frontend/e2e/time-off.spec.js`); not yet released (latest release v1.123.0 predates the merge).
+**See also:** `vacation-balance-tracking-plan.md` (2026-09-24, PLAN) — the per-person balance / hours-used tracking this plan did not build.
 **Ask (Doug, 2026-09-23):** "there is nothing that lets anyone put down a
 vacation day or holiday pay." Shape decisions, all Doug's, same day:
 

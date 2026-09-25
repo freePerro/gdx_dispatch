@@ -69,10 +69,13 @@ build/
 Thumbs.db
 
 # Claude Code per-machine state — ignore everything under .claude/ except
-# project settings (.claude/settings.json; none committed today).
-# settings.local.json and session scratch stay ignored.
+# project settings (.claude/settings.json; none committed today) and the
+# checked-in project subagents (.claude/agents/*.md — see
+# docs/design/domain-agents-plan.md). settings.local.json, agent memory and
+# session scratch stay ignored.
 .claude/*
 !.claude/settings.json
+!.claude/agents/
 
 # Session notes / dated reports (local scratch files)
 RECOVERY_*.md

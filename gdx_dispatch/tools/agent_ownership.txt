@@ -1,0 +1,701 @@
+# agent_ownership.txt — which project subagent owns which source file.
+#
+# One rule per line:   <fnmatch glob, repo-relative posix path>   <owner>
+# `*` matches across `/` (fnmatch semantics, not gitignore). LAST MATCH WINS,
+# so list the broad rule first and the exception after it. An owner is the
+# stem of a checked-in agent file: `.claude/agents/<owner>.md`.
+#
+# Read by gdx_dispatch/tools/agent_ownership_scan.py and gated by
+# gdx_dispatch/tests/test_agent_ownership.py: every source file under the
+# covered roots must resolve to an owner, every rule must still match a file,
+# every owner must have an agent file and every agent file must own something.
+# Adding a router, view, module or composable without a line here is red.
+#
+# Deliberately NO catch-all like `gdx_dispatch/core/*.py`: a new file has to be
+# claimed on purpose, or the guard could never tell you it was forgotten.
+#
+# Decided 2026-09-24; rationale and rejected shapes in
+# domain-agents-plan under docs/design/.
+
+## ---------------------------------------------------------------------------
+## platform-core — the kernel: app wiring, identity & RBAC, audit, database,
+## migrations, settings, admin, scheduler/Celery, observability, scanners.
+## ---------------------------------------------------------------------------
+gdx_dispatch/app.py                                          platform-core
+gdx_dispatch/main.py                                         platform-core
+gdx_dispatch/alembic.ini                                     platform-core
+gdx_dispatch/requirements.txt                                platform-core
+gdx_dispatch/openapi_routes.txt                              platform-core
+gdx_dispatch/migrations/*                                    platform-core
+gdx_dispatch/docker/*                                        platform-core
+gdx_dispatch/tools/*                                         platform-core
+gdx_dispatch/static/*                                        platform-core
+gdx_dispatch/api/*                                           platform-core
+gdx_dispatch/models/tenant_models.py                         platform-core
+.github/*                                                    platform-core
+scripts/*                                                    platform-core
+tools/*                                                      platform-core
+conftest.py                                                  platform-core
+pytest.ini                                                   platform-core
+ruff.toml                                                    platform-core
+pyproject.toml                                               platform-core
+
+gdx_dispatch/routers/auth/*                                  platform-core
+gdx_dispatch/routers/activity.py                             platform-core
+gdx_dispatch/routers/admin_db.py                             platform-core
+gdx_dispatch/routers/admin_ops.py                            platform-core
+gdx_dispatch/routers/admin_settings.py                       platform-core
+gdx_dispatch/routers/api_metadata.py                         platform-core
+gdx_dispatch/routers/audit.py                                platform-core
+gdx_dispatch/routers/bug_reports.py                          platform-core
+gdx_dispatch/routers/custom_fields.py                        platform-core
+gdx_dispatch/routers/games.py                                platform-core
+gdx_dispatch/routers/gdpr.py                                 platform-core
+gdx_dispatch/routers/onboarding.py                           platform-core
+gdx_dispatch/routers/resources.py                            platform-core
+gdx_dispatch/routers/role_permissions.py                     platform-core
+gdx_dispatch/routers/search.py                               platform-core
+gdx_dispatch/routers/session_policy.py                       platform-core
+gdx_dispatch/routers/settings.py                             platform-core
+gdx_dispatch/routers/support.py                              platform-core
+gdx_dispatch/routers/tours.py                                platform-core
+gdx_dispatch/routers/ui_compat.py                            platform-core
+gdx_dispatch/routers/users.py                                platform-core
+gdx_dispatch/routers/ux_telemetry.py                         platform-core
+gdx_dispatch/routers/webhooks.py                             platform-core
+gdx_dispatch/routers/well_known.py                           platform-core
+
+gdx_dispatch/core/middleware/*                               platform-core
+gdx_dispatch/core/webhooks/*                                 platform-core
+gdx_dispatch/core/deprecations.json                          platform-core
+gdx_dispatch/core/shadow_maps.json                           platform-core
+gdx_dispatch/core/activity_feed.py                           platform-core
+gdx_dispatch/core/api_keys.py                                platform-core
+gdx_dispatch/core/api_version.py                             platform-core
+gdx_dispatch/core/audit.py                                   platform-core
+gdx_dispatch/core/audit_dashboard.py                         platform-core
+gdx_dispatch/core/audit_labels.py                            platform-core
+gdx_dispatch/core/audit_middleware.py                        platform-core
+gdx_dispatch/core/auth.py                                    platform-core
+gdx_dispatch/core/auth_capabilities.py                       platform-core
+gdx_dispatch/core/auth_dispatcher.py                         platform-core
+gdx_dispatch/core/auth_revoke.py                             platform-core
+gdx_dispatch/core/cache.py                                   platform-core
+gdx_dispatch/core/celery_app.py                              platform-core
+gdx_dispatch/core/circuit_breaker.py                         platform-core
+gdx_dispatch/core/custom_fields.py                           platform-core
+gdx_dispatch/core/data_access_logger.py                      platform-core
+gdx_dispatch/core/database.py                                platform-core
+gdx_dispatch/core/denylist.py                                platform-core
+gdx_dispatch/core/deprecation_registry.py                    platform-core
+gdx_dispatch/core/error_handler.py                           platform-core
+gdx_dispatch/core/feature_defaults.py                        platform-core
+gdx_dispatch/core/gdpr.py                                    platform-core
+gdx_dispatch/core/integrations.py                            platform-core
+gdx_dispatch/core/internal_auth.py                           platform-core
+gdx_dispatch/core/jwks.py                                    platform-core
+gdx_dispatch/core/log_format.py                              platform-core
+gdx_dispatch/core/log_redact.py                              platform-core
+gdx_dispatch/core/log_shipper.py                             platform-core
+gdx_dispatch/core/modules.py                                 platform-core
+gdx_dispatch/core/observability.py                           platform-core
+gdx_dispatch/core/onboarding.py                              platform-core
+gdx_dispatch/core/pagination.py                              platform-core
+gdx_dispatch/core/performance.py                             platform-core
+gdx_dispatch/core/permissions.py                             platform-core
+gdx_dispatch/core/pii.py                                     platform-core
+gdx_dispatch/core/prometheus.py                              platform-core
+gdx_dispatch/core/rate_limiter.py                            platform-core
+gdx_dispatch/core/request_logging.py                         platform-core
+gdx_dispatch/core/roles.py                                   platform-core
+gdx_dispatch/core/route_order.py                             platform-core
+gdx_dispatch/core/scheduler.py                               platform-core
+gdx_dispatch/core/security_logger.py                         platform-core
+gdx_dispatch/core/settings_audit.py                          platform-core
+gdx_dispatch/core/settings_flags.py                          platform-core
+gdx_dispatch/core/settings_row.py                            platform-core
+gdx_dispatch/core/ssrf_guard.py                              platform-core
+gdx_dispatch/core/tenant.py                                  platform-core
+gdx_dispatch/core/tenant_ctx.py                              platform-core
+gdx_dispatch/core/tenant_settings.py                         platform-core
+gdx_dispatch/core/terminology.py                             platform-core
+gdx_dispatch/core/token_binding.py                           platform-core
+gdx_dispatch/core/turnstile.py                               platform-core
+gdx_dispatch/core/unified_principal.py                       platform-core
+gdx_dispatch/core/user_display.py                            platform-core
+gdx_dispatch/core/validation.py                              platform-core
+gdx_dispatch/core/webhook_auth.py                            platform-core
+gdx_dispatch/core/webhook_delivery.py                        platform-core
+gdx_dispatch/core/webhook_logger.py                          platform-core
+gdx_dispatch/core/websocket.py                               platform-core
+gdx_dispatch/core/well_known_manifest.py                     platform-core
+
+gdx_dispatch/modules/error_sink/*                            platform-core
+gdx_dispatch/modules/numbering/*                             platform-core
+gdx_dispatch/modules/workflow/*                              platform-core
+gdx_dispatch/modules/workflows/*                             platform-core
+gdx_dispatch/tasks/audit_chain_verify.py                     platform-core
+
+gdx_dispatch/frontend/src/views/SettingsView.vue             platform-core
+gdx_dispatch/frontend/src/views/AuditLogViewer.vue           platform-core
+gdx_dispatch/frontend/src/views/DatabaseAdminView.vue        platform-core
+gdx_dispatch/frontend/src/views/ServerErrorsView.vue         platform-core
+gdx_dispatch/frontend/src/views/WebhooksView.vue             platform-core
+gdx_dispatch/frontend/src/views/RolePermissionsView.vue      platform-core
+gdx_dispatch/frontend/src/views/UsersView.vue                platform-core
+gdx_dispatch/frontend/src/views/CustomFieldsView.vue         platform-core
+gdx_dispatch/frontend/src/views/OnboardingView.vue           platform-core
+gdx_dispatch/frontend/src/views/LoginView.vue                platform-core
+gdx_dispatch/frontend/src/views/ForgotPasswordView.vue       platform-core
+gdx_dispatch/frontend/src/views/ResetPasswordView.vue        platform-core
+gdx_dispatch/frontend/src/views/AccessDeniedView.vue         platform-core
+gdx_dispatch/frontend/src/views/NotFoundView.vue             platform-core
+gdx_dispatch/frontend/src/views/ActivityView.vue             platform-core
+gdx_dispatch/frontend/src/views/GdprView.vue                 platform-core
+gdx_dispatch/frontend/src/views/AutomationRulesView.vue      platform-core
+gdx_dispatch/frontend/src/views/FeedbackPortalView.vue       platform-core
+gdx_dispatch/frontend/src/views/PortalView.vue               platform-core
+gdx_dispatch/frontend/src/views/GameCatalogView.vue          platform-core
+gdx_dispatch/frontend/src/views/GamePlayerView.vue           platform-core
+gdx_dispatch/frontend/src/views/ResourcesView.vue            platform-core
+gdx_dispatch/frontend/src/components/games/*                 platform-core
+
+## ---------------------------------------------------------------------------
+## frontend-shell — the SPA itself: layout, router, stores, shared
+## composables, theme, i18n, help/tours, test harness, lockfile.
+## ---------------------------------------------------------------------------
+gdx_dispatch/frontend/package.json                           frontend-shell
+gdx_dispatch/frontend/package-lock.json                      frontend-shell
+gdx_dispatch/frontend/e2e/_fixtures.js                       frontend-shell
+gdx_dispatch/frontend/e2e/_routes.js                         frontend-shell
+gdx_dispatch/frontend/e2e/global-setup.js                    frontend-shell
+gdx_dispatch/frontend/index.html                             frontend-shell
+gdx_dispatch/frontend/vite.config.js                         frontend-shell
+gdx_dispatch/frontend/vitest.config.js                       frontend-shell
+gdx_dispatch/frontend/histoire.config.ts                     frontend-shell
+gdx_dispatch/frontend/playwright.config.js                   frontend-shell
+gdx_dispatch/frontend/playwright.prodwalk.config.js          frontend-shell
+gdx_dispatch/frontend/public/*                               frontend-shell
+gdx_dispatch/frontend/scripts/*                              frontend-shell
+gdx_dispatch/frontend/tests/setup.js                         frontend-shell
+gdx_dispatch/frontend/src/App.vue                            frontend-shell
+gdx_dispatch/frontend/src/main.js                            frontend-shell
+gdx_dispatch/frontend/src/histoire-setup.ts                  frontend-shell
+gdx_dispatch/frontend/src/assets/*                           frontend-shell
+gdx_dispatch/frontend/src/router/*                           frontend-shell
+gdx_dispatch/frontend/src/stores/*                           frontend-shell
+gdx_dispatch/frontend/src/i18n/*                             frontend-shell
+gdx_dispatch/frontend/src/help/*                             frontend-shell
+gdx_dispatch/frontend/src/tours/*                            frontend-shell
+gdx_dispatch/frontend/src/lib/*                              frontend-shell
+gdx_dispatch/frontend/src/utils/*                            frontend-shell
+gdx_dispatch/frontend/src/constants/*                        frontend-shell
+gdx_dispatch/frontend/src/plugins/*                          frontend-shell
+gdx_dispatch/frontend/src/views/_ViewTemplate.vue            frontend-shell
+gdx_dispatch/frontend/src/views/DashboardView.vue            frontend-shell
+gdx_dispatch/frontend/src/views/DashboardView.story.vue      frontend-shell
+gdx_dispatch/frontend/src/components/AppLayout.vue           frontend-shell
+gdx_dispatch/frontend/src/components/AppSidebar.vue          frontend-shell
+gdx_dispatch/frontend/src/components/AppTopbar.vue           frontend-shell
+gdx_dispatch/frontend/src/components/AppTopbar.story.vue     frontend-shell
+gdx_dispatch/frontend/src/components/AuthedImage.vue         frontend-shell
+gdx_dispatch/frontend/src/components/BugReportButton.vue     frontend-shell
+gdx_dispatch/frontend/src/components/CommandPalette.vue      frontend-shell
+gdx_dispatch/frontend/src/components/EmptyState.vue          frontend-shell
+gdx_dispatch/frontend/src/components/ErrorBoundary.vue       frontend-shell
+gdx_dispatch/frontend/src/components/FormField.vue           frontend-shell
+gdx_dispatch/frontend/src/components/HelpButton.vue          frontend-shell
+gdx_dispatch/frontend/src/components/HelpDrawer.vue          frontend-shell
+gdx_dispatch/frontend/src/components/ModuleTabsPage.vue      frontend-shell
+gdx_dispatch/frontend/src/components/PhoneInput.vue          frontend-shell
+gdx_dispatch/frontend/src/components/ThemeProvider.vue       frontend-shell
+gdx_dispatch/frontend/src/composables/useApi.js              frontend-shell
+gdx_dispatch/frontend/src/composables/useApiWithToast.js     frontend-shell
+gdx_dispatch/frontend/src/composables/useAuthedFile.js       frontend-shell
+gdx_dispatch/frontend/src/composables/useDestructiveConfirm.js frontend-shell
+gdx_dispatch/frontend/src/composables/useDirtyDialog.js      frontend-shell
+gdx_dispatch/frontend/src/composables/useFormDraft.js        frontend-shell
+gdx_dispatch/frontend/src/composables/useFormatters.js       frontend-shell
+gdx_dispatch/frontend/src/composables/useHelp.js             frontend-shell
+gdx_dispatch/frontend/src/composables/useIdleLogout.js       frontend-shell
+gdx_dispatch/frontend/src/composables/useListPrefs.js        frontend-shell
+gdx_dispatch/frontend/src/composables/useModuleSections.js   frontend-shell
+gdx_dispatch/frontend/src/composables/useOnlineState.js      frontend-shell
+gdx_dispatch/frontend/src/composables/usePermission.js       frontend-shell
+gdx_dispatch/frontend/src/composables/usePollingRefresh.js   frontend-shell
+gdx_dispatch/frontend/src/composables/useTableExport.js      frontend-shell
+gdx_dispatch/frontend/src/composables/useTenantModules.js    frontend-shell
+gdx_dispatch/frontend/src/composables/useTenantTimezone.js   frontend-shell
+gdx_dispatch/frontend/src/composables/useTour.js             frontend-shell
+gdx_dispatch/frontend/src/composables/useViewMode.js         frontend-shell
+
+## ---------------------------------------------------------------------------
+## money-billing — invoices, payments, deposits, voids/refunds, the general
+## ledger, tax, collections, reminders, customer statements, Stripe.
+## ---------------------------------------------------------------------------
+gdx_dispatch/routers/invoices.py                             money-billing
+gdx_dispatch/routers/payments.py                             money-billing
+gdx_dispatch/routers/stripe_webhook.py                       money-billing
+gdx_dispatch/routers/collections.py                          money-billing
+gdx_dispatch/routers/invoice_reminders.py                    money-billing
+gdx_dispatch/routers/customer_statements.py                  money-billing
+gdx_dispatch/core/payments.py                                money-billing
+gdx_dispatch/core/stripe_payments.py                         money-billing
+gdx_dispatch/core/invoice_delivery.py                        money-billing
+gdx_dispatch/core/invoice_invariants.py                      money-billing
+gdx_dispatch/core/invoice_paid.py                            money-billing
+gdx_dispatch/core/invoice_tax.py                             money-billing
+gdx_dispatch/core/billing_lanes.py                           money-billing
+gdx_dispatch/core/billing_predicates.py                      money-billing
+gdx_dispatch/core/closeout_billing.py                        money-billing
+gdx_dispatch/core/closeout_reconciliation.py                 money-billing
+gdx_dispatch/core/money_format.py                            money-billing
+gdx_dispatch/modules/ledger/*                                money-billing
+gdx_dispatch/modules/deposits/*                              money-billing
+gdx_dispatch/modules/tax/*                                   money-billing
+gdx_dispatch/modules/billing_terms/*                         money-billing
+gdx_dispatch/services/customer_statements.py                 money-billing
+gdx_dispatch/tasks/billing_followup.py                       money-billing
+gdx_dispatch/tasks/invoice_reminders_auto.py                 money-billing
+gdx_dispatch/tasks/stale_intent_sweep.py                     money-billing
+gdx_dispatch/frontend/src/views/InvoiceDetailView.vue        money-billing
+gdx_dispatch/frontend/src/views/InvoiceCreateView.vue        money-billing
+gdx_dispatch/frontend/src/views/PaymentsView.vue             money-billing
+gdx_dispatch/frontend/src/views/AccountingLedgerView.vue     money-billing
+gdx_dispatch/frontend/src/views/AccountingSettingsView.vue   money-billing
+gdx_dispatch/frontend/src/views/CollectionsView.vue          money-billing
+gdx_dispatch/frontend/src/views/InvoiceRemindersView.vue     money-billing
+gdx_dispatch/frontend/src/views/BillingView.vue              money-billing
+gdx_dispatch/frontend/src/components/CustomerStatementDialog.vue money-billing
+gdx_dispatch/frontend/src/components/PaymentCaptureForm.vue  money-billing
+gdx_dispatch/frontend/src/utils/customerStatement.js         money-billing
+
+## ---------------------------------------------------------------------------
+## jobs-dispatch — jobs, closeouts, scheduling, dispatch board, planner,
+## appointments, service calls/agreements, checklists, maintenance, GPS/maps,
+## warranties, field vehicles.
+## ---------------------------------------------------------------------------
+gdx_dispatch/routers/jobs.py                                 jobs-dispatch
+gdx_dispatch/routers/job_assignments.py                      jobs-dispatch
+gdx_dispatch/routers/job_costing.py                          jobs-dispatch
+gdx_dispatch/routers/job_diagnosis.py                        jobs-dispatch
+gdx_dispatch/routers/job_hazards_receipts.py                 jobs-dispatch
+gdx_dispatch/routers/dispatch_scheduling.py                  jobs-dispatch
+gdx_dispatch/routers/dispatch_ws.py                          jobs-dispatch
+gdx_dispatch/routers/scheduling.py                           jobs-dispatch
+gdx_dispatch/routers/appointments.py                         jobs-dispatch
+gdx_dispatch/routers/planner.py                              jobs-dispatch
+gdx_dispatch/routers/tasks.py                                jobs-dispatch
+gdx_dispatch/routers/service_calls.py                        jobs-dispatch
+gdx_dispatch/routers/service_triggers.py                     jobs-dispatch
+gdx_dispatch/routers/service_agreements.py                   jobs-dispatch
+gdx_dispatch/routers/holding_areas.py                        jobs-dispatch
+gdx_dispatch/routers/checklists.py                           jobs-dispatch
+gdx_dispatch/routers/safety_checklist.py                     jobs-dispatch
+gdx_dispatch/routers/install_sheet.py                        jobs-dispatch
+gdx_dispatch/routers/maintenance.py                          jobs-dispatch
+gdx_dispatch/routers/notes.py                                jobs-dispatch
+gdx_dispatch/routers/labor.py                                jobs-dispatch
+gdx_dispatch/routers/labor_variance.py                       jobs-dispatch
+gdx_dispatch/routers/tech_locations.py                       jobs-dispatch
+gdx_dispatch/routers/gps.py                                  jobs-dispatch
+gdx_dispatch/routers/maps.py                                 jobs-dispatch
+gdx_dispatch/routers/warranties.py                           jobs-dispatch
+gdx_dispatch/routers/warranty_claims.py                      jobs-dispatch
+gdx_dispatch/routers/vehicle_inspections.py                  jobs-dispatch
+gdx_dispatch/core/closeouts.py                               jobs-dispatch
+gdx_dispatch/core/job_access.py                              jobs-dispatch
+gdx_dispatch/core/job_display_state.py                       jobs-dispatch
+gdx_dispatch/core/job_site.py                                jobs-dispatch
+gdx_dispatch/core/job_taxonomy.py                            jobs-dispatch
+gdx_dispatch/core/drive_time.py                              jobs-dispatch
+gdx_dispatch/core/service_presets.py                         jobs-dispatch
+gdx_dispatch/modules/dispatch_settings/*                     jobs-dispatch
+gdx_dispatch/modules/gps_dispatch/*                          jobs-dispatch
+gdx_dispatch/modules/maintenance/*                           jobs-dispatch
+gdx_dispatch/modules/maps_provider/*                         jobs-dispatch
+gdx_dispatch/modules/service_areas/*                         jobs-dispatch
+gdx_dispatch/modules/fleet/*                                 jobs-dispatch
+gdx_dispatch/modules/equipment/*                             jobs-dispatch
+gdx_dispatch/tasks/planner_digest.py                         jobs-dispatch
+gdx_dispatch/tasks/tech_locations_prune.py                   jobs-dispatch
+gdx_dispatch/frontend/src/views/JobsView.vue                 jobs-dispatch
+gdx_dispatch/frontend/src/views/JobDetailView.vue            jobs-dispatch
+gdx_dispatch/frontend/src/views/DispatchView.vue             jobs-dispatch
+gdx_dispatch/frontend/src/views/PlannerView.vue              jobs-dispatch
+gdx_dispatch/frontend/src/views/AppointmentsView.vue         jobs-dispatch
+gdx_dispatch/frontend/src/views/MapsView.vue                 jobs-dispatch
+gdx_dispatch/frontend/src/views/GpsView.vue                  jobs-dispatch
+gdx_dispatch/frontend/src/views/JobCostingView.vue           jobs-dispatch
+gdx_dispatch/frontend/src/views/DailyLoadsheetView.vue       jobs-dispatch
+gdx_dispatch/frontend/src/views/ChecklistsView.vue           jobs-dispatch
+gdx_dispatch/frontend/src/views/MaintenanceView.vue          jobs-dispatch
+gdx_dispatch/frontend/src/views/ServiceAgreementsView.vue    jobs-dispatch
+gdx_dispatch/frontend/src/views/WarrantiesView.vue           jobs-dispatch
+gdx_dispatch/frontend/src/views/TasksView.vue                jobs-dispatch
+gdx_dispatch/frontend/src/components/JobStateChip.vue        jobs-dispatch
+gdx_dispatch/frontend/src/components/JobStateOverrideDialog.vue jobs-dispatch
+gdx_dispatch/frontend/src/components/TechTimelineColumn.vue  jobs-dispatch
+gdx_dispatch/frontend/src/components/GoogleMapsIntegrationCard.vue jobs-dispatch
+gdx_dispatch/frontend/src/constants/jobTypes.js              jobs-dispatch
+gdx_dispatch/frontend/src/utils/jobDisplayState.js           jobs-dispatch
+
+## ---------------------------------------------------------------------------
+## estimates-pricing — estimates, proposals, change orders, catalog, door
+## catalog/listings, pricing engine, labor pricing, margins, wholesale.
+## ---------------------------------------------------------------------------
+gdx_dispatch/routers/estimates.py                            estimates-pricing
+gdx_dispatch/routers/change_orders.py                        estimates-pricing
+gdx_dispatch/routers/catalog.py                              estimates-pricing
+gdx_dispatch/routers/door_catalog.py                         estimates-pricing
+gdx_dispatch/routers/door_listings.py                        estimates-pricing
+gdx_dispatch/routers/pricing.py                              estimates-pricing
+gdx_dispatch/routers/pricing_admin.py                        estimates-pricing
+gdx_dispatch/routers/labor_pricing_admin.py                  estimates-pricing
+gdx_dispatch/core/pricing_provenance.py                      estimates-pricing
+gdx_dispatch/core/pricing_strategies.py                      estimates-pricing
+gdx_dispatch/core/part_pricing.py                            estimates-pricing
+gdx_dispatch/core/parts_pricing.py                           estimates-pricing
+gdx_dispatch/core/door_specs.py                              estimates-pricing
+gdx_dispatch/core/quantities.py                              estimates-pricing
+gdx_dispatch/modules/proposals/*                             estimates-pricing
+gdx_dispatch/modules/estimates_features/*                    estimates-pricing
+gdx_dispatch/modules/catalog_policy/*                        estimates-pricing
+gdx_dispatch/modules/door_listings/*                         estimates-pricing
+gdx_dispatch/modules/change_orders/*                         estimates-pricing
+gdx_dispatch/modules/wholesale/*                             estimates-pricing
+gdx_dispatch/services/pricing_engine.py                      estimates-pricing
+gdx_dispatch/models/pricing_engine.py                        estimates-pricing
+gdx_dispatch/models/labor_pricing.py                         estimates-pricing
+gdx_dispatch/tasks/estimate_archive.py                       estimates-pricing
+gdx_dispatch/tasks/estimate_expiry.py                        estimates-pricing
+gdx_dispatch/frontend/src/views/EstimateView.vue             estimates-pricing
+gdx_dispatch/frontend/src/views/EstimatesView.vue            estimates-pricing
+gdx_dispatch/frontend/src/views/CatalogView.vue              estimates-pricing
+gdx_dispatch/frontend/src/views/LaborMatrixView.vue          estimates-pricing
+gdx_dispatch/frontend/src/views/MarginTiersView.vue          estimates-pricing
+gdx_dispatch/frontend/src/views/DoorListingsView.vue         estimates-pricing
+gdx_dispatch/frontend/src/views/ChangeOrdersView.vue         estimates-pricing
+gdx_dispatch/frontend/src/views/ProposalPublicView.vue       estimates-pricing
+gdx_dispatch/frontend/src/components/LineItemEditor.vue      estimates-pricing
+gdx_dispatch/frontend/src/components/TierEditor.vue          estimates-pricing
+gdx_dispatch/frontend/src/components/VolumeTierEditor.vue    estimates-pricing
+gdx_dispatch/frontend/src/components/MarginTiersPanel.vue    estimates-pricing
+gdx_dispatch/frontend/src/components/CatalogPickerDialog.vue estimates-pricing
+gdx_dispatch/frontend/src/components/LaborPickerDialog.vue   estimates-pricing
+gdx_dispatch/frontend/src/components/EstimateProfitPanel.vue estimates-pricing
+gdx_dispatch/frontend/src/components/EstimateStatusContext.vue estimates-pricing
+gdx_dispatch/frontend/src/components/DoorSpecList.vue        estimates-pricing
+gdx_dispatch/frontend/src/components/MeasurementDiagram.vue  estimates-pricing
+gdx_dispatch/frontend/src/composables/useEstimateSources.js  estimates-pricing
+gdx_dispatch/frontend/src/composables/useLineCategories.js   estimates-pricing
+gdx_dispatch/frontend/src/catalog/*                          estimates-pricing
+gdx_dispatch/frontend/src/tours/catalog.js                   estimates-pricing
+gdx_dispatch/frontend/src/utils/doorSizeLabel.js             estimates-pricing
+gdx_dispatch/frontend/src/utils/quantity.js                  estimates-pricing
+
+## ---------------------------------------------------------------------------
+## customers-crm — customers, contacts, locations, leads, segments, tags,
+## loyalty, referrals, reviews, surveys, winback, marketing, customer portal.
+## ---------------------------------------------------------------------------
+gdx_dispatch/routers/customers.py                            customers-crm
+gdx_dispatch/routers/sub_resources.py                        customers-crm
+gdx_dispatch/routers/leads.py                                customers-crm
+gdx_dispatch/routers/segments.py                             customers-crm
+gdx_dispatch/routers/tags.py                                 customers-crm
+gdx_dispatch/routers/admin_customer_tags.py                  customers-crm
+gdx_dispatch/routers/loyalty.py                              customers-crm
+gdx_dispatch/routers/referrals.py                            customers-crm
+gdx_dispatch/routers/reviews.py                              customers-crm
+gdx_dispatch/routers/surveys.py                              customers-crm
+gdx_dispatch/routers/winback.py                              customers-crm
+gdx_dispatch/routers/marketing.py                            customers-crm
+gdx_dispatch/routers/portal.py                               customers-crm
+gdx_dispatch/core/customer_alert_tags.py                     customers-crm
+gdx_dispatch/core/name_normalize.py                          customers-crm
+gdx_dispatch/core/locations.py                               customers-crm
+gdx_dispatch/modules/customer_portal/*                       customers-crm
+gdx_dispatch/modules/locations/*                             customers-crm
+gdx_dispatch/services/customer_rolling_volume.py             customers-crm
+gdx_dispatch/tasks/customer_volume_refresh.py                customers-crm
+gdx_dispatch/frontend/src/views/CustomersView.vue            customers-crm
+gdx_dispatch/frontend/src/views/CustomerDetailView.vue       customers-crm
+gdx_dispatch/frontend/src/views/CustomerDuplicatesView.vue   customers-crm
+gdx_dispatch/frontend/src/views/LeadsView.vue                customers-crm
+gdx_dispatch/frontend/src/views/SegmentsView.vue             customers-crm
+gdx_dispatch/frontend/src/views/TagsView.vue                 customers-crm
+gdx_dispatch/frontend/src/views/LoyaltyView.vue              customers-crm
+gdx_dispatch/frontend/src/views/ReferralsView.vue            customers-crm
+gdx_dispatch/frontend/src/views/ReviewsView.vue              customers-crm
+gdx_dispatch/frontend/src/views/SurveysView.vue              customers-crm
+gdx_dispatch/frontend/src/views/WinbackView.vue              customers-crm
+gdx_dispatch/frontend/src/views/CustomerPortalView.vue       customers-crm
+gdx_dispatch/frontend/src/components/CustomerFormDialog.vue  customers-crm
+gdx_dispatch/frontend/src/utils/customerMatch.js             customers-crm
+
+## ---------------------------------------------------------------------------
+## comms-email-phone — Outlook/Graph email, Phone.com voice & SMS, inbound
+## email, cell gateway, notifications, push, transactional email, team chat.
+## ---------------------------------------------------------------------------
+gdx_dispatch/routers/notifications.py                        comms-email-phone
+gdx_dispatch/routers/push.py                                 comms-email-phone
+gdx_dispatch/routers/messages.py                             comms-email-phone
+gdx_dispatch/routers/inbound_comms.py                        comms-email-phone
+gdx_dispatch/routers/outbound_emails.py                      comms-email-phone
+gdx_dispatch/routers/email_settings.py                       comms-email-phone
+gdx_dispatch/routers/outlook_oauth.py                        comms-email-phone
+gdx_dispatch/routers/phone_com_settings.py                   comms-email-phone
+gdx_dispatch/routers/cell_gateway.py                         comms-email-phone
+gdx_dispatch/routers/voice.py                                comms-email-phone
+gdx_dispatch/core/email_layout.py                            comms-email-phone
+gdx_dispatch/core/email_norm.py                              comms-email-phone
+gdx_dispatch/core/email_recipients.py                        comms-email-phone
+gdx_dispatch/core/email_sender.py                            comms-email-phone
+gdx_dispatch/core/transactional_email.py                     comms-email-phone
+gdx_dispatch/core/inbound_email_auth.py                      comms-email-phone
+gdx_dispatch/core/office_notifications.py                    comms-email-phone
+gdx_dispatch/core/push_notifications.py                      comms-email-phone
+gdx_dispatch/core/push_subscriptions.py                      comms-email-phone
+gdx_dispatch/core/customer_views.py                          comms-email-phone
+gdx_dispatch/modules/outlook/*                               comms-email-phone
+gdx_dispatch/modules/phone_com/*                             comms-email-phone
+gdx_dispatch/modules/notifications/*                         comms-email-phone
+gdx_dispatch/tasks/plugin_email_outbox.py                    comms-email-phone
+gdx_dispatch/frontend/src/views/InboxView.vue                comms-email-phone
+gdx_dispatch/frontend/src/views/PhoneComCallsView.vue        comms-email-phone
+gdx_dispatch/frontend/src/views/PhoneComColdLeadsView.vue    comms-email-phone
+gdx_dispatch/frontend/src/views/PhoneComFaxesView.vue        comms-email-phone
+gdx_dispatch/frontend/src/views/PhoneComMessagesView.vue     comms-email-phone
+gdx_dispatch/frontend/src/views/OutboundEmailLogView.vue     comms-email-phone
+gdx_dispatch/frontend/src/views/admin/OutlookSettingsView.vue comms-email-phone
+gdx_dispatch/frontend/src/components/EmailAttachments.vue    comms-email-phone
+gdx_dispatch/frontend/src/components/EmailBodyFrame.vue      comms-email-phone
+gdx_dispatch/frontend/src/components/EmailTimeline.vue       comms-email-phone
+gdx_dispatch/frontend/src/components/OutlookConnectButton.vue comms-email-phone
+gdx_dispatch/frontend/src/components/OutlookIntegrationCard.vue comms-email-phone
+gdx_dispatch/frontend/src/components/PhoneComIntegrationCard.vue comms-email-phone
+gdx_dispatch/frontend/src/components/NotificationsDrawer.vue comms-email-phone
+gdx_dispatch/frontend/src/stores/emailUnread.js              comms-email-phone
+gdx_dispatch/frontend/src/stores/smsUnread.js                comms-email-phone
+gdx_dispatch/frontend/src/stores/notifications.js            comms-email-phone
+gdx_dispatch/frontend/src/composables/usePushSubscription.js comms-email-phone
+gdx_dispatch/frontend/src/utils/composerRecipient.js         comms-email-phone
+gdx_dispatch/frontend/src/utils/phoneComLabels.js            comms-email-phone
+
+## ---------------------------------------------------------------------------
+## back-office-books — QuickBooks, bank feeds, vendor bills & statements (AP),
+## expenses, budgets, overhead, forecasting, reports, exports, variance.
+## ---------------------------------------------------------------------------
+gdx_dispatch/routers/expenses.py                             back-office-books
+gdx_dispatch/routers/budgets.py                              back-office-books
+gdx_dispatch/routers/overhead.py                             back-office-books
+gdx_dispatch/routers/reports.py                              back-office-books
+gdx_dispatch/routers/exports.py                              back-office-books
+gdx_dispatch/routers/variance_report.py                      back-office-books
+gdx_dispatch/routers/vendor_invoices.py                      back-office-books
+gdx_dispatch/routers/vendor_statements.py                    back-office-books
+gdx_dispatch/core/quickbooks.py                              back-office-books
+gdx_dispatch/core/expense_categories.py                      back-office-books
+gdx_dispatch/core/column_fit.py                              back-office-books
+gdx_dispatch/modules/quickbooks/*                            back-office-books
+gdx_dispatch/modules/bank_feeds/*                            back-office-books
+gdx_dispatch/modules/forecasting/*                           back-office-books
+gdx_dispatch/modules/vendor_invoices/*                       back-office-books
+gdx_dispatch/modules/vendor_statements/*                     back-office-books
+gdx_dispatch/modules/reporting/*                             back-office-books
+gdx_dispatch/services/overhead_projection.py                 back-office-books
+gdx_dispatch/frontend/src/views/QuickbooksView.vue           back-office-books
+gdx_dispatch/frontend/src/views/BankFeedsView.vue            back-office-books
+gdx_dispatch/frontend/src/views/VendorBillsView.vue          back-office-books
+gdx_dispatch/frontend/src/views/VendorBillDetailView.vue     back-office-books
+gdx_dispatch/frontend/src/views/VendorStatementsView.vue     back-office-books
+gdx_dispatch/frontend/src/views/VendorStatementDetailView.vue back-office-books
+gdx_dispatch/frontend/src/views/ExpensesView.vue             back-office-books
+gdx_dispatch/frontend/src/views/MonthlyBudgetView.vue        back-office-books
+gdx_dispatch/frontend/src/views/OverheadView.vue             back-office-books
+gdx_dispatch/frontend/src/views/ForecastingView.vue          back-office-books
+gdx_dispatch/frontend/src/views/RecurringStreamsView.vue     back-office-books
+gdx_dispatch/frontend/src/views/SpendingTrendsView.vue       back-office-books
+gdx_dispatch/frontend/src/views/ReportsView.vue              back-office-books
+gdx_dispatch/frontend/src/views/ExportsView.vue              back-office-books
+gdx_dispatch/frontend/src/views/VarianceReportView.vue       back-office-books
+gdx_dispatch/frontend/src/components/quickbooks/*            back-office-books
+gdx_dispatch/frontend/src/components/forecasting/*           back-office-books
+gdx_dispatch/frontend/src/components/SimpleFINCard.vue       back-office-books
+gdx_dispatch/frontend/src/composables/useBudget.js           back-office-books
+gdx_dispatch/frontend/src/composables/useBudgetAnomalies.js  back-office-books
+gdx_dispatch/frontend/src/composables/useForecasting.js      back-office-books
+gdx_dispatch/frontend/src/composables/useOverhead.js         back-office-books
+gdx_dispatch/frontend/src/composables/useQBSync.js           back-office-books
+gdx_dispatch/frontend/src/composables/useRecurringStreams.js back-office-books
+gdx_dispatch/frontend/src/composables/qbSyncLabel.js         back-office-books
+
+## ---------------------------------------------------------------------------
+## people-time — technicians, timeclock, time off, pay periods, timesheets,
+## payroll, tech efficiency, user performance, commission (plugin boundary),
+## the user's own profile.
+## ---------------------------------------------------------------------------
+gdx_dispatch/routers/technicians.py                          people-time
+gdx_dispatch/routers/timeclock.py                            people-time
+gdx_dispatch/routers/time_off.py                             people-time
+gdx_dispatch/routers/payroll.py                              people-time
+gdx_dispatch/routers/tech_efficiency.py                      people-time
+gdx_dispatch/routers/performance.py                          people-time
+gdx_dispatch/routers/commission.py                           people-time
+gdx_dispatch/routers/me_settings.py                          people-time
+gdx_dispatch/core/pay_periods.py                             people-time
+gdx_dispatch/core/time_off.py                                people-time
+gdx_dispatch/core/timesheet_delivery.py                      people-time
+gdx_dispatch/core/timesheet_export.py                        people-time
+gdx_dispatch/core/timesheet_hours.py                         people-time
+gdx_dispatch/modules/timeclock/*                             people-time
+gdx_dispatch/modules/payroll/*                               people-time
+gdx_dispatch/tasks/payroll_timesheet.py                      people-time
+gdx_dispatch/tasks/timeclock_sweep.py                        people-time
+gdx_dispatch/frontend/src/views/TechniciansView.vue          people-time
+gdx_dispatch/frontend/src/views/TimeclockView.vue            people-time
+gdx_dispatch/frontend/src/views/TimesheetsView.vue           people-time
+gdx_dispatch/frontend/src/views/PayrollView.vue              people-time
+gdx_dispatch/frontend/src/views/admin/PayrollView.vue        people-time
+gdx_dispatch/frontend/src/views/CommissionsView.vue          people-time
+gdx_dispatch/frontend/src/views/PerformanceView.vue          people-time
+gdx_dispatch/frontend/src/views/UserProfileView.vue          people-time
+gdx_dispatch/frontend/src/components/TimeEntryDialog.vue     people-time
+gdx_dispatch/frontend/src/components/TimeOffRequestDialog.vue people-time
+gdx_dispatch/frontend/src/components/TimeOffRequestPanel.vue people-time
+gdx_dispatch/frontend/src/components/HolidayPostDialog.vue   people-time
+gdx_dispatch/frontend/src/components/TechEfficiencyPanel.vue people-time
+gdx_dispatch/frontend/src/composables/useWeeklyTimesheet.js  people-time
+gdx_dispatch/frontend/src/utils/hours.js                     people-time
+
+## ---------------------------------------------------------------------------
+## mobile-tech — the technician's phone: /api/mobile/* routers, every
+## Mobile*.vue surface, bottom nav, offline queue, photo queue, PWA, GPS
+## breadcrumb. Applies the owning domain's rules on each surface it renders.
+## ---------------------------------------------------------------------------
+gdx_dispatch/routers/mobile.py                               mobile-tech
+gdx_dispatch/routers/mobile_quoting.py                       mobile-tech
+gdx_dispatch/routers/mobile_invoicing.py                     mobile-tech
+gdx_dispatch/routers/mobile_day_summary.py                   mobile-tech
+gdx_dispatch/routers/mobile_chat.py                          mobile-tech
+gdx_dispatch/routers/admin_tech_mobile_settings.py           mobile-tech
+gdx_dispatch/core/tenant_mobile_settings.py                  mobile-tech
+gdx_dispatch/core/pwa.py                                     mobile-tech
+gdx_dispatch/frontend/src/views/Mobile*.vue                  mobile-tech
+gdx_dispatch/frontend/src/views/admin/TechMobileSettingsView.vue mobile-tech
+gdx_dispatch/frontend/src/components/Mobile*.vue             mobile-tech
+gdx_dispatch/frontend/src/components/AppBottomNav.vue        mobile-tech
+gdx_dispatch/frontend/src/components/QuickCaptureSheet.vue   mobile-tech
+gdx_dispatch/frontend/src/components/PhotoQueueFailedStrip.vue mobile-tech
+gdx_dispatch/frontend/src/components/QueuedActionFailedStrip.vue mobile-tech
+gdx_dispatch/frontend/src/composables/useOfflineSync.js      mobile-tech
+gdx_dispatch/frontend/src/composables/usePhotoQueue.js       mobile-tech
+gdx_dispatch/frontend/src/composables/useGpsBreadcrumb.js    mobile-tech
+gdx_dispatch/frontend/src/composables/useMobileTour.js       mobile-tech
+gdx_dispatch/frontend/src/lib/offlineDb.js                   mobile-tech
+gdx_dispatch/frontend/src/lib/keyboardInset.js               mobile-tech
+# Exceptions to the Mobile*.vue rule: these are communication surfaces.
+gdx_dispatch/frontend/src/views/MobileInboxView.vue          comms-email-phone
+gdx_dispatch/frontend/src/views/MobilePhoneView.vue          comms-email-phone
+gdx_dispatch/frontend/src/views/MobileSmsView.vue            comms-email-phone
+
+## ---------------------------------------------------------------------------
+## inventory-purchasing — stock, van inventory, parts to order, purchase
+## orders, vendor master, vendor on-order tracking, distributor ordering.
+## ---------------------------------------------------------------------------
+gdx_dispatch/routers/inventory.py                            inventory-purchasing
+gdx_dispatch/routers/van_inventory.py                        inventory-purchasing
+gdx_dispatch/routers/parts_needed.py                         inventory-purchasing
+gdx_dispatch/routers/purchase_orders.py                      inventory-purchasing
+gdx_dispatch/routers/vendors.py                              inventory-purchasing
+gdx_dispatch/modules/inventory/*                             inventory-purchasing
+gdx_dispatch/modules/purchase_orders/*                       inventory-purchasing
+gdx_dispatch/modules/vendor_orders/*                         inventory-purchasing
+gdx_dispatch/modules/distributor/*                           inventory-purchasing
+gdx_dispatch/frontend/src/views/InventoryView.vue            inventory-purchasing
+gdx_dispatch/frontend/src/views/PurchaseOrdersView.vue       inventory-purchasing
+gdx_dispatch/frontend/src/views/PartsToOrderView.vue         inventory-purchasing
+gdx_dispatch/frontend/src/views/VendorsView.vue              inventory-purchasing
+gdx_dispatch/frontend/src/composables/usePartsSeenCutoff.js  inventory-purchasing
+
+## ---------------------------------------------------------------------------
+## documents-media — documents, uploads, job photos, PDF generation and
+## templates, signatures, branding.
+## ---------------------------------------------------------------------------
+gdx_dispatch/routers/documents.py                            documents-media
+gdx_dispatch/routers/uploads.py                              documents-media
+gdx_dispatch/routers/photos.py                               documents-media
+gdx_dispatch/routers/pdf.py                                  documents-media
+gdx_dispatch/routers/pdf_templates.py                        documents-media
+gdx_dispatch/routers/signatures.py                           documents-media
+gdx_dispatch/routers/branding_public.py                      documents-media
+gdx_dispatch/core/pdf_generator.py                           documents-media
+gdx_dispatch/core/document_text.py                           documents-media
+gdx_dispatch/core/images.py                                  documents-media
+gdx_dispatch/core/job_photos.py                              documents-media
+gdx_dispatch/core/branding_logo.py                           documents-media
+gdx_dispatch/core/upload_limits.py                           documents-media
+gdx_dispatch/templates/*                                     documents-media
+gdx_dispatch/frontend/src/views/DocumentsView.vue            documents-media
+gdx_dispatch/frontend/src/views/PhotosView.vue               documents-media
+gdx_dispatch/frontend/src/views/SignaturesView.vue           documents-media
+gdx_dispatch/frontend/src/views/PdfTemplateEditorView.vue    documents-media
+gdx_dispatch/frontend/src/components/ComposerPdfPreview.vue  documents-media
+gdx_dispatch/frontend/src/components/FolderTreeNode.vue      documents-media
+gdx_dispatch/frontend/src/composables/useFolderPath.js       documents-media
+
+## ---------------------------------------------------------------------------
+## plugins-host — plugin_api, the plugin-host container, admin install,
+## proxies, storefront, consent, events, browser stream, the checked-in
+## public plugins.
+## ---------------------------------------------------------------------------
+gdx_dispatch/plugin_api/*                                    plugins-host
+gdx_dispatch/plugin_host/*                                   plugins-host
+plugins/*                                                    plugins-host
+PLUGIN-EXCEPTION.md                                          plugins-host
+gdx_dispatch/routers/admin_plugins.py                        plugins-host
+gdx_dispatch/routers/plugins_proxy.py                        plugins-host
+gdx_dispatch/routers/browser_proxy.py                        plugins-host
+gdx_dispatch/core/plugin_consent.py                          plugins-host
+gdx_dispatch/core/plugin_events.py                           plugins-host
+gdx_dispatch/core/plugin_permissions.py                      plugins-host
+gdx_dispatch/core/plugin_storefront.py                       plugins-host
+gdx_dispatch/core/session_recorder.py                        plugins-host
+gdx_dispatch/frontend/src/views/PluginsAdminView.vue         plugins-host
+gdx_dispatch/frontend/src/components/PluginScreen.vue        plugins-host
+gdx_dispatch/frontend/src/components/BrowserStream.vue       plugins-host
+gdx_dispatch/frontend/src/composables/usePluginScreen.js     plugins-host
+gdx_dispatch/frontend/src/composables/useBrowserStream.js    plugins-host
+
+## ---------------------------------------------------------------------------
+## ai-mcp — AI routers and providers, the LLM client, the MCP server and its
+## tools, recommendations / next actions, the AI assistant UI.
+## ---------------------------------------------------------------------------
+gdx_dispatch/routers/ai.py                                   ai-mcp
+gdx_dispatch/routers/ai_communication.py                     ai-mcp
+gdx_dispatch/routers/ai_estimates.py                         ai-mcp
+gdx_dispatch/routers/instant_estimate.py                     ai-mcp
+gdx_dispatch/routers/admin_ai_settings.py                    ai-mcp
+gdx_dispatch/core/llm/*                                      ai-mcp
+gdx_dispatch/core/mcp_tools/*                                ai-mcp
+gdx_dispatch/core/ai_logger.py                               ai-mcp
+gdx_dispatch/core/ai_provider.py                             ai-mcp
+gdx_dispatch/core/ai_quote.py                                ai-mcp
+gdx_dispatch/core/ai_router.py                               ai-mcp
+gdx_dispatch/core/ai_usage_logger.py                         ai-mcp
+gdx_dispatch/core/mcp_bearer.py                              ai-mcp
+gdx_dispatch/core/mcp_bearer_middleware.py                   ai-mcp
+gdx_dispatch/core/mcp_error_schema.py                        ai-mcp
+gdx_dispatch/core/mcp_fastmcp_bridge.py                      ai-mcp
+gdx_dispatch/core/mcp_invoke.py                              ai-mcp
+gdx_dispatch/core/mcp_mount.py                               ai-mcp
+gdx_dispatch/core/mcp_protocol_adapter.py                    ai-mcp
+gdx_dispatch/core/mcp_registry.py                            ai-mcp
+gdx_dispatch/core/mcp_tool_descriptor.py                     ai-mcp
+gdx_dispatch/core/openapi_to_capabilities.py                 ai-mcp
+gdx_dispatch/core/recommendations.py                         ai-mcp
+gdx_dispatch/core/recommendation_routes.py                   ai-mcp
+gdx_dispatch/core/next_action.py                             ai-mcp
+gdx_dispatch/frontend/src/views/AIAssistantView.vue          ai-mcp
+gdx_dispatch/frontend/src/components/AIAssistantPanel.vue    ai-mcp
+gdx_dispatch/frontend/src/components/AIAssistantIntegrationCard.vue ai-mcp
