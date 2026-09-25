@@ -1314,7 +1314,24 @@ onMounted(async () => {
           <div><span class="muted">Date:</span> {{ fmtDate(detail.sent_at || detail.received_at) }}</div>
           <div v-if="detail.is_personal" class="muted" data-test="inbox-personal-flag">🔒 Personal — visible only to you</div>
           <div class="detail-links" data-test="inbox-detail-links">
-            <span v-if="detail.linked_customer_id" class="link-chip customer">
+            <!-- The route to the record. This chip already wore the primary
+                 colour and a matching border, so it read as a link and was an
+                 inert <span> — the reader spent a click finding out. Guarded on
+                 the NAME as well as the id because _link_labels degrades to
+                 "linked, unnamed" on a label-lookup failure and 'Customer' is
+                 not an accessible name for an anchor; that case stays a chip.
+                 A soft-deleted customer keeps its name and loses only the link,
+                 since GET /api/customers/{id} 404s on one. -->
+            <router-link
+              v-if="detail.linked_customer_id && detail.linked_customer_name && !detail.linked_customer_deleted"
+              :to="`/customers/${detail.linked_customer_id}`"
+              class="link-chip customer chip-link"
+              data-test="inbox-detail-customer-link"
+            >
+              <i class="pi pi-user" aria-hidden="true" />
+              {{ detail.linked_customer_name }}
+            </router-link>
+            <span v-else-if="detail.linked_customer_id" class="link-chip customer">
               <i class="pi pi-user" aria-hidden="true" />
               {{ detail.linked_customer_name || 'Customer' }}
             </span>
@@ -1960,6 +1977,11 @@ onMounted(async () => {
   white-space: nowrap;
 }
 .link-chip.customer { border-color: var(--p-primary-color); color: var(--p-primary-color); }
+/* Desktop, so no 44px floor applies — but the chip has to be distinguishable
+   from the inert chips beside it now that one of them navigates. The border and
+   colour were already doing that job wrongly for a <span>; the underline is
+   what the real link gets to keep. */
+.link-chip.chip-link { text-decoration: underline; cursor: pointer; }
 .btn-link.small { font-size: 0.78rem; padding: 0; }
 
 /* ── conversation strip ── */

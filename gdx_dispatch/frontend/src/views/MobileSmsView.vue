@@ -56,13 +56,43 @@
       <!-- Conversation: full-screen bottom sheet, matching MobileInboxView -->
       <Dialog
         v-model:visible="threadOpen"
-        :header="selectedThread ? (selectedThread.customer_name || selectedThread.other_party_number) : 'Conversation'"
         modal
         :style="{ width: '100vw', height: '100dvh' }"
         :breakpoints="{ '768px': '100vw' }"
         position="bottom"
+        aria-labelledby="ms-thread-title"
         @hide="closeThread"
       >
+        <!-- The header was the :header prop, which can only be a string, so the
+             customer's name sat at the top of the conversation as dead text.
+             It is the route to the record now, which needs the #header slot
+             (the close icon lives in .p-dialog-header-icons and is unaffected —
+             same shape as UsersView's lockout dialog).
+
+             `aria-labelledby` above is load-bearing and pairs with the id below.
+             PrimeVue derives the dialog's accessible name from an id it puts on
+             the :header prop's own <span>; taking the slot removes that span, so
+             without this pair the modal announces with NO name at all. Pointing
+             it at our own element restores it. (Verified against primevue 4.x by
+             mounting the real Dialog both ways — the stubbed Dialog in this
+             repo's specs cannot see it.)
+
+             Falls back to the phone number when the thread has no customer:
+             an SMS from an unknown number has nothing to link to. Guarded on
+             not-deleted because /api/customers/{id} 404s on a soft-deleted
+             record, and the name still shows either way. -->
+        <template #header>
+          <router-link
+            v-if="selectedThread?.customer_id && selectedThread?.customer_name && !selectedThread?.customer_deleted"
+            id="ms-thread-title"
+            :to="`/mobile/customers/${selectedThread.customer_id}`"
+            class="thread-title customer-link"
+            data-test="ms-customer-link"
+          >{{ selectedThread.customer_name }}</router-link>
+          <span v-else id="ms-thread-title" class="thread-title">
+            {{ selectedThread ? (selectedThread.customer_name || selectedThread.other_party_number) : 'Conversation' }}
+          </span>
+        </template>
         <div v-if="threadLoading" class="state-msg">
           <i class="pi pi-spin pi-spinner" />
         </div>
@@ -370,6 +400,33 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Replaces what PrimeVue's own .p-dialog-title gave the :header prop — the
+   #header slot renders raw, so the conversation title has to carry its own
+   weight and size or it shrinks to body text. */
+.thread-title {
+  font-weight: 600;
+  font-size: 1.05rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 44px tap floor, as on the other mobile customer links. The header row is
+   already taller than this, so the target costs no layout.
+   inline-BLOCK, not inline-flex: an inline-flex box puts its text in an
+   anonymous flex item, where the `text-overflow: ellipsis` above stops
+   applying — a long business name would then overflow the header instead of
+   truncating. line-height carries the height that align-items would have.
+   Underlined rather than coloured alone: the primary token's contrast on a
+   light background is low app-wide (this repo records 2.53:1 for it in
+   main.js), a separately-owned theming issue this change matches rather than
+   re-themes. */
+.thread-title.customer-link {
+  display: inline-block;
+  line-height: 44px;
+  color: var(--p-primary-color, #3b82f6);
+  text-decoration: underline;
 }
 .thread-card.unread .thread-who {
   font-weight: 700;
