@@ -159,6 +159,12 @@ def _seed_job(db) -> Job:
         dispatch_status="on_site",
         billing_status="unbilled",
         company_id=TENANT,
+        # Assigned to the tech who closes it out below. Required since
+        # 2026-09-25 (GDXA-32): closeout is gated on jobs.write AND a claim
+        # on the job, so a closeout by an unassigned stranger 404s. An
+        # unassigned job here was never a real shape anyway — the whole file
+        # is about the timer THIS tech's arrival opened.
+        assigned_to=USER,
     )
     db.add(job)
     db.commit()

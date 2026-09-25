@@ -19,6 +19,7 @@ from starlette.responses import JSONResponse
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import SessionLocal, get_db
 from gdx_dispatch.core.invoice_paid import paid_amount_sq, paid_to_date_bulk
+from gdx_dispatch.core.job_access import can_read_job, job_write_denial
 from gdx_dispatch.core.job_display_state import derive_job_display_state
 from gdx_dispatch.core.job_site import resolve_job_sites
 from gdx_dispatch.core.job_taxonomy import SERVICE_CALL, canonical_job_type
@@ -1092,6 +1093,22 @@ def update_job(
         log.exception("update_job_failed")
         return jsonable_response({"detail": "job not found"}, 404)
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    # Object-level authz — the anchor comment for all eleven call sites in
+    # this file; the others point here.
+    #
+    # Until 2026-09-25 every job-scoped write route here was gated by nothing
+    # but `require_module("jobs")` + being authenticated, so a technician with
+    # no claim on the job — and even the read-only `viewer` role — could
+    # mutate it (GDXA-32). One predicate now answers for all of them,
+    # core.job_access.job_write_denial: hold `jobs.write`, AND either have a
+    # real claim on the job or be office tier. It returns the refusal shape
+    # rather than a bool because the right status depends on the caller: 404
+    # for someone who cannot see the job at all (a 403 would confirm the id
+    # exists and let one tech enumerate another's jobs), 403 for someone who
+    # can already read it and would learn nothing from "not found".
+    denial = job_write_denial(db, tenant_id, request, current_user, job_id)
+    if denial:
+        return jsonable_response({"detail": denial[1]}, denial[0])
 
     updates: dict[str, Any] = {}
     data = payload.model_dump(exclude_unset=True) if hasattr(payload, "model_dump") else payload.dict(exclude_unset=True)
@@ -1292,6 +1309,13 @@ def delete_job(
     delete any job. jobs.write is the same key the create/update paths
     imply, so every UI that legitimately offers Delete (JobsView, the RFB
     queue) keeps working.
+
+    That decorator is a PERMISSION gate, not an object gate, and on its own
+    it is the very trap job_write_denial exists to close: the builtin
+    technician role holds jobs.write, so a tech with no claim on the job
+    passed it and soft-deleted someone else's job. GDXA-32 listed this route
+    among the three "already gated" and it was not — same class, found by the
+    2026-09-25 audit of that fix.
     """
     try:
         uuid.UUID(job_id)
@@ -1299,6 +1323,9 @@ def delete_job(
         log.exception("delete_job_failed")
         return jsonable_response({"detail": "job not found"}, 404)
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    denial = job_write_denial(db, tenant_id, request, current_user, job_id)
+    if denial:
+        return jsonable_response({"detail": denial[1]}, denial[0])
     now = datetime.now(UTC)
     try:
         # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
@@ -1403,6 +1430,12 @@ def start_job(
     except (ValueError, AttributeError):
         return jsonable_response({"detail": "job not found"}, 404)
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    # Object-level authz — see update_job. A tech with no claim on the job
+    # must not be able to self-assign it by starting it (the auto-assign
+    # below would otherwise hand it to them).
+    denial = job_write_denial(db, tenant_id, request, current_user, job_id)
+    if denial:
+        return jsonable_response({"detail": denial[1]}, denial[0])
     now = datetime.now(UTC)
     flags = _load_workflow_flags(tenant_id)
     try:
@@ -1505,6 +1538,10 @@ def complete_job(
     except (ValueError, AttributeError):
         return jsonable_response({"detail": "job not found"}, 404)
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    # Object-level authz — see update_job.
+    denial = job_write_denial(db, tenant_id, request, current_user, job_id)
+    if denial:
+        return jsonable_response({"detail": denial[1]}, denial[0])
     now = datetime.now(UTC)
     flags = _load_workflow_flags(tenant_id)
     try:
@@ -1954,19 +1991,7 @@ def get_job_closeout(
         # Office tiers hold jobs.read_all; a tech passes via an actual claim
         # on this job. Both resolved with the same helpers the rest of the
         # app uses — no bespoke ACL.
-        from gdx_dispatch.core.job_access import job_belongs_to_user
-        from gdx_dispatch.core.modules import _load_user_permissions
-        from gdx_dispatch.core.permissions import WILDCARD
-
-        perms = getattr(request.state, "user_permissions", None)
-        if perms is None:
-            perms = _load_user_permissions(db, request, current_user or {})
-            request.state.user_permissions = perms
-        if (
-            WILDCARD not in perms
-            and "jobs.read_all" not in perms
-            and not job_belongs_to_user(db, tenant_id, job_id, _user_id(current_user))
-        ):
+        if not can_read_job(db, tenant_id, request, current_user, job_id):
             return jsonable_response({"detail": "job not found"}, 404)
 
         from gdx_dispatch.core.closeouts import (
@@ -2039,6 +2064,15 @@ def closeout_job(
     except (ValueError, AttributeError):
         return jsonable_response({"detail": "job not found"}, 404)
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    # Object-level authz — see update_job. This route is the sharpest case of
+    # the class: the closeout is the tech's attested parts + hours, billed
+    # labor comes from attested hours ONLY, and the body below runs
+    # autodraft_invoice_for_closeout. Hours nobody attested could otherwise
+    # reach an invoice. The matching READ (get_job_closeout, just above) has
+    # been gated since it shipped; this WRITE was not.
+    denial = job_write_denial(db, tenant_id, request, current_user, job_id)
+    if denial:
+        return jsonable_response({"detail": denial[1]}, denial[0])
     now = datetime.now(UTC)
     flags = _load_workflow_flags(tenant_id)
     user_id = _user_id(current_user)
@@ -3699,6 +3733,12 @@ def add_job_dependency(
         log.exception("add_job_dependency_failed")
         return jsonable_response({"detail": "job not found"}, 404)
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    # Object-level authz — see update_job. Gates the job the dependency is
+    # written ONTO; `depends_on_job_id` is only existence-checked below, as
+    # it was before.
+    denial = job_write_denial(db, tenant_id, request, current_user, job_id)
+    if denial:
+        return jsonable_response({"detail": denial[1]}, denial[0])
     # Guardrails added with the first UI door (2026-07): a self-dependency
     # deadlocks can-start forever, and a typo'd target id would create a
     # blocker no list could ever resolve to a job.
@@ -3822,6 +3862,10 @@ def remove_job_dependency(
     except (ValueError, AttributeError):
         return jsonable_response({"detail": "job not found"}, 404)
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    # Object-level authz — see update_job.
+    denial = job_write_denial(db, tenant_id, request, current_user, job_id)
+    if denial:
+        return jsonable_response({"detail": denial[1]}, denial[0])
     try:
         dep = db.execute(
             select(JobDependency).where(
@@ -3895,6 +3939,12 @@ def create_follow_up_job(
         log.exception("create_follow_up_job_failed")
         return jsonable_response({"detail": "job not found"}, 404)
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    # Object-level authz — see update_job. The new job is spawned FROM this
+    # one and copies its customer, location and description, so a caller who
+    # may not read the parent may not mint a child off it either.
+    denial = job_write_denial(db, tenant_id, request, current_user, job_id)
+    if denial:
+        return jsonable_response({"detail": denial[1]}, denial[0])
     try:
         # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
         original = db.execute(
@@ -3989,6 +4039,11 @@ def spawn_return_visit(
     except (ValueError, AttributeError):
         return jsonable_response({"detail": "job not found"}, 404)
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    # Object-level authz — see update_job. Same reasoning as /follow-up: the
+    # child is spawned from this job's customer and location.
+    denial = job_write_denial(db, tenant_id, request, current_user, job_id)
+    if denial:
+        return jsonable_response({"detail": denial[1]}, denial[0])
     now = datetime.now(UTC)
     try:
         original = db.execute(
@@ -4104,6 +4159,12 @@ def uncomplete_job(
     except (ValueError, AttributeError):
         return jsonable_response({"detail": "job not found"}, 404)
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    # Object-level authz — see update_job. Reversing a completion re-opens a
+    # job that closeout/billing already treated as finished; it carried no
+    # permission, access or role check of any kind before 2026-09-25.
+    denial = job_write_denial(db, tenant_id, request, current_user, job_id)
+    if denial:
+        return jsonable_response({"detail": denial[1]}, denial[0])
     now = datetime.now(UTC)
     try:
         job = db.execute(
@@ -4164,6 +4225,11 @@ def reactivate_job(
     except (ValueError, AttributeError):
         return jsonable_response({"detail": "job not found"}, 404)
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    # Object-level authz — see update_job. Same shape as /uncomplete: it
+    # carried no check of any kind before 2026-09-25.
+    denial = job_write_denial(db, tenant_id, request, current_user, job_id)
+    if denial:
+        return jsonable_response({"detail": denial[1]}, denial[0])
     now = datetime.now(UTC)
     try:
         job = db.execute(
