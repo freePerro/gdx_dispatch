@@ -8,6 +8,9 @@
  *  3. Clicking "Edit Customer" calls GET /api/customers/{id} (warms the dialog
  *     with the full customer record so notes/access_notes survive a save).
  *  4. Tel/mailto/maps links are wired when fields are present.
+ *  5. GDXA-5 — the dialog NEVER opens without a full record. The dialog PATCHes
+ *     its whole field set, so opening it on the invoice's four-field customer
+ *     projection silently erases notes / referral_source / customer_type.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
@@ -107,7 +110,10 @@ const baseStubs = {
   CustomerFormDialog: {
     props: ['visible', 'mode', 'customer'],
     emits: ['update:visible', 'saved'],
-    template: '<div v-if="visible" data-testid="customer-form-dialog">stub-dialog:{{ customer?.id }}:{{ customer?.email }}</div>',
+    // notes/customer_type are rendered because they are the fields the real
+    // dialog PATCHes but the invoice payload never carries — GDXA-5 is
+    // exactly "the dialog opened without them". Make them observable.
+    template: '<div v-if="visible" data-testid="customer-form-dialog">stub-dialog:{{ customer?.id }}:{{ customer?.email }}:{{ customer?.notes }}:{{ customer?.customer_type }}</div>',
   },
 };
 
@@ -235,10 +241,104 @@ describe('InvoiceDetailView — Bill-To card', () => {
     await wrapper.get('[data-testid="invoice-edit-customer-btn"]').trigger('click');
     await flushPromises();
 
-    expect(apiGet).toHaveBeenCalledWith('/api/customers/cust-1');
+    // The read is quiet: this function owns the failure path (it redirects),
+    // so useApi's default error toast would be a second, wrong story.
+    expect(apiGet).toHaveBeenCalledWith('/api/customers/cust-1', { suppressErrorToast: true });
     const dialog = wrapper.find('[data-testid="customer-form-dialog"]');
     expect(dialog.exists()).toBe(true);
     expect(dialog.text()).toContain('cust-1');
+  });
+});
+
+/**
+ * GDXA-5 — opening the shared CustomerFormDialog on a partial record.
+ *
+ * CustomerFormDialog.submitForm PATCHes name/phone/email/address/notes/
+ * referral_source/customer_type unconditionally, and `update_customer` uses
+ * `exclude_unset` — which explicit nulls survive. So a dialog opened on the
+ * invoice's four-field customer projection writes `notes: null`,
+ * `referral_source: null`, `customer_type: "Residential"` over the record, on
+ * a toast that reads "Customer Updated". The audit row holds only the new
+ * values, so the erased text is not recoverable.
+ *
+ * The guard is therefore: open on a full record or do not open at all.
+ */
+describe('InvoiceDetailView — Edit Customer never opens on a partial record (GDXA-5)', () => {
+  function mockApiWithCustomer(customerResponder) {
+    apiGet.mockImplementation((url) => {
+      if (url === '/api/invoices/inv-1') return Promise.resolve(buildInvoicePayload({ customer_email: '' }));
+      if (url === '/api/customers/cust-1') return customerResponder();
+      if (url === '/api/tax/config') return Promise.resolve({ default_rate: 0.07 });
+      if (url === '/api/qb/dashboard') return Promise.resolve({ connected: false });
+      if (url === '/api/qb/status') return Promise.resolve({ connected: false });
+      return Promise.resolve({});
+    });
+  }
+
+  it('routes to the customer record instead of opening the dialog when the GET fails', async () => {
+    const boom = Object.assign(new Error('Something went wrong'), { status: 503 });
+    mockApiWithCustomer(() => Promise.reject(boom));
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="invoice-edit-customer-btn"]').trigger('click');
+    await flushPromises();
+
+    // The dialog is the thing that would have done the damage.
+    expect(wrapper.find('[data-testid="customer-form-dialog"]').exists()).toBe(false);
+    expect(routerPush).toHaveBeenCalledWith('/customers/cust-1');
+    // Not a silent navigation — the user is told why they moved.
+    expect(toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ severity: 'warn', summary: expect.stringMatching(/couldn't load the customer/i) }),
+    );
+  });
+
+  it('routes away on a 200 with no record, not just on an error', async () => {
+    // The pre-fix try-branch read `result?.data || result || {...projection}`,
+    // so a 200 carrying an empty body reached the identical destructive state
+    // with no error at all. `id` is the real-record test.
+    mockApiWithCustomer(() => Promise.resolve({}));
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="invoice-edit-customer-btn"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="customer-form-dialog"]').exists()).toBe(false);
+    expect(routerPush).toHaveBeenCalledWith('/customers/cust-1');
+  });
+
+  it('routes away from the "+ Add email" link too — same guard, same function', async () => {
+    // The likeliest way in: the email is missing, which is exactly when the
+    // office clicks this. It must not become a way to blank the record.
+    mockApiWithCustomer(() => Promise.reject(new Error('Failed to fetch')));
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="bill-to-add-email"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="customer-form-dialog"]').exists()).toBe(false);
+    expect(routerPush).toHaveBeenCalledWith('/customers/cust-1');
+  });
+
+  it('opens on the full record, carrying the fields the invoice payload lacks', async () => {
+    mockApiWithCustomer(() => Promise.resolve({
+      id: 'cust-1', name: 'Acme Door Co', email: 'ops@acme.example',
+      phone: '555-0142', address: '123 Main St',
+      notes: 'Gate code 4417', referral_source: 'Chamber', customer_type: 'Commercial',
+    }));
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="invoice-edit-customer-btn"]').trigger('click');
+    await flushPromises();
+
+    const dialog = wrapper.get('[data-testid="customer-form-dialog"]');
+    // These two are what a save would otherwise have erased.
+    expect(dialog.text()).toContain('Gate code 4417');
+    expect(dialog.text()).toContain('Commercial');
+    expect(routerPush).not.toHaveBeenCalledWith('/customers/cust-1');
   });
 });
 

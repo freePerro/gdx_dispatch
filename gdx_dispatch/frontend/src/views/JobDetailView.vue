@@ -273,7 +273,21 @@
               />
             </div>
             <div class="customer-info">
-              <p class="customer-name">{{ customerDetail?.name || job.customer_name || 'Unassigned' }}</p>
+              <!-- The job was the last desktop document page whose customer
+                   name was plain text (GDXA-16) — InvoiceDetailView:64 and
+                   EstimateView:42 both link. Name-guarded as well as
+                   id-guarded: a lead with no customer, or a customer whose
+                   name never resolved, renders "Unassigned" as text rather
+                   than an anchor that reads "Unassigned". -->
+              <p class="customer-name">
+                <router-link
+                  v-if="job.customer_id && customerDisplayName"
+                  :to="`/customers/${job.customer_id}`"
+                  class="customer-link"
+                  data-testid="job-detail-customer-link"
+                >{{ customerDisplayName }}</router-link>
+                <span v-else data-testid="job-detail-customer-name">{{ customerDisplayName || 'Unassigned' }}</span>
+              </p>
               <p v-if="customerDetail?.phone" class="customer-contact">
                 <a :href="`tel:${customerDetail.phone}`">📞 {{ formatPhone(customerDetail.phone) }}</a>
               </p>
@@ -1570,6 +1584,11 @@ const pickedLocation = computed(() => {
   if (!lid) return null;
   return customerLocations.value.find((loc) => String(loc.id) === String(lid)) || null;
 });
+// The loaded record wins over the denormalized name the job carries; empty
+// when neither resolves, so the template can tell "no name" from "Unassigned".
+const customerDisplayName = computed(
+  () => customerDetail.value?.name || job.value?.customer_name || "",
+);
 const customerAddress = computed(() => {
   if (pickedLocation.value) {
     // Explicit: only the picked location's address, never the customer
@@ -2826,6 +2845,9 @@ onMounted(async () => {
 .detail-text { max-width: 100%; }
 .customer-info { display: flex; flex-direction: column; gap: 0.4rem; }
 .customer-name { font-weight: 600; }
+.customer-name a.customer-link { color: var(--p-primary-color); text-decoration: none; }
+.customer-name a.customer-link:hover,
+.customer-name a.customer-link:focus-visible { text-decoration: underline; }
 .customer-contact a { color: var(--p-primary-color); text-decoration: none; }
 .access-notes { color: var(--p-text-muted-color); font-size: 0.85rem; }
 .customer-notes { background: var(--p-content-hover-background); border-left: 3px solid var(--p-primary-color); padding: 0.5rem 0.75rem; border-radius: 4px; margin-top: 0.25rem; }

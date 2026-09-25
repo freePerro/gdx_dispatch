@@ -1651,30 +1651,49 @@ function normalizeInvoice(payload) {
 }
 
 // --- Actions ---
+// Edit the CURRENT customer's record from the invoice (Edit Customer, and the
+// "+ Add email/phone/address" links on the Bill-To card).
+//
+// NEVER open the dialog on a partial record. The invoice payload carries only
+// a four-field projection of the customer (name/email/phone/address), and
+// CustomerFormDialog.submitForm PATCHes its WHOLE field set unconditionally —
+// so a save from that projection writes `notes: null`, `referral_source: null`
+// and `customer_type: "Residential"` over whatever the record held, under a
+// toast that reads "Customer Updated". A Commercial customer with notes
+// becomes a Residential one without them; `update_customer` uses
+// `exclude_unset`, which explicit nulls survive, and the audit row holds only
+// the new values, so the destroyed text is not recoverable (GDXA-5).
+//
+// The read is quiet (suppressErrorToast — useApi toasts by default) because
+// this function owns what happens next. With no full record there is nothing
+// safe to edit from, so the record page is the way in, said out loud rather
+// than as a silent navigation. Same shape as EstimateView.openCustomerEdit.
 async function openCustomerEdit() {
-  if (!invoice.value.customer_id) return;
-  // Pull the full customer so the dialog edits a complete record (notes,
-  // access_notes, customer_type, etc. aren't on the invoice payload).
+  const cid = invoice.value.customer_id;
+  if (!cid) return;
+  let record = null;
   try {
-    const result = await api.get(`/api/customers/${invoice.value.customer_id}`);
-    customerForEdit.value = result?.data || result || {
-      id: invoice.value.customer_id,
-      name: invoice.value.customer_name,
-      email: invoice.value.customer_email,
-      phone: invoice.value.customer_phone,
-      address: invoice.value.customer_address,
-    };
+    const result = await api.get(
+      `/api/customers/${encodeURIComponent(cid)}`, { suppressErrorToast: true },
+    );
+    // `id` is the "this is a real record" test: a 200 with an empty body, or
+    // with `null`, reaches this line too, and opening on THAT is the same
+    // data loss as opening on the projection.
+    if (result?.id) record = result;
   } catch {
-    // Fall back to the slice we already have on the invoice payload so the
-    // dialog still opens — the user can at least add the missing email.
-    customerForEdit.value = {
-      id: invoice.value.customer_id,
-      name: invoice.value.customer_name,
-      email: invoice.value.customer_email,
-      phone: invoice.value.customer_phone,
-      address: invoice.value.customer_address,
-    };
+    // quiet by design — the redirect below is the handling
   }
+  if (!record) {
+    toast.add({
+      severity: "warn",
+      summary: "Couldn't load the customer",
+      detail: "Opening the customer record instead — editing from here could erase fields the invoice doesn't carry.",
+      life: 5000,
+    });
+    router.push(`/customers/${cid}`);
+    return;
+  }
+  customerForEdit.value = record;
   showCustomerEditDialog.value = true;
 }
 
