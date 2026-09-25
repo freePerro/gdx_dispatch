@@ -19,9 +19,8 @@ HTML routes, and the form validators behind them — was deleted 2026-09-24
 (GDXA-24). Nothing had ever mounted ``ui_router`` (``app.py`` imported it and
 never included it), so no request could reach any of it; the Vue SPA's
 ``/onboarding`` route owns that surface. The ``templates/onboarding.html`` page
-those routes rendered belongs to documents-media and is removed separately under
-GDXA-25 — as of this commit the file is still in the tree, but nothing renders
-it.
+those routes rendered belonged to documents-media and was deleted separately
+under GDXA-25, once nothing in the tree named it.
 
 The state functions below are unchanged and ``GET /api/onboarding`` is built on
 them. Do NOT read that as "the live onboarding surface": grep finds **no caller

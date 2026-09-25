@@ -30,7 +30,9 @@ What this does NOT cover, and where the same class still lives:
     as LIVE, both in the same dead-`/settings/<child>` family as
     `/settings/pricing` above:
       - `templates/onboarding.html:266` `href="/settings/stripe-connect"`,
-        the primary CTA on the onboarding Stripe step.
+        the primary CTA on the onboarding Stripe step. **That file:line no
+        longer resolves** — the template was deleted under GDXA-25; the
+        reference is kept as the record of what was found, not as a pointer.
         **Corrected 2026-09-24 (GDXA-24): this one was never live.** The page it
         sat on was rendered only by `core/onboarding.py`'s `ui_router`, which
         `app.py` imported and never mounted — no request could reach it. Calling
@@ -40,9 +42,10 @@ What this does NOT cover, and where the same class still lives:
         wizard's Python half — router, three routes, validators, the Jinja2
         instance — was deleted on the maintainer's ruling, so nothing renders
         the page and the link is unreachable by construction. The template FILE
-        is a separate owner's and is removed under GDXA-25; expect it to still
-        be in the tree if you are reading this before that lands. Absence of the
-        renderer is held by `test_onboarding_jinja_wizard_retired.py`.
+        was a separate owner's and was deleted under GDXA-25, so this line is a
+        record of a link that no longer exists anywhere. Both halves — no
+        renderer, no file — are held by
+        `test_onboarding_jinja_wizard_retired.py`.
       - `frontend/src/views/BankFeedsView.vue:94`
         `$router.push('/settings/integrations')`, the SimpleFIN "Re-link in
         Settings" button. This one WAS live — the button renders on a

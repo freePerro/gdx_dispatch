@@ -54,10 +54,12 @@ rebind `core_onboarding_router` to `APIRouter()` in `app.py` and
 drift in `openapi_routes.txt` would also catch it, but it reads as "you changed
 the route list", not "you unmounted a live API".
 
-Note what the absence tests do NOT cover: `templates/onboarding.html` itself is
-owned by documents-media and is deleted separately. An unrendered template
-cannot answer a request — the load-bearing half is that no code renders it,
-which `test_nothing_renders_the_jinja_onboarding_page` holds.
+`templates/onboarding.html` itself is owned by documents-media and was deleted
+separately, under GDXA-25; `test_the_wizard_template_is_gone_from_the_tree`
+holds that here. The two halves are independent on purpose: an unrendered
+template cannot answer a request, so the load-bearing assertion is that no code
+renders it (`test_nothing_renders_the_jinja_onboarding_page`), and the tree
+assertion only stops the orphan coming back.
 """
 from __future__ import annotations
 
@@ -164,6 +166,27 @@ def test_nothing_renders_the_jinja_onboarding_page():
         if '"onboarding.html"' in body or "'onboarding.html'" in body:
             offenders.append(rel)
     assert offenders == [], f"something renders the retired wizard page: {offenders}"
+
+
+def test_the_wizard_template_is_gone_from_the_tree():
+    """The orphan file itself, deleted under GDXA-25 once nothing rendered it.
+
+    This could not ship with GDXA-24 — the template was still on disk then, so
+    the assertion would have been red on the commit that introduced it.
+
+    It is the weaker half of the pair and says so: a template that no code
+    names is already unreachable, which is
+    `test_nothing_renders_the_jinja_onboarding_page`'s job. What this adds is
+    that the 21KB of dead markup cannot quietly reappear and start collecting
+    dead links again — `href="/settings/stripe-connect"` at its line 266, a
+    CTA for a capability retired 2026-09-01, is what surfaced the whole thread.
+    """
+    root = pathlib.Path(__file__).resolve().parents[1]
+    assert not (root / "templates" / "onboarding.html").exists(), (
+        "templates/onboarding.html is back. Nothing renders it (see the "
+        "assertion above), so it can only be dead markup — delete it rather "
+        "than wiring it up; the Vue SPA's OnboardingView.vue owns this surface."
+    )
 
 
 def test_wizard_form_validators_are_gone():
