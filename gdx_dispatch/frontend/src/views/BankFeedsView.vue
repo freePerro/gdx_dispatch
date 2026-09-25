@@ -83,7 +83,12 @@
                          the recovery is the setup-token re-link on the
                          Settings card. A Banno Reconnect here dead-ends
                          with instructions about credentials that don't
-                         exist for this provider. -->
+                         exist for this provider.
+                         The destination is /settings?tab=integrations — the
+                         query the Settings tabs actually read. There is no
+                         /settings/integrations route (only the deeper
+                         /settings/integrations/outlook), so pushing the bare
+                         child segment landed on NotFoundView. -->
                     <Button
                       v-if="data.provider === 'simplefin' && (!data.connected || data.auth_state !== 'healthy')"
                       label="Re-link in Settings"
@@ -91,7 +96,7 @@
                       icon="pi pi-arrow-up-right"
                       :severity="data.connected ? 'warn' : 'secondary'"
                       :data-testid="`bank-simplefin-relink-${data.id}`"
-                      @click="$router.push('/settings/integrations')"
+                      @click="$router.push({ path: '/settings', query: { tab: 'integrations' } })"
                     />
                     <Button
                       v-else-if="!data.connected"
