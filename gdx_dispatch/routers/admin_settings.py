@@ -17,7 +17,7 @@ from sqlalchemy import text as _text
 from sqlalchemy import update as _update
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import audit_best_effort
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
 from gdx_dispatch.core.tenant_ctx import bind_tenant_context
@@ -56,15 +56,17 @@ def _user_uuid(user_id: str) -> UUID:
 
 def _audit(db: Session, *, request: Request, user: dict, action: str,
            entity_type: str, entity_id: str = "", details: dict | None = None) -> None:
-    try:
-        log_audit_event_sync(
-            db, tenant_id=_tid(request), user_id=_uid(user),
-            action=action, entity_type=entity_type, entity_id=entity_id,
-            details=details or {}, request=request,
-        )
-        db.commit()
-    except Exception:
-        log.exception("admin_audit_failed action=%s", action)
+    """Every caller commits on the line above this one, so the change is already
+    durable — ``audit_best_effort`` is the right half of the pair (GDXA-44).
+
+    It used to hand-roll the swallow, which left the session deactivated for
+    whatever ran next on it. Nothing does, here — these handlers return a plain
+    literal — but that was luck, not design."""
+    audit_best_effort(
+        db, tenant_id=_tid(request), user_id=_uid(user),
+        action=action, entity_type=entity_type, entity_id=entity_id,
+        details=details or {}, request=request,
+    )
 
 
 # ── Email Settings ────────────────────────────────────────────────────────

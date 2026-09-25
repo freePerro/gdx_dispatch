@@ -536,6 +536,131 @@ def audit_or_rollback(
         raise HTTPException(status_code=500, detail="audit failure — change rolled back") from None
 
 
+def _staged_work(db: Any) -> str:
+    """A short description of what the caller has pending, or "" if nothing.
+
+    Read-only: touching ``new``/``dirty``/``deleted`` never flushes.
+    """
+    try:
+        counts = [
+            (name, len(getattr(db, name, ()) or ()))
+            for name in ("new", "dirty", "deleted")
+        ]
+    except Exception:  # a session-shaped object that is not a Session
+        return ""
+    return " ".join(f"{name}={n}" for name, n in counts if n)
+
+
+def audit_best_effort(
+    db: Any,
+    *,
+    action: str,
+    entity_type: str,
+    entity_id: str | None = None,
+    tenant_id: str | None = None,
+    user_id: str | None = None,
+    actor: Any = None,
+    request: Any = None,
+    details: dict[str, Any] | None = None,
+) -> bool:
+    """Record a mutation that has ALREADY committed, and never take the caller
+    down with a failed trail row. Returns True if the row landed.
+
+    The other half of ``audit_or_rollback``. Use that one where an unaudited
+    change is worse than a failed one — it is called BEFORE ``db.commit()`` and
+    rolls the change back. Use this one where the change is already durable and
+    a 500 would be a lie: after the fact no rollback can undo it, and telling
+    the user it failed only makes them do it twice.
+
+    **Precondition, load-bearing: the caller has nothing staged.** Either it
+    already committed, or it never wrote anything (a GET-side export, a webhook
+    branch that only takes a note). This helper COMMITS, so a caller with
+    pending work gets that work hardened whether it wanted it or not — measured
+    on SQLite 2026-09-25: an uncommitted row that a bare ``close()`` discards
+    survives if this runs first. ``audit_ready_db`` does not rescue that case;
+    it moves ``ensure_audit_table``'s first-use commit out of the way, not this
+    one. A caller that still has pending work wants ``audit_or_rollback``
+    before its commit, not this.
+
+    There is deliberately no ``commit=False`` variant. Whether the row is
+    already durable when the ``with`` block ends is dialect- AND state-
+    dependent — on SQLite, releasing a SAVEPOINT that is itself the outermost
+    transaction boundary commits, but the same call inside an enclosing
+    transaction (any prior read on the session opens one) does not, and on
+    Postgres RELEASE never commits. A flag whose meaning flips with the dialect
+    is worse than no flag; the explicit ``commit`` below is what makes the row
+    land on both.
+
+    Why it is shaped this way (GDXA-44, 2026-09-25):
+
+    1. ``ensure_audit_table`` runs OUTSIDE the savepoint. It commits (SQLite)
+       or rolls back (PG without the bootstrap guard) the first time it runs
+       for an engine; inside the savepoint that transaction control would
+       release the very savepoint meant to contain the write. Idempotent —
+       every call after the first for an engine is a no-op.
+    2. The write is inside ``begin_nested()``. ``log_audit_event_sync`` ends in
+       a ``flush()``, and a failed flush DEACTIVATES the session: every later
+       ``execute`` or ``commit`` raises ``PendingRollbackError``. Six helpers
+       used to catch that exception, log it, and hand the dead session back —
+       ``custom_fields.create_definition`` then 500ed reading back a definition
+       it had already committed, and the user created it twice.
+    3. The rollback in the ``except`` is CONDITIONAL, and that is the whole
+       point of having both. An unconditional one would undo mechanism (2)
+       entirely: ``begin_nested()`` re-raises after rolling back to the
+       savepoint, so a blanket ``db.rollback()`` runs on exactly the failures
+       the savepoint just contained, and expires every object the caller still
+       holds. ``is_active`` distinguishes them — False only when the
+       transaction really was deactivated, which the savepoint prevents.
+
+    This is the shape ``core/payments.py:_audit_money_event`` already proves for
+    exactly this case. Proven on SQLite *and* on live Postgres 15, with a real
+    ``BEFORE INSERT`` refusal on ``audit_logs`` in both
+    (``tests/test_audit_best_effort.py``; the PG arm skips without a reachable
+    server, as every PG arm here does).
+    """
+    log = logging.getLogger(__name__)
+    staged = _staged_work(db)
+    if staged:
+        # Documented preconditions that nothing checks are how this defect class
+        # got here. This one is cheap to check, so it is checked.
+        log.warning(
+            "audit_best_effort_caller_has_pending_work action=%s entity_type=%s staged=%s "
+            "— this helper COMMITS, so that pending work is about to be hardened. A caller "
+            "with staged work wants audit_or_rollback before its own commit instead.",
+            action, entity_type, staged,
+        )
+    try:
+        # Outside the savepoint on purpose — see (1) above.
+        ensure_audit_table(db)
+
+        with db.begin_nested():
+            log_audit_event_sync(
+                db,
+                tenant_id=tenant_id,
+                user_id=user_id if user_id is not None else _actor_id_of(actor),
+                action=action,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                details=details or {},
+                request=request,
+            )
+        db.commit()
+    except Exception:
+        log.exception(
+            "audit_best_effort_failed action=%s entity_type=%s entity_id=%s — the change "
+            "stands and it is NOT in the audit trail; this ERROR is the only record of it.",
+            action, entity_type, entity_id,
+        )
+        # Only when the savepoint could not contain it — see (3) above.
+        if not getattr(db, "is_active", True):
+            try:
+                db.rollback()
+            except Exception:
+                log.exception("audit_best_effort_rollback_failed action=%s", action)
+        return False
+    return True
+
+
 def verify_audit_chain(db: Any, entity_type: str | None = None, entity_id: str | None = None) -> bool:
     q = select(AuditLog).order_by(AuditLog.created_at.asc(), AuditLog.id.asc())
     if entity_type is not None:
