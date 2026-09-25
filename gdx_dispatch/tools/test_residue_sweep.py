@@ -36,8 +36,11 @@ MODES
   --delete   Destructive. Requires ``--confirm-delete``. DELETES ONLY
              rows classified as DELETABLE RESIDUE (pattern-matched).
              UNATTRIBUTED DATA is never deleted — only reported.
-             Per-finding: pg_dump snapshot to
-             ``/var/backups/gdx/test_residue_<ts>_<tenant>.sql`` first;
+             Per-finding: row-level snapshot of exactly the rows the
+             delete will remove, written as JSON (re-INSERT by dict) to
+             ``$GDX_SNAPSHOT_DIR/test_residue_<ts>_<tenant>.json``
+             (default ``/var/backups/gdx/``) first — not a pg_dump, so
+             recovery is a re-INSERT, not a ``psql -f``;
              DELETE inside a transaction with post-count verification;
              rollback on any mismatch.
 
