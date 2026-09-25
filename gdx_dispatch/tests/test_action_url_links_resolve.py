@@ -26,25 +26,41 @@ wrong.
 What this does NOT cover, and where the same class still lives:
   * a deep link in a **Jinja template** or in **client-side code**. This guard
     reads Python. The class — a produced path that is not in the route table —
-    is identical there, and as of 2026-09-24 two instances are LIVE, both in
-    the same dead-`/settings/<child>` family as `/settings/pricing` above:
+    is identical there, and when this file was written two instances were named
+    as LIVE, both in the same dead-`/settings/<child>` family as
+    `/settings/pricing` above:
       - `templates/onboarding.html:266` `href="/settings/stripe-connect"`,
-        the primary CTA on the onboarding Stripe step (core/onboarding.py:405);
+        the primary CTA on the onboarding Stripe step.
+        **Corrected 2026-09-24 (GDXA-24): this one was never live.** The page it
+        sat on was rendered only by `core/onboarding.py`'s `ui_router`, which
+        `app.py` imported and never mounted — no request could reach it. Calling
+        it live overstated a real finding, which is the failure mode worth
+        remembering here: the dead-link *shape* was right, the reachability
+        claim was asserted rather than checked against the route table. The
+        wizard's Python half — router, three routes, validators, the Jinja2
+        instance — was deleted on the maintainer's ruling, so nothing renders
+        the page and the link is unreachable by construction. The template FILE
+        is a separate owner's and is removed under GDXA-25; expect it to still
+        be in the tree if you are reading this before that lands. Absence of the
+        renderer is held by `test_onboarding_jinja_wizard_retired.py`.
       - `frontend/src/views/BankFeedsView.vue:94`
         `$router.push('/settings/integrations')`, the SimpleFIN "Re-link in
-        Settings" button.
-    Neither file belongs to this guard's owner; both are counted as deferred
-    in the sweep block of the commit that added this file. Unlike the ten
-    fixed here, a real user reaches both today — so if you are extending this
-    net, those two are the reason to.
+        Settings" button. This one IS live — the button renders on a
+        nav-reachable page whenever a SimpleFIN connection is unhealthy — and is
+        counted as deferred in the sweep block of the commit that added this
+        file. It does not belong to this guard's owner. If you are extending
+        this net to `.vue` files, it is the reason to.
 
 What this does NOT prove, so do not read a pass as more than it is:
   * that a path this guard calls dead really is. The SPA router is not the
-    whole app: `/onboarding/<step>` is a served Jinja wizard (core/onboarding.py),
-    and `/docs`, `/pay/<token>` and `/sign/<token>` are server-rendered too —
-    `_route_for` returns None for every one. That is a false RED, not a false
-    green, and no current link is non-SPA; but if you are sent here to "fix" a
-    link that works, check whether the server renders it before repointing it.
+    whole app: `/docs`, `/pay/<token>` and `/sign/<token>` are server-rendered,
+    and `_route_for` returns None for every one. That is a false RED, not a
+    false green, and no current link is non-SPA; but if you are sent here to
+    "fix" a link that works, check whether the server renders it before
+    repointing it. (`/onboarding/<step>` used to head that list as a served
+    Jinja wizard. It never was one — the router was unmounted — and as of
+    GDXA-24 the wizard is deleted outright, so the path is SPA-only like any
+    other. Check the live route table, not this list, which is prose.)
   * that a link the code *assembles* is alive. Discovery reads literals, so a
     path built by `+`, `%`, `.format`, `join` or handed over in a variable is
     invisible — `mobile_chat` ships exactly that shape (`url=tech_url`), and
