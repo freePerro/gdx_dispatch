@@ -11,10 +11,30 @@ Provides:
   - complete_step(tenant_id, step_name) -> OnboardingStepState
   - get_next_step(tenant_id)          -> str | None
   - is_onboarding_complete(tenant_id) -> bool
-  - API router  (GET /onboarding)
-  - UI router   (GET /onboarding,
-                 GET /onboarding/{step},
-                 POST /onboarding/{step})
+  - API router  (GET /onboarding, mounted under /api — read the caveat below)
+
+The Flask-era Jinja wizard that used to live here — ``ui_router``, its
+``GET /onboarding``, ``GET /onboarding/{step}`` and ``POST /onboarding/{step}``
+HTML routes, and the form validators behind them — was deleted 2026-09-24
+(GDXA-24). Nothing had ever mounted ``ui_router`` (``app.py`` imported it and
+never included it), so no request could reach any of it; the Vue SPA's
+``/onboarding`` route owns that surface. The ``templates/onboarding.html`` page
+those routes rendered belongs to documents-media and is removed separately under
+GDXA-25 — as of this commit the file is still in the tree, but nothing renders
+it.
+
+The state functions below are unchanged and ``GET /api/onboarding`` is built on
+them. Do NOT read that as "the live onboarding surface": grep finds **no caller
+of bare GET /api/onboarding anywhere** — not in ``frontend/src``, not in the
+mobile routers, not in the MCP tools. What the app actually uses is
+``gdx_dispatch/routers/onboarding.py`` (``/api/onboarding/state|step|complete|
+checklist``, DB-backed, modelling a different six steps), and
+``OnboardingView.vue`` calls ``/api/onboarding/complete`` on that router. This
+module's Redis-or-process-memory state is a parallel implementation of the same
+idea, so it is a candidate for the same treatment the wizard just got. That is a
+separate decision and is NOT made here: GDXA-24's brief required this route to
+stay mounted, and a guard now holds it there.
+Guard: ``gdx_dispatch/tests/test_onboarding_jinja_wizard_retired.py``.
 """
 from __future__ import annotations
 
@@ -24,21 +44,12 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Annotated, Any
+from typing import Any
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
+from fastapi import APIRouter, Request
 from sqlalchemy import text  # noqa: F401 – available for callers
-from sqlalchemy.orm import Session
-
-from gdx_dispatch.core.database import get_db
 
 logger = logging.getLogger(__name__)
-
-# ── Template setup ─────────────────────────────────────────────────────────────
-_TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "..", "templates")
-templates = Jinja2Templates(directory=_TEMPLATE_DIR)
 
 # ── Ordered wizard steps ───────────────────────────────────────────────────────
 WIZARD_STEPS: list[str] = [
@@ -195,22 +206,7 @@ def reset_onboarding(tenant_id: str) -> None:
     _mem_store.pop(tenant_id, None)
 
 
-# ── Auth helpers ───────────────────────────────────────────────────────────────
-
-def _get_current_user(request: Request) -> dict[str, Any] | None:
-    return getattr(request.state, "current_user", None)
-
-
-def _require_auth(request: Request) -> dict[str, Any]:
-    user = _get_current_user(request)
-    if not user:
-        # 302 redirect to login — documented in route `responses` below
-        raise HTTPException(
-            status_code=status.HTTP_302_FOUND,
-            headers={"Location": "/auth/login"},
-        )
-    return user
-
+# ── Request helpers ────────────────────────────────────────────────────────────
 
 def _tenant_id_from_request(request: Request) -> str:
     tenant = getattr(request.state, "tenant", None)
@@ -218,11 +214,6 @@ def _tenant_id_from_request(request: Request) -> str:
         return "unknown"
     return str(tenant.get("id", "unknown"))
 
-
-# ── Annotated dependency / form aliases ───────────────────────────────────────
-
-TenantDB = Annotated[Session, Depends(get_db)]
-OptForm = Annotated[str | None, Form(None)]
 
 # ── API router (JSON) — registered at /api prefix in app.py ──────────────────
 
@@ -266,206 +257,3 @@ def get_onboarding_api(request: Request) -> dict:
             "next_step": WIZARD_STEPS[0],
             "steps": [],
         }
-
-
-# ── Wizard form helpers ────────────────────────────────────────────────────────
-
-@dataclass
-class WizardFormData:
-    """All possible form fields across all wizard steps.
-
-    Consolidating them here keeps the POST handler under the 13-parameter limit.
-    """
-    company_name: str | None
-    industry: str | None
-    timezone_name: str | None   # "timezone" is a stdlib name — aliased
-    tech_name: str | None
-    tech_email: str | None
-    tech_phone: str | None
-    tech_role: str | None
-    zip_codes: str | None
-    service_radius: str | None
-    job_types: str | None
-    primary_color: str | None
-    secondary_color: str | None
-
-
-def _validate_company_info(data: WizardFormData) -> list[str]:
-    if not (data.company_name or "").strip():
-        return ["Company name is required."]
-    return []
-
-
-def _validate_first_technician(data: WizardFormData) -> list[str]:
-    errors = []
-    if not (data.tech_name or "").strip():
-        errors.append("Technician name is required.")
-    if not (data.tech_email or "").strip():
-        errors.append("Technician email is required.")
-    return errors
-
-
-def _validate_service_area(data: WizardFormData) -> list[str]:
-    has_zips = bool((data.zip_codes or "").strip())
-    has_radius = bool((data.service_radius or "").strip())
-    if not has_zips and not has_radius:
-        return ["Enter at least one ZIP code or a service radius."]
-    return []
-
-
-def _validate_first_job_type(data: WizardFormData) -> list[str]:
-    if not (data.job_types or "").strip():
-        return ["Select at least one job type."]
-    return []
-
-
-_STEP_VALIDATORS = {
-    "company_info": _validate_company_info,
-    "first_technician": _validate_first_technician,
-    "service_area": _validate_service_area,
-    "first_job_type": _validate_first_job_type,
-}
-
-
-def _validate_step(step: str, data: WizardFormData) -> list[str]:
-    """Return validation error strings for *step* given submitted *data*."""
-    validator = _STEP_VALIDATORS.get(step)
-    if validator is None:
-        return []
-    return validator(data)
-
-
-def _step_template_ctx(
-    request: Request,
-    current_user: dict[str, Any],
-    step: str,
-    steps: list[OnboardingStepState],
-    errors: list[str] | None = None,
-) -> dict[str, Any]:
-    """Build the common Jinja2 template context for a wizard step page."""
-    step_obj = next(s for s in steps if s.step_name == step)
-    ctx: dict[str, Any] = {
-        "request": request,
-        "current_user": current_user,
-        "step": step,
-        "step_title": STEP_TITLES[step],
-        "step_obj": step_obj,
-        "steps": steps,
-        "wizard_steps": WIZARD_STEPS,
-        "step_titles": STEP_TITLES,
-        "current_idx": WIZARD_STEPS.index(step),
-        "total_steps": len(WIZARD_STEPS),
-        "flash_messages": getattr(request.state, "flash_messages", []),
-    }
-    if errors is not None:
-        ctx["errors"] = errors
-    return ctx
-
-
-# ── UI router (HTML wizard) — registered separately in app.py ─────────────────
-
-_REDIRECT_302_RESPONSES = {302: {"description": "Redirect to login or next step"}}
-_NOT_FOUND_RESPONSES = {404: {"description": "Unknown onboarding step"}}
-
-ui_router = APIRouter(tags=["onboarding-ui"])
-
-
-@ui_router.get(
-    "/onboarding",
-    response_class=HTMLResponse,
-    responses=_REDIRECT_302_RESPONSES,
-)
-def onboarding_index(request: Request) -> Any:
-    """Redirect to the current (next incomplete) wizard step."""
-    _require_auth(request)
-    tenant_id = _tenant_id_from_request(request)
-    next_step = get_next_step(tenant_id)
-    if next_step is None:
-        return RedirectResponse(url="/dashboard", status_code=302)
-    return RedirectResponse(url=f"/onboarding/{next_step}", status_code=302)
-
-
-@ui_router.get(
-    "/onboarding/{step}",
-    response_class=HTMLResponse,
-    responses={**_REDIRECT_302_RESPONSES, **_NOT_FOUND_RESPONSES},
-)
-def onboarding_step_get(step: str, request: Request) -> HTMLResponse:
-    """Render the wizard HTML for *step*."""
-    current_user = _require_auth(request)
-    if step not in WIZARD_STEPS:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Unknown onboarding step: {step!r}",
-        )
-    tenant_id = _tenant_id_from_request(request)
-    steps = get_onboarding_status(tenant_id)
-    return templates.TemplateResponse(
-        request,
-        "onboarding.html",
-        _step_template_ctx(request, current_user, step, steps),
-    )
-
-
-async def _wizard_form(request: Request) -> WizardFormData:
-    """FastAPI dependency: parse all wizard form fields from the raw request body."""
-    form = await request.form()
-
-    def _get(key: str) -> str | None:
-        val = form.get(key)
-        return str(val) if val is not None else None
-
-    return WizardFormData(
-        company_name=_get("company_name"),
-        industry=_get("industry"),
-        timezone_name=_get("timezone"),
-        tech_name=_get("tech_name"),
-        tech_email=_get("tech_email"),
-        tech_phone=_get("tech_phone"),
-        tech_role=_get("tech_role"),
-        zip_codes=_get("zip_codes"),
-        service_radius=_get("service_radius"),
-        job_types=_get("job_types"),
-        primary_color=_get("primary_color"),
-        secondary_color=_get("secondary_color"),
-    )
-
-
-WizardForm = Annotated[WizardFormData, Depends(_wizard_form)]
-
-
-@ui_router.post(
-    "/onboarding/{step}",
-    response_class=HTMLResponse,
-    responses={**_REDIRECT_302_RESPONSES, **_NOT_FOUND_RESPONSES},
-)
-async def onboarding_step_post(
-    step: str,
-    request: Request,
-    form_data: WizardForm,
-) -> Any:
-    """Save the submitted wizard step and advance to the next one."""
-    current_user = _require_auth(request)
-    if step not in WIZARD_STEPS:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Unknown onboarding step: {step!r}",
-        )
-
-    tenant_id = _tenant_id_from_request(request)
-    errors = _validate_step(step, form_data)
-
-    if errors:
-        steps = get_onboarding_status(tenant_id)
-        return templates.TemplateResponse(
-            request,
-            "onboarding.html",
-            _step_template_ctx(request, current_user, step, steps, errors=errors),
-            status_code=422,
-        )
-
-    complete_step(tenant_id, step)
-    next_step = get_next_step(tenant_id)
-    if next_step is None:
-        return RedirectResponse(url="/dashboard?onboarded=1", status_code=303)
-    return RedirectResponse(url=f"/onboarding/{next_step}", status_code=303)

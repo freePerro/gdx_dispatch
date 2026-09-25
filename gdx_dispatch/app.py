@@ -617,11 +617,9 @@ except Exception:
 
 try:
     from gdx_dispatch.core.onboarding import router as core_onboarding_router
-    from gdx_dispatch.core.onboarding import ui_router as onboarding_ui_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: core_onboarding_router")
     core_onboarding_router = APIRouter(tags=["onboarding"])
-    onboarding_ui_router = APIRouter(tags=["onboarding-ui"])
 
 try:
     from gdx_dispatch.routers.admin_ops import read_router as admin_ops_read_router
@@ -1619,9 +1617,6 @@ def create_app() -> FastAPI:
     app.include_router(pwa_router if hasattr(pwa_router, "routes") else APIRouter())
     app.include_router(jwks_router)
     app.include_router(core_onboarding_router, prefix="/api", tags=["onboarding"])
-    # onboarding_ui_router (Flask-era HTML wizard at /onboarding + /onboarding/{step})
-    # is no longer mounted — the Vue SPA's /onboarding route owns those paths now.
-    # The router object is still importable for gdx_dispatch/tests/test_24_onboarding.py.
     app.include_router(admin_ops_router)
     app.include_router(admin_ops_read_router)
     app.include_router(admin_db_router)
