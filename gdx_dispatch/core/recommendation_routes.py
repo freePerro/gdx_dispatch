@@ -1,12 +1,18 @@
-"""gdx_dispatch/core/recommendation_routes.py — FastAPI routes for recommendations and next actions.
+"""gdx_dispatch/core/recommendation_routes.py — FastAPI routes for next actions.
 
 Exposes:
-  GET  /api/recommendations               — all recommendations for tenant
-  GET  /api/recommendations/jobs/{job_id} — job-specific recommendations
   GET  /api/next-actions                  — next-action queue for current user
   POST /api/next-actions/{id}/complete    — mark an action complete
   POST /api/next-actions/{id}/snooze      — snooze an action
   POST /api/next-actions                  — create a manual action
+
+The three ``GET /api/recommendations*`` routes this module used to serve, and
+the engine behind them, were deleted in GDXA-21 as a dead surface with no
+caller of any kind. The module keeps its FILE NAME because renaming it would
+drag in ``app.py`` (imported at :724, included at :1649) and put a second owner
+on that change; its ``tags=["recommendations"]`` below is set right here and is
+simply left for the same rename. Both are cosmetic leftovers, not a claim that
+anything recommendation-shaped still exists.
 """
 from __future__ import annotations
 
@@ -21,7 +27,6 @@ from gdx_dispatch.core.audit import resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_role
 from gdx_dispatch.core.next_action import queue as action_queue
-from gdx_dispatch.core.recommendations import engine as rec_engine
 
 logger = logging.getLogger(__name__)
 
@@ -72,52 +77,6 @@ def _get_user_id(request: Request) -> str:
     """
     actor = resolve_audit_actor(None, request)
     return "anonymous" if actor == "system" else actor
-
-
-# ---------------------------------------------------------------------------
-# Recommendation routes
-# ---------------------------------------------------------------------------
-
-@router.get("/recommendations")
-def get_all_recommendations(
-    request: Request,
-    tenant_db: Session = Depends(get_db),
-    _: None = _auth_dep,
-) -> dict:
-    """Return all recommendation categories for the current tenant."""
-    tenant_id = _get_tenant_id(request)
-    return {
-        "operational": rec_engine.get_operational_recommendations(
-            tenant_id, tenant_db
-        ),
-        "revenue": rec_engine.get_revenue_recommendations(
-            tenant_id, tenant_db
-        ),
-    }
-
-
-@router.get("/recommendations/jobs/{job_id}")
-def get_job_recommendations(
-    job_id: str,
-    request: Request,
-    tenant_db: Session = Depends(get_db),
-    _: None = _auth_dep,
-) -> list[dict]:
-    """Return recommendations specific to a single job."""
-    tenant_id = _get_tenant_id(request)
-    return rec_engine.get_job_recommendations(tenant_id, job_id, tenant_db)
-
-
-@router.get("/recommendations/customers/{customer_id}")
-def get_customer_recommendations(
-    customer_id: str,
-    request: Request,
-    tenant_db: Session = Depends(get_db),
-    _: None = _auth_dep,
-) -> list[dict]:
-    """Return upsell and follow-up recommendations for a customer."""
-    tenant_id = _get_tenant_id(request)
-    return rec_engine.get_customer_recommendations(tenant_id, customer_id, tenant_db)
 
 
 # ---------------------------------------------------------------------------

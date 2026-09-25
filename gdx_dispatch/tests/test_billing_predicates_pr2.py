@@ -31,7 +31,6 @@ from sqlalchemy.pool import StaticPool
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.billing_predicates import invoice_bills_job, job_billed_exists
 from gdx_dispatch.core.next_action import NextActionQueue
-from gdx_dispatch.core.recommendations import RecommendationEngine
 from gdx_dispatch.models.tenant_models import Customer, Invoice, InvoiceLine, Job, Payment
 from gdx_dispatch.modules.forecasting.models import ForecastSettings
 from gdx_dispatch.modules.forecasting.service import _scheduled_jobs_projection
@@ -123,6 +122,11 @@ MATRIX = [
     ("sent_500", {"status": "sent", "total": 500.0}, True),
     ("draft_500", {"status": "draft", "total": 500.0}, True),
     ("void_only", {"status": "void", "total": 500.0}, False),
+    # GDXA-21: replaces the consumer-level `invoice_now` test that asserted a
+    # PAID job stops being nagged. "paid" was never special-cased — it takes
+    # the same arm as sent_500 — but the literal status now has its own row
+    # rather than only an argument that it must behave like one.
+    ("paid_500", {"status": "paid", "total": 500.0}, True),
     ("zero_draft", {"status": "draft", "total": 0.0}, False),
     ("zero_sent", {"status": "sent", "total": 0.0}, True),
     ("deleted_sent", {"status": "sent", "total": 500.0, "deleted": True}, False),
@@ -195,6 +199,7 @@ FINALIZED = {
     "sent_500": True,
     "draft_500": False,        # was billed=True: drafts no longer settle RFB
     "void_only": False,
+    "paid_500": True,          # past draft, non-zero → settles RFB, like sent_500
     "zero_draft": False,
     "zero_sent": True,
     "deleted_sent": False,
@@ -226,25 +231,25 @@ def test_rfb_endpoint_and_summary_count_agree(tenant_db_session):
     assert summary["ready_for_billing"] == len(expected_unresolved)
 
 
-def test_invoice_now_no_longer_fires_for_billed_jobs(tenant_db_session):
-    """The old rule read the dead cache and nagged PAID jobs forever."""
-    db = tenant_db_session
-    job = _seed_job(db, title="paid job")
-    _seed_invoice(db, job, status="paid", total=500.0)
-
-    recs = RecommendationEngine().get_job_recommendations("tenant-1", str(job.id), db)
-    assert "invoice_now" not in {r["type"] for r in recs}
-
-
-def test_invoice_now_fires_for_void_only_job(tenant_db_session):
-    """A job whose only invoice was voided is UNBILLED — the old LEFT-JOIN
-    semantics hid it forever."""
-    db = tenant_db_session
-    job = _seed_job(db, title="void job")
-    _seed_invoice(db, job, status="void", total=500.0)
-
-    recs = RecommendationEngine().get_job_recommendations("tenant-1", str(job.id), db)
-    assert "invoice_now" in {r["type"] for r in recs}
+# Two `invoice_now` tests stood here: one that a PAID job stops being nagged,
+# one that a VOID-only job keeps being nagged. Both read the predicate through
+# `RecommendationEngine.get_job_recommendations` — a dead surface with no
+# caller anywhere, deleted in GDXA-21.
+#
+# Both behaviours are still pinned, one level lower — on the predicate itself
+# rather than on a consumer of it:
+#   * void-only was already a named row — `MATRIX`'s `("void_only", …, False)`
+#     and `FINALIZED["void_only"]`, exercised by `test_job_billed_exists_matrix`,
+#     `test_python_twin_matches_sql` and `test_rfb_endpoint_and_summary_count_agree`.
+#   * `status="paid"` was NOT in either table, so `("paid_500", …, True)` was
+#     added above rather than left as an argument. It is not special-cased —
+#     `invoice_bills_job` voids first, excludes deposits, then returns
+#     `total > 0 or status not in ("", "draft")`, the same arm `sent_500` takes
+#     — but the literal status a real paid invoice carries is now asserted
+#     instead of merely reasoned about.
+#
+# What is genuinely gone is the second opinion: no test now reaches these
+# predicates through a *caller*. That is the coverage this deletion costs.
 
 
 def test_stale_estimate_action_survives_clause_deletion(tenant_db_session):

@@ -38,6 +38,13 @@ _RETIRED_MODULES = [
     "gdx_dispatch.core.reconciliation_tasks",
     "gdx_dispatch.core.live_dispatch",
     "gdx_dispatch.modules.ai_health_score",
+    # GDXA-21. Pinned as a MODULE as well as three routes below: this file's
+    # own docstring warns that a route-only check passes while a dead handler
+    # survives, and re-adding the file with its routes unwired would do exactly
+    # that. The route pins alone are also silenceable — agent_ownership_scan
+    # reads the git index, so a tracked re-add is caught there only until
+    # someone adds an owner line. This assertion cannot be silenced that way.
+    "gdx_dispatch.core.recommendations",
 ]
 
 _RETIRED_TEMPLATES = [
@@ -78,6 +85,13 @@ _RETIRED_ROUTES = [
     ("DELETE", "/api/admin/tenants/{tenant_id}/modules/{module_key}"),
     ("GET", "/api/admin/reconciliation"),
     ("POST", "/api/recommendations/{rec_type}/dismiss"),
+    # GDXA-21: the recommendations engine and its three read routes were
+    # deleted as a dead surface — no frontend caller, no MCP tool, no plugin.
+    # `core/next_action.py` does the same job and is the one that is rendered.
+    # Pinned here so re-adding the surface has to be a decision, not a drift.
+    ("GET", "/api/recommendations"),
+    ("GET", "/api/recommendations/jobs/{job_id}"),
+    ("GET", "/api/recommendations/customers/{customer_id}"),
 ]
 
 

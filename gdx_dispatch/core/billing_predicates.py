@@ -98,8 +98,9 @@ def job_billing_resolved():
 
     This is the exit condition for every UNBILLED-NAG surface (Ready-for-
     Billing queue, /api/invoices/summary count, billing-followup task,
-    recommendations). Use ``~job_billing_resolved()`` there instead of
-    ``~job_billed_exists()``.
+    next-actions). Use ``~job_billing_resolved()`` there instead of
+    ``~job_billed_exists()``. (A recommendations engine was a fifth such
+    surface until GDXA-21 deleted it as dead — nothing rendered it.)
 
     Autodraft change (2026-08-07): this used to lean on ``job_billed_exists``,
     whose ``total > 0 OR status != 'draft'`` arm counts a PRICED DRAFT as

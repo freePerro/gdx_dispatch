@@ -488,9 +488,6 @@ GET /api/qb/schedule
 GET /api/qb/status
 GET /api/quickbooks
 GET /api/quickbooks/recurring-transactions
-GET /api/recommendations
-GET /api/recommendations/customers/{customer_id}
-GET /api/recommendations/jobs/{job_id}
 GET /api/referrals
 GET /api/referrals/stats
 GET /api/reports/cash-risk

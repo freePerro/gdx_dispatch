@@ -4,8 +4,10 @@
  * Doug 2026-07-17: a tech is paid start-of-day to end-of-day, and "it should
  * be the dispatcher or office personel that get told about the discrepency."
  * He also said reports "get forgotten and annoying" — which is exactly what
- * happened to `core/recommendations.py`: it has no frontend renderer at all,
- * so everything filed there is invisible on arrival.
+ * happened to the recommendations engine: it had no frontend renderer at all,
+ * so everything filed there was invisible on arrival, and it was deleted for
+ * that reason (GDXA-21). Auto next-actions are the same shape today — the
+ * Dashboard drops every `auto:` row it is handed.
  *
  * So this is not a report. It renders on the board dispatch already has open,
  * only when something is wrong, and correcting the shift IS the dismissal.
