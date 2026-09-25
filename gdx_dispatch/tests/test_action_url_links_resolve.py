@@ -45,11 +45,31 @@ What this does NOT cover, and where the same class still lives:
         renderer is held by `test_onboarding_jinja_wizard_retired.py`.
       - `frontend/src/views/BankFeedsView.vue:94`
         `$router.push('/settings/integrations')`, the SimpleFIN "Re-link in
-        Settings" button. This one IS live — the button renders on a
-        nav-reachable page whenever a SimpleFIN connection is unhealthy — and is
-        counted as deferred in the sweep block of the commit that added this
-        file. It does not belong to this guard's owner. If you are extending
-        this net to `.vue` files, it is the reason to.
+        Settings" button. This one WAS live — the button renders on a
+        nav-reachable page whenever a SimpleFIN connection is unhealthy — and
+        was counted as deferred in the sweep block of the commit that added
+        this file. **Fixed 2026-09-24 (GDXA-18)**, by its owner: the button now
+        pushes `{path: '/settings', query: {tab: 'integrations'}}`.
+
+        Worth keeping, because a correction got it backwards: a parallel report
+        said this instance had "already been fixed" by commit 8de3fe2. `git
+        show 8de3fe2` says the opposite — that commit ADDED the dead push. What
+        it fixed was the *receiving* half (it taught SettingsView to read
+        `?tab=`), leaving a comment there claiming Bank Feeds pointed at it
+        while the sender never did. Two records then agreed the link was fine
+        for five weeks. The original LIVE call above was right; the correction
+        downgraded it by reading a commit message instead of the commit.
+
+  * the client-side half now HAS a guard, and it is not this file. Python is
+    still all this one reads. `frontend/src/router/__tests__/`
+    `client-deep-links-resolve.spec.js` resolves every literal path, route
+    name and `redirect:` target in `frontend/src` against the real route
+    table, in the default vitest gate. Note what it still cannot do: it
+    resolves `path.split('?')[0]`, so it is blind to the QUERY — which is
+    where the payload of a `?tab=` link lives. That is held separately by
+    `views/__tests__/BankFeedsRelinkDestination.spec.js`, which presses the
+    button and reads the resulting route. Both halves tested and the seam
+    between them untested is precisely how the defect above survived.
 
 What this does NOT prove, so do not read a pass as more than it is:
   * that a path this guard calls dead really is. The SPA router is not the

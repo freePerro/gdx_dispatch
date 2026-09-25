@@ -1682,12 +1682,26 @@ const qbSyncAllErrors = computed(() => qbSyncSteps.flatMap((s) => s.errors || []
 const qbSyncHasErrors = computed(() => qbSyncAllErrors.value.length > 0);
 const toast = useToast();
 const theme = useThemeStore();
-const activeTab = ref("branding");
-// Deep-link support: /settings?tab=integrations (Bank Feeds re-link points
-// here — sweep H1).
+// Every tab this view renders. A `?tab=` value outside this set is ignored
+// rather than applied: PrimeVue Tabs activates by exact value match, so an
+// unknown one leaves NO panel selected and the settings body renders blank —
+// a worse failure than landing on the default, and a silent one. The guard has
+// to live here because the query reaches this view from sources no static
+// check can see: bookmarks, emailed links and server-produced action_urls.
+const SETTINGS_TABS = [
+  "branding", "modules", "users", "integrations",
+  "tax", "billing", "estimates", "margin-tiers",
+];
+const DEFAULT_SETTINGS_TAB = "branding";
+const activeTab = ref(DEFAULT_SETTINGS_TAB);
+// Deep-link support: /settings?tab=integrations (Bank Feeds' SimpleFIN
+// "Re-link in Settings" button points here — sweep H1, repointed in GDXA-18).
+// Read once at setup: vue-router writes history before the incoming component
+// is created, so a client-side push is already visible here. That ordering is
+// pinned by router/__tests__/client-deep-links-resolve.spec.js.
 try {
   const _qtab = new URLSearchParams(window.location.search).get('tab');
-  if (_qtab) activeTab.value = _qtab;
+  if (_qtab && SETTINGS_TABS.includes(_qtab)) activeTab.value = _qtab;
 } catch { /* SSR/test envs without location */ }
 const saveState = ref("");
 const brandingSaving = ref(false);
