@@ -1690,9 +1690,12 @@ def list_submitted_days(
 # Doug 2026-07-17: a tech is paid start-of-day to end-of-day, and "it should be
 # the dispatcher or office personel that get told about the discrepency."
 #
-# Deliberately NOT a report and NOT a recommendation. `core/recommendations.py`
-# and next-actions have no frontend renderer at all, so anything filed there is
-# invisible on arrival. This is a plain endpoint the office view renders as a
+# Deliberately NOT a report and NOT a recommendation. The recommendations
+# engine this was written against had no frontend renderer at all, so anything
+# filed there was invisible on arrival — it was deleted for exactly that reason
+# (GDXA-21), which is the lesson, not a pointer. Auto next-actions are the same
+# shape today: DashboardView drops every `auto:` row it is handed. This is a
+# plain endpoint the office view renders as a
 # card that only exists when something is wrong (v-if="rows.length"), so it
 # cannot nag on a clean day and nobody has to remember to open it. The fix IS
 # the dismissal: correcting the shift via PATCH /entries/{id} (or deleting a

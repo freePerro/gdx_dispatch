@@ -43,7 +43,6 @@ GET /api/onboarding
 GET /api/proposals/{token}
 GET /api/qb/callback
 GET /api/qb/oauth/callback
-GET /api/recommendations
 GET /api/settings/branding/logo/{filename}
 GET /api/signatures/token/{token}
 GET /api/surveys/public/{token}

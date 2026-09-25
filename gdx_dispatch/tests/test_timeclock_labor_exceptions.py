@@ -3,9 +3,11 @@
 Doug: a tech is paid start-of-day to end-of-day, and "it should be the
 dispatcher or office personel that get told about the discrepency."
 
-Deliberately not a report and not a recommendation: `core/recommendations.py`
-and next-actions have NO frontend renderer, so anything filed there is
-invisible on arrival. This endpoint backs a card that only exists when
+Deliberately not a report and not a recommendation: the recommendations engine
+this was written against had NO frontend renderer, so anything filed there was
+invisible on arrival — and it was deleted for that reason (GDXA-21). Auto
+next-actions are the same shape today: DashboardView drops every `auto:` row.
+This endpoint backs a card that only exists when
 something is wrong, on a screen the office already opens — so it cannot nag on
 a clean day and nobody has to remember to run it.
 

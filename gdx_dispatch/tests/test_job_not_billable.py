@@ -34,7 +34,6 @@ from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import AuditLog, TenantBase
 from gdx_dispatch.core.billing_predicates import job_billing_resolved
-from gdx_dispatch.core.recommendations import RecommendationEngine
 from gdx_dispatch.models.tenant_models import Customer, Invoice, InvoiceLine, Job, Payment
 from gdx_dispatch.routers.invoices import billing_summary
 from gdx_dispatch.routers.jobs import (
@@ -276,12 +275,17 @@ def test_unmark_is_idempotent(tenant_db_session):
     assert events == []
 
 
-def test_invoice_now_not_fired_for_not_billable_job(tenant_db_session):
-    db = tenant_db_session
-    job = _seed_job(db, title="goodwill")
-    _mark(db, job, reason="goodwill")
-    recs = RecommendationEngine().get_job_recommendations("tenant-1", str(job.id), db)
-    assert "invoice_now" not in {r["type"] for r in recs}
+# A test here asserted that a not-billable job stops firing `invoice_now`,
+# reading the predicate through `RecommendationEngine.get_job_recommendations`.
+# That engine had no caller anywhere and was deleted in GDXA-21.
+#
+# The behaviour it guarded is held directly, and more tightly, above:
+# `test_resolved_predicate_matrix` asserts a `not_billable_at` job reads as
+# resolved by `job_billing_resolved()`, and
+# `test_mark_removes_from_rfb_and_summary_then_unmark_restores` proves marking
+# one drops it out of both `ready_for_billing` and the `billing_summary` count,
+# and that unmarking puts it back. What was lost is a second consumer's view of
+# the same predicate, not the predicate's net.
 
 
 def test_audit_events_written(tenant_db_session):

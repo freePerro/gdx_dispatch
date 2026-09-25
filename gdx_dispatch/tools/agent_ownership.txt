@@ -669,7 +669,7 @@ gdx_dispatch/frontend/src/composables/useBrowserStream.js    plugins-host
 
 ## ---------------------------------------------------------------------------
 ## ai-mcp — AI routers and providers, the LLM client, the MCP server and its
-## tools, recommendations / next actions, the AI assistant UI.
+## tools, next actions, the AI assistant UI.
 ## ---------------------------------------------------------------------------
 gdx_dispatch/routers/ai.py                                   ai-mcp
 gdx_dispatch/routers/ai_communication.py                     ai-mcp
@@ -693,7 +693,6 @@ gdx_dispatch/core/mcp_protocol_adapter.py                    ai-mcp
 gdx_dispatch/core/mcp_registry.py                            ai-mcp
 gdx_dispatch/core/mcp_tool_descriptor.py                     ai-mcp
 gdx_dispatch/core/openapi_to_capabilities.py                 ai-mcp
-gdx_dispatch/core/recommendations.py                         ai-mcp
 gdx_dispatch/core/recommendation_routes.py                   ai-mcp
 gdx_dispatch/core/next_action.py                             ai-mcp
 gdx_dispatch/frontend/src/views/AIAssistantView.vue          ai-mcp

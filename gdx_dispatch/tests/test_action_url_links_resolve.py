@@ -9,10 +9,19 @@ meant to navigate to. Ten of them pointed at paths the router has never had
 None of the ten could be tapped. DashboardView is the single renderer of an
 `action_url` (`@click="a.action_url && router.push(a.action_url)"`); it is fed
 by `/api/next-actions` and drops every `auto:` row, which is all three
-`next_action.py` literals. `/api/recommendations` has no frontend caller at
+`next_action.py` literals. `/api/recommendations` had no frontend caller at
 all. So this was a **latent** class, not a live 404 — which is exactly why the
-net matters more than the ten edits: the eleventh rule, or the day either
-surface gets a renderer, is when it would have bitten.
+net matters more than the ten edits: the eleventh rule, or the day a surface
+gets a renderer, is when it would have bitten.
+
+Nine of those ten links lived in `core/recommendations.py`, and that file is
+gone: GDXA-21 deleted the engine and its three `GET /api/recommendations*`
+routes outright on the maintainer's ruling ("if they are dead surfaces they
+should be removed"), because `core/next_action.py` already does the same job
+and is the one that is actually rendered. So the repoints this guard was
+written around survive only for `next_action.py`; the rest of the class was
+retired by deletion rather than by fixing the links. That is why the floor
+below dropped from 22 to 10 and why `_PINNED` names one file, not two.
 
 The class is *a server-produced deep link whose path is not in the SPA route
 table* — not the field name `action_url`. `send_push(url=...)` is the same
@@ -132,7 +141,7 @@ PKG = pathlib.Path(__file__).resolve().parents[1]
 
 # Discovery reads the parsed module, not its text. A regex over source finds
 # the spellings that ship a link —
-#   action_url="/x"             kwarg          (core/recommendations.py)
+#   action_url="/x"             kwarg          (tasks/invoice_reminders_auto.py)
 #   "action_url": f"/x"         dict key       (core/next_action.py)
 #   existing.action_url = "/x"  attribute      (tasks/billing_followup.py)
 #   row["action_url"] = "/x"    dict subscript
@@ -352,16 +361,19 @@ def test_the_sweep_actually_found_the_links() -> None:
     found = {url for _, url in DISCOVERED}
     # The live control: /jobs/:id has always resolved (next_action.py:336).
     assert "/jobs/{job.id}" in found
-    # Both files this class was found in are represented.
+    # The surviving file this class was found in is represented. Its sibling,
+    # core/recommendations.py, was deleted outright in GDXA-21 — asserting it
+    # is still discovered would now pin a file that must not come back.
     assert any("core/next_action.py" in w for w, _ in DISCOVERED)
-    assert any("core/recommendations.py" in w for w, _ in DISCOVERED)
     # The push spelling is reached too, or the `send_push` branch is dead code.
     assert any("routers/parts_needed.py" in w for w, _ in DISCOVERED)
-    # 22 literals on 2026-09-24 (20 action_url + 2 send_push url=). The floor
-    # is what turns a broken discovery pass red instead of letting it slip by
-    # finding fewer; raise it when rules are added, and only lower it when a
-    # rule is deliberately removed.
-    assert len(DISCOVERED) >= 22, DISCOVERED
+    # 10 literals on 2026-09-25 (8 action_url + 2 send_push url=). Was 22 until
+    # GDXA-21 deleted core/recommendations.py, which shipped 12 of them; this
+    # floor is the *measured* post-deletion count, not 22 − 12 done on paper.
+    # The floor is what turns a broken discovery pass red instead of letting it
+    # slip by finding fewer; raise it when rules are added, and only lower it
+    # when a rule is deliberately removed.
+    assert len(DISCOVERED) >= 10, DISCOVERED
 
 
 def test_the_static_targets_these_links_point_at_still_exist() -> None:
@@ -370,16 +382,17 @@ def test_the_static_targets_these_links_point_at_still_exist() -> None:
     `/billing/new` matches `/billing/:id` too, so the parametrised guard above
     would stay green if the static route were deleted — and the link would open
     InvoiceDetailView for an invoice with the id "new". Pin the exact paths.
+
+    Only targets a live link actually points at are pinned. `/billing/new`,
+    `/customers/:id`, `/dispatch`, `/labor-matrix` and `/reports` were pinned
+    here for `core/recommendations.py` rules and lost their only linker when
+    GDXA-21 deleted that file; pinning a route no producer references is a
+    test that can only ever fail for someone else's unrelated route edit.
     """
     paths = {p for p, _ in _route_patterns()}
     for target in (
-        "/billing/new",     # send_estimate, invoice_now
-        "/billing/:id",     # call_overdue_invoice
-        "/jobs",            # schedule_maintenance, annual_maintenance_followup
-        "/customers/:id",   # request_review
-        "/dispatch",        # technician_overloaded, unassigned_jobs_alert
-        "/labor-matrix",    # review_pricing
-        "/reports",         # revenue_trend_alert
+        "/billing/:id",     # call_overdue_invoice        (next_action.py)
+        "/jobs",            # schedule_maintenance        (next_action.py)
         "/parts-to-order",  # parts_needed critical-part push
         "/mobile",          # parts_needed tech push
     ):
@@ -398,21 +411,10 @@ _PINNED: dict[str, Counter[str]] = {
         "/billing/{inv.id}": 1,                  # call_overdue_invoice
         "/jobs?new=1&customer_id={cid}": 1,      # schedule_maintenance
     }),
-    "gdx_dispatch/core/recommendations.py": Counter({
-        "/billing/new?job_id={job_id}": 2,           # send_estimate, invoice_now
-        "/jobs/{job_id}": 1,                         # check_job_status (unchanged)
-        "/jobs?new=1&customer_id={customer_id}": 2,  # annual_maintenance_followup,
-                                                     # upsell_maintenance_plan
-        "/customers/{customer_id}": 1,               # request_review
-        "/dispatch": 2,                              # unassigned_jobs_alert (unchanged),
-                                                     # technician_overloaded
-        "/jobs?stage=estimate": 1,                   # follow_up_estimates (unchanged —
-                                                     # see FOUND_NOT_FILED: JobsView
-                                                     # reads no ?stage=)
-        "/labor-matrix": 1,                          # review_pricing
-        "/billing": 1,                               # unbilled_work_alert (unchanged)
-        "/reports": 1,                               # revenue_trend_alert
-    }),
+    # `core/recommendations.py` had a nine-entry block here. GDXA-21 deleted
+    # that file, so the block went with it: `by_file.get` would return an empty
+    # Counter, `pinned - live` the whole pin, and the assert below would fail
+    # permanently — pinning destinations in a file that no longer ships any.
 }
 
 
