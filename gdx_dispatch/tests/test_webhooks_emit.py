@@ -19,7 +19,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, select, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -294,10 +294,102 @@ def test_emit_never_commits_callers_txn_with_consent_table_present():
     install_webhook_dispatch_hook()
     ensure_consent_table(db)  # commits; happens BEFORE emit
     _sub(db, ["invoice.paid"])
-    with patch.object(tasks_mod.deliver_webhook_task, "delay"):
+    with patch.object(tasks_mod.deliver_webhook_task, "delay") as delay:
         emit_domain_event(db, "invoice.paid", "inv-x", {}, tenant_id=TENANT)
+        # This test built the whole GDXA-50 scenario and then threw the evidence
+        # away: the premature dispatch happened right here, inside an unbound
+        # patch nobody asserted on. Nothing is dispatched until the caller
+        # commits — and this caller never does.
+        assert delay.call_count == 0
+        db.rollback()
+    assert delay.call_count == 0
+    assert db.execute(select(WebhookDelivery)).scalars().all() == []
+
+
+def test_consent_probe_savepoint_does_not_dispatch_before_business_commit():
+    # GDXA-50 guard 1. after_commit is NOT root-only: SessionTransaction.commit
+    # dispatches it whenever `self._parent is None or self.nested`, so every
+    # SAVEPOINT release fires it. On any box where the plugin_consent table
+    # exists, any_event_consent's begin_nested probe RELEASES its savepoint
+    # mid-emit and drained the pending queue there — enqueueing the delivery
+    # before the business commit. The worker's own connection could not see the
+    # uncommitted row, deliver_webhook_task found nothing and returned, and the
+    # webhook landed 0.5-5 minutes late via the retry sweep instead of promptly.
+    from gdx_dispatch.core.plugin_consent import ensure_consent_table
+
+    db = _session()
+    install_webhook_dispatch_hook()
+    ensure_consent_table(db)  # commits; the probe's SAVEPOINT now RELEASES
+    _sub(db, ["invoice.paid"])
+    with patch.object(tasks_mod.deliver_webhook_task, "delay") as delay:
+        n = emit_domain_event(db, "invoice.paid", "inv-probe", {}, tenant_id=TENANT)
+        assert n == 1
+        assert delay.call_count == 0, "dispatched on the consent probe's SAVEPOINT release"
+        db.commit()
+    assert delay.call_count == 1  # exactly once, and only on the business commit
+
+
+def test_duplicate_reemit_still_dispatches_the_first_delivery():
+    # GDXA-50 guard 2. A legitimate re-emit of the same entity inside ONE business
+    # transaction is the case emit's per-row SAVEPOINT exists for: the duplicate
+    # idempotency key raises IntegrityError and the re-emit is a no-op. But that
+    # failed flush also rolls back SQLAlchemy's INTERNAL _flush subtransaction,
+    # which fires after_soft_rollback with previous_transaction.nested == False —
+    # so the old nested-only guard did not catch it and dropped the FIRST emit's
+    # pending list. The first delivery committed and was never enqueued at all.
+    db = _session()
+    install_webhook_dispatch_hook()
+    _sub(db, ["invoice.paid"])
+    with patch.object(tasks_mod.deliver_webhook_task, "delay") as delay:
+        assert emit_domain_event(db, "invoice.paid", "inv-dup", {}, tenant_id=TENANT) == 1
+        # same entity+subscription, same transaction → duplicate key → no-op
+        assert emit_domain_event(db, "invoice.paid", "inv-dup", {}, tenant_id=TENANT) == 0
+        assert delay.call_count == 0  # nothing before the commit
+        db.commit()
+    assert len(db.execute(select(WebhookDelivery)).scalars().all()) == 1
+    assert delay.call_count == 1  # the surviving delivery IS dispatched
+
+
+def test_rollback_drops_plugin_and_workflow_dispatch_too():
+    # GDXA-50, worst severity. Unlike deliver_webhook_task, the plugin and
+    # workflow sinks carry their payload INLINE and have no row-existence guard,
+    # so a premature dispatch SUCCEEDS: plugin-host is POSTed and the automation
+    # rule's actions (customer email, plugin webhook) run — for an invoice that
+    # never committed. Two distinct entities in one business transaction is
+    # enough: the 2nd emit's consent-probe SAVEPOINT release drained the 1st
+    # emit's plugin and workflow queues before the caller rolled back.
+    from gdx_dispatch.core.plugin_consent import ensure_consent_table
+    from gdx_dispatch.core.plugin_events import deliver_plugin_event_task
+    from gdx_dispatch.modules.workflows.models import WorkflowRule
+    from gdx_dispatch.modules.workflows.tasks import run_workflow_rules_task
+
+    db = _session()
+    install_webhook_dispatch_hook()
+    WorkflowRule.__table__.create(bind=db.get_bind(), checkfirst=True)
+    ensure_consent_table(db)
+    db.execute(
+        text(
+            "INSERT INTO plugin_consent (plugin_key, permissions, declared_events, "
+            "declared_fingerprint) VALUES ('p1', '[]', '[\"invoice.paid\"]', 'fp')"
+        )
+    )
+    db.add(WorkflowRule(
+        name="rule", is_active=True, trigger_event="invoice.paid",
+        conditions=[], actions=[{"type": "send_email"}],
+    ))
+    db.commit()
+    _sub(db, ["invoice.paid"])
+
+    with patch.object(tasks_mod.deliver_webhook_task, "delay") as wh, \
+         patch.object(deliver_plugin_event_task, "delay") as plugin, \
+         patch.object(run_workflow_rules_task, "delay") as workflow:
+        emit_domain_event(db, "invoice.paid", "inv-p1", {"invoice_id": "inv-p1"}, tenant_id=TENANT)
+        emit_domain_event(db, "invoice.paid", "inv-p2", {"invoice_id": "inv-p2"}, tenant_id=TENANT)
         db.rollback()
     assert db.execute(select(WebhookDelivery)).scalars().all() == []
+    assert wh.call_count == 0
+    assert plugin.call_count == 0, "plugin-host POSTed for a rolled-back invoice"
+    assert workflow.call_count == 0, "automation rule ran for a rolled-back invoice"
 
 
 def test_retry_sweep_rescues_stranded_null_next_retry():

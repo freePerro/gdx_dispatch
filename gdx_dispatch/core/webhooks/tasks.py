@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import timedelta
 
 from sqlalchemy import and_, or_, select, update
@@ -9,6 +10,8 @@ from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import SessionLocal
 from gdx_dispatch.core.webhooks.delivery import deliver_webhook
 from gdx_dispatch.core.webhooks.models import WebhookDelivery, WebhookEndpoint
+
+log = logging.getLogger(__name__)
 
 # A row committed 'pending' with next_retry_at=NULL is one whose after_commit
 # enqueue never happened (broker down at dispatch time) — rescue it once it's
@@ -37,6 +40,15 @@ def deliver_webhook_task(delivery_id: str) -> None:
     with _tenant_session() as db:
         if db.get(WebhookDelivery, delivery_id):  # noqa: E701,E702
             asyncio.run(deliver_webhook(delivery_id, db))
+        else:
+            # The worker's own connection cannot see the row this task was
+            # enqueued for: it was rolled back, or it was enqueued BEFORE its
+            # transaction committed (GDXA-50). Returning silently made that
+            # indistinguishable from normal operation — the delivery just waited
+            # out the 30 s grace and the 5-minute retry sweep with no log line.
+            # Nothing deletes WebhookDelivery rows, so this is never routine
+            # noise: if it fires, a dispatch really did race its transaction.
+            log.warning("webhook_delivery_missing_at_dispatch id=%s", delivery_id)
 
 
 @celery_app.task
