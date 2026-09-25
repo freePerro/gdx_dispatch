@@ -154,7 +154,10 @@ class RecommendationEngine:
                                 "with no invoice sent. Follow up with the customer."
                             ),
                             priority="high",
-                            action_url=f"/jobs/{job_id}/invoice/new",
+                            # The SPA has no /jobs/:id/invoice/new. InvoiceCreateView
+                            # is /billing/new and pre-fills from ?job_id=
+                            # (InvoiceCreateView.vue:1007).
+                            action_url=f"/billing/new?job_id={job_id}",
                             estimated_value=0.0,
                         ))
             except Exception as exc:
@@ -182,7 +185,7 @@ class RecommendationEngine:
                             "Send the invoice to get paid."
                         ),
                         priority="high",
-                        action_url=f"/jobs/{job_id}/invoice/new",
+                        action_url=f"/billing/new?job_id={job_id}",
                         estimated_value=0.0,
                     ))
             except Exception as exc:
@@ -286,7 +289,10 @@ class RecommendationEngine:
                                 "Reach out to schedule annual maintenance."
                             ),
                             priority="medium",
-                            action_url=f"/customers/{customer_id}/schedule",
+                            # No customer-scoped scheduling route exists; JobsView
+                            # opens its new-job form from ?new=1 with the customer
+                            # pre-filled from ?customer_id= (JobsView.vue:1410).
+                            action_url=f"/jobs?new=1&customer_id={customer_id}",
                             estimated_value=150.0,
                         ))
             except Exception as exc:
@@ -326,7 +332,7 @@ class RecommendationEngine:
                                 "they are a strong candidate for a recurring maintenance plan."
                             ),
                             priority="high",
-                            action_url=f"/customers/{customer_id}/schedule",
+                            action_url=f"/jobs?new=1&customer_id={customer_id}",
                             estimated_value=float(avg_total) * 0.5,
                         ))
             except Exception as exc:
@@ -354,7 +360,14 @@ class RecommendationEngine:
                             "Now is the ideal time to ask for a review."
                         ),
                         priority="low",
-                        action_url=f"/customers/{customer_id}/message",
+                        # Asking for a review has no surface at all: there is no
+                        # customer-scoped compose route, /inbox is a mailbox, and
+                        # ReviewsView only lists reviews (its one button is
+                        # Refresh). Until one exists, the customer's own record
+                        # is the honest destination — it renders tel: and mailto:
+                        # links for exactly this outreach. The nudge is "reach
+                        # out"; the one-click ask is a product gap, not a route.
+                        action_url=f"/customers/{customer_id}",
                         estimated_value=0.0,
                     ))
             except Exception as exc:
@@ -451,7 +464,14 @@ class RecommendationEngine:
                             "consider redistributing workload."
                         ),
                         priority="high",
-                        action_url="/team",
+                        # There is no /team route. The advice is "redistribute
+                        # workload", and the Dispatch Board is the surface built
+                        # for it — drag-and-drop tech lanes, several jobs moved
+                        # in a row. (Jobs and JobDetail can reassign one job
+                        # each; neither shows who is overloaded.) TechniciansView
+                        # is a roster — name, phone, skills, rate, status — with
+                        # no workload and no reassignment control at all.
+                        action_url="/dispatch",
                         estimated_value=0.0,
                     ))
             except Exception as exc:
@@ -544,7 +564,11 @@ class RecommendationEngine:
                             "Consider reviewing your service pricing."
                         ),
                         priority="low",
-                        action_url="/settings/pricing",
+                        # /settings has no `pricing` child. The rule is about a
+                        # low average *service* price, and the Labor Pricing
+                        # Matrix is the surface that sets it — its rows carry
+                        # the quoted flat_price per service type.
+                        action_url="/labor-matrix",
                         estimated_value=0.0,
                     ))
             except Exception as exc:
@@ -618,7 +642,11 @@ class RecommendationEngine:
                             "30 days. Review your lead sources and marketing."
                         ),
                         priority="medium",
-                        action_url="/reports/revenue",
+                        # There is no /reports/revenue route, and ReportsView
+                        # reads no query at all — a ?tab= would be ignored. Its
+                        # landing state already leads with "Revenue (Period)"
+                        # and the Revenue-by-Period chart.
+                        action_url="/reports",
                         estimated_value=0.0,
                     ))
             except Exception as exc:
