@@ -128,12 +128,104 @@ def _check_flush(session: Session, _flush_context, _instances) -> None:
     log.error("gl_chokepoint_bypass: %s", message)
 
 
-def _clear_sanctions_on_rollback(session: Session) -> None:
-    """A rolled-back transition must not leave a live sanction behind
-    (audit round 1). The service registers every stamped instance here."""
-    for obj in session.info.pop(SANCTION_REGISTRY_KEY, ()):  # noqa: B020
-        if getattr(obj, SANCTION_ATTR, None) is not None:
+def _sanctioned_write_survived(obj) -> bool:
+    """Did the ``Invoice.status`` write this sanction blesses outlive the
+    SAVEPOINT rollback that just happened?
+
+    Asked of the instance, not of the transaction. SQLAlchemy restores its
+    snapshot by EXPIRING (or expunging) exactly the instances whose changes
+    the rollback discarded, so the instance already carries the answer and
+    this never has to reason about savepoint depth.
+
+    Everything is read through ``InstanceState``: ``state.dict`` is the raw
+    instance ``__dict__``, so no branch here can trigger a lazy load —
+    emitting SQL from a rollback listener would open a transaction.
+
+    Conservative by construction: anything it cannot prove survived is
+    treated as gone, so the sanction is cleared. This can only ever make the
+    guard over-police, never under-police.
+    """
+    state = inspect(obj)
+    if state.session is None or state.was_deleted:
+        return False  # expunged by the rollback — the write went with it
+    if "status" in state.unloaded:
+        return False  # expired by the rollback — the in-memory write is gone
+    return state.dict.get("status") == getattr(obj, SANCTION_ATTR, None)
+
+
+def _clear_sanctions_on_rollback(session: Session, previous_transaction=None) -> None:
+    """A rolled-back transition must not leave a live sanction behind (audit
+    round 1) — but a SAVEPOINT rollback is not the business transaction
+    rolling back, and must not strip sanctions it never unwound.
+
+    ⚠ ``after_soft_rollback``, NOT ``after_rollback``. Same reasoning, and the
+    same hook, as ``core/webhooks/emit.py``'s ``_drop_pending`` — read that
+    one first; it is the precedent, and it was written after savepoint
+    rollbacks made webhooks silently never fire on a fresh Postgres box.
+    Measured again here on SQLAlchemy 2.0.54 (line numbers below are the
+    installed sqlalchemy.orm.session module, not this repo):
+
+    1. ``rollback()`` dispatches ``after_rollback`` at line 1366, *inside* the
+       try, while ``_restore_snapshot()`` runs in the ``finally`` at 1371 — so
+       an ``after_rollback`` listener runs before SQLAlchemy has expired
+       anything and cannot tell an unwound write from a surviving one.
+       ``after_soft_rollback`` (1400) is the last statement of ``rollback()``,
+       after both the restore and the close.
+    2. ``after_rollback`` only fires from the ``ACTIVE``/``PREPARED`` branch,
+       so a ``session.rollback()`` on a transaction a failed flush already
+       deactivated never reaches it. ``after_soft_rollback`` fires for every
+       rollback — a strict superset.
+    3. ``session.in_transaction()`` is NOT a usable discriminator in either
+       hook: ``rollback()`` dispatches before ``close()``, so it reads True
+       even for a root rollback. ``previous_transaction.nested`` is the one
+       that works, which is why ``_drop_pending`` uses it.
+
+    Where this guard has to go further than ``_drop_pending``: that one can
+    return outright on a savepoint rollback, because staged webhook payloads
+    only die with the business write. A sanction minted INSIDE the savepoint
+    *is* genuinely undone by rolling it back, and leaving it live would bless
+    a later raw write to the same status — audit round 1's finding, at
+    savepoint depth. So the nested branch filters rather than skips.
+
+    GDXA-51 / GDXA-47: the old form listened on ``after_rollback`` and popped
+    the whole registry, which holds only if the root is the only rollback that
+    can reach it. It is not — ``rollback()`` dispatches for every transaction
+    where ``_parent is None or nested``, and the money path's savepoint sites
+    are ``engine.post_event``'s idempotency-key retry and
+    ``core/payments.py``'s audit savepoint.
+
+    Latent today, deliberately fixed anyway: no shipping caller can present a
+    live sanction here, because ``SessionTransaction._take_snapshot`` flushes
+    on every ``begin_nested()`` (same module, line 1090) and that flush
+    spends the
+    stamp before the savepoint exists. That is SQLAlchemy's accident, not this
+    module's invariant.
+    """
+    if not getattr(previous_transaction, "nested", False):
+        # The business transaction is gone; nothing it staged survives. Also
+        # the registry's ONLY drain — commit and close dispatch nothing here.
+        for obj in session.info.pop(SANCTION_REGISTRY_KEY, ()):  # noqa: B020
+            if getattr(obj, SANCTION_ATTR, None) is not None:
+                delattr(obj, SANCTION_ATTR)
+        return
+
+    registry = session.info.get(SANCTION_REGISTRY_KEY)
+    if not registry:
+        return
+
+    survivors = []
+    for obj in registry:
+        if getattr(obj, SANCTION_ATTR, None) is None:
+            continue  # already spent by a flush — drop it from the registry
+        if _sanctioned_write_survived(obj):
+            survivors.append(obj)  # this savepoint did not unwind it
+        else:
             delattr(obj, SANCTION_ATTR)
+
+    if survivors:
+        session.info[SANCTION_REGISTRY_KEY] = survivors
+    else:
+        session.info.pop(SANCTION_REGISTRY_KEY, None)
 
 
 def install_flush_guard() -> None:
@@ -143,5 +235,5 @@ def install_flush_guard() -> None:
     if _installed:
         return
     event.listen(Session, "before_flush", _check_flush)
-    event.listen(Session, "after_rollback", _clear_sanctions_on_rollback)
+    event.listen(Session, "after_soft_rollback", _clear_sanctions_on_rollback)
     _installed = True

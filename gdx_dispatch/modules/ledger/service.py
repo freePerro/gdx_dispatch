@@ -226,8 +226,10 @@ def ledger_posting_enabled(session: Session, company_id: str) -> bool:
 # honors it if the flushed status matches, so a stale stamp can't bless a
 # different later write.
 SANCTION_ATTR = "_gl_transition_sanctioned"
-# session.info key listing stamped instances; the guard's after_rollback
+# session.info key listing stamped instances; the guard's after_soft_rollback
 # hook clears their stamps (a rolled-back transition must leave no sanction).
+# A SAVEPOINT rollback only clears the stamps that savepoint actually unwound
+# — it is not the business transaction ending. See guard.py.
 SANCTION_REGISTRY_KEY = "gl_sanctioned_invoices"
 
 # (old_status, new_status) → posting callable. EMPTY in S4 — the flag can be
