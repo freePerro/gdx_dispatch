@@ -11,7 +11,7 @@
  */
 import 'fake-indexeddb/auto';
 import { describe, it, expect, vi } from 'vitest';
-import { mount, flushPromises } from '@vue/test-utils';
+import { mount, flushPromises, RouterLinkStub } from '@vue/test-utils';
 import { defineComponent, h, ref } from 'vue';
 import { createRouter, createWebHistory, RouterView } from 'vue-router';
 
@@ -37,6 +37,9 @@ vi.mock('../../composables/usePhotoQueue', () => ({
 }));
 
 const stubs = {
+  // The customer name on these screens is a router-link to /mobile/customers/:id.
+  // These specs mock vue-router wholesale, so RouterLink is not registered.
+  RouterLink: RouterLinkStub,
   MobileChatDialog: {
     props: { visible: Boolean, job: { type: Object, default: null }, markRead: Boolean },
     template: '<div v-if="visible" data-testid="stub-chat" />',

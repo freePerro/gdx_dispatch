@@ -85,7 +85,29 @@
         </div>
         <div v-else-if="detail" class="detail-body">
           <div class="detail-meta">
-            <div class="meta-line"><strong>Customer:</strong> {{ detail.customer_name || detail.customer?.name || '—' }}</div>
+            <!-- Same shape as the estimate dialog and the job detail: the name
+                 is the route to the record, not a label. `invoices` has no
+                 customer_name column at all (_serialize_invoice's getattr
+                 always yields ""), so the name is whatever get_invoice
+                 enriches. Until 2026-09-24 that was the Job -> Customer path
+                 only, which left 43 of 415 invoices on this book — the ones
+                 with a customer_id and no job — carrying an id no screen could
+                 name; get_invoice now resolves the invoice's own customer first.
+                 Guarded on id, name AND not-deleted. A soft-deleted customer
+                 still arrives NAMED (the desktop invoice page guards its own
+                 link on customer_id alone, so blanking the name there would
+                 print "Unknown" and keep the dead link) — so the flag, not a
+                 missing name, is what withholds the link to a record
+                 /api/customers/{id} answers with 404. -->
+            <div class="meta-line"><strong>Customer:</strong>
+              <router-link
+                v-if="detail.customer_id && detail.customer_name && !detail.customer_deleted"
+                :to="`/mobile/customers/${detail.customer_id}`"
+                class="customer-link"
+                data-test="mb-customer-link"
+              >{{ detail.customer_name }}</router-link>
+              <span v-else>{{ detail.customer_name || '—' }}</span>
+            </div>
             <div class="meta-line"><strong>Status:</strong>
               <Tag :value="prettyStatus(detail.status)" :severity="statusSeverity(detail.status)" />
             </div>
@@ -614,6 +636,22 @@ onMounted(async () => {
   gap: 0.4rem;
   font-size: 0.9rem;
   flex-wrap: wrap;
+}
+
+/* The 44px HIG floor, because the tap target here is a name in a line of
+   body text and a gloved thumb gets one try. Underlined so it reads as a
+   link at 0.9rem, where colour alone is not enough.
+   This deliberately makes the row taller than the label/value lines around
+   it. Accepted — the dialog's meta block has the room (walked on the Pixel 8
+   AVD, light and dark, 2026-09-24), and a sub-44px tap target on a phone is
+   the defect this repo already has a regression test for
+   (e2e/mobile-touch-targets.spec.js). */
+.meta-line .customer-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--p-primary-color, #3b82f6);
+  text-decoration: underline;
 }
 
 .lines-heading {

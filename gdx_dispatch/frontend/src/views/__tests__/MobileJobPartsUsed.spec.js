@@ -20,7 +20,7 @@
  */
 import "fake-indexeddb/auto";
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { mount, flushPromises } from "@vue/test-utils";
+import { mount, flushPromises, RouterLinkStub } from "@vue/test-utils";
 import { ref } from "vue";
 
 const getMock = vi.fn();
@@ -52,6 +52,9 @@ vi.mock("../../composables/usePhotoQueue", () => ({
 }));
 
 const stubs = {
+  // The customer name on these screens is a router-link to /mobile/customers/:id.
+  // These specs mock vue-router wholesale, so RouterLink is not registered.
+  RouterLink: RouterLinkStub,
   Button: {
     props: ["label", "icon", "loading", "severity", "text", "rounded", "outlined", "disabled"],
     template: '<button v-bind="$attrs" :disabled="disabled" @click="$emit(\'click\')">{{ label }}</button>',

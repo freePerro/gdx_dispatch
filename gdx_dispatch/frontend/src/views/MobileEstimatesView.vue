@@ -71,7 +71,23 @@
         </div>
         <div v-else-if="detail" class="detail-body">
           <div class="detail-meta">
-            <div class="meta-line"><strong>Customer:</strong> {{ detail.customer_name || detail.customer?.name || '—' }}</div>
+            <!-- The name is the route to the record. Before this it was not
+                 even text: the detail payload carried no name, so this line
+                 read "—" for every estimate. get_estimate now serializes it.
+                 Guarded on id, name AND not-deleted — an anchor with no
+                 accessible name is worse than plain text, and a soft-deleted
+                 customer still arrives NAMED (the payload is shared with the
+                 desktop estimate header), so the flag is what withholds the
+                 link to a record /api/customers/{id} would 404. -->
+            <div class="meta-line"><strong>Customer:</strong>
+              <router-link
+                v-if="detailCustomerId && detailCustomerName && !detail.customer_deleted"
+                :to="`/mobile/customers/${detailCustomerId}`"
+                class="customer-link"
+                data-test="me-customer-link"
+              >{{ detailCustomerName }}</router-link>
+              <span v-else>{{ detailCustomerName || '—' }}</span>
+            </div>
             <div class="meta-line"><strong>Status:</strong>
               <Tag :value="prettyStatus(detail.status)" :severity="statusSeverity(detail.status)" />
             </div>
@@ -407,6 +423,17 @@ async function fetchEstimates() {
     loading.value = false
   }
 }
+
+// Both come from the SAME fresh detail payload, so the name and the link
+// target can never describe different customers. GET /api/estimates/{id} now
+// serializes customer_name, resolved from Estimate.customer_id (estimates.py
+// get_estimate) — before that this line rendered "—" for every estimate,
+// because only the LIST endpoint enriched the name.
+// Never read the name off the list row instead: list_estimates falls back to
+// the JOB's customer name without changing customer_id, so a row can pair one
+// customer's name with another's id.
+const detailCustomerId = computed(() => detail.value?.customer_id || '')
+const detailCustomerName = computed(() => detail.value?.customer_name || '')
 
 async function openDetail(e) {
   detail.value = null
@@ -814,6 +841,22 @@ onMounted(() => {
   gap: 0.4rem;
   font-size: 0.9rem;
   flex-wrap: wrap;
+}
+
+/* The 44px HIG floor, because the tap target here is a name in a line of
+   body text and a gloved thumb gets one try. Underlined so it reads as a
+   link at 0.9rem, where colour alone is not enough.
+   This deliberately makes the row taller than the label/value lines around
+   it. Accepted — the dialog's meta block has the room (walked on the Pixel 8
+   AVD, light and dark, 2026-09-24), and a sub-44px tap target on a phone is
+   the defect this repo already has a regression test for
+   (e2e/mobile-touch-targets.spec.js). */
+.meta-line .customer-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--p-primary-color, #3b82f6);
+  text-decoration: underline;
 }
 
 .lines-heading {

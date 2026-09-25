@@ -7,7 +7,7 @@
  *   - When the endpoint is unavailable, fall back to client computation
  *     over the loaded invoice list (drafts excluded from outstanding).
  */
-import { mount, flushPromises } from '@vue/test-utils';
+import { mount, flushPromises, RouterLinkStub } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import MobileBillingView from '../MobileBillingView.vue';
@@ -52,6 +52,9 @@ vi.mock('../../composables/useDestructiveConfirm', () => ({
 }));
 
 const stubs = {
+  // The customer name on these screens is a router-link to /mobile/customers/:id.
+  // These specs mock vue-router wholesale, so RouterLink is not registered.
+  RouterLink: RouterLinkStub,
   AppLayout: { template: '<div><slot /></div>' },
   Button: {
     props: ['label'],

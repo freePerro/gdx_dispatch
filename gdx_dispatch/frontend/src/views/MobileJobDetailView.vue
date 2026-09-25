@@ -31,8 +31,25 @@
     <template v-else-if="job">
       <div class="detail-card">
         <div class="detail-row detail-row-top">
+          <!-- The name is the route to the record. Until now this screen named
+               the customer and stopped there: a tech who needed the gate code
+               or a second phone number had to leave the job, open the Customers
+               tab and search for a name he was already looking at.
+               Guarded on id, name AND not-deleted. The last one is load-bearing
+               here and only here: unlike the estimate and invoice payloads,
+               /api/mobile/job/{id} deliberately keeps naming a soft-deleted
+               customer so the tech still has the phone number, and the office
+               soft-deletes with no referential check — so `id` and `name` are
+               both present for a record /api/customers/{id} answers with 404.
+               The name stays as text; only the dead link is withheld. -->
           <div class="detail-customer" data-testid="mobile-job-detail-customer">
-            {{ customer?.name || '—' }}
+            <router-link
+              v-if="customer?.id && customer?.name && !customer?.deleted"
+              :to="`/mobile/customers/${customer.id}`"
+              class="customer-link"
+              data-testid="mobile-job-detail-customer-link"
+            >{{ customer.name }}</router-link>
+            <span v-else>{{ customer?.name || '—' }}</span>
           </div>
           <span :class="['status-pill', `status-${(job.dispatch_status || 'assigned').replace(' ', '_')}`]">
             {{ statusLabel(job.dispatch_status) }}
@@ -2053,6 +2070,18 @@ onMounted(() => {
 .detail-row { display: flex; align-items: center; gap: 0.5rem; }
 .detail-row-top { justify-content: space-between; }
 .detail-customer { font-size: 1.1rem; font-weight: 700; }
+/* A gloved thumb needs the 44px HIG floor, and the name is a heading rather
+   than body text — so it reads as the link it is without an underline until
+   it is touched. Colour token, not a literal: this screen is read in a dark
+   garage and a bright driveway on the same afternoon. */
+.detail-customer .customer-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--p-primary-color, #3b82f6);
+  text-decoration: none;
+}
+.detail-customer .customer-link:active { text-decoration: underline; }
 .detail-title { font-size: 0.95rem; }
 .detail-meta { color: var(--p-text-muted-color, #6b7280); font-size: 0.9rem; display: flex; align-items: center; gap: 0.35rem; }
 .detail-meta-muted { font-style: italic; }
