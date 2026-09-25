@@ -39,6 +39,25 @@ if [ -z "${PYTEST:-}" ]; then
     PYTEST="python3 -m pytest"
   fi
 fi
+# ── linked worktree: let a docker PYTEST read the git index ──────────────
+# In a `git worktree add` checkout `.git` is a FILE pointing at
+# <main>/.git/worktrees/<name>, which sits outside the `-v $PWD:/app` mount.
+# tools/tracked_files.py follows that pointer, so inside the container the
+# tracked-set guards (tracked_files, doc_link_scan, saas_surfaces_retired,
+# tenant_plane_redundant_filter, agent_ownership) raise TrackedFilesUnavailable:
+# 14 red tests on every Paperclip worktree (2026-09-24), which cost each run a
+# second matrix on a copied tree just to prove them environmental. Mounting the
+# gitdir read-only at its own host path is enough — verified 2026-09-24,
+# test_tracked_files.py went 4 failed → 8 passed on a Paperclip worktree.
+if [ -f "$REPO_ROOT/.git" ] && [[ "$PYTEST" == *"docker run"* ]]; then
+  GITDIR="$(sed -n 's/^gitdir: *//p' "$REPO_ROOT/.git")"
+  case "$GITDIR" in /*) ;; *) GITDIR="$(cd "$REPO_ROOT" && realpath "$GITDIR")" ;; esac
+  if [ -d "$GITDIR" ] && [[ "$PYTEST" != *"$GITDIR"* ]]; then
+    PYTEST="${PYTEST/docker run/docker run -v $GITDIR:$GITDIR:ro}"
+    echo "linked worktree: mounted $GITDIR read-only so the tracked-set guards can read the index"
+  fi
+fi
+
 # --version alone isn't enough — a host pytest without the app's deps fails
 # every shard with usage errors. Probe the actual imports the suite needs.
 # Only possible when $PYTEST is the "<python> -m pytest" form (stripping the
@@ -121,6 +140,28 @@ fi
 COMMON_OPTS=(--ignore=gdx_dispatch/tests/e2e --tb=short)
 if [ "${FORKED:-0}" = "1" ]; then
   COMMON_OPTS+=(--forked)
+fi
+
+# ── host-wide matrix lock ────────────────────────────────────────────────
+# Two matrices at once are slower than two in a row: on 2026-09-24 four
+# Paperclip agents ran this concurrently — 28 shards on 20 cores, load 28,
+# 1.8 GB free. One matrix at a time on this host. A waiter says so and names the holder, so a
+# polled log explains the silence. MATRIX_LOCK=0 bypasses; MATRIX_LOCK_FILE
+# relocates. The lock lives on fd 9 and drops when this script exits.
+LOCK_FILE="${MATRIX_LOCK_FILE:-/tmp/gdx_matrix.lock}"
+if [ "${MATRIX_LOCK:-1}" = "1" ]; then
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>>"$LOCK_FILE"
+    if ! flock -n 9; then
+      echo "⏳ matrix lock $LOCK_FILE is held ($(tail -1 "$LOCK_FILE" 2>/dev/null || echo 'holder unknown')) — waiting for it (MATRIX_LOCK=0 to bypass)"
+      wait_start=$(date +%s)
+      flock 9
+      echo "🔓 matrix lock acquired after $(( $(date +%s) - wait_start ))s"
+    fi
+    printf 'pid %s since %s in %s\n' "$$" "$(date -Is)" "$REPO_ROOT" > "$LOCK_FILE"
+  else
+    echo "⚠ flock not found — matrix lock NOT taken; two matrices may overlap"
+  fi
 fi
 
 pids=()

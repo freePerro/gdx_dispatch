@@ -55,6 +55,11 @@ this — the budget governs sweeps, not repairs.
   The maintainer triggers merge and release.
 - `ARCHITECTURAL_INVARIANTS.md` is the registry of load-bearing invariants —
   read it before touching mutation paths, deletes, or money code.
+- **Subagents:** one per domain, checked in under `.claude/agents/` (14 as of
+  2026-09-24). Which files each one owns is data, not prose:
+  `gdx_dispatch/tools/agent_ownership.txt`, gated by
+  `tests/test_agent_ownership.py` — a new router, view or module with no
+  owner line is red. Rationale: the plan `domain-agents-plan` under `docs/design/`.
 
 ## Commands and harness facts
 
@@ -86,6 +91,14 @@ this — the budget governs sweeps, not repairs.
   an unreachable Postgres fails them rather than skipping (#440). It does
   **not** run the 8 `TEST_DATABASE_URL` role tests or the
   `GDX_TEST_CONTROL_DB_URL` integration tests — those still skip green there.
+- **`run_tests_split.sh` takes a host-wide lock** (`/tmp/gdx_matrix.lock`): a
+  second matrix waits and says so, because two at once are slower than two in
+  a row (2026-09-24: four at once put the 20-core box at load 28 with 1.8 GB
+  free). Shard 4 takes ~23 min even alone, so a full local matrix is ~25 min
+  whatever else is running. `MATRIX_LOCK=0`
+  bypasses it. In a linked worktree the script also mounts the gitdir into a
+  docker `PYTEST`, so the tracked-set guards pass there instead of failing 14
+  tests for want of the index.
 - `pytest.ini` already carries `-q`; adding another makes output useless. To
   read a CI failure use the `jobs/<id>/logs` API, not `gh run view --log`.
 - **A foreground `sleep` is blocked and a background Bash dies at 600s.** Long
