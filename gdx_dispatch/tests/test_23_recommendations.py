@@ -61,7 +61,10 @@ def test_job_recommendation_invoice_now(tenant_db, control_db):
     assert "invoice_now" in types
     rec = next(r for r in recs if r["type"] == "invoice_now")
     assert rec["priority"] == "high"
-    assert f"/jobs/{job.id}/invoice/new" in rec["action_url"]
+    # /jobs/:id/invoice/new is not a route; InvoiceCreateView is /billing/new
+    # and pre-fills from ?job_id=. Resolution is guarded by
+    # test_action_url_links_resolve.py.
+    assert rec["action_url"] == f"/billing/new?job_id={job.id}"
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +99,10 @@ def test_job_recommendation_send_estimate(tenant_db, control_db):
     assert "send_estimate" in types
     rec = next(r for r in recs if r["type"] == "send_estimate")
     assert rec["priority"] == "high"
+    # The URL the engine really emits, not the one the source appears to say.
+    # test_action_url_links_resolve.py reads these links out of the AST; this
+    # is one of the two that a real invocation confirms end to end.
+    assert rec["action_url"] == f"/billing/new?job_id={job.id}"
 
 
 # ---------------------------------------------------------------------------

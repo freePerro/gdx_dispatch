@@ -35,15 +35,49 @@ ROUTER = (
 )
 
 
+def _router_paths() -> set[str]:
+    """Every route the SPA can reach, as an absolute path.
+
+    Most children declare an absolute `path:` and need no assembly. The
+    `/phone-com` block declares its four children RELATIVE (`path: 'calls'`),
+    so they are joined to the nearest enclosing absolute parent — a scan that
+    only reads absolute paths calls `/phone-com/calls` dead, which is worse
+    than a blind spot: it sends the next author to "fix" a working link.
+    A bare `path: ''` is the parent's own index route, already collected.
+    """
+    paths: set[str] = set()
+    parents: list[tuple[int, str]] = []  # (indent, absolute path)
+    for line in ROUTER.read_text().splitlines():
+        m = re.search(r"path:\s*'([^']*)'", line)
+        if not m:
+            continue
+        raw, indent = m.group(1), len(line) - len(line.lstrip())
+        if raw.startswith("/"):
+            while parents and parents[-1][0] >= indent:
+                parents.pop()
+            parents.append((indent, raw))
+            paths.add(raw)
+        elif raw:
+            parent = next((p for ind, p in reversed(parents) if ind < indent), None)
+            if parent:
+                paths.add(f"{parent.rstrip('/')}/{raw}")
+    return paths
+
+
 def _route_patterns() -> list[tuple[str, re.Pattern[str]]]:
-    """Every absolute `path:` in the SPA router, as an anchored regex."""
-    paths = set(re.findall(r"path:\s*'(/[^']*)'", ROUTER.read_text()))
+    """Every reachable `path:` in the SPA router, as an anchored regex.
+
+    Sorted static-before-dynamic so `_route_for` is deterministic: both
+    `/billing/new` and `/billing/:id` match "/billing/new", and picking off an
+    unordered set made the winner depend on PYTHONHASHSEED.
+    """
     out = []
-    for p in paths:
+    for p in _router_paths():
         if "*" in p or "pathMatch" in p:
             continue  # the catch-all matches everything; it is the 404 page
         body = re.sub(r":[A-Za-z_]+", "[^/]+", p.rstrip("/")) or ""
         out.append((p, re.compile(f"^{body}/?$")))
+    out.sort(key=lambda pr: (pr[0].count(":"), -len(pr[0]), pr[0]))
     return out
 
 

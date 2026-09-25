@@ -370,7 +370,10 @@ class NextActionQueue:
                         "and has not been paid. Call the customer."
                     ),
                     "priority": "high",
-                    "action_url": f"/invoices/{inv.id}",
+                    # The SPA has no /invoices/:id — `/invoices` is an exact
+                    # redirect to /billing and does not catch the id form.
+                    # InvoiceDetailView is /billing/:id.
+                    "action_url": f"/billing/{inv.id}",
                     "estimated_value": float(inv.total) if inv.total else 0.0,
                     "reference_id": str(inv.id),
                     "status": "pending",
@@ -424,7 +427,10 @@ class NextActionQueue:
                             "Schedule a maintenance check-up."
                         ),
                         "priority": "medium",
-                        "action_url": f"/customers/{cid}/schedule",
+                        # No customer-scoped scheduling route exists. JobsView
+                        # opens its new-job form from ?new=1 and pre-fills the
+                        # customer from ?customer_id= (JobsView.vue:1410).
+                        "action_url": f"/jobs?new=1&customer_id={cid}",
                         "estimated_value": 150.0,
                         "reference_id": cid,
                         "status": "pending",
