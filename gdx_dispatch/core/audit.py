@@ -572,6 +572,18 @@ def audit_best_effort(
     a 500 would be a lie: after the fact no rollback can undo it, and telling
     the user it failed only makes them do it twice.
 
+    **Calling it.** Pass your own session positionally; everything else is
+    keyword-only. It never raises — a failure is logged and reported as a
+    ``False`` return, which you are free to ignore. You need nothing else:
+    ``ensure_audit_table`` is hoisted inside (see 1 below), so do **not** reach
+    for ``Depends(audit_ready_db)`` and do not call ``ensure_audit_table``
+    yourself first. That dependency resolves its own session through
+    ``_get_db_dep`` rather than ``core.database.get_db``, so it silently
+    bypasses ``app.dependency_overrides[get_db]`` and hands the handler a
+    different database than the test seeded — measured 2026-09-25, and already
+    written up at ``routers/customers.py:1931`` after it 404ed two
+    ``test_outbound_email_log.py`` tests.
+
     **Precondition, load-bearing: the caller has nothing staged.** Either it
     already committed, or it never wrote anything (a GET-side export, a webhook
     branch that only takes a note). This helper COMMITS, so a caller with
@@ -611,6 +623,19 @@ def audit_best_effort(
        the savepoint just contained, and expires every object the caller still
        holds. ``is_active`` distinguishes them — False only when the
        transaction really was deactivated, which the savepoint prevents.
+    4. Why not simply mirror ``audit_or_rollback`` — a bare ``db.rollback()``
+       in the ``except``, no savepoint? It is enough to un-poison the session,
+       and at these ten sites nothing pending is lost, so on the HTTP contract
+       alone the two are indistinguishable. The savepoint earns its place one
+       level down: a rollback restores the session by discarding its entire
+       identity map, and these handlers read their row back through that same
+       session to build the response (``custom_fields._serialize_definition``
+       is handed a ``defn`` that a rollback has expired). Containing the
+       failure leaves the caller holding exactly what it held before.
+       Measured, not argued — see
+       ``tests/test_audit_best_effort.py::test_the_savepoint_is_load_bearing_not_decoration``,
+       which fails if the savepoint is removed OR the rollback is made
+       unconditional.
 
     This is the shape ``core/payments.py:_audit_money_event`` already proves for
     exactly this case. Proven on SQLite *and* on live Postgres 15, with a real
