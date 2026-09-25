@@ -28,7 +28,10 @@ column only holds that promise for as long as every writer happens to keep it;
 the NOT NULL makes the database refuse the next NULL instead. (#676 also named
 a restore through `tools/pave_tenant_db.py` as the trap. That tool cannot
 rebuild an entrypoint-built database with or without this migration, so 094 is
-not claimed as a restore fix.)
+not claimed as a restore fix. 2026-09-24, GDXA-13: that tool was taught to pair
+`create_all()` with `alembic upgrade head` the way the entrypoint does, so the
+sentence above describes the tool as it stood when 094 was written. 094 is
+still not claimed as a restore fix.)
 
 Existing rows: none are written; only the constraint changes. Prod's 3 NULL
 `customer_id` rows were soft-deleted April drafts the owner had removed on

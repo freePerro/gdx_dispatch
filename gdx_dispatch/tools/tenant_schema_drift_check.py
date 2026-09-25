@@ -1,9 +1,15 @@
 """Sprint 1.0 Phase E5 — ORM-vs-database schema drift detector (run by hand;
 nothing schedules it — ARCHITECTURAL_INVARIANTS.md row 6).
 
-Defends the an earlier session invariant: every tenant DB must equal what
-`TenantBase.metadata.create_all()` would produce. Without this, the pave
-is a one-time miracle, not an enforced state.
+Defends ARCHITECTURAL_INVARIANTS.md row 6: every table the ORM declares must
+match the ORM's definition of it, column by column. It is a one-way check and
+deliberately so — a tenant DB is a superset of the ORM, holding the Alembic
+base (`alembic_version`, `tenants`, `tenant_settings`, `server_errors`, the
+game tables) and the `plug_*` tables `schema_reconcile` creates at boot. A
+table here that the ORM does not declare is not drift. (Reading the older
+"every tenant DB must equal what `create_all()` would produce" as *the ORM is
+the whole database* is what made `tools/pave_tenant_db.py` rebuild one slice
+of a database it had dumped whole — GDXA-13.)
 
 Connects to the one application database (DATABASE_URL), pulls column
 types from information_schema.columns, and compares them to the ORM via the
