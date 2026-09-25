@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.modules.ledger import service as ledger_service
 from gdx_dispatch.modules.ledger.coa import LedgerConfigError, ensure_role_account, resolve_role_account
 from gdx_dispatch.modules.ledger.engine import (
+    PeriodLockedError,
     PostingEvent,
     PostingLine,
     post_for_event,
@@ -622,7 +623,13 @@ def post_era_settlement(
     )
 
 
-def resettle_invoice_payments(session: Session, invoice, actor: str | None = None) -> None:
+def resettle_invoice_payments(
+    session: Session,
+    invoice,
+    actor: str | None = None,
+    *,
+    locked_period_fallback_at: date | None = None,
+) -> None:
     """P4's other half (audit round 2, executed repro): voiding a payment
     changes the AR arithmetic for every LATER payment on the invoice — their
     AR/2300 splits were computed against the old void set. Leaving them
@@ -634,10 +641,85 @@ def resettle_invoice_payments(session: Session, invoice, actor: str | None = Non
     remaining payment whose split changed — the same §5.6 key machinery the
     invoice-edit path uses. Replays after this are idempotent again (same
     state → same splits → same keys). Never commits.
+
+    ``locked_period_fallback_at`` is a **per-write** fallback: any single
+    reversal or repost whose own date a period lock refuses is retried at this
+    day, and every other write keeps its natural date. The office leaves it
+    ``None`` and gets a 409 it can act on; the Stripe webhook (GDXA-45) has no
+    human to answer a 409, so it supplies the current open day rather than
+    lose the void.
+
+    Per-write, emphatically, and not "re-date the whole resettle" — an
+    adversarial review executed that mistake. Re-dating reversals whose own
+    date was never refused strands them in a later period than the replacement
+    entries they cancel, so a trial balance struck between the two dates
+    double-counts the cash: a $100 invoice with a July and an August payment
+    of $60 each read $180 of cash and −$60 of AR as of mid-August. Only the
+    write the ledger actually refused may move. Frozen as
+    `test_locked_period_fallback_does_not_re_date_unrefused_reversals`.
+
+    Both writers check the lock strictly before inserting anything
+    (`engine.post_for_event`, `engine.reverse_entry`), so a refused write has
+    touched nothing and the retry needs no savepoint.
     """
     if not ledger_service.ledger_posting_enabled(session, invoice.company_id):
         return
     from gdx_dispatch.models.tenant_models import Payment
+
+    def _reverse(live):
+        """Reverse at the entry's own date; fall back only if that is locked."""
+        try:
+            return reverse_entry(session, live, created_by=actor)
+        except PeriodLockedError:
+            if locked_period_fallback_at is None:
+                raise
+            log.warning(
+                "resettle: entry %s cannot reverse at %s (period locked) — "
+                "unwinding at %s instead",
+                live.id, live.effective_at, locked_period_fallback_at,
+            )
+            return reverse_entry(
+                session, live, created_by=actor,
+                effective_at=locked_period_fallback_at,
+            )
+
+    def _repost(payment, lines):
+        """Repost a payment's P3 at its own date; fall back only if locked.
+
+        The un-void direction needs this and NOT just `_reverse`: winning a
+        dispute POSTS the payment back, and a `funds_reinstated` that lands
+        after the payment's month closed has no reversal to re-date — its one
+        write is this repost. Without the fallback here the mirror always fell
+        through to the webhook's "commit without the ledger" rung, and the
+        invoice returned to paid/$0.00 against books still reading AR.
+
+        Dating the restored cash at the day the dispute was won, rather than
+        at the original payment date, is also the more honest of the two: that
+        is when the money actually came back.
+        """
+        def _event(when):
+            return PostingEvent(
+                company_id=invoice.company_id,
+                source_type="payment",
+                source_id=str(payment.id),
+                event=EVENT_PAYMENT,
+                effective_at=when,
+                lines=lines,
+                created_by=actor,
+            )
+
+        natural = payment.payment_date or date.today()
+        try:
+            return post_for_event(session, _event(natural))
+        except PeriodLockedError:
+            if locked_period_fallback_at is None:
+                raise
+            log.warning(
+                "resettle: payment %s cannot repost at %s (period locked) — "
+                "posting at %s instead",
+                payment.id, natural, locked_period_fallback_at,
+            )
+            return post_for_event(session, _event(locked_period_fallback_at))
 
     # S10: on a pre-cutover-era invoice (by DATE — settled ones carry no
     # anchor), opening-era payments (rows that existed at cutover) are
@@ -663,11 +745,11 @@ def resettle_invoice_payments(session: Session, invoice, actor: str | None = Non
         late_era = _is_late_era_settlement(payment, era_invoice, cutover)
         if payment.voided_at is not None:
             for live in _live_payment_entries(session, payment, invoice.company_id):
-                reverse_entry(session, live, created_by=actor)
+                _reverse(live)
             for live in _live_era_settlement_entries(session, payment, invoice.company_id):
                 # A voided late-learned era payment un-settles: the anchor
                 # correction reverses (AR back up, 3950 back up).
-                reverse_entry(session, live, created_by=actor)
+                _reverse(live)
             if in_opening and not _voided_before_cutover(payment, cutover):
                 _post_opening_payment_void(session, payment, invoice, actor)
             continue
@@ -679,28 +761,17 @@ def resettle_invoice_payments(session: Session, invoice, actor: str | None = Non
             # key posts above; reverse any stale era-settlement entry.
             for live in _live_era_settlement_entries(session, payment, invoice.company_id):
                 if posted is None or live.id != posted.id:
-                    reverse_entry(session, live, created_by=actor)
+                    _reverse(live)
             continue
         if in_opening:
             continue
         lines = build_payment_lines(session, payment, invoice)
         if not lines:
             continue
-        posted = post_for_event(
-            session,
-            PostingEvent(
-                company_id=invoice.company_id,
-                source_type="payment",
-                source_id=str(payment.id),
-                event=EVENT_PAYMENT,
-                effective_at=payment.payment_date or date.today(),
-                lines=lines,
-                created_by=actor,
-            ),
-        )
+        posted = _repost(payment, lines)
         for live in _live_payment_entries(session, payment, invoice.company_id):
             if live.id != posted.id:
-                reverse_entry(session, live, created_by=actor)
+                _reverse(live)
 
 
 # ---------------------------------------------------------------------------
