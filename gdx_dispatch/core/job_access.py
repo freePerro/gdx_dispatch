@@ -13,11 +13,12 @@ from __future__ import annotations
 import uuid as _uuid
 from typing import Any
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.permissions import is_dispatch_manager
+from gdx_dispatch.core.permissions import WILDCARD, is_dispatch_manager
+from gdx_dispatch.core.roles import is_technician
 
 
 def _user_id(user: Any) -> str:
@@ -25,6 +26,18 @@ def _user_id(user: Any) -> str:
     if isinstance(u, dict):
         return str(u.get("user_id") or u.get("sub") or "")
     return str(getattr(u, "user_id", "") or getattr(u, "sub", "") or "")
+
+
+def _is_field_tier(user: Any) -> bool:
+    """True when the caller is a field technician.
+
+    ``core.roles.is_technician`` takes a role STRING; this unwraps the actor
+    the same way ``core.permissions.is_dispatch_manager`` does, so both
+    spellings ('tech', 'technician') and a dict-or-object principal work.
+    """
+    u = user or {}
+    role = u.get("role") if isinstance(u, dict) else getattr(u, "role", "")
+    return is_technician(role)
 
 
 def _job_match(column: str) -> str:
@@ -177,6 +190,129 @@ def assert_job_access(db: Session, tenant_id: str, current_user: Any, job_id: st
         return
     if not job_belongs_to_user(db, tenant_id, job_id, _user_id(current_user)):
         raise HTTPException(status_code=404, detail="Job not found")
+
+
+def _permissions(db: Session, request: Request, current_user: Any) -> set[str]:
+    """The caller's resolved permission set, cached on the request.
+
+    Resolves from the handler's OWN ``current_user`` — the principal
+    ``get_current_user`` already authenticated — rather than re-deriving it
+    from the request, which is what ``core.modules.has_permission`` does and
+    why its own docstring warns about the revocation/user-row checks it skips.
+    The cache key is the same ``request.state.user_permissions``
+    ``require_permission`` fills, so a route carrying both hits the DB once.
+    """
+    from gdx_dispatch.core.modules import _load_user_permissions
+
+    perms = getattr(request.state, "user_permissions", None)
+    if perms is None:
+        perms = _load_user_permissions(db, request, current_user or {})
+        request.state.user_permissions = perms
+    return perms
+
+
+def can_read_job(
+    db: Session, tenant_id: str, request: Request, current_user: Any, job_id: str
+) -> bool:
+    """True if the caller may SEE this job's records.
+
+    Two ways in, and only two: an office tier holding ``jobs.read_all`` (or
+    WILDCARD), or a real claim on the job — assignment, appointment or crew
+    row, via :func:`job_belongs_to_user`. Mobile built that three-tier grant
+    precisely so one technician cannot browse another's attested records; a
+    desktop endpoint answering any authenticated user would walk around it.
+
+    Permission-keyed, not role-keyed, unlike :func:`assert_job_access` above:
+    a tenant that edits the dispatcher role's permission snapshot must be able
+    to narrow what dispatch can reach, and a role NAME cannot express that.
+    """
+    perms = _permissions(db, request, current_user)
+    if WILDCARD in perms or "jobs.read_all" in perms:
+        return True
+    return job_belongs_to_user(db, tenant_id, job_id, _user_id(current_user))
+
+
+def job_write_denial(
+    db: Session, tenant_id: str, request: Request, current_user: Any, job_id: str
+) -> tuple[int, str] | None:
+    """``None`` if the caller may MUTATE this job; else ``(status, detail)``.
+
+    Three questions in order, and every one of them is load-bearing:
+
+    1. **Do they hold the write key at all?** ``viewer`` — the read-only
+       auditor, whose entire permission set is ``.read`` keys — does not, and
+       could otherwise write an hours attestation onto a job (GDXA-32, proven
+       over HTTP: ``POST /api/jobs/{id}/closeout`` -> 201, hours_worked=8.00).
+       Nor do ``sales`` or ``accounting``.
+    2. **Do they have a real claim on the job?** Assignment, appointment or
+       crew row, via :func:`job_belongs_to_user`. This is the assigned tech.
+    3. **Failing a claim, are they office tier?** Only the office may write a
+       job it is not standing in front of.
+
+    ``jobs.write`` ALONE is not a gate — the builtin technician role holds it,
+    so every tech in the tenant would pass on every job. A claim ALONE is not
+    a gate either — a dispatcher has no assignment row. Hence the conjunction.
+
+    WHY STEP 3 IS NOT SIMPLY ``jobs.read_all``, which is what the obvious
+    reading of "office tier" suggests. ``jobs.read_all`` is a READ-scope key
+    and a tenant may legitimately hand it to technicians so they can see the
+    whole board — **production has done exactly that** (checked 2026-09-25:
+    both live technicians are assigned a `technician` TenantRole whose
+    snapshot carries ``jobs.read_all``, and core/modules._load_user_permissions
+    treats that snapshot as authoritative for every non-admin/owner role). A
+    predicate keyed on ``jobs.read_all`` alone therefore refuses no technician
+    in prod, which would have made this whole fix a no-op on the one
+    installation it exists to protect. So the field tier never gets the
+    blanket pass, whatever its snapshot says.
+
+    The residual gap, recorded rather than hidden: ``is_technician`` reads the
+    JWT's role claim, as every other role check in this module does. A user
+    demoted to technician keeps the blanket pass until their token expires —
+    and only if their snapshot also carries ``jobs.read_all``. A *custom*
+    field-tier role (not named `technician`) holding both keys gets the office
+    pass; that is a tenant configuration choice, the same one that governs
+    dispatchers.
+
+    NOT a way in: :func:`creator_of_unassigned_job`. Creator access
+    deliberately carries no write path — clock and status data are payroll
+    evidence and must come from the assigned tech (/audit 2026-07-22, and the
+    grant table in routers/mobile.py says the same).
+
+    404 vs 403 is chosen by what the caller can already SEE. A caller with no
+    read access gets 404, because a 403 would confirm the job id exists and
+    let one technician enumerate another's jobs by watching status codes. A
+    caller who can read the job already knows it exists — telling them "not
+    found" buys nothing and strands ``sales`` on a button that reports the
+    wrong problem — so they get an honest 403.
+    """
+    perms = _permissions(db, request, current_user)
+    if WILDCARD in perms:
+        return None
+
+    # Asked once and reused for both the allow decision and the 403/404
+    # choice — it is a three-query predicate, and the refusal path would
+    # otherwise run it twice. `claimed or reads_all` below is exactly
+    # can_read_job's rule (its WILDCARD branch returned above), inlined for
+    # that reuse rather than forked: if you change one, change both.
+    claimed = job_belongs_to_user(db, tenant_id, job_id, _user_id(current_user))
+    reads_all = "jobs.read_all" in perms
+
+    if "jobs.write" in perms and (
+        claimed or (reads_all and not _is_field_tier(current_user))
+    ):
+        return None
+    if claimed or reads_all:
+        return (403, "you do not have permission to change this job")
+    return (404, "job not found")
+
+
+def can_write_job(
+    db: Session, tenant_id: str, request: Request, current_user: Any, job_id: str
+) -> bool:
+    """:func:`job_write_denial` as a plain predicate, for callers that only
+    need the yes/no and not the refusal shape."""
+    return job_write_denial(db, tenant_id, request, current_user, job_id) is None
+
 
 def creator_of_unassigned_job(
     db: Session, tenant_id: str, job_id: str, user_id: str | None

@@ -101,6 +101,11 @@ def _seed_job(db) -> Job:
     job = Job(
         customer_id=uuid4(),
         title="Shed door adjustment",
+        # Assigned to the technician who closes it out below. Required
+        # since 2026-09-25 (GDXA-32): a job-scoped write is gated on
+        # jobs.write AND a claim on the job, so a closeout by an
+        # unassigned stranger now 404s.
+        assigned_to=USER,
         description="t",
         lifecycle_stage="in_progress",
         dispatch_status="on_site",
