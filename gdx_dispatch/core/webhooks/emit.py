@@ -11,8 +11,26 @@ Two facts drove this module's shape, both from the adversarial audits:
    SAVEPOINT (an insert failure — e.g. a duplicate idempotency key on a
    legitimate re-emit — stays local and never poisons the caller's txn), and
    the Celery dispatch is deferred to an ``after_commit`` Session listener so it
-   fires only once the business transaction actually commits. A rollback drops
-   the staged dispatch with the rows.
+   fires only once the business transaction actually commits. A real business
+   rollback drops the staged dispatch.
+
+   Neither listener may assume it fires for the *root* transaction only.
+   ``after_commit`` fires on every SAVEPOINT release and ``after_soft_rollback``
+   on every subtransaction rollback — including the savepoints emit itself opens
+   as normal control flow. Both therefore key off the SESSION's post-event
+   transaction state (``in_nested_transaction`` / ``in_transaction``), never off
+   the ending transaction's own flags, and each guard returns WITHOUT draining so
+   the staged work survives to the business commit.
+
+   Known gap (pre-dates the guards, latent): session-level state answers "is any
+   nested transaction still open?", not "is the transaction that STAGED this the
+   one ending?". So if a CALLER wraps the emit in its own ``begin_nested()`` and
+   that savepoint rolls back, the delivery rows die with it but the staged
+   dispatch survives to the outer commit — a phantom. No live emitter does this
+   today (checked 2026-09-25: every ``emit_domain_event`` call site is outside
+   any caller savepoint; bounce_detect.py:506 emits just past its own). Binding
+   each pending entry to its staging ``SessionTransaction`` is what would
+   actually close it. Do not add a caller-savepoint emitter without doing so.
 
 2. **The receiver table is ``webhook_subscriptions``** — the one the CRUD API
    and the WebhooksView UI actually write. (The legacy ``webhook_endpoints``
@@ -250,8 +268,25 @@ def _emit(db: Session, tenant_id: str, event_type: str, entity_id: str, data: di
 
 
 def _dispatch_pending(session: Session) -> None:
-    """after_commit: staged work is now durable — enqueue delivery. Only ever
-    enqueues Celery tasks; never touches the DB on the just-committed session."""
+    """after_commit: the BUSINESS transaction is durable — enqueue delivery.
+
+    after_commit is NOT root-only. ``SessionTransaction.commit`` dispatches it
+    whenever ``self._parent is None or self.nested``, so every SAVEPOINT release
+    fires it too — and emit opens savepoints as its own normal control flow (the
+    per-row staging SAVEPOINT, and the read-only plugin-consent probe). Draining
+    there enqueued the delivery BEFORE the business commit: the worker's own
+    connection could not see the uncommitted row, ``deliver_webhook_task`` found
+    nothing and returned, and the row then waited out the 30 s grace plus the
+    5-minute retry sweep. Return WITHOUT popping — the pending list has to
+    survive to the real commit, which fires this listener again with no nested
+    transaction in play (measured, SQLAlchemy 2.0.54: in_nested_transaction() is
+    True at a savepoint release and False at the root commit, while
+    in_transaction() is True for both and so cannot tell them apart).
+
+    Only ever enqueues Celery tasks; never touches the DB on the just-committed
+    session."""
+    if session.in_nested_transaction():
+        return  # a savepoint was released; the business txn has not committed yet
     ids = session.info.pop(_PENDING_KEY, None)
     if ids:
         # Import here: this module is imported early (via choke points) and the
@@ -295,15 +330,34 @@ def _drop_pending(session: Session, previous_transaction) -> None:  # noqa: ANN0
     """Forget staged dispatch when the BUSINESS transaction rolls back, so a later
     commit on the same session can't dispatch phantoms.
 
-    Uses after_soft_rollback (not after_rollback) and skips SAVEPOINT rollbacks
-    (`previous_transaction.nested`): emit itself rolls back savepoints as normal
-    control flow — a duplicate-key skip in the fan-out, and the read-only
-    plugin-consent probe on a fresh box (missing table). after_rollback fires on
-    those too, and clearing pending there dropped legitimately-staged deliveries
-    — webhooks silently never fired on a fresh Postgres box. Only a real
-    (non-nested) rollback means the business write is gone with its deliveries."""
-    if getattr(previous_transaction, "nested", False):
-        return  # savepoint rolled back; the outer business txn is still live
+    Uses after_soft_rollback (not after_rollback) because emit itself rolls back
+    savepoints as normal control flow — a duplicate-key skip in the fan-out, and
+    the read-only plugin-consent probe on a fresh box (missing table).
+    after_rollback fires on those too, and clearing pending there dropped
+    legitimately-staged deliveries: webhooks silently never fired on a fresh
+    Postgres box.
+
+    The guard was ``previous_transaction.nested`` — right, but incomplete, because
+    after_soft_rollback is not root-only either and fires for these flavours:
+
+      1. a SAVEPOINT rollback (nested=True)         — emit's own control flow;
+      2. a failed flush's INTERNAL subtransaction   — nested=**False**, raised by
+         that same duplicate-key skip on a legitimate re-emit;
+      3. a real business ``db.rollback()``          — nested=False.
+
+    Flavour 2 is not nested, so the old guard let it drain the queue: a re-emit of
+    an already-delivered event dropped the FIRST emit's pending list, and that
+    delivery committed but was never enqueued at all. Key off the session's
+    post-event state instead — only a real business rollback leaves the session
+    with no transaction (measured, SQLAlchemy 2.0.54: in_transaction() is True for
+    flavours 1 and 2 and False for 3).
+
+    That list is NOT exhaustive, and this guard does not close the fourth case: a
+    CALLER's own savepoint rolling back after emit staged inside it looks exactly
+    like flavour 1 from here, so pending survives a rollback that destroyed its
+    rows. Latent — see the module docstring's "Known gap"."""
+    if session.in_transaction():
+        return  # a savepoint/subtransaction ended; the business txn is still live
     session.info.pop(_PENDING_KEY, None)
     session.info.pop(_PLUGIN_PENDING_KEY, None)
     session.info.pop(_WORKFLOW_PENDING_KEY, None)
