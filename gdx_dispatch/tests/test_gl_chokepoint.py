@@ -21,6 +21,7 @@ from gdx_dispatch.modules.ledger.guard import (
 )
 from gdx_dispatch.modules.ledger.models import GlJournalEntry
 from gdx_dispatch.modules.ledger.service import (
+    SANCTION_ATTR,
     ensure_gl_seed,
     transition_invoice_status,
 )
@@ -214,8 +215,6 @@ def test_rolled_back_transition_leaves_no_sanction(db, monkeypatch):
 def test_stale_sanction_does_not_bless_a_different_status(db, monkeypatch):
     """The sanction carries the target status — it only blesses that exact
     write."""
-    from gdx_dispatch.modules.ledger.service import SANCTION_ATTR
-
     monkeypatch.delenv("GDX_ENV", raising=False)
     inv = _invoice(db)
     _enable_posting(db)
@@ -225,6 +224,137 @@ def test_stale_sanction_does_not_bless_a_different_status(db, monkeypatch):
     with pytest.raises(ChokepointBypassError):
         db.flush()
     db.rollback()
+
+
+# ── GDXA-51: a rollback listener must not assume it is the root's ──────
+#
+# SQLAlchemy dispatches a transaction's rollback events for every transaction
+# where `_parent is None or nested` (2.0.54 orm/session.py:1360-1366) — `nested`
+# is an INCLUSION, so a SAVEPOINT rollback reaches the same listener the root
+# rollback does, and the money path's savepoint sites are real
+# (`engine.post_event`'s idempotency-key retry, `core/payments.py`'s audit
+# savepoint). The old listener popped the whole registry on any of them.
+#
+# ⚠ Read the honest scope before trusting these: only the FIRST test below
+# fails against the old listener. The other three are regression nets — they
+# pass either way, and exist so the nested branch cannot be "simplified" back
+# into a false negative. And the first test's shape (a pending invoice
+# chokepointed down to `draft`, which `_check_flush`'s `session.new` arm
+# short-circuits past without spending the stamp) has NO shipping caller: all
+# ten non-test `transition_invoice_status` call sites target sent/paid/void,
+# and `SessionTransaction._take_snapshot` flushes on every `begin_nested()`,
+# spending the stamp before any savepoint exists. This is a latent-shape
+# repair, not a live-defect repair.
+
+
+def test_savepoint_rollback_keeps_a_sanction_it_did_not_unwind(db, monkeypatch):
+    """The one test here that detects the defect.
+
+    A SAVEPOINT rollback undoes only what happened after the savepoint, so a
+    sanctioned status write flushed BEFORE it survives — and its sanction has
+    to survive with it, because the registry is what the guard uses to decide
+    a sanction is dead. Stripping it makes the listener's verdict depend on
+    savepoint depth rather than on what was rolled back.
+    """
+    monkeypatch.delenv("GDX_ENV", raising=False)
+    _enable_posting(db)
+
+    inv = _make_invoice(status="sent", number="INV-SPKEEP")
+    db.add(inv)
+    transition_invoice_status(db, inv, "draft")
+    db.flush()  # the sanctioned write lands BEFORE the savepoint exists
+    assert getattr(inv, SANCTION_ATTR, None) == "draft"
+
+    sp = db.begin_nested()
+    sp.rollback()  # unwound nothing of this invoice's
+
+    assert getattr(inv, SANCTION_ATTR, None) == "draft", (
+        "a SAVEPOINT rollback cleared a sanction whose status write it never "
+        "touched — the listener is treating a nested rollback as the root's"
+    )
+    assert inv.status == "draft"  # and the write itself did survive
+    db.rollback()
+
+
+def test_savepoint_rollback_still_clears_the_sanction_it_did_unwind(db, monkeypatch):
+    """Regression net (passes against the old listener too). A transition
+    minted INSIDE the savepoint is genuinely undone by rolling it back, so its
+    sanction must die — a stale one would bless a later raw write to the same
+    status (audit round 1's finding, at savepoint depth). This is the false
+    negative the nested branch must not acquire: `emit.py`'s `_drop_pending`
+    can `return` outright on a nested rollback; this guard cannot."""
+    monkeypatch.delenv("GDX_ENV", raising=False)
+    inv = _invoice(db)
+    _enable_posting(db)
+
+    sp = db.begin_nested()
+    transition_invoice_status(db, inv, "sent")
+    sp.rollback()
+
+    assert getattr(inv, SANCTION_ATTR, None) is None
+    assert inv.status == "draft"  # the write was unwound with the savepoint
+
+    inv.status = "sent"  # raw write to the status the dead sanction named
+    with pytest.raises(ChokepointBypassError):
+        db.flush()
+    db.rollback()
+
+
+def test_savepoint_rollback_clears_a_sanction_on_an_expunged_invoice(db, monkeypatch):
+    """Regression net for `_sanctioned_write_survived`'s expunge branch: an
+    invoice created inside the savepoint is expunged to transient by the
+    rollback, not merely expired, so `state.session` is None and there is no
+    loaded status to compare."""
+    monkeypatch.delenv("GDX_ENV", raising=False)
+    _enable_posting(db)
+
+    sp = db.begin_nested()
+    inv = _make_invoice(status="sent", number="INV-SPGONE")
+    db.add(inv)
+    transition_invoice_status(db, inv, "draft")
+    db.flush()
+    assert getattr(inv, SANCTION_ATTR, None) == "draft"
+    sp.rollback()  # the whole invoice goes with the savepoint
+
+    assert getattr(inv, SANCTION_ATTR, None) is None
+    db.rollback()
+
+
+def test_a_poisoned_flush_rollback_still_clears_sanctions(db, monkeypatch):
+    """Regression net. A failed flush rolls the whole transaction back from
+    inside SQLAlchemy — a non-nested rollback, so everything staged is gone
+    and no sanction may survive. This is the flavour where
+    `session.in_transaction()` still reads True, which is why the listener
+    discriminates on `previous_transaction.nested` instead."""
+    from sqlalchemy.exc import IntegrityError
+
+    monkeypatch.delenv("GDX_ENV", raising=False)
+    inv = _invoice(db)
+    _enable_posting(db)
+
+    transition_invoice_status(db, inv, "sent")
+    db.add(_make_invoice(number=inv.invoice_number))  # duplicate → flush fails
+    with pytest.raises(IntegrityError):
+        db.flush()
+
+    assert getattr(inv, SANCTION_ATTR, None) is None
+    db.rollback()
+
+
+def test_a_real_rollback_drains_the_registry(db, monkeypatch):
+    """The registry's only drain. Nothing clears it on commit or close, so if
+    the non-nested branch ever stopped popping unconditionally it would hold
+    live stamps and strong Invoice references for the life of the session."""
+    from gdx_dispatch.modules.ledger.service import SANCTION_REGISTRY_KEY
+
+    monkeypatch.delenv("GDX_ENV", raising=False)
+    inv = _invoice(db)
+    _enable_posting(db)
+
+    transition_invoice_status(db, inv, "sent")
+    assert db.info.get(SANCTION_REGISTRY_KEY)
+    db.rollback()
+    assert not db.info.get(SANCTION_REGISTRY_KEY)
 
 
 def test_hard_delete_under_flag_trips(db, monkeypatch):
