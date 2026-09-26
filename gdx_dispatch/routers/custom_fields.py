@@ -33,7 +33,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync, utcnow
+from gdx_dispatch.core.audit import TenantBase, audit_best_effort, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
 from gdx_dispatch.routers.auth import get_current_user
@@ -180,20 +180,23 @@ def _audit(
     entity_id: str,
     details: dict[str, Any] | None = None,
 ) -> None:
-    try:
-        log_audit_event_sync(
-            db,
-            tenant_id=_tenant_id(request),
-            user_id=_user_id(user),
-            action=action,
-            entity_type="custom_field",
-            entity_id=entity_id,
-            details=details or {},
-            request=request,
-        )
-        db.commit()
-    except Exception:
-        log.exception("custom_field_audit_failed action=%s entity_id=%s", action, entity_id)
+    """Every caller commits on the line above this one, so the change is already
+    durable — ``audit_best_effort`` is the right half of the pair (GDXA-44).
+
+    It used to hand-roll the swallow, which left the session deactivated. Three
+    of the four callers then read their row back through it to build the
+    response, so a refused audit write 500ed a create that had already
+    committed, and the user made a second one."""
+    audit_best_effort(
+        db,
+        tenant_id=_tenant_id(request),
+        user_id=_user_id(user),
+        action=action,
+        entity_type="custom_field",
+        entity_id=entity_id,
+        details=details or {},
+        request=request,
+    )
 
 
 def _coerce_value_to_str(raw: Any) -> str | None:

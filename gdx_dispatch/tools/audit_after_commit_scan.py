@@ -89,6 +89,16 @@ SKIP_PARTS = ("tests/", "migrations/", "frontend/", "node_modules/")
 # `AuditLog` counts as a writer when it is CALLED — a row built by hand, as the
 # ledger does — not when it is merely selected from.
 AUDIT_WRITERS = frozenset({"log_audit_event", "log_audit_event_sync", "audit_or_rollback", "AuditLog"})
+# `core.audit.audit_best_effort` is deliberately NOT here, though it writes an
+# audit row (GDXA-48). This set means "leaves a row that someone else has to
+# commit" — the #700 hazard. That helper commits its own row on every path, so
+# the hazard cannot exist through it, and the scan already works this out for
+# itself: it resolves to `always_commits=True` / `leaves_a_row_pending=False`
+# and so lands in `committers`, which is why its callers need no commit after.
+# Adding it here does not tighten the net, it breaks it: `is_writer` excludes a
+# name from `committers`, so every site that calls it would be reported
+# `after-commit`. Making it a member would first need a "self-committing
+# writer" concept this scanner does not have.
 ROUTE_DECORATORS = frozenset({"get", "post", "put", "patch", "delete", "api_route", "websocket"})
 COMMIT = "<commit>"
 
