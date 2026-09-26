@@ -1839,6 +1839,188 @@ def _reverse_unless_superseded(
     return _reverse_recorded_payment(db, reference, reason)
 
 
+# ---------------------------------------------------------------------------
+# The one way a Payment's void flag moves (GDXA-45)
+# ---------------------------------------------------------------------------
+#
+# P3 (the payment's journal entry) is posted at the RECORDING sites, not at the
+# invoice-status chokepoint, so nothing in `transition_invoice_status` can
+# un-post it: `_POSTING_RULES` registers no ("paid","sent") or ("sent","paid")
+# rule, by design — those transitions are money-free. The un-posting therefore
+# has to live at every REVERSING site, and it did not: three places moved
+# `Payment.voided_at` and exactly one of them resettled the ledger. A full
+# Stripe refund or a lost chargeback re-opened the invoice for $500 while the
+# books kept $500 of Undeposited Funds that had gone back to the cardholder and
+# kept AR written down to zero — and no operator action repaired it.
+#
+# These two functions are now the only way the flag moves. A fourth void site
+# cannot be written without the ledger coming with it.
+
+# What to do when the ledger refuses the un-posting because the entry's period
+# is locked. `raise` is the office: a human reads the 409 and decides. `retry`
+# is the webhook, which has no human — see `_apply_payment_void_state`.
+_ON_PERIOD_LOCK_RAISE = "raise"
+_ON_PERIOD_LOCK_RETRY_THEN_DEFER = "retry_then_defer"
+
+# Machine-initiated, and named as such on both the audit trail and the GL
+# entries. Attributing a Stripe event to whoever last logged in would be a lie.
+_WEBHOOK_ACTOR = "stripe-webhook"
+
+
+def apply_payment_void(
+    db: Session,
+    payment,
+    *,
+    reason: str,
+    actor: str,
+    on_period_lock: str = _ON_PERIOD_LOCK_RAISE,
+):
+    """Void ``payment`` AND un-post its ledger entry. Returns the invoice.
+
+    Sets `voided_at` + `voided_reason`, flushes (the resettle and
+    `_recalculate_invoice` both SUM Payment rows with a SELECT, and on an
+    autoflush=False session a pending void is invisible to them), then
+    resettles the invoice's payment entries — which reverses this payment's
+    live P3 and reverse+reposts every remaining payment whose AR/2300 split
+    the void just changed.
+
+    Callers still own what happens to the INVOICE afterwards
+    (`_recalculate_invoice`, the un-pay transition, the audit row): that
+    differs by site. What must never differ is that the money left the books.
+    """
+    return _apply_payment_void_state(
+        db, payment, void=True, reason=reason, actor=actor,
+        on_period_lock=on_period_lock,
+    )
+
+
+def apply_payment_unvoid(
+    db: Session,
+    payment,
+    *,
+    actor: str,
+    on_period_lock: str = _ON_PERIOD_LOCK_RAISE,
+):
+    """Un-void ``payment`` AND re-post its ledger entry. Returns the invoice.
+
+    The mirror of `apply_payment_void`, and NOT optional. A won dispute
+    (`charge.dispute.funds_reinstated`) restores the cash at Stripe and flips
+    the invoice back to paid/$0.00; leaving this side alone would trade the
+    reversal's overstatement for an equal-and-opposite understatement — books
+    at AR $500 / cash $0 against an invoice that reads settled.
+    """
+    return _apply_payment_void_state(
+        db, payment, void=False, reason=None, actor=actor,
+        on_period_lock=on_period_lock,
+    )
+
+
+def _apply_payment_void_state(
+    db: Session, payment, *, void: bool, reason: str | None, actor: str,
+    on_period_lock: str,
+):
+    """Move the void flag and resettle, surviving a locked accounting period.
+
+    The refusal path, settled (GDXA-45). The office converts
+    `PeriodLockedError` into a 409 a person can act on. The webhook has no
+    person: `handle_payment_webhook` raises to a 500 so Stripe retries, so an
+    unguarded resettle there would leave the void permanently uncommitted
+    while Stripe redelivered for three days and then gave up — the event lost
+    entirely. That is strictly worse than the divergence being fixed.
+
+    So the webhook walks three rungs, in this order:
+
+    1. **Natural dates** — identical to the office. Almost always this.
+    2. **The current open day, for the refused write only** — `reverse_entry`'s
+       own documented answer for a closed-period unwind, and the correct
+       accounting one: the entry the lock refuses belongs in the period you
+       are actually in, not in a month somebody closed. Preferred over an
+       ``accounting.close`` override, which a webhook has no standing to
+       assert. The resettle applies it per write, never to the whole batch —
+       see `resettle_invoice_payments` for the period-dated double-count that
+       re-dating unrefused writes produces.
+    3. **Commit the void with NO ledger effect, loudly** — only when even the
+       open day refuses, i.e. a lock dated into the future. All-or-nothing on
+       purpose: a half-applied resettle leaves the books internally
+       inconsistent, which is worse than stale. The gap is named in an audit
+       row and an ERROR log so it is findable, which today's silent divergence
+       is not.
+
+    Rungs 2 and 3 start from a full `db.rollback()` rather than a SAVEPOINT:
+    the ledger writers flush inside their own `begin_nested()`, and #661 is
+    this repo's standing lesson about nesting a savepoint around a writer
+    whose own transaction control can release it under you. Nothing
+    money-relevant is written by any caller before this runs, so rolling back
+    and re-reading the payment by id is safe and complete.
+    """
+    from gdx_dispatch.modules.ledger.engine import PeriodLockedError
+    from gdx_dispatch.modules.ledger.rules import resettle_invoice_payments
+
+    payment_id = payment.id
+
+    def attempt(locked_period_fallback_at, *, post_to_ledger: bool):
+        if void:
+            payment.voided_at = datetime.now(timezone.utc)
+            payment.voided_reason = (reason or "")[:64] or None
+        else:
+            payment.voided_at = None
+            payment.voided_reason = None
+        db.flush()
+        invoice = db.get(Invoice, payment.invoice_id)
+        if invoice is not None and post_to_ledger:
+            resettle_invoice_payments(
+                db, invoice, actor=actor,
+                locked_period_fallback_at=locked_period_fallback_at,
+            )
+        return invoice
+
+    try:
+        return attempt(None, post_to_ledger=True)
+    except PeriodLockedError as first:
+        if on_period_lock != _ON_PERIOD_LOCK_RETRY_THEN_DEFER:
+            raise
+        logger.warning(
+            "payment_void_ledger_period_locked payment=%s void=%s — %s; "
+            "retrying the un-posting in the current open period",
+            payment_id, void, first,
+        )
+        db.rollback()
+        payment = db.get(Payment, payment_id)
+        if payment is None:  # pragma: no cover — the row cannot vanish mid-webhook
+            raise
+        today = datetime.now(timezone.utc).date()
+        try:
+            return attempt(today, post_to_ledger=True)
+        except PeriodLockedError as second:
+            logger.error(
+                "payment_void_ledger_deferred payment=%s void=%s — the ledger "
+                "refused the un-posting even in the current open period (%s). "
+                "The void is being committed WITHOUT it: the money fact is "
+                "real and losing it is worse. GL will read stale for this "
+                "invoice until an accountant unlocks the period and replays "
+                "the resettle.",
+                payment_id, void, second,
+            )
+            db.rollback()
+            payment = db.get(Payment, payment_id)
+            if payment is None:  # pragma: no cover
+                raise
+            invoice = attempt(None, post_to_ledger=False)
+            _audit_payment_reversal(
+                db, payment,
+                action="payment_void_ledger_deferred",
+                reason=str(reason or ""),
+                actor=actor,
+                detail={
+                    "void": void,
+                    "why": "period locked",
+                    "ledger_error": str(second),
+                    "repair": "unlock the period, then resettle this invoice",
+                },
+            )
+            return invoice
+
+
 def _reverse_recorded_payment(db: Session, reference: str, reason: str) -> dict:
     """Void the Payment row recorded for ``reference`` and re-open the invoice.
 
@@ -1850,6 +2032,11 @@ def _reverse_recorded_payment(db: Session, reference: str, reason: str) -> dict:
     Voiding (rather than deleting) keeps the history; ``_recalculate_invoice``
     excludes voided payments, so the balance comes back and the status flips
     off "paid" on its own.
+
+    GDXA-45: the void goes through `apply_payment_void`, which also un-posts
+    the payment's P3. Before that it did not, and every webhook reversal —
+    full refund, ACH return, card failure, dispute — left the cash on the
+    books after it had gone back to the customer.
     """
     from sqlalchemy import select as _select
 
@@ -1866,17 +2053,17 @@ def _reverse_recorded_payment(db: Session, reference: str, reason: str) -> dict:
         # ever saw the success). Not an error.
         return {"status": "no_payment_to_reverse", "reference": reference}
 
-    payment.voided_at = datetime.now(timezone.utc)
+    payment_id = payment.id
     # M15 / migration 076. `reason` was taken and thrown away; without it a
     # later reinstatement cannot tell a dispute's void from a refund's or the
     # office's, and un-voiding the wrong one invents money.
-    payment.voided_reason = (reason or "")[:64] or None
-    # Flush explicitly: _recalculate_invoice SUMs non-voided payments with a
-    # SELECT, and on an autoflush=False session the pending void would not be
-    # visible to it — the balance would come back unchanged and the invoice
-    # would stay "paid" with the money gone.
-    db.flush()
-    invoice = db.get(Invoice, payment.invoice_id)
+    invoice = apply_payment_void(
+        db, payment, reason=reason, actor=_WEBHOOK_ACTOR,
+        on_period_lock=_ON_PERIOD_LOCK_RETRY_THEN_DEFER,
+    )
+    # The locked-period ladder rolls back and re-reads, so take the row the
+    # rest of this function reports on from the session, not from before.
+    payment = db.get(Payment, payment_id) or payment
     if invoice is not None:
         _recalculate_invoice(invoice, db)
         # _recalculate_invoice only ever flips an invoice TO "paid"; there is
@@ -1901,7 +2088,10 @@ def _reverse_recorded_payment(db: Session, reference: str, reason: str) -> dict:
     return {"status": "reversed", "invoice_id": str(payment.invoice_id), "reason": reason}
 
 
-def _audit_payment_reversal(db: Session, payment, *, action: str, reason: str, detail: dict) -> None:
+def _audit_payment_reversal(
+    db: Session, payment, *, action: str, reason: str, detail: dict,
+    actor: str = _WEBHOOK_ACTOR,
+) -> None:
     """Record a webhook-driven money movement.
 
     Invariant #1: every state-changing action answers who did it, what
@@ -1909,8 +2099,15 @@ def _audit_payment_reversal(db: Session, payment, *, action: str, reason: str, d
     event, and both used to leave nothing but a `logger.warning` — which is
     not a record, it is a hope that somebody greps.
 
-    The actor is the webhook, named as such: this is machine-initiated, and
-    saying so is more honest than attributing it to whoever last logged in.
+    The actor defaults to the webhook, named as such: this is
+    machine-initiated, and saying so is more honest than attributing it to
+    whoever last logged in. Every caller today IS the webhook — the office's
+    void writes its own `payment_voided` row through `log_audit_event_sync`
+    and never reaches the deferral branch, because it takes the raise-on-lock
+    policy. `actor` is a parameter rather than a hardcoded string only so the
+    identity travels with the helper instead of being re-asserted here; a
+    future caller that is not the webhook gets the right name for free rather
+    than silently signing itself "stripe-webhook".
     Never raises — a failed trail must not 500 a webhook Stripe will retry,
     turning one lost audit row into a redelivery loop.
     """
@@ -1920,7 +2117,7 @@ def _audit_payment_reversal(db: Session, payment, *, action: str, reason: str, d
         log_audit_event_sync(
             db=db,
             tenant_id=None,
-            user_id="stripe-webhook",
+            user_id=actor,
             action=action,
             entity_type="payment",
             entity_id=str(payment.id),
@@ -2016,13 +2213,16 @@ def _reinstate_reversed_payment(db: Session, reference: str, reason: str) -> dic
             "why": f"voided_reason={voided_reason or 'unrecorded'}, not a dispute",
         }
 
-    payment.voided_at = None
-    payment.voided_reason = None
-    # Flush for the same reason the reversal does: `_recalculate_invoice` SUMs
-    # non-voided payments with a SELECT, and on autoflush=False the pending
-    # un-void would not be visible to it.
-    db.flush()
-    invoice = db.get(Invoice, payment.invoice_id)
+    payment_id = payment.id
+    # Flushes for the same reason the reversal does, and re-posts the P3 the
+    # reversal took off the books (GDXA-45). Leaving this side alone while the
+    # reversal side resettled would be the same divergence with the sign
+    # flipped: AR $500 / cash $0 against an invoice reading paid at $0.00.
+    invoice = apply_payment_unvoid(
+        db, payment, actor=_WEBHOOK_ACTOR,
+        on_period_lock=_ON_PERIOD_LOCK_RETRY_THEN_DEFER,
+    )
+    payment = db.get(Payment, payment_id) or payment
     if invoice is not None:
         _recalculate_invoice(invoice, db)
         # The invoice was paid when the customer paid it, not when a dispute

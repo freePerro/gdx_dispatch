@@ -3421,6 +3421,9 @@ def void_payment(
     """Void a recorded payment (GL S6, P4). The row stays as history but
     stops counting; its P3 ledger entry is reversed when posting is on. A
     fully-paid invoice whose payment is voided reopens to "sent"."""
+    # Lazy: core.payments imports _recalculate_invoice from this module.
+    from gdx_dispatch.core.payments import apply_payment_void  # noqa: PLC0415
+
     invoice = _get_invoice_or_404(invoice_id, db)
     payment = db.get(Payment, payment_id)
     if payment is None or payment.invoice_id != invoice.id:
@@ -3428,19 +3431,25 @@ def void_payment(
     if payment.voided_at is not None:
         return _serialize_payment(payment)  # idempotent
 
-    payment.voided_at = datetime.now(UTC)
+    # GDXA-45: one helper owns "move the void flag and un-post the ledger",
+    # so a fourth void site cannot be written without the ledger coming with
+    # it. It sets voided_at, flushes (resettle reads Payment rows — the void
+    # must be visible), then reverses the voided payment's P3 AND
+    # reverse+reposts every remaining payment whose AR/2300 split the void
+    # changed (audit round 2: stale splits diverged GL from balance_due and
+    # broke replay determinism).
+    #
     # M15 / migration 076. Say WHOSE void this is. A dispute reinstatement
     # only ever un-voids a dispute's own reversal, so recording "office_void"
     # here is what stops a later `charge.dispute.funds_reinstated` from
     # silently undoing a reversal the office made on purpose.
-    payment.voided_reason = "office_void"
-    db.flush()  # resettle reads Payment rows — the void must be visible
-    # Reverses the voided payment's P3 AND reverse+reposts every remaining
-    # payment whose AR/2300 split the void changed (audit round 2: stale
-    # splits diverged GL from balance_due and broke replay determinism).
-    # Ledger refusals surface as 409s with the reason, never bare 500s.
+    #
+    # Ledger refusals surface as 409s with the reason, never bare 500s: this
+    # endpoint has a human on the other end, so it keeps the default
+    # raise-on-lock policy rather than the webhook's unwind-into-the-open-
+    # period ladder.
     try:
-        resettle_invoice_payments(db, invoice, actor=_actor_id(_))
+        apply_payment_void(db, payment, reason="office_void", actor=_actor_id(_))
     except PeriodLockedError as exc:
         raise HTTPException(
             status_code=409,
