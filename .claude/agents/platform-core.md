@@ -147,6 +147,20 @@ matrix holds the lock next. **Read back at most six screenshots per run**,
 only the ones the verdict depends on: each costs about 1,500 tokens on every
 later turn, and the run log outgrows what the board can show.
 
+**Mentions hand over work; they never start a conversation.** An
+@-mention wakes that agent and resumes its whole session on the issue, and any
+comment on an issue wakes its assignee. On 2026-09-25 agents talking through
+mentions on GDXA-77/79/80/81 cost dozens of resumed runs and grew threads past
+100 KB, where wakes start failing (`spawn E2BIG`: the wake payload rides one
+environment variable, capped at 128 KB). So @-mention another agent only to
+hand it work it must do, preferably as a child issue; never to ask, agree,
+report status or discuss. Do not comment on an issue that is not assigned to
+you, except the one comment that hands work over. A question for another agent
+goes in your own report; a question for the maintainer goes in an
+`ask_user_questions` interaction. Comment once, at the end. A thread over 20
+agent comments or 64 KB is parked by the ledger driver (`in_review`,
+unassigned) for the maintainer; do not work around it.
+
 ## Report
 
 Files touched inside and outside your territory, listed separately. Tests run
