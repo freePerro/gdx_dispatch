@@ -238,17 +238,32 @@ async def receive_webhook(
             {"event_id": event_id, "payload_size": len(str(payload))},
         )
 
-        # Step 6: emit to internal event bus (best-effort)
-        try:
-            from gdx_dispatch.events import emit  # type: ignore
-
-            emit(
-                f"phone_com.{kind}",
-                {"tenant_id": str(tenant_uuid), "event_id": event_id, "payload": payload},
-            )
-        except Exception:  # noqa: BLE001
-            log.warning("phone_com_webhook event emit skipped", exc_info=True)
-
+        # No event-bus fan-out here, deliberately (GDXA-70). This step used to
+        # import ``gdx_dispatch.events`` — a module that has never existed — so
+        # it only ever raised into its own except and logged a traceback on
+        # every accepted delivery.
+        #
+        # The real bus is ``core/webhooks/emit.emit_domain_event``, but naively
+        # calling it here would be a NEW FEATURE, not a repair, and would not
+        # work as written:
+        #   * it stages delivery rows on the caller's session and defers the
+        #     actual dispatch to an ``after_commit`` listener. Nothing commits
+        #     after Step 5 here — the ``finally`` below just closes the session
+        #     — so the rows would roll back and the dispatch would never fire.
+        #     A silent no-op is worse than no code at all.
+        #   * it fans out to external subscriber URLs and consented plugins,
+        #     and the dead call passed the whole raw provider payload. Caller
+        #     numbers, SMS bodies and voicemail transcripts leaving the system
+        #     is a product decision. Compare ``modules/outlook/bounce_detect``,
+        #     which emits ``email.bounced`` with minimal structured fields.
+        #   * ``phone_com.*`` is not in ``routers/webhooks.WEBHOOK_EVENTS``,
+        #     which the subscribe/patch validators enforce, so no tenant
+        #     subscription could select it: zero webhook deliveries. On its
+        #     own that is not decisive — ``email.bounced`` is uncatalogued
+        #     too and still reaches the plugin and workflow sinks — but those
+        #     sinks are also after_commit, so the first bullet still bites.
+        # (It would NOT turn this route into a 500 site: emit_domain_event
+        # guards its whole body and never raises into the caller.)
         return None
     finally:
         tenant_db.close()

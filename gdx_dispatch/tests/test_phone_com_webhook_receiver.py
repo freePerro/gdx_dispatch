@@ -1,6 +1,9 @@
 """pc-s12 — phone_com webhook receiver tests."""
 from __future__ import annotations
 
+import ast
+import logging
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -265,3 +268,77 @@ def test_empty_body_returns_204(setup):
         content="",
     )
     assert r.status_code == 204
+
+
+# ── no log noise on a good delivery (GDXA-70) ─────────────────────────
+
+
+def test_successful_delivery_logs_no_warning(setup, caplog):
+    """A delivery that upserts cleanly must be silent at WARNING.
+
+    Guards GDXA-70: Step 6 used to ``from gdx_dispatch.events import emit``,
+    a module that has never existed, so every accepted delivery logged
+    ``phone_com_webhook event emit skipped`` with a traceback. Constant
+    WARNING noise on a busy voice line masks the real warnings this router
+    does emit (api-error, unknown_event, upsert failure).
+
+    Scope: the autouse ``_no_audit`` fixture stubs ``log_audit_event_sync``,
+    so this does NOT exercise Step 5's ``phone_com_webhook audit failed``
+    branch — it covers the upsert-and-return path only.
+    """
+    app, _, _, _, secret = setup
+    caplog.set_level(logging.WARNING, logger=wr.log.name)
+    r = TestClient(app).post(
+        f"/api/webhooks/phone-com/t1/{secret}",
+        json={
+            "voip_id": 1000000, "type": "call.completed",
+            "id": "phc-quiet-001", "direction": "in", "caller_id": "+1",
+        },
+    )
+    assert r.status_code == 204
+    noisy = [rec.getMessage() for rec in caplog.records
+             if rec.name == wr.log.name and rec.levelno >= logging.WARNING]
+    assert noisy == []
+
+
+def test_every_first_party_import_in_router_resolves():
+    """No import in this router names a gdx_dispatch module that isn't there.
+
+    Guards the GDXA-70 class, not just its one instance: ``gdx_dispatch.events``
+    has never existed in this repo's history, so Step 6's import could only ever
+    raise into its own ``except``. Resolution is filesystem-only, so it executes
+    no package ``__init__`` and cannot be fooled by import-time side effects,
+    and it walks the AST so a module named in prose does not count as an import.
+    """
+    import gdx_dispatch
+
+    repo = Path(gdx_dispatch.__file__).resolve().parent.parent
+
+    def resolves(mod: str) -> bool:
+        rel = repo.joinpath(*mod.split("."))
+        return rel.with_suffix(".py").is_file() or rel.is_dir()
+
+    # `wr` lives at gdx_dispatch.modules.phone_com.webhook_router, so its
+    # package is everything but the last segment.
+    pkg = wr.__name__.rsplit(".", 1)[0].split(".")
+
+    tree = ast.parse(Path(wr.__file__).read_text(encoding="utf-8"))
+    imported: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.level:
+                # Relative form: `from .events import emit` is the same defect
+                # wearing a different hat, so resolve it against the package
+                # rather than skipping it.
+                base = pkg[: len(pkg) - node.level + 1]
+                if base:
+                    imported.append(".".join(base + ([node.module] if node.module else [])))
+            elif node.module and node.module.split(".")[0] == "gdx_dispatch":
+                imported.append(node.module)
+        elif isinstance(node, ast.Import):
+            imported += [a.name for a in node.names
+                         if a.name.split(".")[0] == "gdx_dispatch"]
+
+    # The scan must be able to fail: if it found nothing to check, it proves nothing.
+    assert imported, "no first-party imports found — the AST walk is broken"
+    assert [m for m in imported if not resolves(m)] == []
