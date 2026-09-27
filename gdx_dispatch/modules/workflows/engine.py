@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.modules.workflows.models import WorkflowRule, WorkflowRun
 
 # Only events the app ACTUALLY emits (audit round 2): advertising a trigger
@@ -44,7 +45,12 @@ def _automation_email_settings(db: Session) -> tuple[bool, str | None]:
     try:
         from gdx_dispatch.models.tenant_models import AppSettings
 
-        row = db.query(AppSettings).first()
+        # Contained: `execute_rule` writes a WorkflowRun on this same session
+        # once the action returns. On Postgres a swallowed read failure aborted
+        # that transaction, so the rule's own run record — the only trace that
+        # it fired at all — was lost with it (GDXA-86).
+        with contained_read(db):
+            row = db.query(AppSettings).first()
         if row is None:
             return False, None
         return (
@@ -58,7 +64,23 @@ def _automation_email_settings(db: Session) -> tuple[bool, str | None]:
 
 def _resolve_rule_customer(db: Session, context: dict):
     """The customer a rule's email addresses: context customer_id when the
-    event payload carries one, else via the entity (invoice/estimate/job)."""
+    event payload carries one, else via the entity (invoice/estimate/job).
+
+    Both reads are `contained_read`-wrapped for the same reason
+    `_automation_email_settings` is, one frame further out: this function's own
+    handlers catch only (ValueError, TypeError), so a DB failure propagates —
+    into `execute_rule`'s `except Exception` at the `send_email` action, which
+    turns it into `result = "send_failed"` and then writes the WorkflowRun on
+    this same session. On Postgres that write died with the aborted transaction,
+    so the rule's only trace was lost by the very handler that was recording the
+    failure. Found by the GDXA-86 audit after `_automation_email_settings` alone
+    had been contained — the pass had been run outward, never back through this
+    file.
+
+    Insurance, not a repair: prod cannot reach this function today
+    (`_run_send_email_action` returns `skipped_disabled` above it, and
+    `automation_emails_enabled` is false with 0 active rules — checked live
+    2026-09-27)."""
     from gdx_dispatch.models.tenant_models import Customer
 
     customer_id = context.get("customer_id")
@@ -67,20 +89,21 @@ def _resolve_rule_customer(db: Session, context: dict):
         entity_id = context.get("entity_id")
         if entity_id:
             try:
-                if entity_type == "invoice":
-                    from gdx_dispatch.models.tenant_models import Invoice
-                    row = db.get(Invoice, UUID(str(entity_id)))
-                elif entity_type == "estimate":
-                    from gdx_dispatch.modules.proposals.models import Estimate
-                    row = db.get(Estimate, UUID(str(entity_id)))
-                elif entity_type == "job":
-                    from gdx_dispatch.models.tenant_models import Job
-                    row = db.get(Job, UUID(str(entity_id)))
-                elif entity_type == "customer":
-                    customer_id = entity_id
-                    row = None
-                else:
-                    row = None
+                with contained_read(db):
+                    if entity_type == "invoice":
+                        from gdx_dispatch.models.tenant_models import Invoice
+                        row = db.get(Invoice, UUID(str(entity_id)))
+                    elif entity_type == "estimate":
+                        from gdx_dispatch.modules.proposals.models import Estimate
+                        row = db.get(Estimate, UUID(str(entity_id)))
+                    elif entity_type == "job":
+                        from gdx_dispatch.models.tenant_models import Job
+                        row = db.get(Job, UUID(str(entity_id)))
+                    elif entity_type == "customer":
+                        customer_id = entity_id
+                        row = None
+                    else:
+                        row = None
                 if row is not None:
                     customer_id = getattr(row, "customer_id", None)
             except (ValueError, TypeError):
@@ -88,12 +111,13 @@ def _resolve_rule_customer(db: Session, context: dict):
     if not customer_id:
         return None
     try:
-        return db.execute(
-            select(Customer).where(
-                Customer.id == UUID(str(customer_id)),
-                Customer.deleted_at.is_(None),
-            )
-        ).scalar_one_or_none()
+        with contained_read(db):
+            return db.execute(
+                select(Customer).where(
+                    Customer.id == UUID(str(customer_id)),
+                    Customer.deleted_at.is_(None),
+                )
+            ).scalar_one_or_none()
     except (ValueError, TypeError):
         return None
 
@@ -122,6 +146,50 @@ def _run_send_email_action(rule: WorkflowRule, params: dict, context: dict, db: 
     from gdx_dispatch.core.transactional_email import send_transactional_email
     from gdx_dispatch.routers.estimates import _render_template
 
+    # GDXA-86, and the honest state of this frame. The two reads in this module
+    # (`_automation_email_settings` above, `_resolve_rule_customer` below) are
+    # contained, so a failure in them no longer costs the WorkflowRun that
+    # `execute_rule` writes afterwards. FOUR MORE ARE NOT, all on the caller's
+    # session, all swallowed, all comms-email-phone's:
+    #
+    #   core/email_recipients.py:80   resolve_recipient()      — pure read
+    #   core/email_layout.py:129      email_branding()         — pure read
+    #   modules/outlook/token_refresh.py:163 get_user_tokens(tenant_db, …),
+    #       reached on the FIRST send branch whenever tenant and user ids are
+    #       present (transactional_email.py:454-455) via `_try_outlook_graph`
+    #       -> `with_outlook_client`, and swallowed by `_try_outlook_graph`'s
+    #       `except Exception -> (False, "outlook_send_failed")` at
+    #       transactional_email.py:128
+    #   core/transactional_email.py:325 _designated_sender_user_id(tenant_db),
+    #       the flag-gated SMTP-fallback branch at :497
+    #
+    # That list is a CALL-GRAPH WALK, and it replaces one built from names: an
+    # earlier draft of this comment listed `recently_sent` (core/
+    # transactional_email.py:284) as being "inside the send below". It is not —
+    # `send_transactional_email` never calls it; its callers are
+    # routers/customer_statements.py:213, routers/estimates.py:2098 and
+    # routers/invoices.py:2702. Naming it here while missing `get_user_tokens`,
+    # which is the one read on this path that runs every time, is exactly the
+    # mistake this file's own fix was about: the pass was run outward, not back
+    # through the frame. Found by the GDXA-86 audit, round 3.
+    #
+    # Why none of the four is wrapped HERE: each swallows its own failure, and
+    # `contained_read` rolls back only when the exception reaches its `__exit__`.
+    # With the callee swallowing, the block exits clean and the CM issues RELEASE
+    # SAVEPOINT on an already-aborted transaction, which raises 25P02 itself
+    # while the caller's commit stays dead (measured, PG 15.17: 0 rows). See
+    # `contained_read` rule 5. Do NOT read that as "unfixable from here", which
+    # an earlier draft also claimed: `ROLLBACK TO SAVEPOINT` IS legal on an
+    # aborted transaction, so an always-rollback variant of that helper would
+    # contain the pure-read ones from this file (measured on PG 15.17 and 16.14,
+    # 1 row survives). It is not built, and the reason is traffic, not physics:
+    # checked live on prod 2026-09-27, `app_settings.automation_emails_enabled`
+    # is false, there are 0 active workflow_rules and 0 workflow_runs ever — and
+    # `_automation_email_settings` returns `skipped_disabled` above, so nothing
+    # below this line executes on prod today. The two wraps in this module are
+    # correctness insurance on a path that is switched off, not the repair of an
+    # observed loss. Before this feature is turned on, fix those four in their
+    # own files — `get_user_tokens` first, because it is the unconditional one.
     customer = _resolve_rule_customer(db, context)
     if customer is None:
         return "no_customer_for_entity"
