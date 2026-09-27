@@ -59,6 +59,55 @@ def test_scanner_reports_an_unowned_file():
     assert r.unowned == [fake]
 
 
+def test_scanner_reports_an_unowned_root_baseline():
+    """A new repo-root ratchet baseline with no rule is reported (GDXA-142).
+
+    Until 2026-09-27 coverage was ``COVERED_ROOTS`` alone — 11 prefixes, all
+    under ``gdx_dispatch/`` — so a root path never reached the ownership
+    assertion and six tracked ratchet baselines sat UNOWNED while this gate
+    stayed green. This is the input that turns it red.
+    """
+    fake = ".zz_unclaimed_baseline"
+    r = scan.scan(files={fake}, rules=scan.load_rules())
+    assert r.unowned == [fake]
+
+
+def test_root_coverage_reaches_baselines_and_stops_there():
+    """Root coverage is glob-limited: ratchets in, the maintainer's files out."""
+    assert scan.is_covered(".ruff_baseline")
+    assert scan.is_covered(".tenant_plane_redundant_filter_baseline")
+    assert scan.is_covered(".semgrepignore")
+    # The root's project files belong to the maintainer, not to any one agent,
+    # so an empty COVERED_ROOTS prefix was the wrong shape.
+    assert not scan.is_covered("README.md")
+    assert not scan.is_covered("LICENSE")
+    # `*` crosses `/` in fnmatch, so the globs must be anchored to the root.
+    assert not scan.is_covered("docs/design/some_baseline")
+
+
+def test_every_root_rule_is_gated_or_recorded_as_ungated(report):
+    """A root rule landed in the ungated half without anyone saying so.
+
+    Either add a glob to ``COVERED_ROOT_GLOBS`` so the rule is enforced, or add
+    the path to ``DOCUMENTED_ONLY_ROOT_RULES`` to say out loud that it is not.
+    Silently ungated is how six ratchet baselines stayed unclaimed (GDXA-142).
+    """
+    assert not report.ungated_root_rules, (
+        f"{len(report.ungated_root_rules)} repo-root rule(s) neither gated nor recorded:\n  "
+        + "\n  ".join(report.ungated_root_rules)
+    )
+
+
+def test_an_accidentally_ungated_root_rule_is_reported():
+    """The check above can fail: a root rule matching no covered glob is caught."""
+    rules = [*scan.load_rules(), (".dockerignore", "platform-core")]
+    r = scan.scan(files={".dockerignore"}, rules=rules)
+    assert r.ungated_root_rules == [".dockerignore"]
+    # ...and a rule that *is* gated, or is on the documented-only list, is not.
+    assert ".ruff_baseline" not in r.ungated_root_rules
+    assert "conftest.py" not in r.ungated_root_rules
+
+
 def test_last_match_wins():
     rules = [
         ("gdx_dispatch/frontend/src/views/Mobile*.vue", "mobile-tech"),

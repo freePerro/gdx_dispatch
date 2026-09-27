@@ -14,6 +14,18 @@
 # Deliberately NO catch-all like `gdx_dispatch/core/*.py`: a new file has to be
 # claimed on purpose, or the guard could never tell you it was forgotten.
 #
+# NOT every rule here is gated, and the difference matters. The "must have an
+# owner" check only fires for a path the scanner *covers* — COVERED_ROOTS plus
+# COVERED_ROOT_GLOBS in agent_ownership_scan.py. A repo-root rule outside those
+# globs is documentation: `--file` answers for it, and deleting the rule reddens
+# nothing. Those are listed in DOCUMENTED_ONLY_ROOT_RULES and the split is
+# itself checked, so a new root rule must be put in one half or the other.
+#
+# Most of the repo-root files have no rule at all and answer UNOWNED by design:
+# README.md and its neighbours are the maintainer's, not any one agent's. Don't
+# read that as an oversight, and don't enumerate them here — an enumeration in
+# a comment is what rotted last time. `git ls-files | grep -v /` is the list.
+#
 # Decided 2026-09-24; rationale and rejected shapes in
 # domain-agents-plan under docs/design/.
 
@@ -39,6 +51,18 @@ conftest.py                                                  platform-core
 pytest.ini                                                   platform-core
 ruff.toml                                                    platform-core
 pyproject.toml                                               platform-core
+
+# Ratchet baselines and scanner/harness state at the repo root. Gated, via
+# COVERED_ROOT_GLOBS — `.tenant_plane_redundant_filter_baseline` is line-keyed,
+# so refreeze it with its scanner rather than editing it by hand.
+.authz_ungated_baseline                                      platform-core
+.authz_unpermissioned_baseline                               platform-core
+.doc_link_baseline                                           platform-core
+.duplicate_block_baseline                                    platform-core
+.ruff_baseline                                               platform-core
+.tenant_plane_redundant_filter_baseline                      platform-core
+.semgrepignore                                               platform-core
+.test_durations                                              platform-core
 
 gdx_dispatch/routers/auth/*                                  platform-core
 gdx_dispatch/routers/activity.py                             platform-core

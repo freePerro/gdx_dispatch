@@ -11,15 +11,21 @@ for its work-orders — "overlapping ``files_in`` lists → merge conflicts" —
 had nothing enforcing it.
 
 So the map is a file (``gdx_dispatch/tools/agent_ownership.txt``) and this
-scan is its guard. Four things must hold:
+scan is its guard. Five things must hold:
 
 1. **Every source file under the covered roots has an owner.** A new router,
-   view, module or composable without a rule is reported by path.
+   view, module or composable without a rule is reported by path. Coverage is
+   ``COVERED_ROOTS`` (directory prefixes) plus ``COVERED_ROOT_GLOBS`` (the repo
+   root's ratchet baselines).
 2. **Every rule still matches a tracked file.** A rule for a renamed or
    deleted file is dead weight that misleads the next reader; it goes red.
 3. **Every owner named in the map has an agent file**, ``.claude/agents/<owner>.md``.
 4. **Every agent file owns something.** An agent with no territory is a
    definition nobody maintains.
+5. **Every repo-root rule is gated or recorded as ungated.** Root coverage is a
+   glob list, not a prefix, so a root rule can be documentation that no check
+   enforces. That is allowed — ``DOCUMENTED_ONLY_ROOT_RULES`` names them — but
+   it may not be accidental, which is how six baselines went unclaimed.
 
 Semantics
 ---------
@@ -78,6 +84,44 @@ COVERED_ROOTS = (
     "gdx_dispatch/frontend/src/",
 )
 
+# Repo-root files where every match must have an owner. The root cannot be a
+# COVERED_ROOTS prefix: the empty string would pull in README.md, LICENSE,
+# CLAUDE.md and every other project file, which belong to the maintainer and
+# not to any one agent. So the root is covered by glob instead, and these
+# globs are anchored to it by the caller's `"/" not in rel` test.
+#
+# The class this exists for: six ratchet baselines sat UNOWNED until 2026-09-27
+# (GDXA-142) because no prefix reached them, so the gate could not redden for a
+# missing rule the way it does for an unclaimed router. `*_baseline` catches the
+# next one *named that way* — which is the convention all six follow, and the
+# only part a glob can know. It does NOT reach a root ratchet artifact named
+# some other way (`.foo_ratchet.json`); the two literals below are here because
+# the convention did not reach them either. Add a glob when you add a ratchet.
+COVERED_ROOT_GLOBS = (
+    "*_baseline",
+    ".semgrepignore",  # semgrep's ignore list — scanner input, same family
+    ".test_durations",  # pytest-split's durations file, read by every matrix run
+)
+
+# Repo-root rules the map carries for documentation only: `--file` answers for
+# them, but they are outside COVERED_ROOT_GLOBS so deleting the rule reddens
+# nothing. Listing them as data rather than as a comment is deliberate — the
+# split is checked (see `Report.ungated_root_rules`), so adding a root rule
+# forces a choice between gating it and recording it here, instead of silently
+# landing in the ungated half. That silent landing is GDXA-142 itself.
+DOCUMENTED_ONLY_ROOT_RULES = frozenset(
+    {
+        "conftest.py",
+        "pytest.ini",
+        "ruff.toml",
+        "pyproject.toml",
+        # plugins-host's, and a doc rather than scanner state — gating a root
+        # doc is a separate decision and not platform-core's to make. Found by
+        # the check below on its first run, which is the argument for having it.
+        "PLUGIN-EXCEPTION.md",
+    }
+)
+
 # Not source: package markers, caches, and tests (which follow their subject).
 EXCLUDED = (
     "*/__init__.py",
@@ -98,11 +142,16 @@ class Report:
     dead_rules: list[str] = field(default_factory=list)
     owners_without_agent: list[str] = field(default_factory=list)
     agents_without_territory: list[str] = field(default_factory=list)
+    ungated_root_rules: list[str] = field(default_factory=list)
 
     @property
     def clean(self) -> bool:
         return not (
-            self.unowned or self.dead_rules or self.owners_without_agent or self.agents_without_territory
+            self.unowned
+            or self.dead_rules
+            or self.owners_without_agent
+            or self.agents_without_territory
+            or self.ungated_root_rules
         )
 
 
@@ -130,7 +179,17 @@ def owner_of(rel: str, rules: Iterable[tuple[str, str]]) -> str | None:
 
 
 def is_covered(rel: str) -> bool:
-    if not rel.startswith(COVERED_ROOTS):
+    """Must this path resolve to an owner? Covered roots, plus root globs.
+
+    A repo-root path has no ``/``, which is what anchors ``COVERED_ROOT_GLOBS``
+    to the root — fnmatch's ``*`` crosses ``/``, so ``*_baseline`` would
+    otherwise match a baseline nested anywhere in the tree.
+    """
+    at_root = "/" not in rel
+    if at_root:
+        if not any(fnmatch.fnmatchcase(rel, g) for g in COVERED_ROOT_GLOBS):
+            return False
+    elif not rel.startswith(COVERED_ROOTS):
         return False
     return not any(fnmatch.fnmatchcase(rel, g) for g in EXCLUDED)
 
@@ -180,6 +239,15 @@ def scan(files: Iterable[str] | None = None, rules: list[tuple[str, str]] | None
         else:
             matched.add(glob)
 
+    # A repo-root rule is either gated by COVERED_ROOT_GLOBS or recorded in
+    # DOCUMENTED_ONLY_ROOT_RULES. Landing in the ungated half by accident is
+    # the defect this whole file exists to stop, so it is reported.
+    for glob, _who in rules:
+        if "/" in glob or glob in DOCUMENTED_ONLY_ROOT_RULES:
+            continue
+        if not any(fnmatch.fnmatchcase(glob, g) for g in COVERED_ROOT_GLOBS):
+            report.ungated_root_rules.append(glob)
+
     owners_in_map = {who for _g, who in rules}
     agent_files = {
         posixpath.basename(rel)[: -len(".md")]
@@ -212,6 +280,13 @@ def _print_report(report: Report) -> None:
         print(f"\nAGENT FILES THAT OWN NOTHING ({len(report.agents_without_territory)}):")
         for who in report.agents_without_territory:
             print(f"  {AGENTS_DIR}{who}.md")
+    if report.ungated_root_rules:
+        print(
+            f"\nROOT RULES NEITHER GATED NOR RECORDED ({len(report.ungated_root_rules)}) — add a"
+            " glob to COVERED_ROOT_GLOBS or the path to DOCUMENTED_ONLY_ROOT_RULES:"
+        )
+        for glob in report.ungated_root_rules:
+            print(f"  {glob}")
     print("\nclean" if report.clean else "\nfindings above")
 
 
