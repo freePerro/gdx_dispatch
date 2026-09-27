@@ -152,6 +152,67 @@
         {{ routeOrderSummary }}
       </p>
 
+      <!-- Past their date, not closed out (2026-09-27). The board loads only
+           undated jobs and the dates in view, so the day after a visit an
+           open job stopped being on any screen — prod had six, the oldest
+           scheduled 2026-06-02, found by SQL rather than by anyone looking.
+           Same contract as the labor card below: it renders only when
+           something is wrong, and dealing with the job (closing it out, or
+           giving it a new date from the job page) IS the dismissal. -->
+      <Card v-if="lateOpenJobs.length" class="board-section" data-testid="late-open-jobs">
+        <template #title>
+          <div class="section-header">
+            <span class="section-icon pi pi-history" style="color: var(--p-red-500)"></span>
+            <span>Past their date, not closed out</span>
+            <Tag :value="String(lateOpenJobs.length)" severity="danger" rounded />
+            <!-- The tech columns and intake queue must stay reachable without
+                 scrolling (you cannot scroll mid-drag — see the Day View
+                 note), so the list is short and can be folded away while the
+                 board is open (not persisted — it is back on the next visit,
+                 by design). The header and count stay put either way. -->
+            <Button :label="lateOpenCollapsed ? 'Show' : 'Hide'" size="small" text
+              style="margin-left: auto" data-testid="late-open-toggle"
+              @click="lateOpenCollapsed = !lateOpenCollapsed" />
+          </div>
+        </template>
+        <template #content>
+          <DataTable v-if="!lateOpenCollapsed" responsiveLayout="scroll" :value="lateOpenJobs" :rows="3"
+            :paginator="lateOpenJobs.length > 3" size="small" stripedRows dataKey="id">
+            <Column header="Scheduled">
+              <template #body="{ data }">
+                {{ formatScheduled(data.scheduled_at) }}
+                <small class="muted" :data-testid="`late-open-days-${data.id}`"> · {{ lateLabel(data.days_late) }}</small>
+              </template>
+            </Column>
+            <Column header="Customer">
+              <template #body="{ data }">{{ data.customer_name || '—' }}</template>
+            </Column>
+            <Column header="Job">
+              <template #body="{ data }">
+                <i v-if="data.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" />
+                {{ data.title || data.job_number || '—' }}
+              </template>
+            </Column>
+            <Column header="Tech">
+              <template #body="{ data }">{{ data.tech_name || 'No tech' }}</template>
+            </Column>
+            <Column header="State">
+              <template #body="{ data }"><JobStateChip :job="data" /></template>
+            </Column>
+            <Column header="Action">
+              <template #body="{ data }">
+                <div style="display: flex; gap: 0.4rem; white-space: nowrap;">
+                  <Button label="Close out" icon="pi pi-check" size="small" severity="success"
+                    :data-testid="`late-open-closeout-${data.id}`" @click="openCloseout(data)" />
+                  <Button label="Open job" icon="pi pi-external-link" size="small" severity="secondary"
+                    :data-testid="`late-open-open-${data.id}`" @click="goToJob(data)" />
+                </div>
+              </template>
+            </Column>
+          </DataTable>
+        </template>
+      </Card>
+
       <!-- Labor exceptions — shifts the office needs to correct.
            Deliberately not a report: it renders only when something is wrong,
            on the screen dispatch already has open, so nobody has to remember
@@ -778,7 +839,7 @@ const router = useRouter();
 // Office display timezone — the board buckets jobs into day columns and renders
 // card times in THIS zone, not UTC or the viewer's browser zone.
 const { tenantTimezone, zonedDateKey } = useTenantTimezone();
-const { hasPermission } = usePermission();
+const { hasPermission, permissionsLoaded } = usePermission();
 
 function goToJob(job) {
   if (job?.id) router.push(`/jobs/${job.id}`);
@@ -798,6 +859,35 @@ async function loadLaborExceptions() {
     console.warn('labor_exceptions_failed', e);
     laborExceptions.value = [];
   }
+}
+
+// Open jobs whose scheduled day has passed (GET /api/dispatch/late-open).
+// Office-only (jobs.read_all): the board is also opened by roles without it,
+// so don't ask rather than eat a 403 on every poll.
+const lateOpenJobs = ref([]);
+const lateOpenCollapsed = ref(false);
+
+async function loadLateOpen({ keepOnError = false } = {}) {
+  if (!hasPermission('jobs.read_all')) {
+    lateOpenJobs.value = [];
+    return;
+  }
+  try {
+    const res = await api.get('/api/dispatch/late-open');
+    lateOpenJobs.value = Array.isArray(res?.items) ? res.items : [];
+  } catch (e) {
+    console.warn('late_open_jobs_failed', e);
+    if (!keepOnError) lateOpenJobs.value = [];
+  }
+}
+
+// Permissions resolve asynchronously; the first board load can run before
+// they arrive and would skip this card until the next 45 s poll.
+watch(permissionsLoaded, (loaded) => { if (loaded) loadLateOpen({ keepOnError: true }); });
+
+function lateLabel(days) {
+  if (days == null) return 'date passed';
+  return days === 1 ? '1 day ago' : `${days} days ago`;
 }
 
 function fixLaborException(row) {
@@ -858,7 +948,7 @@ function onCloseoutDone() {
 watch(closeoutOpen, async (v) => {
   if (!v) {
     closeoutJob.value = null;
-    await fetchJobs();
+    await Promise.all([fetchJobs(), loadLateOpen({ keepOnError: true })]);
   }
 });
 
@@ -1918,7 +2008,7 @@ async function seedHoldingAreas() {
 async function refreshBoard() {
   refreshing.value = true;
   try {
-    await Promise.all([fetchTechnicians(), fetchJobs(), fetchHoldingAreas(), fetchScheduledUnassigned()]);
+    await Promise.all([fetchTechnicians(), fetchJobs(), fetchHoldingAreas(), fetchScheduledUnassigned(), loadLateOpen()]);
     await loadSkillOptions();
   } finally {
     refreshing.value = false;
@@ -1941,6 +2031,7 @@ async function pollBoard() {
       fetchJobs({ keepOnError: true }),
       fetchHoldingAreas({ keepOnError: true }),
       fetchScheduledUnassigned({ keepOnError: true }),
+      loadLateOpen({ keepOnError: true }),
     ]);
   } finally {
     autoPolling = false;
