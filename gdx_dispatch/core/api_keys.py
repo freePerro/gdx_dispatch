@@ -27,6 +27,8 @@ from sqlalchemy.types import Uuid
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
+from gdx_dispatch.core.audit import audit_best_effort, audit_or_rollback, ensure_audit_table
+
 # Import at module level so tests can patch gdx_dispatch.core.api_keys.SessionLocal
 try:
     from gdx_dispatch.core.database import SessionLocal
@@ -284,6 +286,16 @@ async def create_api_key(
     if body.expires_in_days and body.expires_in_days > 0:
         expires_at = datetime.now(UTC) + timedelta(days=body.expires_in_days)
 
+    # An API key is a bearer credential for the whole public API, and every
+    # audit row those routes write names it as the actor — so the key itself
+    # must never exist without a record of who minted it, or the trail has no
+    # root. `audit_or_rollback` stages the row inside this transaction: the key
+    # and its record commit together, or neither does and the caller is told so.
+    #
+    # `ensure_audit_table` runs before anything is staged, because its first run
+    # on an engine commits (and every run after is a no-op).
+    ensure_audit_table(db)
+
     api_key = APIKey(
         id=uuid4(),
         tenant_id=tenant_uuid,
@@ -295,6 +307,33 @@ async def create_api_key(
         expires_at=expires_at,
     )
     db.add(api_key)
+    # Flush the key BEFORE the audit call, even though the id is already known:
+    # otherwise the audit's own flush is what surfaces a failed `api_keys`
+    # insert, and `audit_or_rollback` reports it as "audit failure — change
+    # rolled back" while logging `audit_write_failed`. Whoever triages that goes
+    # looking at the audit table for a fault in this one.
+    db.flush()
+    audit_or_rollback(
+        db,
+        action="api_key_created",
+        entity_type="api_key",
+        entity_id=str(api_key.id),
+        actor=current_user,
+        request=request,
+        # Explicit: `audit_or_rollback` otherwise reads the tenant off
+        # `request.state.tenant`, and `routers/activity.py` filters the feed on
+        # this column, so a row that falls back to None is invisible there.
+        tenant_id=tenant_id_str,
+        details={
+            "name": name,
+            "key_prefix": key_prefix,
+            "scopes": sorted(body.scopes),
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            # Never the raw key or its hash. The prefix is the identifier the
+            # key list and every public-API audit row already carry, and it is
+            # what makes this row joinable to them.
+        },
+    )
     db.commit()
     db.refresh(api_key)
 
@@ -338,9 +377,32 @@ async def revoke_api_key(
     if api_key.revoked_at is not None:
         return JSONResponse({"ok": True, "message": "Already revoked"})
 
+    # Read these before the commit expires the instance.
+    revoked_prefix, revoked_name = api_key.key_prefix, api_key.name
+
     api_key.revoked_at = datetime.now(UTC)
     db.commit()
-    return JSONResponse({"ok": True, "id": key_id, "revoked_at": api_key.revoked_at.isoformat()})
+    # Read back once, here: `audit_best_effort` commits too, and a response
+    # built afterwards would lazy-load through a second expiry for nothing.
+    revoked_iso = api_key.revoked_at.isoformat()
+
+    # Deliberately the OTHER half of the pair from create_api_key. Revocation is
+    # the security-positive act: a refusing audit table must not be able to keep
+    # a compromised key alive, so the revoke commits first and the trail is
+    # best-effort. If the row is refused, `audit_best_effort` returns False and
+    # the ERROR it logs is the only record — which is the honest outcome, and
+    # still better than a live key.
+    audit_best_effort(
+        db,
+        action="api_key_revoked",
+        entity_type="api_key",
+        entity_id=key_id,
+        tenant_id=tenant_id_str,
+        actor=current_user,
+        request=request,
+        details={"key_prefix": revoked_prefix, "name": revoked_name},
+    )
+    return JSONResponse({"ok": True, "id": key_id, "revoked_at": revoked_iso})
 
 
 # ---------------------------------------------------------------------------

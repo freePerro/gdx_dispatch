@@ -27,6 +27,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.api_keys import scope_required
+from gdx_dispatch.core.audit import audit_or_rollback, ensure_audit_table
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.tenant import company_id, single_tenant
 from gdx_dispatch.core.webhooks.models import WebhookEndpoint
@@ -140,6 +141,90 @@ def _list_ok(data: list, page: int, per_page: int, total: int) -> JSONResponse:
             "data": jsonable_encoder(data),
             "meta": {"page": page, "per_page": per_page, "total": total},
         }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Audit trail for API-key writes (invariant #1)
+# ---------------------------------------------------------------------------
+#
+# There is no human on a public-API request: the API key IS the principal, so
+# its prefix is the actor. `log_audit_event` treats a falsy — or literally
+# "system" — user_id as a broken call site and tries to recover the actor from
+# `request.state.user`, which no API-key request has, so the prefix falls back
+# to a named constant rather than to nothing.
+
+
+def _api_key_actor(request: Request) -> tuple[str | None, str, str | None]:
+    """(tenant_id, actor, key_prefix) for the key that signed this request.
+
+    All three come off `request.state`, which `_require_api_key` stamped after
+    the single-tenant tripwire passed — so tenant_id here is this deployment's
+    one company by construction, not a value the caller chose.
+    """
+    key_prefix = getattr(request.state, "api_key_prefix", None)
+    return (
+        getattr(request.state, "api_key_tenant_id", None),
+        key_prefix or "api_key",
+        key_prefix,
+    )
+
+
+def _audit_public_write(
+    db: Session,
+    request: Request,
+    *,
+    action: str,
+    entity_type: str,
+    entity_id: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Stage the trail row INSIDE the caller's transaction, before its commit.
+
+    This is the canonical shape and every mutation route below uses it: the
+    change and its record land together or neither does. Auditing *after* the
+    commit is the weaker half of the pair — it exists for a change committed by
+    a helper the handler cannot reach into, and it can lose the row (bug class
+    #700, and `tools/audit_after_commit_scan.py` is the gate for it). Each of
+    these handlers owns its single `db.commit()`, so none of them needs it.
+
+    Two requirements on the caller, both load-bearing:
+
+    * Run `ensure_audit_table(db)` before staging anything — its first run on
+      an engine commits, which would otherwise harden a half-finished write.
+      It is called as the first statement inside each handler's `try`, so a
+      broken session surfaces through that handler's own error path.
+    * Re-raise `HTTPException` ahead of the generic database-error handler. On
+      a refused row `audit_or_rollback` has already rolled the change back and
+      raised "audit failure — change rolled back"; letting that fall through to
+      the generic 500 would report a different failure than the one that
+      happened.
+
+    The one audit write in this file that does NOT go through here is
+    `create_public_landing_lead`. That is deliberate and is the exception, not
+    a second convention: a lead from a marketing site must never be lost to a
+    trail failure, so it commits first and swallows. Everything reachable with
+    an API key belongs here.
+    """
+    tenant_id, actor, key_prefix = _api_key_actor(request)
+    audit_or_rollback(
+        db,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        # Explicit, not left to the request fallback: `_extract_tenant_id`
+        # reads `request.state.tenant`, and `routers/activity.py` filters the
+        # feed on this column, so a row that falls back to None is invisible
+        # there.
+        tenant_id=tenant_id,
+        # `_actor_id_of` reads `.id`/`.sub`/dict keys — a bare prefix string
+        # resolves to None and the row would land attributed to "system".
+        actor={"user_id": actor},
+        request=request,
+        # `channel` is what separates these rows from the in-app ones sharing
+        # the same action name, so the audit viewer can show both together and
+        # still answer "did a person or a key do this?".
+        details={"channel": "public_api", "api_key_prefix": key_prefix, **(details or {})},
     )
 
 
@@ -307,6 +392,8 @@ def create_job(
     now = datetime.now(timezone.utc)
 
     try:
+        # First, before the INSERT is staged: its first run on an engine commits.
+        ensure_audit_table(db)
         row = db.execute(
             text(
                 """
@@ -325,7 +412,21 @@ def create_job(
                 "created_at": now,
             },
         ).mappings().first()
+        _audit_public_write(
+            db,
+            request,
+            action="job_created",
+            entity_type="job",
+            entity_id=job_id,
+            details={
+                "title": title,
+                "status": payload.status or "lead",
+                "customer_id": payload.customer_id,
+            },
+        )
         db.commit()
+    except HTTPException:
+        raise  # see _audit_public_write: the audit 500 has already rolled back
     except Exception:
         logging.getLogger(__name__).exception("public api create_job failed")
         # rollback on a dead session can itself raise; the real error is
@@ -361,6 +462,8 @@ def update_job(
     params = {**updates, "job_id": job_id}
 
     try:
+        # First, before the UPDATE is staged: its first run on an engine commits.
+        ensure_audit_table(db)
         row = db.execute(
             text(
                 f"""
@@ -374,7 +477,24 @@ def update_job(
             ),
             params,
         ).mappings().first()
+        if row:
+            # Only when a row matched. An id that matched nothing (or a
+            # soft-deleted job) changed nothing, and a row recording an update
+            # that never happened is worse than no row — it is a false entry.
+            _audit_public_write(
+                db,
+                request,
+                action="job_updated",
+                entity_type="job",
+                entity_id=job_id,
+                # The columns actually written, not the request body: `status`
+                # lands in `lifecycle_stage`, and the trail should say what
+                # changed in the table.
+                details={"changed": dict(updates)},
+            )
         db.commit()
+    except HTTPException:
+        raise  # see _audit_public_write: the audit 500 has already rolled back
     except Exception:
         logging.getLogger(__name__).exception("public api update_job failed")
         # rollback on a dead session can itself raise; the real error is
@@ -472,9 +592,25 @@ def create_customer(
         company_id=str(tenant["id"]),
     )
     try:
+        # First, before anything is staged: its first run on an engine commits.
+        ensure_audit_table(db)
         db.add(customer)
+        db.flush()  # assigns customer.id, which the audit row has to name
+        _audit_public_write(
+            db,
+            request,
+            action="customer_created",
+            entity_type="customer",
+            entity_id=str(customer.id),
+            # Name only, matching routers/customers.py:create_customer.
+            # `details` is not redacted (core.audit only JSON-normalizes it), so
+            # email, phone and the encrypted address stay out of the trail.
+            details={"name": customer.name},
+        )
         db.commit()
         db.refresh(customer)
+    except HTTPException:
+        raise  # see _audit_public_write: the audit 500 has already rolled back
     except Exception:
         logging.getLogger(__name__).exception("public api create_customer failed")
         # rollback on a dead session can itself raise; the real error is
@@ -715,9 +851,34 @@ def register_webhook(
         is_active=True,
     )
     try:
+        # First, before anything is staged: its first run on an engine commits.
+        ensure_audit_table(db)
         db.add(endpoint)
+        db.flush()  # assigns endpoint.id, which the audit row has to name
+        # Registering an endpoint grants a standing data-egress channel to a URL
+        # the key holder chose, with a secret stored beside it. The attack this
+        # row defends against: a leaked API key adds an exfiltration target, and
+        # the only trace is a row the attacker never had to write. Staged inside
+        # the transaction, so an unauditable endpoint is never registered.
+        _audit_public_write(
+            db,
+            request,
+            action="webhook_endpoint_registered",
+            entity_type="webhook_endpoint",
+            entity_id=str(endpoint.id),
+            details={
+                "url": url,
+                "events": list(payload.events or []),
+                # Never the secret itself. That one was set is the auditable
+                # fact; the value is a credential and `details` is readable in
+                # the audit viewer.
+                "secret_set": bool(payload.secret),
+            },
+        )
         db.commit()
         db.refresh(endpoint)
+    except HTTPException:
+        raise  # see _audit_public_write: the audit 500 has already rolled back
     except Exception:
         logging.getLogger(__name__).exception("public api register_webhook failed")
         # rollback on a dead session can itself raise; the real error is

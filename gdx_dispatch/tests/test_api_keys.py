@@ -13,6 +13,7 @@ Tests:
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 from uuid import UUID, uuid4
@@ -390,3 +391,185 @@ class TestRateLimiting:
                 # 61st should be rate-limited
                 r = client.get("/v1/rate-test", headers={"X-API-Key": raw_key})
                 assert r.status_code == 429, f"expected 429 on 61st request, got {r.status_code}"
+
+
+# ---------------------------------------------------------------------------
+# Invariant #1 — the key's own lifecycle leaves a trail (GDXA-85 sweep)
+# ---------------------------------------------------------------------------
+#
+# Every public-API audit row names a key prefix as its actor. Without these two
+# rows the trail has no root: you can see that `gdx_live_abc` created a job and
+# never who minted `gdx_live_abc`, or who took it away.
+
+
+def _audit_rows(engine, *, action: str | None = None) -> list[dict]:
+    """Committed audit rows, details decoded. Reads the table directly, so a row
+    only appears here if the handler's audit path really committed it."""
+    import json as _json
+
+    from sqlalchemy import text as _text
+
+    with engine.connect() as conn:
+        rows = conn.execute(_text(
+            "SELECT action, entity_type, entity_id, user_id, tenant_id, details "
+            "  FROM audit_logs ORDER BY created_at, id"
+        )).mappings().all()
+    out = []
+    for r in rows:
+        d = dict(r)
+        raw = d.get("details")
+        d["details"] = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+        out.append(d)
+    return [r for r in out if action is None or r["action"] == action]
+
+
+def _make_audit_table(engine) -> None:
+    """ensure_audit_table creates it lazily; a test that installs a refusal
+    trigger, or asserts an absence, needs it to exist up front."""
+    from gdx_dispatch.core.audit import ensure_audit_table
+
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = Session()
+    try:
+        ensure_audit_table(db)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _refuse_audit_inserts(engine) -> None:
+    """Refusal from the storage layer, which is the only thing that produces a
+    real failed flush (the mechanism GDXA-44's triage used)."""
+    from sqlalchemy import text as _text
+
+    _make_audit_table(engine)
+    with engine.begin() as conn:
+        conn.execute(_text(
+            """
+            CREATE TRIGGER audit_logs_refuse_insert
+            BEFORE INSERT ON audit_logs
+            BEGIN
+                SELECT RAISE(ABORT, 'audit storage refuses this row');
+            END;
+            """
+        ))
+
+
+class TestApiKeyLifecycleIsAudited:
+    def test_creating_a_key_is_audited_without_storing_the_key(self, control_engine):
+        tenant_id = str(uuid4())
+        client = _make_router_app(control_engine, tenant_id)
+
+        resp = client.post("/api/developer/keys", json={"name": "CI key", "scopes": ["read:jobs"]})
+        assert resp.status_code == 201, resp.text[:300]
+        body = resp.json()
+
+        rows = _audit_rows(control_engine, action="api_key_created")
+        assert len(rows) == 1, f"expected one trail row, got {rows!r}"
+        row = rows[0]
+        assert row["entity_type"] == "api_key"
+        assert row["entity_id"] == body["id"]
+        assert row["user_id"] == "u1"  # the admin who minted it, not "system"
+        # From the token, not from request.state.tenant: this app has no tenant
+        # middleware, and `routers/activity.py` filters the feed on this column,
+        # so a NULL here would hide the row from the activity feed.
+        assert row["tenant_id"] == tenant_id
+        assert row["details"]["key_prefix"] == body["prefix"]
+        assert row["details"]["name"] == "CI key"
+        assert row["details"]["scopes"] == ["read:jobs"]
+        # The key is shown once and never stored in recoverable form — least of
+        # all in a trail row an auditor reads.
+        blob = json.dumps(row["details"])
+        assert body["key"] not in blob
+        assert hashlib.sha256(body["key"].encode()).hexdigest() not in blob
+
+    def test_revoking_a_key_is_audited(self, control_engine, control_db):
+        tenant_id = uuid4()
+        _, api_key = _make_api_key(control_db, tenant_id=tenant_id)
+        client = _make_router_app(control_engine, str(tenant_id))
+
+        resp = client.delete(f"/api/developer/keys/{api_key.id}")
+        assert resp.status_code == 200, resp.text[:300]
+
+        rows = _audit_rows(control_engine, action="api_key_revoked")
+        assert len(rows) == 1, f"expected one trail row, got {rows!r}"
+        assert rows[0]["entity_id"] == str(api_key.id)
+        assert rows[0]["user_id"] == "u1"
+        assert rows[0]["tenant_id"] == str(tenant_id)
+        assert rows[0]["details"]["key_prefix"] == api_key.key_prefix
+
+    def test_a_refused_trail_row_means_no_key_is_minted(self, control_engine):
+        """A credential nobody can attribute must not exist. The caller gets a
+        500 and can retry; what it must not get is a working, untraceable key."""
+        _refuse_audit_inserts(control_engine)
+        client = _make_router_app(control_engine, str(uuid4()))
+
+        resp = client.post("/api/developer/keys", json={"name": "untraceable", "scopes": []})
+
+        assert resp.status_code == 500, resp.text[:300]
+        assert resp.json()["detail"] == "audit failure — change rolled back"
+        Session = sessionmaker(bind=control_engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            assert db.query(APIKey).filter(APIKey.name == "untraceable").all() == []
+        finally:
+            db.close()
+
+    def test_a_key_insert_fault_is_not_reported_as_an_audit_fault(self, control_engine):
+        """`db.flush()` before the audit call is what keeps these two apart.
+
+        Without it, the audit's own flush is what surfaces the pending `api_keys`
+        insert, so any key-table failure comes back as "audit failure — change
+        rolled back" and logs `audit_write_failed` — sending whoever triages it
+        to the audit table for a fault that is nowhere near it.
+        """
+        from sqlalchemy import text as _text
+
+        _make_audit_table(control_engine)  # audit side healthy on purpose
+        with control_engine.begin() as conn:
+            conn.execute(_text(
+                """
+                CREATE TRIGGER api_keys_refuse_insert
+                BEFORE INSERT ON api_keys
+                BEGIN
+                    SELECT RAISE(ABORT, 'api_keys refuses this row');
+                END;
+                """
+            ))
+        client = _make_router_app(control_engine, str(uuid4()))
+        try:
+            # The fixture's TestClient re-raises server exceptions, and this
+            # handler has no DB-error branch of its own, so the storage error
+            # arrives here intact — which is the point.
+            with pytest.raises(Exception) as exc_info:
+                client.post("/api/developer/keys", json={"name": "k", "scopes": []})
+        finally:
+            with control_engine.begin() as conn:
+                conn.execute(_text("DROP TRIGGER IF EXISTS api_keys_refuse_insert"))
+
+        msg = str(exc_info.value)
+        assert "api_keys refuses this row" in msg, msg
+        assert "audit failure" not in msg, msg
+
+    def test_a_refused_trail_row_does_not_keep_a_compromised_key_alive(
+        self, control_engine, control_db, caplog
+    ):
+        """The asymmetry is the point: revocation is the security-positive act,
+        so it survives an audit table that refuses. The lost row is logged."""
+        import logging as _logging
+
+        tenant_id = uuid4()
+        _, api_key = _make_api_key(control_db, tenant_id=tenant_id)
+        _refuse_audit_inserts(control_engine)
+        client = _make_router_app(control_engine, str(tenant_id))
+
+        with caplog.at_level(_logging.ERROR, logger="gdx_dispatch.core.audit"):
+            resp = client.delete(f"/api/developer/keys/{api_key.id}")
+
+        assert resp.status_code == 200, resp.text[:300]
+        assert any(
+            "audit_best_effort_failed" in r.getMessage() for r in caplog.records
+        ), [r.getMessage() for r in caplog.records]
+        control_db.expire_all()
+        assert control_db.query(APIKey).filter(APIKey.id == api_key.id).one().revoked_at is not None
+        assert _audit_rows(control_engine, action="api_key_revoked") == []

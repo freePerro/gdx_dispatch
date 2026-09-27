@@ -503,6 +503,7 @@ def audit_or_rollback(
     actor: Any = None,
     request: Any = None,
     details: dict[str, Any] | None = None,
+    tenant_id: str | None = None,
 ) -> None:
     """Record a mutation, or take the mutation down with it.
 
@@ -514,12 +515,21 @@ def audit_or_rollback(
     Callers whose write already committed (a helper that commits internally)
     must audit *before* that helper instead — after the fact this rollback
     cannot undo the change, and the 500 would be a lie.
+
+    ``tenant_id`` is optional and, when omitted, falls back to
+    ``request.state.tenant`` as it always did. Pass it where the caller knows
+    the tenant from something other than the request — an API key's own
+    ``tenant_id``, a token claim — because the fallback returns None on any
+    path the tenant middleware does not cover, and ``routers/activity.py``
+    filters the feed on this column, so a NULL row is invisible there
+    (GDXA-85).
     """
     from fastapi import HTTPException
 
     try:
         log_audit_event_sync(
             db,
+            tenant_id=tenant_id,
             user_id=_actor_id_of(actor),
             action=action,
             entity_type=entity_type,
