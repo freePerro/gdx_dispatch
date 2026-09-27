@@ -3,6 +3,7 @@
 Routes:
   GET  /api/dispatch/schedule-with-traffic — optimized schedule with drive times
   GET  /api/dispatch/check-capacity — overbooking prevention
+  GET  /api/dispatch/late-open — open jobs whose scheduled day has passed
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -148,3 +149,89 @@ def scheduled_unassigned(
             for r in rows
         ]
     }
+
+
+# ---------------------------------------------------------------------------
+# Past their date, not closed out (2026-09-27)
+# ---------------------------------------------------------------------------
+# A job whose scheduled day has passed without a closeout was on no screen at
+# all: the board fetches only undated jobs and the dates in view, so the day
+# after its visit an open job simply stopped being loaded. On 2026-09-27 prod
+# had six of them, the oldest scheduled 2026-05-13 and one a broken spring
+# waiting since 2026-06-02 — found by SQL, not by anyone looking at the board. This is the list that makes that
+# state visible on the screen dispatch already has open.
+#
+# "Past" is judged on the shop's calendar day, not UTC and not the instant:
+# a job booked for 8am today is not late at 9am, and a 7pm Minnesota job is
+# already tomorrow in UTC. Everything before the start of today, shop time.
+# Holding area, tech and job type are deliberately NOT filters — a stale
+# Ready-to-Schedule stamp is how several of these hid in the first place.
+
+@router.get("/api/dispatch/late-open", dependencies=[Depends(require_permission("jobs.read_all"))])
+def late_open_jobs(
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    _ = user
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import select as _select
+
+    from gdx_dispatch.core.pay_periods import resolve_zone, shop_day_of, shop_today, shop_tz_name_from_settings
+    from gdx_dispatch.models.tenant_models import Customer, Job, Technician
+
+    tz_name = shop_tz_name_from_settings(db)
+    zone: ZoneInfo = resolve_zone(tz_name)
+    today = shop_today(tz_name)
+    start_of_today = datetime(today.year, today.month, today.day, tzinfo=zone).astimezone(timezone.utc)
+
+    rows = db.execute(
+        _select(Job, Customer.name, Technician.name)
+        .outerjoin(Customer, Job.customer_id == Customer.id)
+        .outerjoin(Technician, Job.assigned_to == Technician.id)
+        .where(
+            Job.deleted_at.is_(None),
+            Job.scheduled_at.is_not(None),
+            Job.scheduled_at < start_of_today,
+            Job.lifecycle_stage.notin_(["completed", "cancelled"]),
+        )
+        # Oldest first — the customer who has waited longest.
+        .order_by(Job.scheduled_at.asc())
+        .limit(200)
+    ).all()
+
+    # The board's JobStateChip reads display_state; without it every row
+    # renders "unverified — refresh to sync", which no refresh ever fixes.
+    # Same helper and same degrade-to-empty contract as the jobs list.
+    try:
+        from gdx_dispatch.routers.jobs import _display_state_for_jobs
+
+        ds_map = _display_state_for_jobs(db, [(job.id, job.lifecycle_stage) for job, _c, _t in rows])
+    except Exception:
+        log.exception("late_open_display_state_failed")
+        ds_map = {}
+
+    items = []
+    for job, customer_name, tech_name in rows:
+        day = shop_day_of(job.scheduled_at, tz_name)
+        items.append({
+            "id": str(job.id),
+            "job_number": job.job_number,
+            "title": job.title,
+            "job_type": job.job_type,
+            "status": job.status,
+            "lifecycle_stage": job.lifecycle_stage,
+            # SQLite hands back a naive (UTC) value; say so, or the browser
+            # reads it as local time.
+            "scheduled_at": (
+                job.scheduled_at if job.scheduled_at.tzinfo else job.scheduled_at.replace(tzinfo=timezone.utc)
+            ).isoformat(),
+            "days_late": (today - day).days if day else None,
+            "customer_id": str(job.customer_id) if job.customer_id else None,
+            "customer_name": customer_name,
+            "assigned_to": job.assigned_to,
+            "tech_name": tech_name,
+            "is_return_visit": bool(job.is_return_visit),
+            "display_state": ds_map.get(str(job.id)),
+        })
+    return {"items": items, "today": today.isoformat(), "timezone": tz_name}
