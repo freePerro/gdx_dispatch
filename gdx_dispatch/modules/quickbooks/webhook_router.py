@@ -1,3 +1,40 @@
+"""QuickBooks change-notification webhook handler — **NOT MOUNTED**.
+
+``create_app()`` has never included this router (no commit ever wired or
+unwired it; it arrives with the initial public release). Verified by execution
+on 2026-09-27 by walking the real route table: ``/api/qb/webhook`` (singular)
+is not a path on the app, and ``qb_webhook`` below is not the endpoint of any
+mounted route. Nothing over HTTP reaches this file.
+
+The route that *is* live is ``POST /api/qb/webhooks`` (**plural**), served by
+the different handler ``modules/quickbooks/router.py::qb_webhooks``. That one
+verifies the signature, answers ``{"verified": true}``, and then drops the
+event: it writes no ``qb_webhook_events`` row, enqueues no task, and does not
+understand the CloudEvents v1.0 payload that only this file normalizes.
+
+That drop is not hypothetical. Measured on production 2026-09-27:
+``audit_logs`` holds **46** ``qb_webhook_received`` rows (latest
+2026-08-30 02:39:50Z) while ``qb_webhook_events`` holds **0**. The live handler
+raises before auditing on both a missing verifier (503) and a bad signature
+(403), so all 46 were signature-verified — real Intuit deliveries, acknowledged
+as ``verified`` and discarded with no record of what was lost. Every code path
+below (dedupe, CloudEvents normalization, per-entity dispatch, the GL S9 §5.4
+money-pull suppression) has therefore never executed in production.
+
+So the tests that drive ``qb_webhook`` (``tests/test_qb_full_sync.py``,
+``tests/test_gl_qb_pull_disable.py``, ``tests/test_03_sprint2_modules.py``)
+certify *this module's logic*, not the behaviour of any reachable URL. They
+say so at each call site since GDXA-89; the wiring claim itself is pinned by
+``test_qb_full_sync.py::test_qb_webhook_router_unmounted_plural_route_live``.
+
+**Do not mount this router as-is** — see the fail-open note on the verifier
+gate in :func:`qb_webhook`. Whether the live plural route should start
+processing events instead, or this module plus ``QBWebhookEvent`` and the
+``qb_webhook_events`` table should be removed under the QuickBooks phase-out
+(``UNFINISHED_WORK.md`` records that QBO can no longer be reached), is an open
+decision for the maintainer — not a cleanup for an agent to pick.
+"""
+
 from __future__ import annotations
 
 import base64
@@ -128,6 +165,16 @@ async def qb_webhook(
         raise HTTPException(status_code=413, detail="Webhook payload too large")
 
     verifier_token = os.getenv("QB_WEBHOOK_VERIFIER_TOKEN") or os.getenv("QB_WEBHOOK_SECRET", "")
+    # FAILS OPEN, deliberately flagged not fixed (GDXA-89): with neither env var
+    # set this `if` skips the signature check entirely and the unsigned body is
+    # processed below — rows written, tasks enqueued. It is survivable only
+    # because nothing is mounted here (see the module docstring); mounting this
+    # router without first inverting this gate to a fail-CLOSED 503 (the shape
+    # router.py::qb_webhooks uses) ships an unauthenticated write endpoint.
+    # The suite depends on the fail-open path today — every test below that
+    # deletes both env vars and posts an unsigned body is exercising it — so
+    # inverting it here is a behaviour change bundled with a live-route decision
+    # that belongs to the maintainer, not a drive-by fix.
     if verifier_token:
         sig_header = request.headers.get("intuit-signature", "")
         if not _verify_signature(raw_body, sig_header, verifier_token):
