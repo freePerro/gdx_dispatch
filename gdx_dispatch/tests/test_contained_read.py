@@ -18,7 +18,10 @@ pending work) and that it re-raises so the caller's own handler still runs.
 """
 from __future__ import annotations
 
+import ast
+import inspect
 from contextlib import suppress
+from pathlib import Path
 
 import pytest
 from sqlalchemy import Column, Integer, String, create_engine, select, text
@@ -318,8 +321,19 @@ def test_pg_a_flushed_write_inside_the_block_is_the_hole_rule_2_cannot_see(pg_te
     been described as covering rule 2 when it covers one of its two directions.
     Documented here rather than fixed: a DML check could ride the Engine-level
     ``before_cursor_execute`` that ``core/performance.py:169`` already installs,
-    but it would police a precondition none of the eight call sites violates. If
-    someone builds it, this test is where it lands — invert both assertions.
+    but it would police a precondition no PRODUCTION call site violates. Say
+    production and mean it: THIS suite violates it deliberately, at the
+    ``db.add()`` + ``flush()`` below and again in
+    ``test_staging_a_write_inside_the_block_is_warned_about`` — proving the
+    hole is what those two are for. A DML check would fire on both, so
+    whoever builds it exempts this file and inverts both assertions here.
+
+    That sentence read "none of the eight call sites" and was still reading it
+    after GDXA-137 made them nine: a second copy of a number whose first copy
+    had already been corrected in ``contained_read``'s docstring. The number is
+    gone from here rather than re-synced, because a count kept in two places is
+    a count that is wrong in one. It lives in that docstring and is pinned by
+    ``test_the_docstring_call_site_count_is_not_stale`` at the end of this file.
 
     This test has NO teeth about the helper, deliberately, and that is worth
     knowing before citing it: it passes with or without ``contained_read``,
@@ -662,3 +676,108 @@ def test_pg_resolve_author_name_no_longer_costs_the_note(pg_test_engine):
     db.close()
     with pg_test_engine.connect() as other:
         assert other.execute(text("SELECT count(*) FROM gdxa86_row")).scalar() == 1
+
+
+# ── the docstring's call-site count is a number, so pin it ──────────────────
+
+_SKIP_DIRS = {"tests", "node_modules", ".git", "frontend", ".venv"}
+
+_NUMBER_WORD = {
+    1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
+    7: "seven", 8: "eight", 9: "nine", 10: "ten", 11: "eleven", 12: "twelve",
+}
+
+
+def test_the_docstring_call_site_count_is_not_stale():
+    """``contained_read``'s docstring states its own call-site count. Pin it.
+
+    That number is load-bearing: it is the stated reason the helper only warns
+    about a staged-but-unflushed write instead of policing DML on the
+    connection ("it would police a precondition nothing violates"). Let the
+    count drift and the justification is for a world that no longer exists.
+
+    It had gone stale twice before this test — six when it was seven, eight
+    when GDXA-137 made it nine — each caught by an adversarial audit rather
+    than by CI. The recipe written to stop that was itself wrong in the same
+    way (GDXA-151): it told you to subtract one when two of its matches were
+    the docstring's own prose, so it answered ten.
+
+    Counts from the FILESYSTEM, deliberately, because the recipe it replaced
+    used ``git grep`` and a call site in a brand-new module reads as zero there
+    until someone runs ``git add`` — measured in the GDXA-151 audit.
+
+    Counts by PARSING, not by grepping, and that is the whole difference
+    between this and the recipe it replaced. An ``ast`` walk sees only real
+    calls, so a commented-out line, a docstring example, or any other mention
+    inside a string cannot inflate the number — and it catches a site opened
+    through ``ExitStack.enter_context(contained_read(db))``, which a
+    ``with contained_read(`` grep misses. A text scan got both wrong in the
+    GDXA-151 audit: the docstring-example case is the nastier one, because it
+    made the guard demand a number that was not the call-site count, so
+    following its own error message would have written "ten" into the sentence
+    below — the exact defect, by the exact mechanism, as the recipe deleted here.
+
+    Walks the whole repo, not just this package: ``tools/`` and ``scripts/``
+    sit outside ``gdx_dispatch/`` and a call site there is still a call site.
+    ``core/database.py`` is excluded because it defines the helper and calls it
+    nowhere — asserted below, so a real site landing there cannot go uncounted.
+    Tests are excluded because they wrap writes on purpose, which is also why
+    the docstring's number is about PRODUCTION call sites.
+
+    TWO LIMITS, so nobody mistakes this for more than it is:
+
+    1. It pins the COUNT, not the claim that those sites "wrap pure reads".
+       Put a write inside an existing call site and this stays green while the
+       docstring goes wrong.
+    2. It does not enforce that the number is written down only once. An
+       earlier revision tried; it could only match one phrasing, in one
+       directory, and missed both historical drifts ("none of the eight call
+       sites", "six") and the whole of ``tests/`` — where the copy this commit
+       deletes actually lived. A guard that checks the easy half of a rule
+       reads as if it checked all of it, so it was removed rather than left
+       to reassure. Keeping the number in one place is a review habit here,
+       not a machine-checked invariant.
+    """
+    import gdx_dispatch
+
+    def _count(src: str) -> int:
+        """Real calls only — ``ast``, so strings and comments cannot inflate."""
+        return sum(
+            1
+            for node in ast.walk(ast.parse(src))
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", getattr(node.func, "attr", None))
+            == "contained_read"
+        )
+
+    root = Path(gdx_dispatch.__file__).resolve().parent.parent
+    database_py = Path("gdx_dispatch/core/database.py")
+    per_file: dict[str, int] = {}
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(root)
+        if _SKIP_DIRS & set(rel.parts):
+            continue
+        hits = _count(path.read_text(encoding="utf-8"))
+        if rel == database_py:
+            assert hits == 0, (
+                "core/database.py gained a contained_read call site. It is "
+                "excluded from the count, so that site would go uncounted — "
+                "either move it or stop excluding this file."
+            )
+            continue
+        if hits:
+            per_file[rel.as_posix()] = hits
+
+    total = sum(per_file.values())
+    word = _NUMBER_WORD.get(total)
+    assert word is not None, f"extend _NUMBER_WORD: {total} call sites {per_file}"
+
+    # Whitespace-collapsed so re-WRAPPING the sentence is free. Re-WORDING it is
+    # not, and that is deliberate: this exact phrase is the anchor.
+    doc = " ".join((inspect.getdoc(contained_read) or "").split())
+    expected = f"{word} current call sites"
+    assert expected in doc, (
+        f"contained_read has {total} call sites {per_file}, but its docstring "
+        f"does not say {expected!r}. Fix the sentence in core/database.py — and "
+        "nowhere else. A second copy of this number is what went stale twice."
+    )
