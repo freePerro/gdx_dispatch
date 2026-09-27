@@ -231,16 +231,26 @@ def test_pause_reader_missing_schema_reads_open(db):
     assert qb_money_pull_paused(COMPANY, db) is False  # table not created here
 
 
-def test_pause_reader_fails_closed_on_unexpected_error(db):
+def test_pause_reader_fails_closed_on_unexpected_error(db, monkeypatch):
     # Any OTHER read failure pauses the pull: a blocked sync is a retry; an
     # overwritten payment date is not.
+    #
+    # The failure is injected into a REAL session rather than a hand-rolled
+    # stub. GDXA-86 wrapped this read in `contained_read`, which calls
+    # `db.connection()` before `db.execute()` — so a stub carrying only
+    # `execute` raised AttributeError on the line before the error under test,
+    # and the assertion below still passed because AttributeError is not a
+    # missing-schema error either. Green for the wrong reason, which is the
+    # failure mode this repo calls a vacuous test.
     from gdx_dispatch.core.settings_flags import qb_money_pull_paused
 
-    class _BrokenSession:
-        def execute(self, *a, **kw):
-            raise RuntimeError("connection reset")
+    _create_settings_table(db)  # so a missing table is not what fails
 
-    assert qb_money_pull_paused(COMPANY, _BrokenSession()) is True
+    def _boom(*a, **kw):
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(db, "execute", _boom)
+    assert qb_money_pull_paused(COMPANY, db) is True
 
 
 # ─── /api/workflow/flags round trip ─────────────────────────────────────

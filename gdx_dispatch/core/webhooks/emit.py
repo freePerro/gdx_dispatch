@@ -56,6 +56,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import utcnow
+from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.core.webhooks.models import WebhookDelivery
 from gdx_dispatch.routers.webhooks import WebhookSubscription
 
@@ -142,17 +143,43 @@ def _emit(db: Session, tenant_id: str, event_type: str, entity_id: str, data: di
     envelope = build_envelope(event_type, data)
     staged: list[str] = []
 
-    subs = (
-        db.execute(
-            select(WebhookSubscription).where(
-                WebhookSubscription.company_id == tenant_id,
-                WebhookSubscription.active.is_(True),
-                WebhookSubscription.deleted_at.is_(None),
+    # Contained: `emit_domain_event`'s handler one frame up turns any failure
+    # here into "no webhook", which is the right degradation — but on Postgres
+    # a bare failed SELECT also aborts the CALLER's transaction, so the
+    # promise directly above it ("Webhook fan-out must NEVER break that write")
+    # was false for exactly the failure it was written to survive (GDXA-86).
+    #
+    # That promise is still not FULLY kept, and this containment is not what is
+    # missing. A `db.begin_nested()` further down — the per-row delivery staging
+    # — snapshot-flushes the caller's pending work, and that flush runs while the
+    # transaction object is still being constructed, so a caller holding a row
+    # that cannot flush never enters the block and NO savepoint is ever emitted.
+    # The session is poisoned upstream of any containment, and the caller's own
+    # commit is dead. Do not grep for one log line: measured on PG 15.17, which
+    # line you get depends on how far the fan-out got — with a matching
+    # subscription, `emit_domain_event_failed`; with none (the ordinary state of
+    # this install), `workflow_dispatch_stage_failed`; with none and an event
+    # outside SUPPORTED_TRIGGERS, NOTHING IS LOGGED AT ALL and the caller simply
+    # dies at its own commit. That silent third case is why this is invisible in
+    # production. That flush is pre-existing and deliberately not fixed here: the
+    # staging is a WRITE, so it genuinely needs the ORM-level savepoint and
+    # untangling it is its own change.
+    #
+    # `any_event_consent` in `core/plugin_consent.py` was the same hazard on a
+    # READ — another owner's file (`plugins-host`), handed over as GDXA-137 and
+    # being fixed there, so do not read this comment as its current state.
+    with contained_read(db):
+        subs = (
+            db.execute(
+                select(WebhookSubscription).where(
+                    WebhookSubscription.company_id == tenant_id,
+                    WebhookSubscription.active.is_(True),
+                    WebhookSubscription.deleted_at.is_(None),
+                )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
-    )
     for sub in subs:
         try:
             sub_events = json.loads(sub.events) if sub.events else []
@@ -241,12 +268,13 @@ def _emit(db: Session, tenant_id: str, event_type: str, entity_id: str, data: di
         if event_type in SUPPORTED_TRIGGERS:
             from gdx_dispatch.modules.workflows.models import WorkflowRule
 
-            has_rule = db.execute(
-                select(WorkflowRule.id).where(
-                    WorkflowRule.is_active.is_(True),
-                    WorkflowRule.trigger_event == event_type,
-                ).limit(1)
-            ).first()
+            with contained_read(db):
+                has_rule = db.execute(
+                    select(WorkflowRule.id).where(
+                        WorkflowRule.is_active.is_(True),
+                        WorkflowRule.trigger_event == event_type,
+                    ).limit(1)
+                ).first()
             if has_rule:
                 db.info.setdefault(_WORKFLOW_PENDING_KEY, []).append(
                     {
