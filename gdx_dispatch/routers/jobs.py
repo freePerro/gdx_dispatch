@@ -1088,7 +1088,19 @@ def update_job(
 ):
     """Partial update. Accepts any subset of JobUpdate fields; tenant-scoped; audit logged."""
     try:
-        uuid.UUID(job_id)
+        # Keep the PARSED uuid and bind that below — the anchor comment for the
+        # seven routes in this file that used to validate the id here and then
+        # bind the raw path string anyway.
+        #
+        # `Job.id` is `Uuid()`. Postgres takes either form, so a str bind is
+        # invisible in production; SQLite raises StatementError ('str' object
+        # has no attribute 'hex'), which `except SQLAlchemyError` below turns
+        # into this route's deliberate 500. That is the whole of GDXA-37/88's
+        # "PATCH returned 500, not 403 for a technician": not an authz
+        # decision, a bind the default harness cannot execute — which is also
+        # why six job-scoped writes had no admission test at all until
+        # tests/test_jobs_write_authz.py could finally drive them.
+        job_uuid = uuid.UUID(job_id)
     except (ValueError, AttributeError):
         log.exception("update_job_failed")
         return jsonable_response({"detail": "job not found"}, 404)
@@ -1189,7 +1201,7 @@ def update_job(
         # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
         job = db.execute(
             select(Job).where(
-                Job.id == job_id,
+                Job.id == job_uuid,
                 Job.deleted_at.is_(None),
             )
         ).scalar_one_or_none()
@@ -1242,7 +1254,21 @@ def update_job(
             setattr(job, col, val)
 
         if ls_value is not None:
-            # PG enum requires explicit CAST; use raw SQL for this one column
+            # PG enum requires explicit CAST; use raw SQL for this one column.
+            #
+            # This statement is Postgres-only in BOTH halves, and the obvious
+            # tidy-up — reusing the `job_uuid` parsed at the top of this
+            # handler, or matching SQLite's storage form — makes it worse, not
+            # better. On SQLite `id = :jid` compares a dashed uuid against the
+            # 32 hex characters SQLite stores, so it matches nothing and the
+            # statement is a no-op; and `CAST(... AS job_lifecycle_stage)`
+            # resolves to NUMERIC affinity there, so a statement that DID
+            # match would store '0'. The two defects cancel, which is the only
+            # reason the SQLite harness can run this route at all. Make the
+            # WHERE match without also dialect-switching the CAST and you turn
+            # a harmless no-op into a corrupt write. `jobs.status` is written
+            # from the same patch through the ORM above, and that half IS
+            # asserted in tests/test_jobs_write_authz.py.
             db.execute(
                 _text("UPDATE jobs SET lifecycle_stage = CAST(:ls AS job_lifecycle_stage) WHERE id = :jid"),
                 {"ls": ls_value, "jid": job_id},
@@ -1318,7 +1344,7 @@ def delete_job(
     2026-09-25 audit of that fix.
     """
     try:
-        uuid.UUID(job_id)
+        job_uuid = uuid.UUID(job_id)  # bind the parsed uuid — see update_job
     except (ValueError, AttributeError):
         log.exception("delete_job_failed")
         return jsonable_response({"detail": "job not found"}, 404)
@@ -1331,7 +1357,7 @@ def delete_job(
         # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
         job = db.execute(
             select(Job).where(
-                Job.id == job_id,
+                Job.id == job_uuid,
                 Job.deleted_at.is_(None),
             )
         ).scalar_one_or_none()
@@ -3436,7 +3462,7 @@ def get_job(job_id: str, request: Request, current_user: Any = Depends(get_curre
     _ = current_user
     # Validate UUID format before querying to avoid DataError on non-UUID paths like "new"
     try:
-        uuid.UUID(job_id)
+        job_uuid = uuid.UUID(job_id)  # bind the parsed uuid — see update_job
     except (ValueError, AttributeError):
         logging.getLogger(__name__).exception("get_job caught exception")
         return jsonable_response({"detail": "job not found"}, 404)
@@ -3445,7 +3471,7 @@ def get_job(job_id: str, request: Request, current_user: Any = Depends(get_curre
         # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
         result = db.execute(
             select(Job, Customer).outerjoin(Customer, Job.customer_id == Customer.id).where(
-                Job.id == job_id,
+                Job.id == job_uuid,
                 Job.deleted_at.is_(None),
             )
         ).first()
@@ -3934,7 +3960,7 @@ def create_follow_up_job(
 ):
     """Create a follow-up job linked to the original via parent_job_id."""
     try:
-        uuid.UUID(job_id)
+        job_uuid = uuid.UUID(job_id)  # bind the parsed uuid — see update_job
     except (ValueError, AttributeError):
         log.exception("create_follow_up_job_failed")
         return jsonable_response({"detail": "job not found"}, 404)
@@ -3949,7 +3975,7 @@ def create_follow_up_job(
         # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
         original = db.execute(
             select(Job).where(
-                Job.id == job_id,
+                Job.id == job_uuid,
                 Job.deleted_at.is_(None),
             )
         ).scalar_one_or_none()
@@ -4035,7 +4061,7 @@ def spawn_return_visit(
 ):
     """Create a warranty / callback child job. Original is left untouched."""
     try:
-        uuid.UUID(job_id)
+        job_uuid = uuid.UUID(job_id)  # bind the parsed uuid — see update_job
     except (ValueError, AttributeError):
         return jsonable_response({"detail": "job not found"}, 404)
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
@@ -4047,7 +4073,7 @@ def spawn_return_visit(
     now = datetime.now(UTC)
     try:
         original = db.execute(
-            select(Job).where(Job.id == job_id, Job.deleted_at.is_(None))
+            select(Job).where(Job.id == job_uuid, Job.deleted_at.is_(None))
         ).scalar_one_or_none()
         if not original:
             return jsonable_response({"detail": "Original job not found"}, 404)
@@ -4155,7 +4181,7 @@ def uncomplete_job(
     if not cleaned:
         return jsonable_response({"detail": "reason is required (≥4 characters)"}, 422)
     try:
-        uuid.UUID(job_id)
+        job_uuid = uuid.UUID(job_id)  # bind the parsed uuid — see update_job
     except (ValueError, AttributeError):
         return jsonable_response({"detail": "job not found"}, 404)
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
@@ -4168,7 +4194,7 @@ def uncomplete_job(
     now = datetime.now(UTC)
     try:
         job = db.execute(
-            select(Job).where(Job.id == job_id, Job.deleted_at.is_(None))
+            select(Job).where(Job.id == job_uuid, Job.deleted_at.is_(None))
         ).scalar_one_or_none()
         if not job:
             return jsonable_response({"detail": "job not found"}, 404)
@@ -4221,7 +4247,7 @@ def reactivate_job(
     if not cleaned:
         return jsonable_response({"detail": "reason is required (≥4 characters)"}, 422)
     try:
-        uuid.UUID(job_id)
+        job_uuid = uuid.UUID(job_id)  # bind the parsed uuid — see update_job
     except (ValueError, AttributeError):
         return jsonable_response({"detail": "job not found"}, 404)
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
@@ -4233,7 +4259,7 @@ def reactivate_job(
     now = datetime.now(UTC)
     try:
         job = db.execute(
-            select(Job).where(Job.id == job_id, Job.deleted_at.is_(None))
+            select(Job).where(Job.id == job_uuid, Job.deleted_at.is_(None))
         ).scalar_one_or_none()
         if not job:
             return jsonable_response({"detail": "job not found"}, 404)
