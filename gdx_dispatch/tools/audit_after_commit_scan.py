@@ -117,6 +117,14 @@ ALLOWED: dict[tuple[str, str], str] = {
         "no caller: the live pull is modules/quickbooks/sync.pull_accounts; "
         "this legacy SDK copy is dead code (#700 close-out)"
     ),
+    ("routers/timeclock.py", "_auto_close_stale_shift"): (
+        "helper: its one caller, post_clock_in, commits the close and this row "
+        "together on the next line — the atomicity is the point (GDXA-97). New "
+        "to this scan not because the code moved but because it became legible: "
+        "the site used to write its row through asyncio.run(log_audit_event(...)), "
+        "a wrapper the scan cannot resolve, so it was invisible here while it was "
+        "swallowing refusals"
+    ),
     ("routers/commission.py", "set_rules"): "commission is leaving core for a plugin; not fixed in core (#700)",
     ("routers/commission.py", "update_rule"): "commission is leaving core for a plugin; not fixed in core (#700)",
     ("routers/commission.py", "calculate_commission"): (
