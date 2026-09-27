@@ -266,12 +266,24 @@ def test_rollback_drops_dispatch():
 
 def test_emit_still_dispatches_when_consent_probe_savepoint_rolls_back():
     # Regression: on a FRESH box the plugin_consent table doesn't exist, so
-    # any_event_consent's begin_nested SELECT fails and rolls back its SAVEPOINT.
+    # any_event_consent's SELECT fails and rolls back its SAVEPOINT.
     # after_rollback fires on savepoint rollbacks too — an earlier version cleared
     # the staged webhook dispatch there, so webhooks silently NEVER fired on a
     # fresh Postgres box. The after_soft_rollback + `nested` guard keeps pending
     # across savepoint rollbacks. This _session() has NO plugin_consent table, so
     # the probe savepoint really does roll back.
+    #
+    # Since GDXA-137 that savepoint is a CONNECTION-level one (contained_read),
+    # which fires no Session listener at all, so this no longer reaches
+    # after_soft_rollback through the consent probe. Measured by deleting the
+    # in_transaction() guard from _drop_pending: before GDXA-137 it
+    # reddened 3 tests in this file (this one, test_fanout_two_receivers_no_
+    # integrityerror, test_duplicate_reemit_still_dispatches_the_first_delivery),
+    # after it only the last of those — emit's per-row staging savepoint on a
+    # duplicate idempotency key is the surviving trigger, and that test is the
+    # guard's net now. Kept because the end-to-end contract this one asserts (a
+    # fresh box with no consent table still dispatches its webhooks) is exactly
+    # the production state of this install.
     db = _session()
     install_webhook_dispatch_hook()
     _sub(db, ["invoice.paid"])
@@ -310,11 +322,25 @@ def test_consent_probe_savepoint_does_not_dispatch_before_business_commit():
     # GDXA-50 guard 1. after_commit is NOT root-only: SessionTransaction.commit
     # dispatches it whenever `self._parent is None or self.nested`, so every
     # SAVEPOINT release fires it. On any box where the plugin_consent table
-    # exists, any_event_consent's begin_nested probe RELEASES its savepoint
+    # exists, any_event_consent's begin_nested probe RELEASED its savepoint
     # mid-emit and drained the pending queue there — enqueueing the delivery
     # before the business commit. The worker's own connection could not see the
     # uncommitted row, deliver_webhook_task found nothing and returned, and the
     # webhook landed 0.5-5 minutes late via the retry sweep instead of promptly.
+    #
+    # NO LONGER A LIVE NET FOR THAT GUARD, and say so rather than let the name
+    # imply otherwise. GDXA-137 moved the consent probe to
+    # core.database.contained_read, whose SAVEPOINT is on the Connection and is
+    # invisible to the Session, so nothing in a single emit releases a
+    # session-level savepoint after _PENDING_KEY is populated (the per-row
+    # staging savepoint releases BEFORE that, while the list is still empty).
+    # Measured by deleting the in_nested_transaction() guard from
+    # _dispatch_pending: before GDXA-137 that reddened three tests in this file,
+    # after it exactly one — test_rollback_drops_plugin_and_workflow_dispatch_too,
+    # which emits twice and so releases the 2nd emit's staging savepoint while the
+    # 1st emit's queue is populated. That test is the guard's regression net now.
+    # This one keeps its assertions because they are still the correct
+    # end-to-end contract, and it documents the mechanism GDXA-50 was found in.
     from gdx_dispatch.core.plugin_consent import ensure_consent_table
 
     db = _session()
