@@ -21,10 +21,12 @@ Scope is deliberate and honest: SQLite can faithfully execute the
 the handler's own try/except, so a genuine code/schema bug — like the
 original missing pydantic field — still hard-fails this test; proven).
 ``create_job`` + the holding_area 400 are the faithful, always-on guard
-for the actual incident class. PATCH /api/jobs/{id} and the closeout
-endpoint use Postgres-only SQL that SQLite cannot run faithfully — see
-the note below the tests for exactly how those are covered instead. No
-skip/xfail: every test here actually executes the code it asserts on.
+for the actual incident class. ``GET`` and ``PATCH /api/jobs/{id}`` joined
+them in GDXA-88, once the raw-str-to-``Uuid`` bind that made them
+unexecutable on SQLite was fixed. The closeout endpoint still uses
+Postgres-only SQL that SQLite cannot run faithfully — see the note below
+the tests. No skip/xfail: every test here actually executes the code it
+asserts on.
 """
 from __future__ import annotations
 
@@ -111,17 +113,56 @@ def test_post_jobs_bogus_holding_area_id_is_400_not_500(client: TestClient) -> N
     assert "holding_area_id" in r.text
 
 
-# NOTE on PATCH /api/jobs/{id} and POST /api/jobs/{id}/closeout —
-# deliberately NOT driven end-to-end here.
+def test_get_and_patch_one_job_are_not_5xx(client: TestClient) -> None:
+    """GDXA-88: the round trip POST -> GET {id} -> PATCH {id}.
+
+    Both single-job routes validated `job_id` as a uuid and then bound the raw
+    path STRING to `Job.id`, a `Uuid()` column. Postgres takes either form;
+    SQLite raises StatementError ('str' object has no attribute 'hex'), which
+    each handler's own `except SQLAlchemyError` returned as a 500 — the exact
+    complaint GDXA-37 filed. `get_job` is the one route of the seven with no
+    other always-on guard: its only coverage was `tests/e2e/`, which
+    `pytest.ini` excludes, so reverting its bind alone turned nothing red.
+
+    Deliberately a <500 smoke, matching this file's premise, not an authz
+    test — the caller here is an admin. The object-level gate on PATCH is
+    covered by tests/test_jobs_write_authz.py.
+    """
+    created = client.post("/api/jobs", json={"title": f"smoke {uuid4().hex[:8]}"})
+    assert created.status_code < 500, f"POST setup 5xx'd: {created.text[:300]}"
+    job_id = created.json().get("id")
+    assert job_id, f"POST /api/jobs returned no id: {created.text[:300]}"
+
+    got = client.get(f"/api/jobs/{job_id}")
+    assert got.status_code == 200, f"GET /api/jobs/{{id}}: {got.status_code} {got.text[:300]}"
+    assert str(got.json().get("id")).replace("-", "") == str(job_id).replace("-", "")
+
+    patched = client.patch(f"/api/jobs/{job_id}", json={"title": "smoke renamed"})
+    assert patched.status_code == 200, (
+        f"PATCH /api/jobs/{{id}}: {patched.status_code} {patched.text[:300]}"
+    )
+    assert client.get(f"/api/jobs/{job_id}").json().get("title") == "smoke renamed"
+
+
+# NOTE on POST /api/jobs/{id}/closeout — deliberately NOT driven
+# end-to-end here.
 #
-# Their handlers use Postgres-only SQL (`SELECT ... FOR UPDATE` in
-# next_job_number; a control-plane `tenant_settings` workflow-gate read;
-# `Uuid` columns bound from str) that SQLite cannot execute faithfully.
-# Forcing them through the in-memory harness produces failures caused by
+# PATCH /api/jobs/{id} WAS in this note until GDXA-88, on the strength of
+# the third reason below; that reason is now gone (it bound a raw str to a
+# `Uuid` column, which was a portability defect rather than a property of
+# SQLite) and the round trip is driven above. The closeout handler's
+# remaining Postgres-only SQL (`SELECT ... FOR UPDATE` in next_job_number;
+# a control-plane `tenant_settings` workflow-gate read) is genuinely not
+# something SQLite can execute faithfully.
+# Forcing it through the in-memory harness produces failures caused by
 # the dialect, not by the code — a flaky test that blocks CI for the
-# wrong reason. Reintroducing them as skip/xfail would recreate the exact
+# wrong reason. Reintroducing it as skip/xfail would recreate the exact
 # blind spot this file exists to close (a green suite that doesn't run
 # the code).
+#
+# The lesson worth keeping from GDXA-88: "SQLite cannot run this" and "this
+# code is not portable" look identical from here, and only the second one is
+# ours to fix. Check which it is before writing the route off.
 #
 # The ATTRIBUTE shape of the original bug class (a handler reading a
 # `payload.<attr>` the request schema doesn't declare — the exact 6-day
@@ -129,8 +170,13 @@ def test_post_jobs_bogus_holding_area_id_is_400_not_500(client: TestClient) -> N
 # test_router_payload_attr_contract.py. Honest limit: that scan sees
 # `payload.<attr>` only. `update_job` reads via
 # `data = payload.model_dump(); data["holding_area_id"]` — the SAME bug
-# class in dict-key shape, which an attribute scan cannot see and the
-# SQLite smoke cannot run (Postgres `FOR UPDATE`). So PATCH's dict-shape
-# variant is covered ONLY by the `-m e2e` suite (real Postgres + live
-# VPS), not by the always-on suite. That residual is stated, not hidden —
-# closing it (a model_dump/dict-key scan) is a tracked follow-up.
+# class in dict-key shape, which an attribute scan cannot see.
+#
+# As of GDXA-88 the always-on suite DOES execute that dict-key path: the
+# round trip above plus the PATCH admission tests in
+# test_jobs_write_authz.py drive update_job for title, status /
+# lifecycle_stage and assignment. The residual is narrower than it was and
+# still worth stating — a dict-key read reached only by a field no test
+# sends (`holding_area_id` among them) is still unexecuted here, and only
+# the `-m e2e` suite covers it. Closing it (a model_dump/dict-key scan) is
+# a tracked follow-up.
