@@ -135,11 +135,21 @@ def contained_read(db: Session) -> Iterator[None]:
        new machinery" is not it: ``core/performance.py:169`` already registers an
        Engine-level ``before_cursor_execute`` (``SlowQueryMiddleware``, wired at
        ``app.py``), so the hook is already in every query's path and a
-       DML-in-savepoint check could ride it. The reason is that all eight current
+       DML-in-savepoint check could ride it. The reason is that all nine current
        call sites wrap pure reads, so it would police a precondition nothing
        violates, and ``tests/test_contained_read.py`` pins the hole so the next
        person does not mistake it for coverage. When a call site does need a
        write contained, it wants ``db.begin_nested()`` — not a louder warning.
+
+       That count is load-bearing — it IS the reason above — and it has gone
+       stale twice already, each time caught by an adversarial audit rather than
+       by a test: six when it was seven, eight when GDXA-137 made it nine. So
+       recount instead of trusting this sentence, and update it in the same
+       commit that adds a site::
+
+           git grep -c 'with contained_read(' -- gdx_dispatch \
+             | grep -v /tests/          # minus the example at the top of this
+                                        # docstring, which is not a call site
 
        A warning and not a raise, either way — by the time it could fire the
        read has already happened, and turning a degraded read into a 500 is
