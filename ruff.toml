@@ -1,6 +1,30 @@
 # ruff.toml — GDX Dispatch
-# Replaces flake8 + black + isort in one tool (150-200x faster)
+# Replaces flake8 + isort in one tool (150-200x faster). NOT black, and not any
+# other formatter: no formatter has ever been wired in this repo, checked over
+# its whole commit history. There is no [format] table below, no formatter step
+# in .github/workflows/ci.yml, no pre-commit config and no .editorconfig. Nor
+# does any repo tooling run `ruff check --fix`, so the autofixable rules below
+# only ever rewrite code when a developer invokes them by hand.
+#
+# Linting is enforced as a RATCHET, not pass/fail: gdx_dispatch/tools/ruff_ratchet.sh
+# compares the violation count against a floor kept in .ruff_baseline. Read that
+# file for the number rather than trusting a copy in prose — the script rewrites
+# it whenever the count drops, so any figure quoted here would go stale with
+# nothing able to fail for it. One scope gap worth knowing: the ratchet's target
+# is `gdx_dispatch/` only, so tracked .py files outside it (conftest.py,
+# plugins/, scripts/, tools/) obey these rules but are gated by nothing.
+#
+# Adopting a formatter is a maintainer decision deliberately left open, and not
+# a small one: at the CI pin (ruff 0.15.18), measured 2026-09-27, it would
+# rewrite 1300 of the 1401 files under gdx_dispatch/, and the baseline would
+# have to be refrozen in the same change.
 
+# Read by the `I` (isort) autofix, which wraps an import block it rewrites at
+# this width — verified 2026-09-27 at the CI pin: the same block fixes to one
+# line under 120 and to one name per line under 40. That autofix is its only
+# consumer here today. It does not cap line length for the gate (E501 is
+# ignored below) and no formatter reads it, so a line over 120 characters is
+# not a finding anywhere in this repo.
 line-length = 120
 
 [lint]
@@ -15,7 +39,15 @@ select = [
     "SIM",   # flake8-simplify
 ]
 ignore = [
-    "E501",  # Line too long — handled by formatter
+    # E501: line length is not enforced in this repo by anything. It is ignored
+    # here, and no formatter runs to enforce it instead (see the header). The
+    # "handled by formatter" this line claimed until 2026-09-27 was never true —
+    # there has never been a formatter to hand it to. Lifting the ignore is not
+    # a free tidy-up: under gdx_dispatch/ alone it surfaces 756 violations
+    # across 197 files (32 of them over 200 characters, longest 304), measured
+    # 2026-09-27 at the CI pin — far above the .ruff_baseline floor, so it reds
+    # the ratchet on the first run.
+    "E501",
     "S101",  # assert used — needed in tests
     "S108",  # Probable insecure usage of temp file — we use /tmp intentionally
     "S603",  # subprocess call - check for execution of untrusted input
