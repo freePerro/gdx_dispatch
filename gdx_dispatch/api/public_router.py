@@ -16,6 +16,7 @@ Response envelope for single items / mutations:
 import contextlib
 import logging
 import uuid
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
@@ -192,13 +193,14 @@ def _audit_public_write(
 
     * Run `ensure_audit_table(db)` before staging anything — its first run on
       an engine commits, which would otherwise harden a half-finished write.
-      It is called as the first statement inside each handler's `try`, so a
-      broken session surfaces through that handler's own error path.
-    * Re-raise `HTTPException` ahead of the generic database-error handler. On
-      a refused row `audit_or_rollback` has already rolled the change back and
-      raised "audit failure — change rolled back"; letting that fall through to
-      the generic 500 would report a different failure than the one that
-      happened.
+      It is called as the first statement inside each handler's
+      `_write_errors_as_500` body, so a broken session surfaces through that
+      handler's own error path.
+    * Let `HTTPException` out ahead of the generic database-error translation.
+      On a refused row `audit_or_rollback` has already rolled the change back
+      and raised "audit failure — change rolled back"; reporting that as the
+      generic 500 would name a different failure than the one that happened.
+      `_write_errors_as_500` is what satisfies this, for every handler at once.
 
     The one audit write in this file that does NOT go through here is
     `create_public_landing_lead`. That is deliberate and is the exception, not
@@ -226,6 +228,50 @@ def _audit_public_write(
         # still answer "did a person or a key do this?".
         details={"channel": "public_api", "api_key_prefix": key_prefix, **(details or {})},
     )
+
+
+@contextlib.contextmanager
+def _write_errors_as_500(db: Session, route: str) -> Iterator[None]:
+    """Translate a failed write into the opaque 500 — nothing more.
+
+    Deliberately named for what it does and not for where it is used: all five
+    of this file's write handlers wrap their primary write in it, but it audits
+    nothing and guarantees nothing about the trail. Invariant #1 stays entirely
+    with the caller (`_audit_public_write`, inside this block, before the
+    commit) — a name like `_audited_write` would make an unaudited handler
+    *read* as compliant, which is exactly the GDXA-85 defect wearing a helper's
+    name.
+
+    Both arms are load-bearing:
+
+    * `HTTPException` passes through untouched. On a refused audit row
+      `audit_or_rollback` has already rolled the change back and raised
+      "audit failure — change rolled back"; reporting that as the generic
+      message would name a different failure than the one that happened.
+      Dropping this arm turns the three `TestAuditFailureSemantics` tests red —
+      measured, not assumed.
+    * Anything else is logged against `route` — an opaque 500 with no log left
+      an integration failure undebuggable on a box with no Sentry — and then
+      answered as that opaque 500, with the rollback suppressed: a rollback on
+      a dead session can itself raise, and since the real error is already
+      logged, a rollback failure must not replace the 500 with an unhandled
+      crash (repo pattern per #751).
+
+    On the success path this wrapper executes no statement of its own — the
+    `db.rollback()` above is the only one, and it runs only on the way to a 500.
+    So the caller still owns `ensure_audit_table(db)` as the first line of its
+    body and its single `db.commit()`, for the reasons `_audit_public_write`
+    gives.
+    """
+    try:
+        yield
+    except HTTPException:
+        raise
+    except Exception:
+        logging.getLogger(__name__).exception("public api %s failed", route)
+        with contextlib.suppress(Exception):
+            db.rollback()
+        raise HTTPException(status_code=500, detail="A database error occurred") from None
 
 
 class _PageParams:
@@ -391,7 +437,7 @@ def create_job(
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
 
-    try:
+    with _write_errors_as_500(db, "create_job"):
         # First, before the INSERT is staged: its first run on an engine commits.
         ensure_audit_table(db)
         row = db.execute(
@@ -425,16 +471,6 @@ def create_job(
             },
         )
         db.commit()
-    except HTTPException:
-        raise  # see _audit_public_write: the audit 500 has already rolled back
-    except Exception:
-        logging.getLogger(__name__).exception("public api create_job failed")
-        # rollback on a dead session can itself raise; the real error is
-        # already logged above, so a rollback failure must not replace the
-        # opaque 500 with an unhandled crash (repo pattern per #751).
-        with contextlib.suppress(Exception):
-            db.rollback()
-        raise HTTPException(status_code=500, detail="A database error occurred") from None
 
     return _ok(dict(row), status_code=201)
 
@@ -461,7 +497,7 @@ def update_job(
     set_clauses = ", ".join(f"{col} = :{col}" for col in updates)
     params = {**updates, "job_id": job_id}
 
-    try:
+    with _write_errors_as_500(db, "update_job"):
         # First, before the UPDATE is staged: its first run on an engine commits.
         ensure_audit_table(db)
         row = db.execute(
@@ -493,16 +529,6 @@ def update_job(
                 details={"changed": dict(updates)},
             )
         db.commit()
-    except HTTPException:
-        raise  # see _audit_public_write: the audit 500 has already rolled back
-    except Exception:
-        logging.getLogger(__name__).exception("public api update_job failed")
-        # rollback on a dead session can itself raise; the real error is
-        # already logged above, so a rollback failure must not replace the
-        # opaque 500 with an unhandled crash (repo pattern per #751).
-        with contextlib.suppress(Exception):
-            db.rollback()
-        raise HTTPException(status_code=500, detail="A database error occurred") from None
 
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -591,7 +617,7 @@ def create_customer(
         address=payload.address,
         company_id=str(tenant["id"]),
     )
-    try:
+    with _write_errors_as_500(db, "create_customer"):
         # First, before anything is staged: its first run on an engine commits.
         ensure_audit_table(db)
         db.add(customer)
@@ -609,16 +635,6 @@ def create_customer(
         )
         db.commit()
         db.refresh(customer)
-    except HTTPException:
-        raise  # see _audit_public_write: the audit 500 has already rolled back
-    except Exception:
-        logging.getLogger(__name__).exception("public api create_customer failed")
-        # rollback on a dead session can itself raise; the real error is
-        # already logged above, so a rollback failure must not replace the
-        # opaque 500 with an unhandled crash (repo pattern per #751).
-        with contextlib.suppress(Exception):
-            db.rollback()
-        raise HTTPException(status_code=500, detail="A database error occurred") from None
 
     return _ok(
         {
@@ -741,18 +757,15 @@ async def create_public_landing_lead(
         utm_medium=payload.utm_medium,
         status="new",
     )
-    try:
+    # Same translation as the four audited handlers, and the fifth copy of it
+    # the extraction collapses — the `except HTTPException` arm is inert here
+    # (nothing in this body raises one) but costs nothing. What is NOT shared is
+    # the audit: this handler's trail row is written after the commit, in the
+    # best-effort block below, and that is deliberate — see `_audit_public_write`.
+    with _write_errors_as_500(db, "create_public_landing_lead"):
         db.add(ll)
         db.commit()
         db.refresh(ll)
-    except Exception:
-        logging.getLogger(__name__).exception("public api create_public_landing_lead failed")
-        # rollback on a dead session can itself raise; the real error is
-        # already logged above, so a rollback failure must not replace the
-        # opaque 500 with an unhandled crash (repo pattern per #751).
-        with contextlib.suppress(Exception):
-            db.rollback()
-        raise HTTPException(status_code=500, detail="A database error occurred") from None
 
     try:
         from gdx_dispatch.core.audit import log_audit_event_sync  # noqa: PLC0415
@@ -850,7 +863,7 @@ def register_webhook(
         secret=payload.secret or "",
         is_active=True,
     )
-    try:
+    with _write_errors_as_500(db, "register_webhook"):
         # First, before anything is staged: its first run on an engine commits.
         ensure_audit_table(db)
         db.add(endpoint)
@@ -877,16 +890,6 @@ def register_webhook(
         )
         db.commit()
         db.refresh(endpoint)
-    except HTTPException:
-        raise  # see _audit_public_write: the audit 500 has already rolled back
-    except Exception:
-        logging.getLogger(__name__).exception("public api register_webhook failed")
-        # rollback on a dead session can itself raise; the real error is
-        # already logged above, so a rollback failure must not replace the
-        # opaque 500 with an unhandled crash (repo pattern per #751).
-        with contextlib.suppress(Exception):
-            db.rollback()
-        raise HTTPException(status_code=500, detail="A database error occurred") from None
 
     return _ok(
         {
