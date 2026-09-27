@@ -59,6 +59,7 @@ in `core/payments.py`, which money-billing owns.
 from __future__ import annotations
 
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -91,6 +92,10 @@ def rendered() -> str:
         surcharge_percent_label="",
         job_photos=[],
     )
+
+
+# One double-quoted JS literal, escapes included.
+_JS_STRING = r'"(?:[^"\\]|\\.)*"'
 
 
 def _js_strings(expr: str) -> list[str]:
@@ -131,9 +136,14 @@ def test_the_page_pins_the_server_s_recovered_card_sentence(rendered):
     """
     # Matches the literal-and-`+` sequence only, never up to the first `;` —
     # the sentence itself contains one ("paid in full; you don't need...").
+    # The `+` is a mandatory separator *between* literals, not an optional
+    # `\+?` inside a repeated group: written that way, `"a" "b"` was reachable
+    # by many paths through the one quantifier, and any input that matched the
+    # literals but not the trailing `;` made the engine walk all of them
+    # (CodeQL py/redos, GDXA-139).
     m = re.search(
-        r'const ALREADY_RECORDED_DETAIL\s*=\s*'
-        r'((?:\s*"(?:[^"\\]|\\.)*"\s*\+?)+)\s*;',
+        r"const ALREADY_RECORDED_DETAIL\s*=\s*"
+        rf"({_JS_STRING}(?:\s*\+\s*{_JS_STRING})*)\s*;",
         rendered,
     )
     assert m, "the pay page no longer pins the already-recorded sentence"
@@ -170,10 +180,62 @@ def test_a_cancelled_invoice_is_not_called_a_success(rendered):
     assert "This invoice has been cancelled." not in details
 
 
+class _ScriptBodies(HTMLParser):
+    """Collects the body of every `<script>` element, verbatim.
+
+    A parse rather than a `<script>(.*?)</script>` regex, which CodeQL flags as
+    a bad tag filter and is right to: it misses `<SCRIPT>` and any attribute on
+    the open tag, and this file's whole point is to notice when the rendered
+    page stops looking the way it assumed. `HTMLParser` lowercases tag names
+    for us, and inside a script element it reports the body as raw CDATA, so
+    the text handed back is byte-for-byte what the browser gets — entities
+    included, undecoded.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.bodies: list[str] = []
+        self._open = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "script":
+            self._open = True
+            self.bodies.append("")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script":
+            self._open = False
+
+    def handle_data(self, data: str) -> None:
+        if self._open:
+            self.bodies[-1] += data
+
+
 def _script(rendered: str) -> str:
-    blocks = re.findall(r"<script>(.*?)</script>", rendered, re.S)
-    assert blocks, "the pay page has no inline script"
-    return max(blocks, key=len)
+    """The page's own inline script, identified by the function every caller reads.
+
+    Picked by that marker rather than by being the longest body: the parse sees
+    every script element, so a `type="application/json"` data island longer
+    than the JS would win on length and send the assertions below hunting in
+    the wrong text — reporting "found 0 createIntent handlers" for a page that
+    has three.
+    """
+    parser = _ScriptBodies()
+    parser.feed(rendered)
+    parser.close()
+    bodies = [body for body in parser.bodies if "createIntent" in body]
+    assert len(bodies) == 1, (
+        f"expected exactly one inline script declaring createIntent, found "
+        f"{len(bodies)} — the pay page's JS moved, was split, or was renamed"
+    )
+    body = bodies[0]
+    # A well-formed script body cannot contain an open tag; this one means the
+    # parse ran past an unterminated `<script src=...>` and swallowed the rest
+    # of the document, which would make every assertion below read the wrong text.
+    assert "<script" not in body, (
+        "a script element is unterminated — the parse swallowed the page"
+    )
+    return body
 
 
 def _handlers_awaiting_create_intent(script: str) -> list[str]:
