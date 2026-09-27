@@ -27,6 +27,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.database import contained_read
+
 log = logging.getLogger(__name__)
 
 
@@ -64,7 +66,17 @@ def resolve_author_name(db: Session, user: Any, *, user_id: str | None = None) -
     downstream. Let the reader decide how to render an absent one.
 
     Never raises. A note must not fail to save because we couldn't pretty up a
-    name — the body is the thing worth keeping.
+    name — the body is the thing worth keeping. Not raising is only half of
+    keeping that promise: most callers resolve the name INTO a row they are
+    about to write (`routers/notes.py` builds the `JobNote` with it, then
+    `db.add()` + `db.commit()`; also `messages.py`, `signatures.py`,
+    `mobile_chat.send_job_chat`, `mobile.py`, and `admin_ops.py` into an audit
+    row), so on Postgres a swallowed read failure would abort the caller's
+    transaction and lose the note anyway. Not all of them: the read-only
+    `mobile_chat._last_read_receipts` only labels a GET response, and that one
+    loses nothing. `contained_read` is the other half — see GDXA-86 and its
+    docstring, including how narrow the set of failures that actually reaches
+    this on prod is.
     """
     direct = _from_auth_dict(user)
     if direct:
@@ -86,8 +98,9 @@ def resolve_author_name(db: Session, user: Any, *, user_id: str | None = None) -
             key: Any = UUID(str(uid))
         except (ValueError, AttributeError, TypeError):
             return None
-        row = db.execute(select(User).where(User.id == key)).scalar_one_or_none()
-    except Exception:  # pragma: no cover - defensive, see docstring
+        with contained_read(db):
+            row = db.execute(select(User).where(User.id == key)).scalar_one_or_none()
+    except Exception:
         log.exception("resolve_author_name_failed")
         return None
 

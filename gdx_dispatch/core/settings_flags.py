@@ -11,7 +11,7 @@ import logging
 
 from sqlalchemy import text
 
-from gdx_dispatch.core.database import SessionLocal
+from gdx_dispatch.core.database import SessionLocal, contained_read
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +41,22 @@ def qb_money_pull_paused(tenant_id: str, db=None) -> bool:
     )
     try:
         if db is not None:
-            row = db.execute(stmt, {"tid": tenant_id}).first()
+            # The caller's session, and `modules/quickbooks/sync.py` calls this
+            # as a gate mid-pull — so on Postgres a failed read here would abort
+            # ITS transaction, not just ours, and the fail-closed `return True`
+            # below would hand back a session that can no longer commit, under a
+            # message blaming a pause that was never set (GDXA-86). The
+            # `SessionLocal` branch owns its session and needs no containment:
+            # nothing outside it can be poisoned.
+            #
+            # This fixes the transaction, NOT that message. A non-schema read
+            # failure here still returns the fail-closed `True`, and
+            # `sync.py:129` still tells the operator to "turn the pause off in
+            # Settings → Workflow" for a flag nobody set. That wording is
+            # `modules/quickbooks/sync.py`'s (back-office-books) and is left
+            # alone here on purpose.
+            with contained_read(db):
+                row = db.execute(stmt, {"tid": tenant_id}).first()
         else:
             with SessionLocal() as _db:
                 row = _db.execute(stmt, {"tid": tenant_id}).first()

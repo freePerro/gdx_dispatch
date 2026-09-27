@@ -343,7 +343,7 @@
       <span>{% if ach_processing.get("stage") == "verifying" %}Bank transfer awaiting verification{% else %}Bank transfer processing{% endif %}</span>
     </div>
     {% else %}
-    <div class="invoice-total">${{ "%.2f"|format(invoice.balance_due) }}</div>
+    <div class="invoice-total" id="invoice-total">${{ "%.2f"|format(invoice.balance_due) }}</div>
     {% endif %}
   </div>
 
@@ -588,6 +588,55 @@
     btn.classList.toggle("loading", loading);
   }
 
+  // GDXA-131. Not every non-2xx from create-intent is a failure. Some of them
+  // mean the customer's money is already handled and they must NOT pay again,
+  // and painting those red under a live Pay button is the defect: it tells
+  // somebody who has already been charged that they failed, and invites the
+  // second charge the server just refused.
+  //
+  // Three distinct events land here, all 409:
+  //   1. the card settled at Stripe, the confirm response never reached this
+  //      page, and the mint gate has just recovered and recorded the money
+  //      (`core/payments.py::_settle_unrecorded_intents`, GDXA-84);
+  //   2. the balance is already zero — the webhook won the race, or the office
+  //      recorded it — so `_resolve_public_invoice` refuses before the mint;
+  //   3. an ACH debit is in flight (`_refuse_if_ach_processing`, M16). Note the
+  //      page already renders BOTH of those sentences in the GREEN box when
+  //      they are true at page load; reaching the same state mid-session must
+  //      not suddenly make them red.
+  //
+  // Matched by sentence, because that is all the browser gets: the 409s below
+  // raise a plain-string `detail`. A structured `detail: {code: ...}` WOULD
+  // survive `core/error_handler.py` intact (it serializes `exc.detail`
+  // verbatim; only `exc.headers` is dropped) and the repo already does exactly
+  // that next door — `routers/invoices.py::DUPLICATE_PAYMENT_CODE` and the
+  // `nothing_remaining` 409 — so that is the durable fix. It belongs in
+  // `core/payments.py`, which money-billing owns, not here. Until then
+  // `tests/test_pay_page_already_recorded.py` pins every sentence below
+  // against that module so a reword cannot silently put this page back on the
+  // red-box path.
+  const ALREADY_RECORDED_DETAIL =
+    "Your payment already went through — we just hadn't finished recording it. " +
+    "This invoice is paid in full; you don't need to pay again.";
+
+  const SETTLED_DETAILS = [
+    ALREADY_RECORDED_DETAIL,
+    "This invoice has no balance due.",
+    "A bank transfer for this invoice is already processing. " +
+      "Bank transfers take up to 4 business days to clear — " +
+      "you don't need to pay again.",
+    "A bank transfer for this invoice is waiting for you to confirm a " +
+      "small test deposit. Stripe emailed you the link; your payment " +
+      "starts once you confirm it — you don't need to pay again.",
+  ];
+
+  // Deliberately NOT in that list: "This invoice has been cancelled." A void
+  // invoice is also a 409 the customer cannot pay, but it is not money they
+  // have paid — saying so in the green box would be a false statement.
+  function isAlreadySettled(err) {
+    return !!err && err.status === 409 && SETTLED_DETAILS.indexOf(err.detail) >= 0;
+  }
+
   async function createIntent(method, paymentMethodId) {
     const payload = { invoice_token: INVOICE_TOKEN, method: method };
     if (paymentMethodId) payload.payment_method_id = paymentMethodId;
@@ -598,7 +647,14 @@
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
-      throw new Error(err.detail || "Failed to initialise payment.");
+      // The status and the raw detail have to survive the throw, or the
+      // catch below cannot tell "already collected" from "declined" — a bare
+      // `new Error(detail)` loses both, which is how the recovered-payment
+      // sentence ended up in the red box.
+      const error = new Error(err.detail || "Failed to initialise payment.");
+      error.status = resp.status;
+      error.detail = err.detail || "";
+      throw error;
     }
     return resp.json();
   }
@@ -650,6 +706,22 @@
     document.querySelector(".tabs").style.display = "none";
   }
 
+  // GDXA-131: the page's answer when create-intent reports the money is
+  // already handled. It is the SUCCESS path — the green box, not the red one —
+  // and every remaining way to pay has to go, whichever tab the customer
+  // happened to be on, because a live Pay button over "you don't need to pay
+  // again" is an invitation to pay twice. The big balance figure goes with
+  // them: an unlabelled "$200.00" above "this invoice is paid in full" is the
+  // page contradicting itself, and it is the number that made the old red box
+  // read as "still owed". (`finishAch` is declared further down; both are
+  // function declarations and this only runs from a handler, long after load.)
+  function finishSettled(message) {
+    finishCard(message);
+    finishAch();
+    const total = document.getElementById("invoice-total");
+    if (total) total.remove();
+  }
+
   async function settleCard(result) {
     if (result.error) {
       showError(result.error.message);
@@ -688,6 +760,7 @@
       });
       await settleCard(result);
     } catch (err) {
+      if (isAlreadySettled(err)) { finishSettled(err.detail); return; }
       showError(err.message || "An unexpected error occurred.");
     } finally {
       setLoading(btn, false);
@@ -710,8 +783,13 @@
         // The customer may have looked at this for a while. Ask the server
         // again before charging: the same call replays the same intent when
         // nothing changed (idempotent), refuses with 409 if a bank transfer
-        // for this invoice started meanwhile (M16), and hands back a fresh
-        // intent if the balance moved — in which case show it and stop.
+        // for this invoice started meanwhile (M16), refuses with 409 and the
+        // already-recorded sentence if step 1's card in fact settled and we
+        // have just recovered it (GDXA-131, handled in the catch), and hands
+        // back a fresh intent if the balance moved — in which case show it
+        // and stop.
+        // On a PARTIAL recovery the comparison below is legitimately true —
+        // a smaller intent was minted — and shows the customer the new total.
         const again = await createIntent("card", cardPaymentMethodId);
         if (again.payment_intent_id !== cardIntentId || again.amount !== cardTotalCents) {
           renderCardBreakdown(again);
@@ -720,6 +798,7 @@
         }
         await settleCard(await stripe.confirmCardPayment(cardClientSecret));
       } catch (err) {
+        if (isAlreadySettled(err)) { finishSettled(err.detail); return; }
         showError(err.message || "An unexpected error occurred.");
       } finally {
         setLoading(btn, false);
@@ -819,6 +898,12 @@
       document.getElementById("ach-bank-last4").textContent = bank.last4 ? "\u2022\u2022\u2022\u2022 " + bank.last4 : "";
       showAchStep("confirm");
     } catch (err) {
+      // GDXA-131. Reachable from this tab too, and by the likeliest route
+      // there is: the card confirm was lost, the customer gives up on cards
+      // and clicks "Link bank account", and THIS mint is the one that finds
+      // the settled charge. Same answer \u2014 they are paid, and no bank account
+      // should be linked for a balance that is gone.
+      if (isAlreadySettled(err)) { finishSettled(err.detail); return; }
       showError(err.message || "An unexpected error occurred.");
     } finally {
       setLoading(btn, false);

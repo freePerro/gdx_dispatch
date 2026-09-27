@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.roles import normalize_role
 
 MODULES = {
@@ -154,15 +154,32 @@ def enabled_module_keys(db: Session, company_id: str) -> set[str]:
     """All module keys granted to a tenant. Used by the plugin proxy to forward
     the authoritative enabled-modules set to plugin-host (so plugins gate without
     a DB round-trip). Returns an empty set on any DB error — fail closed: a
-    transient failure must not silently enable a plugin."""
+    transient failure must not silently enable a plugin.
+
+    Fail-closed is only half of it: the session belongs to the request, not to
+    this function, so on Postgres the swallowed failure also aborted the
+    caller's transaction and its next `commit()` died (GDXA-86). `contained_read`
+    keeps the empty-set degradation and stops it costing the caller its work."""
     if not company_id:
         return set()
     try:
-        rows = db.execute(
-            text("SELECT module_key FROM company_module_grants WHERE company_id = :cid"),
-            {"cid": company_id},
-        ).fetchall()
+        with contained_read(db):
+            rows = db.execute(
+                text("SELECT module_key FROM company_module_grants WHERE company_id = :cid"),
+                {"cid": company_id},
+            ).fetchall()
         return {r[0] for r in rows if r[0]}
+    # Still SQLAlchemyError only. `contained_read` does call `db.connection()`
+    # before the read, so something session-SHAPED but not a Session (a bare
+    # Connection, a stub carrying only `.execute`) now raises AttributeError
+    # here where it used to work — and this handler was briefly widened to
+    # (SQLAlchemyError, AttributeError, TypeError) to keep failing closed for it.
+    # Reverted after the GDXA-86 audit: there is no such caller (the one
+    # production call site, `routers/plugins_proxy.py:107`, is
+    # `db: Session = Depends(get_db)`, and the only test monkeypatches this
+    # function whole), so the widening bought nothing and cost something real —
+    # a genuine TypeError in this function would have returned an empty set,
+    # gating every plugin module OFF behind a 200, instead of raising.
     except SQLAlchemyError:
         logging.getLogger("gdx_dispatch.modules").exception(
             "enabled_module_keys query failed for tenant=%s", company_id
