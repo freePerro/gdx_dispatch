@@ -19,7 +19,13 @@ from sqlalchemy.orm import Session
 # from-import of a name it has not defined yet raises. Binding the module and
 # resolving the attribute at call time is the standard way through.
 from gdx_dispatch.core import time_off as time_off_rules
-from gdx_dispatch.core.audit import AuditLog, ensure_audit_table, log_audit_event, log_audit_event_sync
+from gdx_dispatch.core.audit import (
+    AuditLog,
+    audit_best_effort,
+    ensure_audit_table,
+    log_audit_event,
+    log_audit_event_sync,
+)
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pay_periods import (
@@ -1089,30 +1095,34 @@ def _audit_export(
     A download is not a mutation, but it is everyone's hours leaving the
     app, and "who exported that" is a question worth being able to answer.
     Never allowed to fail the download.
+
+    That last line is `audit_best_effort`'s contract, so there is deliberately
+    no `try/except` here to read as missing: the helper never raises, contains
+    the failed write in a savepoint, and commits. It replaced a hand-rolled
+    `except Exception: log.exception(...)` that swallowed the failure and handed
+    back a session SQLAlchemy had already deactivated — harmless while both
+    callers stay read-only GETs that touch nothing afterwards, and a 500 the
+    moment one of them reads the db again (GDXA-44). Its precondition is that
+    the caller has nothing staged, which `_export_context` satisfies by being
+    query-only; a caller that stages work wants `audit_or_rollback` instead.
     """
-    try:
-        asyncio.run(
-            log_audit_event(
-                db=db,
-                tenant_id=_tenant_id(request),
-                user_id=_user_id(user),
-                action="timesheet_exported",
-                entity_type="timesheet",
-                entity_id=f"{sheet.period.start.isoformat()}..{sheet.period.end.isoformat()}",
-                details={
-                    "format": fmt,
-                    "period_start": sheet.period.start.isoformat(),
-                    "period_end": sheet.period.end.isoformat(),
-                    "people": sheet.people,
-                    "hours": sheet.worked_hours,
-                    "flagged": len(sheet.flagged),
-                },
-                request=request,
-            )
-        )
-        db.commit()
-    except Exception:
-        log.exception("timesheet_export_audit_failed")
+    audit_best_effort(
+        db,
+        tenant_id=_tenant_id(request),
+        user_id=_user_id(user),
+        action="timesheet_exported",
+        entity_type="timesheet",
+        entity_id=f"{sheet.period.start.isoformat()}..{sheet.period.end.isoformat()}",
+        details={
+            "format": fmt,
+            "period_start": sheet.period.start.isoformat(),
+            "period_end": sheet.period.end.isoformat(),
+            "people": sheet.people,
+            "hours": sheet.worked_hours,
+            "flagged": len(sheet.flagged),
+        },
+        request=request,
+    )
 
 
 @router.get("/pay-period/export.csv", response_model=None)
