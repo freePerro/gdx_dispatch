@@ -1146,3 +1146,312 @@ describe('InvoiceDetailView — M31+M33 edit-save guards', () => {
   });
 });
 
+
+describe('InvoiceDetailView — GDXA-91: the edit save refuses BEFORE it writes', () => {
+  // The class: a save that refuses mid-write. saveEdit is a multi-request diff
+  // loop — per-line PATCH/POST, then per-line DELETE, then the invoice-level
+  // PATCH carrying tax rate / dates / notes / hide_line_prices LAST. The M31
+  // quantity refusal used to live INSIDE that loop, so a refusal the client
+  // could have computed up front landed after earlier lines were committed.
+  //
+  // Why the pre-existing M31 pin could not catch it: it emits a single bad
+  // line, so the loop refuses on iteration 1 and nothing has been written yet
+  // — it passes before AND after the fix. The input that can turn red is a
+  // GOOD line ordered BEFORE the bad one. Verified red against the pre-fix
+  // view (test 1 failed on the /lines/ PATCH and the invoice PATCH).
+  const GOOD_ID = '1111111111111111111111111111aaaa'; // >= 32 chars => server id
+  const BAD_ID = '2222222222222222222222222222bbbb';
+
+  function storedLines() {
+    return [
+      { id: GOOD_ID, description: 'Spring', quantity: 1, unit_price: 100, taxable: true, line_total: 100 },
+      { id: BAD_ID, description: 'Warranty swap', quantity: 2, unit_price: 50, taxable: true, line_total: 100 },
+    ];
+  }
+
+  // Emits the operator's edit: line A legitimately changed (qty 1 -> 3), line
+  // B's quantity cleared. Order matters — A is first, so the pre-fix loop
+  // PATCHed A and only then refused on B.
+  const ORDER_STUB = {
+    props: ['lines'],
+    emits: ['update:lines', 'update:fromPartIds'],
+    template: `
+      <div>
+        <button data-testid="emit-good-then-bad" @click="$emit('update:lines', [
+          { id: '${GOOD_ID}', description: 'Spring', quantity: 3, unit_price: 100, taxable: true },
+          { id: '${BAD_ID}', description: 'Warranty swap', quantity: null, unit_price: 50, taxable: true },
+        ])">goodthenbad</button>
+        <button data-testid="emit-two-bad" @click="$emit('update:lines', [
+          { id: '${GOOD_ID}', description: 'Spring', quantity: 0, unit_price: 100, taxable: true },
+          { id: '${BAD_ID}', description: 'Warranty swap', quantity: null, unit_price: 50, taxable: true },
+        ])">twobad</button>
+      </div>`,
+  };
+
+  function mountOrdered(overrides = {}) {
+    mockApi(buildInvoicePayload({ lines: storedLines(), ...overrides }));
+    apiPatch.mockResolvedValue({});
+    apiPost.mockResolvedValue({});
+    apiDel.mockResolvedValue({});
+    return mount(InvoiceDetailView, {
+      global: { stubs: { ...baseStubs, LineItemEditor: ORDER_STUB } },
+    });
+  }
+
+  const lineWrites = () => [
+    ...apiPatch.mock.calls.filter(([url]) => url.includes('/lines/')),
+    ...apiPost.mock.calls.filter(([url]) => url.includes('/lines')),
+    ...apiDel.mock.calls.filter(([url]) => url.includes('/lines/')),
+  ];
+  const invoiceWrites = () =>
+    apiPatch.mock.calls.filter(([url]) => url === '/api/invoices/inv-1');
+
+  it('refuses with ZERO writes when a good line is ordered before the bad one', async () => {
+    const wrapper = mountOrdered();
+    await flushPromises();
+    await wrapper.get('[data-testid="invoice-edit-btn"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="emit-good-then-bad"]').trigger('click');
+    await wrapper.get('[data-testid="invoice-edit-save"]').trigger('click');
+    await flushPromises();
+
+    // The whole point: line A's qty 1 -> 3 must NOT have been committed.
+    expect(lineWrites()).toEqual([]);
+    // And the operator's invoice-level edits (tax rate, dates, notes,
+    // hide_line_prices) must not have been silently dropped on the floor —
+    // pre-fix this PATCH never fired at all because it is sequenced LAST.
+    expect(invoiceWrites()).toEqual([]);
+
+    const warn = toastAdd.mock.calls.filter(([t]) => t.severity === 'warn');
+    expect(warn).toHaveLength(1);
+    expect(warn[0][0].detail).toContain('Warranty swap');
+    // The refusal is the ONLY reaction — no bogus "Save failed" on top.
+    expect(toastAdd.mock.calls.find(([t]) => t.severity === 'error')).toBeFalsy();
+    expect(toastAdd.mock.calls.find(([t]) => t.severity === 'success')).toBeFalsy();
+  });
+
+  it('the snapshot the view keeps rendering is still accurate after a refusal', async () => {
+    // The refusal `return`s from inside the `try` WITHOUT throwing, so the
+    // catch's resync GET never runs — pre-fix that made it the one failure
+    // that left the read-only table rendering the pre-save snapshot over
+    // half-committed rows, and Cancel then discarded an edit already
+    // partially applied.
+    //
+    // A unit test cannot see the server, so the invariant is the PAIR:
+    // zero writes AND no resync. Asserting "no resync" alone would pass
+    // pre-fix too (that silence IS the defect) — it only means the view is
+    // still accurate when nothing moved underneath it. Both assertions
+    // together are what can turn red.
+    const wrapper = mountOrdered();
+    await flushPromises();
+    const fetches = () =>
+      apiGet.mock.calls.filter(([url]) => url === '/api/invoices/inv-1').length;
+    expect(fetches()).toBe(1);
+
+    await wrapper.get('[data-testid="invoice-edit-btn"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="emit-good-then-bad"]').trigger('click');
+    await wrapper.get('[data-testid="invoice-edit-save"]').trigger('click');
+    await flushPromises();
+    expect(lineWrites()).toEqual([]); // nothing moved...
+    expect(invoiceWrites()).toEqual([]);
+    expect(fetches()).toBe(1); // ...so no resync was owed, and none fired.
+
+    // Edit mode stays open so the operator keeps their draft and can fix it,
+    // and Cancel now discards an edit that really was never applied.
+    expect(wrapper.find('[data-testid="invoice-edit-save"]').exists()).toBe(true);
+    await wrapper.get('[data-testid="invoice-edit-cancel"]').trigger('click');
+    await flushPromises();
+    expect(lineWrites()).toEqual([]);
+    expect(fetches()).toBe(1);
+  });
+
+  it('names EVERY offending line in one toast, not just the first', async () => {
+    // Sibling parity (InvoiceCreateView / EstimateView / ChangeOrdersView):
+    // a loop-bound refusal can only ever name the line it tripped on, so the
+    // operator fixes one, re-saves, and gets told about the next.
+    const wrapper = mountOrdered();
+    await flushPromises();
+    await wrapper.get('[data-testid="invoice-edit-btn"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="emit-two-bad"]').trigger('click');
+    await wrapper.get('[data-testid="invoice-edit-save"]').trigger('click');
+    await flushPromises();
+
+    expect(lineWrites()).toEqual([]);
+    expect(invoiceWrites()).toEqual([]);
+    const warn = toastAdd.mock.calls.filter(([t]) => t.severity === 'warn');
+    expect(warn).toHaveLength(1);
+    expect(warn[0][0].detail).toContain('Spring');
+    expect(warn[0][0].detail).toContain('Warranty swap');
+  });
+
+  it('a STORED quantity of 0 the operator never touched still refuses', async () => {
+    // Reachability is wider than "the operator cleared a field":
+    // normalizeInvoice keeps a stored 0 (`toNum(item.quantity ?? 1)`) and
+    // enterEditMode maps it through recordedQuantity, which since #560 keeps
+    // 0 as 0. So an invoice carrying a zero-quantity line cannot be saved at
+    // all — an operator editing ONLY the tax rate or notes is refused.
+    //
+    // Honest labelling: this one passes BEFORE the fix as well — with a
+    // single offending line the old in-loop refusal tripped on iteration 1,
+    // before writing anything. It is a REACHABILITY pin, not the regression
+    // net (that is the first test in this block).
+    //
+    // And the refusal is SETTLED, not an open question: the owner ruled on
+    // 2026-09-11 (`core/quantities.py`, `zero_quantity_verdict`) that a
+    // recorded 0 carrying money is refused rather than laundered into an
+    // invoice, and that docstring already names this exact consequence —
+    // "`InvoiceLinePatchIn` forbids quantity 0 so nothing can put it back …
+    // the office cannot save the invoice at all". The same census recorded
+    // 0 zero and 0 NULL quantities across 1,281 prod rows, so the block is
+    // unreachable from real data; a contradictory row is fixed at its
+    // source, where a person can see it.
+    mockApi(buildInvoicePayload({
+      lines: [{ id: GOOD_ID, description: 'Warranty swap', quantity: 0, unit_price: 0, taxable: true, line_total: 0 }],
+    }));
+    apiPatch.mockResolvedValue({});
+    apiPost.mockResolvedValue({});
+    apiDel.mockResolvedValue({});
+    const wrapper = mount(InvoiceDetailView, {
+      global: { stubs: { ...baseStubs, LineItemEditor: { template: '<div />' } } },
+    });
+    await flushPromises();
+    await wrapper.get('[data-testid="invoice-edit-btn"]').trigger('click');
+    await flushPromises();
+    // No line touched at all — straight to Save.
+    await wrapper.get('[data-testid="invoice-edit-save"]').trigger('click');
+    await flushPromises();
+
+    expect(lineWrites()).toEqual([]);
+    expect(invoiceWrites()).toEqual([]);
+    const warn = toastAdd.mock.calls.filter(([t]) => t.severity === 'warn');
+    expect(warn).toHaveLength(1);
+    expect(warn[0][0].detail).toContain('Warranty swap');
+  });
+});
+
+describe('InvoiceDetailView — GDXA-91: the server bounds refuse before writing too', () => {
+  // Same class, found by the pre-commit audit: InvoiceLineCreateIn /
+  // InvoiceLinePatchIn (routers/invoices.py) bound description to 500 chars,
+  // quantity to 9999 and unit_price/cost to 999999.99, while LineItemEditor
+  // sets `:min` but no `:max` and no `maxlength`. Every one of those was a
+  // refusal the client could compute up front that instead surfaced as a 422
+  // raised from INSIDE the write loop — earlier lines already committed, and
+  // the invoice-level PATCH (tax rate, dates, notes) dropped because it is
+  // sequenced last. The operator saw "Save failed" and kept the wrong rate.
+  const GOOD_ID = '1111111111111111111111111111aaaa';
+  const BAD_ID = '2222222222222222222222222222bbbb';
+
+  function stored(overrides = []) {
+    return [
+      { id: GOOD_ID, description: 'Spring', quantity: 1, unit_price: 100, taxable: true, line_total: 100 },
+      { id: BAD_ID, description: 'Opener', quantity: 1, unit_price: 200, taxable: true, line_total: 200 },
+      ...overrides,
+    ];
+  }
+
+  function stubEmitting(lines) {
+    return {
+      props: ['lines'],
+      emits: ['update:lines', 'update:fromPartIds'],
+      // The view puts data-testid="invoice-edit-line-items" on this component,
+      // and Vue merges a parent attr onto a SINGLE root element — which would
+      // clobber our own testid. Wrap, so the button keeps its own.
+      template: '<div><button data-testid="emit" @click="$emit(\'update:lines\', payload)">go</button></div>',
+      data: () => ({ payload: lines }),
+    };
+  }
+
+  async function attempt(storedLines, editedLines) {
+    mockApi(buildInvoicePayload({ lines: storedLines }));
+    apiPatch.mockResolvedValue({});
+    apiPost.mockResolvedValue({});
+    apiDel.mockResolvedValue({});
+    const wrapper = mount(InvoiceDetailView, {
+      global: { stubs: { ...baseStubs, LineItemEditor: stubEmitting(editedLines) } },
+    });
+    await flushPromises();
+    await wrapper.get('[data-testid="invoice-edit-btn"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="emit"]').trigger('click');
+    await wrapper.get('[data-testid="invoice-edit-save"]').trigger('click');
+    await flushPromises();
+    return {
+      lineWrites: [
+        ...apiPatch.mock.calls.filter(([u]) => u.includes('/lines/')),
+        ...apiPost.mock.calls.filter(([u]) => u.includes('/lines')),
+        ...apiDel.mock.calls.filter(([u]) => u.includes('/lines/')),
+      ],
+      invoiceWrites: apiPatch.mock.calls.filter(([u]) => u === '/api/invoices/inv-1'),
+      warns: toastAdd.mock.calls.filter(([t]) => t.severity === 'warn'),
+      errors: toastAdd.mock.calls.filter(([t]) => t.severity === 'error'),
+    };
+  }
+
+  it('an over-long description refuses with zero writes (good line first)', async () => {
+    const r = await attempt(stored(), [
+      { id: GOOD_ID, description: 'Spring', quantity: 3, unit_price: 100, taxable: true },
+      { id: BAD_ID, description: 'x'.repeat(501), quantity: 1, unit_price: 200, taxable: true },
+    ]);
+    expect(r.lineWrites).toEqual([]);
+    expect(r.invoiceWrites).toEqual([]);
+    expect(r.errors).toEqual([]);
+    expect(r.warns).toHaveLength(1);
+    expect(r.warns[0][0].detail).toContain('500 characters');
+    // The toast names the line without dumping 501 characters into it.
+    expect(r.warns[0][0].detail.length).toBeLessThan(200);
+  });
+
+  it('a quantity above 9999 refuses with zero writes (good line first)', async () => {
+    const r = await attempt(stored(), [
+      { id: GOOD_ID, description: 'Spring', quantity: 3, unit_price: 100, taxable: true },
+      { id: BAD_ID, description: 'Opener', quantity: 10000, unit_price: 200, taxable: true },
+    ]);
+    expect(r.lineWrites).toEqual([]);
+    expect(r.invoiceWrites).toEqual([]);
+    expect(r.warns[0][0].detail).toContain('9999');
+  });
+
+  it('a unit price above 999999.99 refuses with zero writes (good line first)', async () => {
+    const r = await attempt(stored(), [
+      { id: GOOD_ID, description: 'Spring', quantity: 3, unit_price: 100, taxable: true },
+      { id: BAD_ID, description: 'Opener', quantity: 1, unit_price: 1000000, taxable: true },
+    ]);
+    expect(r.lineWrites).toEqual([]);
+    expect(r.invoiceWrites).toEqual([]);
+    expect(r.warns[0][0].detail).toMatch(/Unit price above/);
+  });
+
+  it('a NEW line over the bounds refuses too (no id to diff against)', async () => {
+    const r = await attempt(stored(), [
+      { id: GOOD_ID, description: 'Spring', quantity: 3, unit_price: 100, taxable: true },
+      { description: 'Fresh row', quantity: 20000, unit_price: 5, taxable: true },
+    ]);
+    expect(r.lineWrites).toEqual([]);
+    expect(r.invoiceWrites).toEqual([]);
+    expect(r.warns[0][0].detail).toContain('9999');
+  });
+
+  it('an UNTOUCHED stored value over the bounds still saves — the carve-out', async () => {
+    // Deliberate and load-bearing. A stored out-of-bounds value cannot be
+    // created through the API but is reachable by import, and today such an
+    // invoice saves fine as long as nobody edits that line (the diff finds
+    // no change, so no PATCH fires and nothing 422s). Bound-checking it in
+    // the pre-pass would make a savable invoice unsavable — a behavior
+    // change, not this fix. If this test ever goes red, someone widened the
+    // pre-pass past "what the operator changed" and needs a ruling first.
+    const importedLines = [
+      { id: GOOD_ID, description: 'Spring', quantity: 1, unit_price: 100, taxable: true, line_total: 100 },
+      { id: BAD_ID, description: 'y'.repeat(700), quantity: 1, unit_price: 200, taxable: true, line_total: 200 },
+    ];
+    const r = await attempt(importedLines, [
+      // line 0 edited; line 1 passed through EXACTLY as stored.
+      { id: GOOD_ID, description: 'Spring', quantity: 3, unit_price: 100, taxable: true },
+      { id: BAD_ID, description: 'y'.repeat(700), quantity: 1, unit_price: 200, taxable: true },
+    ]);
+    expect(r.warns).toEqual([]);
+    expect(r.lineWrites).toHaveLength(1); // only the line the operator changed
+    expect(r.invoiceWrites).toHaveLength(1); // and the header edits landed
+  });
+});

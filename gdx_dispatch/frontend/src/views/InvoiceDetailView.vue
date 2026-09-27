@@ -2160,14 +2160,119 @@ function cancelEdit() {
 }
 
 async function saveEdit() {
+  // M31 pre-pass: a refusal the client can COMPUTE must land before the
+  // first write. The save below is a multi-request diff loop (per-line
+  // PATCH/POST, then per-line DELETE, then the invoice-level PATCH carrying
+  // tax rate / dates / notes / hide_line_prices LAST), so the quantity
+  // refusal used to fire from inside that loop — after any earlier line had
+  // already been committed. Two ways that hurt: the operator's tax-rate,
+  // date and notes edits silently went nowhere while line A's change stuck,
+  // and because the refusal `return`s from inside the `try` without
+  // throwing, the catch's resync never ran, so it was the one failure that
+  // left the view rendering the pre-save snapshot (Cancel then discarded an
+  // edit that was already half-committed).
+  //
+  // Predicate, filter and `Math.floor` are the loop's own, unchanged — this
+  // moves WHEN the refusal happens, never WHICH invoices it refuses. Shape
+  // matches the three sibling screens that always got this right:
+  // InvoiceCreateView `createInvoice`, EstimateView `save`,
+  // ChangeOrdersView `saveCo` — collect every offender, name them all in
+  // one toast, send zero requests.
+  const original = invoice.value.line_items;
+  const originalById = new Map(original.map((ln) => [String(ln.id), ln]));
+  const billable = editLines.value.filter(
+    (ln) =>
+      // Server-owned netting line: skipped by the loop, so skipped here.
+      !isDepositNettingLine(ln) &&
+      // Rows with no description are dropped by the loop, not billed.
+      (ln.description || "").trim(),
+  );
+  // A long description would make the toast unreadable — and an over-long
+  // description is one of the things being reported.
+  const nameOf = (ln) => {
+    const d = (ln.description || "").trim();
+    return `“${d.length > 40 ? `${d.slice(0, 40)}…` : d}”`;
+  };
+  // The server's own bounds, from InvoiceLineCreateIn / InvoiceLinePatchIn
+  // (`routers/invoices.py`) — both schemas agree. LineItemEditor sets `:min`
+  // on quantity/cost/price but NO `:max`, and no `maxlength` on the
+  // description, so every one of these is reachable by typing. They used to
+  // surface as a 422 raised from INSIDE the write loop: same class as the
+  // quantity refusal above (a refusal the client could compute up front,
+  // landing after earlier lines were committed), except a throw at least
+  // reached the catch's resync. The header PATCH is sequenced last, so it
+  // was dropped either way — an operator fixing the tax rate in the same
+  // edit silently kept the wrong rate.
+  const MAX_DESC = 500;
+  const MAX_QTY = 9999;
+  const MAX_MONEY = 999999.99;
+  // Bound-check only what the operator actually CHANGED (and every new
+  // line). A stored value already out of bounds — impossible to create
+  // through the API, but reachable by import — is left alone: its line only
+  // gets written if something else on it changed, and refusing it here would
+  // make an invoice that saves today unsavable, which is a behavior change,
+  // not this fix. Counted as deferred in the sweep accounting.
+  const changedFields = (ln) => {
+    const orig = ln.id ? originalById.get(String(ln.id)) || null : null;
+    const desc = (ln.description || "").trim();
+    const qty = Math.floor(toNum(ln.quantity));
+    const price = ln.id ? toNum(ln.unit_price) : Math.max(0, toNum(ln.unit_price));
+    const cost = ln.cost != null && toNum(ln.cost) > 0 ? toNum(ln.cost) : null;
+    const origCost = orig && orig.cost_snapshot != null ? toNum(orig.cost_snapshot) : null;
+    return {
+      desc: !orig || (orig.description || "").trim() !== desc ? desc : null,
+      qty: !orig || toNum(orig.quantity) !== qty ? qty : null,
+      price: !orig || toNum(orig.unit_price) !== price ? price : null,
+      cost: !orig || origCost !== cost ? cost : null,
+    };
+  };
+  const problems = [];
+  // The dispatched defect (M31). Unconditional, exactly as the old in-loop
+  // check was: a recorded 0 is a contradictory row that must be fixed at the
+  // source, not laundered into an invoice — the owner's ruling of 2026-09-11,
+  // reasoned out in `core/quantities.py` (`zero_quantity_verdict`).
+  const badQty = billable.filter((ln) => !(Math.floor(toNum(ln.quantity)) > 0));
+  if (badQty.length) {
+    problems.push(
+      `No quantity on: ${badQty.map(nameOf).join(", ")}. Enter one or remove the line — a cleared quantity is never billed as 1.`,
+    );
+  }
+  const overQty = billable.filter((ln) => changedFields(ln).qty > MAX_QTY);
+  if (overQty.length) {
+    problems.push(`Quantity above ${MAX_QTY} on: ${overQty.map(nameOf).join(", ")}.`);
+  }
+  const longDesc = billable.filter((ln) => (changedFields(ln).desc || "").length > MAX_DESC);
+  if (longDesc.length) {
+    problems.push(
+      `Description longer than ${MAX_DESC} characters on: ${longDesc.map(nameOf).join(", ")}.`,
+    );
+  }
+  const overPrice = billable.filter((ln) => changedFields(ln).price > MAX_MONEY);
+  if (overPrice.length) {
+    problems.push(`Unit price above ${currency(MAX_MONEY)} on: ${overPrice.map(nameOf).join(", ")}.`);
+  }
+  const overCost = billable.filter((ln) => changedFields(ln).cost > MAX_MONEY);
+  if (overCost.length) {
+    problems.push(`Cost above ${currency(MAX_MONEY)} on: ${overCost.map(nameOf).join(", ")}.`);
+  }
+  if (problems.length) {
+    toast.add({
+      severity: "warn",
+      summary: "Fix line items first",
+      detail: problems.join(" "),
+      life: 8000,
+    });
+    // Deliberately before `savingEdit.value = true` and outside the `try`:
+    // the flag never flips and the outer catch cannot turn the refusal into
+    // a spurious "Save failed" toast (it did once, via an undefined ref).
+    return;
+  }
   // Diff editLines against the current invoice, fire one request per
   // change. Server runs _recalculate_invoice on every line write so
   // totals/tax stay correct even if the patch sequence is interrupted.
   savingEdit.value = true;
   try {
     const id = route.params.id;
-    const original = invoice.value.line_items;
-    const originalById = new Map(original.map((ln) => [String(ln.id), ln]));
     const keptIds = new Set();
 
     // 1. Updates + inserts
@@ -2181,7 +2286,8 @@ async function saveEdit() {
       }
       const desc = (ln.description || "").trim();
       if (!desc) continue;  // skip rows with no description
-      // M31: a cleared quantity refuses (below) instead of becoming 1.
+      // M31: a cleared quantity refuses instead of becoming 1 — in the
+      // pre-pass at the top of this function, never from in here.
       const qty = Math.floor(toNum(ln.quantity));
       // M33: clamp ONLY lines added in this edit session. A loaded line with
       // a negative price (QB-imported discount, future promo) passes through
@@ -2190,16 +2296,6 @@ async function saveEdit() {
       // the balance. The deposit-netting exemption above showed the hazard
       // was understood for one case and never generalized.
       const price = ln.id ? toNum(ln.unit_price) : Math.max(0, toNum(ln.unit_price));
-      if (!(qty > 0)) {
-        toast.add({
-          severity: 'warn',
-          summary: 'Fix line items first',
-          detail: `No quantity on “${desc}”. Enter one or remove the line — a cleared quantity is never billed as 1.`,
-          life: 8000,
-        });
-        savingEdit.value = false;
-        return;
-      }
       // D-S122b-detail-view-columns — forward category/cost/margin too.
       const category = ln.category || null;
       // Labor provenance (071). Sent together or not at all: the contract
