@@ -87,14 +87,48 @@ def mock_qb() -> QBClient:
     return qb
 
 
-def _request(*, tenant_id: str = "tenant-1", headers: list[tuple[bytes, bytes]] | None = None, body: bytes = b"") -> Request:
+# Scope paths, named so a reader can tell coverage of a live route apart from
+# coverage of a plain function (GDXA-89). Every handler in this file is called
+# directly rather than routed, and none of them reads ``scope["path"]`` — but a
+# scope that names a real endpoint *reads* as "this test exercises that
+# endpoint", which is how these tests came to look like coverage of a QB webhook
+# URL the app does not serve. Pass the constant that matches the handler.
+#
+# MOUNTED: the only QB webhook route on ``create_app()``, served by
+# ``modules/quickbooks/router.py::qb_webhooks``.
+_MOUNTED_WEBHOOK_PATH = "/api/qb/webhooks"
+
+# NOT MOUNTED: ``modules/quickbooks/webhook_router.py`` is never included by
+# ``create_app()``, so no URL reaches ``qb_webhook``. This is the path its
+# decorator declares, not a path you can POST to. See
+# ``test_qb_webhook_router_unmounted_plural_route_live``.
+_UNMOUNTED_MODULE_WEBHOOK_PATH = "/api/qb/webhook"
+
+# Neither — for the handlers here that have nothing to do with webhooks
+# (status, events, disconnect, settings). Matches no route by construction, so
+# it cannot be misread as a claim about one.
+_INERT_SCOPE_PATH = "/not-a-route/direct-handler-call"
+
+
+def _request(
+    *,
+    path: str = _INERT_SCOPE_PATH,
+    tenant_id: str = "tenant-1",
+    headers: list[tuple[bytes, bytes]] | None = None,
+    body: bytes = b"",
+) -> Request:
+    """A bare ASGI request for invoking a QB handler as a plain function.
+
+    ``path`` is inert — no handler reached from here reads it — but it must not
+    name a route the caller does not exercise.
+    """
     async def _receive():
         return {"type": "http.request", "body": body, "more_body": False}
 
     scope = {
         "type": "http",
         "method": "POST",
-        "path": "/api/qb/webhooks",
+        "path": path,
         "headers": headers or [],
         "query_string": b"",
     }
@@ -784,21 +818,75 @@ def test_sync_full_endpoint_returns_valid_response_shape(db_session: Session, qb
 
 
 # ---------------------------------------------------------------------------
-# Webhook test
+# Webhook tests
+#
+# Read this first: there are TWO QB webhook handlers and only one is reachable.
+# `test_qb_webhook_router_unmounted_plural_route_live` below pins which, by
+# execution, so the rest of this section cannot quietly drift into looking like
+# coverage of a live URL.
 # ---------------------------------------------------------------------------
 
+def test_qb_webhook_router_unmounted_plural_route_live():
+    """Pin the wiring every webhook test here depends on (GDXA-89).
+
+    Two QB webhook handlers exist; only one can be reached over HTTP:
+
+    * ``modules/quickbooks/router.py::qb_webhooks`` serves the mounted
+      ``POST /api/qb/webhooks`` (**plural**).
+    * ``modules/quickbooks/webhook_router.py::qb_webhook`` is mounted nowhere.
+      ``/api/qb/webhook`` (singular) is not a path on the app, so the tests that
+      drive it assert module logic, not route behaviour.
+
+    Before this test, that distinction lived only in prose, and the prose was
+    wrong in the one place it mattered. If this goes red, a wiring decision was
+    made — carry it into the record with it: the module docstring in
+    ``webhook_router.py``, the comment on the 503 gate in ``router.py``, and the
+    scope-path constants above all assert this same shape.
+    """
+    from gdx_dispatch.app import create_app
+    from gdx_dispatch.modules.quickbooks import router as qb_router_mod
+    from gdx_dispatch.modules.quickbooks import webhook_router
+    from gdx_dispatch.tests.conftest import iter_app_routes
+
+    routes = list(iter_app_routes(create_app()))
+    paths = {p for p, _ in routes}
+    endpoints = {getattr(rt, "endpoint", None) for _, rt in routes}
+
+    assert _MOUNTED_WEBHOOK_PATH in paths, (
+        f"{_MOUNTED_WEBHOOK_PATH} is no longer mounted, but the tests for "
+        "qb_webhooks describe it as the live QB webhook route"
+    )
+    assert qb_router_mod.qb_webhooks in endpoints, (
+        f"{_MOUNTED_WEBHOOK_PATH} is no longer served by router.qb_webhooks"
+    )
+    assert _UNMOUNTED_MODULE_WEBHOOK_PATH not in paths, (
+        f"{_UNMOUNTED_MODULE_WEBHOOK_PATH} is now a route. Check the verifier "
+        "gate in webhook_router.py FIRST: it fails OPEN, so with neither "
+        "QB_WEBHOOK_VERIFIER_TOKEN nor QB_WEBHOOK_SECRET set this mounts an "
+        "unauthenticated write endpoint."
+    )
+    assert webhook_router.qb_webhook not in endpoints, (
+        "webhook_router.qb_webhook is now reachable over HTTP. Its verifier "
+        "gate fails open with no token set — re-read GDXA-89 before shipping."
+    )
+
+
 def test_webhook_verifies_signature(db_session: Session, monkeypatch):
+    """The LIVE handler: ``qb_webhooks`` in ``modules/quickbooks/router.py``,
+    which serves the mounted ``POST /api/qb/webhooks``. Called directly here,
+    but it is the one QB webhook handler a real Intuit delivery can reach.
+    """
     import gdx_dispatch.modules.quickbooks.router as qb_router
 
     monkeypatch.setenv("QB_WEBHOOK_VERIFIER_TOKEN", "top-secret")
     body = b'{"eventNotifications":[]}'
     sig = base64.b64encode(hmac.new(b"top-secret", body, hashlib.sha256).digest()).decode("utf-8")
 
-    ok_req = _request(headers=[(b"intuit-signature", sig.encode("utf-8"))], body=body)
+    ok_req = _request(path=_MOUNTED_WEBHOOK_PATH, headers=[(b"intuit-signature", sig.encode("utf-8"))], body=body)
     out = asyncio.run(qb_router.qb_webhooks(request=ok_req, db=db_session))
     assert out["verified"] is True
 
-    bad_req = _request(headers=[(b"intuit-signature", b"bad")], body=body)
+    bad_req = _request(path=_MOUNTED_WEBHOOK_PATH, headers=[(b"intuit-signature", b"bad")], body=body)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(qb_router.qb_webhooks(request=bad_req, db=db_session))
     assert exc.value.status_code == 403
@@ -809,6 +897,11 @@ def test_s122_5_modular_webhook_verifies_hmac_sha256_raw_bytes(db_session, monke
     compare on the wrong header against the wrong algorithm. Real Intuit
     deliveries 403'd, forged events passed. Now it must do HMAC-SHA256 base64
     against the raw request bytes using the ``intuit-signature`` header.
+
+    Subject is ``webhook_router.qb_webhook``, which is **not mounted** — this
+    asserts the module's own verification logic, not that any URL verifies.
+    The mounted route's verification is covered by
+    ``test_webhook_verifies_signature`` above, against the other handler.
     """
     from gdx_dispatch.modules.quickbooks import webhook_router
 
@@ -816,11 +909,11 @@ def test_s122_5_modular_webhook_verifies_hmac_sha256_raw_bytes(db_session, monke
     body = b'{"eventNotifications":[]}'
     good_sig = base64.b64encode(hmac.new(b"vt", body, hashlib.sha256).digest()).decode("utf-8")
 
-    ok_req = _request(headers=[(b"intuit-signature", good_sig.encode("utf-8"))], body=body)
+    ok_req = _request(path=_UNMOUNTED_MODULE_WEBHOOK_PATH, headers=[(b"intuit-signature", good_sig.encode("utf-8"))], body=body)
     out = asyncio.run(webhook_router.qb_webhook(request=ok_req, db=db_session))
     assert out["processed"] == 0  # empty notification list
 
-    bad_req = _request(headers=[(b"intuit-signature", b"forged")], body=body)
+    bad_req = _request(path=_UNMOUNTED_MODULE_WEBHOOK_PATH, headers=[(b"intuit-signature", b"forged")], body=body)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(webhook_router.qb_webhook(request=bad_req, db=db_session))
     assert exc.value.status_code == 403
@@ -863,7 +956,7 @@ def test_s122_ce_modular_webhook_parses_cloudevents_format(db_session, monkeypat
         "intuitaccountid": "9130000000000000001",
         "data": {},
     }]).encode("utf-8")
-    req = _request(body=body)
+    req = _request(path=_UNMOUNTED_MODULE_WEBHOOK_PATH, body=body)
     out = asyncio.run(webhook_router.qb_webhook(request=req, db=db_session))
     assert out["processed"] == 1
 
@@ -883,7 +976,7 @@ def test_s122_ce_modular_webhook_still_parses_old_format(db_session, monkeypatch
             ]},
         }],
     }).encode("utf-8")
-    req = _request(body=body)
+    req = _request(path=_UNMOUNTED_MODULE_WEBHOOK_PATH, body=body)
     out = asyncio.run(webhook_router.qb_webhook(request=req, db=db_session))
     assert out["processed"] == 1
 
@@ -901,8 +994,8 @@ def test_s122_ce_modular_webhook_deduplicates_on_replay(db_session, monkeypatch)
         "time": "2026-07-31T12:00:00Z", "intuitentityid": "777",
         "intuitaccountid": "12345", "data": {},
     }]).encode("utf-8")
-    asyncio.run(webhook_router.qb_webhook(request=_request(body=body), db=db_session))
-    out2 = asyncio.run(webhook_router.qb_webhook(request=_request(body=body), db=db_session))
+    asyncio.run(webhook_router.qb_webhook(request=_request(path=_UNMOUNTED_MODULE_WEBHOOK_PATH, body=body), db=db_session))
+    out2 = asyncio.run(webhook_router.qb_webhook(request=_request(path=_UNMOUNTED_MODULE_WEBHOOK_PATH, body=body), db=db_session))
     assert out2["skipped"] == 1
 
 
@@ -1016,7 +1109,7 @@ def test_s122_ce_webhook_rejects_oversized_body(db_session, monkeypatch):
     monkeypatch.delenv("QB_WEBHOOK_VERIFIER_TOKEN", raising=False)
     monkeypatch.delenv("QB_WEBHOOK_SECRET", raising=False)
     body = b"x" * (1_048_577)  # 1 MB + 1 byte
-    req = _request(body=body)
+    req = _request(path=_UNMOUNTED_MODULE_WEBHOOK_PATH, body=body)
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(webhook_router.qb_webhook(request=req, db=db_session))
     assert excinfo.value.status_code == 413
@@ -1438,7 +1531,7 @@ def test_s122_ce_modular_webhook_unhandled_entities_logged_not_dropped(db_sessio
         "time": "2026-07-31T12:00:00Z", "intuitentityid": "555",
         "intuitaccountid": "12345", "data": {},
     }]).encode("utf-8")
-    out = asyncio.run(webhook_router.qb_webhook(request=_request(body=body), db=db_session))
+    out = asyncio.run(webhook_router.qb_webhook(request=_request(path=_UNMOUNTED_MODULE_WEBHOOK_PATH, body=body), db=db_session))
     assert out["unhandled"] == 1
     assert out["processed"] == 0
 
@@ -2088,7 +2181,7 @@ def test_s122_11_12_per_entity_dispatch(db_session, monkeypatch):
             "intuitentityid": entity_id, "intuitaccountid": "9130000000000000001",
             "data": {},
         }]).encode("utf-8")
-        out = asyncio.run(webhook_router.qb_webhook(request=_request(body=body), db=db_session))
+        out = asyncio.run(webhook_router.qb_webhook(request=_request(path=_UNMOUNTED_MODULE_WEBHOOK_PATH, body=body), db=db_session))
         assert out["processed"] == 1, f"{qb_entity_lc} should route to a per-entity task"
 
     # Each per-entity task should have been called exactly once with the
@@ -2120,7 +2213,7 @@ def test_s122_11_12_per_entity_dispatch(db_session, monkeypatch):
         "time": "2026-07-31T12:00:00Z", "intuitentityid": "9999",
         "intuitaccountid": "9130000000000000001", "data": {},
     }]).encode("utf-8")
-    asyncio.run(webhook_router.qb_webhook(request=_request(body=body), db=db_session))
+    asyncio.run(webhook_router.qb_webhook(request=_request(path=_UNMOUNTED_MODULE_WEBHOOK_PATH, body=body), db=db_session))
     assert legacy_calls == [], (
         f"webhook must NOT call sync_all_*_task; saw: {legacy_calls}"
     )
