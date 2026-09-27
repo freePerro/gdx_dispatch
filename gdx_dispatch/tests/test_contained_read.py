@@ -678,14 +678,305 @@ def test_pg_resolve_author_name_no_longer_costs_the_note(pg_test_engine):
         assert other.execute(text("SELECT count(*) FROM gdxa86_row")).scalar() == 1
 
 
+# ── GDXA-152: the audit-viewer call sites ────────────────────────────────────
+#
+# The same class in the two files GDXA-86 did not reach. Both are read-only
+# "decoration" paths, which is exactly why they were left: the swallow looks
+# harmless when the function's own contract is "degrade, never raise". It is
+# not, because the session is the request's and the request is not over.
+
+
+def test_pg_get_audit_events_cannot_poison_the_request(pg_test_engine):
+    """The audit viewer's list query.
+
+    `get_audit_events` already degrades to an empty page with an `error` key,
+    which reads like graceful degradation and is what hid this: on Postgres the
+    caller kept a dead transaction, so the *next* thing the request touched
+    raised 25P02 and the operator got a 500 naming an unrelated table instead of
+    the error in the payload they were handed.
+
+    A renamed COLUMN, not a renamed table: this module calls
+    `create_all(checkfirst=True)` before the read, which re-creates a dropped
+    table — the read would then succeed and the test would pass vacuously —
+    but never adds a missing column back.
+    """
+    from gdx_dispatch.core.audit_dashboard import get_audit_events
+
+    Session = _pg_sessions(pg_test_engine)
+    with pg_test_engine.begin() as c:
+        c.execute(text("ALTER TABLE audit_logs RENAME COLUMN event_type TO event_type_gone"))
+
+    db = Session()
+    db.add(_Row(id=1, v="the caller's pending work"))
+    page = get_audit_events(db, tenant_id="11111111-1111-4111-8111-111111111111")
+    assert page["events"] == [] and "error" in page, "must still degrade, not raise"
+    db.commit()
+    db.close()
+
+    with pg_test_engine.connect() as other:
+        assert other.execute(text("SELECT count(*) FROM gdxa86_row")).scalar() == 1, (
+            "a failed audit-log read cost the caller its row"
+        )
+
+
+def test_pg_resolve_actors_cannot_poison_the_request(pg_test_engine):
+    """Audit actor labels.
+
+    The injected failure is a fixture artifact, not a production state:
+    `customer_users` is created by `create_orm_tables()` on every boot regardless
+    of the customer_portal module grant, and prod and demo both have it (checked
+    live 2026-09-27). It exercises the containment exactly as a genuine
+    UndefinedTable would — same caveat `_caller_survives` already documents for
+    its other callers.
+    """
+    from gdx_dispatch.core.audit_labels import resolve_actors
+
+    out = _caller_survives(
+        pg_test_engine,
+        "customer_users",
+        lambda db: resolve_actors(db, {"e1a0c3f6-0b1a-4c3d-8e5f-0a1b2c3d4e5f"}),
+    )
+    assert isinstance(out, dict), "must still degrade to a dict of what it could resolve"
+
+
+def test_pg_resolve_entity_labels_cannot_poison_the_request(pg_test_engine):
+    """The nine entity-label resolvers, contained at their dispatch frame.
+
+    This is the one that makes the pair above worth anything.
+    `decorate_rows` calls `resolve_actors` and then `resolve_entity_labels` one
+    line apart, and BOTH read `customer_users`, so whatever makes one fail makes
+    the other fail. Containing only the first left the caller's transaction just
+    as dead on the second — the fix defeated by the function next to it. Verified
+    that way round: with only `resolve_actors` wrapped, this test failed with
+    InFailedSqlTransaction.
+    """
+    from gdx_dispatch.core.audit_labels import resolve_entity_labels
+
+    out = _caller_survives(
+        pg_test_engine,
+        "customer_users",
+        lambda db: resolve_entity_labels(
+            db, {("customer_user", "e1a0c3f6-0b1a-4c3d-8e5f-0a1b2c3d4e5f")}
+        ),
+    )
+    assert out == {}, "an unresolvable type must simply be absent from the result"
+
+
+def test_pg_a_resolver_that_swallows_its_own_read_defeats_the_dispatch_wrap(pg_test_engine):
+    """Pins the precondition on `resolve_entity_labels`'s dispatch-frame wrap.
+
+    Not a defect in the nine resolvers — none of them catches. It pins the trap
+    the wrap creates for the NEXT one, because this file's two actor resolvers
+    are written in exactly the style that breaks it. A resolver that swallows its
+    own failure exits the `with` clean on an aborted transaction, __exit__ issues
+    RELEASE SAVEPOINT (illegal there), and the dispatch loop's own handler eats
+    the 25P02 — so the caller dies with nothing in the log naming the cause.
+
+    Asserting the BROKEN behaviour on purpose: if a future change makes this pass
+    (per-resolver wrapping, or a rollback-always variant of contained_read), this
+    test should be deleted along with the precondition comment it guards.
+    """
+    import gdx_dispatch.core.audit_labels as al
+
+    Session = _pg_sessions(pg_test_engine)
+
+    def _self_swallowing(db, etype, ids, out):
+        # `suppress(Exception)` rather than try/except/pass only to satisfy
+        # SIM105; it is the same swallow, and the same house style as
+        # _resolve_staff / _resolve_customer_users.
+        with suppress(Exception):
+            db.execute(text("SELECT 1 FROM table_that_does_not_exist")).all()
+
+    db = Session()
+    db.add(_Row(id=1, v="the caller's pending work"))
+    original = dict(al._RESOLVERS)
+    al._RESOLVERS["gdxa152_probe"] = _self_swallowing
+    try:
+        al.resolve_entity_labels(db, {("gdxa152_probe", "x")})
+        with pytest.raises(Exception) as caught:
+            db.execute(text("SELECT 1")).scalar()
+        assert "InFailedSqlTransaction" in str(type(caught.value)) or "aborted" in str(caught.value), (
+            "expected the documented rule-5 defeat; if containment now holds, "
+            "delete this test and the precondition comment it pins"
+        )
+    finally:
+        al._RESOLVERS.clear()
+        al._RESOLVERS.update(original)
+        with suppress(Exception):
+            db.rollback()
+        db.close()
+
+
+def test_pg_compliance_summary_reports_a_true_failed_login_count_under_drift(pg_test_engine):
+    """The one containment in GDXA-152 with an observable consequence.
+
+    `compliance_summary` swallows its 500-row integrity probe and then reads
+    AGAIN for `failed_login_24h`. Uncontained, a drifted column aborts the
+    transaction at the probe, so the later count degrades to 0 and the SOC2
+    dashboard reports zero failed logins in 24h — silently wrong rather than
+    visibly broken, which is the worst class in this repo. Worse, the probe's
+    query is a superset of `_walk_chain`'s, so the abort happens BEFORE
+    `_walk_chain`'s own savepoint is reachable: without the probe's savepoint,
+    `SAVEPOINT` itself raises 25P02 on the already-aborted transaction.
+
+    Remove `contained_read` from the probe in `compliance_summary` and this
+    fails on `failed_login_24h == 0`.
+    """
+    import json as _json
+
+    from gdx_dispatch.core.audit_dashboard import compliance_summary
+
+    Session = _pg_sessions(pg_test_engine)
+
+    with pg_test_engine.begin() as c:
+        c.execute(
+            text(
+                # Every NOT NULL column without a default, filled explicitly.
+                # row_hash/prev_hash are junk on purpose: this test is about the
+                # COUNT surviving, not the chain — and the chain walk reports a
+                # break on real rows anyway (see _walk_chain's docstring).
+                "INSERT INTO audit_logs "
+                "(id, action, event_type, entity_type, entity_id, "
+                " row_hash, prev_hash, created_at) "
+                "VALUES (gen_random_uuid(), 'login_failed', 'login_failed', "
+                "'user', 'u1', 'x', '', now())"
+            )
+        )
+        # A renamed COLUMN, not a table: this module calls
+        # create_all(checkfirst=True) first, which would re-create a dropped
+        # table and make the probe succeed.
+        c.execute(text("ALTER TABLE audit_logs RENAME COLUMN ip_address TO ip_address_gone"))
+
+    db = Session()
+    db.add(_Row(id=1, v="the caller's pending work"))
+    payload = _json.loads(bytes(compliance_summary(db=db).body))
+    assert payload["failed_login_24h"] == 1, (
+        "the probe's failure poisoned the transaction and the count silently "
+        "degraded to 0 — a SOC2 dashboard reporting no failed logins"
+    )
+    # NOT asserted: `audit_log_integrity is False`. It reads False here, but it
+    # reads False with nothing broken at all — `_walk_chain`'s hash formula does
+    # not match the writer's, so row 1 always mismatches (see its docstring).
+    # Asserting it would look like a second net and could not fail for the
+    # reason it named. `failed_login_24h` above is the only real net in here.
+    db.commit()
+    db.close()
+
+    with pg_test_engine.connect() as other:
+        assert other.execute(text("SELECT count(*) FROM gdxa86_row")).scalar() == 1
+
+def test_no_dispatched_entity_resolver_swallows_its_own_read():
+    """`resolve_entity_labels` wraps the DISPATCH frame, so pin its precondition.
+
+    One `contained_read` in `resolve_entity_labels` contains all nine entity
+    resolvers, which is only sound while every one of them lets a read failure
+    PROPAGATE. A resolver that catches its own failure exits the `with` block
+    cleanly on an already-aborted Postgres transaction; `__exit__` then issues
+    `RELEASE SAVEPOINT`, which is illegal there, and the 25P02 it raises is
+    eaten by the dispatch frame's own `except Exception` — which logs
+    `resolve_failed type=<X>`, naming the wrong cause, and leaves the caller
+    dead with nothing in the log explaining why. That is strictly worse than
+    not wrapping at all.
+
+    The trap is that this file's HOUSE STYLE is the thing that breaks it: the
+    two ACTOR resolvers (`_resolve_staff`, `_resolve_customer_users`) each
+    swallow, which is correct for them because they wrap their own reads —
+    and they are the obvious copy-paste source for a tenth entity resolver.
+    A GDXA-152 audit demonstrated the gap by adding a swallowing clone of
+    `_resolve_vendor` to `_RESOLVERS`: 83 tests across the label and activity
+    suites stayed green. Prose could not hold this; it is a machine check now.
+
+    AST, not grep, and it reads `_RESOLVERS` rather than a hardcoded list, so a
+    resolver added to the dict is covered the moment it is registered. No
+    marker, no Postgres: this is the SQLite arm's only guard on the dispatch
+    wrap, and the PG tests beside it skip by default.
+    """
+    import gdx_dispatch
+
+    src = (
+        Path(gdx_dispatch.__file__).resolve().parent / "core" / "audit_labels.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    # `_resolve_line` is dispatched too — `resolve_entity_labels` falls back to
+    # it for any `*_line` type, and it re-enters `_RESOLVERS` for the parent.
+    dispatched: set[str] = {"_resolve_line"}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Dict):
+            continue
+        if not any(getattr(t, "id", None) == "_RESOLVERS" for t in node.targets):
+            continue
+        for value in node.value.values:
+            name = getattr(value, "id", None)
+            assert name is not None, (
+                "a _RESOLVERS entry is no longer a plain function name "
+                f"({ast.dump(value)}) — this guard can no longer see what is "
+                "dispatched, so teach it the new shape rather than deleting it."
+            )
+            dispatched.add(name)
+
+    assert len(dispatched) > 1, (
+        "could not find the _RESOLVERS dict in core/audit_labels.py — the guard "
+        "resolved nothing, which would make it pass vacuously forever."
+    )
+
+    offenders = [
+        f"{node.name}() catches at line {sub.lineno}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name in dispatched
+        for sub in ast.walk(node)
+        if isinstance(sub, ast.ExceptHandler)
+    ]
+    assert not offenders, (
+        "These resolvers are dispatched through `resolve_entity_labels`'s "
+        "`contained_read` frame but swallow their own read failure:\n    "
+        + "\n    ".join(offenders)
+        + "\n\nOn Postgres that exits the savepoint clean on an aborted "
+        "transaction and RELEASE SAVEPOINT raises 25P02 into the dispatch "
+        "handler, which logs the wrong cause. Either let the failure propagate "
+        "(the house style for the nine entity resolvers), or give this resolver "
+        "its own `with contained_read(db):` around its read the way "
+        "`_resolve_staff` and `_resolve_customer_users` do."
+    )
+
+
 # ── the docstring's call-site count is a number, so pin it ──────────────────
 
 _SKIP_DIRS = {"tests", "node_modules", ".git", "frontend", ".venv"}
 
-_NUMBER_WORD = {
-    1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
-    7: "seven", 8: "eight", 9: "nine", 10: "ten", 11: "eleven", 12: "twelve",
-}
+_ONES = (
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+    "sixteen", "seventeen", "eighteen", "nineteen",
+)
+_TENS = (
+    "", "", "twenty", "thirty", "forty", "fifty",
+    "sixty", "seventy", "eighty", "ninety",
+)
+
+
+def _number_word(n: int) -> str | None:
+    """Spell ``n`` the way the docstring sentence spells it, or None past 99.
+
+    This was a hand-written dict that stopped at twelve (GDXA-151). Extending it
+    by hand each time a call site lands is the same shape as the count it
+    guards: a number a human maintains, that goes stale, and whose staleness
+    surfaces as a confusing RED on someone else's unrelated change. GDXA-152
+    took the count from nine to nineteen in one commit and ran straight off the
+    end of it; the nine sibling delegations of GDXA-46 are each expected to add
+    sites to the same sentence, so it would have run off again.
+
+    Generating the word removes that maintenance entirely below 100. It stays
+    `None` above that, deliberately — a repo with 100+ contained reads has
+    outgrown a prose count, and the assertion's message is the right place to
+    find that out rather than silently spelling ever-longer numbers.
+    """
+    if 0 <= n < 20:
+        return _ONES[n]
+    if 20 <= n < 100:
+        tens, ones = divmod(n, 10)
+        return _TENS[tens] if not ones else f"{_TENS[tens]}-{_ONES[ones]}"
+    return None
 
 
 def test_the_docstring_call_site_count_is_not_stale():
@@ -769,8 +1060,13 @@ def test_the_docstring_call_site_count_is_not_stale():
             per_file[rel.as_posix()] = hits
 
     total = sum(per_file.values())
-    word = _NUMBER_WORD.get(total)
-    assert word is not None, f"extend _NUMBER_WORD: {total} call sites {per_file}"
+    word = _number_word(total)
+    assert word is not None, (
+        f"{total} contained_read call sites {per_file} — past ninety-nine, which "
+        "is where a prose count stops being the right instrument. Replace the "
+        "sentence in core/database.py with something that is not a number, "
+        "rather than teaching _number_word to spell hundreds."
+    )
 
     # Whitespace-collapsed so re-WRAPPING the sentence is free. Re-WORDING it is
     # not, and that is deliberate: this exact phrase is the anchor.
