@@ -26,6 +26,31 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core import internal_auth
+
+# HARD DEPENDENCY on GDXA-86: `contained_read` landed with it, and this module
+# must not ship without it. Module scope on purpose, and the blast radius is
+# worth knowing rather than discovering, because it is NOT all in one place:
+#
+#   - the API half degrades quietly. `app.py` wraps browser_proxy +
+#     plugins_proxy + admin_plugins in ONE try/except, so an ImportError here
+#     does not crash the app: it logs "plugins proxy router failed to load" and
+#     boots green with three whole routers missing. That is 25 of the operations
+#     pinned in `openapi_routes.txt` — admin_plugins 11, plugins_proxy 10
+#     (two `api_route` decorators carrying 5 methods each), browser_proxy 4 —
+#     plus one websocket, which OpenAPI does not list.
+#   - the WORKER half does not degrade at all, it crash-loops.
+#     `core/celery_app.py` imports `core.plugin_events` at module scope with no
+#     guard, and that imports this module, so celery-high, celery-low and
+#     celery-beat all fail to start — under `restart: unless-stopped` that is a
+#     restart loop, which is the loud half and the reason this is bearable.
+#
+# A function-local import would be worse, not better: `any_event_consent`'s own
+# `except Exception: return False` would swallow it and silently turn off plugin
+# event fan-out with no log line anywhere. The real guard is that
+# `tests/test_plugin_consent_contained_read.py` fails at COLLECTION without this
+# name — which only holds while that file is TRACKED, so a path-limited commit
+# in this shared worktree must include it.
+from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.plugin_api.events import capability_fingerprint, event_matches
 
 log = logging.getLogger(__name__)
@@ -64,6 +89,61 @@ def internal_auth_headers() -> dict[str, str]:
 
 
 def ensure_consent_table(db: Session) -> None:
+    """Create plugin_consent (and backfill its two later columns) if absent.
+
+    **It COMMITS the caller's transaction, unconditionally.** That is the hazard
+    to know about this function, so it goes first: anything the caller has staged
+    is hardened whether it meant it or not. Nothing enforces the precondition, so
+    it was checked rather than assumed — three direct callers
+    (``record_consent``, ``consented_permissions``, ``event_recipients``), five
+    entry points through them, and none holds pending work when it arrives:
+    ``admin_plugins.py:411``'s consent route is *built* around this commit and
+    stages its grant afterwards; ``admin_plugins.py:382``'s ``plugin_permissions``
+    and ``browser_proxy.py:78``'s browser gate only read; and both
+    ``tasks/plugin_email_outbox.py:59`` and ``core/plugin_events.py:91``'s
+    dispatch task run on a session they opened themselves. **A future caller
+    that arrives with work of its own is the thing to look at here, not the
+    swallow below — and the one that has already FLUSHED it is the dangerous
+    one, not the one still holding it.** ``any_event_consent`` deliberately does
+    NOT call this at all, precisely because that one runs inside a money
+    transaction.
+
+    The commit is also why it cannot be contained: transaction control inside a
+    savepoint releases the very savepoint meant to contain the work, the same
+    reason ``core/audit.py`` hoists ``ensure_audit_table`` outside
+    ``audit_best_effort``'s ``begin_nested()`` (documented there at point (1)).
+    So ``core.database.contained_read`` is the wrong tool here and no
+    containment is being withheld.
+
+    That matters because the swallowed ``db.execute`` below has the GDXA-86
+    census shape — caller-owned session, statement in a ``try``, swallowing
+    ``except`` — without the defect, and the commit is why. That class's harm is
+    handing a caller back a silently poisoned session; this commit ENDS the
+    aborted transaction, so nobody is handed one. Measured on PG 15.17 (prod is
+    16.13) by making the ALTER fail for real, with a VIEW named plugin_consent
+    that ``CREATE TABLE IF NOT EXISTS`` skips over without an error, in all three
+    caller shapes:
+
+    1. nothing staged — returns quietly leaving the session usable, and
+       ``record_consent`` then raises ``UndefinedColumn`` on its own INSERT.
+    2. work still pending — the flush inside the commit raises
+       ``InFailedSqlTransaction`` out of this frame: loud, in the right place.
+    3. work already FLUSHED — **the bad one.** Nothing is left to flush, so the
+       commit raises nothing; the transaction is already aborted, and Postgres
+       answers COMMIT on an aborted transaction with a ROLLBACK rather than an
+       error. So this returns quietly, the caller's own ``commit()`` reports
+       success, and the caller's row is gone. A silent write loss.
+
+    So do not read the commit as making this function safe — it only keeps it out
+    of the GDXA-86 class, which is a claim about *which* defect this is, not a
+    clean bill of health. Shape 3 is not reachable from any of the five entry
+    points above (each was re-walked, not assumed); it is the precondition a
+    future caller must not break. Shape 3 was found by this change's adversarial
+    audit, after the first two had been measured and written up here as the whole
+    story — so if you are adding a caller, measure rather than trust this list.
+    All three are pinned by ``tests/test_plugin_consent_contained_read.py::
+    test_pg_ensure_consent_table_does_not_hand_on_a_poisoned_session``.
+    """
     # Fresh tables (tests, new deploys) get the event-platform columns inline.
     db.execute(
         text(
@@ -85,10 +165,13 @@ def ensure_consent_table(db: Session) -> None:
     for col in ("declared_events", "declared_fingerprint"):
         try:
             db.execute(text(f"ALTER TABLE plugin_consent ADD COLUMN IF NOT EXISTS {col} TEXT"))
-        except Exception:
+        except Exception as exc:
             # Column already present, or an SQLite build without IF NOT EXISTS
-            # where CREATE already made it — either way it exists now.
-            log.debug("plugin_consent add-column skipped col=%s", col)
+            # where CREATE already made it — either way it exists now. Name the
+            # cause: on Postgres IF NOT EXISTS makes the benign case a no-op, so
+            # a failure HERE is something else, and without this the only trace
+            # is the opaque InFailedSqlTransaction raised by the commit below.
+            log.debug("plugin_consent add-column skipped col=%s err=%s", col, exc)
     db.commit()
 
 
@@ -188,12 +271,101 @@ def any_event_consent(db: Session) -> bool:
     SAVEPOINT-wrapped: plugin_consent is a lazily-created raw table (not an ORM
     model), so on a FRESH Postgres box it doesn't exist yet — a bare SELECT would
     raise UndefinedTable and POISON the caller's transaction, failing the
-    invoice/job/customer commit. begin_nested() contains that abort in a
-    savepoint so the outer money transaction survives. (SQLite doesn't poison, so
-    this bug is Postgres-only and invisible to the SQLite test harness.)
+    invoice/job/customer commit. (SQLite doesn't poison, so this bug is
+    Postgres-only and invisible to the SQLite test harness.)
+
+    The savepoint comes from ``core.database.contained_read``, deliberately NOT
+    from ``db.begin_nested()`` — which is what this used first, and which
+    contains the UndefinedTable perfectly well but not the case that matters
+    here (GDXA-137). ``SessionTransaction._take_snapshot`` FLUSHES on every
+    ``begin_nested()``, and that flush runs while the transaction object is
+    still being constructed, i.e. **before the savepoint exists**. So a caller
+    holding a row that cannot flush never enters the block, no savepoint is ever
+    emitted, and the abort happens upstream of any containment. Measured on PG
+    15.17 with the caller's own table renamed out from under it:
+
+    - ``begin_nested()`` — the probe dies in the snapshot flush before reading
+      anything, ``db.new`` is emptied, ``is_active`` goes False, the ``except``
+      below swallows the only evidence, and the caller's ``commit()`` raises
+      ``PendingRollbackError`` naming no cause.
+    - ``contained_read`` — no flush here at all: ``db.new`` is still 1, the
+      session is still active, and the caller's ``commit()`` raises its OWN
+      ``UndefinedTable``, which it can act on.
+
+    The sharpest version is a caller whose pending row is merely a DUPLICATE KEY
+    — an error it was about to handle. Same box: with ``begin_nested()`` the
+    snapshot flush raises that ``IntegrityError`` *inside this function*, the
+    ``except`` below swallows it, and the caller's ``commit()`` raises
+    ``PendingRollbackError`` instead, so the caller's own ``except
+    IntegrityError`` never runs. With ``contained_read`` the caller's
+    ``commit()`` raises the ``IntegrityError`` it was waiting for. Both are
+    pinned in ``tests/test_plugin_consent_contained_read.py``.
+
+    Every measurement above is PG 15.17 (the test container). Prod is 16.13, so
+    read them as the mechanism, not as a reproduction of a prod incident — none
+    has been reported, and the docstring of ``contained_read`` enumerates how
+    narrow the trigger is on prod's current settings.
+
+    **Which live callers this actually protects: two of the nine, and they are
+    estimate send and estimate accept/decline.** Measured 2026-09-27 by
+    instrumenting this function and driving the real routes, not by reading them
+    — a static read of these same nine sites got this WRONG in an earlier draft
+    of this very docstring, which is why the method is named here and not just
+    the result:
+
+    - ``routers/estimates.py:2190`` (send_estimate) — 18 calls, **0 clean**: a
+      dirty, unflushed persistent ``Estimate`` (status, sent_at, sent_via,
+      valid_until, updated_at) is held at the probe. Its first ``db.commit()``
+      is line 2205, *after* the emit.
+    - ``routers/estimates.py:276`` (``_emit_estimate_decision`` →
+      ``estimate.accepted`` / ``estimate.declined``) — 12 calls, **0 clean**.
+    - the other seven arrive clean: ``estimates.py:2988`` commits first,
+      ``customers.py:471`` flushes deliberately (``Customer.id`` is a flush-time
+      default), and ``jobs.py``, ``transactional_email.py``,
+      ``ledger/service.py`` (via ``post_for_event``, which flushes inside its own
+      savepoint) and ``bounce_detect.py`` all flush first.
+
+    ``routers/estimates.py`` contains **zero** ``SQLAlchemyError`` handlers and
+    its ``db.commit()`` at 2205 is unguarded, so before this change a failed
+    snapshot flush inside this probe was eaten by emit's
+    ``log.exception("plugin_dispatch_stage_failed")`` and the route then died on
+    an unhandled ``PendingRollbackError`` naming nothing at all. Still narrow —
+    the flush itself has to fail, and ``contained_read``'s docstring enumerates
+    how little can make that happen on prod's current settings, which is why the
+    issue is priority ``low``. But do not read it as cosmetic, and do not cite a
+    caller census as grounds for putting ``begin_nested()`` back: re-measure
+    instead. This census has already been wrong once.
+
+    **This fixes the probe, not ``emit_domain_event``'s whole promise, and the
+    difference is one active webhook subscription.** ``_emit`` stages each
+    delivery row inside its own ``db.begin_nested()`` + ``flush()`` BEFORE
+    reaching here, so on a box with a subscription matching the event, a caller
+    whose row cannot flush is already poisoned upstream of this function and its
+    ``commit()`` still dies with ``PendingRollbackError``. Measured end to end
+    through ``emit_domain_event`` on PG 15.17: no subscription → the caller gets
+    its own ``UndefinedTable``; with one → the pre-fix outcome. That staging
+    savepoint is a WRITE, so it genuinely wants ``begin_nested()`` and cannot
+    simply take ``contained_read`` — untangling it is platform-core's change in
+    ``core/webhooks/emit.py``, not this one. Pinned as a known limit by
+    ``test_pg_a_matching_subscription_still_poisons_upstream_of_this_probe``, so
+    the next reader does not have to rediscover it. What this function is
+    responsible for is being the probe that no longer adds a failure of its own,
+    and on the zero-subscriber box — the ordinary state of this install, which is
+    why emit's own notes call it that — it is also the last one in the way.
+
+    ``contained_read`` opens its SAVEPOINT on the *Connection*, below the ORM,
+    and holds ``no_autoflush`` — which is exactly why there is no flush, and
+    also why it is reads only. This function is a pure read; it must stay one.
+    A connection-level savepoint is invisible to the Session, so unlike
+    ``begin_nested()`` this probe no longer fires the session's ``after_commit``
+    / ``after_soft_rollback`` listeners. That is a narrowing, not a fix: the
+    GDXA-50 guards in ``core/webhooks/emit.py`` are still load-bearing and are
+    still reached, by emit's own per-row delivery-staging savepoint. Measured
+    both ways, with the net counts, at the two tests named in
+    ``tests/test_webhooks_emit.py``.
     """
     try:
-        with db.begin_nested():
+        with contained_read(db):
             row = db.execute(
                 text(
                     "SELECT 1 FROM plugin_consent "
