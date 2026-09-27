@@ -15,9 +15,26 @@ from pathlib import Path
 
 import pytest
 
-from gdx_dispatch.tests.authz_sweep import ungated_routes
+from gdx_dispatch.tests.authz_sweep import (
+    AUTH_DEPENDENCIES,
+    STALE_GATED,
+    STALE_OTHER,
+    STALE_UNREGISTERED,
+    _first_registration_dependencies,
+    classify_stale,
+    ungated_routes,
+)
 
 BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_ungated_baseline"
+
+# The baseline's length, pinned EXACTLY rather than as a ceiling. A ceiling
+# rots: 85 was set on 2026-09-03 and survived every prune after it (#655,
+# #782, and six more in GDXA-90), so by 2026-09-27 the "ratchet" was carrying
+# 24 lines of slack and could not catch the next 24 additions. Equality means a
+# prune that forgets to lower this number is red, once, with a one-line fix —
+# and gating a route never reddens it, because gating changes the SWEEP, not
+# the file.
+BASELINE_SIZE = 61
 
 
 def _baseline() -> set[str]:
@@ -26,8 +43,25 @@ def _baseline() -> set[str]:
 
 
 @pytest.fixture(scope="module")
-def current() -> set[str]:
-    return set(ungated_routes())
+def _app():
+    """One assembled app for the whole module — `create_app()` is not cheap."""
+    from gdx_dispatch.app import create_app
+
+    return create_app()
+
+
+@pytest.fixture(scope="module")
+def current(_app) -> set[str]:
+    # Via `ungated_routes()`, never by re-implementing its predicate here: two
+    # copies of that filter is how a sweep and its own report start disagreeing
+    # about which routes they are judging.
+    return set(ungated_routes(_app))
+
+
+@pytest.fixture(scope="module")
+def table(_app) -> dict[str, set[str]]:
+    """The same route table the sweep judged, for classifying stale lines."""
+    return _first_registration_dependencies(_app)
 
 
 def test_no_new_unauthenticated_routes(current: set[str]) -> None:
@@ -47,18 +81,54 @@ def test_no_new_unauthenticated_routes(current: set[str]) -> None:
     )
 
 
-def test_baseline_does_not_silently_grow(current: set[str]) -> None:
+def test_baseline_does_not_silently_grow(
+    current: set[str], table: dict[str, set[str]]
+) -> None:
     """The baseline is a debt list — it must shrink, never quietly expand.
 
-    Stale entries (routes since gated) are fine and are reported, not failed,
-    so hardening work never breaks the build.
+    Stale entries are fine and are reported, not failed, so hardening work never
+    breaks the build.
+
+    The report separates the reasons a line goes stale, because they call for
+    opposite reactions. It used to print "now authenticated" for every stale
+    line, and on 2026-09-27 six of the seven stale lines were routes that had
+    been DELETED (#605, #578) — in a security ratchet's own output that sentence
+    invites a reviewer to believe an endpoint is live and guarded when it does
+    not exist. The buckets and the caveats on each live in
+    ``authz_sweep.classify_stale``, shared with the sibling ratchet.
     """
     stale = sorted(_baseline() - current)
     if stale:
-        print(
-            f"\n{len(stale)} baseline entries are now authenticated — "
-            f"prune them from {BASELINE_PATH.name}:\n  " + "\n  ".join(stale)
-        )
+        buckets = classify_stale(stale, table, AUTH_DEPENDENCIES)
+        report = [f"\n{len(stale)} baseline line(s) no longer appear in the sweep."]
+        if buckets[STALE_GATED]:
+            report.append(
+                f"\n{len(buckets[STALE_GATED])} are NOW AUTHENTICATED — hardening "
+                f"landed, prune them from {BASELINE_PATH.name} and lower "
+                "BASELINE_SIZE to match:\n  " + "\n  ".join(buckets[STALE_GATED])
+            )
+        if buckets[STALE_UNREGISTERED]:
+            report.append(
+                f"\n{len(buckets[STALE_UNREGISTERED])} are NOT REGISTERED in this "
+                "route table. Do NOT read that as 'gated' — establish which "
+                "before pruning:\n"
+                "  • the route was deleted (prune the line — good), or\n"
+                "  • its router failed to import and app.py substituted an "
+                "empty one (fix the import — the debt is still open), or\n"
+                "  • it is registered conditionally and this environment does "
+                "not meet the condition (keep the line — GET /{full_path:path} "
+                "needs frontend/dist, which no test environment builds):\n  "
+                + "\n  ".join(buckets[STALE_UNREGISTERED])
+            )
+        if buckets[STALE_OTHER]:
+            report.append(
+                f"\n{len(buckets[STALE_OTHER])} are registered with NO auth "
+                "dependency and still absent from the sweep. That should be "
+                "impossible here — such a route is by definition ungated, so it "
+                "cannot be stale. Read it as a defect in ungated_routes(), not "
+                "as hardening:\n  " + "\n  ".join(buckets[STALE_OTHER])
+            )
+        print("\n".join(report))
     # 91 → 93 (2026-08-13): POST /api/proposals/{token}/accept + /decline —
     # the public estimate approval page. Group 2, token IS the credential
     # (64-char Estimate.public_token, sent_at-gated, uniform 404, row-locked);
@@ -72,9 +142,95 @@ def test_baseline_does_not_silently_grow(current: set[str]) -> None:
     # routes outright (/superadmin, the six /legacy/* tenant-UI handlers,
     # the /integrations Jinja page, and the dismissed-recommendation POST
     # whose router was the dead half of a shadowed pair). Pruned, not fixed.
-    assert len(_baseline()) <= 85, (
-        "The ungated-route baseline grew. It is a debt list to work down, not "
-        "a place to record new exceptions."
+    # 85 → BASELINE_SIZE = 61 (2026-09-27, GDXA-90), and from a ceiling to an
+    # equality — see the constant for why a ceiling could not hold. The pin is
+    # on the FILE's line count, not the sweep result, so it stays deterministic
+    # across environments even though GET /{full_path:path} only registers when
+    # frontend/dist exists.
+    assert len(_baseline()) == BASELINE_SIZE, (
+        f"{BASELINE_PATH.name} holds {len(_baseline())} entries, pinned at "
+        f"{BASELINE_SIZE}.\n"
+        "GREW? It is a debt list to work down, not a place to record new "
+        "exceptions. If a new public-by-design route really belongs here, say "
+        "so in review, add it with a reason, and raise BASELINE_SIZE in the "
+        "same commit.\n"
+        "SHRANK? Good — hardening or a deletion landed. Lower BASELINE_SIZE to "
+        f"{len(_baseline())} in this commit, so the next addition is caught "
+        "instead of absorbed by slack."
+    )
+
+
+def test_classify_stale_can_fail_for_its_own_defect() -> None:
+    """The control for the split report — on the classifier, not on its inputs.
+
+    An earlier version of this test asserted only that the route-table helper
+    returns what it says. That could not fail for the defect: inverting the
+    report's own ``in table`` test left the module 6/6 green while it printed
+    "NOW AUTHENTICATED" for ``GET /{full_path:path}`` — the one line this commit
+    pinned as must-not-prune. So drive ``classify_stale`` directly, with one
+    probe route per bucket, and assert the buckets.
+
+    ``STALE_GATED`` must require a VISIBLE gate, not mere registration. That is
+    the whole point: in the sibling authorization sweep a line also disappears
+    when the route loses its authentication, and calling that "the debt is paid"
+    reintroduces exactly the false reassurance being removed here.
+    """
+    from fastapi import APIRouter, Depends, FastAPI
+
+    from gdx_dispatch.routers.auth.core import get_current_user
+
+    router = APIRouter()
+
+    @router.get("/probe/gated", dependencies=[Depends(get_current_user)])
+    def _gated() -> dict:
+        return {}
+
+    @router.get("/probe/wide-open")
+    def _wide_open() -> dict:
+        return {}
+
+    app = FastAPI()
+    app.include_router(router)
+    table = _first_registration_dependencies(app)
+
+    stale = ["GET /probe/gated", "GET /probe/wide-open", "GET /probe/deleted"]
+    buckets = classify_stale(stale, table, AUTH_DEPENDENCIES)
+
+    assert buckets[STALE_GATED] == ["GET /probe/gated"], (
+        "a registered route carrying get_current_user is the only one of the "
+        f"three that was hardened: {buckets}"
+    )
+    assert buckets[STALE_UNREGISTERED] == ["GET /probe/deleted"], (
+        f"a route absent from the table must not be called gated: {buckets}"
+    )
+    assert buckets[STALE_OTHER] == ["GET /probe/wide-open"], (
+        "a registered route with NO auth dependency must NOT land in "
+        f"STALE_GATED — registration is not a gate: {buckets}"
+    )
+    # And the sweep agrees the wide-open probe is ungated, so the two halves of
+    # the report are measuring different things.
+    assert "GET /probe/wide-open" in set(ungated_routes(app))
+    assert "GET /probe/gated" not in set(ungated_routes(app))
+
+
+def test_the_spa_catch_all_stays_in_the_baseline() -> None:
+    """GDXA-90's near-miss, pinned.
+
+    ``GET /{full_path:path}`` is declared inside ``if _frontend_dist.exists():``
+    (``app.py:1930``, route at ``:1940``), and no test environment builds the
+    frontend — CI's
+    ``test`` job never runs ``npm run build``, that is the separate ``frontend``
+    job. So the line reads as stale in every sweep run while the route is live
+    in every deployed container, and the 2026-09-27 prune came within one line
+    of deleting it on that evidence.
+    """
+    assert "GET /{full_path:path}" in _baseline(), (
+        "GET /{full_path:path} was pruned from .authz_ungated_baseline. It "
+        "looks stale because frontend/dist is absent in test environments, not "
+        "because the route is gone — app.py registers the SPA catch-all only "
+        "when that directory exists, so pruning it reddens "
+        "test_no_new_unauthenticated_routes for anyone running the suite "
+        "against a tree with a built frontend. Put the line back."
     )
 
 

@@ -83,16 +83,48 @@ def _set_flag(db: Session, on: bool) -> None:
     db.commit()
 
 
-def _request(*, tenant_id: str = TENANT) -> Request:
+_QB_STATUS_PATH = "/api/qb/status"
+
+# Handlers here are invoked as plain functions, not routed, and none reads
+# ``scope["path"]``. The default therefore names NO route: a scope path that
+# matches a real endpoint reads as "this test exercises that endpoint", and this
+# one helper feeds qb_status, qb_dashboard, sync_invoices and sync_full, so any
+# single route name it carried would be a false claim for three of the four
+# (GDXA-89). Tests that do mean a specific route pass ``path=``.
+_INERT_SCOPE_PATH = "/not-a-route/direct-handler-call"
+
+
+def _request(*, path: str = _INERT_SCOPE_PATH, tenant_id: str = TENANT) -> Request:
     scope = {
         "type": "http",
         "method": "GET",
-        "path": "/api/qb/status",
+        "path": path,
         "headers": [],
         "query_string": b"",
     }
     req = Request(scope)
     req.state.tenant = {"id": tenant_id}
+    return req
+
+
+def _unmounted_module_webhook_request(body: bytes) -> Request:
+    """A request for ``webhook_router.qb_webhook`` — which is **not mounted**.
+
+    The scope path below is the one that handler's decorator declares, not one
+    you can POST to: the live QB webhook route is ``POST /api/qb/webhooks``
+    (plural), served by a different handler that suppresses nothing. Full
+    account in the ``webhook_router.py`` module docstring; pinned by
+    ``test_qb_full_sync.py::test_qb_webhook_router_unmounted_plural_route_live``.
+    """
+    async def _receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    scope = {
+        "type": "http", "method": "POST", "path": "/api/qb/webhook",
+        "headers": [], "query_string": b"",
+    }
+    req = Request(scope, receive=_receive)
+    req.state.tenant = {"id": TENANT}
     return req
 
 
@@ -186,12 +218,12 @@ def test_pulls_run_normally_with_flag_off(db, mock_qb):
 def test_qb_status_surfaces_money_pulls_disabled(db):
     from gdx_dispatch.modules.quickbooks.router import qb_status
 
-    out = qb_status(request=_request(), current_user={"sub": "t"}, db=db)
+    out = qb_status(request=_request(path=_QB_STATUS_PATH), current_user={"sub": "t"}, db=db)
     assert out["money_pulls_disabled"] is False
     assert out["money_pulls_disabled_reason"] is None
 
     _set_flag(db, True)
-    out = qb_status(request=_request(), current_user={"sub": "t"}, db=db)
+    out = qb_status(request=_request(path=_QB_STATUS_PATH), current_user={"sub": "t"}, db=db)
     assert out["money_pulls_disabled"] is True
     assert "book of record" in out["money_pulls_disabled_reason"]
 
@@ -260,6 +292,14 @@ def _dispatched(monkeypatch) -> list[str]:
 
 
 def test_webhook_suppresses_money_pull_dispatch_when_ledger_on(db, monkeypatch):
+    """GL S9 §5.4: with ledger posting on, the module handler must not enqueue
+    Invoice/Payment pulls.
+
+    Subject is the **unmounted** ``webhook_router.qb_webhook`` — see
+    :func:`_unmounted_module_webhook_request`. This proves the suppression logic
+    in that module; it does not prove that any live URL suppresses anything. The
+    mounted ``POST /api/qb/webhooks`` runs none of this code.
+    """
     from gdx_dispatch.modules.quickbooks import webhook_router
 
     monkeypatch.setenv("GDX_TENANT_ID", TENANT)
@@ -281,22 +321,19 @@ def test_webhook_suppresses_money_pull_dispatch_when_ledger_on(db, monkeypatch):
         }]
     }).encode()
 
-    async def _receive():
-        return {"type": "http.request", "body": body, "more_body": False}
-
-    scope = {
-        "type": "http", "method": "POST", "path": "/api/qb/webhooks",
-        "headers": [], "query_string": b"",
-    }
-    req = Request(scope, receive=_receive)
-    req.state.tenant = {"id": TENANT}
-
-    out = asyncio.run(webhook_router.qb_webhook(request=req, db=db))
+    out = asyncio.run(
+        webhook_router.qb_webhook(request=_unmounted_module_webhook_request(body), db=db)
+    )
     assert out["suppressed_ledger_on"] == 2
     assert fired == ["sync_customer_task"]
 
 
 def test_webhook_dispatches_money_pulls_when_flag_off(db, monkeypatch):
+    """The other side of GL S9 §5.4: flag off, the Invoice pull is enqueued.
+
+    Same subject and same caveat as the test above — the **unmounted**
+    ``webhook_router.qb_webhook``, not a live route.
+    """
     from gdx_dispatch.modules.quickbooks import webhook_router
 
     monkeypatch.setenv("GDX_TENANT_ID", TENANT)
@@ -316,17 +353,9 @@ def test_webhook_dispatches_money_pulls_when_flag_off(db, monkeypatch):
         }]
     }).encode()
 
-    async def _receive():
-        return {"type": "http.request", "body": body, "more_body": False}
-
-    scope = {
-        "type": "http", "method": "POST", "path": "/api/qb/webhooks",
-        "headers": [], "query_string": b"",
-    }
-    req = Request(scope, receive=_receive)
-    req.state.tenant = {"id": TENANT}
-
-    out = asyncio.run(webhook_router.qb_webhook(request=req, db=db))
+    out = asyncio.run(
+        webhook_router.qb_webhook(request=_unmounted_module_webhook_request(body), db=db)
+    )
     assert out["suppressed_ledger_on"] == 0
     assert fired == ["sync_invoice_task"]
 

@@ -18,17 +18,19 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import date
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core.audit import TenantBase, ensure_audit_table
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.pay_periods import PayPeriod
 from gdx_dispatch.core.timesheet_export import (
@@ -40,6 +42,7 @@ from gdx_dispatch.core.timesheet_export import (
 )
 from gdx_dispatch.core.timesheet_hours import build_timesheet
 from gdx_dispatch.models.tenant_models import AppSettings, TimeclockBreak, TimeclockEntry
+from gdx_dispatch.routers import timeclock as timeclock_router_module
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.timeclock import router as timeclock_router
 
@@ -240,8 +243,28 @@ def test_pdf_renders_for_real(db: Session):
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@pytest.fixture()
-def client():
+@contextmanager
+def _export_app(*, refuse_audit: bool = False):
+    """The export endpoints on a throwaway SQLite database.
+
+    Yields `(TestClient, SessionLocal, handler_sessions)`. `handler_sessions`
+    collects every session handed to a handler, so a test can inspect what a
+    failed audit write left behind on the session the handler was still using.
+
+    `refuse_audit=True` installs a real `BEFORE INSERT ON audit_logs` trigger.
+    The refusal has to come from the storage layer rather than a patched
+    function: the defect this guards is what a failed *flush* does to the
+    session, and only a real statement failure produces that. Same mechanism
+    GDXA-44's triage used, and `tests/test_audit_best_effort.py` after it.
+
+    The sessionmaker matches `core/database.py`'s arguments, `expire_on_commit`
+    included. That is house-keeping, not a guard: measured for GDXA-58, pinning
+    it `False` here changes no result, because nothing crossing the audit
+    boundary in these handlers is ORM-mapped — `PeriodTimesheet` is a plain
+    dataclass and `branding` a plain dict, so there is no identity to expire.
+    The expire-on-commit trap is real at sites that read a row back through the
+    session (see `test_audit_best_effort.py`); it cannot reach this one.
+    """
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
@@ -269,8 +292,21 @@ def client():
     setup.commit()
     setup.close()
 
+    if refuse_audit:
+        # `audit_logs` is created lazily by `ensure_audit_table`, so the table
+        # has to exist before a trigger can be hung on it.
+        ensure_audit_table(SessionLocal())
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TRIGGER audit_logs_refuse_insert BEFORE INSERT ON audit_logs "
+                "BEGIN SELECT RAISE(ABORT, 'audit storage refuses this row'); END;"
+            ))
+
+    handler_sessions: list[Session] = []
+
     def _override_db():
         session = SessionLocal()
+        handler_sessions.append(session)
         try:
             yield session
         finally:
@@ -288,9 +324,24 @@ def client():
     app.dependency_overrides[get_current_user] = lambda: {
         "user_id": "office-1", "sub": "office-1", "role": "dispatcher", "tenant_id": TENANT,
     }
-    yield TestClient(app, raise_server_exceptions=True), SessionLocal
-    app.dependency_overrides.clear()
-    engine.dispose()
+    try:
+        yield TestClient(app, raise_server_exceptions=True), SessionLocal, handler_sessions
+    finally:
+        app.dependency_overrides.clear()
+        engine.dispose()
+
+
+@pytest.fixture()
+def client():
+    with _export_app() as (tc, SessionLocal, _sessions):
+        yield tc, SessionLocal
+
+
+@pytest.fixture()
+def refusing_client():
+    """A client whose every audit write is refused by the database itself."""
+    with _export_app(refuse_audit=True) as parts:
+        yield parts
 
 
 def _seed(SessionLocal, **kw):
@@ -358,6 +409,143 @@ def test_export_is_audited(client):
     assert rows, "an export must leave a trail"
     assert rows[0][0] == "office-1"
     assert "2026-08-10" in str(rows[0][1])
+
+
+# ---------------------------------------------------------------------------
+# The export when the audit trail itself fails (GDXA-44 / GDXA-58)
+#
+# `_audit_export` promises in its docstring that the trail is "never allowed to
+# fail the download", which is `audit_best_effort`'s contract. Nothing asserted
+# that promise before these tests: the suite only ever covered the happy path,
+# so the swap onto the helper — and any later change to it — could regress the
+# guarantee silently. A payroll export that 500s because an audit row was
+# refused is the worse outcome; the bookkeeper cannot be paid by an error page.
+#
+# Which of these can actually fail, measured rather than assumed (GDXA-58):
+# restore the old hand-rolled `try/except` and only ONE goes red,
+# `..._leaves_the_session_usable_for_the_next_read`, with the exact
+# `PendingRollbackError` from GDXA-44's verdict. The csv/pdf pair passes on the
+# old code too, because the old swallow also returned 200 — they lock the
+# contract against a future change that lets the audit raise, they do not
+# detect the defect being fixed here. Said plainly so nobody reads three
+# guards where there is one.
+# ---------------------------------------------------------------------------
+
+def test_a_refused_audit_row_never_fails_the_csv_download(refusing_client):
+    tc, SessionLocal, _sessions = refusing_client
+    _seed(SessionLocal, entry_id="e1", clock_in="2026-08-17T13:00:00+00:00",
+          clock_out="2026-08-17T22:00:00+00:00", minutes=540)
+
+    r = tc.get("/api/timeclock/pay-period/export.csv?start=2026-08-10&end=2026-08-23")
+
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("text/csv")
+    assert "timesheet_2026-08-10_2026-08-23.csv" in r.headers["content-disposition"]
+    # Not merely a 200 — the hours have to be in it. A body built from a
+    # session the failed audit had poisoned is the failure being guarded.
+    rows = list(csv.reader(io.StringIO(r.text)))
+    assert rows[0] == list(CSV_HEADER)
+    date_col, worked_col = CSV_HEADER.index("date"), CSV_HEADER.index("worked_hours")
+    totals = [r_ for r_ in rows[1:] if r_[date_col] == "TOTAL"]
+    assert len(totals) == 1, r.text
+    assert totals[0][worked_col] == "9.00", r.text
+
+    session = SessionLocal()
+    try:
+        landed = session.execute(text(
+            "SELECT count(*) FROM audit_logs WHERE action = 'timesheet_exported'"
+        )).scalar_one()
+    finally:
+        session.close()
+    assert landed == 0, "the trigger is the point; if the row landed this proves nothing"
+
+
+def test_a_refused_audit_row_never_fails_the_pdf_download(refusing_client):
+    """The second call site — the 200 only, and deliberately not more.
+
+    This one cannot observe a poisoned session even in principle: the PDF
+    handler calls `build_pdf` BEFORE `_audit_export`, so the audit is the last
+    statement in the request and there is nothing after it to break. It locks
+    the never-fail-the-download contract for the second endpoint; the session
+    guarantee is `..._leaves_the_session_usable_for_the_next_read`'s job, on
+    the csv path where a read actually follows.
+    """
+    tc, SessionLocal, _sessions = refusing_client
+    _seed(SessionLocal, entry_id="e1", clock_in="2026-08-17T13:00:00+00:00",
+          clock_out="2026-08-17T22:00:00+00:00", minutes=540)
+
+    r = tc.get("/api/timeclock/pay-period/export.pdf?start=2026-08-10&end=2026-08-23")
+
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "application/pdf"
+    assert r.content.startswith(b"%PDF")
+    assert len(r.content) > 1000
+
+
+def test_a_refused_audit_leaves_the_session_usable_for_the_next_read(
+    refusing_client, monkeypatch
+):
+    """The class defect itself, made observable.
+
+    At this site the old hand-rolled swallow was *latent*: both handlers stop
+    touching `db` after the audit, so a deactivated session was never noticed.
+    It bites the moment anyone adds a db read after the audit — so this test
+    adds one, by standing in for that future edit at the real call site.
+
+    Without the helper this is a 500: `log_audit_event_sync` ends in a flush,
+    the refused INSERT deactivates the session, and the next `execute` raises
+    `PendingRollbackError`. With it, the savepoint contains the failure and the
+    session the handler is still holding keeps working.
+    """
+    tc, SessionLocal, handler_sessions = refusing_client
+    _seed(SessionLocal, entry_id="e1", clock_in="2026-08-17T13:00:00+00:00",
+          clock_out="2026-08-17T22:00:00+00:00", minutes=540)
+
+    observed: dict[str, object] = {}
+    real_build_csv = timeclock_router_module.build_csv
+
+    def _build_csv_after_reading_the_db(sheet):
+        observed["read"] = handler_sessions[-1].execute(select(1)).scalar_one()
+        return real_build_csv(sheet)
+
+    monkeypatch.setattr(
+        timeclock_router_module, "build_csv", _build_csv_after_reading_the_db
+    )
+
+    r = tc.get("/api/timeclock/pay-period/export.csv?start=2026-08-10&end=2026-08-23")
+
+    assert r.status_code == 200, r.text
+    assert observed["read"] == 1, "the handler's session was not usable after the audit"
+    assert "TOTAL" in r.text
+
+
+def test_the_export_stages_nothing_so_the_helpers_precondition_holds(client, caplog):
+    """The precondition that makes `audit_best_effort` the right helper here.
+
+    It COMMITS, so it is only safe at a caller with nothing staged — otherwise
+    a GET hardens pending work nobody asked it to. `_audit_export`'s docstring
+    asserts `_export_context` is query-only; this is what checks it, because a
+    documented precondition that nothing verifies is how GDXA-44's defect class
+    arrived. The helper WARNs on violation, and a warning no test reads is not
+    a guard.
+
+    Goes red if a later edit stages a row anywhere on the export path —
+    `_export_context`, `build_timesheet`, or a new dependency — which is
+    exactly when this site must move to `audit_or_rollback`.
+    """
+    tc, SessionLocal = client
+    _seed(SessionLocal, entry_id="e1", clock_in="2026-08-17T13:00:00+00:00",
+          clock_out="2026-08-17T22:00:00+00:00", minutes=540)
+
+    with caplog.at_level(logging.WARNING, logger="gdx_dispatch.core.audit"):
+        r = tc.get("/api/timeclock/pay-period/export.csv?start=2026-08-10&end=2026-08-23")
+
+    assert r.status_code == 200, r.text
+    staged = [
+        rec.getMessage() for rec in caplog.records
+        if "audit_best_effort_caller_has_pending_work" in rec.getMessage()
+    ]
+    assert not staged, staged
 
 
 def test_one_person_can_be_exported_alone(client):

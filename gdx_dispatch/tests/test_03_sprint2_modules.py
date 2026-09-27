@@ -153,9 +153,21 @@ def test_qb_token_refresh_survives_db_commit_failure():
 
 
 def test_qb_webhook_deduplication(tenant_db, monkeypatch):
-    """Second delivery of an identical QB webhook event is skipped by the
-    real /api/qb/webhook handler (previously this test inserted a row and
-    re-queried it — asserting SQLAlchemy identity, not the dedup code path).
+    """Second delivery of an identical QB webhook event is skipped by the dedup
+    branch in ``modules/quickbooks/webhook_router.py::qb_webhook`` (previously
+    this test inserted a row and re-queried it — asserting SQLAlchemy identity,
+    not the dedup code path).
+
+    That handler is **not mounted**: ``create_app()`` never includes this router,
+    so ``/api/qb/webhook`` is not a path on the real app. The throwaway
+    ``FastAPI()`` below is what makes the singular path answer at all, and it
+    exists only to drive the handler through the HTTP layer. What this test
+    certifies is the module's dedup logic — not that QB webhook deliveries are
+    deduplicated in production. The live route is ``POST /api/qb/webhooks``
+    (plural), served by a different handler that writes no ``qb_webhook_events``
+    row and so cannot dedupe anything. Wiring pinned by
+    ``test_qb_full_sync.py::test_qb_webhook_router_unmounted_plural_route_live``
+    (GDXA-89).
 
     Uses an entity with no per-entity sync task ("Estimate") so the dedup
     branch is exercised without dispatching celery."""
@@ -168,10 +180,15 @@ def test_qb_webhook_deduplication(tenant_db, monkeypatch):
     from gdx_dispatch.modules.quickbooks.webhook_models import QBWebhookEvent
     from gdx_dispatch.modules.quickbooks.webhook_router import router as webhook_router
 
-    # No verifier token → the handler skips signature enforcement.
+    # No verifier token → the handler skips signature enforcement entirely and
+    # accepts the unsigned bodies posted below. That is the fail-OPEN gate this
+    # module must not be mounted with; it is a property of the module under test,
+    # not licence to mount it (GDXA-89).
     monkeypatch.delenv("QB_WEBHOOK_VERIFIER_TOKEN", raising=False)
     monkeypatch.delenv("QB_WEBHOOK_SECRET", raising=False)
 
+    # A throwaway app, NOT a mirror of create_app(): this include is the only
+    # reason the singular path resolves anywhere.
     app = FastAPI()
     app.include_router(webhook_router)
     app.dependency_overrides[get_db] = lambda: tenant_db

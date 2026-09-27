@@ -1,7 +1,10 @@
 # pyproject.toml — GDX Dispatch
 #
-# Lint/format live in ruff.toml; the build is Docker-based (no [build-system]
-# here). This file currently carries only the mypy baseline (#48).
+# Lint config lives in ruff.toml — lint only. Formatting lives nowhere: that
+# file has no [format] table and no formatter runs anywhere in this repo, so do
+# not go looking for a formatter config on the strength of this pointer. The
+# build is Docker-based (no [build-system] here). This file currently carries
+# only the mypy baseline (#48).
 
 [tool.mypy]
 # The SQLAlchemy plugin teaches mypy that `Mapped[X]` columns assign/read as X,

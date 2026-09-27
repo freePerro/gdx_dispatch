@@ -85,10 +85,23 @@ locust>=2.20
 # an incompatibility surfaces, tighten back to 0.24.0.
 watchfiles>=0.24.0,<2.0
 
-# Sprint 0.9-g: fakeredis is used by gdx/tests/test_dev_portal.py to stand in
-# for the real Redis session store. Listed here because the repo has no
-# separate requirements-dev.txt; installing it alongside the rest is harmless
-# (pure-Python, tiny) and keeps the test suite runnable in any env.
+# NOT OPTIONAL — removing this breaks the WHOLE test suite, not one file.
+# gdx_dispatch/tests/conftest.py imports it from an AUTOUSE fixture
+# (``_isolated_redis``), so without fakeredis every test errors in setup,
+# ~8000 of them. It is the sole importer; grep before touching this line.
+#
+# That fixture gives each test its own in-process Redis so a reachable Redis
+# cannot share one cache key across tests, processes and previous runs
+# (GDXA-109 — the customers list served a row a prior run had cached).
+#
+# Listed here rather than a requirements-dev.txt because the repo has no such
+# file, and CI installs this one (ci.yml). Pure-Python and tiny, so shipping
+# it to prod costs nothing; that is the trade that keeps the suite runnable
+# in every env.
+#
+# History: added in Sprint 0.9-g for gdx/tests/test_dev_portal.py, a file
+# that no longer exists — the comment still cited it as the only reason to
+# keep the pin, which would have made "prune the unused dep" look safe.
 fakeredis>=2.20
 
 # Sprint 1.x-S5: Anthropic SDK for the per-tenant AI assistant. Pinned to a

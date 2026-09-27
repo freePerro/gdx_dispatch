@@ -226,6 +226,84 @@ def _reset_module_state():
 
 
 # ---------------------------------------------------------------------------
+# Cross-test isolation: give every test its own Redis for the cache path
+# ---------------------------------------------------------------------------
+# ``core/cache.py`` resolves its client from ``REDIS_URL`` and falls back to
+# ``redis://localhost:6379/0`` — a REAL server — while the keys it builds are
+# constants under test, because ``company_id()`` reads the ``GDX_TENANT_ID``
+# pinned above. So wherever a Redis happens to be reachable, every test that
+# hits a ``cached()`` endpoint reads and writes the SAME key as every other
+# test, every parallel pytest process, and every previous run. Per-test DB
+# isolation cannot touch that: the shared state is not in the process.
+#
+# The customers list is the instance that bit (GDXA-109). ``list_customers``
+# caches ``cache:<GDX_TENANT_ID>:customers:q=:page=1:per=50`` for 30 s, so
+# ``test_list_customers_excludes_soft_deleted`` served the empty result a
+# previous run had written and ``test_list_customers_empty`` served that
+# run's leftover row. With a Redis up the file was deterministically red
+# (1 failed / 28 passed, three runs identical); with none, green. It read as
+# a flake for two reasons: ``cached()`` swallows its own errors, so a degrade
+# and a hit look identical from outside, and a HIT does not re-write, so a
+# stale entry keeps its original residual TTL — the run landing inside the
+# 30 s window failed and the next ones fell past expiry and passed.
+#
+# So the fixture's job is to make a test's result independent of whether a
+# Redis is reachable. Each test gets its own ``FakeServer``: an isolated
+# in-process keyspace, nothing shared, nothing external. Guarded by
+# ``test_redis_isolation_fixture.py``.
+#
+# A fake rather than stubbing the cache out, because with no Redis the
+# ``cached()`` read/write path degraded to a no-op — nothing proved the 30 s
+# cache or its ``invalidate_prefix()`` family-clear worked at all. The fake
+# exercises the real round-trip. A test that wants the degrade path still
+# gets it: patching this same attribute inside the test body wins.
+#
+# Scope is deliberately just the cache. ``cache.py`` does ``from ...
+# rate_limiter import get_redis_client``, so it holds its OWN module binding,
+# and that binding is what all three ``cached()`` call sites (customers list,
+# branding_public, drive_time) resolve — patching it closes the whole cache
+# leak while leaving ``rate_limiter.get_redis_client`` alone. That last part
+# is load-bearing, not incidental: the rate limiter shares that factory, it
+# currently fails OPEN under test (its long-lived client is bound to an
+# earlier test's event loop, so calls raise and the limiter allows), and
+# ``_privileged_write_rate_limit`` is 1 write/sec/actor. Give it a working
+# client and test_role_permissions goes 14 failures -> 20 under a live Redis.
+# Measured both ways; do not "finish the job" here without rewriting those
+# tests in the same change.
+#
+# The other helpers defaulting to a real localhost:6379 — rate_limiter,
+# circuit_breaker, terminology, api_keys, onboarding, auth_revoke,
+# bank_feeds/oauth — are the same SHAPE and still carry the same latent
+# cross-run exposure. Isolating them changes what those subsystems DO under
+# test, not just where their state lives, so each is separate work with its
+# own tests. Reported on GDXA-109 rather than bundled into a flake fix.
+#
+# One more, listed because it is the awkward case: routers/auth/core.py:176
+# binds ``redis = from_url(...)`` at MODULE scope and admin_ops.py imports
+# that OBJECT (as ``_auth_redis``), not a factory — so a factory-patching
+# fixture like this one structurally cannot reach it. It keys on
+# ``pw_reset:<random token>``, so it cannot collide the way a constant key
+# does; it is the shape without the flake.
+
+
+@pytest.fixture(autouse=True, scope="function")
+def _isolated_redis(monkeypatch):
+    """Point ``cached()`` at a per-test in-process Redis."""
+    import fakeredis.aioredis
+
+    from gdx_dispatch.core import cache
+
+    client = fakeredis.aioredis.FakeRedis(
+        server=fakeredis.FakeServer(), decode_responses=True
+    )
+    # Only cache.py's binding. NOT a cache_clear() on the real lru_cache:
+    # that object is shared with the rate limiter (see above), and clearing
+    # it hands the limiter a fresh, correctly loop-bound client.
+    monkeypatch.setattr(cache, "get_redis_client", lambda: client)
+    yield
+
+
+# ---------------------------------------------------------------------------
 # Fresh DB factory
 # ---------------------------------------------------------------------------
 
