@@ -538,3 +538,309 @@ class TestDbErrorsLeaveATrace:
         matching = [r for r in caplog.records if f"public api {handler} failed" in r.getMessage()]
         assert matching, f"{handler}: no log record; records: {[r.getMessage() for r in caplog.records]!r}"
         assert matching[0].exc_info is not None  # full traceback captured
+
+
+# ---------------------------------------------------------------------------
+# Invariant #1 — every public-API mutation leaves a trail (GDXA-85)
+# ---------------------------------------------------------------------------
+
+
+def _audit_rows(client: TestClient, *, action: str | None = None,
+                entity_id: str | None = None) -> list[dict]:
+    """Every audit row in the tenant DB, newest last, details decoded.
+
+    Read straight out of the fixture engine rather than through the router:
+    the point is what *landed*, and `get_db()` closes without committing, so a
+    row only shows up here if the handler's audit path really committed it
+    (bug class #700).
+    """
+    with client._tenant_engine.connect() as conn:  # type: ignore[attr-defined]
+        rows = conn.execute(text(
+            "SELECT action, entity_type, entity_id, user_id, tenant_id, details, "
+            "       ip_address, row_hash, prev_hash "
+            "  FROM audit_logs ORDER BY created_at, id"
+        )).mappings().all()
+    out = []
+    for r in rows:
+        d = dict(r)
+        raw = d.get("details")
+        d["details"] = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        out.append(d)
+    if action is not None:
+        out = [r for r in out if r["action"] == action]
+    if entity_id is not None:
+        out = [r for r in out if r["entity_id"] == entity_id]
+    return out
+
+
+class TestPublicApiMutationsAreAudited:
+    """GDXA-85: four mutation routes committed with no audit row at all.
+
+    Invariant #1 says every create/update/delete answers who did it, what
+    changed and when. On a public-API request there is no human to name, so
+    "who" is the API key: these rows carry the key prefix as the actor and
+    `details.channel == "public_api"`, which is what separates them from the
+    in-app rows sharing the same action name.
+
+    What would make these tests worthless: asserting the handler *calls* an
+    audit helper (a mock proves which arguments went in, never that a row came
+    out). Every assertion below reads the committed row back out of the
+    database instead.
+    """
+
+    _headers = {"X-API-Key": RAW_API_KEY, "x-tenant-id": TENANT_ID}
+
+    def test_job_create_is_audited(self, client: TestClient):
+        resp = client.post(
+            "/api/v1/jobs",
+            headers=self._headers,
+            json={"title": "Audited job", "status": "lead"},
+        )
+        assert resp.status_code == 201, resp.text[:400]
+        job_id = resp.json()["data"]["id"]
+
+        rows = _audit_rows(client, action="job_created", entity_id=job_id)
+        assert len(rows) == 1, f"expected exactly one trail row, got {rows!r}"
+        row = rows[0]
+        assert row["entity_type"] == "job"
+        assert row["tenant_id"] == TENANT_ID
+        assert row["user_id"] == "gdx_live_tes"  # the key prefix, not "system"
+        assert row["details"]["channel"] == "public_api"
+        assert row["details"]["api_key_prefix"] == "gdx_live_tes"
+        assert row["details"]["title"] == "Audited job"
+        assert row["row_hash"]  # hash chain populated
+
+    def test_job_update_is_audited_with_the_columns_it_wrote(self, client: TestClient):
+        created = client.post(
+            "/api/v1/jobs", headers=self._headers, json={"title": "before"}
+        )
+        job_id = created.json()["data"]["id"]
+
+        resp = client.patch(
+            f"/api/v1/jobs/{job_id}",
+            headers=self._headers,
+            json={
+                "title": "after",
+                "status": "scheduled",
+                # A datetime in `details` is the shape that broke a prod audit
+                # insert (core/audit.py: an expense PATCH's raw `date` raised
+                # StatementError AFTER the mutation committed). Here a refused
+                # row is swallowed by design, so it would vanish silently —
+                # this field is why the assertion below is on the stored row.
+                "scheduled_at": "2026-10-01T15:30:00+00:00",
+            },
+        )
+        assert resp.status_code == 200, resp.text[:400]
+
+        rows = _audit_rows(client, action="job_updated", entity_id=job_id)
+        assert len(rows) == 1, f"expected exactly one trail row, got {rows!r}"
+        changed = rows[0]["details"]["changed"]
+        # The columns, not the request body: `status` lands in lifecycle_stage.
+        assert set(changed) == {"title", "lifecycle_stage", "scheduled_at"}, changed
+        assert changed["title"] == "after"
+        assert changed["lifecycle_stage"] == "scheduled"
+        assert changed["scheduled_at"].startswith("2026-10-01"), changed["scheduled_at"]
+        assert rows[0]["user_id"] == "gdx_live_tes"
+
+    def test_an_update_that_matched_nothing_writes_no_row(self, client: TestClient):
+        """A 404 changed nothing, so a row for it would be a false entry.
+
+        A real update runs first so the assertion cannot pass merely because
+        nothing in this module has written an audit row yet — run this test
+        alone and it still distinguishes the two cases.
+        """
+        created = client.post(
+            "/api/v1/jobs", headers=self._headers, json={"title": "real target"}
+        )
+        real_id = created.json()["data"]["id"]
+        assert client.patch(
+            f"/api/v1/jobs/{real_id}", headers=self._headers, json={"title": "touched"}
+        ).status_code == 200
+        assert len(_audit_rows(client, action="job_updated", entity_id=real_id)) == 1
+
+        missing = "00000000-0000-0000-0000-0000000000ff"
+        resp = client.patch(
+            f"/api/v1/jobs/{missing}", headers=self._headers, json={"title": "ghost"}
+        )
+        assert resp.status_code == 404, resp.text[:300]
+        assert _audit_rows(client, action="job_updated", entity_id=missing) == []
+
+    def test_customer_create_is_audited_without_leaking_contact_details(
+        self, client: TestClient
+    ):
+        resp = client.post(
+            "/api/v1/customers",
+            headers=self._headers,
+            json={
+                "name": "Audited Customer",
+                "email": "leak@example.com",
+                "phone": "612-555-0001",
+                "address": "1 Secret Lane",
+            },
+        )
+        assert resp.status_code == 201, resp.text[:400]
+        customer_id = resp.json()["data"]["id"]
+
+        rows = _audit_rows(client, action="customer_created", entity_id=customer_id)
+        assert len(rows) == 1, f"expected exactly one trail row, got {rows!r}"
+        details = rows[0]["details"]
+        assert details["name"] == "Audited Customer"
+        assert rows[0]["entity_type"] == "customer"
+        assert rows[0]["user_id"] == "gdx_live_tes"
+        # core.audit does not redact `details`; it only JSON-normalizes it. The
+        # contact columns (address is EncryptedString at rest) must not be
+        # copied into a plaintext audit payload.
+        blob = json.dumps(details)
+        assert "leak@example.com" not in blob
+        assert "612-555-0001" not in blob
+        assert "1 Secret Lane" not in blob
+
+    def test_webhook_registration_is_audited_and_never_stores_the_secret(
+        self, client: TestClient
+    ):
+        resp = client.post(
+            "/api/v1/webhooks",
+            headers=self._headers,
+            json={
+                "url": "https://example.com/hooks/audited",
+                "events": ["job.created"],
+                "secret": "sup3r-secret-value",
+            },
+        )
+        assert resp.status_code == 201, resp.text[:400]
+        endpoint_id = resp.json()["data"]["id"]
+
+        rows = _audit_rows(
+            client, action="webhook_endpoint_registered", entity_id=endpoint_id
+        )
+        assert len(rows) == 1, f"expected exactly one trail row, got {rows!r}"
+        details = rows[0]["details"]
+        assert rows[0]["entity_type"] == "webhook_endpoint"
+        assert rows[0]["user_id"] == "gdx_live_tes"
+        assert details["url"] == "https://example.com/hooks/audited"
+        assert details["events"] == ["job.created"]
+        assert details["secret_set"] is True
+        # The secret is a credential; `details` is readable in the audit viewer.
+        assert "sup3r-secret-value" not in json.dumps(details)
+
+
+class TestAuditFailureSemantics:
+    """What happens when the audit table itself refuses the row.
+
+    Every mutation route here stages its trail row inside its own transaction,
+    so the answer is the same for all of them: the change does not stand. That
+    is the repo's canonical shape — auditing after the commit is for a change
+    committed by a helper the handler cannot reach into, and these handlers each
+    own their single commit.
+
+    The refusal comes from the storage layer (a real BEFORE INSERT trigger), not
+    a patched function: the behaviour under test is what a failed *flush* does
+    to the session, and only a real statement failure produces that.
+    """
+
+    _headers = {"X-API-Key": RAW_API_KEY, "x-tenant-id": TENANT_ID}
+
+    @staticmethod
+    def _refuse_audit_inserts(client: TestClient):
+        """Install the refusal; caller must drop it. audit_logs is created
+        lazily by ensure_audit_table, so make sure it exists first."""
+        engine = client._tenant_engine  # type: ignore[attr-defined]
+        with engine.begin() as conn:
+            conn.execute(text(
+                """
+                CREATE TABLE IF NOT EXISTS audit_logs (
+                    id TEXT PRIMARY KEY, tenant_id TEXT, user_id TEXT,
+                    action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT,
+                    details JSON, ip_address TEXT, request_id TEXT,
+                    row_hash TEXT NOT NULL, prev_hash TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    event_type TEXT, actor_id TEXT, actor_role TEXT, payload JSON, hash TEXT
+                )
+                """
+            ))
+            conn.execute(text(
+                """
+                CREATE TRIGGER audit_logs_refuse_insert
+                BEFORE INSERT ON audit_logs
+                BEGIN
+                    SELECT RAISE(ABORT, 'audit storage refuses this row');
+                END;
+                """
+            ))
+        return engine
+
+    def test_a_refused_row_leaves_no_unaudited_job_and_no_duplicate(
+        self, client: TestClient, caplog
+    ):
+        """No job without a trail — and the honest 500 costs nothing, because
+        the write was never committed, so a retry cannot duplicate it.
+
+        An audit-after-commit shape would answer 201 here and silently lose the
+        row. That was this fix's first draft, and the reason it changed.
+        """
+        import logging as _logging
+
+        title = "refused trail"
+        engine = self._refuse_audit_inserts(client)
+        try:
+            with caplog.at_level(_logging.ERROR, logger="gdx_dispatch.core.audit"):
+                first = client.post("/api/v1/jobs", headers=self._headers, json={"title": title})
+                second = client.post("/api/v1/jobs", headers=self._headers, json={"title": title})
+        finally:
+            with engine.begin() as conn:
+                conn.execute(text("DROP TRIGGER IF EXISTS audit_logs_refuse_insert"))
+
+        for resp in (first, second):
+            assert resp.status_code == 500, resp.text[:400]
+            assert resp.json()["detail"] == "audit failure — change rolled back"
+        with engine.connect() as conn:
+            count = conn.execute(
+                text("SELECT COUNT(*) FROM jobs WHERE title = :t"), {"t": title}
+            ).scalar()
+        assert count == 0, "an unaudited job was left behind"
+        assert any(
+            "audit_write_failed action=job_created" in r.getMessage() for r in caplog.records
+        ), [r.getMessage() for r in caplog.records]
+
+    def test_a_refused_row_leaves_no_unaudited_customer(self, client: TestClient):
+        """The same for the ORM-routed write, which reaches its id via flush()."""
+        name = "refused trail co"
+        engine = self._refuse_audit_inserts(client)
+        try:
+            resp = client.post("/api/v1/customers", headers=self._headers, json={"name": name})
+        finally:
+            with engine.begin() as conn:
+                conn.execute(text("DROP TRIGGER IF EXISTS audit_logs_refuse_insert"))
+
+        assert resp.status_code == 500, resp.text[:400]
+        assert resp.json()["detail"] == "audit failure — change rolled back"
+        with engine.connect() as conn:
+            count = conn.execute(
+                text("SELECT COUNT(*) FROM customers WHERE name = :n"), {"n": name}
+            ).scalar()
+        assert count == 0, "an unaudited customer was left behind"
+
+    def test_a_refused_row_rolls_the_webhook_registration_back(self, client: TestClient):
+        """Registering an endpoint grants a data-egress channel; an untraceable
+        one must not exist."""
+        url = "https://example.com/hooks/must-not-persist"
+        engine = self._refuse_audit_inserts(client)
+        try:
+            resp = client.post(
+                "/api/v1/webhooks",
+                headers=self._headers,
+                json={"url": url, "events": ["job.created"], "secret": "x"},
+            )
+        finally:
+            with engine.begin() as conn:
+                conn.execute(text("DROP TRIGGER IF EXISTS audit_logs_refuse_insert"))
+
+        assert resp.status_code == 500, resp.text[:400]
+        # The audit-specific message, not the generic database one: the caller
+        # is told the change was undone, which is what actually happened.
+        assert resp.json()["detail"] == "audit failure — change rolled back"
+        with engine.connect() as conn:
+            count = conn.execute(
+                text("SELECT COUNT(*) FROM webhook_endpoints WHERE url = :u"), {"u": url}
+            ).scalar()
+        assert count == 0, "an unaudited egress endpoint was left registered"

@@ -706,3 +706,62 @@ class TestTurnstileHelper:
         )
         assert ok is False
         assert "hostname-mismatch" in errs
+
+
+# ---------------------------------------------------------------------------
+# The ninth handler's error path (GDXA-136)
+# ---------------------------------------------------------------------------
+
+
+class TestLandingLeadDbErrorsLeaveATrace:
+    """The one public-API handler `test_public_api.py` cannot reach.
+
+    Its `TestDbErrorsLeaveATrace` matrix covers 8 of the 9 handlers and says so:
+    this route sits behind a `landing_leads:write` scope and a Turnstile call
+    that file's API key and fixtures don't carry, so its log-then-opaque-500 tail
+    was verified by hand and by nothing executable. That mattered when GDXA-136
+    folded the tail — the fifth verbatim copy in the file — into the shared
+    `_write_errors_as_500` context manager: the fold changed this handler with no
+    test watching. It has one now.
+    """
+
+    def test_a_db_error_logs_and_answers_an_opaque_500(self, client: TestClient, caplog):
+        import logging as _logging
+
+        from gdx_dispatch.core.database import get_db
+
+        class _BrokenDB:
+            """Every attribute access raises — `db.add(ll)` is the first one."""
+
+            def __getattr__(self, name):
+                raise RuntimeError("simulated database failure")
+
+        def _broken_db():
+            yield _BrokenDB()
+
+        app = client.app
+        prev = app.dependency_overrides.get(get_db)
+        app.dependency_overrides[get_db] = _broken_db
+        try:
+            with caplog.at_level(_logging.ERROR, logger="gdx_dispatch.api.public_router"):
+                resp = client.post(
+                    URL,
+                    json={"name": "Boom Probe", "email": "boom@example.com"},
+                    headers={"X-API-Key": RAW_KEY_A, "Host": HOST_A},
+                )
+        finally:
+            if prev is None:
+                app.dependency_overrides.pop(get_db, None)
+            else:
+                app.dependency_overrides[get_db] = prev
+
+        assert resp.status_code == 500, resp.text
+        assert resp.json()["detail"] == "A database error occurred"
+        assert "simulated database failure" not in resp.text  # opaque to callers
+        matching = [
+            r
+            for r in caplog.records
+            if "public api create_public_landing_lead failed" in r.getMessage()
+        ]
+        assert matching, f"no log record; records: {[r.getMessage() for r in caplog.records]!r}"
+        assert matching[0].exc_info is not None  # full traceback captured
