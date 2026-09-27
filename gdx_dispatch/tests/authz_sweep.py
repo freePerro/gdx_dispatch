@@ -1,7 +1,11 @@
 """Shared helper: enumerate routes that no authentication dependency guards.
 
-Used by ``test_authz_route_sweep.py`` (the ratchet) and by
-``tools/authz_sweep_report.py`` (the human-facing worklist).
+Used by ``test_authz_route_sweep.py`` and ``test_authz_permission_sweep.py``
+(the two ratchets). The human-facing worklist is what those tests PRINT from
+``test_baseline_does_not_silently_grow`` — read it with ``pytest -rP``. This
+docstring used to cite ``tools/authz_sweep_report.py``; no such file has ever
+existed in this repository, so the pointer sent every reader looking for a tool
+that was never written.
 
 Replaces the hand-maintained 18-path list in ``test_authz_regression.py``,
 which was frozen at the 2026-06-24 sweep — nothing shipped afterwards was
@@ -215,6 +219,62 @@ def _first_registration_dependencies(app=None) -> dict[str, set[str]]:
             if method in ("HEAD", "OPTIONS"):
                 continue
             out.setdefault(f"{method} {path}", names)
+    return out
+
+
+# Why a stale baseline line left the sweep. Three answers, three reactions.
+STALE_GATED = "gated"
+STALE_UNREGISTERED = "unregistered"
+STALE_OTHER = "other"
+
+
+def classify_stale(
+    stale,
+    table: dict[str, set[str]],
+    gate_dependencies: frozenset[str],
+    *,
+    in_body_counts: bool = False,
+) -> dict[str, list[str]]:
+    """Bucket stale baseline lines by WHY each one left the sweep.
+
+    Shared by both ratchets so their reports cannot drift apart, and so the
+    classification is reachable from a test. Reporting the wrong reason is not
+    cosmetic: this used to say "now authenticated" for every stale line, and on
+    2026-09-27 six of seven were routes that had been DELETED — in a security
+    ratchet's own output that invites a reviewer to believe an endpoint is live
+    and guarded when it does not exist.
+
+    ``STALE_GATED`` requires the gate to be VISIBLE, not merely that the route
+    still exists. Registration alone is not evidence of a gate: in
+    ``unpermissioned_mutations()`` a line also disappears when the route loses
+    its *authentication*, which is a worse hole, not a fixed one.
+
+    ``STALE_UNREGISTERED`` is deliberately not called "deleted". ``app.py``
+    swallows a router ImportError and substitutes an EMPTY router, and the SPA
+    catch-all is registered only when ``frontend/dist`` exists — either makes a
+    live route read as gone. ``table`` also cannot see routes with no
+    ``dependant`` (mounts, static files, websockets), so the ``/mcp`` Mount and
+    its 42 tools are absent from it by construction.
+
+    ``STALE_OTHER`` is registered but carries no visible gate. For the
+    authentication sweep it is provably empty (a registered route with no auth
+    dependency is *in* ``ungated_routes()``, so it cannot be stale). For the
+    authorization sweep it means the route no longer authenticates anyone.
+    """
+    out: dict[str, list[str]] = {
+        STALE_GATED: [],
+        STALE_UNREGISTERED: [],
+        STALE_OTHER: [],
+    }
+    for key in stale:
+        if key not in table:
+            out[STALE_UNREGISTERED].append(key)
+            continue
+        names = table[key]
+        gated = bool(names & gate_dependencies) or (
+            in_body_counts and _IN_BODY_SENTINEL in names
+        )
+        out[STALE_GATED if gated else STALE_OTHER].append(key)
     return out
 
 

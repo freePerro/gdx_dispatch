@@ -24,6 +24,11 @@
 # lacks the key. Only admin and owner pass via the BUILTIN union escape hatch.
 #
 # Counts at freeze: 405 total — 392 staff, 13 customer-portal.
+#
+# 371 → 370 (2026-09-27, GDXA-90): pruned POST /portal/invoices/{invoice_id}/pay.
+# DELETED, not gated — routers/portal.py:644 records the removal (2026-09-16):
+# nothing called it, and a second card-mint site that could not carry the card
+# surcharge would have breached the networks' surcharge-consistency rule.
 
 # ── customer portal ───────────────────────────────────────────────────────
 # These authenticate a CUSTOMER, not a tenant user, so no role or permission
@@ -47,7 +52,6 @@ POST /portal/door-listings/{listing_id}/photos
 POST /portal/estimates/{estimate_id}/accept
 POST /portal/estimates/{estimate_id}/decline
 POST /portal/estimates/{estimate_id}/deposit/pay
-POST /portal/invoices/{invoice_id}/pay
 POST /portal/message
 POST /portal/password
 
