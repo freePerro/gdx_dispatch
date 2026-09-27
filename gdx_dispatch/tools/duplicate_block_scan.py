@@ -38,11 +38,50 @@ The baseline mode is the same expand-contract pattern used by
 `tenant_plane_redundant_filter_scan.py` — capture the current state, gate
 fails only on NET-NEW duplicate hashes.
 
+What actually runs the gate (GDXA-83, 2026-09-27)
+-------------------------------------------------
+For its first three months this file had a committed baseline that **no test
+and no CI step read**: the docstring above claimed a gate and there was none,
+so the baseline drifted to 68% dead hashes and 1382 net-new groups without ever
+going red. The gate is now
+`gdx_dispatch/tests/test_duplicate_block_scan_refreeze.py::test_the_committed_baseline_is_what_the_tree_scans`,
+which runs in the default suite, reads `BASELINE_FILE` **unpatched** and demands
+exact equality in both directions.
+
+One rule covers every case: **`--baseline` re-freezes anything that only
+shrank, and refuses anything that grew.** So
+
+* clones you only REMOVED -> `--baseline` (or `--prune`, which is shrink-only
+  and can never bless anything, if you want belt and braces);
+* any clone you ADDED, alone or MIXED with removals -> `--baseline` exits 2 with
+  the file untouched and names the hashes. Extract the helper, or bless it on
+  purpose with `--baseline --allow-new`, a reviewable line in a diff. A mixed
+  add+remove commit is not rare — 1 of the 5 commits before this one was mixed
+  (`0343b157`: 1 added, 9 dead) — and `--prune` alone will NOT clear it.
+
+Without that refusal the guard would be theatre: the test goes red, the author
+runs `--baseline`, the new clone is blessed in silence, and we are back to a
+ratchet that cannot fail (CLAUDE.md: "A green ratchet proves nothing unless it
+can fail for your defect").
+
+The limit of the guard, stated rather than inferred
+---------------------------------------------------
+`_iter_py_files` takes its file LIST from `.git/index` and its CONTENT from the
+working tree (`tracked_files.tracked_or_none`, whose docstring accepts this on
+purpose). So a clone pasted into a brand-new file that has not been `git add`-ed
+yet is invisible to this gate: the suite is green locally and reddens only once
+the file is staged — at the commit gate, or in CI. Verified by execution, not
+read off: a verbatim copy in an untracked `gdx_dispatch/core/*.py` scanned as
+`added 0` (audit, 2026-09-27). This is the same blind spot every tracked-set
+guard in the repo has; closing it would mean re-implementing `.gitignore`
+matching, which `tracked_files.py` rejects for good reasons.
+
 Usage
 -----
     python -m gdx_dispatch.tools.duplicate_block_scan
     python -m gdx_dispatch.tools.duplicate_block_scan --strict
-    python -m gdx_dispatch.tools.duplicate_block_scan --baseline
+    python -m gdx_dispatch.tools.duplicate_block_scan --prune
+    python -m gdx_dispatch.tools.duplicate_block_scan --baseline [--allow-new]
 """
 from __future__ import annotations
 
@@ -191,6 +230,41 @@ def _write_baseline(groups: dict[str, list[tuple[Path, int]]]) -> None:
     BASELINE_FILE.write_text(json.dumps(sigs, indent=2) + "\n")
 
 
+def _relative(path: Path) -> str:
+    """Repo-relative when it can be, absolute when it can't (scratch dirs).
+
+    A near-twin of `tenant_plane_redundant_filter_scan._display` — named here
+    because it is exactly the shape this scanner exists to flag, and the
+    scanner is structurally blind to it (the bodies differ by `as_posix()` vs
+    `str()`, so the hashes differ). Not folded into a shared helper on purpose:
+    that edit lands in `tenant_plane_redundant_filter_scan.py`, whose baseline
+    is LINE-KEYED, so a pure line shift there reddens its own gate and forces
+    an unrelated re-freeze. Recorded for the maintainer instead of smuggled in.
+    """
+    try:
+        return Path(path).relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _hashes_beyond_baseline(
+    baseline: set[str], groups: dict[str, list[tuple[Path, int]]]
+) -> list[str]:
+    """Net-new hashes a re-freeze would ADD, as printable lines.
+
+    A duplicate hash is content-keyed, not line-keyed, so — unlike
+    `tenant_plane_redundant_filter_scan._shapes_beyond_baseline` — there is no
+    "pure line shift" to forgive: moving a clone leaves its hash identical.
+    Every difference in the add direction is therefore a genuinely new clone,
+    and refusing all of them costs no false positives.
+    """
+    out = []
+    for h in sorted(set(groups) - baseline):
+        path, lineno = groups[h][0]
+        out.append(f"{h}: {len(groups[h])} copies, first at {_relative(path)}:{lineno}")
+    return out
+
+
 def _prune_baseline(groups: dict[str, list[tuple[Path, int]]]) -> tuple[int, int]:
     """Drop baseline hashes that no longer appear in current scan results."""
     baseline = _load_baseline()
@@ -210,6 +284,11 @@ def main() -> int:
     parser.add_argument("--no-baseline", action="store_true")
     parser.add_argument("--prune", action="store_true", help="drop baseline hashes that no longer appear in current findings")
     parser.add_argument(
+        "--allow-new",
+        action="store_true",
+        help="with --baseline: bless net-new clones instead of refusing them",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=50,
@@ -220,8 +299,27 @@ def main() -> int:
     groups = scan()
 
     if args.baseline:
+        existing = _load_baseline()
+        beyond = _hashes_beyond_baseline(existing, groups) if existing else []
+        if beyond and not args.allow_new:
+            print(f"❌ refusing to re-freeze: {len(beyond)} net-new duplicate group(s)")
+            for line in beyond[: args.limit or len(beyond)]:
+                print(f"    {line}")
+            if args.limit and len(beyond) > args.limit:
+                print(f"    … and {len(beyond) - args.limit} more")
+            print()
+            print("   The baseline is left byte-for-byte alone. Extract the shared")
+            print("   block, or bless these on purpose with --baseline --allow-new.")
+            print("   --allow-new is also the fix for a MIXED add+remove tree:")
+            print("   --prune drops the dead hashes but adds none, so it leaves")
+            print("   the refreeze guard red.")
+            return 2
         _write_baseline(groups)
-        print(f"Wrote {len(groups)} duplicate-block hashes to {BASELINE_FILE.relative_to(REPO_ROOT)}")
+        blessed = f", {len(beyond)} net-new blessed" if beyond else ""
+        print(
+            f"Wrote {len(groups)} duplicate-block hashes to "
+            f"{_relative(BASELINE_FILE)}{blessed}"
+        )
         return 0
 
     if args.prune:
@@ -252,8 +350,7 @@ def main() -> int:
         marker = "NEW" if h not in baseline else "   "
         print(f"  [{marker}] hash={h} ({len(locs)} copies)")
         for path, lineno in locs[:8]:
-            rel = path.relative_to(REPO_ROOT)
-            print(f"        {rel}:{lineno}")
+            print(f"        {_relative(path)}:{lineno}")
         if len(locs) > 8:
             print(f"        … and {len(locs) - 8} more")
         print()

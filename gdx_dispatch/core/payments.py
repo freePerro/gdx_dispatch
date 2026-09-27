@@ -527,7 +527,34 @@ def _open_intents_for_invoice(invoice, *, connect: dict) -> list:
     return found
 
 
-def _ach_in_flight(invoice, *, tenant: dict | None = None) -> dict | None:
+def _intent_snapshot(invoice, *, tenant: dict | None = None) -> list:
+    """One read of Stripe's register for this invoice, shared by the mint gates.
+
+    `create-intent` asks two questions of the same list — "is a bank debit
+    already moving?" (M16) and "did a card already settle without reaching our
+    books?" (GDXA-84) — and both fail open. Reading it once keeps the customer's
+    Pay click at the single Stripe round trip it cost before the second gate
+    existed, and means the two answers cannot disagree about what was open.
+
+    An empty list IS the fail-open answer for both: nothing known means nothing
+    refused and nothing recorded. So a failure is logged here, once, and
+    returned as "nothing" rather than propagated — which is also why callers
+    take the list as an argument instead of a "did the scan work" flag they
+    would each have to get right.
+    """
+    try:
+        _init_stripe()
+        return _open_intents_for_invoice(invoice, connect=_stripe_extra(tenant or {}))
+    except Exception:
+        logger.exception(
+            "intent_snapshot_failed invoice=%s — the ACH gate and the settled-card "
+            "recovery both fail open on it.",
+            getattr(invoice, "id", "?"),
+        )
+        return []
+
+
+def _ach_in_flight(invoice, *, tenant: dict | None = None, intents: list | None = None) -> dict | None:
     """The ACH debit already moving for ``invoice``, or None.
 
     M16. ACH is a delayed-notification method — "up to 4 business days to
@@ -548,12 +575,18 @@ def _ach_in_flight(invoice, *, tenant: dict | None = None) -> dict | None:
     fail open on a Stripe outage (refusing to take money because we could not
     check would strand a legitimate payer; the M12 sweep and the
     ``payment_exceeds_receivable`` backstop still cover the overlap).
+
+    ``intents`` lets a caller that has already read the register hand the same
+    snapshot over (``_intent_snapshot``) instead of paying for a second list
+    call. Omit it and this reads Stripe itself, exactly as before.
     """
     if invoice is None:
         return None
     try:
-        _init_stripe()
-        for pi in _open_intents_for_invoice(invoice, connect=_stripe_extra(tenant or {})):
+        if intents is None:
+            _init_stripe()
+            intents = _open_intents_for_invoice(invoice, connect=_stripe_extra(tenant or {}))
+        for pi in intents:
             status = str(getattr(pi, "status", "") or "")
             if status == "processing":
                 return {
@@ -649,7 +682,8 @@ def _intent_method(intent: Any, *, connect: dict | None = None, strict: bool = F
 
 
 def _refuse_if_ach_processing(
-    invoice, *, tenant: dict | None = None, op: str, db: Session | None = None, actor: str = "customer"
+    invoice, *, tenant: dict | None = None, op: str, db: Session | None = None,
+    actor: str = "customer", intents: list | None = None,
 ) -> None:
     """409 when an ACH debit for ``invoice`` is already moving (M16).
 
@@ -665,7 +699,7 @@ def _refuse_if_ach_processing(
     reports on an event prod is not subscribed to — this row is the only trace.
     Best-effort: a trail failure never turns into a 500 on a refusal.
     """
-    pending = _ach_in_flight(invoice, tenant=tenant)
+    pending = _ach_in_flight(invoice, tenant=tenant, intents=intents)
     if pending:
         logger.warning(
             "ach_processing_blocks_new_payment invoice=%s op=%s intent=%s amount_cents=%s stage=%s",
@@ -943,6 +977,94 @@ def _audit_payment_on_void(db: Session, *, invoice, payment, source: str, detail
     )
 
 
+def _audit_recovered_payment(db: Session, *, invoice, payment, detail: dict) -> None:
+    """GDXA-84: money that had settled at Stripe and was missing from the books.
+
+    The office must be able to answer "who entered this payment?" — and for
+    this one the answer is *nobody did*: a customer's own pay-page request
+    discovered it. Without the row the invoice simply grows a payment with no
+    explanation.
+
+    Committed here, unlike the other two money events. Those are written inside
+    ``_mark_invoice_paid``'s transaction and ride its commit; this one runs
+    after that commit has already landed, so there is no later commit of the
+    caller's to join. Best-effort and never raising, like every alert in this
+    module: the money is already recorded, and losing the alert is survivable.
+    """
+    _audit_money_event(
+        db, invoice=invoice, payment=payment, source=_RECOVERED_SOURCE,
+        action="payment_recovered_from_stripe", detail=detail,
+        consequence="a payment nobody entered is on the invoice with nothing to explain it",
+    )
+    try:
+        db.commit()
+    except Exception:
+        with contextlib.suppress(Exception):
+            db.rollback()
+        logger.exception(
+            "payment_recovered_audit_commit_failed invoice=%s — the payment is committed; "
+            "only its trail row was lost.", getattr(invoice, "id", "?"),
+        )
+
+
+def _recorded_payment(db: Session, invoice, reference: str):
+    """The LIVE ``Payment`` row for ``reference`` on ``invoice``, or None.
+
+    ``_mark_invoice_paid``'s idempotency question: "is this money currently in
+    the books?"
+
+    M14 (money audit 2026-08-04): VOIDED rows must be excluded. A wrongly
+    reversed payment (a late ``charge.failed`` on a retried intent) left a
+    voided row here, and this check then blocked the redelivered ``succeeded``
+    from re-recording it — the invoice stayed open with the money collected.
+
+    ⚠ NOT the predicate the settled-intent recovery may use — see
+    ``_reference_ever_recorded``, and the warning there about why sharing one
+    predicate between the two is a defect rather than a simplification.
+    """
+    return db.scalars(
+        select(Payment).where(
+            Payment.invoice_id == invoice.id,
+            Payment.reference == reference,
+            Payment.voided_at.is_(None),
+        )
+    ).first()
+
+
+def _reference_ever_recorded(db: Session, invoice, reference: str) -> bool:
+    """Have the books EVER carried ``reference`` on ``invoice`` — voids included.
+
+    The recovery's question, and the opposite of ``_recorded_payment``'s. The
+    first version of GDXA-84 shared that one predicate for both and the
+    adversarial audit broke it, with a probe: **a Stripe PaymentIntent stays
+    ``succeeded`` forever.** A refund, a dispute, or an office void does not
+    touch it — they set ``voided_at`` on OUR row and re-open the balance. So
+    "succeeded at Stripe with no LIVE payment row" describes two opposite
+    situations:
+
+      * we never booked it — the window this fix exists to close; and
+      * we booked it and un-booked it **on purpose**.
+
+    Re-recording the second silently undoes a refund the office already paid
+    out, flips the invoice back to paid, and tells the customer they need not
+    pay — money that is genuinely owed again. Measured: a `charge.refunded`
+    reversal followed by one pay-page request left the invoice at
+    ``balance_due`` 0.00 with the refunded charge booked a second time.
+
+    M14 is what makes the two predicates irreconcilable, and it is right for
+    its own caller: the *webhook* must be able to re-record a wrongly reversed
+    payment, because there the money really is still collected. A *pay page*
+    must not, because it cannot tell a mistaken void from a deliberate refund —
+    so it defers to the human who made that decision and lets the customer pay.
+    """
+    return db.scalars(
+        select(Payment.id).where(
+            Payment.invoice_id == invoice.id,
+            Payment.reference == reference,
+        )
+    ).first() is not None
+
+
 def _mark_invoice_paid(
     invoice: Invoice,
     db: Session,
@@ -978,21 +1100,8 @@ def _mark_invoice_paid(
     from gdx_dispatch.modules.ledger.rules import post_payment_received
     from gdx_dispatch.routers.invoices import _recalculate_invoice
 
-    if external_ref:
-        existing = db.scalars(
-            _select(Payment).where(
-                Payment.invoice_id == invoice.id,
-                Payment.reference == external_ref,
-                # M14 (money audit 2026-08-04): must exclude VOIDED rows. A
-                # wrongly-reversed payment (late charge.failed on a retried
-                # intent) left a voided row here, and this check then blocked
-                # the redelivered `succeeded` from re-recording it — the
-                # invoice stayed open with the money collected.
-                Payment.voided_at.is_(None),
-            )
-        ).first()
-        if existing is not None:
-            return  # already recorded (idempotent across confirm + webhook)
+    if external_ref and _recorded_payment(db, invoice, external_ref) is not None:
+        return  # already recorded (idempotent across confirm + webhook + recovery)
 
     # #422: read the status BEFORE recording. The chokepoint now refuses to
     # leave a void, so the invoice will still be void afterwards — but the
@@ -1226,6 +1335,169 @@ def _split_surcharge(intent: Any, received_cents: int, *, connect: dict | None =
     return fee
 
 
+_RECOVERED_SOURCE = "stripe-recovered"
+
+# The exact sentence the pay page shows when a retry turns out to be money we
+# had already collected. `core/error_handler.py`'s HTTPException handler
+# rebuilds the response from `exc.detail` alone and DROPS `exc.headers`, so a
+# structured discriminator cannot survive the trip — the status and this string
+# are the whole contract, and `test_card_double_charge_window.py` pins it so
+# the pay page can match on it.
+ALREADY_RECORDED_DETAIL = (
+    "Your payment already went through — we just hadn't finished recording it. "
+    "This invoice is paid in full; you don't need to pay again."
+)
+
+
+def _settle_unrecorded_intents(
+    invoice, *, tenant: dict | None = None, db: Session, op: str, intents: list | None = None,
+) -> list[str]:
+    """Record money that already settled at Stripe and never reached our books.
+
+    GDXA-84. The class M16 closed for bank transfers, closed for cards: *money
+    has already moved on this invoice and our books do not know yet, so the pay
+    page collects again*. A card confirm that succeeds at Stripe whose response
+    never reaches the browser — a network blip, a backgrounded tab, a mobile
+    handoff — puts the thrown `confirmCardPayment` into the page's `catch`, so
+    the Pay button comes back enabled with the full balance still showing and
+    ``/confirm`` was never called. Nothing local changed, so until the webhook
+    lands the next mint hands over a fresh chargeable intent for the FULL
+    amount and the customer is charged twice. The webhook's latency is the
+    whole window, and before this the balance reaching zero was its only closer.
+
+    **Keyed on the invoice, not on the replay.** A guard inside
+    ``_create_usable_intent`` would only ever see the case where Stripe's
+    idempotency key repeats — and ``_attempt_key`` folds the PaymentMethod id
+    into that key, so the surcharge flow's "Use a different card" mints under a
+    brand-new key and there is no replay at all. Stripe is the register: any
+    ``succeeded`` intent carrying this invoice's ``metadata.invoice_id`` is
+    money that moved, whether or not a key repeated.
+
+    **Recording, not refusing.** A bare 409 would park the customer on a dead
+    page and leave the office an invoice that looks unpaid. Handing the intent
+    to the recorder collapses the window instead: the retry resolves to "paid",
+    and ``_mark_invoice_paid`` is idempotent on ``external_ref`` so the webhook
+    that lands afterwards still books exactly one payment. It is also the
+    reason ``_ach_in_flight`` must stay stateless and must NOT learn about
+    ``succeeded`` — a *recorded* settled intent has to keep passing, or a
+    partial payment wedges the remaining balance
+    (``test_ach_processing_window.py::test_only_processing_counts``).
+
+    Fails **OPEN**, like the mint gates it stands beside: refusing to take
+    money because Stripe could not be read would strand a legitimate payer, and
+    the M12 sweep plus the ``payment_exceeds_receivable`` backstop still cover
+    the overlap. An unreadable register arrives here as an empty snapshot (see
+    ``_intent_snapshot``), and each intent is then recorded in its own ``try``
+    so one bad row cannot stop the next — with a rollback on the way out,
+    because a poisoned session would take the caller's own mint down with it.
+
+    Returns the intent ids that are in the books when this finishes.
+    """
+    if invoice is None or db is None:
+        return []
+    connect = _stripe_extra(tenant or {})
+    if intents is None:
+        intents = _intent_snapshot(invoice, tenant=tenant)
+    settled = [pi for pi in intents if str(_field(pi, "status") or "") == "succeeded"]
+
+    recorded: list[str] = []
+    for pi in settled:
+        ref = str(_field(pi, "id") or "")
+        if not ref or _reference_ever_recorded(db, invoice, ref):
+            # Nothing to recover. Either the webhook or /confirm already booked
+            # it, or it was booked and deliberately reversed — a refund, a
+            # dispute, or an office void. `_reference_ever_recorded`, never
+            # `_recorded_payment`: the docstring there says why.
+            continue
+
+        received = int(_field(pi, "amount_received") or _field(pi, "amount") or 0)
+        if received <= 0:
+            # `_mark_invoice_paid` reads a zero amount as "legacy event, record
+            # the whole remaining balance". On a succeeded intent that reports
+            # no money, that would invent a payment.
+            logger.error(
+                "unrecorded_settled_intent_has_no_amount invoice=%s intent=%s — not recorded; "
+                "a succeeded intent reporting zero received is not something to book.",
+                invoice.id, ref,
+            )
+            continue
+        try:
+            # strict: the same rule /confirm uses. Booking a bank debit as a
+            # card payment (or the reverse) is a wrong write, and here there is
+            # no retrier behind us — so an unreadable rail SKIPS the recovery
+            # rather than guessing. The webhook remains the fallback.
+            method = _intent_method(pi, connect=connect, strict=True)
+        except RailUndeterminable:
+            logger.error(
+                "unrecorded_settled_intent_rail_unknown invoice=%s intent=%s received=%s — "
+                "money has moved and is NOT in the books, and the rail cannot be read; "
+                "leaving it for the webhook rather than booking it on a guess.",
+                invoice.id, ref, received,
+            )
+            continue
+        fee = _split_surcharge(pi, received, connect=connect)
+        try:
+            _mark_invoice_paid(
+                invoice, db, external_ref=ref, method=method,
+                surcharge=fee / 100.0 if fee else None,
+                # `amount_received` over `amount`, and the fee split off it:
+                # identical to /confirm, so the same charge books the same
+                # figures whichever surface gets to it first.
+                amount=(received - fee) / 100.0,
+                source=_RECOVERED_SOURCE,
+                connected_account=str(connect.get("stripe_account", "") or ""),
+            )
+        except Exception:
+            with contextlib.suppress(Exception):
+                db.rollback()
+            logger.exception(
+                "unrecorded_settled_record_failed invoice=%s intent=%s received=%s — the "
+                "money is still only at Stripe; the webhook is the fallback.",
+                invoice.id, ref, received,
+            )
+            continue
+
+        landed = _recorded_payment(db, invoice, ref)
+        if landed is None:
+            # Returned without raising and without a live row. The reachable
+            # path is `_mark_invoice_paid`'s IntegrityError branch: a concurrent
+            # writer won the unique index on (invoice_id, reference), rolled us
+            # back, and has not committed yet — so the money IS recorded, just
+            # not visibly to this session. Logged at info, not error, and NOT
+            # counted as recovered: the balance re-read below is what decides
+            # whether this request may still mint.
+            logger.info(
+                "unrecorded_settled_left_no_visible_row invoice=%s intent=%s received=%s — "
+                "most likely a concurrent writer that has not committed yet.",
+                invoice.id, ref, received,
+            )
+            continue
+        logger.warning(
+            "payment_recovered_from_stripe invoice=%s intent=%s method=%s amount_cents=%s "
+            "fee_cents=%s op=%s — it had succeeded at Stripe with no payment row; recorded "
+            "here so this request cannot collect it a second time.",
+            invoice.id, ref, method, received - fee, fee, op,
+        )
+        _audit_recovered_payment(
+            db, invoice=invoice, payment=landed,
+            detail={
+                "intent_id": ref,
+                "op": op,
+                "method": method,
+                "amount": round((received - fee) / 100.0, 2),
+                "surcharge": round(fee / 100.0, 2),
+                "why": (
+                    "the PaymentIntent had already succeeded at Stripe and no payment row "
+                    "existed — the confirm response never reached the customer's browser "
+                    "and the webhook had not landed yet. Recorded on their next pay-page "
+                    "request so the retry could not charge them a second time."
+                ),
+            },
+        )
+        recorded.append(ref)
+    return recorded
+
+
 # ---------------------------------------------------------------------------
 # POST /api/payments/create-intent
 # ---------------------------------------------------------------------------
@@ -1257,10 +1529,46 @@ def create_intent(
     )
     tenant: dict = getattr(request.state, "tenant", {}) or {}
     method = body.method
+    # Both mint gates below read Stripe's register for this invoice. One read,
+    # handed to both: two calls would double the latency of every Pay click and
+    # could disagree about what was open.
+    op = f"create-intent:{method}"
+    intents = _intent_snapshot(invoice, tenant=tenant)
     # M16: a card payment while an ACH debit is processing double-pays just as
     # surely as a second ACH — the balance has not moved yet.
-    _refuse_if_ach_processing(invoice, tenant=tenant, op=f"create-intent:{method}", db=db)
+    _refuse_if_ach_processing(invoice, tenant=tenant, op=op, db=db, intents=intents)
+    # GDXA-84: the card half of the same class. A confirm that succeeded at
+    # Stripe whose response never reached the browser leaves the balance full
+    # and the Pay button live, so this call would hand over a second chargeable
+    # intent for money already collected. Record it first — before the mint,
+    # and before the amount is read, because recording it changes the amount.
+    recovered = _settle_unrecorded_intents(
+        invoice, tenant=tenant, db=db, op=op, intents=intents
+    )
     amount_cents = _amount_cents(invoice)
+    # Nothing chargeable left. Checked on the AMOUNT rather than on `recovered`,
+    # so the mint can never be handed a zero: the recorder commits before it
+    # returns, so a payment can have landed on paths that report nothing back
+    # (its own post-commit raise, or a webhook committing concurrently).
+    if amount_cents <= 0:
+        if recovered:
+            # `_resolve_public_invoice`'s balance 409 already ran, above, against
+            # a balance that was still full — so this is the one place the
+            # "already paid" answer can be given, and it must say what actually
+            # happened: not "no balance due" out of nowhere, but "we found it".
+            logger.warning(
+                "create_intent_refused_already_recovered invoice=%s intents=%s — the settled "
+                "intent(s) just recorded cover the balance; no second intent minted.",
+                invoice.id, ",".join(recovered),
+            )
+            raise HTTPException(status_code=409, detail=ALREADY_RECORDED_DETAIL)
+        logger.warning(
+            "create_intent_balance_vanished invoice=%s — nothing was recovered here, so "
+            "money landed between the resolve and the mint (a concurrent webhook, or a "
+            "sub-cent residual). Refusing rather than asking Stripe for a zero charge.",
+            invoice.id,
+        )
+        raise HTTPException(status_code=409, detail="This invoice has no balance due.")
 
     rail: dict[str, Any] = {}
     if method == "ach":

@@ -1084,9 +1084,25 @@ async def qb_webhooks(
     if not verifier:
         # Fail CLOSED. `if verifier:` meant an unset QB_WEBHOOK_VERIFIER_TOKEN
         # turned signature checking off entirely, so anyone could POST a forged
-        # Intuit event to this route. The sibling handler in
-        # modules/quickbooks/webhook_router.py already refuses in this case;
-        # this one is the same shape as the /metrics gate fixed alongside it.
+        # Intuit event to this route — the same shape as the /metrics gate fixed
+        # alongside it.
+        #
+        # This comment used to go on to say "the sibling handler in
+        # modules/quickbooks/webhook_router.py already refuses in this case".
+        # That was backwards in both halves, and anyone acting on it ("mount the
+        # sibling, it already refuses") ships an unauthenticated write endpoint.
+        # Corrected under GDXA-89; both halves verified by execution against
+        # create_app() on 2026-09-27:
+        #   * NOT MOUNTED — this route, POST /api/qb/webhooks (plural), is the
+        #     only QB webhook route in the table. webhook_router.qb_webhook is
+        #     not the endpoint of any mounted route, and /api/qb/webhook
+        #     (singular) is not a path on the app at all.
+        #   * FAILS OPEN — webhook_router.py gates its entire signature check
+        #     behind `if verifier_token:`, so with neither
+        #     QB_WEBHOOK_VERIFIER_TOKEN nor QB_WEBHOOK_SECRET set it accepts
+        #     UNSIGNED bodies and writes qb_webhook_events rows.
+        # So: do not cite it as precedent, and do not mount it as-is. Pinned by
+        # test_qb_full_sync.py::test_qb_webhook_router_unmounted_plural_route_live.
         raise HTTPException(
             status_code=503,
             detail="QuickBooks webhooks are not configured (set QB_WEBHOOK_VERIFIER_TOKEN)",

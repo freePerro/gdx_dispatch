@@ -439,14 +439,50 @@ class TestAdmission:
     """The other half of a gate: who must still get through — executed, not
     asserted from a mock.
 
-    Driven on /closeout and /start. NOT on /uncomplete, /reactivate,
-    /follow-up or /spawn-return-visit: those four bind `Job.id == job_id`
-    with a raw str, which the SQLite harness rejects ('str' object has no
-    attribute 'hex') long before any gate is involved. Pre-existing, unrelated
-    to this fix, and it means an admitted caller on those four cannot be
-    proven here at all — see this file's companion note in the PR body. Their
-    refusal arms above still execute, because the gate answers before the
-    broken query runs.
+    Driven on /closeout and /start since GDXA-32, and since GDXA-88 on the six
+    routes that could not be executed here at all: PATCH and DELETE /{id},
+    /uncomplete, /reactivate, /follow-up and /spawn-return-visit. Each of
+    those six validated `job_id` as a uuid and then bound the raw path STRING
+    to `Job.id` — a `Uuid()` column — which SQLite rejects with
+    StatementError ('str' object has no attribute 'hex'); the routers' own
+    `except SQLAlchemyError` turned that into their deliberate 500. Postgres
+    takes either form, so the shape was invisible in production and surfaced
+    only as GDXA-37's complaint, "PATCH /api/jobs/{id} returned 500 (not 403)
+    for a technician". It was never an authz decision.
+
+    WHY THAT MATTERS TO THIS FILE, not just to the routers: the refusal arms
+    above always passed on those six, because the gate answers before the
+    query runs. So a route could be certified refused-correctly and still be
+    incapable of serving the caller it admits, and no arm here would notice. A
+    refusal proven on a route whose success path cannot execute is half a gate.
+
+    The three remaining ROUTES rows — /complete and the two /dependencies —
+    were always executable and stay undriven for the original reason: the call
+    sites pass identical arguments to the same predicate, so there is no
+    per-route variation left for an admission test to cover.
+
+    WHAT THESE TESTS DELIBERATELY DO NOT ASSERT. On the five routes other than
+    PATCH the admitted caller here is the OFFICE tier, which is the caller
+    every one of them has a named UI for. Whether a technician should also be
+    able to soft-delete, un-complete, reactivate or spawn children off their
+    own job is a role-configuration question — they pass today only because
+    the builtin technician role holds `jobs.write` — and pinning either answer
+    in a test would mint a product decision this file has no standing to make.
+    PATCH is different: a tech editing the job in front of them is the
+    documented intent (see create_job's "a job created in the field belongs to
+    the tech who created it"), and it is the exact route GDXA-37 filed.
+
+    A KNOWN HOLE, so the next person does not chase it: a PATCH that moves
+    `lifecycle_stage` cannot be proven here either, and is not covered below.
+    That one column is written by raw SQL — `UPDATE jobs SET lifecycle_stage =
+    CAST(:ls AS job_lifecycle_stage) WHERE id = :jid` — which needs the PG
+    enum cast, and on SQLite `id = :jid` compares a dashed uuid against the 32
+    hex characters SQLite stores, matching nothing. The statement is a silent
+    no-op here rather than a wrong write (SQLite resolves the unknown cast
+    target to NUMERIC affinity, so a match would store '0'), so the two
+    defects cancel and neither reaches production, where the write is correct.
+    Half-fixing it — making the WHERE match without dialect-switching the
+    CAST — would turn a no-op into a corrupt write. Left alone on purpose.
     """
 
     def test_the_assigned_technician_can_close_out(self, ctx):
@@ -492,6 +528,160 @@ class TestAdmission:
         assert r.status_code == 200, r.text[:300]
         db.expire_all()
         assert _job_row(db, job.id)[0] == "in_progress"
+
+    def test_the_assigned_technician_can_patch_the_job(self, ctx):
+        """GDXA-88. Byte-for-byte the request Arm A refuses with 404 — same
+        route, same field, different caller — and the one this whole issue
+        was filed about. Before the bind fix it answered 500 for EVERY caller,
+        so the route's success path had never once run in this suite."""
+        client, db, job, _dep, be, _ = ctx
+        be(ASSIGNED_USER, "technician")
+        r = _call(client, "PATCH", f"/api/jobs/{job.id}", {"title": "renamed"})
+        assert r.status_code == 200, r.text[:400]
+        db.expire_all()
+        assert _job_row(db, job.id)[1] == "renamed"
+
+    @pytest.mark.parametrize("role", ["owner", "admin", "dispatcher"])
+    def test_the_office_tiers_can_patch_the_job(self, ctx, role):
+        """JobsView's edit dialog and the dispatch board both PATCH here, and
+        no office user has an assignment row — they pass on the read_all /
+        WILDCARD half."""
+        client, db, job, _dep, be, _ = ctx
+        be(str(uuid4()), role)
+        r = _call(client, "PATCH", f"/api/jobs/{job.id}", {"title": f"by-{role}"})
+        assert r.status_code == 200, f"{role}: {r.text[:400]}"
+        db.expire_all()
+        assert _job_row(db, job.id)[1] == f"by-{role}"
+
+    def test_the_office_tier_can_soft_delete_the_job(self, ctx):
+        """Soft delete, never hard (invariant #2): the row must survive with
+        `deleted_at` set, or the audit and billing chains stop being
+        reconstructable. Matched against both textual uuid forms for the same
+        reason `_job_row` is."""
+        client, db, job, _dep, be, _ = ctx
+        be(str(uuid4()), "dispatcher")
+        r = _call(client, "DELETE", f"/api/jobs/{job.id}", {})
+        assert r.status_code == 200, r.text[:400]
+        db.expire_all()
+        raw = str(job.id)
+        row = db.execute(
+            text(
+                "SELECT deleted_at FROM jobs WHERE CAST(id AS TEXT) IN (:j, :jh)"
+            ),
+            {"j": raw, "jh": raw.replace("-", "").lower()},
+        ).first()
+        assert row is not None, "the row was hard-deleted"
+        assert row[0] is not None, "deleted_at was not set"
+
+    def test_the_office_tier_can_uncomplete(self, ctx):
+        """The fixture's job is completed, which is what /uncomplete requires;
+        a 409 here would mean the handler never reached its state check."""
+        client, db, job, _dep, be, _ = ctx
+        be(str(uuid4()), "dispatcher")
+        r = _call(client, "POST", f"/api/jobs/{job.id}/uncomplete",
+                  {"reason": "wrong job closed"})
+        assert r.status_code == 200, r.text[:400]
+        db.expire_all()
+        assert _job_row(db, job.id)[0] == "in_progress"
+
+    def test_the_office_tier_can_reactivate(self, ctx):
+        """/reactivate only accepts a cancelled job, so cancel it first —
+        through the ORM, since the raw-SQL lifecycle write is the known hole
+        described in this class's docstring."""
+        client, db, job, _dep, be, _ = ctx
+        job.lifecycle_stage = "cancelled"
+        db.commit()
+        be(str(uuid4()), "dispatcher")
+        r = _call(client, "POST", f"/api/jobs/{job.id}/reactivate",
+                  {"reason": "customer called back"})
+        assert r.status_code == 200, r.text[:400]
+        db.expire_all()
+        assert _job_row(db, job.id)[0] != "cancelled"
+
+    @pytest.mark.parametrize(
+        ("path", "body"),
+        [
+            ("follow-up", {}),
+            ("spawn-return-visit", {"reason": "warranty callback"}),
+        ],
+    )
+    def test_the_office_tier_can_spawn_a_child_job(self, ctx, path, body):
+        """Both routes mint a second row off the first, and counting rows is
+        not enough: a child minted with no `parent_job_id` is an orphan the
+        original can never be reconciled against, and it would pass a count
+        while being a silent-write defect wearing a 201. So assert the LINK.
+
+        NOT asserted, deliberately: which KIND of child each route mints.
+        Both set `is_return_visit=True` — `create_follow_up_job` does so
+        explicitly (checked, not assumed) — so that column does not
+        distinguish a follow-up from a warranty callback, and the reporting
+        question the design note at the bottom of routers/jobs.py poses ("how
+        many warranty visits did we do this month?") cannot be answered from
+        it alone. Whether that is intended is jobs-dispatch's call about a
+        metric, not something an authz test should pin in either direction.
+        """
+        client, db, job, _dep, be, _ = ctx
+        be(str(uuid4()), "dispatcher")
+        r = _call(client, "POST", f"/api/jobs/{job.id}/{path}", body)
+        assert r.status_code == 201, f"{path}: {r.text[:400]}"
+        raw = str(job.id)
+        children = db.execute(
+            text(
+                "SELECT CAST(parent_job_id AS TEXT) FROM jobs "
+                "WHERE CAST(id AS TEXT) NOT IN (:j, :jh)"
+            ),
+            {"j": raw, "jh": raw.replace("-", "").lower()},
+        ).all()
+        assert len(children) == 1, f"{path}: expected exactly one child, got {children}"
+        parent = children[0][0]
+        assert parent is not None, f"{path}: child was minted with no parent link"
+        assert parent.replace("-", "").lower() == raw.replace("-", "").lower()
+
+    def test_the_office_tier_can_reassign_the_job(self, ctx):
+        """The dispatch board's own request, and the most common PATCH in the
+        app: DispatchView drag-and-drop sends {assigned_tech_id, assigned_to,
+        technician_id} (+ scheduled_at). It is a different branch of update_job
+        from a title edit — it runs `_set_job_assignments`, the
+        require-tech-for-scheduled-job gate and the appointment mirror — so a
+        title-only admission test does not cover it."""
+        client, db, job, _dep, be, cust = ctx
+        _ = cust
+        be(str(uuid4()), "dispatcher")
+        r = _call(client, "PATCH", f"/api/jobs/{job.id}",
+                  {"assigned_tech_ids": [STRANGER_TECH]})
+        assert r.status_code == 200, r.text[:400]
+        db.expire_all()
+        raw = str(job.id)
+        assigned = db.execute(
+            text("SELECT assigned_to FROM jobs WHERE CAST(id AS TEXT) IN (:j, :jh)"),
+            {"j": raw, "jh": raw.replace("-", "").lower()},
+        ).scalar()
+        assert assigned == STRANGER_TECH, f"assigned_to={assigned!r}"
+
+    def test_a_status_change_lands_through_the_orm_half(self, ctx):
+        """The JobsView dropdown and the board both PATCH a status, which is
+        the branch that writes `jobs.status` from either the `status` or the
+        `lifecycle_stage` key (update_job's `raw_status` fallback).
+
+        Only the ORM half is asserted. The `lifecycle_stage` enum column is
+        written by the raw SQL this class's docstring describes as a known
+        hole — a no-op on SQLite — so asserting it here would pin the hole
+        instead of the behaviour. `jobs.status` is the half a regression in
+        this branch would take with it, and it does execute."""
+        client, db, job, _dep, be, _ = ctx
+        be(ASSIGNED_USER, "technician")
+        r = _call(client, "PATCH", f"/api/jobs/{job.id}",
+                  {"lifecycle_stage": "in_progress"})
+        assert r.status_code == 200, r.text[:400]
+        db.expire_all()
+        raw = str(job.id)
+        status = db.execute(
+            text("SELECT status FROM jobs WHERE CAST(id AS TEXT) IN (:j, :jh)"),
+            {"j": raw, "jh": raw.replace("-", "").lower()},
+        ).scalar()
+        assert status is not None and status.lower().startswith("in"), (
+            f"status={status!r} — the ORM half of the status write did not land"
+        )
 
 
 # Job-scoped write routes allowed to gate on a decorator permission ALONE,

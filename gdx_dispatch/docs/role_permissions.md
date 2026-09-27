@@ -3,10 +3,12 @@
 **Status: CURRENT** for the mechanism (spot-checked 2026-09-01 — 10 of 11 file
 references resolve; the exception is an external planning file). **Caveat this
 doc does not state:** the enforcement contract is not applied everywhere —
-`.authz_ungated_baseline` freezes 127 routes reachable without an auth
-dependency, and `routers/payments.py` has 7 mutation routes and 0
-`require_permission` gates. Some are token-scoped by design; the baseline
-cannot tell you which.
+`.authz_ungated_baseline` freezes routes reachable without an auth dependency
+(61 as of 2026-09-27; read the file, not this number), and `routers/payments.py`
+has 5 mutation routes and 0 `require_permission` gates. Some are token-scoped by
+design; the baseline cannot tell you which. There is a second debt list,
+`.authz_unpermissioned_baseline` (370 lines), for mutations that authenticate a
+caller but never ask whether they are allowed.
 
 
 This document describes the RBAC system that backs `/role-permissions`. It covers the permission catalog, the seven builtin roles, the enforcement contract, and the recipe for adding a new permission.

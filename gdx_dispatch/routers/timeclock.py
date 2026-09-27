@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -19,7 +18,14 @@ from sqlalchemy.orm import Session
 # from-import of a name it has not defined yet raises. Binding the module and
 # resolving the attribute at call time is the standard way through.
 from gdx_dispatch.core import time_off as time_off_rules
-from gdx_dispatch.core.audit import AuditLog, ensure_audit_table, log_audit_event, log_audit_event_sync
+from gdx_dispatch.core.audit import (
+    AuditLog,
+    audit_best_effort,
+    audit_or_rollback,
+    ensure_audit_table,
+    log_audit_event,
+    log_audit_event_sync,
+)
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pay_periods import (
@@ -314,44 +320,67 @@ def _auto_close_stale_shift(
     clock-out. Returns None because no duration was established.
 
     Caller is responsible for db.commit() after — same transaction shape
-    as the regular clock-out flow.
+    as the regular clock-out flow, and the audit row is flushed INTO that
+    transaction, so the close and its trail commit together or not at all.
+
+    The audit is `audit_or_rollback`, NOT `audit_best_effort` (GDXA-97). This
+    site reads like the other five in this router and is not one of them: the
+    close is still *staged* when the audit runs, so a refusal can be undone, and
+    an atomic refusal is available. It used to wrap the audit in
+    `except Exception: log`, promising that "audit failure must not block the
+    close-out" — which it did not deliver anyway: `log_audit_event` ends in a
+    flush, a refused row deactivates the Session, and the caller's next
+    `db.commit()` raised `PendingRollbackError` into `post_clock_in`'s
+    `except SQLAlchemyError` (measured 2026-09-27: HTTP 500 "Clock-in failed",
+    stale shift still open). So the swallow bought nothing and cost the
+    diagnosis. Now the refusal rolls the close back and says so — the pre-fix
+    atomicity is kept, and a system-initiated write to payroll data never lands
+    unattributed. Same call this router already made for breaks (#700: "a failed
+    audit write now fails the request instead of leaving a break nobody can
+    attribute").
+
+    Consequence, stated rather than buried: while `audit_logs` refuses, a tech
+    whose shift is stale cannot clock in — which is what happened pre-fix too.
+    The office can still key the day by hand (`POST /entries`).
     """
+    # Before staging: `ensure_audit_table`'s first run on an engine commits
+    # (SQLite) or rolls back (PG without the bootstrap guard), and the mutations
+    # below must not be hardened or discarded by it — that is what would make
+    # `audit_or_rollback`'s all-or-nothing promise a lie. Idempotent after the
+    # first call per engine. Same hoist as start_break/end_break below.
+    ensure_audit_table(db)
     now_iso = datetime.now(UTC).isoformat()
+    entry_id = str(entry.id)
+    unattended_minutes = _minutes_between(str(entry.clock_in_at), now_iso)
     entry.clock_out_at = now_iso
     entry.minutes = None
     entry.notes = _append_note(entry.notes, AUTO_CLOSE_NOTE)
     entry.updated_at = now_iso
-    # Best-effort audit. We pass request=None for celery-side calls; the
-    # log_audit_event helper tolerates that.
-    try:
-        asyncio.run(
-            log_audit_event(
-                db=db,
-                tenant_id=tenant_id,
-                user_id=actor_user_id,
-                action="timeclock_auto_close",
-                entity_type="timeclock_entry",
-                entity_id=str(entry.id),
-                details={
-                    "minutes": None,
-                    # Evidence, not truth: how long the clock ran unattended.
-                    # Recorded so the office has a bound when they set the
-                    # real end time; never stamped onto the entry as worked.
-                    "unattended_minutes": _minutes_between(
-                        str(entry.clock_in_at), now_iso
-                    ),
-                    "reason": reason,
-                    "max_shift_hours": MAX_SHIFT_HOURS,
-                },
-                request=request,
-            )
-        )
-    except Exception:
-        # Audit failure must not block the close-out itself.
-        log.exception("timeclock_auto_close_audit_failed", extra={"entry_id": str(entry.id)})
+    # `post_clock_in` is the only caller — the beat-scheduled sweep
+    # (`tasks/timeclock_sweep.py`) carries its own raw-SQL copy of this close,
+    # already audited inside its own transaction. `tenant_id` rides the request
+    # here: `audit_or_rollback` resolves it through `_extract_tenant_id`, which
+    # reads the same `request.state.tenant["id"]` that `_tenant_id` does.
+    audit_or_rollback(
+        db,
+        action="timeclock_auto_close",
+        entity_type="timeclock_entry",
+        entity_id=entry_id,
+        actor={"user_id": actor_user_id},
+        request=request,
+        details={
+            "minutes": None,
+            # Evidence, not truth: how long the clock ran unattended.
+            # Recorded so the office has a bound when they set the
+            # real end time; never stamped onto the entry as worked.
+            "unattended_minutes": unattended_minutes,
+            "reason": reason,
+            "max_shift_hours": MAX_SHIFT_HOURS,
+        },
+    )
     log.warning(
         "timeclock_auto_closed_unknown_duration",
-        extra={"tenant_id": tenant_id, "entry_id": str(entry.id), "reason": reason},
+        extra={"tenant_id": tenant_id, "entry_id": entry_id, "reason": reason},
     )
     return None
 
@@ -405,6 +434,8 @@ def post_clock_in(
             # open shifts. This is the same threshold the /status banner
             # uses, so the user UX matches the back-end policy.
             if _elapsed_hours_since(active.clock_in_at) >= MAX_SHIFT_HOURS:
+                # The close and its audit row commit together here — the helper
+                # stages both and leaves this commit to do the work.
                 _auto_close_stale_shift(
                     db,
                     tenant_id=tenant_id,
@@ -431,19 +462,37 @@ def post_clock_in(
         db.add(entry)
         db.commit()
 
-        asyncio.run(
-            log_audit_event(
-                db=db,
-                tenant_id=tenant_id,
-                user_id=_user_id(current_user),
-                action="timeclock_clock_in",
-                entity_type="timeclock_entry",
-                entity_id=entry_id,
-                details={"technician_id": tech_id},
-                request=request,
-            )
+        # The shift is on the clock. A refused audit row used to reach the
+        # `except SQLAlchemyError` below and answer 500 "Clock-in failed" with
+        # the entry already committed (measured 2026-09-27) — so the tech
+        # punches again and the day carries two open shifts. Nothing is staged
+        # here, which is `audit_best_effort`'s precondition; it commits.
+        #
+        # THIS IS A PRODUCT CHOICE, not a mechanical consequence, and it is the
+        # same one at all four punch/entry sites in this router (clock-out,
+        # POST /entries, PATCH /entries/{id}). The commit could move BELOW the
+        # audit instead, which makes a refusal atomic — verified: no entry row,
+        # no trail row, an honest 500. We keep commit-first because the punch is
+        # the tech's only record of their own day and it must be recordable while
+        # the trail is broken; the cost is that a refused row leaves a committed
+        # entry whose author is recorded ONLY in an `audit_best_effort_failed`
+        # ERROR log. Note this router decides the opposite way one screen over:
+        # `start_break` (#700) audits before its commit and fails the request
+        # "instead of leaving a break nobody can attribute". The two are not
+        # reconciled, and GDXA-97's report asks for a ruling — a break is
+        # reconstructable from the shift around it; a missing punch is not.
+        # `_auto_close_stale_shift` above is the third answer: staged, so
+        # `audit_or_rollback`.
+        audit_best_effort(
+            db,
+            tenant_id=tenant_id,
+            user_id=_user_id(current_user),
+            action="timeclock_clock_in",
+            entity_type="timeclock_entry",
+            entity_id=entry_id,
+            details={"technician_id": tech_id},
+            request=request,
         )
-        db.commit()
 
         return TimeEntryResponse(
             id=entry_id,
@@ -487,6 +536,10 @@ def post_clock_out(
 
         minutes = _minutes_between(str(entry.clock_in_at), now)
         notes = payload.notes if payload.notes is not None else entry.notes
+        # Read before the commit expires the instance, so neither the audit
+        # details nor the response re-reads the row through this session.
+        entry_id = str(entry.id)
+        clock_in_at = str(entry.clock_in_at)
 
         entry.clock_out_at = now
         entry.minutes = minutes
@@ -494,24 +547,24 @@ def post_clock_out(
         entry.updated_at = now
         db.commit()
 
-        asyncio.run(
-            log_audit_event(
-                db=db,
-                tenant_id=tenant_id,
-                user_id=_user_id(current_user),
-                action="timeclock_clock_out",
-                entity_type="timeclock_entry",
-                entity_id=str(entry.id),
-                details={"minutes": minutes},
-                request=request,
-            )
+        # Same as clock-in, including the product choice written out there: the
+        # hours are durable, so a refused audit row must not answer 500 — a tech
+        # told their clock-out failed punches out twice.
+        audit_best_effort(
+            db,
+            tenant_id=tenant_id,
+            user_id=_user_id(current_user),
+            action="timeclock_clock_out",
+            entity_type="timeclock_entry",
+            entity_id=entry_id,
+            details={"minutes": minutes},
+            request=request,
         )
-        db.commit()
 
         return TimeEntryResponse(
-            id=str(entry.id),
+            id=entry_id,
             technician_id=tech_id,
-            clock_in_at=str(entry.clock_in_at),
+            clock_in_at=clock_in_at,
             clock_out_at=now,
             minutes=minutes,
             notes=notes,
@@ -819,19 +872,23 @@ def create_manual_entry(
         db.add(entry)
         db.commit()
 
-        asyncio.run(
-            log_audit_event(
-                db=db,
-                tenant_id=tenant_id,
-                user_id=_user_id(current_user),
-                action="timeclock_entry_created",
-                entity_type="timeclock_entry",
-                entity_id=row_id,
-                details=payload.model_dump(mode="json"),
-                request=request,
-            )
+        # The payroll row is durable here. A refused audit row used to fall into
+        # the `except SQLAlchemyError` below as 500 "Manual entry create failed"
+        # with the entry saved (measured 2026-09-27) — the dispatcher keys it
+        # again and the period exports double-paid hours. That is the exact
+        # "the user created it twice" failure `audit_best_effort` exists for, and
+        # this endpoint has no idempotency key to catch the second one. Same
+        # product choice as clock-in, written out there.
+        audit_best_effort(
+            db,
+            tenant_id=tenant_id,
+            user_id=_user_id(current_user),
+            action="timeclock_entry_created",
+            entity_type="timeclock_entry",
+            entity_id=row_id,
+            details=payload.model_dump(mode="json"),
+            request=request,
         )
-        db.commit()
 
         return TimeEntryResponse(
             id=row_id,
@@ -914,30 +971,37 @@ def update_time_entry(
         entry.minutes = minutes
         entry.notes = notes
         entry.updated_at = updated_at
+        # Read before the commit expires the instance — the response below is
+        # then built without reading the row back through this session.
+        technician_id = str(entry.technician_id)
+        entry_type = str(entry.entry_type)
         db.commit()
 
-        asyncio.run(
-            log_audit_event(
-                db=db,
-                tenant_id=tenant_id,
-                user_id=_user_id(current_user),
-                action="timeclock_entry_updated",
-                entity_type="timeclock_entry",
-                entity_id=entry_id,
-                details=updates,
-                request=request,
-            )
+        # The edit is durable. A refused audit row used to answer 500 "Entry
+        # update failed" with the new stamps already saved (measured
+        # 2026-09-27), which invites the office to "re-apply" a correction that
+        # already landed. Same product choice as clock-in, written out there —
+        # and this is the sharpest instance of its cost: somebody changed a
+        # technician's hours and only an ERROR log knows who.
+        audit_best_effort(
+            db,
+            tenant_id=tenant_id,
+            user_id=_user_id(current_user),
+            action="timeclock_entry_updated",
+            entity_type="timeclock_entry",
+            entity_id=entry_id,
+            details=updates,
+            request=request,
         )
-        db.commit()
 
         return TimeEntryResponse(
             id=entry_id,
-            technician_id=str(entry.technician_id),
+            technician_id=technician_id,
             clock_in_at=str(clock_in_iso),
             clock_out_at=clock_out_iso,
             minutes=minutes,
             notes=notes,
-            entry_type=str(entry.entry_type),
+            entry_type=entry_type,
         )
     except SQLAlchemyError:
         db.rollback()
@@ -1089,30 +1153,34 @@ def _audit_export(
     A download is not a mutation, but it is everyone's hours leaving the
     app, and "who exported that" is a question worth being able to answer.
     Never allowed to fail the download.
+
+    That last line is `audit_best_effort`'s contract, so there is deliberately
+    no `try/except` here to read as missing: the helper never raises, contains
+    the failed write in a savepoint, and commits. It replaced a hand-rolled
+    `except Exception: log.exception(...)` that swallowed the failure and handed
+    back a session SQLAlchemy had already deactivated — harmless while both
+    callers stay read-only GETs that touch nothing afterwards, and a 500 the
+    moment one of them reads the db again (GDXA-44). Its precondition is that
+    the caller has nothing staged, which `_export_context` satisfies by being
+    query-only; a caller that stages work wants `audit_or_rollback` instead.
     """
-    try:
-        asyncio.run(
-            log_audit_event(
-                db=db,
-                tenant_id=_tenant_id(request),
-                user_id=_user_id(user),
-                action="timesheet_exported",
-                entity_type="timesheet",
-                entity_id=f"{sheet.period.start.isoformat()}..{sheet.period.end.isoformat()}",
-                details={
-                    "format": fmt,
-                    "period_start": sheet.period.start.isoformat(),
-                    "period_end": sheet.period.end.isoformat(),
-                    "people": sheet.people,
-                    "hours": sheet.worked_hours,
-                    "flagged": len(sheet.flagged),
-                },
-                request=request,
-            )
-        )
-        db.commit()
-    except Exception:
-        log.exception("timesheet_export_audit_failed")
+    audit_best_effort(
+        db,
+        tenant_id=_tenant_id(request),
+        user_id=_user_id(user),
+        action="timesheet_exported",
+        entity_type="timesheet",
+        entity_id=f"{sheet.period.start.isoformat()}..{sheet.period.end.isoformat()}",
+        details={
+            "format": fmt,
+            "period_start": sheet.period.start.isoformat(),
+            "period_end": sheet.period.end.isoformat(),
+            "people": sheet.people,
+            "hours": sheet.worked_hours,
+            "flagged": len(sheet.flagged),
+        },
+        request=request,
+    )
 
 
 @router.get("/pay-period/export.csv", response_model=None)
@@ -1200,9 +1268,12 @@ def send_pay_period(
     things that block a send are things a correction fixes. An override
     button is what gets clicked at 4:55pm on payday.
 
-    Always audited, blocked or not. "Was the timesheet sent, by whom, and
-    what stopped it" is a payroll question, and a refusal that leaves no
-    trace is indistinguishable from nobody trying.
+    Audited whether it went or was blocked. "Was the timesheet sent, by whom,
+    and what stopped it" is a payroll question, and a refusal that leaves no
+    trace is indistinguishable from nobody trying. The one case that cannot be
+    audited is `audit_logs` itself refusing the row: that is logged as an ERROR
+    and the send still answers honestly, because a 500 here would be pressed
+    again and mail a second copy.
     """
     if not is_dispatch_manager(current_user):
         raise HTTPException(status_code=403, detail="dispatcher or admin role required")
@@ -1222,24 +1293,41 @@ def send_pay_period(
         initiator_kind="user",
     )
 
+    # The mail has already left the building, and `send_transactional_email`
+    # staged its `outbound_emails` delivery row on THIS session without
+    # committing (`core/transactional_email.py` — "Rides the caller's session").
+    # That row is the record that the send happened, and the OutboundEmailLog
+    # surface reads it, so it is the first thing to harden. The audit row comes
+    # second, best-effort.
+    #
+    # Deliberately NOT `audit_or_rollback` (GDXA-97, against that issue's own
+    # suggestion): it cannot un-send an email. Its rollback would discard the
+    # delivery row of mail that really went out and its 500 would tell the
+    # office the send failed — and this endpoint has no `recently_sent()` guard
+    # (verified: its only callers are statements, estimates and invoices), so
+    # the next click mails the bookkeeper a second copy.
     try:
-        asyncio.run(
-            log_audit_event(
-                db=db,
-                tenant_id=tenant_id,
-                user_id=_user_id(current_user),
-                action="timesheet_sent" if outcome.sent else "timesheet_send_blocked",
-                entity_type="timesheet",
-                entity_id=(
-                    f"{sheet.period.start.isoformat()}..{sheet.period.end.isoformat()}"
-                ),
-                details=outcome.as_dict(),
-                request=request,
-            )
-        )
         db.commit()
-    except Exception:
-        log.exception("timesheet_send_audit_failed")
+    except SQLAlchemyError:
+        # Only reachable if something inside the send swallowed a failure and
+        # handed back a deactivated Session. Losing the delivery row is bad, but
+        # 500-after-send is worse — it gets clicked again. Restore the session so
+        # the audit row below can still record that the mail went out.
+        log.exception("timesheet_send_delivery_row_lost")
+        db.rollback()
+
+    audit_best_effort(
+        db,
+        tenant_id=tenant_id,
+        user_id=_user_id(current_user),
+        action="timesheet_sent" if outcome.sent else "timesheet_send_blocked",
+        entity_type="timesheet",
+        entity_id=(
+            f"{sheet.period.start.isoformat()}..{sheet.period.end.isoformat()}"
+        ),
+        details=outcome.as_dict(),
+        request=request,
+    )
 
     if outcome.blocked:
         # 409, not 422: the request is well formed and the operator did
