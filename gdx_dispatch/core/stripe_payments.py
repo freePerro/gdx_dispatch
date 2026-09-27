@@ -1,8 +1,16 @@
 """
 gdx_dispatch/core/stripe_payments.py — Stripe payment processing service layer.
 
-Handles PaymentIntents, SetupIntents, saved payment methods (card + ACH),
-and webhook event processing for GDX (single-tenant, self-hosted).
+Handles PaymentIntents, SetupIntents, listing saved payment methods and ACH
+bank-account setup for GDX (single-tenant, self-hosted). Every function here is
+called by `routers/payments.py`.
+
+**Webhooks do not live here.** The one Stripe event sink is
+`routers/stripe_webhook.py`, which verifies the signature and dispatches to
+`core/payments.py::handle_payment_webhook` — the only handler that takes a
+`Session`, so the only one that can record money. See
+`tests/test_stripe_webhook_single_handler.py` for why this module must not grow
+a second one.
 """
 from __future__ import annotations
 
@@ -80,31 +88,6 @@ def create_setup_intent(
     )
     logger.info("Created SetupIntent %s for customer %s", intent.id, customer_id)
     return intent
-
-
-def save_payment_method(
-    customer_id: str,
-    payment_method_id: str,
-    stripe_secret_key: str | None = None,
-) -> stripe.PaymentMethod:
-    """
-    Attach a payment method (card or bank account) to a Stripe customer.
-
-    Args:
-        customer_id: Stripe customer ID (cus_xxx).
-        payment_method_id: Stripe PaymentMethod ID (pm_xxx).
-        stripe_secret_key: Override the STRIPE_SECRET_KEY env var.
-
-    Returns:
-        The attached stripe.PaymentMethod object.
-
-    Raises:
-        stripe.error.StripeError: On any Stripe API error.
-    """
-    _set_key(stripe_secret_key)
-    pm = stripe.PaymentMethod.attach(payment_method_id, customer=customer_id)
-    logger.info("Attached PaymentMethod %s to customer %s", payment_method_id, customer_id)
-    return pm
 
 
 def list_payment_methods(
@@ -228,98 +211,3 @@ def create_ach_verification(
     source = stripe.Customer.create_source(customer_id, source=token.id)
     logger.info("Attached bank account source %s to customer %s", source.id, customer_id)
     return source
-
-
-def handle_webhook(
-    payload: bytes,
-    sig_header: str,
-    webhook_secret: str,
-) -> dict[str, Any]:
-    """
-    Verify and process a Stripe webhook event.
-
-    Handles:
-        - payment_intent.succeeded
-        - payment_intent.payment_failed
-        - charge.succeeded
-        - charge.failed
-
-    Args:
-        payload: Raw request body bytes.
-        sig_header: Value of the Stripe-Signature header.
-        webhook_secret: Webhook endpoint signing secret (whsec_xxx).
-
-    Returns:
-        Dict describing the processed event result.
-
-    Raises:
-        stripe.error.SignatureVerificationError: If signature is invalid.
-        ValueError: If event construction fails.
-    """
-    event = stripe.Webhook.construct_event(
-        payload=payload,
-        sig_header=sig_header,
-        secret=webhook_secret,
-    )
-
-    event_type: str = event.get("type", "")
-    data_obj: dict[str, Any] = event.get("data", {}).get("object", {})
-
-    logger.info("Processing Stripe webhook event: %s", event_type)
-
-    if event_type == "payment_intent.succeeded":
-        pi_id = data_obj.get("id")
-        amount = data_obj.get("amount")
-        currency = data_obj.get("currency")
-        customer = data_obj.get("customer")
-        logger.info("PaymentIntent succeeded: %s amount=%s %s customer=%s", pi_id, amount, currency, customer)
-        return {
-            "event": event_type,
-            "payment_intent_id": pi_id,
-            "amount": amount,
-            "currency": currency,
-            "customer": customer,
-            "status": "succeeded",
-        }
-
-    elif event_type == "payment_intent.payment_failed":
-        pi_id = data_obj.get("id")
-        last_error = data_obj.get("last_payment_error", {})
-        error_message = last_error.get("message") if isinstance(last_error, dict) else str(last_error)
-        logger.warning("PaymentIntent failed: %s error=%s", pi_id, error_message)
-        return {
-            "event": event_type,
-            "payment_intent_id": pi_id,
-            "error": error_message,
-            "status": "failed",
-        }
-
-    elif event_type == "charge.succeeded":
-        charge_id = data_obj.get("id")
-        amount = data_obj.get("amount")
-        currency = data_obj.get("currency")
-        customer = data_obj.get("customer")
-        logger.info("Charge succeeded: %s amount=%s %s customer=%s", charge_id, amount, currency, customer)
-        return {
-            "event": event_type,
-            "charge_id": charge_id,
-            "amount": amount,
-            "currency": currency,
-            "customer": customer,
-            "status": "succeeded",
-        }
-
-    elif event_type == "charge.failed":
-        charge_id = data_obj.get("id")
-        failure_message = data_obj.get("failure_message")
-        logger.warning("Charge failed: %s reason=%s", charge_id, failure_message)
-        return {
-            "event": event_type,
-            "charge_id": charge_id,
-            "failure_message": failure_message,
-            "status": "failed",
-        }
-
-    else:
-        logger.debug("Ignoring unhandled Stripe event type: %s", event_type)
-        return {"event": event_type, "status": "ignored"}
