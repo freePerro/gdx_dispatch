@@ -18,17 +18,28 @@
 #      like staff surfaces that should require a session (parts adjustment,
 #      push send, job parts). Work them down; do not add to them.
 #
-# Regenerate after deliberately changing the surface:
+# 67 → 61 (2026-09-27, GDXA-90): pruned six lines for routes that no longer
+# exist — the four /.well-known/ OAuth + OIDC discovery documents (deleted by
+# #605) and the two Stripe Connect webhooks (deleted by #578). NOT hardened,
+# DELETED; nothing on this list was gated by that change. A seventh line looked
+# equally stale and was deliberately kept — see the note on
+# GET /{full_path:path} below.
+#
+# Print the current list after deliberately changing the surface (from the
+# repo root):
 #   python -c "from gdx_dispatch.tests.authz_sweep import ungated_routes; \
-#              open('.authz_ungated_baseline','a').write('')"
-# ...then paste the new list below this header.
+#              print(chr(10).join(ungated_routes()))"
+# ...then reconcile it with the entries below by hand, and set BASELINE_SIZE in
+# gdx_dispatch/tests/test_authz_route_sweep.py to the new count.
+#
+# ⚠ Do NOT paste that list over this file wholesale: it omits the per-line
+# reasons below and every conditionally registered route this environment does
+# not build (GET /{full_path:path}). The recipe that used to sit here appended
+# an empty string and changed nothing at all, so anyone who trusted it shipped
+# an unchanged file believing it refreshed.
 DELETE /api/push/unsubscribe
 GET /.well-known/gdx-platform
 GET /.well-known/mcp-tools
-GET /.well-known/oauth-authorization-server
-GET /.well-known/oauth-protected-resource
-GET /.well-known/oauth-protected-resource/{resource_path:path}
-GET /.well-known/openid-configuration
 GET /.well-known/security.txt
 GET /api/.well-known/jwks.json
 GET /api/ai/pricing/health
@@ -62,6 +73,15 @@ GET /pwa/manifest.json
 GET /pwa/version
 GET /survey/{token}
 GET /sw.js
+# ⚠ DO NOT PRUNE, however stale this looks. The SPA catch-all is declared
+# inside `if _frontend_dist.exists():` (app.py:1930; the route itself at
+# app.py:1940), so it exists only when the frontend is built. No test
+# environment builds the frontend — CI's `test` job never runs `npm run build`
+# (that is the separate `frontend` job), and a bare worktree has no dist — so
+# this line reports as stale in every sweep run while being live in every
+# deployed container. Proven 2026-09-27 by re-running the sweep with a stub
+# dist/index.html in place: stale count 7 → 6, this line the only difference.
+# Pinned by test_the_spa_catch_all_stays_in_the_baseline.
 GET /{full_path:path}
 POST /api/ai/pricing/suggest
 POST /api/ai/quote
@@ -85,7 +105,6 @@ POST /api/push/send-user/{user_id}
 POST /api/push/subscribe
 POST /api/qb/webhooks
 POST /api/signatures/token/{token}
-POST /api/stripe/connect/webhook
 POST /api/surveys/public/{token}
 POST /api/webhooks/outlook/{tenant_slug}/{client_state}
 POST /api/webhooks/phone-com/{tenant_slug}/{secret}
@@ -94,7 +113,6 @@ POST /auth/login
 POST /auth/logout
 POST /auth/refresh
 POST /auth/reset-password
-POST /payments/connect/webhook
 POST /portal/login
 POST /portal/login/password
 POST /stripe/webhook
