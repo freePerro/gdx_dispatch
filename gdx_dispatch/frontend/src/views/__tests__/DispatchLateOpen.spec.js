@@ -92,7 +92,7 @@ const stubs = {
 
 const flushAll = async () => { await flushPromises(); await flushPromises(); };
 
-const VOELTZ = {
+const LATE_JOB = {
   id: "job-31", job_number: "JOB-2026-031", title: "Replace broken spring", job_type: "Service Call",
   status: "Scheduled", lifecycle_stage: "scheduled", scheduled_at: "2026-06-02T14:00:00+00:00",
   days_late: 117, customer_id: "c1", customer_name: "Paula Vance", assigned_to: "tech-1",
@@ -131,7 +131,7 @@ describe("DispatchView — past their date, not closed out", () => {
   });
 
   it("lists a late job with its customer, tech and how late it is", async () => {
-    lateRows = [VOELTZ];
+    lateRows = [LATE_JOB];
     const w = await mountBoard();
     const card = w.find('[data-testid="late-open-jobs"]');
     expect(card.exists()).toBe(true);
@@ -143,7 +143,7 @@ describe("DispatchView — past their date, not closed out", () => {
   });
 
   it("Close out opens the board's closeout sheet for that job and sends nothing itself", async () => {
-    lateRows = [VOELTZ];
+    lateRows = [LATE_JOB];
     const w = await mountBoard();
     postMock.mockClear(); patchMock.mockClear();
     await w.find('[data-testid="late-open-closeout-job-31"]').trigger("click");
@@ -157,14 +157,14 @@ describe("DispatchView — past their date, not closed out", () => {
   });
 
   it("Open job routes to the job page", async () => {
-    lateRows = [VOELTZ];
+    lateRows = [LATE_JOB];
     const w = await mountBoard();
     await w.find('[data-testid="late-open-open-job-31"]').trigger("click");
     expect(pushMock).toHaveBeenCalledWith("/jobs/job-31");
   });
 
   it("closing the sheet reloads the list, so a closed-out job drops off", async () => {
-    lateRows = [VOELTZ];
+    lateRows = [LATE_JOB];
     const w = await mountBoard();
     await w.find('[data-testid="late-open-closeout-job-31"]').trigger("click");
     await flushAll();
@@ -175,7 +175,7 @@ describe("DispatchView — past their date, not closed out", () => {
   });
 
   it("Hide folds the rows away but keeps the header and count; Show brings them back", async () => {
-    lateRows = [VOELTZ];
+    lateRows = [LATE_JOB];
     const w = await mountBoard();
     const toggle = w.find('[data-testid="late-open-toggle"]');
     expect(toggle.text()).toBe("Hide");
@@ -189,7 +189,7 @@ describe("DispatchView — past their date, not closed out", () => {
 
   it("never calls the endpoint for a user without jobs.read_all", async () => {
     granted = new Set();
-    lateRows = [VOELTZ];
+    lateRows = [LATE_JOB];
     const w = await mountBoard();
     expect(lateCalls()).toBe(0);
     expect(w.find('[data-testid="late-open-jobs"]').exists()).toBe(false);
