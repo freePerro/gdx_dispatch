@@ -82,6 +82,7 @@
             />
             <i v-if="c.has_recording" class="pi pi-microphone meta-vm" aria-label="has recording" />
             <button
+              v-if="canIntake"
               type="button"
               class="row-lead-btn"
               data-test="mp-row-create-lead"
@@ -174,6 +175,7 @@
               @click="callBack"
             />
             <Button
+              v-if="canIntake"
               class="detail-lead-btn"
               label="Create Lead"
               icon="pi pi-user-plus"
@@ -194,7 +196,6 @@
         v-model:visible="leadFormOpen"
         :initial-phone="leadPrefill.phone"
         :initial-name="leadPrefill.name"
-        :initial-email="leadPrefill.email"
         :initial-notes="leadPrefill.notes"
         :origin-ref="leadPrefill.originRef"
       />
@@ -207,47 +208,45 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import { useApi } from '../composables/useApi'
 import { formatDateTime } from '../composables/useFormatters'
-import { callerDisplay, friendlyStatus, prettyDirection } from '../utils/phoneComLabels'
+import { callerDisplay, friendlyStatus, isCnamJunk, prettyDirection } from '../utils/phoneComLabels'
+import { usePermission } from '../composables/usePermission'
 import LeadIntakeForm from '../components/LeadIntakeForm.vue'
 
 const api = useApi()
 
+// Lead intake (lead-intake-followup-plan §4). Same keys the server accepts.
+const { hasPermission } = usePermission()
+const canIntake = computed(() => hasPermission('leads.intake') || hasPermission('leads.write'))
 const leadFormOpen = ref(false)
-const leadPrefill = ref({
-  phone: '',
-  name: '',
-  email: '',
-  notes: '',
-  originRef: '',
-})
+const leadPrefill = ref({ phone: '', name: '', notes: '', originRef: '' })
 
-function openLeadFromCall(callRecord) {
-  if (!callRecord) return
-  const isOutbound = callRecord.direction === 'out'
-  const targetPhone = isOutbound ? callRecord.to_number : callRecord.from_number
-  const callName = callRecord.customer_name || (callRecord.caller_name && callRecord.caller_name !== 'Unknown' ? callRecord.caller_name : '') || ''
-
-  const noteParts = []
-  if (isOutbound) {
-    noteParts.push(`Outbound call to ${callRecord.to_number || 'customer'}`)
-  } else {
-    noteParts.push(`Inbound call from ${callRecord.from_number || 'customer'}`)
+async function openLeadFromCall(call) {
+  if (!call) return
+  // The detail endpoint carries no caller_cnam; the list row does. Read both
+  // off whichever record we were handed so either button gets the same prefill.
+  const row = calls.value.find((c) => c.id === call.id) || {}
+  const outbound = call.direction === 'out'
+  const number = outbound ? call.to_number : call.from_number
+  const rawCnam = call.caller_cnam ?? row.caller_cnam
+  const cnam = !outbound && rawCnam && !isCnamJunk(rawCnam, call.from_number) ? rawCnam : ''
+  const notes = [`${outbound ? 'Outbound call to' : 'Inbound call from'} ${number || 'unknown number'}`]
+  // The dialog has already loaded the transcript for the call it shows; a row
+  // tap has not, so fetch it — a voicemail's words are the request itself.
+  let text = detail.value?.id === call.id ? transcript.value : ''
+  if (!text && (call.has_voicemail ?? row.has_voicemail)) {
+    try {
+      text = (await api.get(`/api/phone-com/calls/${call.id}/voicemail-transcript`))?.transcript || ''
+    } catch { text = '' }
   }
-  const callTranscript = callRecord.transcript || (detail.value?.id === callRecord.id ? transcript.value : '')
-  if (callTranscript) {
-    noteParts.push(`Voicemail / Transcript:\n${callTranscript}`)
-  }
-
+  if (text) notes.push(`Voicemail transcript:\n${text}`)
   leadPrefill.value = {
-    phone: targetPhone || '',
-    name: callName,
-    email: callRecord.customer_email || '',
-    notes: noteParts.join('\n\n'),
-    originRef: `phone_com_call:${callRecord.id}`,
+    phone: number || '',
+    name: call.customer_name || cnam,
+    notes: notes.join('\n\n'),
+    originRef: `phone_com_call:${call.id}`,
   }
   leadFormOpen.value = true
 }
-
 
 const tab = ref('voicemail')
 const calls = ref([])

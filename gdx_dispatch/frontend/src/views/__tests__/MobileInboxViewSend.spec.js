@@ -18,6 +18,8 @@ vi.mock('../../composables/useApi', () => ({
   useApi: () => ({ get: apiGet, post: apiPost, patch: apiPatch, put: vi.fn(), del: vi.fn() }),
 }));
 vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }));
+// The lead-intake button's permission check; these specs don't mount Pinia.
+vi.mock('../../composables/usePermission', () => ({ usePermission: () => ({ hasPermission: () => false }) }));
 
 import MobileInboxView from '../MobileInboxView.vue';
 

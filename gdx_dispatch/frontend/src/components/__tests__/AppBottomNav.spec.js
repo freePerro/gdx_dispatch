@@ -11,12 +11,9 @@
  * If a future PrimeVue upgrade changes the selector or someone removes
  * the override, this test fails — and Doug's complaint resurfaces.
  */
-import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { flushPromises, mount, RouterLinkStub } from '@vue/test-utils';
-import { createPinia, setActivePinia } from 'pinia';
-import PrimeVue from 'primevue/config';
 
 const SRC = readFileSync(
   join(__dirname, '..', 'AppBottomNav.vue'),
@@ -73,7 +70,13 @@ describe('AppBottomNav More-drawer styles', () => {
  * the desktop sidebar pin, the poll starts and stops with the nav, and a
  * tenant with the inbox module off gets no dead tab.
  */
-const { apiGet, routerPush, routerReplace, modules, emailModuleOn } = vi.hoisted(() => ({
+import { afterEach, vi } from 'vitest';
+import { flushPromises, mount, RouterLinkStub } from '@vue/test-utils';
+import { createPinia, setActivePinia } from 'pinia';
+import PrimeVue from 'primevue/config';
+
+const { apiGet, routerPush, routerReplace, modules, emailModuleOn, routeQuery } = vi.hoisted(() => ({
+  routeQuery: { value: {} },
   apiGet: vi.fn(),
   routerPush: vi.fn().mockResolvedValue(undefined),
   routerReplace: vi.fn().mockResolvedValue(undefined),
@@ -95,7 +98,7 @@ vi.mock('../../composables/useTenantModules', () => ({
   }),
 }));
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ path: '/mobile/jobs', query: {}, fullPath: '/mobile/jobs' }),
+  useRoute: () => ({ path: '/mobile/jobs', query: routeQuery.value, fullPath: '/mobile/jobs' }),
   useRouter: () => ({
     push: routerPush,
     replace: routerReplace,
@@ -125,19 +128,16 @@ const DRAWER_MODULES = [
 // a cold load has that claim before /auth/me has hydrated `user`.
 const jwtFor = (role) => `h.${btoa(JSON.stringify({ role })).replace(/=+$/, '')}.s`;
 
-function mountNav(role, { signedIn = true, cachedUser = true, permissions = null } = {}) {
+function mountNav(role, { signedIn = true, cachedUser = true, permissions = [] } = {}) {
   const pinia = createPinia();
   setActivePinia(pinia);
   const auth = useAuthStore();
   auth.accessToken = signedIn ? jwtFor(role) : null;
   auth.user = signedIn && cachedUser ? { role } : null;
-  if (permissions) {
-    auth.permissions = new Set(permissions);
-    auth.permissionsLoaded = true;
-  } else if (role === 'tech' || role === 'technician') {
-    auth.permissions = new Set(['leads.intake']);
-    auth.permissionsLoaded = true;
-  }
+  // Loaded up front so usePermission never fetches (and never adds an apiGet
+  // call to the poll-count assertions below).
+  auth.permissions = new Set(permissions);
+  auth.permissionsLoaded = true;
   const wrapper = mount(AppBottomNav, {
     global: {
       plugins: [PrimeVue, pinia],
@@ -190,10 +190,13 @@ describe('AppBottomNav — Email tab for office roles', () => {
   });
 
   it('office role: Inbox leaves the More drawer now that it has a tab', async () => {
-    const wrapper = mountNav('owner');
+    const wrapper = mountNav('dispatcher');
     await flushPromises();
     await wrapper.find('[data-testid="tab-more"]').trigger('click');
-    expect(drawerTargets(wrapper)).not.toContain('/mobile/inbox');
+    const targets = drawerTargets(wrapper);
+    expect(targets).toContain('/mobile/billing'); // drawer rewrites to the mobile companion
+    expect(targets).not.toContain('/mobile/inbox');
+    expect(targets).not.toContain('/inbox');
     wrapper.unmount();
   });
 
@@ -203,31 +206,29 @@ describe('AppBottomNav — Email tab for office roles', () => {
     expect(tabLabels(wrapper)).toEqual(['Today', 'Jobs', 'Customers', 'Clock', 'Photos', 'More']);
     await wrapper.find('[data-testid="tab-more"]').trigger('click');
     expect(drawerTargets(wrapper)).toContain('/mobile/inbox');
+    // A tech never polls the mailbox for a badge they don't have.
+    expect(apiGet).not.toHaveBeenCalledWith('/api/outlook/messages/unread-count');
     wrapper.unmount();
   });
 
   it('badge: mirrors the unread count, caps at 99+, hidden at zero', async () => {
-    const wrapper = mountNav('owner');
-    await flushPromises();
-    const unread = useEmailUnreadStore();
-
-    // Zero: no badge in DOM at all.
-    unread.count = 0;
-    await flushPromises();
-    expect(wrapper.find('[data-testid="email-unread-badge-mobile"]').exists()).toBe(false);
-
-    // Positive: rendered, and tab's aria-label announces the count.
-    unread.count = 3;
+    apiGet.mockResolvedValue({ count: 3 });
+    const wrapper = mountNav('admin');
     await flushPromises();
     const badge = () => wrapper.find('[data-testid="email-unread-badge-mobile"]');
     expect(badge().exists()).toBe(true);
     expect(badge().text()).toBe('3');
     expect(wrapper.find('[data-testid="tab-inbox"]').attributes('aria-label')).toBe('Email, 3 unread');
 
-    // Capped:
-    unread.count = 250;
+    const store = useEmailUnreadStore();
+    store.count = 120;
     await flushPromises();
     expect(badge().text()).toBe('99+');
+
+    store.count = 0;
+    await flushPromises();
+    expect(badge().exists()).toBe(false);
+    expect(wrapper.find('[data-testid="tab-inbox"]').attributes('aria-label')).toBeUndefined();
     wrapper.unmount();
   });
 
@@ -239,19 +240,15 @@ describe('AppBottomNav — Email tab for office roles', () => {
     vi.advanceTimersByTime(60000);
     await flushPromises();
     expect(apiGet).toHaveBeenCalledTimes(2);
-
     wrapper.unmount();
-    vi.advanceTimersByTime(60000);
+    vi.advanceTimersByTime(180000);
     await flushPromises();
-    // No new poll after unmount.
     expect(apiGet).toHaveBeenCalledTimes(2);
   });
 
   it('cold load as a tech with no cached user: tech strip from the first paint, no mailbox poll', async () => {
-    // Regression check: the pre-fix bug read `auth.user.role` only. While
-    // /auth/me was in-flight, `user` was null and effectiveRole answered
-    // undefined; that passed `!isTechnician(undefined)` and rendered the
-    // office strip. The auth store derives `role` synchronously from JWT, so a
+    // The 2026-08-28 router lesson, re-learned by the audit: `auth.user` is
+    // null until /auth/me lands, but the JWT role claim is there at once. A
     // tech must not get the office strip, an Email tab and a mailbox GET for
     // that window.
     const wrapper = mountNav('technician', { cachedUser: false });
@@ -291,45 +288,62 @@ describe('AppBottomNav — Email tab for office roles', () => {
   });
 });
 
-describe('AppBottomNav — Quick capture & Lead intake FAB', () => {
-  it('tech role: FAB is visible and opens LeadIntakeForm directly', async () => {
-    const wrapper = mountNav('tech');
+// Lead intake (lead-intake-followup-plan §4): the "+" button asks Quick note or
+// Estimate request for office, goes straight to the form for a tech holding
+// leads.intake, and stays a plain quick note where the server would 403 a lead.
+describe('AppBottomNav — capture button and lead intake', () => {
+  const fab = (w) => w.find('[data-testid="quick-capture-fab"]');
+
+  it('tech with leads.intake: opens the intake form directly', async () => {
+    const wrapper = mountNav('technician', { permissions: ['leads.intake'] });
     await flushPromises();
-
-    const fab = wrapper.find('[data-testid="quick-capture-fab"]');
-    expect(fab.exists()).toBe(true);
-    expect(fab.attributes('aria-label')).toBe('New estimate request');
-
-    await fab.trigger('click');
-    await flushPromises();
-
+    expect(fab(wrapper).attributes('aria-label')).toBe('New estimate request');
+    await fab(wrapper).trigger('click');
     expect(wrapper.find('[data-testid="lead-intake-stub"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="quick-capture-stub"]').exists()).toBe(false);
     wrapper.unmount();
   });
 
-  it('office role: FAB opens choice drawer with Lead Intake and Quick Note', async () => {
-    const wrapper = mountNav('owner');
+  it('tech without leads.intake: no button at all', async () => {
+    const wrapper = mountNav('technician');
     await flushPromises();
+    expect(fab(wrapper).exists()).toBe(false);
+    wrapper.unmount();
+  });
 
-    const fab = wrapper.find('[data-testid="quick-capture-fab"]');
-    expect(fab.exists()).toBe(true);
-    expect(fab.attributes('aria-label')).toBe('Quick note from a call');
-
-    await fab.trigger('click');
+  it('office with leads.write: offers the choice, and each choice opens its sheet', async () => {
+    const wrapper = mountNav('dispatcher', { permissions: ['leads.write'] });
     await flushPromises();
-
-    // Choice items exist:
-    const choiceLead = wrapper.find('[data-testid="choice-lead-intake"]');
-    const choiceNote = wrapper.find('[data-testid="choice-quick-note"]');
-    expect(choiceLead.exists()).toBe(true);
-    expect(choiceNote.exists()).toBe(true);
-
-    // Clicking lead intake choice opens LeadIntakeForm
-    await choiceLead.trigger('click');
-    await flushPromises();
+    expect(fab(wrapper).attributes('aria-label')).toBe('Quick note or estimate request');
+    await fab(wrapper).trigger('click');
+    await wrapper.find('[data-testid="choice-lead-intake"]').trigger('click');
     expect(wrapper.find('[data-testid="lead-intake-stub"]').exists()).toBe(true);
+    wrapper.unmount();
 
+    const again = mountNav('dispatcher', { permissions: ['leads.write'] });
+    await flushPromises();
+    await fab(again).trigger('click');
+    await again.find('[data-testid="choice-quick-note"]').trigger('click');
+    expect(again.find('[data-testid="quick-capture-stub"]').exists()).toBe(true);
+    again.unmount();
+  });
+
+  it('office without a leads key: the button is the plain quick note, no dead choice', async () => {
+    const wrapper = mountNav('dispatcher');
+    await flushPromises();
+    expect(fab(wrapper).attributes('aria-label')).toBe('Quick note from a call');
+    await fab(wrapper).trigger('click');
+    expect(wrapper.find('[data-testid="choice-lead-intake"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="quick-capture-stub"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('a share into the app from a tech is still refused, even with leads.intake', async () => {
+    routeQuery.value = { share_text: 'call Bob back' };
+    const wrapper = mountNav('technician', { permissions: ['leads.intake'] });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="quick-capture-stub"]').exists()).toBe(false);
+    routeQuery.value = {};
     wrapper.unmount();
   });
 });

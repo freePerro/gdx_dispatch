@@ -88,13 +88,14 @@
     <!-- Quick-capture FAB (2026-07-07): note a phone call in ~10s without
          stopping to find/create a customer. Office roles only — the same
          population that has the Planner tab. Floats above the nav, centered,
-         clear of the bottom-right bug FAB.
-         Technicians holding leads.intake can now tap to capture an estimate request. -->
+         clear of the bottom-right bug FAB. Since the lead-intake plan it also
+         opens the estimate-request form: straight to it for a tech holding
+         leads.intake, via a Quick note / Estimate request choice for office. -->
     <button
       v-if="showCapture"
       type="button"
       class="capture-fab"
-      :aria-label="isTech ? 'New estimate request' : 'Quick note from a call'"
+      :aria-label="fabLabel"
       data-testid="quick-capture-fab"
       @click="onFabClick"
     >
@@ -178,7 +179,6 @@ const { hasPermission } = usePermission();
 // router learned the same lesson on 2026-08-28 (router/index.js, tech
 // redirect block).
 const effectiveRole = computed(() => auth.user?.role || auth.role);
-const isTech = computed(() => isTechnician(effectiveRole.value));
 
 const moreOpen = ref(false);
 const moreSearch = ref('');
@@ -191,18 +191,20 @@ const canIntake = computed(
   () => hasPermission('leads.intake') || hasPermission('leads.write')
 );
 
-// Office roles run the planner + field the calls; techs now have leads.intake
-// to capture estimate requests from the field (PR B).
-const showCapture = computed(
-  () => canIntake.value || !isTechnician(effectiveRole.value)
-);
+// Office roles run the planner + field the calls, so the quick note stays
+// theirs alone (and so does the share-target path below). The estimate
+// request goes to whoever the server will accept it from.
+const showQuickNote = computed(() => !isTechnician(effectiveRole.value));
+const showCapture = computed(() => showQuickNote.value || canIntake.value);
+const fabLabel = computed(() => {
+  if (showQuickNote.value && canIntake.value) return 'Quick note or estimate request';
+  return showQuickNote.value ? 'Quick note from a call' : 'New estimate request';
+});
 
 function onFabClick() {
-  if (isTechnician(effectiveRole.value)) {
-    leadIntakeOpen.value = true;
-  } else {
-    choiceOpen.value = true;
-  }
+  if (showQuickNote.value && canIntake.value) choiceOpen.value = true;
+  else if (showQuickNote.value) captureOpen.value = true;
+  else leadIntakeOpen.value = true;
 }
 
 function openLeadIntakeFromChoice() {
@@ -232,7 +234,7 @@ function consumeCaptureParams() {
   const q = route.query;
   const wantsCapture = q.capture === '1' || SHARE_KEYS.some((k) => q[k] != null);
   if (!wantsCapture) return;
-  if (!showCapture.value) {
+  if (!showQuickNote.value) {
     // Tech role: capture is office-only (same gate as the FAB). Never eat a
     // share silently — say why nothing happened. (Audit 2026-08-03 finding.)
     toast.add({
@@ -483,11 +485,15 @@ function isRouteActive(targetPath) {
 }
 
 function handleTab(item) {
-  if (!item.available) return;
   if (item.key === 'more') {
     moreOpen.value = true;
     return;
   }
+
+  if (!item.available) {
+    return;
+  }
+
   router.push(item.to);
 }
 </script>

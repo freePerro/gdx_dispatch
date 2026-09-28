@@ -89,7 +89,7 @@ function mountForm(props = {}) {
 
 describe('LeadIntakeForm', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockRole = 'admin';
     mockPermissions = new Set(['leads.write', 'estimates.write', 'leads.intake']);
     mockGet.mockResolvedValue({
@@ -131,6 +131,15 @@ describe('LeadIntakeForm', () => {
 
     const nameInput = wrapper.find('[data-test="intake-name-input"]');
     expect(nameInput.attributes('value') || nameInput.element.value).toBe('John Smith');
+  });
+
+  it('an E.164 prefill from a call lands in the mask as the national number', async () => {
+    mockPost.mockResolvedValueOnce({ lead: { id: 'l9', name: 'X' }, matched_customer: null, possible_duplicate: null });
+    const wrapper = mountForm({ initialName: 'X', initialPhone: '+16125550199' });
+    await flushPromises();
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+    expect(mockPost).toHaveBeenCalledWith('/api/leads/intake', expect.objectContaining({ phone: '(612)555-0199' }));
   });
 
   it('submits intake payload and shows Start estimate button for office user', async () => {
@@ -175,32 +184,48 @@ describe('LeadIntakeForm', () => {
     expect(mockPush).toHaveBeenCalledWith('/estimates/est-uuid-99');
   });
 
-  it('redacts customer match and hides Start estimate for technician', async () => {
+  it('technician: no Start estimate, and the phone lookup is never called', async () => {
     mockRole = 'technician';
     mockPermissions = new Set(['leads.intake']);
 
+    // The server withholds matched_customer from a caller without
+    // customers.read_all, so this is what a tech really receives.
     mockPost.mockResolvedValueOnce({
       lead: { id: 'lead-uuid-2', name: 'Bob Tech Lead' },
-      matched_customer: { matched: true }, // Redacted for tech
+      matched_customer: null,
       possible_duplicate: null,
     });
 
-    const wrapper = mountForm({ initialName: 'Bob Tech Lead' });
+    const wrapper = mountForm({ initialName: 'Bob Tech Lead', initialPhone: '(555) 999-1234' });
+    await flushPromises();
+    await wrapper.find('.phone-input-mock').setValue('5559991235');
+    await new Promise((r) => setTimeout(r, 400));
     await flushPromises();
 
-    // Verify technician title
-    expect(wrapper.text()).toContain('New Estimate Request');
+    // The match endpoint returns the owner's name; a tech must not be sent it.
+    expect(mockGet.mock.calls.some(([url]) => url.includes('match-phone'))).toBe(false);
 
-    // Submit
     await wrapper.find('form').trigger('submit');
     await flushPromises();
 
-    // Result pane:
     expect(wrapper.text()).toContain('Saved — the office will follow up');
-    // Start estimate button is not shown to techs
     expect(wrapper.find('[data-test="intake-start-estimate-btn"]').exists()).toBe(false);
-    // Customer match details are NOT displayed to techs
     expect(wrapper.find('[data-test="intake-match-info"]').exists()).toBe(false);
+  });
+
+  it('office with customers.read_all: the phone lookup names the customer', async () => {
+    mockPermissions = new Set(['leads.write', 'estimates.write', 'customers.read_all']);
+    mockGet.mockImplementation(async (url) => {
+      if (url.startsWith('/api/planner/match-phone')) {
+        return { customer_id: 'cust-9', name: 'Carol Existing', normalized: '+15559991234' };
+      }
+      return { sources: ['Google'], custom_fields: [] };
+    });
+
+    const wrapper = mountForm({ initialPhone: '(555) 999-1234' });
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="intake-phone-match"]').text()).toContain('Carol Existing');
   });
 
   it('renders duplicate warning banner when possible duplicate is returned', async () => {

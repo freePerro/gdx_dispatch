@@ -179,7 +179,7 @@
                caller's own mailbox, so the server 403s a non-owner. Same gate
                as the personal toggle. -->
           <Button v-if="detail && detail.viewer_is_owner && composeMode !== 'forward'" label="Forward" icon="pi pi-share-alt" severity="secondary" text @click="startForward" data-test="mi-forward-open" />
-          <Button v-if="detail" label="Lead" icon="pi pi-user-plus" severity="secondary" text @click="openLeadFromEmail" data-test="mi-create-lead" />
+          <Button v-if="detail && canIntake" label="Lead" icon="pi pi-user-plus" severity="secondary" text @click="openLeadFromEmail" data-test="mi-create-lead" />
           <Button v-if="detail" label="Task" icon="pi pi-check-square" severity="secondary" text :loading="taskSaving" @click="createTaskFromEmail" data-test="mi-create-task" />
           <Button v-if="detail && !detail.is_read" label="Mark unread later" icon="pi pi-eye-slash" severity="secondary" text @click="markUnread" data-test="mi-mark-unread" />
           <Button v-if="detail" :label="detail.is_flagged ? 'Unflag' : 'Flag'" :icon="detail.is_flagged ? 'pi pi-flag' : 'pi pi-flag-fill'" severity="secondary" text :loading="flagSaving" @click="toggleFlag" data-test="mi-toggle-flag" />
@@ -240,7 +240,6 @@
 
       <LeadIntakeForm
         v-model:visible="leadFormOpen"
-        :initial-phone="leadPrefill.phone"
         :initial-name="leadPrefill.name"
         :initial-email="leadPrefill.email"
         :initial-notes="leadPrefill.notes"
@@ -261,6 +260,7 @@ import Textarea from 'primevue/textarea'
 import EmailBodyFrame from '../components/EmailBodyFrame.vue'
 import EmailAttachments from '../components/EmailAttachments.vue'
 import LeadIntakeForm from '../components/LeadIntakeForm.vue'
+import { usePermission } from '../composables/usePermission'
 
 const api = useApi()
 const toast = useToast()
@@ -479,14 +479,11 @@ async function sendForward() {
 // ── P2.2 email → follow-up task ──────────────────────────────────────
 const taskSaving = ref(false)
 
+// Email → lead intake (lead-intake-followup-plan §4), beside "Task".
+const { hasPermission } = usePermission()
+const canIntake = computed(() => hasPermission('leads.intake') || hasPermission('leads.write'))
 const leadFormOpen = ref(false)
-const leadPrefill = ref({
-  phone: '',
-  name: '',
-  email: '',
-  notes: '',
-  originRef: '',
-})
+const leadPrefill = ref({ name: '', email: '', notes: '', originRef: '' })
 
 function openLeadFromEmail() {
   if (!detail.value) return
@@ -497,8 +494,9 @@ function openLeadFromEmail() {
   if (snippet) noteParts.push(snippet)
 
   leadPrefill.value = {
-    phone: '',
-    name: d.from_name || d.linked_customer_name || '',
+    // The message API carries no sender display name, only the address; a
+    // linked customer is the one name we have. Otherwise the user types it.
+    name: d.linked_customer_name || '',
     email: d.from_address || '',
     notes: noteParts.join('\n\n'),
     originRef: `outlook_message:${d.id}`,

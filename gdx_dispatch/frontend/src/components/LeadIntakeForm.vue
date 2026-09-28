@@ -11,10 +11,10 @@
   >
     <!-- Post-submission result view -->
     <div v-if="submittedResult" class="intake-result" data-test="intake-result-pane">
-      <div class="result-banner" :class="isTech ? 'banner-tech' : 'banner-office'">
+      <div class="result-banner" :class="canStartEstimate ? 'banner-office' : 'banner-tech'">
         <i class="pi pi-check-circle result-icon" aria-hidden="true" />
-        <h2 class="result-title">{{ isTech ? 'Saved — the office will follow up' : 'Lead created successfully' }}</h2>
-        <p v-if="!isTech && submittedResult.lead?.name" class="result-subtitle">
+        <h2 class="result-title">{{ canStartEstimate ? 'Lead saved' : 'Saved — the office will follow up' }}</h2>
+        <p v-if="canStartEstimate && submittedResult.lead?.name" class="result-subtitle">
           Lead #{{ submittedResult.lead.id.slice(0, 8) }} for {{ submittedResult.lead.name }}
         </p>
       </div>
@@ -23,25 +23,24 @@
       <div v-if="submittedResult.possible_duplicate" class="dup-banner" data-test="intake-dup-warning">
         <i class="pi pi-exclamation-triangle" aria-hidden="true" />
         <div>
-          <strong>Possible duplicate lead:</strong>
-          <span> An open lead already exists for this contact.</span>
+          <strong>Possible duplicate lead:</strong>&nbsp;<span>An open lead already exists for this contact.</span>
         </div>
       </div>
 
-      <!-- Customer match info (Office only — redacted for techs to prevent enumeration) -->
-      <div v-if="!isTech && submittedResult.matched_customer" class="match-banner" data-test="intake-match-info">
+      <!-- The server returns matched_customer only to customers.read_all, so
+           a technician never receives who owns a number (#817 review). -->
+      <div v-if="submittedResult.matched_customer" class="match-banner" data-test="intake-match-info">
         <i class="pi pi-user" aria-hidden="true" />
         <div>
-          <strong>Matched customer:</strong>
-          <span> {{ submittedResult.matched_customer.name || 'Existing customer' }}</span>
+          <strong>Matched customer:</strong>&nbsp;<span>{{ submittedResult.matched_customer.name || 'Existing customer' }}</span>
         </div>
       </div>
 
       <!-- Action buttons -->
       <div class="result-actions">
-        <!-- Start estimate is available for office users holding leads.write + estimates.write -->
+        <!-- Same keys the start-estimate route requires: leads.write + estimates.write -->
         <Button
-          v-if="!isTech && canStartEstimate"
+          v-if="canStartEstimate"
           label="Start estimate"
           icon="pi pi-file-edit"
           severity="primary"
@@ -52,7 +51,7 @@
         />
         <Button
           label="Done"
-          :severity="isTech || !canStartEstimate ? 'primary' : 'secondary'"
+          :severity="canStartEstimate ? 'secondary' : 'primary'"
           class="w-full"
           data-test="intake-done-btn"
           @click="closeDialog"
@@ -92,8 +91,7 @@
           />
           <p v-if="phoneMatch.matched" class="phone-hint phone-hint--hit" data-test="intake-phone-match">
             <i class="pi pi-user" aria-hidden="true" />
-            <span v-if="!isTech && phoneMatch.name">Matched: {{ phoneMatch.name }}</span>
-            <span v-else>Matches an existing customer</span>
+            <span>Existing customer{{ phoneMatch.name ? `: ${phoneMatch.name}` : '' }}</span>
           </p>
           <p v-else-if="phoneClean && phoneMatch.checked" class="phone-hint phone-hint--miss">
             New customer contact
@@ -247,11 +245,9 @@ import Textarea from 'primevue/textarea';
 import Checkbox from 'primevue/checkbox';
 import { useToast } from 'primevue/usetoast';
 import { useApi } from '../composables/useApi';
-import { getActivePinia } from 'pinia';
-import { useAuthStore } from '../stores/auth';
 import { usePermission } from '../composables/usePermission';
-import { isTechnician } from '../constants/roles';
 import PhoneInput from './PhoneInput.vue';
+import { formatPhone } from '../composables/useFormatters';
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -269,53 +265,27 @@ const emit = defineEmits(['update:visible', 'saved', 'estimate-started']);
 const api = useApi();
 const router = useRouter();
 const toast = useToast();
-let auth = null;
-try {
-  auth = useAuthStore();
-} catch {
-  auth = null;
-}
+const { hasPermission } = usePermission();
 
-let permissionComposable = null;
-try {
-  permissionComposable = usePermission();
-} catch {
-  permissionComposable = null;
-}
-
-function checkPermission(key) {
-  if (permissionComposable?.hasPermission) {
-    return permissionComposable.hasPermission(key);
-  }
-  if (auth?.hasPermission) {
-    return auth.hasPermission(key);
-  }
-  return false;
-}
-
-const effectiveRole = computed(() => auth?.user?.role || auth?.role || '');
-const isTech = computed(() => isTechnician(effectiveRole.value));
+// Permission-shaped, not role-shaped: the backend gates on these keys.
 const canStartEstimate = computed(
-  () => Boolean(checkPermission('leads.write') && checkPermission('estimates.write'))
+  () => hasPermission('leads.write') && hasPermission('estimates.write')
 );
+// The live phone lookup names the customer who owns a number. Only roles that
+// can already read every customer get it — the same rule the intake response
+// applies to matched_customer. This form never asks on a tech's behalf, rather
+// than asking and hiding the answer. (The endpoint itself does not check.)
+const canSeeMatches = computed(() => hasPermission('customers.read_all'));
 
 const dialogTitle = computed(() => {
-  if (submittedResult.value) return 'Request Recorded';
-  return isTech.value ? 'New Estimate Request' : 'New Lead Intake';
+  return submittedResult.value ? 'Request saved' : 'Estimate request';
 });
 
 const saving = ref(false);
 const startingEstimate = ref(false);
 const loadError = ref('');
-const sourcesList = ref([
-  'Google Search',
-  'Referral',
-  'Repeat Customer',
-  'Yard Sign',
-  'Truck / Vehicle',
-  'Flyer / Mailer',
-  'Other',
-]);
+// From GET /api/leads/intake-form — the server's list is the one reports read.
+const sourcesList = ref([]);
 const customFieldDefs = ref([]);
 const submittedResult = ref(null);
 
@@ -341,7 +311,10 @@ const phoneClean = computed(() => (form.phone || '').replace(/\D/g, ''));
 
 function resetForm() {
   form.name = props.initialName || '';
-  form.phone = props.initialPhone || '';
+  // A call's number arrives as E.164 ("+16125550199"). PhoneInput's mask takes
+  // the first ten digits it sees, so the country code must go first or the
+  // lead saves as "(161)255-5019" — seen in the browser walk.
+  form.phone = formatPhone(props.initialPhone);
   form.email = props.initialEmail || '';
   form.address = props.initialAddress || '';
   form.source = props.initialSource || '';
@@ -359,7 +332,7 @@ watch(
     if (isOpen) {
       resetForm();
       fetchIntakeForm();
-      if (form.phone) checkPhoneMatch(form.phone);
+      if (form.phone && canSeeMatches.value) checkPhoneMatch(form.phone);
     }
   },
   { immediate: true }
@@ -373,7 +346,7 @@ watch(
     phoneMatch.checked = false;
     if (phoneDebounceTimer) clearTimeout(phoneDebounceTimer);
     const digits = (newPhone || '').replace(/\D/g, '');
-    if (digits.length >= 7) {
+    if (digits.length >= 7 && canSeeMatches.value) {
       phoneDebounceTimer = setTimeout(() => {
         checkPhoneMatch(digits);
       }, 350);
@@ -381,12 +354,20 @@ watch(
   }
 );
 
+// Permissions can land after the form opens with a prefilled number; look
+// the number up then rather than never.
+watch(canSeeMatches, (can) => {
+  if (can && props.visible && phoneClean.value.length >= 7 && !phoneMatch.checked) {
+    checkPhoneMatch(phoneClean.value);
+  }
+});
+
 async function checkPhoneMatch(rawDigits) {
   try {
     const res = await api.get(`/api/planner/match-phone?phone=${encodeURIComponent(rawDigits)}`);
-    if (res?.name || res?.customer_id) {
+    if (res?.customer_id) {
       phoneMatch.matched = true;
-      phoneMatch.name = res?.name || '';
+      phoneMatch.name = res.name || '';
     } else {
       phoneMatch.matched = false;
       phoneMatch.name = '';
@@ -446,7 +427,7 @@ async function save() {
     emit('saved', res);
     toast.add({
       severity: 'success',
-      summary: isTech.value ? 'Request submitted' : 'Lead created',
+      summary: 'Request saved',
       life: 2500,
     });
   } catch (err) {
@@ -578,8 +559,8 @@ function closeDialog() {
 }
 
 .intake-error-banner {
-  background-color: var(--p-red-50, #fef2f2);
-  color: var(--p-red-700, #b91c1c);
+  background-color: var(--color-danger-bg);
+  color: var(--p-text-color);
   padding: 0.75rem;
   border-radius: 6px;
   font-size: 0.875rem;
@@ -603,19 +584,19 @@ function closeDialog() {
 }
 
 .banner-tech {
-  background-color: var(--p-green-50, #f0fdf4);
-  color: var(--p-green-800, #166534);
+  background-color: var(--color-success-bg);
+  color: var(--p-text-color);
 }
 
 .banner-office {
-  background-color: var(--p-primary-50, #eff6ff);
-  color: var(--p-primary-800, #1e40af);
+  background-color: var(--color-info-bg);
+  color: var(--p-text-color);
 }
 
 .result-icon {
   font-size: 2.5rem;
   margin-bottom: 0.75rem;
-  color: var(--p-green-600, #16a34a);
+  color: var(--color-success-500);
 }
 
 .result-title {
@@ -635,9 +616,9 @@ function closeDialog() {
   align-items: center;
   gap: 0.75rem;
   padding: 0.875rem 1rem;
-  background-color: var(--p-amber-50, #fffbeb);
-  color: var(--p-amber-800, #92400e);
-  border: 1px solid var(--p-amber-200, #fde68a);
+  background-color: var(--color-warning-bg);
+  color: var(--p-text-color);
+  border: 1px solid var(--color-warning-border);
   border-radius: 6px;
   font-size: 0.875rem;
 }
@@ -647,9 +628,9 @@ function closeDialog() {
   align-items: center;
   gap: 0.75rem;
   padding: 0.875rem 1rem;
-  background-color: var(--p-blue-50, #eff6ff);
-  color: var(--p-blue-800, #1e40af);
-  border: 1px solid var(--p-blue-200, #bfdbfe);
+  background-color: var(--color-info-bg);
+  color: var(--p-text-color);
+  border: 1px solid var(--color-info-border);
   border-radius: 6px;
   font-size: 0.875rem;
 }
