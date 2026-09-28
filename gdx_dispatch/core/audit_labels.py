@@ -28,6 +28,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.database import contained_read
+
 log = logging.getLogger(__name__)
 
 # Actor classes. The feed renders these differently — a customer accepting an
@@ -180,11 +182,16 @@ def _resolve_staff(db: Session, ids: list[str], out: dict[str, dict[str, Any]]) 
     try:
         from gdx_dispatch.models.tenant_models import User
 
-        rows = db.execute(
-            select(User.id, User.name, User.full_name, User.email).where(
-                User.id.in_(_uuid_keys(set(ids)))
-            )
-        ).all()
+        # SAVEPOINT (GDXA-152): label resolution is best-effort decoration on a
+        # session the caller still needs. On Postgres a failed SELECT aborts the
+        # transaction, so swallowing it here turned "unlabelled actor" into a
+        # 25P02 on the caller's next statement.
+        with contained_read(db):
+            rows = db.execute(
+                select(User.id, User.name, User.full_name, User.email).where(
+                    User.id.in_(_uuid_keys(set(ids)))
+                )
+            ).all()
         for row in rows:
             # Deliberately NOT falling back to str(id)[:8] like the old
             # audit.py resolver did — an 8-char hex string renders as if it
@@ -201,11 +208,23 @@ def _resolve_customer_users(db: Session, ids: list[str], out: dict[str, dict[str
         from gdx_dispatch.models.tenant_models import Customer
         from gdx_dispatch.modules.customer_portal.models import CustomerUser
 
-        rows = db.execute(
-            select(CustomerUser.id, CustomerUser.email, Customer.name)
-            .join(Customer, Customer.id == CustomerUser.customer_id, isouter=True)
-            .where(CustomerUser.id.in_(_uuid_keys(set(ids))))
-        ).all()
+        # SAVEPOINT (GDXA-152). Prophylactic, and say so rather than inventing a
+        # trigger: an earlier version of this comment claimed customer_users is
+        # absent on a box that never enabled the customer_portal module, and that
+        # is wrong. `docker/entrypoint.sh` runs `create_orm_tables()` →
+        # `TenantBase.metadata.create_all()` on every boot, and importing
+        # `gdx_dispatch.models` alone registers customer_users on that metadata,
+        # so the table exists regardless of the module grant — checked live
+        # 2026-09-27, prod and demo both have it (prod: 3 rows). What is left is
+        # the generic mechanism `contained_read` documents: a migration window,
+        # a future statement_timeout. The read is contained because it is cheap
+        # to contain, not because a failure has been observed here.
+        with contained_read(db):
+            rows = db.execute(
+                select(CustomerUser.id, CustomerUser.email, Customer.name)
+                .join(Customer, Customer.id == CustomerUser.customer_id, isouter=True)
+                .where(CustomerUser.id.in_(_uuid_keys(set(ids))))
+            ).all()
         for row in rows:
             # The EMAIL is the actor, not the customer name. Using the customer
             # name collapsed every contact at a company to a single actor,
@@ -270,7 +289,38 @@ def resolve_entity_labels(
         if handler is None:
             continue
         try:
-            handler(db, etype, ids, out)
+            # contained_read at the DISPATCH frame, not in each of the nine
+            # resolvers: the swallow lives here, so this is the frame where the
+            # savepoint belongs (rule 5's corollary — what matters is that the
+            # exception crosses __exit__, not who eventually catches it). One
+            # wrap therefore contains every resolver today, including the
+            # recursive `_resolve_line` -> parent-resolver hop.
+            #
+            # ⚠ PRECONDITION, and it is the opposite of what it looks like: a
+            # resolver must let its read failure PROPAGATE. None of the nine
+            # catches today. One that swallowed its own failure would exit this
+            # `with` CLEAN on an aborted Postgres transaction, so __exit__ would
+            # issue RELEASE SAVEPOINT — illegal on an aborted transaction — and
+            # the 25P02 it raises is eaten by the handler just below, leaving the
+            # caller dead with nothing in the log naming why. That is rule 5's
+            # "strictly worse than not wrapping". Note the two ACTOR resolvers in
+            # this file (`_resolve_staff`, `_resolve_customer_users`) are written
+            # exactly that way, so the house style here is the trap: a new entity
+            # resolver copied from one of them breaks this. If you add one that
+            # must swallow, wrap its own read instead of relying on this frame.
+            #
+            # `_resolve_customer_user_entity` is why wrapping only `resolve_actors`
+            # was not enough: `decorate_rows` calls the two one line apart and both
+            # read `customer_users`, so whatever makes one fail makes the other
+            # fail, and containing only the first left the caller's transaction
+            # dead on the second. (That table is NOT module-gated — see the note
+            # in `_resolve_customer_users`. The pairing is the point here, not any
+            # particular trigger.) The structural half is real and was verified:
+            # `routers/estimates.py::get_estimate_activity` runs further uncaught
+            # SELECTs (`_latest()`) after `_decorate_activity`, so a poisoned
+            # transaction there is a 500, not a degraded label.
+            with contained_read(db):
+                handler(db, etype, ids, out)
         except Exception:
             # One bad entity type must not blank the whole feed.
             log.exception("audit_labels.resolve_failed type=%s", etype)

@@ -135,8 +135,8 @@ def contained_read(db: Session) -> Iterator[None]:
        new machinery" is not it: ``core/performance.py:169`` already registers an
        Engine-level ``before_cursor_execute`` (``SlowQueryMiddleware``, wired at
        ``app.py``), so the hook is already in every query's path and a
-       DML-in-savepoint check could ride it. The reason is that all nine current
-       call sites wrap pure reads, so it would police a precondition nothing
+       DML-in-savepoint check could ride it. The reason is that all twenty-one
+       current call sites wrap pure reads, so it would police a precondition nothing
        violates, and ``tests/test_contained_read.py`` pins the hole so the next
        person does not mistake it for coverage. When a call site does need a
        write contained, it wants ``db.begin_nested()`` — not a louder warning.
