@@ -767,6 +767,74 @@ def list_estimates(
     return items
 
 
+def create_draft_estimate_record(
+    db: Session,
+    *,
+    tenant_id: str,
+    customer_id: UUID | None = None,
+    job_id: UUID | None = None,
+    estimate_number: str | None = None,
+    label: str | None = None,
+    jobsite_address: str | None = None,
+    description: str | None = None,
+    notes: str | None = None,
+    tax_rate: Decimal | None = None,
+    discount: Decimal | None = None,
+    hide_line_prices: bool | None = None,
+) -> Estimate:
+    """Stage a draft estimate (flush, no commit, no audit) — the body of
+    POST /api/estimates, shared with lead start-estimate so numbering and
+    defaults live in one place. hide_line_prices is tri-state: None inherits
+    the tenant's total-only default; False would force prices visible."""
+    estimate = Estimate(
+        job_id=job_id,
+        customer_id=customer_id,
+        estimate_number=estimate_number or _next_estimate_number(db),
+        label=label.strip() if label else None,
+        jobsite_address=jobsite_address.strip() if jobsite_address else None,
+        description=description.strip() if description else None,
+        notes=notes.strip() if notes else None,
+        tax_rate=tax_rate,
+        discount=discount,
+        hide_line_prices=hide_line_prices,
+        status="draft",
+        total=Decimal("0.00"),
+        public_token=secrets.token_urlsafe(48)[:64],
+        company_id=tenant_id,
+    )
+    db.add(estimate)
+    db.flush()
+    return estimate
+
+
+def stage_estimate_created_audit(
+    db: Session,
+    *,
+    tenant_id: str,
+    user_id: str | None,
+    estimate: Estimate,
+    line_count: int,
+    request: Request | None = None,
+) -> None:
+    """Stage the estimate_created row (no commit) — the caller's single
+    commit lands the estimate and its record together."""
+    log_audit_event_sync(
+        db=db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="estimate_created",
+        entity_type="estimate",
+        entity_id=str(estimate.id),
+        details={
+            "estimate_number": estimate.estimate_number,
+            "status": estimate.status,
+            "line_count": line_count,
+            "total": float(estimate.total or 0),
+        },
+        request=request,
+    )
+
+
 @router.post("", response_model=None, status_code=201)
 def create_estimate(
     payload: EstimateCreateIn,
@@ -776,6 +844,7 @@ def create_estimate(
 ) -> dict[str, object]:
     if not payload.job_id and not payload.customer_id:
         raise HTTPException(status_code=400, detail="job_id or customer_id is required")
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
 
     customer_id = payload.customer_id
     if payload.job_id:
@@ -795,24 +864,19 @@ def create_estimate(
     # that the model enforces NOT NULL we must pull tenant from the request.
     tenant_id = str((getattr(request.state, "tenant", {}) or {}).get("id") or "tenant-test")
 
-    estimate = Estimate(
-        job_id=payload.job_id,
+    estimate = create_draft_estimate_record(
+        db,
+        tenant_id=tenant_id,
         customer_id=customer_id,
-        estimate_number=_next_estimate_number(db),
-        label=payload.label.strip() if payload.label else None,
-        jobsite_address=payload.jobsite_address.strip() if payload.jobsite_address else None,
-        description=payload.description.strip() if payload.description else None,
-        notes=payload.notes.strip() if payload.notes else None,
+        job_id=payload.job_id,
+        label=payload.label,
+        jobsite_address=payload.jobsite_address,
+        description=payload.description,
+        notes=payload.notes,
         tax_rate=Decimal(str(payload.tax_rate)) if payload.tax_rate is not None else None,
         discount=Decimal(str(payload.discount)) if payload.discount is not None else None,
         hide_line_prices=payload.hide_line_prices,
-        status="draft",
-        total=Decimal("0.00"),
-        public_token=secrets.token_urlsafe(48)[:64],
-        company_id=tenant_id,
     )
-    db.add(estimate)
-    db.flush()
 
     # Persist nested line_items if the client sent them. The Estimate.total is
     # the sum of (quantity * unit_price) across lines (subtotal — tax/discount
@@ -886,23 +950,14 @@ def create_estimate(
         ))
         running_total += line_total
     estimate.total = running_total
-    db.commit()
-    db.refresh(estimate)
-    log_audit_event_sync(
-        db=db,
-        tenant_id=None,
-        user_id=_actor_id(_),
-        action="estimate_created",
-        entity_type="estimate",
-        entity_id=str(estimate.id),
-        details={
-            "estimate_number": estimate.estimate_number,
-            "status": estimate.status,
-            "line_count": len(payload.line_items),
-            "total": float(running_total),
-        },
+    # The estimate and its creation row commit together (#700 shape): the row
+    # used to follow a first commit, with tenant_id=None.
+    stage_estimate_created_audit(
+        db, tenant_id=tenant_id, user_id=_actor_id(_), estimate=estimate,
+        line_count=len(payload.line_items),
     )
     db.commit()
+    db.refresh(estimate)
     return _serialize_estimate(estimate, include_lines=True)
 
 

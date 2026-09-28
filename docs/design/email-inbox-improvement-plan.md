@@ -42,7 +42,8 @@ Deviations from the plan as written, and why:
   hash.
 - **P2.2** ships create-task + attach-to-job/customer. "Create estimate from
   email" is NOT built — an estimate needs a customer *and* line items, so it
-  is a builder-prefill feature, not an inbox button.
+  is a builder-prefill feature, not an inbox button. [2026-09-28: planned as
+  `lead-intake-followup-plan.md` — email → lead → Start estimate.]
 - **Latent bug fixed in passing:** the reply path threaded through
   `/me/messages/{parent_graph_id}/reply` using the VIEWER's token; on a shared
   mailbox a non-owner's reply 404'd at Graph and 502'd the whole send. It now

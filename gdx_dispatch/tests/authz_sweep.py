@@ -157,6 +157,10 @@ IN_BODY_AUTHZ_MARKERS = (
     "_require_owner(",
     "_is_admin(",
     "_gate_browser(",
+    # routers/leads.py: leads.intake OR leads.write — require_permission()
+    # demands all its keys, so an either-key gate has to live in the body.
+    # Not `has_permission(` generally: that shapes responses, it refuses nothing.
+    "_require_intake(",
     "_OWNER_ROLES",
     "require_permission(",
     "require_role(",

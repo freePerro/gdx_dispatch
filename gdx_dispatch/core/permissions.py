@@ -42,6 +42,7 @@ PERMISSIONS: Final[list[tuple[str, str, str]]] = [
     ("leads.read", "View the leads / landing-leads pipeline", "leads"),
     ("leads.write", "Create / edit / convert / advance leads", "leads"),
     ("leads.delete", "Delete leads and landing leads", "leads"),
+    ("leads.intake", "Submit a lead through the intake form", "leads"),
 
     # Estimates
     ("estimates.read_own", "View own estimates", "estimates"),
@@ -208,6 +209,7 @@ BUILTIN_ROLES: Final[dict[str, list[str]]] = {
         "customers.read_own",
         # Contact details only — never customers.write. See the key's note above.
         "customers.contact_write",
+        "leads.intake",
         "estimates.read_own",
         "inventory.read", "inventory.write",
         "pricing.labor_matrix.read",
