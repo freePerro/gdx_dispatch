@@ -66,23 +66,34 @@
             <span v-else class="text-muted">—</span>
           </template>
         </Column>
-        <Column header="" style="width: 220px">
+        <Column header="" style="width: 280px">
           <template #body="{ data }">
-            <Button
-              label="Create customer"
-              icon="pi pi-user-plus"
-              size="small"
-              :as="'a'"
-              :href="`/customers/new?phone=${encodeURIComponent(data.from_number)}`"
-              data-test="pc-cl-create"
-            />
-            <a
-              v-if="data.from_number"
-              v-tooltip="'Call back'"
-              :href="`tel:${data.from_number}`"
-              class="action-icon"
-              aria-label="Call back"
-            >📞</a>
+            <div class="row-actions-inline">
+              <Button
+                v-if="canIntake"
+                label="Create lead"
+                icon="pi pi-user-plus"
+                size="small"
+                outlined
+                data-test="pc-cl-create-lead"
+                @click="openLeadFromColdLead(data)"
+              />
+              <Button
+                label="Create customer"
+                icon="pi pi-user-plus"
+                size="small"
+                :as="'a'"
+                :href="`/customers/new?phone=${encodeURIComponent(data.from_number)}`"
+                data-test="pc-cl-create"
+              />
+              <a
+                v-if="data.from_number"
+                v-tooltip="'Call back'"
+                :href="`tel:${data.from_number}`"
+                class="action-icon"
+                aria-label="Call back"
+              >📞</a>
+            </div>
           </template>
         </Column>
       </DataTable>
@@ -93,10 +104,18 @@
         <Button label="Next" icon="pi pi-chevron-right" iconPos="right" :disabled="page * perPage >= total" severity="secondary" @click="page = page + 1" />
       </div>
     </section>
+
+    <LeadIntakeForm
+      v-model:visible="showLeadDialog"
+      :initial-phone="leadPrefill.phone"
+      :initial-name="leadPrefill.name"
+      :initial-notes="leadPrefill.notes"
+      :origin-ref="leadPrefill.originRef"
+    />
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useApi } from '../composables/useApi'
 import { isCnamJunk } from '../utils/phoneComLabels'
 import { formatDateTime } from '../composables/useFormatters'
@@ -108,8 +127,35 @@ import Button from 'primevue/button'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import ProgressSpinner from 'primevue/progressspinner'
+import { usePermission } from '../composables/usePermission'
+import LeadIntakeForm from '../components/LeadIntakeForm.vue'
 
 const api = useApi()
+const { hasPermission } = usePermission()
+// Same either-key gate as POST /api/leads/intake (_require_intake).
+const canIntake = computed(() => hasPermission('leads.intake') || hasPermission('leads.write'))
+
+const showLeadDialog = ref(false)
+const leadPrefill = ref({
+  phone: '',
+  name: '',
+  notes: '',
+  originRef: '',
+})
+
+function openLeadFromColdLead(row) {
+  const cnam = row.caller_cnam || row.caller_name || ''
+  const name = (!cnam || isCnamJunk(cnam, row.from_number) || cnam.startsWith('+')) ? '' : cnam
+  const notes = row.voicemail_snippet ? `Voicemail snippet:\n${row.voicemail_snippet}` : ''
+  leadPrefill.value = {
+    phone: row.from_number || '',
+    name,
+    notes,
+    originRef: row.from_number ? `cold_lead:${row.from_number}` : '',
+  }
+  showLeadDialog.value = true
+}
+
 
 const items = ref([])
 const total = ref(0)
@@ -186,6 +232,11 @@ onMounted(fetchColdLeads)
 }
 .filter-select {
   min-width: 11rem;
+}
+.row-actions-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 .action-icon {
   margin-left: 0.5rem;

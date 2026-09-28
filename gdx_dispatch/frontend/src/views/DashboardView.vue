@@ -692,6 +692,22 @@ async function loadWebsiteLeads() {
   }
 }
 
+const leadFollowUpSummary = ref({ overdue: 0, due_today: 0 });
+
+async function loadLeadFollowUpSummary() {
+  try {
+    await auth.loadPermissions();
+    if (!auth.hasPermission('leads.read')) return;
+    const res = await api.get('/api/leads/follow-up-summary', { suppressErrorToast: true });
+    leadFollowUpSummary.value = {
+      overdue: Number(res?.overdue || 0),
+      due_today: Number(res?.due_today || 0),
+    };
+  } catch {
+    leadFollowUpSummary.value = { overdue: 0, due_today: 0 };
+  }
+}
+
 // Persisted next-actions — the nags background loops file (billing follow-up,
 // reminders-off, email-sync alarm). The channel existed since PR5 but no SPA
 // surface ever read GET /api/next-actions (found 2026-08-04: $13K of
@@ -817,6 +833,28 @@ const attentionItems = computed(() => {
       // the copy must say so rather than understate.
       text: `${leadsN >= 100 ? '100+' : leadsN} new website lead${leadsN === 1 ? '' : 's'} waiting for a first call`,
       link: '/leads',
+    });
+  }
+  // Two items, because the lead list filters overdue and due-today
+  // separately: each count links to exactly the rows it counts.
+  const fuOverdue = toNumber(leadFollowUpSummary.value.overdue);
+  const fuToday = toNumber(leadFollowUpSummary.value.due_today);
+  if (fuOverdue > 0) {
+    items.push({
+      id: 'leads-follow-up-overdue',
+      type: 'Lead Call-back',
+      severity: 'danger',
+      text: `${fuOverdue} lead${fuOverdue === 1 ? '' : 's'} to call back — overdue`,
+      link: '/leads?follow_up=overdue',
+    });
+  }
+  if (fuToday > 0) {
+    items.push({
+      id: 'leads-follow-up-today',
+      type: 'Lead Call-back',
+      severity: 'warn',
+      text: `${fuToday} lead${fuToday === 1 ? '' : 's'} to call back today`,
+      link: '/leads?follow_up=today',
     });
   }
   // Auto-ingested vendor bills nobody has reviewed. Unreviewed bills are
@@ -1216,6 +1254,7 @@ async function loadDashboard() {
     loadPartsToOrder(),
     loadVendorBills(),
     loadWebsiteLeads(),
+    loadLeadFollowUpSummary(),
     loadRejectedEstimates(),
     loadNextActions(),
     // One refresh each so the dashboard is correct before the sidebar's 60s
