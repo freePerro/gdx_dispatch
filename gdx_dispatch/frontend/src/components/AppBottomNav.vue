@@ -88,18 +88,63 @@
     <!-- Quick-capture FAB (2026-07-07): note a phone call in ~10s without
          stopping to find/create a customer. Office roles only — the same
          population that has the Planner tab. Floats above the nav, centered,
-         clear of the bottom-right bug FAB. -->
+         clear of the bottom-right bug FAB.
+         Technicians holding leads.intake can now tap to capture an estimate request. -->
     <button
       v-if="showCapture"
       type="button"
       class="capture-fab"
-      aria-label="Quick note from a call"
+      :aria-label="isTech ? 'New estimate request' : 'Quick note from a call'"
       data-testid="quick-capture-fab"
-      @click="captureOpen = true"
+      @click="onFabClick"
     >
       <i class="pi pi-plus" aria-hidden="true" />
     </button>
+
+    <!-- Choice drawer for office users -->
+    <Drawer
+      v-model:visible="choiceOpen"
+      position="bottom"
+      header="Create new"
+      class="capture-choice-drawer"
+    >
+      <div class="capture-choice-list">
+        <button
+          type="button"
+          class="capture-choice-item"
+          data-testid="choice-lead-intake"
+          @click="openLeadIntakeFromChoice"
+        >
+          <div class="choice-icon choice-icon--lead">
+            <i class="pi pi-user-plus" aria-hidden="true" />
+          </div>
+          <div class="choice-text">
+            <span class="choice-title">Estimate request</span>
+            <span class="choice-desc">New lead from a customer call or visit</span>
+          </div>
+          <i class="pi pi-chevron-right choice-arrow" aria-hidden="true" />
+        </button>
+
+        <button
+          type="button"
+          class="capture-choice-item"
+          data-testid="choice-quick-note"
+          @click="openQuickNoteFromChoice"
+        >
+          <div class="choice-icon choice-icon--note">
+            <i class="pi pi-file-edit" aria-hidden="true" />
+          </div>
+          <div class="choice-text">
+            <span class="choice-title">Quick note</span>
+            <span class="choice-desc">Save a task or reminder for today</span>
+          </div>
+          <i class="pi pi-chevron-right choice-arrow" aria-hidden="true" />
+        </button>
+      </div>
+    </Drawer>
+
     <QuickCaptureSheet v-model:visible="captureOpen" :initial-note="captureSeed" @saved="onCaptureSaved" />
+    <LeadIntakeForm v-model:visible="leadIntakeOpen" />
   </nav>
 </template>
 
@@ -114,7 +159,9 @@ import { useAuthStore } from '../stores/auth';
 import { useEmailUnreadStore } from '../stores/emailUnread';
 import { groupModules } from '../composables/useModuleSections';
 import { isTechnician } from '../constants/roles';
+import { usePermission } from '../composables/usePermission';
 import QuickCaptureSheet from './QuickCaptureSheet.vue';
+import LeadIntakeForm from './LeadIntakeForm.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -122,6 +169,8 @@ const toast = useToast();
 const { allEnabledModules, isEnabled } = useTenantModules();
 const auth = useAuthStore();
 const emailUnread = useEmailUnreadStore();
+const { hasPermission } = usePermission();
+
 // Role for shaping the strip: the persisted /api/users/me snapshot, else the
 // JWT claim, which exists the instant a token does. A cold load with a token
 // but no cached user painted the office strip — and, once the Email tab
@@ -129,14 +178,42 @@ const emailUnread = useEmailUnreadStore();
 // router learned the same lesson on 2026-08-28 (router/index.js, tech
 // redirect block).
 const effectiveRole = computed(() => auth.user?.role || auth.role);
+const isTech = computed(() => isTechnician(effectiveRole.value));
 
 const moreOpen = ref(false);
 const moreSearch = ref('');
 
 const captureOpen = ref(false);
-// Office roles run the planner + field the calls; techs get a lean strip and
-// don't. Gate the quick-capture FAB to the same non-tech population.
-const showCapture = computed(() => !isTechnician(effectiveRole.value));
+const leadIntakeOpen = ref(false);
+const choiceOpen = ref(false);
+
+const canIntake = computed(
+  () => hasPermission('leads.intake') || hasPermission('leads.write')
+);
+
+// Office roles run the planner + field the calls; techs now have leads.intake
+// to capture estimate requests from the field (PR B).
+const showCapture = computed(
+  () => canIntake.value || !isTechnician(effectiveRole.value)
+);
+
+function onFabClick() {
+  if (isTechnician(effectiveRole.value)) {
+    leadIntakeOpen.value = true;
+  } else {
+    choiceOpen.value = true;
+  }
+}
+
+function openLeadIntakeFromChoice() {
+  choiceOpen.value = false;
+  leadIntakeOpen.value = true;
+}
+
+function openQuickNoteFromChoice() {
+  choiceOpen.value = false;
+  captureOpen.value = true;
+}
 
 function onCaptureSaved() {
   // Nudge the planner to reload if it's mounted (e.g. Doug captured from the
@@ -406,15 +483,11 @@ function isRouteActive(targetPath) {
 }
 
 function handleTab(item) {
+  if (!item.available) return;
   if (item.key === 'more') {
     moreOpen.value = true;
     return;
   }
-
-  if (!item.available) {
-    return;
-  }
-
   router.push(item.to);
 }
 </script>
@@ -545,6 +618,76 @@ function handleTab(item) {
   transform: translateX(-50%) scale(0.94);
 }
 
+/* Choice drawer for office quick capture vs estimate request */
+.capture-choice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.5rem 0 1.25rem;
+}
+
+.capture-choice-item {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--p-content-border-color);
+  background: var(--p-content-background);
+  border-radius: 0.75rem;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+  transition: background-color 0.15s ease;
+}
+
+.capture-choice-item:active {
+  background-color: var(--p-content-hover-background);
+}
+
+.choice-icon {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  flex-shrink: 0;
+}
+
+.choice-icon--lead {
+  background-color: var(--p-highlight-background);
+  color: var(--p-primary-color);
+}
+
+.choice-icon--note {
+  background-color: var(--p-content-hover-background);
+  color: var(--p-text-muted-color);
+}
+
+.choice-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.choice-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--p-text-color, #111827);
+}
+
+.choice-desc {
+  font-size: 0.8rem;
+  color: var(--p-text-muted-color, #6b7280);
+}
+
+.choice-arrow {
+  color: var(--p-text-muted-color, #9ca3af);
+  font-size: 0.875rem;
+}
+
 .drawer-items {
   display: grid;
   gap: var(--space-2);
@@ -673,5 +816,11 @@ function handleTab(item) {
   height: min(80vh, calc(100dvh - var(--bottom-nav-height, 60px) - 1rem));
   max-height: 90vh;
   max-height: 90dvh;
+}
+
+.p-drawer-mask.p-drawer-bottom .capture-choice-drawer.p-drawer {
+  height: auto;
+  max-height: 50vh;
+  max-height: 50dvh;
 }
 </style>

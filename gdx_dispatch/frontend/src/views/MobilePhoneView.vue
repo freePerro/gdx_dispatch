@@ -81,6 +81,16 @@
               data-test="mp-vm-flag"
             />
             <i v-if="c.has_recording" class="pi pi-microphone meta-vm" aria-label="has recording" />
+            <button
+              type="button"
+              class="row-lead-btn"
+              data-test="mp-row-create-lead"
+              title="Create Lead"
+              @click.stop="openLeadFromCall(c)"
+            >
+              <i class="pi pi-user-plus" aria-hidden="true" />
+              <span>Lead</span>
+            </button>
           </div>
         </li>
       </ol>
@@ -152,22 +162,42 @@
 
           <div v-if="audioError" class="error-banner">{{ audioError }}</div>
 
-          <Button
-            v-if="callbackNumber"
-            class="callback-btn"
-            :label="`Call ${callbackNumber}`"
-            icon="pi pi-phone"
-            severity="success"
-            :loading="originating"
-            data-test="mp-call-back"
-            @click="callBack"
-          />
+          <div class="detail-actions">
+            <Button
+              v-if="callbackNumber"
+              class="callback-btn"
+              :label="`Call ${callbackNumber}`"
+              icon="pi pi-phone"
+              severity="success"
+              :loading="originating"
+              data-test="mp-call-back"
+              @click="callBack"
+            />
+            <Button
+              class="detail-lead-btn"
+              label="Create Lead"
+              icon="pi pi-user-plus"
+              severity="secondary"
+              outlined
+              data-test="mp-create-lead"
+              @click="openLeadFromCall(detail)"
+            />
+          </div>
           <p v-if="callbackNumber" class="callback-hint muted">Rings your extension first, then connects the customer.</p>
           <div v-if="originateStatus" :class="['status-line', originateStatus.ok ? 'status-ok' : 'error-banner']">
             {{ originateStatus.message }}
           </div>
         </div>
       </Dialog>
+
+      <LeadIntakeForm
+        v-model:visible="leadFormOpen"
+        :initial-phone="leadPrefill.phone"
+        :initial-name="leadPrefill.name"
+        :initial-email="leadPrefill.email"
+        :initial-notes="leadPrefill.notes"
+        :origin-ref="leadPrefill.originRef"
+      />
     </section>
 </template>
 
@@ -178,8 +208,46 @@ import Dialog from 'primevue/dialog'
 import { useApi } from '../composables/useApi'
 import { formatDateTime } from '../composables/useFormatters'
 import { callerDisplay, friendlyStatus, prettyDirection } from '../utils/phoneComLabels'
+import LeadIntakeForm from '../components/LeadIntakeForm.vue'
 
 const api = useApi()
+
+const leadFormOpen = ref(false)
+const leadPrefill = ref({
+  phone: '',
+  name: '',
+  email: '',
+  notes: '',
+  originRef: '',
+})
+
+function openLeadFromCall(callRecord) {
+  if (!callRecord) return
+  const isOutbound = callRecord.direction === 'out'
+  const targetPhone = isOutbound ? callRecord.to_number : callRecord.from_number
+  const callName = callRecord.customer_name || (callRecord.caller_name && callRecord.caller_name !== 'Unknown' ? callRecord.caller_name : '') || ''
+
+  const noteParts = []
+  if (isOutbound) {
+    noteParts.push(`Outbound call to ${callRecord.to_number || 'customer'}`)
+  } else {
+    noteParts.push(`Inbound call from ${callRecord.from_number || 'customer'}`)
+  }
+  const callTranscript = callRecord.transcript || (detail.value?.id === callRecord.id ? transcript.value : '')
+  if (callTranscript) {
+    noteParts.push(`Voicemail / Transcript:\n${callTranscript}`)
+  }
+
+  leadPrefill.value = {
+    phone: targetPhone || '',
+    name: callName,
+    email: callRecord.customer_email || '',
+    notes: noteParts.join('\n\n'),
+    originRef: `phone_com_call:${callRecord.id}`,
+  }
+  leadFormOpen.value = true
+}
+
 
 const tab = ref('voicemail')
 const calls = ref([])
@@ -567,4 +635,34 @@ onUnmounted(() => {
 .status-ok {
   color: var(--p-green-600, #16a34a);
 }
+
+.row-lead-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-panel);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  min-height: 32px;
+}
+.row-lead-btn:active {
+  background: var(--p-content-hover-background);
+}
+
+.detail-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.detail-lead-btn {
+  width: 100%;
+  min-height: 48px;
+}
+
 </style>

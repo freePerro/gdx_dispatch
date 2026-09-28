@@ -179,6 +179,7 @@
                caller's own mailbox, so the server 403s a non-owner. Same gate
                as the personal toggle. -->
           <Button v-if="detail && detail.viewer_is_owner && composeMode !== 'forward'" label="Forward" icon="pi pi-share-alt" severity="secondary" text @click="startForward" data-test="mi-forward-open" />
+          <Button v-if="detail" label="Lead" icon="pi pi-user-plus" severity="secondary" text @click="openLeadFromEmail" data-test="mi-create-lead" />
           <Button v-if="detail" label="Task" icon="pi pi-check-square" severity="secondary" text :loading="taskSaving" @click="createTaskFromEmail" data-test="mi-create-task" />
           <Button v-if="detail && !detail.is_read" label="Mark unread later" icon="pi pi-eye-slash" severity="secondary" text @click="markUnread" data-test="mi-mark-unread" />
           <Button v-if="detail" :label="detail.is_flagged ? 'Unflag' : 'Flag'" :icon="detail.is_flagged ? 'pi pi-flag' : 'pi pi-flag-fill'" severity="secondary" text :loading="flagSaving" @click="toggleFlag" data-test="mi-toggle-flag" />
@@ -236,6 +237,15 @@
           />
         </template>
       </Dialog>
+
+      <LeadIntakeForm
+        v-model:visible="leadFormOpen"
+        :initial-phone="leadPrefill.phone"
+        :initial-name="leadPrefill.name"
+        :initial-email="leadPrefill.email"
+        :initial-notes="leadPrefill.notes"
+        :origin-ref="leadPrefill.originRef"
+      />
     </section>
 </template>
 
@@ -250,6 +260,7 @@ import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
 import EmailBodyFrame from '../components/EmailBodyFrame.vue'
 import EmailAttachments from '../components/EmailAttachments.vue'
+import LeadIntakeForm from '../components/LeadIntakeForm.vue'
 
 const api = useApi()
 const toast = useToast()
@@ -467,6 +478,33 @@ async function sendForward() {
 
 // ── P2.2 email → follow-up task ──────────────────────────────────────
 const taskSaving = ref(false)
+
+const leadFormOpen = ref(false)
+const leadPrefill = ref({
+  phone: '',
+  name: '',
+  email: '',
+  notes: '',
+  originRef: '',
+})
+
+function openLeadFromEmail() {
+  if (!detail.value) return
+  const d = detail.value
+  const noteParts = []
+  if (d.subject) noteParts.push(`Subject: ${d.subject}`)
+  const snippet = d.body_preview || bodyData.value?.body_preview || ''
+  if (snippet) noteParts.push(snippet)
+
+  leadPrefill.value = {
+    phone: '',
+    name: d.from_name || d.linked_customer_name || '',
+    email: d.from_address || '',
+    notes: noteParts.join('\n\n'),
+    originRef: `outlook_message:${d.id}`,
+  }
+  leadFormOpen.value = true
+}
 
 async function createTaskFromEmail() {
   if (!detail.value) return
