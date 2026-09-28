@@ -44,7 +44,7 @@ def send_planner_digest(tenant_id: str = "", to_email: str = "") -> dict[str, An
 
     db = SessionLocal()
     try:
-        from gdx_dispatch.models.tenant_models import AppSettings, Lead, PlannerTask
+        from gdx_dispatch.models.tenant_models import Lead, PlannerTask
 
         now = datetime.now(timezone.utc)
         open_tasks = (
@@ -53,33 +53,23 @@ def send_planner_digest(tenant_id: str = "", to_email: str = "") -> dict[str, An
             .all()
         )
 
-        settings = (
-            db.execute(select(AppSettings).limit(1)).scalar_one_or_none()
-            if tid
-            else None
-        )
-        tz_name = getattr(settings, "timezone", None) or "America/Chicago"
-        try:
-            from zoneinfo import ZoneInfo
-            tz = ZoneInfo(tz_name)
-        except Exception:
-            from zoneinfo import ZoneInfo
-            tz = ZoneInfo("UTC")
-        today = datetime.now(tz).date()
+        # Same shop-local "today" as the planner and the leads list.
+        from gdx_dispatch.routers.leads import CLOSED_STAGES, business_today
+
+        today = business_today()
 
         leads_to_call = (
             db.execute(
                 select(Lead).where(
                     Lead.deleted_at.is_(None),
-                    Lead.stage.not_in(["won", "lost"]),
-                    Lead.follow_up_date.isnot(None),
+                    Lead.stage.not_in(CLOSED_STAGES),
                     Lead.follow_up_date <= today,
                 ).order_by(Lead.follow_up_date.asc(), Lead.created_at.desc())
             )
             .scalars()
             .all()
         )
-        overdue_leads = [l for l in leads_to_call if l.follow_up_date and l.follow_up_date < today]
+        overdue_leads = [ld for ld in leads_to_call if ld.follow_up_date and ld.follow_up_date < today]
 
         if not open_tasks and not leads_to_call:
             log.info("planner_digest_nothing_open tenant=%s", tid)
@@ -217,15 +207,15 @@ def _html_body(
     leads_section = ""
     leads_list = leads_to_call or []
     if leads_list:
-        def _lead_row(l) -> str:
-            contact = l.phone or l.email or ""
+        def _lead_row(lead) -> str:
+            contact = lead.phone or lead.email or ""
             contact_str = f" <span style='color:#64748b'>({_esc(contact)})</span>" if contact else ""
-            is_overdue = today and l.follow_up_date and l.follow_up_date < today
+            is_overdue = today and lead.follow_up_date and lead.follow_up_date < today
             badge = " <span style='color:#dc2626;font-weight:bold'>[OVERDUE]</span>" if is_overdue else ""
-            due_str = f" <span style='color:#64748b'>· due {l.follow_up_date.isoformat()}</span>" if l.follow_up_date else ""
-            return f"<li style='margin:4px 0'><b>{_esc(l.name or '(unnamed lead)')}</b>{contact_str}{badge}{due_str}</li>"
+            due_str = f" <span style='color:#64748b'>· due {lead.follow_up_date.isoformat()}</span>" if lead.follow_up_date else ""
+            return f"<li style='margin:4px 0'><b>{_esc(lead.name or '(unnamed lead)')}</b>{contact_str}{badge}{due_str}</li>"
 
-        lead_rows = "".join(_lead_row(l) for l in leads_list[:15])
+        lead_rows = "".join(_lead_row(lead) for lead in leads_list[:15])
         leads_more = len(leads_list) - 15
         leads_more_line = f"<p style='color:#64748b'>…and {leads_more} more leads.</p>" if leads_more > 0 else ""
         leads_section = (

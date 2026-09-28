@@ -409,15 +409,10 @@ def _load_user_permissions(db: Session, request: Request, user: dict) -> set[str
     if user_id:
         try:
             from sqlalchemy import select as _select
-            from uuid import UUID as _UUID
 
             from gdx_dispatch.models.tenant_models import User as _User
-            try:
-                target_uid = _UUID(str(user_id))
-            except (ValueError, TypeError):
-                target_uid = user_id
             db_role = (
-                db.execute(_select(_User.role).where(_User.id == target_uid, _User.deleted_at.is_(None))).scalar_one_or_none()
+                db.execute(_select(_User.role).where(_User.id == user_id, _User.deleted_at.is_(None))).scalar_one_or_none()
                 or ""
             )
         except SQLAlchemyError:

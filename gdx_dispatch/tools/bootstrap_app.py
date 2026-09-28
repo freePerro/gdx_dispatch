@@ -200,6 +200,19 @@ def main() -> int:
     with SessionLocal() as db:
         seed_customer_alert_tags_on_first_boot(db, tenant_id)
 
+    # ── 6. Default lead intake fields, once per install (migration 099) ──
+    # Contained: the entrypoint runs this under `set -e`, and a convenience
+    # seed must not crash-loop the app. A failure is logged loudly and the
+    # intake form simply starts with no extra fields until the next boot.
+    try:
+        with SessionLocal() as db:
+            from gdx_dispatch.routers.custom_fields import seed_default_lead_fields
+
+            if seed_default_lead_fields(db, tenant_id):
+                log.info("Seeded the default lead intake fields.")
+    except Exception:
+        log.exception("lead_intake_fields_seed_failed — boot continues without the default fields")
+
     log.info("Bootstrap complete.")
     return 0
 

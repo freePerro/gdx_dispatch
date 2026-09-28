@@ -102,6 +102,63 @@ class CustomFieldValue(TenantBase):
     )
 
 
+# The lead intake form's starting fields (lead-intake-followup-plan §1). They
+# are ordinary definitions: an admin renames, reorders, deletes or adds to them
+# in Custom Fields -> "Lead".
+DEFAULT_LEAD_FIELDS: tuple[dict[str, Any], ...] = (
+    {"field_key": "job_kind", "label": "Job kind", "field_type": "select",
+     "options": json.dumps(["Repair", "New door", "New opener", "Door + opener"]), "sort_order": 1},
+    {"field_key": "door_count", "label": "Door count", "field_type": "number", "options": None, "sort_order": 2},
+    {"field_key": "door_size", "label": "Door size", "field_type": "text", "options": None, "sort_order": 3},
+    {"field_key": "door_options", "label": "Door options", "field_type": "text", "options": None, "sort_order": 4},
+    {"field_key": "opener", "label": "Opener", "field_type": "text", "options": None, "sort_order": 5},
+)
+
+
+def seed_default_lead_fields(db: Session, tenant_id: str) -> int:
+    """Create the default lead intake fields once, and never again.
+
+    Called by bootstrap_app on every boot, after migrations — not from a
+    migration, because pave_tenant_db re-runs the migration chain on an empty
+    schema and then reloads the dumped rows, and a migration seed collides
+    with its own reloaded copy. Unlike the first-boot tag seed, this runs on
+    installs that already exist (the feature is new to them).
+
+    "Once": any lead definition ever created — deleted ones included, since
+    deletion here is a soft delete — means the admin has had the defaults, so
+    removing them sticks across restarts. Writes one audit row so the rows
+    trace to this step, not to a person who never acted. Commits.
+    """
+    from gdx_dispatch.core.audit import SYSTEM_ACTOR, ensure_audit_table, log_audit_event_sync
+
+    # Before staging: its first run on an engine commits, which would land the
+    # fields ahead of their audit row — and "once ever" would then never retry.
+    ensure_audit_table(db)
+    ever = db.execute(
+        select(CustomFieldDefinition.id).where(CustomFieldDefinition.entity_type == "lead").limit(1)
+    ).first()
+    if ever is not None:
+        return 0
+    now = utcnow()
+    for f in DEFAULT_LEAD_FIELDS:
+        db.add(CustomFieldDefinition(
+            id=uuid4(), company_id=tenant_id, entity_type="lead", required=False,
+            created_at=now, updated_at=now, **f,
+        ))
+    log_audit_event_sync(
+        db,
+        tenant_id=tenant_id,
+        user_id=SYSTEM_ACTOR,  # a boot step, not a person
+        action="lead_intake_fields_seeded",
+        entity_type="custom_field",
+        entity_id=None,
+        details={"inserted": len(DEFAULT_LEAD_FIELDS), "source": "bootstrap_app"},
+        actor_role="system",
+    )
+    db.commit()
+    return len(DEFAULT_LEAD_FIELDS)
+
+
 # ---------------------------------------------------------------------------
 # Pydantic schemas (all strings bounded — Build Rule: Input Validation)
 # ---------------------------------------------------------------------------

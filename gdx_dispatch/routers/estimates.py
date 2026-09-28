@@ -780,8 +780,12 @@ def create_draft_estimate_record(
     notes: str | None = None,
     tax_rate: Decimal | None = None,
     discount: Decimal | None = None,
-    hide_line_prices: bool = False,
+    hide_line_prices: bool | None = None,
 ) -> Estimate:
+    """Stage a draft estimate (flush, no commit, no audit) — the body of
+    POST /api/estimates, shared with lead start-estimate so numbering and
+    defaults live in one place. hide_line_prices is tri-state: None inherits
+    the tenant's total-only default; False would force prices visible."""
     estimate = Estimate(
         job_id=job_id,
         customer_id=customer_id,
@@ -803,6 +807,34 @@ def create_draft_estimate_record(
     return estimate
 
 
+def stage_estimate_created_audit(
+    db: Session,
+    *,
+    tenant_id: str,
+    user_id: str | None,
+    estimate: Estimate,
+    line_count: int,
+    request: Request | None = None,
+) -> None:
+    """Stage the estimate_created row (no commit) — the caller's single
+    commit lands the estimate and its record together."""
+    log_audit_event_sync(
+        db=db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="estimate_created",
+        entity_type="estimate",
+        entity_id=str(estimate.id),
+        details={
+            "estimate_number": estimate.estimate_number,
+            "status": estimate.status,
+            "line_count": line_count,
+            "total": float(estimate.total or 0),
+        },
+        request=request,
+    )
+
+
 @router.post("", response_model=None, status_code=201)
 def create_estimate(
     payload: EstimateCreateIn,
@@ -812,6 +844,7 @@ def create_estimate(
 ) -> dict[str, object]:
     if not payload.job_id and not payload.customer_id:
         raise HTTPException(status_code=400, detail="job_id or customer_id is required")
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
 
     customer_id = payload.customer_id
     if payload.job_id:
@@ -917,23 +950,14 @@ def create_estimate(
         ))
         running_total += line_total
     estimate.total = running_total
-    db.commit()
-    db.refresh(estimate)
-    log_audit_event_sync(
-        db=db,
-        tenant_id=None,
-        user_id=_actor_id(_),
-        action="estimate_created",
-        entity_type="estimate",
-        entity_id=str(estimate.id),
-        details={
-            "estimate_number": estimate.estimate_number,
-            "status": estimate.status,
-            "line_count": len(payload.line_items),
-            "total": float(running_total),
-        },
+    # The estimate and its creation row commit together (#700 shape): the row
+    # used to follow a first commit, with tenant_id=None.
+    stage_estimate_created_audit(
+        db, tenant_id=tenant_id, user_id=_actor_id(_), estimate=estimate,
+        line_count=len(payload.line_items),
     )
     db.commit()
+    db.refresh(estimate)
     return _serialize_estimate(estimate, include_lines=True)
 
 

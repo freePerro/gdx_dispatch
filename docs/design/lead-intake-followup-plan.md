@@ -1,7 +1,7 @@
 # Lead Intake, Call-Back Dates, and Start-Estimate
 
 **Date:** 2026-09-28
-**Status:** PLAN — nothing built. All decisions made (Doug, 2026-09-28); not started — Doug to give the go before PR A.
+**Status:** PARTIALLY BUILT — PR A (backend: migration 099, `leads.intake`, the §3 endpoints, digest, the boot-time seed of the default fields, and the Custom Fields "Lead" option — pulled forward from PR C because PR A creates the fields it labels) is #817, not yet merged. **Not built:** PR B (mobile intake form and entry points), PR C (desktop Leads view, dashboard count, Inbox/Calls buttons, the estimate-screen request panel).
 
 Builds on, does not replace: `docs/design/archive/call-capture-followup-plan.md`
 (the mobile quick-capture note, BUILT 2026-07-07) and P2.2 of
@@ -77,25 +77,34 @@ Verified against `origin/main` @ 5c5a15b9, 2026-09-28.
   `phone_com_call:<id>` or `outlook_message:<id>`, so a call/email is never
   captured twice without a warning.
 - Custom fields: `ENTITY_TYPES` gains `"lead"` (code only; there is no DB check
-  constraint). Seed default lead definitions — Job kind (select: Repair / New
+  constraint). Seed (at boot, not in the migration — see *Seed target*) default lead definitions — Job kind (select: Repair / New
   door / New opener / Door + opener), Door count (number), Door size (text),
   Door options (text), Opener (text). They are ordinary rows, so the admin can
   rename, reorder, delete or add to them.
 - "How they found us" stays on the existing `Lead.source` column (reports read
   it), as a fixed dropdown plus "Other".
 - Guarded `ADD COLUMN` (fresh installs build columns from the ORM before
-  alembic runs); must pass on SQLite and Postgres. Rollback = drop the three
-  columns and the seeded definitions that have no values. No money rows touched.
+  alembic runs); must pass on SQLite and Postgres. Rollback drops the three
+  columns only: the grant stays (the 029 reasoning — upgrade cannot tell its
+  own grants from later ones). The seeded definitions are not the
+  migration's; they stay (the table carries `deleted_at`, invariant #2).
+  No money rows touched.
 
-- **Seed target (audit round 1, finding 3).** Prod carries two company ids in
-  `tenant_roles`; all 12 leads sit under one of them and
-  `custom_field_definitions` is empty. A migration has no request, so "the
-  tenant" is ambiguous. The seed must key on the id the app actually serves
-  (`request.state.tenant["id"]`'s source) — determine that source at build
-  time, and count rows on prod **and** demo immediately before deploy. If it
-  cannot be made unambiguous, fall back to an explicit admin action ("Add the
-  default intake fields" button in Custom Fields, audited) instead of a
-  migration seed.
+- **Seed target and seed step (audit round 1, finding 3) — resolved in #817.**
+  Prod carries two company ids in `tenant_roles`, so guessing from table
+  contents is ambiguous (and the first draft's fallback queried a column that
+  does not exist, crashing any database with no leads — demo has none). The
+  seed is **not** in the migration at all: `pave_tenant_db` rebuilds by
+  re-running the migration chain on an empty schema and reloading the dumped
+  rows, so a migration seed collides with its reloaded copy
+  (`uq_custom_field_key`). It is `custom_fields.seed_default_lead_fields`,
+  called by `bootstrap_app` on every boot after migrations, under
+  `company_id()` — the env-sourced id the app serves (verified 2026-09-28:
+  prod's `GDX_TENANT_ID` equals the `company_id` on all 12 of its leads;
+  demo has its own id and no leads). It seeds only if no lead field was ever
+  defined (deletion is soft, so deletions stick), writes a
+  `lead_intake_fields_seeded` audit row, and a failure is logged without
+  failing boot.
 
 ### 2. Permission
 
@@ -227,6 +236,29 @@ audits with no tenant id, and an either-key gate needs `has_permission` —
 all folded into PR A. Still unverified: whether a technician's mobile session
 reaches `/api/leads/*` past the `customers` module gate and the frontend route
 guards — PR B proves it on the AVD as a real tech.
+
+## Review of #817 (2026-09-28) — fixed on the branch
+
+The first cut of PR A had a red CI (lint + 5 of 7 shards) and seven code
+defects, all fixed before merge: the no-leads migration crash above (and,
+found while fixing it, the migration seed breaking `pave_tenant_db`'s
+rebuild — the seed moved to `bootstrap_app`); an
+undeclared change to `core/modules.py`'s role lookup (reverted — it broke
+4 closeout-read tests); intake echoing a matched customer's name, phone and
+email to technicians (now shown only to `customers.read_all`, duplicate-lead
+details only to `leads.read`; both still recorded in the audit row); the
+dedupe phone match widened from last-10-digits to substring (reverted);
+lazy re-seeding that made the default fields undeletable (removed);
+start-estimate forcing `hide_line_prices=False` over the tenant's total-only
+default (now inherits); and raw exception text in a 500 detail (opaque now).
+The Custom Fields admin view labelled every non-job group "Customer Fields",
+so the seeded lead fields would have appeared as five unexplained customer
+fields — it now has a "Lead Intake Fields" group and a Lead option.
+Also folded in: `create_estimate`'s audit row now commits with the estimate
+and carries the tenant id, and the handlers this PR touched that stage
+before auditing (intake, start-estimate, convert-to-customer,
+`create_estimate`, the boot seed) call `ensure_audit_table` first. Not swept:
+other handlers of that shape remain (e.g. `delete_landing_lead` on main).
 
 ## Out of scope
 

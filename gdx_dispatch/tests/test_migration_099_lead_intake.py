@@ -7,7 +7,7 @@ import importlib.util
 import os
 import pathlib
 import re
-from typing import Generator
+from collections.abc import Generator
 from uuid import uuid4
 
 import pytest
@@ -17,7 +17,6 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 
 from gdx_dispatch.core.permissions import BUILTIN_ROLES
-from gdx_dispatch.migrations.grant_helpers import grant_permission_to_seeded_roles
 from gdx_dispatch.tests.fixtures.pg import _skip_unless_ci
 
 MIGRATION = (
@@ -132,37 +131,57 @@ def sqlite_conn(tmp_path):
     eng.dispose()
 
 
+def _lead_field_count(conn) -> int:
+    return conn.exec_driver_sql(
+        "SELECT count(*) FROM custom_field_definitions WHERE entity_type = 'lead'"
+    ).scalar()
+
+
 def test_sqlite_upgrade_and_downgrade(sqlite_conn) -> None:
     mod = _load(sqlite_conn)
-
-    # 1. Upgrade
     mod.upgrade()
 
     cols = _cols(sqlite_conn, "leads")
-    assert "follow_up_date" in cols
-    assert "estimate_id" in cols
-    assert "origin_ref" in cols
-
+    assert {"follow_up_date", "estimate_id", "origin_ref"} <= cols
     indexes = _indexes(sqlite_conn, "leads")
-    assert "ix_leads_follow_up_date" in indexes
-    assert "ix_leads_estimate_id" in indexes
+    assert {"ix_leads_follow_up_date", "ix_leads_estimate_id"} <= indexes
 
-    # Verify default custom fields seeded
-    field_keys = {
-        row[0]
-        for row in sqlite_conn.exec_driver_sql(
-            "SELECT field_key FROM custom_field_definitions WHERE entity_type = 'lead'"
-        ).fetchall()
-    }
-    assert field_keys == {"job_kind", "door_count", "door_size", "door_options", "opener"}
-
-    # 2. Downgrade
     mod.downgrade()
+    assert not ({"follow_up_date", "estimate_id", "origin_ref"} & _cols(sqlite_conn, "leads"))
 
-    cols_after = _cols(sqlite_conn, "leads")
-    assert "follow_up_date" not in cols_after
-    assert "estimate_id" not in cols_after
-    assert "origin_ref" not in cols_after
+
+def test_the_migration_seeds_no_rows(sqlite_conn) -> None:
+    """pave_tenant_db re-runs the migration chain on an empty schema and then
+    reloads the dumped rows; a row seeded here collides with its reloaded
+    copy (uq_custom_field_key) and aborts the pave. The first cut seeded the
+    intake fields here — they belong to bootstrap_app."""
+    mod = _load(sqlite_conn)
+    mod.upgrade()
+    assert _lead_field_count(sqlite_conn) == 0
+
+
+def test_upgrade_with_no_leads_does_not_crash(sqlite_conn) -> None:
+    """The first cut queried app_settings.company_id — a column that does not
+    exist — whenever the leads table was empty (demo has none)."""
+    sqlite_conn.exec_driver_sql("DELETE FROM leads")
+    sqlite_conn.exec_driver_sql("CREATE TABLE app_settings (id VARCHAR(36) PRIMARY KEY)")
+    mod = _load(sqlite_conn)
+    mod.upgrade()
+    assert "follow_up_date" in _cols(sqlite_conn, "leads")
+
+
+def test_fresh_install_schema_built_from_the_orm(tmp_path) -> None:
+    """Fresh installs build tables from the ORM before alembic runs, so the
+    three columns already exist; upgrade must skip them cleanly."""
+    from gdx_dispatch.models.tenant_models import Lead
+
+    eng = create_engine(f"sqlite:///{tmp_path / 'fresh.db'}", future=True)
+    Lead.__table__.create(eng)
+    with eng.connect() as conn:
+        mod = _load(conn)
+        mod.upgrade()
+        assert {"follow_up_date", "estimate_id", "origin_ref"} <= _cols(conn, "leads")
+    eng.dispose()
 
 
 # ── Behavior against a real Postgres ─────────────────────────────────────────

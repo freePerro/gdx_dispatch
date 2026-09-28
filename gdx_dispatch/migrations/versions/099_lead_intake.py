@@ -4,7 +4,7 @@
 * leads.estimate_id — UUID NULL, indexed.
 * leads.origin_ref — VARCHAR(120) NULL.
 * Grant leads.intake to technician seeded role snapshots.
-* Seed default lead intake custom fields if definitions table exists.
+* The default intake fields are seeded by bootstrap_app, not here.
 
 Revision ID: 099_lead_intake
 Revises: 098_planner_today
@@ -12,10 +12,7 @@ Create Date: 2026-09-28
 """
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime, timezone
-from uuid import uuid4
 
 import sqlalchemy as sa
 from alembic import op
@@ -32,50 +29,6 @@ depends_on = None
 
 _KEY = "leads.intake"
 _ROLES = ("technician",)
-
-_DEFAULT_LEAD_FIELDS = [
-    {
-        "field_key": "job_kind",
-        "label": "Job kind",
-        "field_type": "select",
-        "options": json.dumps(["Repair", "New door", "New opener", "Door + opener"]),
-        "required": False,
-        "sort_order": 1,
-    },
-    {
-        "field_key": "door_count",
-        "label": "Door count",
-        "field_type": "number",
-        "options": None,
-        "required": False,
-        "sort_order": 2,
-    },
-    {
-        "field_key": "door_size",
-        "label": "Door size",
-        "field_type": "text",
-        "options": None,
-        "required": False,
-        "sort_order": 3,
-    },
-    {
-        "field_key": "door_options",
-        "label": "Door options",
-        "field_type": "text",
-        "options": None,
-        "required": False,
-        "sort_order": 4,
-    },
-    {
-        "field_key": "opener",
-        "label": "Opener",
-        "field_type": "text",
-        "options": None,
-        "required": False,
-        "sort_order": 5,
-    },
-]
-
 
 def _has_column(bind, table: str, column: str) -> bool | None:
     insp = inspect(bind)
@@ -113,59 +66,21 @@ def upgrade() -> None:
     granted = grant_permission_to_seeded_roles(bind, permission=_KEY, roles=_ROLES)
     log.info(f"099_lead_intake: granted {_KEY} to {granted} seeded role row(s)")
 
-    # Seed default lead custom field definitions if table exists
-    if insp.has_table("custom_field_definitions"):
-        # Discover tenant IDs
-        tenant_ids: set[str] = set()
-        if insp.has_table("leads"):
-            rows = bind.execute(sa.text("SELECT DISTINCT company_id FROM leads WHERE company_id IS NOT NULL")).fetchall()
-            for r in rows:
-                if r[0]:
-                    tenant_ids.add(str(r[0]))
-        if not tenant_ids and insp.has_table("app_settings"):
-            rows = bind.execute(sa.text("SELECT DISTINCT company_id FROM app_settings WHERE company_id IS NOT NULL")).fetchall()
-            for r in rows:
-                if r[0]:
-                    tenant_ids.add(str(r[0]))
-        if not tenant_ids and insp.has_table("tenant_roles"):
-            rows = bind.execute(sa.text("SELECT DISTINCT company_id FROM tenant_roles WHERE company_id IS NOT NULL")).fetchall()
-            for r in rows:
-                if r[0]:
-                    tenant_ids.add(str(r[0]))
-
-        now = datetime.now(timezone.utc)
-        for tid in sorted(tenant_ids):
-            existing = bind.execute(
-                sa.text(
-                    "SELECT count(*) FROM custom_field_definitions "
-                    "WHERE company_id = :tid AND entity_type = 'lead' AND deleted_at IS NULL"
-                ),
-                {"tid": tid},
-            ).scalar()
-            if existing == 0:
-                for f in _DEFAULT_LEAD_FIELDS:
-                    bind.execute(
-                        sa.text(
-                            "INSERT INTO custom_field_definitions "
-                            "(id, company_id, entity_type, field_key, label, field_type, options, required, sort_order, created_at, updated_at) "
-                            "VALUES (:id, :company_id, 'lead', :field_key, :label, :field_type, :options, :required, :sort_order, :created_at, :updated_at)"
-                        ),
-                        {
-                            "id": str(uuid4()),
-                            "company_id": tid,
-                            "field_key": f["field_key"],
-                            "label": f["label"],
-                            "field_type": f["field_type"],
-                            "options": f["options"],
-                            "required": f["required"],
-                            "sort_order": f["sort_order"],
-                            "created_at": now,
-                            "updated_at": now,
-                        },
-                    )
+    # The default intake fields are NOT seeded here. pave_tenant_db rebuilds
+    # a database by re-running `alembic upgrade head` on an empty schema and
+    # then reloading the dumped rows, so a data seed in a migration collides
+    # with its own reloaded copy (uq_custom_field_key). They are seeded by
+    # bootstrap_app, which runs after migrations on every boot.
 
 
 def downgrade() -> None:
+    """Drop the three lead columns. The grant stays.
+
+    The leads.intake grant is deliberately NOT revoked — upgrade grants only
+    where the key is absent, so it cannot tell its own grants from a later
+    tenant's BUILTIN seed or an operator's tick in Roles & Permissions (the
+    reasoning in 029_customer_contact_write.downgrade).
+    """
     bind = op.get_bind()
     insp = inspect(bind)
 

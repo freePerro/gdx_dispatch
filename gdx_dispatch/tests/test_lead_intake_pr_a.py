@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from datetime import date, timedelta
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -20,9 +19,13 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Lead
 from gdx_dispatch.modules.proposals.models import Estimate
 from gdx_dispatch.routers.auth import get_current_user
+from gdx_dispatch.routers.custom_fields import DEFAULT_LEAD_FIELDS, seed_default_lead_fields
 from gdx_dispatch.routers.leads import (
     DEFAULT_LEAD_SOURCES,
+    business_today,
     next_business_day,
+)
+from gdx_dispatch.routers.leads import (
     router as leads_router,
 )
 
@@ -68,6 +71,8 @@ def _make_client(
             {"id": f"g-{mod}-{tenant_id}", "tid": tenant_id, "mod": mod},
         )
     setup.commit()
+    # The real seeder, as bootstrap_app runs it on boot.
+    seed_default_lead_fields(setup, tenant_id)
     setup.close()
 
     def _override_db():
@@ -209,10 +214,16 @@ def test_tech_creates_lead_intake_with_custom_fields(tech_client: TestClient):
     assert body["matched_customer"] is None
     assert body["possible_duplicate"] is None
 
-    # Check custom fields were persisted
-    r_cf = tech_client.get(f"/api/leads/{lead['id']}/custom-fields")
-    assert r_cf.status_code == 200
-    cf_values = {f["field_key"]: f["value"] for f in r_cf.json()}
+    # A tech submits but does not browse: reading the answers back is refused.
+    assert tech_client.get(f"/api/leads/{lead['id']}/custom-fields").status_code == 403
+
+    from gdx_dispatch.routers.custom_fields import _list_values_for_entity
+
+    with tech_client._Session() as db:  # type: ignore[attr-defined]
+        cf_values = {
+            f["field_key"]: f["value"]
+            for f in _list_values_for_entity(db, "tenant-test", "lead", lead["id"])
+        }
     assert cf_values["job_kind"] == "Repair"
     assert cf_values["door_count"] == "1"
     assert cf_values["door_size"] == "16x7"
@@ -280,7 +291,7 @@ def test_intake_duplicate_and_customer_matching(admin_client: TestClient):
 
 
 def test_follow_up_filters_and_summary(admin_client: TestClient):
-    today = date.today()
+    today = business_today()
     yesterday = today - timedelta(days=1)
     tomorrow = today + timedelta(days=1)
 
@@ -328,7 +339,7 @@ def test_follow_up_filters_and_summary(admin_client: TestClient):
     # Filter: overdue
     r_od = admin_client.get("/api/leads?follow_up=overdue")
     assert r_od.status_code == 200
-    names_od = [l["name"] for l in r_od.json()]
+    names_od = [row["name"] for row in r_od.json()]
     assert "Overdue Lead" in names_od
     assert "Today Lead" not in names_od
     assert "Won Lead" not in names_od
@@ -336,14 +347,14 @@ def test_follow_up_filters_and_summary(admin_client: TestClient):
     # Filter: today
     r_td = admin_client.get("/api/leads?follow_up=today")
     assert r_td.status_code == 200
-    names_td = [l["name"] for l in r_td.json()]
+    names_td = [row["name"] for row in r_td.json()]
     assert "Today Lead" in names_td
     assert "Overdue Lead" not in names_td
 
     # Filter: upcoming
     r_up = admin_client.get("/api/leads?follow_up=upcoming")
     assert r_up.status_code == 200
-    names_up = [l["name"] for l in r_up.json()]
+    names_up = [row["name"] for row in r_up.json()]
     assert "Upcoming Lead" in names_up
     assert "Today Lead" not in names_up
 
@@ -357,7 +368,7 @@ def test_patch_lead_follow_up_date(admin_client: TestClient):
     r_create = admin_client.post("/api/leads", json={"name": "Patch Test Lead"})
     lead_id = r_create.json()["id"]
 
-    new_date = (date.today() + timedelta(days=5)).isoformat()
+    new_date = (business_today() + timedelta(days=5)).isoformat()
     r_patch = admin_client.patch(
         f"/api/leads/{lead_id}",
         json={"follow_up_date": new_date},
@@ -463,9 +474,9 @@ def test_technician_permission_gates(tech_client: TestClient):
 
 def test_planner_digest_includes_leads(admin_client: TestClient):
     Session = admin_client._Session  # type: ignore[attr-defined]
-    today = date.today()
+    today = business_today()
     with Session() as db:
-        l = Lead(
+        urgent = Lead(
             id=uuid4(),
             company_id="tenant-test",
             name="Urgent Callback",
@@ -473,7 +484,7 @@ def test_planner_digest_includes_leads(admin_client: TestClient):
             stage="new",
             follow_up_date=today,
         )
-        db.add(l)
+        db.add(urgent)
         db.commit()
 
     from gdx_dispatch.tasks.planner_digest import send_planner_digest
@@ -492,3 +503,142 @@ def test_planner_digest_includes_leads(admin_client: TestClient):
         kwargs = mock_send.call_args.kwargs
         assert "lead to call back" in kwargs["subject"]
         assert "Urgent Callback" in kwargs["html_body"]
+
+
+# ---------------------------------------------------------------------------
+# Review fixes (#817)
+# ---------------------------------------------------------------------------
+
+
+def _seed_customer_and_open_lead(Session) -> None:
+    with Session() as db:
+        db.add(Customer(
+            id=uuid4(), company_id="tenant-test", name="Private Paula",
+            phone="612-555-3030", email="paula@example.com", address="1 Hidden Ln",
+        ))
+        db.add(Lead(
+            id=uuid4(), company_id="tenant-test", name="Open Olivia",
+            phone="612-555-3030", stage="new",
+        ))
+        db.commit()
+
+
+def test_tech_intake_does_not_reveal_who_owns_a_number(tech_client: TestClient):
+    """A technician holds customers.read_own only. Typing a number into the
+    intake form must not hand back the customer's (or another lead's) name
+    and contact details — that would be a phone-number lookup service."""
+    _seed_customer_and_open_lead(tech_client._Session)  # type: ignore[attr-defined]
+    r = tech_client.post("/api/leads/intake", json={"name": "Probe", "phone": "6125553030"})
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["matched_customer"] is None
+    assert body["possible_duplicate"] is None
+    assert "Paula" not in r.text and "Olivia" not in r.text
+
+    # The match is still recorded for the office, in the audit row.
+    with tech_client._Session() as db:  # type: ignore[attr-defined]
+        details = db.execute(text(
+            "SELECT details FROM audit_logs WHERE action = 'lead_intake_created'"
+        )).scalar_one()
+    details = json.loads(details) if isinstance(details, str) else details
+    assert details["matched_customer_id"] and details["possible_duplicate_id"]
+
+
+def test_office_intake_still_sees_the_match(admin_client: TestClient):
+    _seed_customer_and_open_lead(admin_client._Session)  # type: ignore[attr-defined]
+    body = admin_client.post("/api/leads/intake", json={"name": "Probe", "phone": "6125553030"}).json()
+    assert body["matched_customer"]["name"] == "Private Paula"
+    assert body["possible_duplicate"]["name"] == "Open Olivia"
+
+
+def test_a_deleted_default_field_stays_deleted(admin_client: TestClient):
+    """The form used to re-create the defaults whenever no lead field was
+    live, so an admin could never remove them."""
+    with admin_client._Session() as db:  # type: ignore[attr-defined]
+        db.execute(text(
+            "UPDATE custom_field_definitions SET deleted_at = CURRENT_TIMESTAMP WHERE entity_type = 'lead'"
+        ))
+        db.commit()
+    for _ in range(2):
+        r = admin_client.get("/api/leads/intake-form")
+        assert r.status_code == 200
+        assert r.json()["custom_fields"] == []
+    with admin_client._Session() as db:  # type: ignore[attr-defined]
+        live = db.execute(text(
+            "SELECT count(*) FROM custom_field_definitions WHERE entity_type = 'lead' AND deleted_at IS NULL"
+        )).scalar_one()
+    assert live == 0
+
+
+def test_phone_dedupe_matches_the_trailing_ten_digits_only(admin_client: TestClient):
+    """_find_matching_customer silently LINKS records at conversion, so it
+    matches on the number's last ten digits — not anywhere inside it."""
+    from gdx_dispatch.routers.leads import _find_matching_customer
+
+    with admin_client._Session() as db:  # type: ignore[attr-defined]
+        db.add(Customer(
+            id=uuid4(), company_id="tenant-test", name="Ext Eddie",
+            phone="612-555-4040 x12",
+        ))
+        db.commit()
+        assert _find_matching_customer(db, email=None, phone="6125554040") is None
+        db.add(Customer(id=uuid4(), company_id="tenant-test", name="Plain Pat", phone="(612) 555-5050"))
+        db.commit()
+        assert _find_matching_customer(db, email=None, phone="+1 612 555 5050").name == "Plain Pat"
+
+
+def test_start_estimate_inherits_price_display_and_audits(sales_client: TestClient):
+    lead_id = sales_client.post(
+        "/api/leads", json={"name": "Audit Annie", "address": "2 Trail Rd"}
+    ).json()["id"]
+    r = sales_client.post(f"/api/leads/{lead_id}/start-estimate")
+    assert r.status_code == 200, r.text
+    est_id = r.json()["estimate"]["id"]
+    cust_id = r.json()["customer"]["id"]
+
+    with sales_client._Session() as db:  # type: ignore[attr-defined]
+        est = db.get(Estimate, UUID(est_id))
+        # NULL = inherit the tenant's total-only setting; False would force
+        # line prices onto the customer's PDF.
+        assert est.hide_line_prices is None
+        rows = db.execute(text(
+            "SELECT action, entity_id, tenant_id FROM audit_logs"
+        )).fetchall()
+    by_action = {row[0]: row for row in rows}
+    assert {"customer_created", "estimate_created", "lead_estimate_started"} <= set(by_action)
+    assert UUID(by_action["customer_created"][1]) == UUID(cust_id)
+    assert all(by_action[a][2] == "tenant-test" for a in ("customer_created", "estimate_created", "lead_estimate_started"))
+
+
+def test_convert_to_customer_writes_the_customer_row(sales_client: TestClient):
+    lead_id = sales_client.post("/api/leads", json={"name": "Convert Carl"}).json()["id"]
+    r = sales_client.post(f"/api/leads/{lead_id}/convert-to-customer")
+    assert r.status_code == 200 and r.json()["converted"] is True
+    with sales_client._Session() as db:  # type: ignore[attr-defined]
+        actions = {a for (a,) in db.execute(text("SELECT action FROM audit_logs")).fetchall()}
+    assert {"customer_created", "lead_converted_to_customer"} <= actions
+
+
+def test_seeder_runs_once_and_is_audited():
+    """bootstrap_app calls this on every boot: it must seed an existing
+    install once, record that it did, and never put a deleted default back."""
+    tc = _make_client(role="admin", uid=_ADMIN_UID)  # fixture already seeded once
+    with tc._Session() as db:  # type: ignore[attr-defined]
+        keys = {k for (k,) in db.execute(text(
+            "SELECT field_key FROM custom_field_definitions WHERE entity_type = 'lead'"
+        )).fetchall()}
+        assert keys == {f["field_key"] for f in DEFAULT_LEAD_FIELDS}
+        seeded_rows = db.execute(text(
+            "SELECT count(*) FROM audit_logs WHERE action = 'lead_intake_fields_seeded'"
+        )).scalar_one()
+        assert seeded_rows == 1
+
+        assert seed_default_lead_fields(db, "tenant-test") == 0  # a second boot
+        db.execute(text("UPDATE custom_field_definitions SET deleted_at = CURRENT_TIMESTAMP"))
+        db.commit()
+        assert seed_default_lead_fields(db, "tenant-test") == 0  # after the admin deleted them
+        live = db.execute(text(
+            "SELECT count(*) FROM custom_field_definitions WHERE deleted_at IS NULL"
+        )).scalar_one()
+    assert live == 0
+    tc._engine.dispose()  # type: ignore[attr-defined]
