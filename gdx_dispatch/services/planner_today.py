@@ -201,7 +201,7 @@ def today_view(db: Session, uid: str, *, today: datetime | None = None) -> dict:
 
 def set_today(
     db: Session, *, tid: str, uid: str, task_id: str, on: bool, via: str = "user",
-    today: datetime | None = None,
+    today: datetime | None = None, request=None,
 ) -> dict:
     """Pin ``task_id`` to Today (``on``) or take it off. Raises LookupError
     for no such task and NotYours when it is not in the caller's set."""
@@ -222,6 +222,7 @@ def set_today(
         action="planner_today_add" if on else "planner_today_remove",
         entity_type="planner_task", entity_id=str(task.id),
         details={"title": task.title, "via": via, "today": today.date().isoformat()},
+        request=request,
     )
     db.commit()
     return task_out(task, today)
@@ -260,6 +261,7 @@ def _parse_ts(value: str | None) -> datetime | None:
 def save_note(
     db: Session, *, tid: str, uid: str, body: str, note_date: str | None,
     base_updated_at: str | None, via: str = "user", today: datetime | None = None,
+    request=None,
 ) -> dict:
     """Replace today's note with ``body``.
 
@@ -326,6 +328,7 @@ def save_note(
         action="planner_day_note_save",
         entity_type="planner_day_note", entity_id=str(note_id),
         details={"note_date": day.isoformat(), "via": via, "before_len": before_len, "after": body},
+        request=request,
     )
     db.commit()
     return note_out(_note_row(db, uid, day), day)

@@ -46,6 +46,42 @@ def _uid(user: dict) -> str:
     return str(user.get("sub") or user.get("user_id") or "system")
 
 
+def _audit(db: Session, request: Request | None, user: dict, *, action: str,
+           entity_type: str, entity_id: str, details: dict) -> None:
+    """Stage the audit row in the caller's transaction, so the change and its
+    trail commit together or not at all (#700). Call ensure_audit_table(db)
+    BEFORE staging the change — its first run on an engine commits."""
+    log_audit_event_sync(
+        db=db, tenant_id=(_tid(request) if request is not None else "") or None,
+        user_id=_uid(user), action=action, entity_type=entity_type,
+        entity_id=entity_id, details=details, request=request,
+    )
+
+
+def _audit_value(value):
+    """A task field as the audit trail records it, JSON-safe. A calendar date
+    (the D@00:00 UTC convention) reads 'YYYY-MM-DD' like the API; any other
+    datetime keeps its full instant, so a same-day time move still shows a
+    different from and to."""
+    if not isinstance(value, datetime):
+        return value
+    utc = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    utc = utc.astimezone(timezone.utc)
+    if (utc.hour, utc.minute, utc.second, utc.microsecond) == (0, 0, 0, 0):
+        return utc.date().isoformat()
+    return utc.isoformat()
+
+
+def _differs(before, after) -> bool:
+    """Did the write change the stored value? Datetimes compare as instants —
+    comparing their calendar-date rendering would hide a same-day stamp move."""
+    if isinstance(before, datetime) and isinstance(after, datetime):
+        b = before if before.tzinfo else before.replace(tzinfo=timezone.utc)
+        a = after if after.tzinfo else after.replace(tzinfo=timezone.utc)
+        return a != b
+    return before != after
+
+
 def _parse_due_date(value) -> datetime | None:
     """Client due dates are calendar dates ('YYYY-MM-DD') or ISO stamps.
     Normalize to a tz-aware UTC datetime so every writer stores one
@@ -232,12 +268,10 @@ def create_task(body: TaskIn, request: Request, user: dict = Depends(get_current
     # The task and its audit row commit together (#700). The row used to be
     # written after the commit, and get_db() closes without committing, so it
     # never landed; a failed audit write now fails the request instead of
-    # leaving a task nobody can attribute.
-    log_audit_event_sync(
-        db=db, action="create_task", user_id=uid,
-        entity_type="planner_task", entity_id=str(task.id),
-        details={"title": task.title, "today": bool(body.today)},
-    )
+    # leaving a task nobody can attribute. Through _audit, so it carries the
+    # tenant (the activity feed filters on it) and the request like the rest.
+    _audit(db, request, user, action="create_task", entity_type="planner_task",
+           entity_id=str(task.id), details={"title": task.title, "today": bool(body.today)})
     db.commit()
 
     return {"id": str(task.id), "title": task.title, "priority": task.priority, "assigned_to": task.assigned_to}
@@ -268,7 +302,8 @@ def pin_task_today(
     user: dict = Depends(get_current_user), db: Session = Depends(get_db),
 ) -> dict:
     try:
-        return today_svc.set_today(db, tid=_tid(request), uid=_uid(user), task_id=task_id, on=body.on)
+        return today_svc.set_today(db, tid=_tid(request), uid=_uid(user), task_id=task_id, on=body.on,
+                                   request=request)
     except LookupError:
         raise HTTPException(status_code=404, detail="Task not found") from None
     except today_svc.NotYours:
@@ -285,7 +320,7 @@ def save_today_note(
     try:
         return today_svc.save_note(
             db, tid=_tid(request), uid=_uid(user), body=body.body,
-            note_date=body.note_date, base_updated_at=body.base_updated_at,
+            note_date=body.note_date, base_updated_at=body.base_updated_at, request=request,
         )
     except today_svc.NoteConflict as exc:
         raise HTTPException(
@@ -431,9 +466,12 @@ def link_customer(
     ).scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
+    previous_customer = task.customer_id
     task.customer_id = body.customer_id
 
     backfilled = 0
+    backfilled_calls: list[str] = []
     try:
         from uuid import UUID
 
@@ -451,6 +489,7 @@ def link_customer(
             if call is not None and not call.customer_id:
                 call.customer_id = call_customer_id
                 backfilled += 1
+                backfilled_calls.append(str(call.id))
         if task.contact_phone:
             norm = normalize_e164(task.contact_phone) or task.contact_phone
             # phone_com_calls.from_number is stored RAW (Phone.com sends it
@@ -472,9 +511,15 @@ def link_customer(
                 if (normalize_e164(call.from_number) or call.from_number) == norm:
                     call.customer_id = call_customer_id
                     backfilled += 1
+                    backfilled_calls.append(str(call.id))
     except Exception:
         log.exception("link_customer_call_backfill_failed task=%s", task_id)
 
+    # The calls it stamped are named, so a wrong link can be walked back.
+    _audit(db, request, user, action="link_customer", entity_type="planner_task",
+           entity_id=str(task.id),
+           details={"customer_id": {"from": previous_customer, "to": body.customer_id},
+                    "calls_backfilled": backfilled_calls})
     db.commit()
     return {"id": task_id, "customer_id": body.customer_id, "calls_backfilled": backfilled}
 
@@ -494,8 +539,8 @@ def update_task(task_id: str, body: TaskPatch, request: Request, user: dict = De
     # didn't send (absent from model_fields_set) are left untouched.
     _clearable = {"due_date", "assigned_to", "job_id", "customer_id"}
     previous_owner = today_svc.owner_of(task)
-    if "assigned_to" in body.model_fields_set and task.today_date is not None:
-        ensure_audit_table(db)  # before staging: its first run on an engine commits
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
+    changed: dict = {}
     updated = []
     for field in ["title", "description", "status", "priority", "due_date",
                   "assigned_to", "job_id", "customer_id"]:
@@ -512,23 +557,34 @@ def update_task(task_id: str, body: TaskPatch, request: Request, user: dict = De
             val = _parse_due_date(val)
             if val is None:
                 raise HTTPException(status_code=422, detail="Invalid due_date")
+        before = getattr(task, field)
+        if _differs(before, val):
+            changed[field] = {"from": _audit_value(before), "to": _audit_value(val)}
         setattr(task, field, val)
         updated.append(field)
     if not updated:
         raise HTTPException(status_code=400, detail="Nothing to update")
-    if body.status == "done":
+    # completed_at moves only when the task BECOMES done. The edit dialog
+    # re-sends status on every save, and re-stamping an already-done task made
+    # it look finished today — a write no trail recorded.
+    if "status" in changed and body.status == "done":
+        before_completed = task.completed_at
         task.completed_at = _now()
+        changed["completed_at"] = {"from": _ts_out(before_completed), "to": _ts_out(task.completed_at)}
+    if changed:
+        # Checking a task off is this route: {"status": {"from": "todo", "to": "done"}}.
+        # A field re-sent with its current value is not a change and not recorded.
+        _audit(db, request, user, action="update_task", entity_type="planner_task",
+               entity_id=str(task.id), details={"title": task.title, "changed": changed})
     if task.today_date is not None and today_svc.owner_of(task) != previous_owner:
         # A pin shows on the owner's Today (services.planner_today.owner_of).
         # When the edit hands the task to someone else it does not travel to
         # their list unasked — take it off, and say so in the trail.
         task.today_date = None
-        log_audit_event_sync(
-            db=db, tenant_id=_tid(request) or None, user_id=_uid(user),
-            action="planner_today_remove", entity_type="planner_task", entity_id=str(task.id),
-            details={"title": task.title, "via": "user", "reason": "reassigned",
-                     "from": previous_owner, "to": today_svc.owner_of(task)},
-        )
+        _audit(db, request, user, action="planner_today_remove", entity_type="planner_task",
+               entity_id=str(task.id),
+               details={"title": task.title, "via": "user", "reason": "reassigned",
+                        "from": previous_owner, "to": today_svc.owner_of(task)})
     db.commit()
     return {"id": task_id, "title": task.title, "updated": updated}
 
@@ -540,6 +596,14 @@ def delete_task(task_id: str, request: Request, user: dict = Depends(get_current
         select(PlannerTask).where(PlannerTask.id == task_id)
     ).scalar_one_or_none()
     if task:
+        # planner_tasks has no deleted_at, so the row goes — the audit row
+        # keeps the whole task, so what was deleted stays reconstructable.
+        ensure_audit_table(db)
+        # Every stored column, raw — not the API shape, which renders a legacy
+        # due-date stamp as a bare date and would drop its time.
+        snapshot = {col.key: _audit_value(getattr(task, col.key)) for col in PlannerTask.__table__.columns}
+        _audit(db, request, user, action="delete_task", entity_type="planner_task",
+               entity_id=str(task.id), details={"task": snapshot})
         db.delete(task)
         db.commit()
     return {"deleted": True}
@@ -581,6 +645,7 @@ def list_plans(request: Request, user: dict = Depends(get_current_user), db: Ses
 @router.post("/plans", status_code=201)
 def create_plan(body: PlanIn, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     tid, uid = _tid(request), _uid(user)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     plan = Plan(id=str(uuid4()), company_id=tid, title=body.title, description=body.description,
                 is_template=body.is_template, created_by=uid, created_at=_now())
     db.add(plan)
@@ -588,6 +653,10 @@ def create_plan(body: PlanIn, request: Request, user: dict = Depends(get_current
         db.add(PlanStep(id=str(uuid4()), plan_id=plan.id, title=step.get("title", ""),
                         assigned_to=step.get("assigned_to"),
                         due_date=_parse_due_date(step.get("due_date")), sort_order=i))
+    _audit(db, request, user, action="create_plan", entity_type="plan", entity_id=str(plan.id),
+           details={"title": body.title, "is_template": body.is_template,
+                    "steps": [{"title": st.get("title", ""), "assigned_to": st.get("assigned_to"),
+                               "due_date": st.get("due_date")} for st in body.steps]})
     db.commit()
     return {"id": str(plan.id), "title": body.title, "steps": len(body.steps)}
 
@@ -619,7 +688,13 @@ def update_step(step_id: str, status: str = Query(pattern="^(todo|in-progress|do
     step = db.execute(select(PlanStep).where(PlanStep.id == step_id)).scalar_one_or_none()
     if not step:
         raise HTTPException(status_code=404, detail="Step not found")
-    step.status = status
+    if step.status != status:
+        ensure_audit_table(db)  # before staging: its first run on an engine commits
+        _audit(db, request, user, action="update_plan_step", entity_type="plan_step",
+               entity_id=str(step.id),
+               details={"plan_id": str(step.plan_id), "title": step.title,
+                        "status": {"from": step.status, "to": status}})
+        step.status = status
     db.commit()
     return {"id": step_id, "status": status}
 
@@ -673,11 +748,15 @@ def list_threads(request: Request, user: dict = Depends(get_current_user), db: S
 @router.post("/threads", status_code=201)
 def create_thread(body: ThreadIn, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     tid, uid = _tid(request), _uid(user)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     thread = MessageThread(id=str(uuid4()), company_id=tid, type=body.type, name=body.name or None, created_by=uid, created_at=_now())
     db.add(thread)
     all_members = list(set([uid] + body.members))
     for mid in all_members:
         db.add(MessageThreadMember(thread_id=thread.id, user_id=mid, joined_at=_now()))
+    _audit(db, request, user, action="create_thread", entity_type="message_thread",
+           entity_id=str(thread.id),
+           details={"type": body.type, "name": body.name or None, "members": sorted(all_members)})
     db.commit()
     return {"id": str(thread.id), "name": body.name, "members": all_members}
 
@@ -696,10 +775,15 @@ def get_messages(thread_id: str, request: Request, user: dict = Depends(get_curr
             MessageThreadMember.thread_id == thread_id, MessageThreadMember.user_id == uid
         )
     ).scalar_one_or_none()
+    # The read receipt (last_read_at) is deliberately NOT audited — it moves on
+    # every open of a thread and records no decision. Becoming a member does.
     if member:
         member.last_read_at = _now()
     else:
+        ensure_audit_table(db)  # before staging: its first run on an engine commits
         db.add(MessageThreadMember(thread_id=thread_id, user_id=uid, joined_at=_now(), last_read_at=_now()))
+        _audit(db, request, user, action="join_thread", entity_type="message_thread",
+               entity_id=str(thread_id), details={"via": "opened_thread"})
     db.commit()
 
     return {"items": [
@@ -713,6 +797,7 @@ def get_messages(thread_id: str, request: Request, user: dict = Depends(get_curr
 @router.post("/threads/{thread_id}/messages", status_code=201)
 def send_message(thread_id: str, body: MessageIn, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     uid = _uid(user)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     msg = Message(id=str(uuid4()), thread_id=thread_id, sender_id=uid, body=body.body,
                   job_id=body.job_id, customer_id=body.customer_id, created_at=_now())
     db.add(msg)
@@ -724,5 +809,9 @@ def send_message(thread_id: str, body: MessageIn, request: Request, user: dict =
     ).scalar_one_or_none()
     if member:
         member.last_read_at = _now()
+    # The message row itself keeps the text; the trail records who sent what where.
+    _audit(db, request, user, action="send_message", entity_type="message", entity_id=str(msg.id),
+           details={"thread_id": thread_id, "length": len(body.body),
+                    "job_id": body.job_id, "customer_id": body.customer_id})
     db.commit()
     return {"id": str(msg.id), "body": body.body, "sender_id": uid}
