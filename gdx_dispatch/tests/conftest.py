@@ -410,6 +410,92 @@ def tenant_db():
 
 
 @pytest.fixture
+def dead_after_commit():
+    """Kill an engine the instant one of its COMMITs succeeds (GDXA-145).
+
+    Use as ``with dead_after_commit(engine) as seam:`` — inside the block, every
+    SQL statement issued on ``engine`` after its first successful commit raises,
+    the way psycopg does when pgbouncer restarts or PG fails over between a
+    handler's COMMIT and its next statement. ``seam["refused"]`` counts what it
+    stopped, so a test can assert a handler issued *zero* statements after
+    committing rather than only that it survived one failing.
+
+    Why an engine event and not a patched ``Session.refresh``: the window has to
+    close on ANY post-commit statement, and the dangerous one is often a
+    statement nobody wrote — ``SessionLocal`` leaves ``expire_on_commit`` at its
+    default True, so reading one column off a just-committed ORM instance
+    issues a SELECT.
+
+    ``fail_rollback=True`` additionally fails the FIRST DBAPI rollback after the
+    commit, which a refusing cursor does NOT cover: SQLAlchemy rolls back through
+    ``dialect.do_rollback``, not through a cursor, so a `db.rollback()` inside a
+    post-commit `except` block succeeds under the default seam and raises on a
+    genuinely dead connection. That is the shape that escapes a best-effort
+    block and answers a bare 500 for a committed row.
+
+    Only the first two, deliberately, and the number is load-bearing in both
+    directions:
+
+    * Not fewer. A refused statement makes SQLAlchemy roll back on its own error
+      path before the handler's `except` runs, so the handler's own
+      `db.rollback()` is the *second* — capping at one lets it succeed and the
+      seam sees nothing (measured: the bare-rollback variant went green).
+    * Not more. A failed reset-on-return makes the pool invalidate the
+      connection, and for a ``sqlite://`` StaticPool fixture that discards the
+      database itself — measured: the next test in the module died on "no such
+      table: webhook_endpoints". Letting the teardown rollback succeed is what
+      keeps this seam non-destructive on a shared in-memory engine, and it is
+      also why what a failing *teardown* rollback does cannot be pinned here.
+
+    Warm the path before arming. A handler whose first statement is
+    ``ensure_audit_table(db)`` commits there on that table's first run per
+    engine, and that commit would arm the seam before the write under test —
+    send one successful request through the same route first.
+    """
+    import contextlib as _contextlib
+
+    from sqlalchemy import event as _event
+
+    _ROLLBACK_FAILURES = 2  # see the docstring — both bounds are measured
+
+    @_contextlib.contextmanager
+    def _seam(engine, *, fail_rollback=False):
+        state = {"armed": False, "refused": 0, "rollbacks_failed": 0}
+
+        def _arm(conn):  # ConnectionEvents.commit
+            state["armed"] = True
+
+        def _refuse(conn, cursor, statement, parameters, context, executemany):
+            if state["armed"]:
+                state["refused"] += 1
+                raise RuntimeError("server closed the connection unexpectedly")
+
+        dialect = engine.dialect
+        real_rollback = dialect.do_rollback
+
+        def _refuse_rollback(dbapi_connection):
+            if state["armed"] and state["rollbacks_failed"] < _ROLLBACK_FAILURES:
+                state["rollbacks_failed"] += 1
+                raise RuntimeError("server closed the connection unexpectedly")
+            return real_rollback(dbapi_connection)
+
+        _event.listen(engine, "commit", _arm)
+        _event.listen(engine, "before_cursor_execute", _refuse)
+        if fail_rollback:
+            dialect.do_rollback = _refuse_rollback
+        try:
+            yield state
+        finally:
+            state["armed"] = False
+            if fail_rollback:
+                dialect.do_rollback = real_rollback
+            _event.remove(engine, "commit", _arm)
+            _event.remove(engine, "before_cursor_execute", _refuse)
+
+    return _seam
+
+
+@pytest.fixture
 def control_db():
     """Isolated control plane DB (tenants / tenant_settings / games).
 

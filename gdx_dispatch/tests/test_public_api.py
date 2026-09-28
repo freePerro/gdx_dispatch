@@ -844,3 +844,430 @@ class TestAuditFailureSemantics:
                 text("SELECT COUNT(*) FROM webhook_endpoints WHERE url = :u"), {"u": url}
             ).scalar()
         assert count == 0, "an unaudited egress endpoint was left registered"
+
+
+# ---------------------------------------------------------------------------
+# GDXA-145 — a write that landed is never answered as a failure
+# ---------------------------------------------------------------------------
+
+
+class TestADurableWriteIsNotReportedAsAFailure:
+    """`_write_errors_as_500` turns anything raised in its body into the opaque
+    500 and calls `db.rollback()`. Past the commit that rollback is a no-op, so
+    a statement left inside the block after the commit hands an API consumer
+    "A database error occurred" for a row that is already on disk.
+
+    That is an audit problem, not a status-code nit: the consumer retries, and
+    the retry creates a second customer / a second egress endpoint, each with
+    its own `*_created` trail row. Two rows describing one intended change is a
+    false trail, which is why this sits with the invariant #1 work.
+
+    The narrowing, stated honestly: this closes the window between the COMMIT
+    and the response, not the retry class. There is no idempotency key and no
+    unique constraint behind these routes — two identical `POST /api/v1/webhooks`
+    calls give two endpoints for one URL, measured — so a connection lost
+    *during* the COMMIT is still an ambiguous write answered as 500, and any 500
+    a consumer retries still duplicates. What is fixed is the case where nothing
+    was ambiguous at all.
+
+    The seam is `dead_after_commit` (conftest): the engine refuses every
+    statement issued after its first commit inside the block, which is what a
+    pgbouncer restart or a PG failover does in that window. Both assertions in
+    each test below fail on the pre-GDXA-145 code — measured: 500, with one
+    refused statement, the `db.refresh()` that used to sit after the commit.
+
+    All five write handlers get a probe, not just the three this fix changed.
+    `create_job` / `update_job` were already clean — they build their response
+    from a RETURNING mapping — but the AST guard below is lexical and stops at a
+    call boundary (`return _ok(_job_body(db, job_id))` passes it), so a probe per
+    route is the only net that does not depend on where the read is written.
+    """
+
+    _headers = {"X-API-Key": RAW_API_KEY, "x-tenant-id": TENANT_ID}
+
+    def test_a_committed_job_is_reported_as_created_and_updated(
+        self, client: TestClient, dead_after_commit
+    ):
+        """The two handlers this fix did not have to change, pinned anyway.
+
+        Both reach their response through a RETURNING mapping captured before the
+        commit, so `refused` must be 0 for each. Without this, the only thing
+        keeping them clean is a lexical guard that a one-line refactor into a
+        helper walks straight through.
+        """
+        engine = client._tenant_engine  # type: ignore[attr-defined]
+        assert client.post(
+            "/api/v1/jobs", headers=self._headers, json={"title": "warm up"}
+        ).status_code == 201
+
+        with dead_after_commit(engine) as seam:
+            created = client.post(
+                "/api/v1/jobs", headers=self._headers, json={"title": "postcommit job"}
+            )
+        assert created.status_code == 201, (
+            f"a durable write answered {created.status_code} after "
+            f"{seam['refused']} post-commit statement(s): {created.text[:300]}"
+        )
+        assert seam["refused"] == 0, "create_job touched the DB after committing"
+        job_id = created.json()["data"]["id"]
+        assert created.json()["data"]["title"] == "postcommit job"
+
+        with dead_after_commit(engine) as seam:
+            patched = client.patch(
+                f"/api/v1/jobs/{job_id}", headers=self._headers, json={"title": "after"}
+            )
+        assert patched.status_code == 200, (
+            f"a durable update answered {patched.status_code} after "
+            f"{seam['refused']} post-commit statement(s): {patched.text[:300]}"
+        )
+        assert seam["refused"] == 0, "update_job touched the DB after committing"
+        assert patched.json()["data"]["title"] == "after"
+
+    def test_a_committed_customer_is_reported_as_created(
+        self, client: TestClient, dead_after_commit
+    ):
+        engine = client._tenant_engine  # type: ignore[attr-defined]
+        # Warm the audit table first: `ensure_audit_table` commits on its first
+        # run per engine, and that commit would arm the seam before the INSERT
+        # under test — the probe would then measure the wrong window.
+        assert client.post(
+            "/api/v1/customers", headers=self._headers, json={"name": "warm up"}
+        ).status_code == 201
+
+        name = "postcommit probe"
+        with dead_after_commit(engine) as seam:
+            resp = client.post(
+                "/api/v1/customers",
+                headers=self._headers,
+                json={"name": name, "email": "probe@example.com"},
+            )
+
+        assert resp.status_code == 201, (
+            f"a durable write answered {resp.status_code}; the handler issued "
+            f"{seam['refused']} statement(s) after its commit: {resp.text[:300]}"
+        )
+        assert seam["refused"] == 0, (
+            f"{seam['refused']} statement(s) ran after the commit — each one is a "
+            "way to fail a write that already landed"
+        )
+        data = resp.json()["data"]
+        assert data["name"] == name
+        assert data["email"] == "probe@example.com"
+        # Populated by the flush (default=utcnow), not by a re-read: a handler
+        # that needed a post-commit SELECT for this field could not answer here.
+        assert data["created_at"], data
+
+        with engine.connect() as conn:
+            count = conn.execute(
+                text("SELECT COUNT(*) FROM customers WHERE name = :n"), {"n": name}
+            ).scalar()
+        assert count == 1, "the write the 201 promised is not in the table"
+        rows = _audit_rows(client, action="customer_created", entity_id=data["id"])
+        assert len(rows) == 1, f"expected one trail row for the create, got {rows!r}"
+
+    def test_a_committed_webhook_endpoint_is_reported_as_registered(
+        self, client: TestClient, dead_after_commit
+    ):
+        """The retry case that matters most: a duplicate egress endpoint.
+
+        Answering 500 for a registration that landed leaves the key holder
+        retrying, and two endpoints pointed at the same URL each deliver every
+        event — with two `webhook_endpoint_registered` rows for one intended
+        grant.
+        """
+        engine = client._tenant_engine  # type: ignore[attr-defined]
+        url = "https://example.com/hooks/postcommit-probe"
+        assert client.post(
+            "/api/v1/webhooks",
+            headers=self._headers,
+            json={"url": "https://example.com/hooks/warm-up", "secret": "x"},
+        ).status_code == 201
+
+        with dead_after_commit(engine) as seam:
+            resp = client.post(
+                "/api/v1/webhooks",
+                headers=self._headers,
+                json={"url": url, "events": ["job.created"], "secret": "s3cret"},
+            )
+
+        assert resp.status_code == 201, (
+            f"a durable write answered {resp.status_code}; the handler issued "
+            f"{seam['refused']} statement(s) after its commit: {resp.text[:300]}"
+        )
+        assert seam["refused"] == 0, (
+            f"{seam['refused']} statement(s) ran after the commit — each one is a "
+            "way to fail a registration that already landed"
+        )
+        data = resp.json()["data"]
+        assert data["url"] == url
+        assert data["events"] == ["job.created"]
+        assert data["active"] is True
+        assert data["created_at"], data
+
+        with engine.connect() as conn:
+            count = conn.execute(
+                text("SELECT COUNT(*) FROM webhook_endpoints WHERE url = :u"), {"u": url}
+            ).scalar()
+        assert count == 1, "the registration the 201 promised is not in the table"
+        rows = _audit_rows(
+            client, action="webhook_endpoint_registered", entity_id=data["id"]
+        )
+        assert len(rows) == 1, f"expected one trail row for the grant, got {rows!r}"
+
+    def test_every_write_block_ends_at_its_commit(self):
+        """The contract `_write_errors_as_500`'s docstring states, enforced.
+
+        Reads the module's AST, not its text, and checks two things per handler:
+
+        1. the last statement in the `with _write_errors_as_500(...)` body is
+           `db.commit()` — anything after it is inside the translation, so it
+           answers the opaque 500 for a write that landed;
+        2. no statement *after* the block, written in the handler itself, calls a
+           method on `db` or reads an attribute off the ORM instance it just
+           wrote — unless it sits in a `try` whose handlers raise nothing, or in
+           a `contextlib.suppress(...)`. Moving the same `db.refresh()` one line
+           down, out of the block, is not a fix: with `expire_on_commit` at its
+           default True that read is a SELECT, and past the `with` it answers a
+           bare `Internal Server Error` instead. Rule 1 alone passed that
+           variant — measured, which is why rule 2 exists.
+
+        Rule 3 then closes the way around both: every write route in this module
+        (`@router.post/patch/put/delete`) must open a `_write_errors_as_500`
+        block at all. Without it a sixth handler that simply never adopts the
+        wrapper is invisible here — measured: appending one made no rule fire.
+
+        What this guard does NOT see, said plainly:
+
+        * It is lexical and stops at the call boundary. Hand the instance or the
+          session to a helper (`return _ok(_customer_body(customer))`) and rule 2
+          stays green while the 500 is live — measured. That is why every one of
+          the five handlers also has a runtime probe above; this guard is the
+          cheap net that catches the obvious regression in place, not the proof.
+        * It checks position, never whether a statement *can* fail.
+        * It is scoped to this one file. The same shape — a DB statement after
+          `db.commit()` inside a block that answers 5xx — exists at 21 other
+          call sites in 13 files owned by other domains (counted in the PR body,
+          `routers/customers.py:490` the worst of them: its audit write sits
+          *after* the try, so a post-commit failure there leaves a committed
+          customer with no trail row at all). Guarding the class repo-wide
+          belongs in `tools/audit_after_commit_scan.py`, which already has the
+          AST machinery and an allowance ledger; that is a separate change.
+        """
+        import ast
+        import pathlib
+
+        src = pathlib.Path(pr_module_path()).read_text()
+        tree = ast.parse(src)
+
+        def blocks_in(fn):
+            return [
+                node
+                for node in ast.walk(fn)
+                if isinstance(node, ast.With)
+                and any(
+                    isinstance(item.context_expr, ast.Call)
+                    and getattr(item.context_expr.func, "id", None)
+                    == "_write_errors_as_500"
+                    for item in node.items
+                )
+            ]
+
+        functions = [
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and blocks_in(n)
+        ]
+        total = sum(len(blocks_in(fn)) for fn in functions)
+        assert total == 5, (
+            f"expected the five public-API write handlers, found {total} "
+            "`_write_errors_as_500` blocks — update this guard with the new one"
+        )
+
+        # --- rule 3: every write route opens the block in the first place ---
+        # Rules 1 and 2 only look inside `_write_errors_as_500` blocks, so a new
+        # handler that never adopts the wrapper is invisible to them. Counting the
+        # routes instead of the blocks is what makes "any handler added later"
+        # true rather than aspirational.
+        write_routes = [
+            fn
+            for fn in ast.walk(tree)
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and any(
+                isinstance(d, ast.Call)
+                and getattr(d.func, "attr", None) in ("post", "patch", "put", "delete")
+                and getattr(getattr(d.func, "value", None), "id", None) == "router"
+                for d in fn.decorator_list
+            )
+        ]
+        assert write_routes, "found no @router.post/patch/put/delete at all — guard broken"
+        unwrapped = [fn.name for fn in write_routes if not blocks_in(fn)]
+        assert not unwrapped, (
+            f"write route(s) {unwrapped} run outside `_write_errors_as_500`: their "
+            "DB failures do not become the opaque 500, and rules 1 and 2 cannot see "
+            "a post-commit statement in them at all"
+        )
+
+        for fn in functions:
+            for block in blocks_in(fn):
+                # --- rule 1: the commit is the last statement in the block ---
+                last = block.body[-1]
+                call = last.value if isinstance(last, ast.Expr) else None
+                assert (
+                    isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Attribute)
+                    and call.func.attr == "commit"
+                    # The receiver too: `something_else.commit()` is not the
+                    # handler's own commit, and accepting it would let the block
+                    # end on a statement that commits nothing.
+                    and isinstance(call.func.value, ast.Name)
+                    and call.func.value.id == "db"
+                ), (
+                    f"{fn.name}: the `_write_errors_as_500` block at line "
+                    f"{block.lineno} ends with {ast.dump(last)[:120]}, not "
+                    "db.commit() — a statement after the commit inside this block "
+                    "answers 500 for a durable write"
+                )
+
+                # ...and at every depth, not just the top level of the body.
+                # `if payload.phone: db.commit(); db.refresh(customer)` leaves the
+                # block ending on a commit while a post-commit read hides on a
+                # branch no probe's payload takes — measured: all other rules
+                # passed. `update_job` already nests an `if row:` inside its own
+                # block, so this shape is native to the file, not hypothetical.
+                commits = [
+                    n
+                    for n in ast.walk(block)
+                    if isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == "commit"
+                    and isinstance(n.func.value, ast.Name)
+                    and n.func.value.id == "db"
+                ]
+                first_commit = min(c.lineno for c in commits)
+                for n in ast.walk(block):
+                    if (
+                        isinstance(n, ast.Call)
+                        and isinstance(n.func, ast.Attribute)
+                        and isinstance(n.func.value, ast.Name)
+                        and n.func.value.id == "db"
+                        and n.func.attr != "commit"
+                        and n.lineno > first_commit
+                    ):
+                        raise AssertionError(
+                            f"{fn.name}: db.{n.func.attr}() at line {n.lineno} runs "
+                            f"after the commit at line {first_commit}, still inside the "
+                            "block — it answers the opaque 500 for a durable write, on "
+                            "whatever branch it sits"
+                        )
+
+                # --- rule 2: nothing reachable-as-an-error after the block ---
+                # Names bound to an ORM instance in this handler: `x = Model(...)`
+                # or `x = models.Model(...)` — the callee's last component being
+                # Capitalized is what marks it, so a qualified construction is
+                # caught too.
+                def _model_call(value):
+                    if not isinstance(value, ast.Call):
+                        return False
+                    fnode = value.func
+                    name = getattr(fnode, "id", None) or getattr(fnode, "attr", None)
+                    return bool(name) and name[:1].isupper()
+
+                orm_names = {
+                    t.id
+                    for n in ast.walk(fn)
+                    if isinstance(n, ast.Assign) and _model_call(n.value)
+                    for t in n.targets
+                    if isinstance(t, ast.Name)
+                }
+                # Line spans a failure cannot escape from:
+                #   * the BODY of a `try` whose handlers raise nothing — the
+                #     landing-lead handler's audit and notification blocks, by
+                #     design;
+                #   * a `with contextlib.suppress(...)` block, anywhere.
+                # A handler's own `except` body is deliberately NOT such a span:
+                # a bare `db.rollback()` there raises *out* of the block it was
+                # meant to contain, which is how a committed lead answered a bare
+                # "Internal Server Error" (measured; the fix wraps both in
+                # suppress, and this is what keeps them wrapped).
+                def _swallows(t):
+                    """A try that really cannot let a failure out.
+
+                    Three conditions, and the last two were wrong in the first
+                    draft: a handler catching a narrower type lets everything else
+                    through, and a bare `try/finally` has no handlers at all — so
+                    `not any(...)` called it swallowing and a post-commit refresh
+                    under `except ValueError:` sailed past rule 2 (measured).
+                    """
+                    if not t.body or not t.handlers:
+                        return False
+                    for h in t.handlers:
+                        if any(isinstance(s, ast.Raise) for s in ast.walk(h)):
+                            return False
+                        caught = h.type
+                        names = (
+                            [getattr(e, "id", None) for e in caught.elts]
+                            if isinstance(caught, ast.Tuple)
+                            else [getattr(caught, "id", None)]
+                        )
+                        if not all(n in ("Exception", "BaseException") for n in names):
+                            return False
+                    return True
+
+                swallowing = [
+                    (t.body[0].lineno, t.body[-1].end_lineno)
+                    for t in ast.walk(fn)
+                    if isinstance(t, ast.Try) and _swallows(t)
+                ] + [
+                    (w.lineno, w.end_lineno)
+                    for w in ast.walk(fn)
+                    if isinstance(w, ast.With)
+                    and any(
+                        isinstance(i.context_expr, ast.Call)
+                        and getattr(i.context_expr.func, "attr", None) == "suppress"
+                        for i in w.items
+                    )
+                ]
+
+                def contained(node, spans=swallowing):
+                    return any(lo <= node.lineno <= hi for lo, hi in spans)
+
+                for node in ast.walk(fn):
+                    if getattr(node, "lineno", 0) <= block.end_lineno or contained(node):
+                        continue
+                    if (
+                        isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id == "db"
+                    ):
+                        raise AssertionError(
+                            f"{fn.name}: db.{node.func.attr}() at line {node.lineno} runs "
+                            "after the write block and outside any swallowing try — it "
+                            "can answer an error for a write that already landed"
+                        )
+                    if (
+                        isinstance(node, ast.Attribute)
+                        and isinstance(node.value, ast.Name)
+                        and node.value.id in orm_names
+                    ):
+                        raise AssertionError(
+                            f"{fn.name}: reads {node.value.id}.{node.attr} at line "
+                            f"{node.lineno}, after the write block — with "
+                            "expire_on_commit=True that is a SELECT, and it answers an "
+                            "error for a write that already landed. Snapshot it before "
+                            "the commit instead."
+                        )
+
+
+def pr_module_path() -> str:
+    """Where public_router.py lives, without importing it.
+
+    The module itself is imported and deleted from `sys.modules` by the `client`
+    fixture; resolving the path off the package directory keeps the AST guard
+    independent of that.
+    """
+    import pathlib
+
+    import gdx_dispatch
+
+    return str(pathlib.Path(gdx_dispatch.__file__).parent / "api" / "public_router.py")
