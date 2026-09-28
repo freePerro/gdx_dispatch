@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
@@ -24,6 +23,17 @@ from gdx_dispatch.models.tenant_models import (
 )
 from gdx_dispatch.routers.auth import get_current_user
 
+# The calendar-date helpers live with the Today service now (2026-09-28); they
+# stay importable from here for the outlook capture writer and the tests.
+from gdx_dispatch.services import planner_today as today_svc
+from gdx_dispatch.services.planner_today import (  # noqa: F401
+    _BUSINESS_TZ,
+    _date_out,
+    _now,
+    _ts_out,
+    calendar_today_utc,
+)
+
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/planner", tags=["planner"], dependencies=[Depends(require_module("jobs"))])
 
@@ -34,28 +44,6 @@ def _tid(request: Request) -> str:
 
 def _uid(user: dict) -> str:
     return str(user.get("sub") or user.get("user_id") or "system")
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-# due_date is a CALENDAR date. Storage convention: date D = D@00:00:00 UTC.
-# "Today" for a garage-door business is the shop's local day, not UTC's —
-# after ~7pm CDT those differ, which put evening captures a day late.
-try:
-    from zoneinfo import ZoneInfo
-
-    _BUSINESS_TZ = ZoneInfo(os.getenv("GDX_BUSINESS_TZ", "America/Chicago"))
-except Exception:  # tzdata missing — degrade to UTC rather than crash the router
-    _BUSINESS_TZ = timezone.utc
-
-
-def calendar_today_utc() -> datetime:
-    """Today's business-local calendar date, stored per the D@00:00 UTC
-    convention. Shared with other planner-task writers (outlook capture)."""
-    today = datetime.now(_BUSINESS_TZ).date()
-    return datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
 
 
 def _parse_due_date(value) -> datetime | None:
@@ -74,33 +62,6 @@ def _parse_due_date(value) -> datetime | None:
     return dt
 
 
-def _date_out(dt: datetime | None) -> str | None:
-    """due_date OUT is a bare calendar date ('YYYY-MM-DD'). str(datetime)
-    ('2026-08-03 00:00:00+00:00') made browsers parse UTC midnight and
-    render the previous local day — the 2026-08-03 off-by-one fix.
-
-    Two row shapes coexist: UTC-midnight rows (the calendar convention —
-    return that date verbatim) and real-timestamp rows written by older
-    server defaults (quick-capture/outlook `now()`) — those are instants,
-    so their calendar day is the BUSINESS-local one. A genuine event at
-    exactly 00:00:00 UTC degrades to the convention read — acceptable,
-    same trade the useFormatters stamp helpers make."""
-    if not dt:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    utc_dt = dt.astimezone(timezone.utc)
-    if (utc_dt.hour, utc_dt.minute, utc_dt.second) == (0, 0, 0):
-        return utc_dt.date().isoformat()
-    return dt.astimezone(_BUSINESS_TZ).date().isoformat()
-
-
-def _ts_out(dt: datetime | None) -> str | None:
-    """Real timestamps go out as proper ISO-8601 ('T' separator + offset),
-    not str(datetime)'s space-separated form."""
-    return dt.isoformat() if dt else None
-
-
 # ── Tasks ────────────────────────────────────────────────────────────────────
 
 class TaskIn(BaseModel):
@@ -117,6 +78,17 @@ class TaskIn(BaseModel):
     contact_phone: str | None = Field(default=None, max_length=40)
     phone_com_call_id: str | None = Field(default=None, max_length=80)
     source: str | None = Field(default=None, max_length=20)
+    # Today tab (2026-09-28): create the task already pinned to today.
+    today: bool = False
+
+    @field_validator("source")
+    @classmethod
+    def _source_not_ai(cls, v: str | None) -> str | None:
+        # "ai" marks a task the assistant created; only the Today service sets
+        # it, so the AI tag cannot be faked from a browser.
+        if v == today_svc.SOURCE_AI:
+            raise ValueError("source 'ai' is reserved")
+        return v
 
 
 class TaskPatch(BaseModel):
@@ -195,20 +167,8 @@ def list_tasks(
     else:  # newest
         q = q.order_by(PlannerTask.created_at.desc().nullslast())
     rows = db.execute(q).scalars().all()
-    return {"items": [
-        {
-            "id": str(t.id), "title": t.title, "description": t.description,
-            "status": t.status, "priority": t.priority,
-            "due_date": _date_out(t.due_date),
-            "assigned_to": t.assigned_to, "created_by": t.created_by,
-            "job_id": t.job_id, "customer_id": t.customer_id,
-            "contact_phone": t.contact_phone, "phone_com_call_id": t.phone_com_call_id,
-            "source": t.source,
-            "created_at": _ts_out(t.created_at),
-            "completed_at": _ts_out(t.completed_at),
-        }
-        for t in rows
-    ]}
+    today = calendar_today_utc()
+    return {"items": [today_svc.task_out(t, today) for t in rows]}
 
 
 @router.post("/tasks", status_code=201)
@@ -227,6 +187,13 @@ def create_task(body: TaskIn, request: Request, user: dict = Depends(get_current
     # whose UTC calendar day is tomorrow (audit 2026-08-03).
     if due_dt is None and body.source == "quick_capture":
         due_dt = calendar_today_utc()
+    # Today is the caller's own list: a task handed to someone else cannot be
+    # created on it, or it would land pinned on THEIR Today unasked.
+    assigned_to = body.assigned_to or None  # "" is unassigned, as the outlook writer treats it
+    if body.today and assigned_to is not None and assigned_to != uid:
+        raise HTTPException(
+            status_code=422, detail="Only your own tasks can go on your Today list",
+        )
 
     # Call-capture auto-match: fill customer_id from the linked call or the typed
     # number when the caller didn't already pick a customer. Never overrides an
@@ -252,13 +219,14 @@ def create_task(body: TaskIn, request: Request, user: dict = Depends(get_current
         priority=body.priority,
         due_date=due_dt,
         created_by=uid,
-        assigned_to=body.assigned_to,
+        assigned_to=assigned_to,
         job_id=body.job_id,
         customer_id=customer_id,
         contact_phone=(contact_phone or None),
         phone_com_call_id=(body.phone_com_call_id or None),
         source=(body.source or None),
         created_at=_now(),
+        today_date=calendar_today_utc() if body.today else None,
     )
     db.add(task)
     # The task and its audit row commit together (#700). The row used to be
@@ -268,11 +236,61 @@ def create_task(body: TaskIn, request: Request, user: dict = Depends(get_current
     log_audit_event_sync(
         db=db, action="create_task", user_id=uid,
         entity_type="planner_task", entity_id=str(task.id),
-        details={"title": task.title},
+        details={"title": task.title, "today": bool(body.today)},
     )
     db.commit()
 
     return {"id": str(task.id), "title": task.title, "priority": task.priority, "assigned_to": task.assigned_to}
+
+
+# ── Today tab (the 2026-09-28 planner Today plan) ───────────────────────────
+
+class TodayPin(BaseModel):
+    on: bool
+
+
+class DayNoteIn(BaseModel):
+    body: str = Field(default="", max_length=today_svc.NOTE_MAX)
+    # The day and version the browser's copy belongs to; a mismatch is a 409,
+    # never a silent overwrite.
+    note_date: str | None = None
+    base_updated_at: str | None = None
+
+
+@router.get("/today")
+def get_today(request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    return today_svc.today_view(db, _uid(user))
+
+
+@router.put("/tasks/{task_id}/today")
+def pin_task_today(
+    task_id: str, body: TodayPin, request: Request,
+    user: dict = Depends(get_current_user), db: Session = Depends(get_db),
+) -> dict:
+    try:
+        return today_svc.set_today(db, tid=_tid(request), uid=_uid(user), task_id=task_id, on=body.on)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+    except today_svc.NotYours:
+        raise HTTPException(
+            status_code=403, detail="Only your own tasks can go on your Today list",
+        ) from None
+
+
+@router.put("/today/note")
+def save_today_note(
+    body: DayNoteIn, request: Request,
+    user: dict = Depends(get_current_user), db: Session = Depends(get_db),
+) -> dict:
+    try:
+        return today_svc.save_note(
+            db, tid=_tid(request), uid=_uid(user), body=body.body,
+            note_date=body.note_date, base_updated_at=body.base_updated_at,
+        )
+    except today_svc.NoteConflict as exc:
+        raise HTTPException(
+            status_code=409, detail={"reason": exc.reason, "current": exc.current},
+        ) from None
 
 
 # ── Call capture helpers & endpoints (2026-07-07) ─────────────────────────────
@@ -475,12 +493,17 @@ def update_task(task_id: str, body: TaskPatch, request: Request, user: dict = De
     # meant clearing a due date silently never persisted). Fields the client
     # didn't send (absent from model_fields_set) are left untouched.
     _clearable = {"due_date", "assigned_to", "job_id", "customer_id"}
+    previous_owner = today_svc.owner_of(task)
+    if "assigned_to" in body.model_fields_set and task.today_date is not None:
+        ensure_audit_table(db)  # before staging: its first run on an engine commits
     updated = []
     for field in ["title", "description", "status", "priority", "due_date",
                   "assigned_to", "job_id", "customer_id"]:
         if field not in body.model_fields_set:
             continue
         val = getattr(body, field)
+        if field == "assigned_to" and val == "":
+            val = None  # "" is unassigned — stored as "" it would match nobody's list
         if val is None and field not in _clearable:
             continue
         if field == "due_date" and val is not None:
@@ -495,6 +518,17 @@ def update_task(task_id: str, body: TaskPatch, request: Request, user: dict = De
         raise HTTPException(status_code=400, detail="Nothing to update")
     if body.status == "done":
         task.completed_at = _now()
+    if task.today_date is not None and today_svc.owner_of(task) != previous_owner:
+        # A pin shows on the owner's Today (services.planner_today.owner_of).
+        # When the edit hands the task to someone else it does not travel to
+        # their list unasked — take it off, and say so in the trail.
+        task.today_date = None
+        log_audit_event_sync(
+            db=db, tenant_id=_tid(request) or None, user_id=_uid(user),
+            action="planner_today_remove", entity_type="planner_task", entity_id=str(task.id),
+            details={"title": task.title, "via": "user", "reason": "reassigned",
+                     "from": previous_owner, "to": today_svc.owner_of(task)},
+        )
     db.commit()
     return {"id": task_id, "title": task.title, "updated": updated}
 

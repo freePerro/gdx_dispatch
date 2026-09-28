@@ -452,6 +452,7 @@ GET /api/planner/recent-calls
 GET /api/planner/tasks
 GET /api/planner/threads
 GET /api/planner/threads/{thread_id}/messages
+GET /api/planner/today
 GET /api/plugins
 GET /api/plugins/_browser/credentials
 GET /api/plugins/{path}
@@ -1224,6 +1225,8 @@ PUT /api/jobs/{job_id}/lead
 PUT /api/labor-pricing/items/{item_id}
 PUT /api/locations/{location_id}
 PUT /api/pdf-templates/{template_type}
+PUT /api/planner/tasks/{task_id}/today
+PUT /api/planner/today/note
 PUT /api/plugins
 PUT /api/plugins/{path}
 PUT /api/pricing-engine/class-settings
