@@ -2150,6 +2150,33 @@ class PlannerTask(Base):
     source: Mapped[str] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Today tab (2026-09-28): the business-local day this task was pinned to
+    # Today, D@00:00 UTC like due_date. On Today only while it equals today,
+    # so the list empties itself each morning (the 2026-09-28 planner Today plan).
+    today_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PlannerDayNote(Base):
+    """One free-text note per user per business day — the Today tab's notes
+    box, for thoughts that are not tasks yet. Every save is audited with its
+    resulting text (`planner_day_note_save`), so history rebuilds from
+    audit_logs; there is no deleted_at because emptying the box is an edit."""
+
+    __tablename__ = "planner_day_notes"
+    __table_args__ = (
+        UniqueConstraint("user_id", "note_date", name="uq_planner_day_notes_user_date"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    note_date: Mapped[date] = mapped_column(Date, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default=text("''"))
+    # The human whose day it is, also when the AI wrote on their behalf;
+    # updated_via says which ("user" | "ai").
+    updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    updated_via: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class Plan(Base):

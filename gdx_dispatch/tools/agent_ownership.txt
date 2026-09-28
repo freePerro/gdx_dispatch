@@ -309,6 +309,7 @@ gdx_dispatch/routers/dispatch_ws.py                          jobs-dispatch
 gdx_dispatch/routers/scheduling.py                           jobs-dispatch
 gdx_dispatch/routers/appointments.py                         jobs-dispatch
 gdx_dispatch/routers/planner.py                              jobs-dispatch
+gdx_dispatch/services/planner_today.py                       jobs-dispatch
 gdx_dispatch/routers/tasks.py                                jobs-dispatch
 gdx_dispatch/routers/service_calls.py                        jobs-dispatch
 gdx_dispatch/routers/service_triggers.py                     jobs-dispatch
@@ -347,6 +348,7 @@ gdx_dispatch/frontend/src/views/JobsView.vue                 jobs-dispatch
 gdx_dispatch/frontend/src/views/JobDetailView.vue            jobs-dispatch
 gdx_dispatch/frontend/src/views/DispatchView.vue             jobs-dispatch
 gdx_dispatch/frontend/src/views/PlannerView.vue              jobs-dispatch
+gdx_dispatch/frontend/src/components/PlannerTodayPanel.vue   jobs-dispatch
 gdx_dispatch/frontend/src/views/AppointmentsView.vue         jobs-dispatch
 gdx_dispatch/frontend/src/views/MapsView.vue                 jobs-dispatch
 gdx_dispatch/frontend/src/views/GpsView.vue                  jobs-dispatch
