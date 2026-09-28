@@ -21,7 +21,7 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -190,6 +190,55 @@ def _query_candidates(db: Session, tenant_id: str, months: int) -> list[dict[str
 
     Reads existing customers/jobs tables via raw SQL with bind params. If the tables
     don't exist (e.g. test DB without those tables), logs and returns [].
+
+    That `[]` is the right answer for a screen and the wrong one for a send, so
+    the read itself lives in `_query_candidates_checked`, which says which `[]`
+    it is. Use this wrapper only where "no candidates" and "we could not tell"
+    lead to the same behaviour — i.e. displaying a list or a count.
+    """
+    return _query_candidates_checked(db, tenant_id, months)[1]
+
+
+def _query_candidates_checked(
+    db: Session, tenant_id: str, months: int
+) -> tuple[bool, list[dict[str, Any]]]:
+    """`(read_succeeded, rows)` — customers with no jobs in the last N months.
+
+    Two separate defects met at this read, and the fix needs both halves.
+
+    **The transaction (GDXA-162).** The session belongs to whichever route called
+    us, and on Postgres a failed statement aborts the WHOLE transaction — so the
+    swallow below handed its caller an empty list on a session that could no
+    longer commit, and the request died later at `db.commit()` naming
+    `winback_campaigns`, a table this query never mentions. `contained_read`
+    opens a SAVEPOINT on the connection, below the ORM, so the failure costs the
+    caller nothing but this answer. Reads only — `contained_read` rule 2.
+
+    **The answer.** Containing the damage is what *exposed* the second defect.
+    The poisoned transaction had been protecting `send_campaign` by accident: its
+    `commit()` blew up, which was loud, and left the campaign retryable in
+    `draft`. Contained, that commit succeeds — the campaign flips `draft -> sent`
+    having queued nothing, and `_audit` records `winback_campaign_sent` with
+    `enqueued: 0`. So `send_campaign` refuses instead: 503 here (the flag below),
+    409 at the write. Read its comment for why the guard belongs at the write.
+
+    Two things this tuple does NOT fix, both real:
+
+    - `winback_stats` still calls `_query_candidates`, so a degraded read reaches
+      the operator as `candidates_count: 0` — rendered "0" by WinbackView,
+      indistinguishable from "nobody is inactive", on the tile that decides
+      whether a campaign gets built. Telling it apart needs a response field and
+      the view to render it; an API field no screen reads is not a fix.
+    - Nothing CONSUMES `winback_sends`: one writer (this router), no reader, no
+      beat task. So `enqueued: N` means "N rows written", never "N customers
+      reached", for every N and not only N=0. Be precise about the gap, because
+      the first draft of this comment said "no transport since Twilio was
+      dropped" and that is wrong in a decision-shaping way: a live SMS sender
+      exists (`modules/phone_com/client.py`'s `send_message`, reached by
+      `POST /api/phone-com/messages`) and so does
+      `core/transactional_email.py`'s `send_transactional_email`. What is missing
+      is the drainer between them and this table, not the transport. Recorded at
+      `FOUND_NOT_FILED.md` 2026-09-20, still open.
     """
     cutoff = utcnow() - timedelta(days=int(months) * 30)
     sql = text(
@@ -209,13 +258,21 @@ def _query_candidates(db: Session, tenant_id: str, months: int) -> list[dict[str
         """
     )
     try:
-        rows = db.execute(sql, {"tenant_id": tenant_id, "cutoff": cutoff}).mappings().all()
-    except (OperationalError, ProgrammingError):  # returns empty list if database tables are missing or query fails due to schema mismatch
+        # SAVEPOINT inside the try, never around it (rules 1 and 5). Be exact
+        # about why, because the loose version of this ("the handlers below
+        # never run") is wrong and was measured wrong here: with the savepoint
+        # around the try, the handler DOES run and DOES return — and then
+        # `__exit__` issues RELEASE SAVEPOINT on an already-aborted transaction,
+        # which raises 25P02 out of the `with` anyway. Same 500, different line.
+        # `.all()` materialises inside the block on purpose — no cursor outlives it.
+        with contained_read(db):
+            rows = db.execute(sql, {"tenant_id": tenant_id, "cutoff": cutoff}).mappings().all()
+    except (OperationalError, ProgrammingError):  # degraded: tables missing, or a schema mismatch
         log.exception("winback_candidates_query_failed tenant=%s", tenant_id)
-        return []
-    except Exception:  # returns empty list if database tables are missing or query fails due to schema mismatch
+        return False, []
+    except Exception:  # degraded: anything else, including a statement timeout
         log.exception("winback_candidates_unexpected_error tenant=%s", tenant_id)
-        return []
+        return False, []
 
     out: list[dict[str, Any]] = []
     for r in rows:
@@ -229,7 +286,7 @@ def _query_candidates(db: Session, tenant_id: str, months: int) -> list[dict[str
                 "last_job_date": last.isoformat() if hasattr(last, "isoformat") else last,
             }
         )
-    return out
+    return True, out
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +407,21 @@ def send_campaign(
     if payload and payload.override_customer_ids:
         target_ids = list(payload.override_customer_ids)
     else:
-        candidates = _query_candidates(db, tenant_id, c.inactivity_months)
+        # 503 and not 409 because these are different answers to the operator:
+        # "we could not find out" is retryable, "nobody qualifies" is not. Only
+        # the checked variant can tell them apart — the bare `[]` cannot, which
+        # is the whole reason it exists. Note the detail string below does NOT
+        # reach the operator: useApi.js maps every status >= 500 to a generic
+        # "Something went wrong / Please try again." That is accurate advice
+        # here, and the win is the state, not the wording — the campaign stays a
+        # retryable draft with no audit row claiming it was sent.
+        ok, candidates = _query_candidates_checked(db, tenant_id, c.inactivity_months)
+        if not ok:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not read the win-back candidate list — campaign not sent. "
+                       "It is still a draft; try again.",
+            )
         target_ids = [cand["id"] for cand in candidates]
 
     enqueued = 0
@@ -369,6 +440,36 @@ def send_campaign(
         )
         db.add(send)
         enqueued += 1
+
+    # The invariant lives HERE, at the write, not at any one read: a campaign must
+    # never reach `sent` having queued nothing. GDXA-162's audit measured four
+    # entrances to that state and only one of them is a failed read — the others
+    # are a readable-but-empty candidate list and an override list the UUID loop
+    # drops (malformed, or every id invalid). Guarding the read alone fixed one of
+    # four. 409 rather than 503 because the detail below reaches the operator
+    # (useApi.js surfaces a 4xx message and genericises >= 500).
+    #
+    # Scope, so this is not mistaken for more than it is. It blocks the literal
+    # zero case and nothing else, so it does NOT make the audit row true:
+    #   - `enqueued > 0` does not mean anyone was contacted. Nothing consumes
+    #     `winback_sends` (no reader, no beat task — FOUND_NOT_FILED.md
+    #     2026-09-20, still open). The transports exist; the drainer does not.
+    #   - override ids are not checked for existence or tenant. There is no FK on
+    #     `winback_sends.customer_id`, so a well-formed UUID matching no customer
+    #     counts toward `enqueued` and the audit row reports it.
+    # Both are named on GDXA-162 rather than fixed here.
+    # `shorter`, not longer: `inactivity_months` is how long they must have been
+    # quiet, so a LONGER window is stricter and matches fewer people. The first
+    # draft of this string said "longer" and was measured backwards by the
+    # GDXA-162 audit (candidates by window, 1/6/12/24/60 → 288/242/94/94/94 on
+    # prod). It is the only sentence in this change an operator ever reads.
+    if not enqueued:
+        raise HTTPException(
+            status_code=409,
+            detail="Nobody matched, so nothing was queued and the campaign is "
+                   "still a draft. Try a campaign with a shorter inactivity "
+                   "window, which matches more customers.",
+        )
 
     c.status = "sent"
     c.sent_at = utcnow()

@@ -107,7 +107,12 @@ def contained_read(db: Session) -> Iterator[None]:
     Five rules, each of which something here got wrong first:
 
     1. **The savepoint goes INSIDE the existing ``try``**, not around it. Around
-       it and the ``except`` never runs, which turns a degraded read into a 500.
+       it, a degraded read becomes a 500 — but not for the reason this rule gave
+       until GDXA-162 measured it. The ``except`` DOES run and DOES return
+       (``handler_ran=True``, degraded value returned); the ``return`` then exits
+       the ``with`` *cleanly*, so ``__exit__`` issues RELEASE SAVEPOINT on an
+       already-aborted transaction and 25P02 comes out of the ``with`` itself.
+       Same 500, and it is rule 5's mechanism rather than a skipped handler.
 
     2. **READS ONLY.** A write wants ``db.begin_nested()`` instead, so the ORM's
        unit of work participates in the savepoint and knows what to un-stage
@@ -135,9 +140,9 @@ def contained_read(db: Session) -> Iterator[None]:
        new machinery" is not it: ``core/performance.py:169`` already registers an
        Engine-level ``before_cursor_execute`` (``SlowQueryMiddleware``, wired at
        ``app.py``), so the hook is already in every query's path and a
-       DML-in-savepoint check could ride it. The reason is that all twenty-one
-       current call sites wrap pure reads, so it would police a precondition nothing
-       violates, and ``tests/test_contained_read.py`` pins the hole so the next
+       DML-in-savepoint check could ride it. The reason is that all twenty-two
+       current call sites wrap pure reads, so it would police a precondition
+       nothing violates, and ``tests/test_contained_read.py`` pins the hole so the next
        person does not mistake it for coverage. When a call site does need a
        write contained, it wants ``db.begin_nested()`` — not a louder warning.
 
