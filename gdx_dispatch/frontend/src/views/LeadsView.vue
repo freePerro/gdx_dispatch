@@ -27,22 +27,36 @@
         </Card>
       </div>
 
-      <Tabs v-model:value="stageFilter" class="stage-tabs">
-        <TabList>
-          <Tab v-for="tab in stageTabs" :key="tab" :value="tab">
-            <span class="tab-label">{{ tabLabel(tab) }}
-              <small v-if="tab === 'all'">({{ leads.length }})</small>
-              <small v-else-if="pipelineSummary[tab] !== undefined">({{ pipelineSummary[tab] }})</small>
-            </span>
-          </Tab>
-        </TabList>
-      </Tabs>
+      <div class="filters-bar">
+        <Tabs v-model:value="stageFilter" class="stage-tabs">
+          <TabList>
+            <Tab v-for="tab in stageTabs" :key="tab" :value="tab">
+              <span class="tab-label">{{ tabLabel(tab) }}
+                <small v-if="tab === 'all'">({{ leads.length }})</small>
+                <small v-else-if="pipelineSummary[tab] !== undefined">({{ pipelineSummary[tab] }})</small>
+              </span>
+            </Tab>
+          </TabList>
+        </Tabs>
+        <div class="due-filter-box">
+          <Select
+            v-model="dueFilter"
+            :options="dueOptions"
+            optionLabel="label"
+            optionValue="value"
+            placeholder="Due status"
+            class="due-filter-select"
+            data-testid="leads-due-filter"
+            @change="loadLeads"
+          />
+        </div>
+      </div>
 
       <div v-if="loading" class="spinner-wrap"><ProgressSpinner /></div>
 
       <DataTable
         class="clickable-rows"
-      responsiveLayout="scroll"
+        responsiveLayout="scroll"
         v-else
         :value="filteredLeads"
         dataKey="id"
@@ -51,7 +65,6 @@
         :rowsPerPageOptions="[10, 20, 50, 100]"
         striped-rows
         @row-click="openEdit($event.data)"
-
       >
         <template #empty>
           <EmptyState
@@ -69,6 +82,37 @@
             <Badge :value="stageLabel(data.stage)" :severity="stageSeverity(data.stage)" />
           </template>
         </Column>
+        <Column field="follow_up_date" header="Call Back" style="width:170px" sortable>
+          <template #body="{ data }">
+            <div class="inline-date-cell" @click.stop>
+              <DatePicker
+                v-if="canWrite"
+                :modelValue="parseLocalDateString(data.follow_up_date)"
+                dateFormat="yy-mm-dd"
+                placeholder="Set date"
+                :manualInput="false"
+                :disabled="followUpSaving.includes(data.id)"
+                :showIcon="false"
+                class="inline-follow-up-picker"
+                :class="{
+                  'date-overdue': isOverdue(data.follow_up_date, data.stage),
+                  'date-today': isDueToday(data.follow_up_date),
+                }"
+                data-testid="inline-follow-up-date"
+                @update:modelValue="updateLeadFollowUpDate(data, $event)"
+              />
+              <span
+                v-else
+                :class="{
+                  'text-overdue': isOverdue(data.follow_up_date, data.stage),
+                  'text-today': isDueToday(data.follow_up_date),
+                }"
+              >
+                {{ formatDate(data.follow_up_date) || '—' }}
+              </span>
+            </div>
+          </template>
+        </Column>
         <Column field="estimated_value" header="Estimated Value" style="width:140px" sortable>
           <template #body="{ data }">{{ formatCurrency(data.estimated_value) }}</template>
         </Column>
@@ -76,7 +120,7 @@
         <Column field="created_at" header="Created" style="width:140px" sortable>
           <template #body="{ data }">{{ formatDate(data.created_at) }}</template>
         </Column>
-        <Column header="Actions" style="width:340px">
+        <Column header="Actions" style="width:380px">
           <template #body="{ data }">
             <div class="row-actions">
               <Button
@@ -98,11 +142,24 @@
                 v-tooltip.top="'Create service call'"
                 data-testid="lead-service-call"
                 :loading="serviceCallLeadId === data.id"
-                :disabled="serviceCallLeadId === data.id || estimateLeadId === data.id"
+                :disabled="serviceCallLeadId === data.id || estimateLeadId === data.id || startEstimateLeadId === data.id"
                 @click.stop="createServiceCall(data)"
               />
               <Button
-                v-if="canWrite"
+                v-if="canStartEstimate"
+                text
+                size="small"
+                icon="pi pi-file-edit"
+                label="Start estimate"
+                aria-label="Start estimate"
+                v-tooltip.top="'Start estimate'"
+                data-testid="lead-start-estimate"
+                :loading="startEstimateLeadId === data.id"
+                :disabled="serviceCallLeadId === data.id || estimateLeadId === data.id || startEstimateLeadId === data.id"
+                @click.stop="startEstimateFromLead(data)"
+              />
+              <Button
+                v-else-if="canWrite"
                 text
                 size="small"
                 icon="pi pi-file-edit"
@@ -110,7 +167,7 @@
                 v-tooltip.top="'Create estimate'"
                 data-testid="lead-estimate"
                 :loading="estimateLeadId === data.id"
-                :disabled="serviceCallLeadId === data.id || estimateLeadId === data.id"
+                :disabled="serviceCallLeadId === data.id || estimateLeadId === data.id || startEstimateLeadId === data.id"
                 @click.stop="createEstimateFromLead(data)"
               />
               <Button
@@ -159,7 +216,7 @@
         </header>
         <div v-if="landingLoading" class="spinner-wrap small"><ProgressSpinner /></div>
         <DataTable
-      responsiveLayout="scroll" v-else :value="landingLeads" dataKey="id" paginator :rows="10" striped-rows
+          responsiveLayout="scroll" v-else :value="landingLeads" dataKey="id" paginator :rows="10" striped-rows
           class="landing-table" @row-click="openLanding($event.data)">
           <template #empty>
             <EmptyState
@@ -274,7 +331,7 @@
         v-model:visible="showDialog"
         :header="editingLead ? `Edit ${editingLead.name}` : 'New Lead'"
         modal
-        :style="{ width: '600px' }"
+        :style="{ width: '640px', maxWidth: '95vw' }"
       >
         <div class="form-grid">
           <div class="form-field">
@@ -298,6 +355,10 @@
             <Select v-model="form.stage" :options="stageOptions" optionLabel="label" optionValue="value" class="w-full" />
           </div>
           <div class="form-field">
+            <label>Call-back Date</label>
+            <InputText v-model="form.follow_up_date" type="date" class="w-full" data-testid="lead-follow-up-date-input" />
+          </div>
+          <div class="form-field">
             <label>Estimated Value</label>
             <InputText v-model="form.estimated_value" class="w-full" />
           </div>
@@ -313,10 +374,64 @@
             <label>Notes</label>
             <Textarea v-model="form.notes" rows="3" class="w-full" />
           </div>
+
+          <!-- Custom intake fields -->
+          <div v-if="editingLead && customFieldDefs.length" class="form-field full-width custom-fields-block" data-testid="lead-custom-fields-block">
+            <h4 class="custom-fields-title">Intake Answers</h4>
+            <div class="custom-fields-grid">
+              <div
+                v-for="f in customFieldDefs"
+                :key="f.id || f.field_key"
+                class="form-field"
+                :data-testid="`custom-field-${f.field_key}`"
+              >
+                <label>{{ f.label }}</label>
+                <Select
+                  v-if="f.field_type === 'select'"
+                  v-model="customFieldValues[f.field_key]"
+                  :options="f.options || []"
+                  placeholder="Choose..."
+                  class="w-full"
+                />
+                <InputNumber
+                  v-else-if="f.field_type === 'number'"
+                  v-model="customFieldValues[f.field_key]"
+                  class="w-full"
+                />
+                <div v-else-if="f.field_type === 'boolean'" class="bool-field">
+                  <Checkbox
+                    v-model="customFieldValues[f.field_key]"
+                    :binary="true"
+                  />
+                  <span>Yes</span>
+                </div>
+                <InputText
+                  v-else-if="f.field_type === 'date'"
+                  v-model="customFieldValues[f.field_key]"
+                  type="date"
+                  class="w-full"
+                />
+                <InputText
+                  v-else
+                  v-model="customFieldValues[f.field_key]"
+                  class="w-full"
+                />
+              </div>
+            </div>
+          </div>
         </div>
         <template #footer>
+          <Button
+            v-if="editingLead && canStartEstimate"
+            label="Start Estimate"
+            icon="pi pi-file-edit"
+            severity="info"
+            data-testid="dialog-start-estimate"
+            :loading="startEstimateLeadId === editingLead.id"
+            @click="startEstimateFromLead(editingLead)"
+          />
           <Button label="Cancel" severity="secondary" @click="showDialog = false" />
-          <Button :label="editingLead ? 'Save Lead' : 'Create Lead'" icon="pi pi-check" :loading="saving" @click="saveLead" />
+          <Button :label="editingLead ? 'Save Lead' : 'Create Lead'" icon="pi pi-check" :loading="saving" :disabled="customFieldsLoading || (editingLead && followUpSaving.includes(editingLead.id))" @click="saveLead" />
         </template>
       </Dialog>
 
@@ -442,13 +557,13 @@
 <script setup>
 import { leadStageSeverity } from '../utils/statusSeverity';
 import { computed, onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { useToast } from 'primevue/usetoast';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { useListPrefs } from '../composables/useListPrefs';
 import { useTableExport } from '../composables/useTableExport';
-import { formatMoney as formatCurrency, formatDate, formatDateTime, formatPhone } from '../composables/useFormatters';
+import { formatMoney as formatCurrency, formatDate, formatDateTime, formatPhone, localDateString, parseLocalDateString } from '../composables/useFormatters';
 import { useAuthStore } from '../stores/auth';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
@@ -456,6 +571,9 @@ import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
 import Dialog from 'primevue/dialog';
 import InputText from 'primevue/inputtext';
+import InputNumber from 'primevue/inputnumber';
+import Checkbox from 'primevue/checkbox';
+import DatePicker from 'primevue/datepicker';
 import Select from 'primevue/select';
 import Tag from 'primevue/tag';
 import Textarea from 'primevue/textarea';
@@ -473,6 +591,7 @@ const toast = useToast();
 const { confirmDestructive } = useDestructiveConfirm();
 const auth = useAuthStore();
 const router = useRouter();
+const route = useRoute();
 
 // Mirror the backend require_permission gates on leads.py so we don't
 // render controls a role will only get a 403 from. Hide (not disable):
@@ -480,6 +599,7 @@ const router = useRouter();
 // (Smashing/NN-group: hide when the user can't act on it).
 const canWrite = computed(() => auth.hasPermission('leads.write'));
 const canDelete = computed(() => auth.hasPermission('leads.delete'));
+const canStartEstimate = computed(() => auth.hasPermission('leads.write') && auth.hasPermission('estimates.write'));
 
 const leads = ref([]);
 const landingLeads = ref([]);
@@ -487,6 +607,7 @@ const pipelineSummary = ref({ New: 0, Contacted: 0, Qualified: 0, Quoted: 0, Won
 const loading = ref(true);
 const landingLoading = ref(true);
 const stageFilter = ref('All');
+const dueFilter = ref('all');
 const showDialog = ref(false);
 const editingLead = ref(null);
 const saving = ref(false);
@@ -501,7 +622,22 @@ const showLandingDialog = ref(false);
 const selectedLanding = ref(null);
 const serviceCallLeadId = ref(null);
 const estimateLeadId = ref(null);
+const startEstimateLeadId = ref(null);
 const landingActionId = ref(null);
+
+const customFieldDefs = ref([]);
+const customFieldValues = ref({});
+const customFieldsLoading = ref(false);
+// What the server holds, so Save sends only the answers someone changed.
+const customFieldOriginal = ref({});
+let customFieldsRequest = 0;
+
+const dueOptions = [
+  { value: 'all', label: 'All Due Dates' },
+  { value: 'overdue', label: 'Overdue' },
+  { value: 'today', label: 'Due Today' },
+  { value: 'upcoming', label: 'Upcoming' },
+];
 
 const stageOptions = [
   { value: 'New', label: 'New' },
@@ -537,9 +673,37 @@ const pipelineStages = [
   { key: 'Lost', label: 'Lost' },
 ];
 
+// The local calendar day, never toISOString()'s UTC one — after ~7pm Central
+// that is tomorrow, and every lead due today would read as overdue.
+function isOverdue(dateStr, stage) {
+  if (!dateStr) return false;
+  const s = String(stage || '').toLowerCase();
+  if (['won', 'lost'].includes(s)) return false;
+  return dateStr < localDateString(new Date());
+}
+
+function isDueToday(dateStr) {
+  if (!dateStr) return false;
+  return dateStr === localDateString(new Date());
+}
+
 const filteredLeads = computed(() => {
-  if (stageFilter.value === 'All') return leads.value;
-  return leads.value.filter((lead) => lead.stage === stageFilter.value);
+  let list = leads.value;
+  if (stageFilter.value !== 'All') {
+    list = list.filter((lead) => lead.stage === stageFilter.value);
+  }
+  return list.slice().sort((a, b) => {
+    const isAOverdue = isOverdue(a.follow_up_date, a.stage);
+    const isBOverdue = isOverdue(b.follow_up_date, b.stage);
+    if (isAOverdue && !isBOverdue) return -1;
+    if (!isAOverdue && isBOverdue) return 1;
+    if (a.follow_up_date && b.follow_up_date) {
+      return a.follow_up_date.localeCompare(b.follow_up_date);
+    }
+    if (a.follow_up_date && !b.follow_up_date) return -1;
+    if (!a.follow_up_date && b.follow_up_date) return 1;
+    return 0;
+  });
 });
 
 // CSV export — dumps the CURRENTLY FILTERED rows (stage tab applied),
@@ -552,6 +716,7 @@ function exportLeads() {
       { field: 'name', header: 'Name' },
       { field: 'email', header: 'Email' },
       { field: 'stage', header: 'Stage' },
+      { field: 'follow_up_date', header: 'Call Back' },
       { field: 'estimated_value', header: 'Estimated Value' },
       { field: 'source', header: 'Source' },
       { field: 'created_at', header: 'Created' },
@@ -593,17 +758,37 @@ function emptyForm() {
     source: '',
     assigned_to: '',
     notes: '',
+    follow_up_date: '',
   };
 }
 
-async function loadLeads() {
-  loading.value = true;
+// Latest request wins: flipping the due filter fast must never leave one
+// filter's rows under another's label.
+let leadsRequest = 0;
+// The request number of the load whose rows are on screen now.
+let appliedRequest = 0;
+
+// quiet: refresh the rows in place, without swapping the table for a spinner.
+// Resolves true when its rows were applied, false when a newer load won.
+async function loadLeads({ quiet = false } = {}) {
+  const req = ++leadsRequest;
+  if (!quiet) loading.value = true;
   try {
-    const data = await api.get('/api/leads');
+    const params = new URLSearchParams();
+    if (dueFilter.value && dueFilter.value !== 'all') {
+      params.append('follow_up', dueFilter.value);
+    }
+    const queryStr = params.toString() ? `?${params.toString()}` : '';
+    const data = await api.get(`/api/leads${queryStr}`);
+    if (req !== leadsRequest) return false;
     const list = Array.isArray(data) ? data : data?.items || [];
     leads.value = list.map((l) => ({ ...l, stage: capitalize(l.stage) || 'New' }));
+    appliedRequest = req;
+    return true;
   } finally {
-    loading.value = false;
+    // Whoever is newest clears the spinner — a quiet load that superseded a
+    // normal one must too, or nothing ever does.
+    if (req === leadsRequest) loading.value = false;
   }
 }
 
@@ -634,15 +819,57 @@ async function refreshLeads() {
   await Promise.all([loadLeads(), loadPipelineSummary()]);
 }
 
+// The answers in memory must belong to the dialog as it was last opened:
+// they are cleared on every open, only the newest request's response is kept
+// (reopening the same lead included), and Save waits while it loads —
+// otherwise one lead's answers save onto another, or a late reply eats an edit.
+async function loadLeadCustomFields(leadId) {
+  const req = ++customFieldsRequest;
+  customFieldDefs.value = [];
+  customFieldValues.value = {};
+  customFieldOriginal.value = {};
+  customFieldsLoading.value = true;
+  try {
+    const defs = await api.get(`/api/leads/${leadId}/custom-fields`);
+    if (req !== customFieldsRequest) return;
+    customFieldDefs.value = Array.isArray(defs) ? defs : [];
+    // The server stores every answer as text ("true", "3"); a binary
+    // Checkbox and an InputNumber need the real types back.
+    const vals = {};
+    for (const f of customFieldDefs.value) {
+      if (f.field_type === 'boolean') vals[f.field_key] = f.value === 'true' || f.value === true;
+      else if (f.field_type === 'number') vals[f.field_key] = f.value == null || f.value === '' ? null : Number(f.value);
+      else vals[f.field_key] = f.value ?? null;
+    }
+    customFieldValues.value = vals;
+    customFieldOriginal.value = { ...vals };
+  } catch {
+    // useApi has already said why; the dialog just shows no answers.
+  } finally {
+    if (req === customFieldsRequest) customFieldsLoading.value = false;
+  }
+}
+
 function openCreate() {
   editingLead.value = null;
   form.value = emptyForm();
+  customFieldDefs.value = [];
+  customFieldValues.value = {};
+  customFieldOriginal.value = {};
+  customFieldsRequest++;
+  customFieldsLoading.value = false;
   showDialog.value = true;
 }
 
 function openEdit(lead) {
   editingLead.value = lead;
-  form.value = { ...lead, estimated_value: lead.estimated_value ?? '' };
+  form.value = {
+    ...lead,
+    estimated_value: lead.estimated_value ?? '',
+    follow_up_date: lead.follow_up_date || '',
+  };
+  formOriginal.value = leadPayload(form.value);
+  loadLeadCustomFields(lead.id);
   showDialog.value = true;
 }
 
@@ -663,24 +890,101 @@ function deleteFromDialog(landingLead, reason) {
   confirmDeleteLanding(landingLead, reason);
 }
 
+// "$2,500", "1,500" and "2500.50" are amounts. Blank — including a box
+// backspaced down to "$" — is undefined (the API cannot blank it). Anything
+// else ("about 2k", "1e999", "0x10") is NaN and refused before sending: only
+// plain digits go out, never a value JSON would turn into null.
+// One leading "$" is allowed; commas only as thousands separators; nothing
+// is stripped from inside the number ("2,50", "2 50", "25$00" are typos).
+function parseEstimatedValue(raw) {
+  const s = raw === null || raw === undefined ? '' : String(raw).trim();
+  if (s === '' || s === '$') return undefined;
+  const m = /^\$?\s*((\d+|\d{1,3}(,\d{3})+)(\.\d{1,2})?)$/.exec(s);
+  return m ? Number(m[1].replace(/,/g, '')) : NaN;
+}
+
+function leadPayload(f) {
+  return {
+    name: f.name,
+    email: f.email,
+    phone: f.phone,
+    address: f.address,
+    stage: f.stage,
+    estimated_value: parseEstimatedValue(f.estimated_value),
+    source: f.source,
+    assigned_to: f.assigned_to,
+    notes: f.notes,
+    follow_up_date: f.follow_up_date || null,
+  };
+}
+
+// The edit form as it was opened. Save sends only the fields changed since:
+// a value merely copied into the form — possibly stale, e.g. a call-back
+// date picked in the table while the dialog was opening — is never written
+// back over what the server holds.
+const formOriginal = ref(null);
+
 async function saveLead() {
   if (!form.value.name.trim()) return;
+  // An inline call-back save for this lead is still in flight (Save is
+  // disabled too): a dialog PATCH now could land on either side of it.
+  if (editingLead.value && followUpSaving.value.includes(editingLead.value.id)) return;
+  const payload = leadPayload(form.value);
+  if (Number.isNaN(payload.estimated_value)) {
+    // NaN would go out as null, which the API ignores — a "save" that isn't.
+    toast.add({ severity: 'warn', summary: 'Estimated value is not a number', detail: 'Enter an amount like 2500.', life: 5000 });
+    return;
+  }
   saving.value = true;
-  const payload = {
-    name: form.value.name,
-    email: form.value.email,
-    phone: form.value.phone,
-    address: form.value.address,
-    stage: form.value.stage,
-    estimated_value: form.value.estimated_value ? Number(form.value.estimated_value) : undefined,
-    source: form.value.source,
-    assigned_to: form.value.assigned_to,
-    notes: form.value.notes,
-  };
 
   try {
     if (editingLead.value) {
-      await api.patch(`/api/leads/${editingLead.value.id}`, payload, { successMessage: 'Lead updated' });
+      // Only the answers someone changed: an untouched, unanswered yes/no is
+      // null on the server and must not be saved as "No".
+      // A text box typed into and emptied again reads "" — still unanswered.
+      const changed = {};
+      for (const [k, raw] of Object.entries(customFieldValues.value)) {
+        const v = raw === '' ? null : raw;
+        if (v !== customFieldOriginal.value[k]) changed[k] = v;
+      }
+      const hasAnswers = Object.keys(changed).length > 0;
+      const edits = {};
+      for (const [k, v] of Object.entries(payload)) {
+        if (JSON.stringify(v) !== JSON.stringify(formOriginal.value?.[k])) edits[k] = v;
+      }
+      // The API cannot blank Estimated Value (it ignores null there), and an
+      // undefined never reaches the wire. Say so rather than report a save.
+      if ('estimated_value' in edits && edits.estimated_value === undefined) {
+        delete edits.estimated_value;
+        // Blanking a 0 changes nothing; blanking an amount is refused, loudly,
+        // and the dialog stays open if there is nothing else to save.
+        if (formOriginal.value?.estimated_value) {
+          toast.add({
+            severity: 'warn',
+            summary: 'Estimated value not cleared',
+            detail: 'It cannot be left blank once set — enter 0 instead.',
+            life: 5000,
+          });
+          if (Object.keys(edits).length === 0 && !hasAnswers) return;
+        }
+      }
+      // Up to two writes, not atomic. "Lead updated" rides on the last one;
+      // if only the first lands, the table shows it and the dialog stays open
+      // (useApi has toasted the failure) so the answers can be saved again.
+      if (Object.keys(edits).length > 0) {
+        await api.patch(`/api/leads/${editingLead.value.id}`, edits, hasAnswers ? {} : { successMessage: 'Lead updated' });
+        // Landed: a retry after a failed answers save must not resend these.
+        formOriginal.value = { ...formOriginal.value, ...edits };
+      }
+      if (hasAnswers) {
+        try {
+          await api.put(`/api/leads/${editingLead.value.id}/custom-fields`, { values: changed }, { successMessage: 'Lead updated' });
+          customFieldOriginal.value = { ...customFieldValues.value };
+        } catch {
+          await refreshLeads();
+          return;
+        }
+      }
     } else {
       await api.post('/api/leads', payload, { successMessage: 'Lead created' });
     }
@@ -689,6 +993,69 @@ async function saveLead() {
   } finally {
     saving.value = false;
   }
+}
+
+// The inline picker is pick-only (manualInput=false): a typed date would be
+// reported, and saved, at every keystroke that happens to parse. Typing a
+// date stays available in the edit dialog, which saves once.
+// One save per lead at a time — its picker is disabled, and so is the edit
+// dialog's Save for that lead, from the pick until its re-read has settled. Afterwards, landed or
+// not, the rows are re-read from the server: that read is requested after the
+// PATCH settled and loadLeads is latest-wins, so the table shows what the
+// server holds, under the right due filter, whatever else was in flight.
+// What is on screen is trusted only if it was read after the PATCH settled
+// (appliedRequest > settledAt); otherwise the PATCH's own outcome is shown.
+// An open edit dialog sends only what the user changed, so a date it merely
+// copied can never be written back.
+const followUpSaving = ref([]);
+
+async function updateLeadFollowUpDate(lead, dateVal) {
+  const dateStr = localDateString(dateVal);
+  // The picker reports every click, including the day already selected;
+  // re-picking it changes nothing, so it writes nothing (no PATCH, no audit row).
+  if (dateStr === (lead.follow_up_date || null)) return;
+  if (followUpSaving.value.includes(lead.id)) return;
+  followUpSaving.value = [...followUpSaving.value, lead.id];
+  const previous = lead.follow_up_date || null;
+  lead.follow_up_date = dateStr; // shown at once; settled below
+  let landed = false;
+  try {
+    await api.patch(`/api/leads/${lead.id}`, { follow_up_date: dateStr }, { successMessage: 'Call-back date saved' });
+    landed = true;
+  } catch {
+    // useApi has already said why.
+  }
+  // Loads numbered above this went out after the PATCH settled, so their
+  // rows already include it; anything at or below may predate it.
+  const settledAt = leadsRequest;
+  try {
+    await loadLeads({ quiet: true });
+  } catch {
+    // The re-read failed too (network down); decided below like a stale one.
+  }
+  // Rows read after this PATCH settled are the server's word — leave them.
+  // Otherwise they may predate it (this re-read failed, or a newer load is
+  // still pending): the PATCH's own outcome is the best word until then.
+  if (appliedRequest <= settledAt) {
+    const outcome = landed ? dateStr : previous;
+    lead.follow_up_date = outcome;
+    const shown = leads.value.find((l) => l.id === lead.id);
+    if (shown) shown.follow_up_date = outcome;
+  }
+  // An edit dialog open on this lead with its date untouched (still what it
+  // opened with) shows the settled date. Form and snapshot move together, so
+  // the date is still not sent unless the user changes it.
+  const shownRow = leads.value.find((l) => l.id === lead.id);
+  // Not in the table (e.g. filtered out): the PATCH outcome, not the stale row.
+  const settled = shownRow ? shownRow.follow_up_date || null : landed ? dateStr : previous;
+  if (showDialog.value && editingLead.value?.id === lead.id
+      && (form.value.follow_up_date || null) === formOriginal.value?.follow_up_date) {
+    form.value.follow_up_date = settled || '';
+    formOriginal.value = { ...formOriginal.value, follow_up_date: settled };
+  }
+  // Only now: until the re-read settles, a re-pick or a dialog save on this
+  // lead could interleave with it.
+  followUpSaving.value = followUpSaving.value.filter((id) => id !== lead.id);
 }
 
 function nextStage(current) {
@@ -820,6 +1187,29 @@ async function createEstimateFromLead(lead) {
     router.push({ path: '/estimates/new', query: { customer_id: customerId } });
   } finally {
     estimateLeadId.value = null;
+  }
+}
+
+async function startEstimateFromLead(lead) {
+  startEstimateLeadId.value = lead.id;
+  try {
+    const res = await api.post(`/api/leads/${lead.id}/start-estimate`);
+    if (res?.customer?.status === 'matched') {
+      toast.add({
+        severity: 'info',
+        summary: 'Linked to existing customer',
+        detail: `Using existing customer ${res.customer.name || ''}`,
+        life: 5000,
+      });
+    }
+    if (res?.estimate?.id) {
+      showDialog.value = false;
+      router.push(`/estimates/${res.estimate.id}`);
+    }
+  } catch {
+    // useApi has already toasted the failure.
+  } finally {
+    startEstimateLeadId.value = null;
   }
 }
 
@@ -973,7 +1363,26 @@ async function doDeleteLanding(landingLead, reason) {
 }
 
 onMounted(async () => {
+  if (route.query.follow_up) {
+    const q = String(route.query.follow_up).toLowerCase();
+    if (q === 'due' || q === 'overdue') {
+      dueFilter.value = 'overdue';
+    } else if (['today', 'upcoming'].includes(q)) {
+      dueFilter.value = q;
+    }
+  }
   await Promise.all([refreshLeads(), loadLandingLeads()]);
+  // The estimate's Customer Request panel links here with ?id=<lead>.
+  if (route.query.id) {
+    const id = String(route.query.id);
+    let lead = leads.value.find((l) => l.id === id);
+    if (!lead) {
+      // Past the first page, or outside the due filter: fetch it directly.
+      const one = await api.get(`/api/leads/${encodeURIComponent(id)}`).catch(() => null);
+      if (one?.id) lead = { ...one, stage: capitalize(one.stage) || 'New' };
+    }
+    if (lead) openEdit(lead);
+  }
 });
 </script>
 
@@ -1000,7 +1409,7 @@ onMounted(async () => {
 
 .pipeline-label {
   font-size: 0.85rem;
-  color: #6b7280;
+  color: var(--p-text-muted-color, #6b7280);
 }
 
 .stat-value {
@@ -1009,8 +1418,22 @@ onMounted(async () => {
   margin-top: 0.4rem;
 }
 
-.stage-tabs {
+.filters-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
   margin-bottom: 1rem;
+}
+
+.stage-tabs {
+  flex: 1;
+  min-width: 280px;
+}
+
+.due-filter-box {
+  min-width: 170px;
 }
 
 .spinner-wrap {
@@ -1024,6 +1447,55 @@ onMounted(async () => {
   align-items: center;
   flex-wrap: wrap;
   gap: 0.4rem;
+}
+
+.inline-date-cell {
+  display: flex;
+  align-items: center;
+}
+
+.inline-follow-up-picker :deep(input) {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.85rem;
+  height: 2rem;
+}
+
+.date-overdue :deep(input),
+.text-overdue {
+  color: var(--p-red-500, #ef4444);
+  font-weight: 600;
+}
+
+.date-today :deep(input),
+.text-today {
+  color: var(--p-amber-600, #d97706);
+  font-weight: 600;
+}
+
+.custom-fields-block {
+  margin-top: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--p-content-border-color);
+}
+
+.custom-fields-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0 0 0.75rem 0;
+  color: var(--p-text-color);
+}
+
+.custom-fields-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.75rem;
+}
+
+.bool-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-top: 0.25rem;
 }
 
 .landing-section {

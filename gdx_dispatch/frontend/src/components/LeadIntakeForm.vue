@@ -4,9 +4,9 @@
     modal
     class="lead-intake-dialog"
     :header="dialogTitle"
-    :style="{ width: '100vw', maxWidth: '640px', height: '100dvh', maxHeight: '100dvh' }"
+    :style="isMobileViewport ? { width: '100vw', maxWidth: '640px', height: '100dvh', maxHeight: '100dvh' } : { width: '640px', maxWidth: '95vw', maxHeight: '90vh' }"
     :breakpoints="{ '768px': '100vw' }"
-    position="bottom"
+    :position="isMobileViewport ? 'bottom' : 'center'"
     @update:visible="emit('update:visible', $event)"
   >
     <!-- Post-submission result view -->
@@ -246,6 +246,7 @@ import Checkbox from 'primevue/checkbox';
 import { useToast } from 'primevue/usetoast';
 import { useApi } from '../composables/useApi';
 import { usePermission } from '../composables/usePermission';
+import { useViewMode } from '../composables/useViewMode';
 import PhoneInput from './PhoneInput.vue';
 import { formatPhone } from '../composables/useFormatters';
 
@@ -266,6 +267,8 @@ const api = useApi();
 const router = useRouter();
 const toast = useToast();
 const { hasPermission } = usePermission();
+// A phone gets the full-height bottom sheet; a desk gets a centered dialog.
+const { isMobileViewport } = useViewMode();
 
 // Permission-shaped, not role-shaped: the backend gates on these keys.
 const canStartEstimate = computed(

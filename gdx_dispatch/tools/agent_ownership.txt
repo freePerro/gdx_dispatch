@@ -411,6 +411,7 @@ gdx_dispatch/frontend/src/components/CatalogPickerDialog.vue estimates-pricing
 gdx_dispatch/frontend/src/components/LaborPickerDialog.vue   estimates-pricing
 gdx_dispatch/frontend/src/components/EstimateProfitPanel.vue estimates-pricing
 gdx_dispatch/frontend/src/components/EstimateStatusContext.vue estimates-pricing
+gdx_dispatch/frontend/src/components/EstimateLeadRequestPanel.vue estimates-pricing
 gdx_dispatch/frontend/src/components/DoorSpecList.vue        estimates-pricing
 gdx_dispatch/frontend/src/components/MeasurementDiagram.vue  estimates-pricing
 gdx_dispatch/frontend/src/composables/useEstimateSources.js  estimates-pricing

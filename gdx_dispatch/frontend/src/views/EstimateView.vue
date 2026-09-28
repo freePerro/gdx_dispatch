@@ -252,7 +252,14 @@
         </template>
       </Dialog>
 
-      <Card v-if="!loading">
+      <div v-if="!loading" class="estimate-layout-container">
+        <EstimateLeadRequestPanel
+          v-if="isExisting && currentEstimateId"
+          :estimate-id="currentEstimateId"
+          class="estimate-lead-panel"
+        />
+        <div class="estimate-main-form">
+          <Card>
         <template #content>
           <div class="form-grid">
             <!-- Customer & Title -->
@@ -756,7 +763,9 @@
             <EstimateProfitPanel :lines="profitPanelLines" />
           </div>
         </template>
-      </Card>
+          </Card>
+        </div>
+      </div>
 
       <div v-if="loading" class="loading-spinner"><p>Loading estimate...</p></div>
 
@@ -1206,6 +1215,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import EstimateProfitPanel from "../components/EstimateProfitPanel.vue";
+import EstimateLeadRequestPanel from "../components/EstimateLeadRequestPanel.vue";
 import CatalogPickerDialog from "../components/CatalogPickerDialog.vue";
 import ComposerPdfPreview from "../components/ComposerPdfPreview.vue";
 import {
@@ -1323,6 +1333,7 @@ async function loadLineCategories() {
 }
 
 const isExisting = computed(() => Boolean(route.params.id));
+const currentEstimateId = computed(() => route.params.id || estimate.value?.id || null);
 
 // Server-side estimate metadata (read-only on existing).
 const estimate = ref({
@@ -3949,6 +3960,37 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.estimate-layout-container {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+}
+
+.estimate-lead-panel {
+  width: 320px;
+  flex-shrink: 0;
+}
+
+.estimate-main-form {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 1024px) {
+  .estimate-layout-container {
+    flex-direction: column;
+  }
+  .estimate-lead-panel {
+    width: 100%;
+  }
+}
+
+@media print {
+  .estimate-lead-panel {
+    display: none !important;
+  }
+}
+
 .estimate-view {
   max-width: 1280px;
   margin: 0 auto;

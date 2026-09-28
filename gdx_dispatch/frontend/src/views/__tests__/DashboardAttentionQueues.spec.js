@@ -224,6 +224,50 @@ describe('dashboard attention queue: website leads', () => {
   });
 });
 
+describe('dashboard attention queue: lead follow-up summary', () => {
+  it('shows overdue and due-today as separate items, each linking to exactly its rows', async () => {
+    const w = mountDashboard({
+      '/api/leads/follow-up-summary': { overdue: 3, due_today: 2 },
+    });
+    await flushPromises();
+    const items = w.findAll('[data-testid="needs-attention"] .attention-item');
+    const overdue = items.find((n) => n.text().includes('3 leads to call back — overdue'));
+    const today = items.find((n) => n.text().includes('2 leads to call back today'));
+    expect(overdue).toBeTruthy();
+    expect(today).toBeTruthy();
+    // The lead list has no combined filter, so one link for both counts
+    // would hide one set of rows behind the Due filter.
+    expect(w.vm.attentionItems.find((i) => i.id === 'leads-follow-up-overdue').link).toBe('/leads?follow_up=overdue');
+    expect(w.vm.attentionItems.find((i) => i.id === 'leads-follow-up-today').link).toBe('/leads?follow_up=today');
+  });
+
+  it('displays singular copy when exactly one lead is due today with no overdue', async () => {
+    const w = mountDashboard({
+      '/api/leads/follow-up-summary': { overdue: 0, due_today: 1 },
+    });
+    await flushPromises();
+    expect(
+      attentionTexts(w).some((t) => t.includes('1 lead to call back today')),
+    ).toBe(true);
+  });
+
+  it('does not fetch without leads.read and survives error', async () => {
+    mockAuth.hasPermission.mockImplementation((key) => key !== 'leads.read');
+    try {
+      const w1 = mountDashboard({ '/api/leads/follow-up-summary': { overdue: 2, due_today: 1 } });
+      await flushPromises();
+      expect(attentionTexts(w1).some((t) => t.includes('call back'))).toBe(false);
+      expect(mockGet.mock.calls.some(([url]) => url.startsWith('/api/leads/follow-up-summary'))).toBe(false);
+    } finally {
+      mockAuth.hasPermission.mockReturnValue(true);
+    }
+
+    const w2 = mountDashboard({}, { reject: ['/api/leads/follow-up-summary'] });
+    await flushPromises();
+    expect(attentionTexts(w2).some((t) => t.includes('call back'))).toBe(false);
+  });
+});
+
 // Minimal cash-risk payload so the Cash & Risk card (home of the A/P tile)
 // renders. Shape mirrors /api/reports/cash-risk.
 const CASH_RISK = {
