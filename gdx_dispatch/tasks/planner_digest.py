@@ -44,7 +44,7 @@ def send_planner_digest(tenant_id: str = "", to_email: str = "") -> dict[str, An
 
     db = SessionLocal()
     try:
-        from gdx_dispatch.models.tenant_models import PlannerTask
+        from gdx_dispatch.models.tenant_models import AppSettings, Lead, PlannerTask
 
         now = datetime.now(timezone.utc)
         open_tasks = (
@@ -52,7 +52,36 @@ def send_planner_digest(tenant_id: str = "", to_email: str = "") -> dict[str, An
             .scalars()
             .all()
         )
-        if not open_tasks:
+
+        settings = (
+            db.execute(select(AppSettings).limit(1)).scalar_one_or_none()
+            if tid
+            else None
+        )
+        tz_name = getattr(settings, "timezone", None) or "America/Chicago"
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("UTC")
+        today = datetime.now(tz).date()
+
+        leads_to_call = (
+            db.execute(
+                select(Lead).where(
+                    Lead.deleted_at.is_(None),
+                    Lead.stage.not_in(["won", "lost"]),
+                    Lead.follow_up_date.isnot(None),
+                    Lead.follow_up_date <= today,
+                ).order_by(Lead.follow_up_date.asc(), Lead.created_at.desc())
+            )
+            .scalars()
+            .all()
+        )
+        overdue_leads = [l for l in leads_to_call if l.follow_up_date and l.follow_up_date < today]
+
+        if not open_tasks and not leads_to_call:
             log.info("planner_digest_nothing_open tenant=%s", tid)
             return {"status": "skipped", "reason": "nothing_open"}
 
@@ -60,8 +89,8 @@ def send_planner_digest(tenant_id: str = "", to_email: str = "") -> dict[str, An
         captures = [t for t in open_tasks if t.source == "quick_capture"]
         cold_leads = _cold_lead_count(db)
 
-        subject = _subject(len(open_tasks), len(overdue))
-        html = _html_body(open_tasks, overdue, captures, cold_leads)
+        subject = _subject(len(open_tasks), len(overdue), len(leads_to_call))
+        html = _html_body(open_tasks, overdue, captures, cold_leads, leads_to_call, today)
 
         from gdx_dispatch.core.transactional_email import send_transactional_email
 
@@ -84,8 +113,8 @@ def send_planner_digest(tenant_id: str = "", to_email: str = "") -> dict[str, An
             return {"status": "failed", "reason": reason}
 
         log.info(
-            "planner_digest_sent tenant=%s provider=%s open=%d overdue=%d",
-            tid, provider, len(open_tasks), len(overdue),
+            "planner_digest_sent tenant=%s provider=%s open=%d overdue=%d leads_to_call=%d",
+            tid, provider, len(open_tasks), len(overdue), len(leads_to_call),
         )
         return {
             "status": "sent",
@@ -94,6 +123,8 @@ def send_planner_digest(tenant_id: str = "", to_email: str = "") -> dict[str, An
             "overdue": len(overdue),
             "captures": len(captures),
             "cold_leads": cold_leads,
+            "leads_to_call": len(leads_to_call),
+            "leads_overdue": len(overdue_leads),
         }
     except Exception:
         log.exception("planner_digest_failed tenant=%s", tid)
@@ -146,13 +177,26 @@ def _cold_lead_count(db) -> int:
         return 0
 
 
-def _subject(open_count: int, overdue_count: int) -> str:
-    if overdue_count:
-        return f"GDX planner: {open_count} open, {overdue_count} overdue"
-    return f"GDX planner: {open_count} open"
+def _subject(open_count: int, overdue_count: int, leads_count: int = 0) -> str:
+    parts = []
+    if open_count or overdue_count or leads_count == 0:
+        if overdue_count:
+            parts.append(f"{open_count} open, {overdue_count} overdue")
+        else:
+            parts.append(f"{open_count} open")
+    if leads_count:
+        parts.append(f"{leads_count} lead{'s' if leads_count != 1 else ''} to call back")
+    return f"GDX planner: {' · '.join(parts)}"
 
 
-def _html_body(open_tasks, overdue, captures, cold_leads: int) -> str:
+def _html_body(
+    open_tasks,
+    overdue,
+    captures,
+    cold_leads: int,
+    leads_to_call: list | None = None,
+    today: Any = None,
+) -> str:
     def _row(t) -> str:
         due = ""
         if t.due_date:
@@ -170,6 +214,28 @@ def _html_body(open_tasks, overdue, captures, cold_leads: int) -> str:
     more = len(ordered) - 25
     more_line = f"<p style='color:#64748b'>…and {more} more.</p>" if more > 0 else ""
 
+    leads_section = ""
+    leads_list = leads_to_call or []
+    if leads_list:
+        def _lead_row(l) -> str:
+            contact = l.phone or l.email or ""
+            contact_str = f" <span style='color:#64748b'>({_esc(contact)})</span>" if contact else ""
+            is_overdue = today and l.follow_up_date and l.follow_up_date < today
+            badge = " <span style='color:#dc2626;font-weight:bold'>[OVERDUE]</span>" if is_overdue else ""
+            due_str = f" <span style='color:#64748b'>· due {l.follow_up_date.isoformat()}</span>" if l.follow_up_date else ""
+            return f"<li style='margin:4px 0'><b>{_esc(l.name or '(unnamed lead)')}</b>{contact_str}{badge}{due_str}</li>"
+
+        lead_rows = "".join(_lead_row(l) for l in leads_list[:15])
+        leads_more = len(leads_list) - 15
+        leads_more_line = f"<p style='color:#64748b'>…and {leads_more} more leads.</p>" if leads_more > 0 else ""
+        leads_section = (
+            f"<div style='margin-top:16px;padding-top:12px;border-top:1px solid #e2e8f0'>"
+            f"<p style='font-size:14px;color:#0f172a'><b>Leads to call back ({len(leads_list)}):</b></p>"
+            f"<ul style='padding-left:18px'>{lead_rows}</ul>"
+            f"{leads_more_line}"
+            f"</div>"
+        )
+
     parts = [
         "<div style='font-family:system-ui,Segoe UI,Arial,sans-serif;font-size:15px;color:#0f172a'>",
         "<p>Good morning — here's your planner:</p>",
@@ -177,11 +243,16 @@ def _html_body(open_tasks, overdue, captures, cold_leads: int) -> str:
         f"<b>{len(open_tasks)}</b> open · <b>{len(overdue)}</b> overdue · "
         f"<b>{len(captures)}</b> from calls",
     ]
+    if len(leads_list):
+        parts.append(f" · <b>{len(leads_list)}</b> leads to call")
     if cold_leads:
         parts.append(f" · <b>{cold_leads}</b> unmatched callers")
     parts.append("</p>")
-    parts.append(f"<ul style='padding-left:18px'>{lines}</ul>")
-    parts.append(more_line)
+    if open_tasks:
+        parts.append(f"<ul style='padding-left:18px'>{lines}</ul>")
+        parts.append(more_line)
+    if leads_section:
+        parts.append(leads_section)
     # Absolute URL or no link at all — a relative href is dead in every mail
     # client (this one shipped dead for months).
     import os as _os

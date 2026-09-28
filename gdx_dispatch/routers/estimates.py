@@ -767,6 +767,42 @@ def list_estimates(
     return items
 
 
+def create_draft_estimate_record(
+    db: Session,
+    *,
+    tenant_id: str,
+    customer_id: UUID | None = None,
+    job_id: UUID | None = None,
+    estimate_number: str | None = None,
+    label: str | None = None,
+    jobsite_address: str | None = None,
+    description: str | None = None,
+    notes: str | None = None,
+    tax_rate: Decimal | None = None,
+    discount: Decimal | None = None,
+    hide_line_prices: bool = False,
+) -> Estimate:
+    estimate = Estimate(
+        job_id=job_id,
+        customer_id=customer_id,
+        estimate_number=estimate_number or _next_estimate_number(db),
+        label=label.strip() if label else None,
+        jobsite_address=jobsite_address.strip() if jobsite_address else None,
+        description=description.strip() if description else None,
+        notes=notes.strip() if notes else None,
+        tax_rate=tax_rate,
+        discount=discount,
+        hide_line_prices=hide_line_prices,
+        status="draft",
+        total=Decimal("0.00"),
+        public_token=secrets.token_urlsafe(48)[:64],
+        company_id=tenant_id,
+    )
+    db.add(estimate)
+    db.flush()
+    return estimate
+
+
 @router.post("", response_model=None, status_code=201)
 def create_estimate(
     payload: EstimateCreateIn,
@@ -795,24 +831,19 @@ def create_estimate(
     # that the model enforces NOT NULL we must pull tenant from the request.
     tenant_id = str((getattr(request.state, "tenant", {}) or {}).get("id") or "tenant-test")
 
-    estimate = Estimate(
-        job_id=payload.job_id,
+    estimate = create_draft_estimate_record(
+        db,
+        tenant_id=tenant_id,
         customer_id=customer_id,
-        estimate_number=_next_estimate_number(db),
-        label=payload.label.strip() if payload.label else None,
-        jobsite_address=payload.jobsite_address.strip() if payload.jobsite_address else None,
-        description=payload.description.strip() if payload.description else None,
-        notes=payload.notes.strip() if payload.notes else None,
+        job_id=payload.job_id,
+        label=payload.label,
+        jobsite_address=payload.jobsite_address,
+        description=payload.description,
+        notes=payload.notes,
         tax_rate=Decimal(str(payload.tax_rate)) if payload.tax_rate is not None else None,
         discount=Decimal(str(payload.discount)) if payload.discount is not None else None,
         hide_line_prices=payload.hide_line_prices,
-        status="draft",
-        total=Decimal("0.00"),
-        public_token=secrets.token_urlsafe(48)[:64],
-        company_id=tenant_id,
     )
-    db.add(estimate)
-    db.flush()
 
     # Persist nested line_items if the client sent them. The Estimate.total is
     # the sum of (quantity * unit_price) across lines (subtotal — tax/discount

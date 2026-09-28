@@ -14,7 +14,8 @@ Pattern follows gdx_dispatch/routers/appointments.py
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+import json
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -27,8 +28,18 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.core.modules import require_module, require_permission
+from gdx_dispatch.core.modules import has_permission, require_module, require_permission
 from gdx_dispatch.routers.auth import get_current_user
+from gdx_dispatch.routers.custom_fields import (
+    CustomFieldDefinition,
+    CustomFieldValueUpsert,
+    _list_values_for_entity,
+    _upsert_values_for_entity,
+)
+from gdx_dispatch.routers.estimates import (
+    _serialize_estimate,
+    create_draft_estimate_record,
+)
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +66,153 @@ LEAD_STAGES = ("new", "contacted", "qualified", "quoted", "won", "lost")
 # ---------------------------------------------------------------------------
 
 
-from gdx_dispatch.models.tenant_models import LandingLead, Lead  # noqa: E402
+from gdx_dispatch.models.tenant_models import AppSettings, Customer, LandingLead, Lead  # noqa: E402
+
+DEFAULT_LEAD_SOURCES = [
+    "Google",
+    "Referral",
+    "Repeat Customer",
+    "Drive-by / Yard Sign",
+    "Social Media",
+    "Direct Mail",
+    "Other",
+]
+
+_DEFAULT_LEAD_FIELDS = [
+    {
+        "field_key": "job_kind",
+        "label": "Job kind",
+        "field_type": "select",
+        "options": json.dumps(["Repair", "New door", "New opener", "Door + opener"]),
+        "required": False,
+        "sort_order": 1,
+    },
+    {
+        "field_key": "door_count",
+        "label": "Door count",
+        "field_type": "number",
+        "options": None,
+        "required": False,
+        "sort_order": 2,
+    },
+    {
+        "field_key": "door_size",
+        "label": "Door size",
+        "field_type": "text",
+        "options": None,
+        "required": False,
+        "sort_order": 3,
+    },
+    {
+        "field_key": "door_options",
+        "label": "Door options",
+        "field_type": "text",
+        "options": None,
+        "required": False,
+        "sort_order": 4,
+    },
+    {
+        "field_key": "opener",
+        "label": "Opener",
+        "field_type": "text",
+        "options": None,
+        "required": False,
+        "sort_order": 5,
+    },
+]
+
+
+def next_business_day(settings: AppSettings | None, from_date: date | None = None) -> date:
+    tz_name = getattr(settings, "timezone", None) or "America/Chicago"
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("UTC")
+
+    today = from_date or datetime.now(tz).date()
+
+    mask = getattr(settings, "default_workdays", None)
+    mask = 31 if mask is None or int(mask) <= 0 else int(mask)
+
+    try:
+        from gdx_dispatch.core.time_off import holiday_calendar
+        holidays = {h["date"] for h in holiday_calendar(settings) if isinstance(h, dict) and "date" in h}
+    except Exception:
+        holidays = set()
+
+    candidate = today + timedelta(days=1)
+    for _ in range(30):
+        bit = 1 << candidate.weekday()
+        if (mask & bit) and candidate.isoformat() not in holidays:
+            return candidate
+        candidate += timedelta(days=1)
+    return today + timedelta(days=1)
+
+
+def _ensure_lead_custom_field_definitions(db: Session, tenant_id: str) -> None:
+    try:
+        existing = db.execute(
+            select(CustomFieldDefinition).where(
+                CustomFieldDefinition.company_id == tenant_id,
+                CustomFieldDefinition.entity_type == "lead",
+                CustomFieldDefinition.deleted_at.is_(None),
+            )
+        ).scalars().first()
+        if existing is None:
+            now = datetime.now(timezone.utc)
+            for f in _DEFAULT_LEAD_FIELDS:
+                db.add(
+                    CustomFieldDefinition(
+                        id=uuid4(),
+                        company_id=tenant_id,
+                        entity_type="lead",
+                        field_key=f["field_key"],
+                        label=f["label"],
+                        field_type=f["field_type"],
+                        options=f["options"],
+                        required=f["required"],
+                        sort_order=f["sort_order"],
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            db.flush()
+    except Exception:
+        db.rollback()
+
+
+def _find_possible_duplicate_lead(
+    db: Session, tenant_id: str, lead: Lead
+) -> dict[str, Any] | None:
+    base = select(Lead).where(
+        Lead.deleted_at.is_(None),
+        Lead.company_id == tenant_id,
+        Lead.stage.not_in(["won", "lost"]),
+        Lead.id != lead.id,
+    )
+    if lead.origin_ref:
+        m = db.execute(base.where(Lead.origin_ref == lead.origin_ref)).scalars().first()
+        if m:
+            return {"id": str(m.id), "name": m.name, "stage": m.stage, "reason": "origin_ref"}
+    if lead.email:
+        email_clean = lead.email.strip().lower()
+        if email_clean:
+            m = db.execute(base.where(func.lower(Lead.email) == email_clean)).scalars().first()
+            if m:
+                return {"id": str(m.id), "name": m.name, "stage": m.stage, "reason": "email"}
+    digits = "".join(ch for ch in (lead.phone or "") if ch.isdigit())
+    if len(digits) >= 10:
+        stripped = Lead.phone
+        for sep in (" ", "-", "(", ")", ".", "+"):
+            stripped = func.replace(stripped, sep, "")
+        m = db.execute(base.where(stripped.like(f"%{digits[-10:]}"))).scalars().first()
+        if m:
+            return {"id": str(m.id), "name": m.name, "stage": m.stage, "reason": "phone"}
+    return None
+
+
 
 # ---------------------------------------------------------------------------
 # Pydantic schemas
@@ -100,6 +257,8 @@ class LeadIn(BaseModel):
     source: str | None = Field(default=None, max_length=100)
     assigned_to: str | None = Field(default=None, max_length=200)
     notes: str | None = Field(default=None, max_length=10000)
+    follow_up_date: date | None = None
+    origin_ref: str | None = Field(default=None, max_length=120)
 
     _norm_stage = field_validator("stage", mode="before")(_lower_stage)
 
@@ -116,8 +275,21 @@ class LeadPatch(BaseModel):
     # Tier-6 (2026-07): the edit dialog has always sent stage; the PATCH
     # silently dropped it, so only the separate advance-stage button worked.
     stage: str | None = Field(default=None, pattern=r"^(new|contacted|qualified|quoted|won|lost)$")
+    follow_up_date: date | None = None
 
     _norm_stage = field_validator("stage", mode="before")(_lower_stage)
+
+
+class LeadIntakeIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    email: str | None = Field(default=None, max_length=254)
+    phone: str | None = Field(default=None, max_length=30)
+    address: str | None = Field(default=None, max_length=500)
+    source: str | None = Field(default=None, max_length=100)
+    notes: str | None = Field(default=None, max_length=10000)
+    origin_ref: str | None = Field(default=None, max_length=120)
+    follow_up_date: date | None = None
+    custom_fields: dict[str, Any] = Field(default_factory=dict)
 
 
 class StageIn(BaseModel):
@@ -211,6 +383,9 @@ def _serialize_lead(l: Lead) -> dict[str, Any]:
         "created_by": l.created_by,
         "created_at": l.created_at.isoformat() if l.created_at else None,
         "updated_at": l.updated_at.isoformat() if l.updated_at else None,
+        "follow_up_date": l.follow_up_date.isoformat() if getattr(l, "follow_up_date", None) else None,
+        "estimate_id": str(l.estimate_id) if getattr(l, "estimate_id", None) else None,
+        "origin_ref": getattr(l, "origin_ref", None),
     }
 
 
@@ -520,6 +695,7 @@ def list_leads(
     db: Session = Depends(get_db),
     stage: str | None = None,
     assigned_to: str | None = None,
+    follow_up: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
@@ -533,7 +709,37 @@ def list_leads(
         stmt = stmt.where(Lead.stage == stage)
     if assigned_to:
         stmt = stmt.where(Lead.assigned_to == assigned_to)
-    stmt = stmt.order_by(Lead.created_at.desc()).limit(limit).offset(offset)
+
+    if follow_up:
+        tenant_id = _tenant_id(request)
+        settings = db.execute(
+            select(AppSettings).limit(1)
+        ).scalars().first()
+        tz_name = getattr(settings, "timezone", None) or "America/Chicago"
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("UTC")
+        today = datetime.now(tz).date()
+
+        stmt = stmt.where(Lead.stage.not_in(["won", "lost"]))
+        if follow_up == "overdue":
+            stmt = stmt.where(Lead.follow_up_date.isnot(None), Lead.follow_up_date < today)
+            stmt = stmt.order_by(Lead.follow_up_date.asc(), Lead.created_at.desc())
+        elif follow_up == "today":
+            stmt = stmt.where(Lead.follow_up_date == today)
+            stmt = stmt.order_by(Lead.created_at.desc())
+        elif follow_up == "upcoming":
+            stmt = stmt.where(Lead.follow_up_date.isnot(None), Lead.follow_up_date > today)
+            stmt = stmt.order_by(Lead.follow_up_date.asc(), Lead.created_at.desc())
+        else:
+            stmt = stmt.order_by(Lead.created_at.desc())
+    else:
+        stmt = stmt.order_by(Lead.created_at.desc())
+
+    stmt = stmt.limit(limit).offset(offset)
     rows = db.execute(stmt).scalars().all()
     return [_serialize_lead(r) for r in rows]
 
@@ -559,6 +765,179 @@ def pipeline_summary(
             summary[l.stage] += 1
     return summary
 
+
+@router.get(
+    "/api/leads/follow-up-summary",
+    response_model=None,
+    dependencies=[Depends(require_permission("leads.read"))],
+)
+def follow_up_summary(
+    request: Request,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    tenant_id = _tenant_id(request)
+    settings = db.execute(
+        select(AppSettings).limit(1)
+    ).scalars().first()
+    tz_name = getattr(settings, "timezone", None) or "America/Chicago"
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("UTC")
+    today = datetime.now(tz).date()
+
+    open_leads = db.execute(
+        select(Lead).where(
+            Lead.deleted_at.is_(None),
+            Lead.stage.not_in(["won", "lost"]),
+            Lead.follow_up_date.isnot(None),
+        )
+    ).scalars().all()
+
+    overdue = sum(1 for l in open_leads if l.follow_up_date and l.follow_up_date < today)
+    due_today = sum(1 for l in open_leads if l.follow_up_date == today)
+    return {"overdue": overdue, "due_today": due_today}
+
+
+@router.get(
+    "/api/leads/intake-form",
+    response_model=None,
+)
+def get_lead_intake_form(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    if not (
+        has_permission(request, db, "leads.intake")
+        or has_permission(request, db, "leads.write")
+    ):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    tenant_id = _tenant_id(request)
+    _ensure_lead_custom_field_definitions(db, tenant_id)
+    return {
+        "custom_fields": _list_values_for_entity(db, tenant_id, "lead", ""),
+        "sources": DEFAULT_LEAD_SOURCES,
+    }
+
+
+@router.post(
+    "/api/leads/intake",
+    response_model=None,
+    status_code=201,
+)
+def create_lead_intake(
+    payload: LeadIntakeIn,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    if not (
+        has_permission(request, db, "leads.intake")
+        or has_permission(request, db, "leads.write")
+    ):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    tenant_id = _tenant_id(request)
+
+    settings = db.execute(
+        select(AppSettings).limit(1)
+    ).scalars().first()
+    follow_up = payload.follow_up_date or next_business_day(settings)
+
+    lead = Lead(
+        company_id=tenant_id,
+        name=payload.name.strip(),
+        email=payload.email.strip() if payload.email else None,
+        phone=payload.phone.strip() if payload.phone else None,
+        address=payload.address.strip() if payload.address else None,
+        source=payload.source.strip() if payload.source else None,
+        notes=payload.notes.strip() if payload.notes else None,
+        origin_ref=payload.origin_ref.strip() if payload.origin_ref else None,
+        follow_up_date=follow_up,
+        stage="new",
+        assigned_to=None,
+        created_by=_user_id(user),
+    )
+    db.add(lead)
+    db.flush()
+
+    if payload.custom_fields:
+        _ensure_lead_custom_field_definitions(db, tenant_id)
+        _upsert_values_for_entity(
+            db,
+            request,
+            user,
+            "lead",
+            str(lead.id),
+            CustomFieldValueUpsert(values=payload.custom_fields),
+            commit=False,
+        )
+
+    possible_dup = _find_possible_duplicate_lead(db, tenant_id, lead)
+
+    matched_cust = None
+    matched = _find_matching_customer(db, email=lead.email, phone=lead.phone)
+    if matched:
+        matched_cust = {
+            "id": str(matched.id),
+            "name": matched.name,
+            "phone": matched.phone,
+            "email": matched.email,
+        }
+
+    log_audit_event_sync(
+        db,
+        tenant_id=tenant_id,
+        user_id=_user_id(user),
+        action="lead_intake_created",
+        entity_type="lead",
+        entity_id=str(lead.id),
+        details={
+            "source": lead.source,
+            "follow_up_date": lead.follow_up_date.isoformat() if lead.follow_up_date else None,
+            "has_duplicate_warning": possible_dup is not None,
+            "matched_customer": matched_cust is not None,
+        },
+        request=request,
+    )
+
+    db.commit()
+    db.refresh(lead)
+
+    return {
+        "lead": _serialize_lead(lead),
+        "matched_customer": matched_cust,
+        "possible_duplicate": possible_dup,
+    }
+
+
+@router.get(
+    "/api/leads/by-estimate/{estimate_id}",
+    response_model=None,
+    dependencies=[Depends(require_permission("leads.read"))],
+)
+def get_lead_by_estimate(
+    estimate_id: UUID,
+    request: Request,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id = _tenant_id(request)
+    lead = db.execute(
+        select(Lead).where(
+            Lead.company_id == tenant_id,
+            Lead.estimate_id == estimate_id,
+            Lead.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found for estimate")
+    data = _serialize_lead(lead)
+    data["custom_fields"] = _list_values_for_entity(db, tenant_id, "lead", str(lead.id))
+    return data
 
 @router.post(
     "/api/leads",
@@ -586,6 +965,8 @@ def create_lead(
         source=payload.source,
         assigned_to=payload.assigned_to,
         notes=payload.notes,
+        follow_up_date=payload.follow_up_date,
+        origin_ref=payload.origin_ref,
         created_by=_user_id(user),
     )
     db.add(lead)
@@ -619,6 +1000,45 @@ def get_lead(
     return _serialize_lead(_get_lead_scoped(db, lead_id, tenant_id))
 
 
+@router.get(
+    "/api/leads/{lead_id}/custom-fields",
+    response_model=None,
+)
+def get_lead_custom_fields(
+    lead_id: UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    if not (
+        has_permission(request, db, "leads.read")
+        or has_permission(request, db, "leads.write")
+        or has_permission(request, db, "leads.intake")
+    ):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    tenant_id = _tenant_id(request)
+    _get_lead_scoped(db, lead_id, tenant_id)
+    return _list_values_for_entity(db, tenant_id, "lead", str(lead_id))
+
+
+@router.put(
+    "/api/leads/{lead_id}/custom-fields",
+    response_model=None,
+    dependencies=[Depends(require_permission("leads.write"))],
+)
+def put_lead_custom_fields(
+    lead_id: UUID,
+    payload: CustomFieldValueUpsert,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    tenant_id = _tenant_id(request)
+    _get_lead_scoped(db, lead_id, tenant_id)
+    _ensure_lead_custom_field_definitions(db, tenant_id)
+    return _upsert_values_for_entity(db, request, user, "lead", str(lead_id), payload)
+
+
 @router.patch(
     "/api/leads/{lead_id}",
     response_model=None,
@@ -637,10 +1057,9 @@ def update_lead(
     # diverge: first contact stamps last_contact_at (audit catch).
     if payload.stage == "contacted" and lead.last_contact_at is None:
         lead.last_contact_at = datetime.now(timezone.utc)
-    for field in ("name", "email", "phone", "address", "source", "assigned_to", "notes", "stage"):
-        val = getattr(payload, field, None)
-        if val is not None:
-            setattr(lead, field, val)
+    for field in ("name", "email", "phone", "address", "source", "assigned_to", "notes", "stage", "follow_up_date"):
+        if field in payload.model_fields_set:
+            setattr(lead, field, getattr(payload, field))
     if payload.estimated_value is not None:
         lead.estimated_value = Decimal(str(payload.estimated_value))
     db.commit()
@@ -807,13 +1226,98 @@ def _find_matching_customer(db: Session, *, email: str | None, phone: str | None
         # "(612) 555-0200" regardless of which side carries the country code.
         row = db.execute(
             select(Customer)
-            .where(*not_deleted, stripped.like(f"%{digits[-10:]}"))
+            .where(*not_deleted, stripped.like(f"%{digits[-10:]}%"))
             .order_by(Customer.created_at.asc())
             .limit(1)
         ).scalars().first()
         if row:
             return row
     return None
+
+
+def _resolve_or_create_customer(
+    db: Session,
+    *,
+    lead: Lead,
+    tenant_id: str,
+    now: datetime,
+    user: dict,
+    request: Request,
+) -> tuple[Any | None, str, str | None]:
+    """Resolve customer via existing link, dedupe match, or fresh creation.
+
+    Returns (customer_or_None, status, error_reason).
+    status is one of 'existing', 'matched', 'new', 'error'.
+    Non-committing: flushes new customer and adds customer_created audit row.
+    """
+    from gdx_dispatch.models.tenant_models import Customer
+
+    # 1. Existing converted customer?
+    if lead.converted_customer_id:
+        try:
+            prior = db.execute(
+                select(Customer).where(
+                    Customer.id == lead.converted_customer_id,
+                    Customer.deleted_at.is_(None),
+                )
+            ).scalar_one_or_none()
+        except (OperationalError, ProgrammingError):
+            db.rollback()
+            prior = None
+        if prior is not None:
+            return prior, "existing", None
+
+    # 2. Dedupe match?
+    try:
+        match = _find_matching_customer(db, email=lead.email, phone=lead.phone)
+    except (OperationalError, ProgrammingError):
+        log.exception("convert_dedupe_probe_failed lead_id=%s", lead.id)
+        db.rollback()
+        match = None
+    if match is not None:
+        lead.converted_customer_id = match.id
+        return match, "matched", None
+
+    # 3. Create fresh customer
+    new_customer_id = uuid4()
+    try:
+        customer = Customer(
+            id=new_customer_id,
+            company_id=tenant_id,
+            name=lead.name or "",
+            email=lead.email,
+            phone=lead.phone,
+            address=lead.address,
+            # Customer.source is String(50); Lead.source allows 100.
+            source=(lead.source or None) and lead.source[:50],
+            created_at=now,
+        )
+        db.add(customer)
+        db.flush()
+        lead.converted_customer_id = customer.id
+        log_audit_event_sync(
+            db,
+            tenant_id=tenant_id,
+            user_id=_user_id(user),
+            action="customer_created",
+            entity_type="customer",
+            entity_id=str(customer.id),
+            details={
+                "source": "lead_conversion",
+                "lead_id": str(lead.id),
+                "name": customer.name,
+            },
+            request=request,
+        )
+        return customer, "new", None
+    except (OperationalError, ProgrammingError) as exc:
+        log.exception("convert_to_customer_insert_failed lead_id=%s", lead.id)
+        db.rollback()
+        return None, "error", f"customers table unavailable: {type(exc).__name__}"
+    except Exception as exc:
+        log.exception("convert_to_customer_unexpected lead_id=%s", lead.id)
+        db.rollback()
+        return None, "error", f"unexpected error: {exc}"
 
 
 @router.post(
@@ -833,11 +1337,7 @@ def convert_to_customer(
     target_stage = payload.stage if payload else "won"
     now = datetime.now(timezone.utc)
 
-    from gdx_dispatch.models.tenant_models import Customer
-
     def _apply_stage() -> None:
-        # "won" is definitive (they booked work) and always sticks; "quoted"
-        # must never downgrade a lead that already won.
         if target_stage == "won" or lead.stage != "won":
             lead.stage = target_stage
 
@@ -868,77 +1368,125 @@ def convert_to_customer(
             "customer_id": str(customer_id),
             "converted": True,
             "existing": existing,
-            # Surfaced so the UI can SAY it linked to an existing record —
-            # a dedupe match is a merge decision; it must not be invisible.
             "customer_name": customer_name,
         }
 
-    # Idempotent: an already-converted lead reuses its customer instead of
-    # minting a duplicate (the old handler created a new row every call).
-    if lead.converted_customer_id:
-        try:
-            prior = db.execute(
-                select(Customer).where(
-                    Customer.id == lead.converted_customer_id,
-                    Customer.deleted_at.is_(None),
-                )
-            ).scalar_one_or_none()
-        except (OperationalError, ProgrammingError):
-            db.rollback()
-            prior = None
+    customer, status, err = _resolve_or_create_customer(
+        db, lead=lead, tenant_id=tenant_id, now=now, user=user, request=request
+    )
+    if customer is None:
+        return {
+            "lead_id": str(lead.id),
+            "customer_id": None,
+            "converted": False,
+            "reason": err or "customer creation failed",
+        }
+
+    return _finish(customer.id, existing=(status in ("existing", "matched")), matched=(status == "matched"), customer_name=customer.name)
+
+
+@router.post(
+    "/api/leads/{lead_id}/start-estimate",
+    response_model=None,
+    dependencies=[Depends(require_permission("leads.write", "estimates.write"))],
+)
+def start_estimate(
+    lead_id: UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id = _tenant_id(request)
+    lead = _get_lead_scoped(db, lead_id, tenant_id)
+    now = datetime.now(timezone.utc)
+
+    from gdx_dispatch.models.tenant_models import Customer
+    from gdx_dispatch.modules.proposals.models import Estimate
+
+    # Idempotent: return existing draft estimate if already started
+    if lead.estimate_id:
+        prior = db.execute(
+            select(Estimate).where(
+                Estimate.id == lead.estimate_id,
+                Estimate.deleted_at.is_(None),
+            )
+        ).scalar_one_or_none()
         if prior is not None:
-            return _finish(prior.id, existing=True, customer_name=prior.name)
+            customer = None
+            if prior.customer_id:
+                customer = db.execute(
+                    select(Customer).where(
+                        Customer.id == prior.customer_id,
+                        Customer.deleted_at.is_(None),
+                    )
+                ).scalar_one_or_none()
+            return {
+                "estimate": _serialize_estimate(prior, include_lines=True),
+                "customer": {
+                    "id": str(customer.id),
+                    "name": customer.name,
+                    "status": "existing",
+                } if customer else None,
+                "reused": True,
+            }
 
-    # Dedupe: a repeat web form from a known customer links to their
-    # existing record instead of creating "John Smith (2)".
-    try:
-        match = _find_matching_customer(db, email=lead.email, phone=lead.phone)
-    except (OperationalError, ProgrammingError):
-        # Minimal/legacy schemas may lack the match columns — creating a
-        # fresh customer still works, so fall through rather than fail.
-        # Logged loudly: if this fires on a full schema, every conversion
-        # is silently minting duplicates again — the bug dedupe exists for.
-        log.exception("convert_dedupe_probe_failed lead_id=%s", lead_id)
-        db.rollback()
-        match = None
-    if match is not None:
-        return _finish(match.id, existing=True, matched=True, customer_name=match.name)
+    customer, status, err = _resolve_or_create_customer(
+        db, lead=lead, tenant_id=tenant_id, now=now, user=user, request=request
+    )
+    if customer is None:
+        raise HTTPException(status_code=500, detail=f"Failed to resolve customer: {err}")
 
-    new_customer_id = uuid4()
-    try:
-        customer = Customer(
-            id=new_customer_id,
-            company_id=tenant_id,
-            name=lead.name or "",
-            email=lead.email,
-            phone=lead.phone,
-            address=lead.address,
-            # Customer.source is String(50); Lead.source allows 100.
-            source=(lead.source or None) and lead.source[:50],
-            created_at=now,
-        )
-        db.add(customer)
-        db.flush()
-    except (OperationalError, ProgrammingError) as exc:
-        log.exception("convert_to_customer_insert_failed lead_id=%s", lead_id)
-        db.rollback()
-        return {
-            "lead_id": str(lead.id),
-            "customer_id": None,
-            "converted": False,
-            "reason": f"customers table unavailable: {type(exc).__name__}",
-        }
-    except Exception:
-        log.exception("convert_to_customer_unexpected lead_id=%s", lead_id)
-        db.rollback()
-        return {
-            "lead_id": str(lead.id),
-            "customer_id": None,
-            "converted": False,
-            "reason": "unexpected error",
-        }
+    estimate = create_draft_estimate_record(
+        db,
+        tenant_id=tenant_id,
+        customer_id=customer.id,
+        jobsite_address=lead.address,
+    )
+    lead.estimate_id = estimate.id
 
-    return _finish(new_customer_id, existing=False, customer_name=customer.name)
+    log_audit_event_sync(
+        db,
+        tenant_id=tenant_id,
+        user_id=_user_id(user),
+        action="estimate_created",
+        entity_type="estimate",
+        entity_id=str(estimate.id),
+        details={
+            "estimate_number": estimate.estimate_number,
+            "status": estimate.status,
+            "line_count": 0,
+            "total": 0.0,
+        },
+        request=request,
+    )
+    log_audit_event_sync(
+        db,
+        tenant_id=tenant_id,
+        user_id=_user_id(user),
+        action="lead_estimate_started",
+        entity_type="lead",
+        entity_id=str(lead.id),
+        details={
+            "estimate_id": str(estimate.id),
+            "customer_id": str(customer.id),
+            "customer_status": status,
+        },
+        request=request,
+    )
+
+    db.commit()
+    db.refresh(lead)
+    db.refresh(estimate)
+
+    return {
+        "estimate": _serialize_estimate(estimate, include_lines=True),
+        "customer": {
+            "id": str(customer.id),
+            "name": customer.name,
+            "status": status,
+        },
+        "reused": False,
+    }
 
 
 @router.delete(

@@ -46,7 +46,7 @@ router = APIRouter(
 )
 
 
-ENTITY_TYPES = ("customer", "job")
+ENTITY_TYPES = ("customer", "job", "lead")
 FIELD_TYPES = ("text", "number", "date", "select", "boolean")
 
 
@@ -107,7 +107,7 @@ class CustomFieldValue(TenantBase):
 # ---------------------------------------------------------------------------
 
 class CustomFieldDefinitionIn(BaseModel):
-    entity_type: str = Field(pattern=r"^(customer|job)$", max_length=30)
+    entity_type: str = Field(pattern=r"^(customer|job|lead)$", max_length=30)
     field_key: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
     label: str = Field(min_length=1, max_length=200)
     field_type: str = Field(pattern=r"^(text|number|date|select|boolean)$", max_length=30)
@@ -441,6 +441,8 @@ def _upsert_values_for_entity(
     entity_type: str,
     entity_id: str,
     payload: CustomFieldValueUpsert,
+    *,
+    commit: bool = True,
 ) -> list[dict[str, Any]]:
     tenant_id = _tenant_id(request)
 
@@ -489,16 +491,18 @@ def _upsert_values_for_entity(
             )
         updated_keys.append(field_key)
 
-    db.commit()
-
-    _audit(
-        db,
-        request,
-        user,
-        action="custom_field_value_set",
-        entity_id=str(entity_id),
-        details={"entity_type": entity_type, "keys": updated_keys},
-    )
+    if commit:
+        db.commit()
+        _audit(
+            db,
+            request,
+            user,
+            action="custom_field_value_set",
+            entity_id=str(entity_id),
+            details={"entity_type": entity_type, "keys": updated_keys},
+        )
+    else:
+        db.flush()
 
     return _list_values_for_entity(db, tenant_id, entity_type, entity_id)
 
