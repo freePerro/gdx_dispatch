@@ -1,7 +1,7 @@
 # Lead Intake, Call-Back Dates, and Start-Estimate
 
 **Date:** 2026-09-28
-**Status:** PARTIALLY BUILT — PR A (backend: migration 099, `leads.intake`, the §3 endpoints, digest, the boot-time seed of the default fields, and the Custom Fields "Lead" option — pulled forward from PR C because PR A creates the fields it labels) is #817, not yet merged. **Not built:** PR B (mobile intake form and entry points), PR C (desktop Leads view, dashboard count, Inbox/Calls buttons, the estimate-screen request panel).
+**Status:** PARTIALLY BUILT — PR A (backend: migration 099, `leads.intake`, the §3 endpoints, digest, the boot-time seed of the default fields, and the Custom Fields "Lead" option — pulled forward from PR C because PR A creates the fields it labels) is #817; PR B (mobile intake form, the "+" button's Quick note / Estimate request choice, Phone and Inbox **Lead** buttons) is #818, stacked on it. Neither is merged. **Not built:** PR C (desktop Leads view, dashboard count, Inbox/Calls buttons, the estimate-screen request panel).
 
 Builds on, does not replace: `docs/design/archive/call-capture-followup-plan.md`
 (the mobile quick-capture note, BUILT 2026-07-07) and P2.2 of
@@ -259,6 +259,33 @@ and carries the tenant id, and the handlers this PR touched that stage
 before auditing (intake, start-estimate, convert-to-customer,
 `create_estimate`, the boot seed) call `ensure_audit_table` first. Not swept:
 other handlers of that shape remain (e.g. `delete_landing_lead` on main).
+
+## Review of #818 (2026-09-28) — fixed on the branch
+
+The first cut of PR B was built against the pre-review PR A and targeted
+`main`, so it carried PR A's red CI; it was re-stacked on #817. Its own
+defects, fixed: the live phone lookup (`/api/planner/match-phone`, which
+returns the owner's name to any caller) ran for technicians and only *hid*
+the name on screen — it now runs only for `customers.read_all`, the same
+rule the intake response applies; every gate was a role-name check where the
+server gates on keys (`leads.intake`/`leads.write`, `leads.write` +
+`estimates.write` for Start estimate), so an office role without a leads key
+got an Estimate request choice and Lead buttons that 403 — all now
+permission-shaped; a tech holding `leads.intake` who shared text into the app
+got the office-only planner sheet (the share path keeps its office-only
+gate); the call prefill read `caller_name` / `customer_email` and the email
+prefill `from_name` — none of which the APIs send (a call's name now comes
+from `caller_cnam`, taken from the list row because the detail endpoint omits
+it, skipping junk CNAM; an email's only name is its linked customer); a row
+tap never carried the voicemail transcript (now fetched); a call's E.164
+number went into the phone mask unconverted and saved as `(161)255-5019`
+(found in the browser walk; now `formatPhone`d); the result banners stayed
+light in dark mode; a hard-coded source list diverged from the server's.
+**Not fixed here:** `GET /api/planner/match-phone` itself has no permission
+check, so any signed-in user can still ask it who owns a number — this form
+simply no longer asks on a technician's behalf. It had also weakened four existing
+`AppBottomNav` tests (a tech's no-mailbox-poll assertion among them) — they
+are restored unmodified.
 
 ## Out of scope
 

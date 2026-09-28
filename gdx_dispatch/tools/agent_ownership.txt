@@ -448,6 +448,7 @@ gdx_dispatch/frontend/src/views/CustomersView.vue            customers-crm
 gdx_dispatch/frontend/src/views/CustomerDetailView.vue       customers-crm
 gdx_dispatch/frontend/src/views/CustomerDuplicatesView.vue   customers-crm
 gdx_dispatch/frontend/src/views/LeadsView.vue                customers-crm
+gdx_dispatch/frontend/src/components/LeadIntakeForm.vue      customers-crm
 gdx_dispatch/frontend/src/views/SegmentsView.vue             customers-crm
 gdx_dispatch/frontend/src/views/TagsView.vue                 customers-crm
 gdx_dispatch/frontend/src/views/LoyaltyView.vue              customers-crm

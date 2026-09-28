@@ -81,6 +81,17 @@
               data-test="mp-vm-flag"
             />
             <i v-if="c.has_recording" class="pi pi-microphone meta-vm" aria-label="has recording" />
+            <button
+              v-if="canIntake"
+              type="button"
+              class="row-lead-btn"
+              data-test="mp-row-create-lead"
+              title="Create Lead"
+              @click.stop="openLeadFromCall(c)"
+            >
+              <i class="pi pi-user-plus" aria-hidden="true" />
+              <span>Lead</span>
+            </button>
           </div>
         </li>
       </ol>
@@ -152,22 +163,42 @@
 
           <div v-if="audioError" class="error-banner">{{ audioError }}</div>
 
-          <Button
-            v-if="callbackNumber"
-            class="callback-btn"
-            :label="`Call ${callbackNumber}`"
-            icon="pi pi-phone"
-            severity="success"
-            :loading="originating"
-            data-test="mp-call-back"
-            @click="callBack"
-          />
+          <div class="detail-actions">
+            <Button
+              v-if="callbackNumber"
+              class="callback-btn"
+              :label="`Call ${callbackNumber}`"
+              icon="pi pi-phone"
+              severity="success"
+              :loading="originating"
+              data-test="mp-call-back"
+              @click="callBack"
+            />
+            <Button
+              v-if="canIntake"
+              class="detail-lead-btn"
+              label="Create Lead"
+              icon="pi pi-user-plus"
+              severity="secondary"
+              outlined
+              data-test="mp-create-lead"
+              @click="openLeadFromCall(detail)"
+            />
+          </div>
           <p v-if="callbackNumber" class="callback-hint muted">Rings your extension first, then connects the customer.</p>
           <div v-if="originateStatus" :class="['status-line', originateStatus.ok ? 'status-ok' : 'error-banner']">
             {{ originateStatus.message }}
           </div>
         </div>
       </Dialog>
+
+      <LeadIntakeForm
+        v-model:visible="leadFormOpen"
+        :initial-phone="leadPrefill.phone"
+        :initial-name="leadPrefill.name"
+        :initial-notes="leadPrefill.notes"
+        :origin-ref="leadPrefill.originRef"
+      />
     </section>
 </template>
 
@@ -177,9 +208,45 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import { useApi } from '../composables/useApi'
 import { formatDateTime } from '../composables/useFormatters'
-import { callerDisplay, friendlyStatus, prettyDirection } from '../utils/phoneComLabels'
+import { callerDisplay, friendlyStatus, isCnamJunk, prettyDirection } from '../utils/phoneComLabels'
+import { usePermission } from '../composables/usePermission'
+import LeadIntakeForm from '../components/LeadIntakeForm.vue'
 
 const api = useApi()
+
+// Lead intake (lead-intake-followup-plan §4). Same keys the server accepts.
+const { hasPermission } = usePermission()
+const canIntake = computed(() => hasPermission('leads.intake') || hasPermission('leads.write'))
+const leadFormOpen = ref(false)
+const leadPrefill = ref({ phone: '', name: '', notes: '', originRef: '' })
+
+async function openLeadFromCall(call) {
+  if (!call) return
+  // The detail endpoint carries no caller_cnam; the list row does. Read both
+  // off whichever record we were handed so either button gets the same prefill.
+  const row = calls.value.find((c) => c.id === call.id) || {}
+  const outbound = call.direction === 'out'
+  const number = outbound ? call.to_number : call.from_number
+  const rawCnam = call.caller_cnam ?? row.caller_cnam
+  const cnam = !outbound && rawCnam && !isCnamJunk(rawCnam, call.from_number) ? rawCnam : ''
+  const notes = [`${outbound ? 'Outbound call to' : 'Inbound call from'} ${number || 'unknown number'}`]
+  // The dialog has already loaded the transcript for the call it shows; a row
+  // tap has not, so fetch it — a voicemail's words are the request itself.
+  let text = detail.value?.id === call.id ? transcript.value : ''
+  if (!text && (call.has_voicemail ?? row.has_voicemail)) {
+    try {
+      text = (await api.get(`/api/phone-com/calls/${call.id}/voicemail-transcript`))?.transcript || ''
+    } catch { text = '' }
+  }
+  if (text) notes.push(`Voicemail transcript:\n${text}`)
+  leadPrefill.value = {
+    phone: number || '',
+    name: call.customer_name || cnam,
+    notes: notes.join('\n\n'),
+    originRef: `phone_com_call:${call.id}`,
+  }
+  leadFormOpen.value = true
+}
 
 const tab = ref('voicemail')
 const calls = ref([])
@@ -567,4 +634,34 @@ onUnmounted(() => {
 .status-ok {
   color: var(--p-green-600, #16a34a);
 }
+
+.row-lead-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-panel);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  min-height: 32px;
+}
+.row-lead-btn:active {
+  background: var(--p-content-hover-background);
+}
+
+.detail-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.detail-lead-btn {
+  width: 100%;
+  min-height: 48px;
+}
+
 </style>
