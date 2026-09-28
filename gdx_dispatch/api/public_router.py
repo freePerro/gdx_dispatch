@@ -280,11 +280,18 @@ def _write_errors_as_500(db: Session, route: str) -> Iterator[None]:
 
     On the success path this wrapper executes no statement of its own — the
     `db.rollback()` above is the only one, and it runs only on the way to a 500.
-    So the caller still owns `ensure_audit_table(db)` as the first line of its
-    body and its own `db.commit()` as the last, for the reasons
-    `_audit_public_write` gives and the reason above. ("Its own", not "its
-    single": on a cold engine `ensure_audit_table` commits the table creation
-    too, so the block can hold two.)
+    So the caller still owns its own `db.commit()` as the LAST statement in its
+    body, for the reasons `_audit_public_write` gives and the reason above.
+    ("Its own", not "its single": on a cold engine `ensure_audit_table` commits
+    the table creation too, so the block can hold two.)
+
+    The four handlers that audit *inside* the block also open it with
+    `ensure_audit_table(db)`. `create_public_landing_lead` does not — it opens on
+    `db.add(ll)`, audits after the block in a best-effort tail, and
+    `log_audit_event_sync` ensures the table itself; so read that as a
+    four-of-five convention, not a rule. Only the commit half is enforced:
+    `test_every_write_block_ends_at_its_commit` never looks at the first
+    statement.
     """
     try:
         yield
@@ -688,6 +695,14 @@ def create_customer(
         # `_write_errors_as_500`, so a connection lost in that window would
         # answer 500 for a customer that exists (GDXA-145). This replaces the
         # `db.refresh(customer)` that used to sit below the commit.
+        #
+        # "Needs no re-read" is not "identical to one". On SQLite a
+        # `DateTime(timezone=True)` round-trip drops tzinfo, so `created_at`
+        # here serializes as `...+00:00` where the old post-commit refresh
+        # yielded a naive string — and a later GET on this row still returns the
+        # naive form. Postgres round-trips it aware, and prod and demo are
+        # Postgres, so the difference is confined to SQLite (tests, and the
+        # `sqlite:///./app.db` DATABASE_URL fallback). No test pins the format.
         body = {
             "id": str(customer.id),
             "name": customer.name,
