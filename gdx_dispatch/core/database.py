@@ -135,11 +135,49 @@ def contained_read(db: Session) -> Iterator[None]:
        new machinery" is not it: ``core/performance.py:169`` already registers an
        Engine-level ``before_cursor_execute`` (``SlowQueryMiddleware``, wired at
        ``app.py``), so the hook is already in every query's path and a
-       DML-in-savepoint check could ride it. The reason is that all eight current
-       call sites wrap pure reads, so it would police a precondition nothing
+       DML-in-savepoint check could ride it. The reason is that all twenty-one
+       current call sites wrap pure reads, so it would police a precondition nothing
        violates, and ``tests/test_contained_read.py`` pins the hole so the next
        person does not mistake it for coverage. When a call site does need a
        write contained, it wants ``db.begin_nested()`` — not a louder warning.
+
+       That count is load-bearing — it IS the reason above — and it has gone
+       stale twice already, each time caught by an adversarial audit rather than
+       by a test: six when it was seven, eight when GDXA-137 made it nine. The
+       ``git grep`` recipe that used to sit here was a third instance of the
+       same class rather than a cure for it, and it is worth knowing how it
+       failed, because all three failures are one shape — a number a human has
+       to maintain by hand:
+
+       - It said to subtract one, for "the example at the top of this
+         docstring". By the time it shipped this file held TWO matches that are
+         not call sites: that example, and the recipe's own line, which
+         contained the very string it searched for. Followed in good faith it
+         answered ten.
+       - ``git grep`` reads TRACKED files, so a call site in a brand-new module
+         counted as zero until someone ran ``git add``.
+
+       So the number is pinned by a test now, not by an instruction:
+       ``test_the_docstring_call_site_count_is_not_stale`` in
+       ``tests/test_contained_read.py``. It parses every Python file in the
+       repo, counts the real calls, and fails with the true number and a
+       per-file breakdown. It carries no marker, so the default suite runs it
+       and there is nothing to remember.
+
+       **This sentence should be the only place the count is written down.**
+       Both stalings above were a second copy drifting from a first, and until
+       GDXA-151 the test file carried one of its own. That part is a review
+       habit, not a machine-checked one — the test pins this number, it does
+       not hunt for rival copies; see its own LIMIT 2. (``core/plugin_consent``
+       also says "nine" and it is NOT this number — it counts
+       ``emit_domain_event`` call sites, which happen to be nine too. A
+       GDXA-151 audit mistook one for the other; do not "sync" them.)
+
+       What the guard does NOT pin is the other half of the claim above, that
+       those sites wrap PURE READS. Only the count is mechanical; "pure" is the
+       precondition the unbuilt ``before_cursor_execute`` check would police,
+       so putting a write inside an existing call site keeps this docstring
+       green and makes it wrong. Reviewing that is still a human's job.
 
        A warning and not a raise, either way — by the time it could fire the
        read has already happened, and turning a degraded read into a 500 is

@@ -333,6 +333,16 @@ def shop_today_from_settings(db: Any, *, now: datetime | None = None) -> date:
     name is kept in ``Session.info`` for the life of the session (a request),
     so serializing a page of invoices costs one query, not one per row.
     """
+    return shop_today(shop_tz_name_from_settings(db), now=now)
+
+
+def shop_tz_name_from_settings(db: Any) -> str:
+    """The shop's IANA zone name (``AppSettings.timezone``), cached per session.
+
+    Same fallback and ``Session.info`` cache as ``shop_today_from_settings``,
+    for callers that need the zone itself — a shop-local day boundary as an
+    instant, not just today's date.
+    """
     info = getattr(db, "info", None)
     tz_name = info.get(_SHOP_TZ_SESSION_KEY) if isinstance(info, dict) else None
     if tz_name is None:
@@ -341,7 +351,7 @@ def shop_today_from_settings(db: Any, *, now: datetime | None = None) -> date:
         tz_name = db.query(AppSettings.timezone).limit(1).scalar() or "America/New_York"
         if isinstance(info, dict):
             info[_SHOP_TZ_SESSION_KEY] = tz_name
-    return shop_today(tz_name, now=now)
+    return tz_name
 
 
 def shop_today_for(instance: Any, *, now: datetime | None = None) -> date:

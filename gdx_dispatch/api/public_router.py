@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.api_keys import scope_required
 from gdx_dispatch.core.audit import audit_or_rollback, ensure_audit_table
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.tenant import company_id, single_tenant
 from gdx_dispatch.core.webhooks.models import WebhookEndpoint
 
@@ -1001,11 +1001,23 @@ def list_public_listings(
         stmt = stmt.where(DoorListing.listing_type == listing_type)
 
     try:
-        rows = db.execute(stmt.order_by(*_listing_service.public_ordering())).scalars().all()
-        # Serialization is INSIDE the guard on purpose: it lazy-loads the photo
-        # relationship, so on a not-yet-migrated environment the 500 would come
-        # from here, not from the query above.
-        payload = [_listing_service.serialize(r, public=True) for r in rows]
+        # SAVEPOINT (GDXA-152), and PROPHYLACTIC here — weaker than the other
+        # sites in this sweep, so do not read it as a fix for a live failure.
+        # This is a leaf handler: nothing runs on `db` after the swallow below
+        # (`_ok` only serializes, `_require_api_key` already returned and holds a
+        # SEPARATE `get_auth_db` session, and `get_db`'s teardown is a bare
+        # `close()`), so today an aborted transaction dies unobserved. It is
+        # wrapped because the trap is structural — the next statement added after
+        # this block would inherit a dead transaction and 500 on a line that
+        # looks innocent — not because a 25P02 has been produced here.
+        #
+        # The serialization stays INSIDE, and now inside the savepoint too: it
+        # lazy-loads the photo relationship, so it is a second read on this same
+        # session and an uncontained failure there aborts the transaction just as
+        # the query would.
+        with contained_read(db):
+            rows = db.execute(stmt.order_by(*_listing_service.public_ordering())).scalars().all()
+            payload = [_listing_service.serialize(r, public=True) for r in rows]
     except Exception:
         # Degrade to "no doors" — the marketing page has a static fallback for
         # exactly this — rather than 500 the whole public API.

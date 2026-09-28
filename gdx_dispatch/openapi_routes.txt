@@ -233,6 +233,7 @@ GET /api/dealer/orders/{order_id}
 GET /api/developer/keys
 GET /api/diagnosis/schemas
 GET /api/dispatch-settings
+GET /api/dispatch/late-open
 GET /api/dispatch/locations
 GET /api/dispatch/optimize-route
 GET /api/dispatch/schedule-with-traffic
