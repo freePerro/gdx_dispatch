@@ -765,3 +765,139 @@ class TestLandingLeadDbErrorsLeaveATrace:
         ]
         assert matching, f"no log record; records: {[r.getMessage() for r in caplog.records]!r}"
         assert matching[0].exc_info is not None  # full traceback captured
+
+
+# ---------------------------------------------------------------------------
+# GDXA-145 — a lead that committed is never answered as a failure
+# ---------------------------------------------------------------------------
+
+
+class TestACommittedLeadIsNotReportedAsAFailure:
+    """Not losing the lead is only half the contract — not *reporting* it lost
+    is the other half.
+
+    This handler commits the lead, then writes its audit row and a notification
+    in two best-effort blocks that swallow their own failures, precisely so a
+    lead from a marketing site cannot be lost to a trail failure. Until
+    GDXA-145 a `db.refresh(ll)` sat between the commit and those blocks, inside
+    `_write_errors_as_500` — so a connection that died in that window answered
+    "A database error occurred" for a lead that was on disk, and the form the
+    visitor submitted would offer them a retry that duplicates it.
+
+    Post-commit statements here ARE by design (the audit row, the
+    notification), so unlike the two audited handlers in test_public_api.py the
+    seam is expected to fire: what this pins is that every one of them is
+    swallowed and the 201 still names the lead.
+    """
+
+    def test_a_committed_lead_answers_201_when_the_session_dies_after_commit(
+        self, client: TestClient, dead_after_commit, caplog
+    ):
+        import logging as _logging
+
+        engine = _FIXTURE_STATE["tenant_engine"]
+        headers = {"X-API-Key": RAW_KEY_A, "Host": HOST_A}
+        # Warm-up: audit_logs is created lazily, and that DDL commits — which
+        # would arm the seam before the INSERT under test.
+        assert client.post(
+            URL, json={"name": "Warm Up", "email": "warm@example.com"}, headers=headers
+        ).status_code == 201
+
+        with dead_after_commit(engine) as seam, caplog.at_level(_logging.ERROR):
+            resp = client.post(
+                URL,
+                json={"name": "Postcommit Probe", "email": "probe@example.com"},
+                headers=headers,
+            )
+
+        assert resp.status_code == 201, (
+            f"a durable lead answered {resp.status_code}; the handler issued "
+            f"{seam['refused']} statement(s) after its commit: {resp.text[:300]}"
+        )
+        data = resp.json()["data"]
+        assert data["status"] == "new"
+        lead_id = data["id"]
+        assert lead_id
+
+        db = _open_tenant_session()
+        try:
+            row = db.execute(
+                text("SELECT name, status FROM landing_leads WHERE id = :id"),
+                {"id": lead_id.replace("-", "")},
+            ).mappings().first()
+        finally:
+            db.close()
+        assert row is not None, "the 201 named a lead that is not in the table"
+        assert row["name"] == "Postcommit Probe"
+        assert row["status"] == "new"
+
+        # The trail row and the notification are the statements the seam
+        # refused; both are best-effort here and both must have said so in the
+        # log rather than in the response.
+        assert seam["refused"] >= 1, (
+            "the seam never fired — this test would pass on a handler that "
+            "never reaches its post-commit blocks at all"
+        )
+        logged = [r.getMessage() for r in caplog.records]
+        # BOTH blocks, not just the first. Replacing the notification block's
+        # containment with a bare `pass` left every other assertion here green —
+        # a write that fails with no trace at all is the defect class CLAUDE.md
+        # ranks highest, so each best-effort block is pinned to its own log line.
+        assert any("landing-lead audit write failed" in m for m in logged), logged
+        assert any("landing-lead notification write failed" in m for m in logged), logged
+
+    def test_a_best_effort_block_whose_own_rollback_dies_still_answers_201(
+        self, client: TestClient, dead_after_commit, caplog
+    ):
+        """The half a refusing cursor cannot see.
+
+        SQLAlchemy rolls back through `dialect.do_rollback`, not through a
+        cursor, so the seam above leaves `db.rollback()` working and the two
+        best-effort blocks look safe. On a connection that is genuinely gone the
+        rollback raises too — and a bare `db.rollback()` inside `except
+        Exception:` then escapes the block it was meant to contain, past the 201
+        this handler owes for a lead already on disk. Measured before the fix:
+        `status=500 body="Internal Server Error"` (not even the opaque JSON) with
+        the row committed and nothing logged.
+
+        `_write_errors_as_500` has suppressed its own rollback for this reason
+        since #751; these two blocks now do the same.
+        """
+        import logging as _logging
+
+        engine = _FIXTURE_STATE["tenant_engine"]
+        headers = {"X-API-Key": RAW_KEY_A, "Host": HOST_A}
+        assert client.post(
+            URL, json={"name": "Warm Up 2", "email": "warm2@example.com"}, headers=headers
+        ).status_code == 201
+
+        with dead_after_commit(engine, fail_rollback=True) as seam, caplog.at_level(
+            _logging.ERROR
+        ):
+            resp = client.post(
+                URL,
+                json={"name": "Rollback Probe", "email": "rb@example.com"},
+                headers=headers,
+            )
+
+        assert resp.status_code == 201, (
+            f"a durable lead answered {resp.status_code} after {seam['rollbacks_failed']} "
+            f"failed rollback(s): {resp.text[:300]}"
+        )
+        assert seam["rollbacks_failed"] >= 1, (
+            "no rollback was refused — the seam proved nothing about this path"
+        )
+        lead_id = resp.json()["data"]["id"]
+
+        db = _open_tenant_session()
+        try:
+            row = db.execute(
+                text("SELECT name FROM landing_leads WHERE id = :id"),
+                {"id": lead_id.replace("-", "")},
+            ).mappings().first()
+        finally:
+            db.close()
+        assert row is not None and row["name"] == "Rollback Probe"
+        logged = [r.getMessage() for r in caplog.records]
+        assert any("landing-lead audit write failed" in m for m in logged), logged
+        assert any("landing-lead notification write failed" in m for m in logged), logged

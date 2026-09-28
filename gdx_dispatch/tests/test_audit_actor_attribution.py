@@ -108,6 +108,46 @@ def test_empty_claim_values_do_not_become_the_string_none():
 # ---------------------------------------------------------------------------
 
 
+def _names_the_audit_helper(expr) -> bool:
+    """True if `expr` is *code* naming log_audit_event — never a string.
+
+    Selection used to be ``"log_audit_event" in ast.dump(node)``, and
+    ``ast.dump`` of a FunctionDef includes its docstring as a Constant, so
+    prose counted as a call. A docstring in api/public_router.py that named
+    ``log_audit_event_sync`` to say the helper "audits nothing" was therefore
+    scanned as an audit writer and reported as an offender for not holding a
+    principal (GDXA-177). Matching identifiers instead of a dump makes the
+    gate read code only.
+
+    Deliberately an identifier check and not an ``ast.Call`` check: a handler
+    that hands the helper to something else — ``add_task(log_audit_event, ...)``
+    — still writes rows and must still be scanned. No such site exists today;
+    the check is shaped so one would not slip past.
+
+    What this gate still cannot see, stated so nobody reads the class as
+    closed: a handler that audits only through the ``core.audit`` wrappers
+    ``audit_or_rollback`` / ``audit_best_effort`` never names this helper, so
+    it is not selected at all. 25 functions under routers/, api/ and modules/
+    are in that position (measured 2026-09-27), including
+    ``api/public_router.py:_audit_public_write`` — the public API's entire
+    audit path. None of them would fail the actor check today, so this is a
+    coverage gap and not a live defect, but the gate cannot fail for the
+    wrapper shape. ``tools/audit_after_commit_scan.py`` already resolves the
+    full writer set (``AUDIT_WRITERS``, with a transitive callee closure) and
+    is the shape to copy if this is ever widened.
+    """
+    if isinstance(expr, ast.Name):
+        return "log_audit_event" in expr.id
+    if isinstance(expr, ast.Attribute):
+        return "log_audit_event" in expr.attr
+    return False
+
+
+def _writes_audit_rows(node) -> bool:
+    """True if anything in this function's code names the audit helper."""
+    return any(_names_the_audit_helper(sub) for sub in ast.walk(node))
+
+
 def _audit_writing_functions():
     """(file, function, node) for every handler that writes an audit row."""
     for path in _python_sources():
@@ -121,8 +161,7 @@ def _audit_writing_functions():
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            body = ast.dump(node)
-            if "log_audit_event" not in body:
+            if not _writes_audit_rows(node):
                 continue
             yield path, node
 
@@ -146,7 +185,7 @@ def _can_resolve_an_actor(node) -> bool:
     # no human performs). A bare "system" string literal does NOT count — that
     # is indistinguishable from the bug this gate exists to catch.
     for sub in ast.walk(node):
-        if isinstance(sub, ast.Call) and "log_audit_event" in ast.dump(sub.func):
+        if isinstance(sub, ast.Call) and _names_the_audit_helper(sub.func):
             for kw in sub.keywords:
                 if kw.arg not in {"user_id", "actor_id"}:
                     continue
@@ -180,6 +219,96 @@ def test_every_audit_writing_handler_can_resolve_an_actor():
         + "\n\nGive the handler `current_user: dict = Depends(get_current_user)` "
         "or `request: Request` (core.audit reads request.state.user)."
     )
+
+
+# ---------------------------------------------------------------------------
+# The gate's own guard: name the input that still turns it red
+# ---------------------------------------------------------------------------
+#
+# A green scanner proves nothing unless it can fail for the defect it claims to
+# catch, and the selection step above was narrowed (GDXA-177) to stop matching
+# docstrings. These pin what "narrowed correctly" means: the first three fix the
+# selector's behaviour on hand-built handlers, and the fourth is the one that
+# notices a narrowing which empties the scan surface instead — without it, the
+# whole gate passes while scanning nothing at all.
+
+
+def _fn(src: str):
+    return ast.parse(src).body[0]
+
+
+#: The original defect, in miniature: a real call, no principal in the
+#: signature. This is what must still be reported.
+_OFFENDER = '''
+async def create_thing(payload: dict, db: Session = Depends(get_db)):
+    """Creates a thing."""
+    thing = Thing(**payload)
+    db.add(thing)
+    await log_audit_event(db=db, action="thing_created", entity_type="thing")
+'''
+
+#: The same handler with the call removed and the helper named only in prose —
+#: what api/public_router.py:_write_errors_as_500 looks like.
+_PROSE_ONLY = '''
+async def create_thing(payload: dict, db: Session = Depends(get_db)):
+    """Stages the row. Auditing is the caller's job via log_audit_event_sync."""
+    db.add(Thing(**payload))
+'''
+
+#: Both at once. A docstring that mentions the helper must not *excuse* a
+#: handler that also calls it — the narrowing has to drop prose, not functions.
+_BOTH = '''
+async def create_thing(payload: dict, db: Session = Depends(get_db)):
+    """Audits via log_audit_event, which this docstring also happens to name."""
+    db.add(Thing(**payload))
+    await log_audit_event(db=db, action="thing_created", entity_type="thing")
+'''
+
+#: The qualified form. Nothing in the tree calls the helper this way today, so
+#: without this the ast.Attribute branch of _names_the_audit_helper could be
+#: deleted with the whole file still green — i.e. unguarded coverage.
+_ATTRIBUTE_CALL = '''
+async def create_thing(payload: dict, db: Session = Depends(get_db)):
+    db.add(Thing(**payload))
+    await audit.log_audit_event(db=db, action="thing_created", entity_type="thing")
+'''
+
+
+def test_the_gate_still_reports_a_handler_that_really_writes_audit_rows():
+    node = _fn(_OFFENDER)
+    assert _writes_audit_rows(node), "a real call must still be selected"
+    assert not _can_resolve_an_actor(node), "no principal in scope — it is an offender"
+
+
+def test_the_gate_ignores_a_handler_that_only_names_the_helper_in_prose():
+    assert not _writes_audit_rows(_fn(_PROSE_ONLY))
+
+
+def test_a_docstring_mention_does_not_excuse_a_handler_that_also_calls_it():
+    node = _fn(_BOTH)
+    assert _writes_audit_rows(node)
+    assert not _can_resolve_an_actor(node)
+
+
+def test_a_qualified_call_is_selected_and_judged_like_a_bare_one():
+    node = _fn(_ATTRIBUTE_CALL)
+    assert _writes_audit_rows(node), "audit.log_audit_event(...) must be selected"
+    assert not _can_resolve_an_actor(node), "and judged on its signature like any other"
+
+
+def test_the_gate_actually_scans_something():
+    """The narrowing must drop prose, not the scan surface.
+
+    Every other test in this section builds its own AST, so all of them stay
+    green if `_audit_writing_functions` yields nothing — and so does the gate
+    itself, which is the failure mode a narrowing introduces. Measured 373
+    functions before GDXA-177 and 371 after (the two dropped named the helper
+    only in prose: `api/public_router.py:_write_errors_as_500` and
+    `routers/timeclock.py:_auto_close_stale_shift`, which audits via
+    `audit_or_rollback`). The floor is loose on purpose — it is here to catch a
+    selector that collapses, not to pin a number that legitimately drifts.
+    """
+    assert len(list(_audit_writing_functions())) > 300
 
 
 def test_no_source_duck_types_the_actor_as_a_dict():
