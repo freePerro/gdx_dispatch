@@ -33,6 +33,7 @@ from gdx_dispatch.modules.vendor_statements.account import build_vendor_accounts
 from gdx_dispatch.modules.vendor_statements.classifier import VALID_CLASSIFICATIONS
 from gdx_dispatch.modules.vendor_statements.models import VendorStatement, VendorStatementLine
 from gdx_dispatch.modules.vendor_statements.parsers.midwest import MidwestParseError
+from gdx_dispatch.modules.vendor_statements.payments_sent import build_vendor_payments
 from gdx_dispatch.modules.vendor_statements.service import (
     DuplicateDocumentError,
     upload_midwest_statement,
@@ -145,6 +146,40 @@ class VendorAccountOut(BaseModel):
     aging: dict[str, Decimal]
     lines: list[AccountLineOut]
     change: AccountChangeOut | None
+
+
+class SentPaymentOut(BaseModel):
+    paid_on: date
+    amount: Decimal
+    reference: str
+    paid_as: str
+    bank_posted_on: date | None
+
+
+class StatementPaymentsOut(BaseModel):
+    statement_id: UUID
+    statement_date: date
+    sent_total: Decimal
+    sent_count: int
+    # DERIVED from the diff against the previous statement (None on the first):
+    # a credit memo reads the same as a payment.
+    applied_total: Decimal | None
+
+
+class VendorPaymentsOut(BaseModel):
+    vendor_name: str
+    vendor_code: str | None
+    sent_total: Decimal
+    after_latest_total: Decimal
+    after_latest_count: int
+    # False = no payment-confirmation senders configured in Outlook settings.
+    senders_configured: bool
+    # Tenant-wide (the same on every row): confirmations from a listed sender
+    # that could not be read, or that read but no vendor claims.
+    unreadable_count: int
+    unattributed_count: int
+    payments: list[SentPaymentOut]
+    statements: list[StatementPaymentsOut]
 
 
 class OnOrderLineOut(BaseModel):
@@ -351,6 +386,41 @@ async def list_vendor_accounts(
             ),
         )
         for a in build_vendor_accounts(db)
+    ]
+
+
+@router.get(
+    "/payments",
+    response_model=list[VendorPaymentsOut],
+    dependencies=[Depends(require_permission("vendor_statements.read"))],
+)
+async def list_vendor_payments(
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[VendorPaymentsOut]:
+    """Payments SENT per vendor (from the processor's confirmation emails, each
+    checked against the bank feed), set beside what each statement says was
+    APPLIED. Read-only; records nothing. Declared before ``/{statement_id}``.
+    """
+    return [
+        VendorPaymentsOut(
+            vendor_name=v.vendor_name,
+            vendor_code=v.vendor_code,
+            sent_total=v.sent_total,
+            after_latest_total=v.after_latest_total,
+            after_latest_count=v.after_latest_count,
+            senders_configured=v.senders_configured,
+            unreadable_count=v.unreadable_count,
+            unattributed_count=v.unattributed_count,
+            payments=[
+                SentPaymentOut(paid_on=p.paid_on, amount=p.amount,
+                               reference=p.reference, paid_as=p.paid_as,
+                               bank_posted_on=p.bank_posted_on)
+                for p in v.payments
+            ],
+            statements=[StatementPaymentsOut(**vars(r)) for r in v.statements],
+        )
+        for v in build_vendor_payments(db)
     ]
 
 

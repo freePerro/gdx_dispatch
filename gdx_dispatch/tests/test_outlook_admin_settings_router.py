@@ -392,6 +392,38 @@ def test_patching_other_fields_leaves_the_allowlist_alone(real_app):
     assert r.json()["vendor_bill_sender_allowlist"] == ["vendor.com"]
 
 
+# ── payment_confirmation_sender_allowlist ───────────────────────────────
+
+
+def test_payment_senders_round_trip_and_are_validated_like_the_bill_list(real_app):
+    client, db, _ = real_app
+    r = client.patch("/api/admin/outlook/settings",
+                     json={"payment_confirmation_sender_allowlist": [" NoReply@Portal.Example.com "]})
+    assert r.status_code == 200
+    assert r.json()["payment_confirmation_sender_allowlist"] == ["noreply@portal.example.com"]
+    assert db.get(OutlookSettings, 1).payment_confirmation_sender_allowlist == [
+        "noreply@portal.example.com",
+    ]
+
+    r = client.patch("/api/admin/outlook/settings",
+                     json={"payment_confirmation_sender_allowlist": ["typo"]})
+    assert r.status_code == 422
+    db.expire_all()
+    assert db.get(OutlookSettings, 1).payment_confirmation_sender_allowlist == [
+        "noreply@portal.example.com",
+    ]
+
+
+def test_the_two_sender_lists_are_independent(real_app):
+    client, _, _ = real_app
+    client.patch("/api/admin/outlook/settings",
+                 json={"vendor_bill_sender_allowlist": ["vendor.com"]})
+    r = client.patch("/api/admin/outlook/settings",
+                     json={"payment_confirmation_sender_allowlist": ["portal.example.com"]})
+    assert r.json()["vendor_bill_sender_allowlist"] == ["vendor.com"]
+    assert r.json()["payment_confirmation_sender_allowlist"] == ["portal.example.com"]
+
+
 # --- the row-creation commit fix --------------------------------------------
 def test_reading_settings_actually_persists_the_row(real_app):
     """_ensure_settings_row used to only flush(), so a GET created a row that

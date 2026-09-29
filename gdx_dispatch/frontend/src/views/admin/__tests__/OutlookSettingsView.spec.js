@@ -31,9 +31,10 @@ function _credentials({ secret_set = false } = {}) {
 }
 
 
-function _settings({ allowlist = [] } = {}) {
+function _settings({ allowlist = [], paymentSenders = [] } = {}) {
   return {
     vendor_bill_sender_allowlist: allowlist,
+    payment_confirmation_sender_allowlist: paymentSenders,
     backfill_days: 90,
     tag_strategy_order: ['auto_match', 'job_thread', 'ai'],
     tag_strategy_enabled: { auto_match: true, job_thread: true, ai: true },
@@ -295,6 +296,37 @@ describe('OutlookSettingsView', () => {
     const body = JSON.parse(fetchMock.mock.calls.at(-1)[1].body);
     expect(body).not.toHaveProperty('vendor_bill_sender_allowlist');
     expect(body).toHaveProperty('backfill_days');
+  });
+
+  // Payment-confirmation senders: read-only evidence for Vendor Statements.
+  it('saves payment senders only when they changed, and never the bill list with them', async () => {
+    const w = await mountWith(['vendor.example.com']);
+    w.vm.$.setupState.settings.payment_confirmation_sender_allowlist.push('noreply@portal.example.com');
+    fetchMock.mockResolvedValueOnce(mkResponse(_settings({
+      allowlist: ['vendor.example.com'], paymentSenders: ['noreply@portal.example.com'],
+    })));
+    await w.vm.saveSettings();
+    await flushPromises();
+    const body = JSON.parse(fetchMock.mock.calls.at(-1)[1].body);
+    expect(body.payment_confirmation_sender_allowlist).toEqual(['noreply@portal.example.com']);
+    expect(body).not.toHaveProperty('vendor_bill_sender_allowlist');
+
+    fetchMock.mockResolvedValueOnce(mkResponse(_settings({
+      allowlist: ['vendor.example.com'], paymentSenders: ['noreply@portal.example.com'],
+    })));
+    await w.vm.saveSettings();
+    await flushPromises();
+    expect(JSON.parse(fetchMock.mock.calls.at(-1)[1].body))
+      .not.toHaveProperty('payment_confirmation_sender_allowlist');
+  });
+
+  it('keeps a payment sender that was typed but never Enter-ed', async () => {
+    const w = await mountWith([]);
+    const input = { value: ' noreply@portal.example.com ' };
+    w.vm.$.setupState.commitPendingPaymentSender({ target: input });
+    expect(w.vm.$.setupState.settings.payment_confirmation_sender_allowlist)
+      .toEqual(['noreply@portal.example.com']);
+    expect(input.value).toBe('');
   });
 
   it('re-enables the sweep once the edit is saved', async () => {

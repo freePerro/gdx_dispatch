@@ -52,6 +52,7 @@ def client(tenant_db, monkeypatch):
     "/api/vendor-statements",
     "/api/vendor-statements/accounts",
     "/api/vendor-statements/on-order",
+    "/api/vendor-statements/payments",
 ])
 def test_read_endpoints_respond_on_an_empty_database(client, path):
     """A NameError inside the handler surfaces as a 500 here — which is the
@@ -65,8 +66,27 @@ def test_read_endpoints_respond_on_an_empty_database(client, path):
 def test_a_literal_path_is_not_swallowed_by_the_uuid_route(client):
     """`/accounts` and `/on-order` are declared before `/{statement_id}`. If
     that ordering regresses they parse as a UUID and 422 instead."""
-    for path in ("/api/vendor-statements/accounts", "/api/vendor-statements/on-order"):
+    for path in ("/api/vendor-statements/accounts", "/api/vendor-statements/on-order",
+                 "/api/vendor-statements/payments"):
         assert client.get(path).status_code != 422
+
+
+def test_payments_serializes_a_populated_account(client, tenant_db):
+    """An empty list never builds a response model; one real row does."""
+    from gdx_dispatch.tests.test_vendor_statement_payments_sent import (
+        _confirmation,
+        _mailbox,
+        _two_statements,
+    )
+
+    _two_statements(tenant_db)
+    _confirmation(tenant_db, _mailbox(tenant_db), "1,300.00", "06/15/2026", "TX-1")
+    tenant_db.commit()  # the request's permission lookup may roll the shared session back
+    response = client.get("/api/vendor-statements/payments")
+    assert response.status_code == 200, response.text
+    [row] = response.json()
+    assert row["payments"][0]["reference"] == "TX-1"
+    assert row["statements"][1]["applied_total"] == row["statements"][1]["sent_total"]
 
 
 def test_job_suggestions_404s_for_an_unknown_order(client):
@@ -94,6 +114,7 @@ def test_every_route_in_this_router_has_been_reached_by_a_test():
         "/api/vendor-statements",
         "/api/vendor-statements/accounts",
         "/api/vendor-statements/on-order",
+        "/api/vendor-statements/payments",
         "/api/vendor-statements/{statement_id}",
         "/api/vendor-statements/orders/{order_id}/job-suggestions",
         "/api/vendor-statements/orders/{order_id}/confirm-job",

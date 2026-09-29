@@ -607,6 +607,7 @@ GET /api/vendor-statements
 GET /api/vendor-statements/accounts
 GET /api/vendor-statements/on-order
 GET /api/vendor-statements/orders/{order_id}/job-suggestions
+GET /api/vendor-statements/payments
 GET /api/vendor-statements/{statement_id}
 GET /api/vendors
 GET /api/vendors/{vendor_id}
