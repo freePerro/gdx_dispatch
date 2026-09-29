@@ -1,6 +1,13 @@
 # Vendor payment visibility — closing the loop after we pay a supplier
 
-Status: DRAFT (design only, nothing built)
+Status: PARTIALLY BUILT — §B's read side only (2026-09-26, feat/vendor-statement-payments-sent):
+confirmations are parsed from `outlook_settings.payment_confirmation_sender_allowlist`
+senders and shown per statement as *sent* beside the diff's *applied*, each
+checked against the bank feed, in `gdx_dispatch/modules/vendor_statements/payments_sent.py`.
+NOT built: the `vendor_payments` table and its pending/corroborated states
+(the build derives at read time and stores nothing), the alias table (the
+build learns payee → vendor from the portal merchant instead, see that
+module's docstring), §A bill suggestions, §C cadence watchdog.
 Date: 2026-08-04
 
 > Repo hygiene: this doc deliberately names no suppliers, processors, account
