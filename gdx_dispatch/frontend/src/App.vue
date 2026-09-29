@@ -16,11 +16,18 @@
            Routes that need a bare shell (login, customer portal,
            full-screen onboarding wizard, the not-found fallback) opt out
            with `meta.noShell: true` and render directly into the bare
-           <router-view>. -->
+           <router-view>.
+
+           KeyedRouterView is <router-view> plus one rule: the routed view
+           REMOUNTS when navigation moves the same view to a different
+           record (/estimates/A -> /estimates/B). Detail views load once in
+           onMounted, so without it the old record stayed on screen while
+           every action hit the new one. Query-only changes and a draft
+           getting its own id keep the view mounted; see lib/viewRemount.js. -->
       <AppLayout v-if="!noShell">
-        <router-view />
+        <KeyedRouterView />
       </AppLayout>
-      <router-view v-else />
+      <KeyedRouterView v-else />
     </ErrorBoundary>
     <CommandPalette v-model="commandPaletteOpen" />
   </ThemeProvider>
@@ -34,6 +41,7 @@ import ThemeProvider from './components/ThemeProvider.vue';
 import CommandPalette from './components/CommandPalette.vue';
 import ErrorBoundary from './components/ErrorBoundary.vue';
 import AppLayout from './components/AppLayout.vue';
+import KeyedRouterView from './components/KeyedRouterView.vue';
 import Toast from 'primevue/toast';
 import { useIdleLogout } from './composables/useIdleLogout';
 
