@@ -25,7 +25,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
+from gdx_dispatch.core.audit import audit_or_rollback, ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import has_permission, require_module, require_permission
 from gdx_dispatch.routers.auth import get_current_user
@@ -327,6 +327,9 @@ def _serialize_lead(l: Lead) -> dict[str, Any]:
         "updated_at": l.updated_at.isoformat() if l.updated_at else None,
         "follow_up_date": l.follow_up_date.isoformat() if getattr(l, "follow_up_date", None) else None,
         "estimate_id": str(l.estimate_id) if getattr(l, "estimate_id", None) else None,
+        "selected_estimate_id": (
+            str(l.selected_estimate_id) if getattr(l, "selected_estimate_id", None) else None
+        ),
         "origin_ref": getattr(l, "origin_ref", None),
     }
 
@@ -839,17 +842,133 @@ def get_lead_by_estimate(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
+    from gdx_dispatch.modules.proposals.models import Estimate
+
+    # The estimate's own lead link is the one source (every estimate made for
+    # a lead, duplicates included; migration 101 backfilled it from the lead's
+    # started-draft pointer). No fallback to that pointer: after the link is
+    # deliberately cleared (reassigned to someone else) a fallback would
+    # resurrect it.
     lead = db.execute(
-        select(Lead).where(
-            Lead.estimate_id == estimate_id,
-            Lead.deleted_at.is_(None),
-        )
+        select(Lead)
+        .join(Estimate, Estimate.lead_id == Lead.id)
+        .where(Estimate.id == estimate_id, Lead.deleted_at.is_(None))
     ).scalar_one_or_none()
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found for estimate")
     data = _serialize_lead(lead)
     data["custom_fields"] = _list_values_for_entity(db, tenant_id, "lead", str(lead.id))
     return data
+
+def _selected_estimate_id(db: Session, lead: Lead) -> str | None:
+    """The lead's pick, if it still names one of its live estimates.
+
+    Stored, not derived (accept_tier re-stamps accepted_at, so an "earliest
+    accepted" rule could flip on its own): the
+    accept helper writes it on the FIRST accepted estimate, then only staff
+    change it. A soft-deleted pick reads as no pick.
+    """
+    from gdx_dispatch.core.lead_estimates import pick_is_live
+
+    return str(lead.selected_estimate_id) if pick_is_live(db, lead) else None
+
+
+@router.get(
+    "/api/leads/{lead_id}/estimates",
+    response_model=None,
+    dependencies=[Depends(require_permission("leads.read", "estimates.read_all"))],
+)
+def list_lead_estimates(
+    lead_id: UUID,
+    request: Request,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Every live estimate made for this lead, and which one counts as won."""
+    from gdx_dispatch.modules.proposals.models import Estimate
+
+    lead = _get_lead_scoped(db, lead_id, _tenant_id(request))
+    rows = db.execute(
+        select(Estimate)
+        .where(Estimate.lead_id == lead.id, Estimate.deleted_at.is_(None))
+        .order_by(Estimate.created_at.asc())
+    ).scalars().all()
+    return {
+        "lead_id": str(lead.id),
+        "selected_estimate_id": _selected_estimate_id(db, lead),
+        "estimates": [
+            {
+                "id": str(e.id),
+                "estimate_number": e.estimate_number,
+                "label": e.label,
+                "status": e.status,
+                "total": float(e.total or 0),
+                "accepted_at": e.accepted_at.isoformat() if e.accepted_at else None,
+                "job_id": str(e.job_id) if e.job_id else None,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            }
+            for e in rows
+        ],
+    }
+
+
+class SelectedEstimateIn(BaseModel):
+    estimate_id: UUID | None = None
+
+
+@router.put(
+    "/api/leads/{lead_id}/selected-estimate",
+    response_model=None,
+    dependencies=[Depends(require_permission("leads.write"))],
+)
+def set_lead_selected_estimate(
+    lead_id: UUID,
+    payload: SelectedEstimateIn,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Staff choose which of the lead's accepted estimates counts as won.
+
+    null clears the pick. Only one of this lead's live, accepted estimates
+    can be picked — a draft or a declined estimate has not won anything.
+    """
+    from gdx_dispatch.modules.proposals.models import Estimate
+
+    tenant_id = _tenant_id(request)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
+    lead = _get_lead_scoped(db, lead_id, tenant_id)
+    if payload.estimate_id is not None:
+        est = db.execute(
+            select(Estimate).where(
+                Estimate.id == payload.estimate_id,
+                Estimate.deleted_at.is_(None),
+            )
+        ).scalar_one_or_none()
+        if est is None or est.lead_id != lead.id:
+            raise HTTPException(status_code=422, detail="That estimate is not one of this lead's")
+        if est.status != "accepted":
+            raise HTTPException(status_code=422, detail="Only an accepted estimate can count as won")
+    previous = str(lead.selected_estimate_id) if lead.selected_estimate_id else None
+    new = str(payload.estimate_id) if payload.estimate_id else None
+    if previous == new:
+        return _serialize_lead(lead)
+    lead.selected_estimate_id = payload.estimate_id
+    lead.updated_at = datetime.now(timezone.utc)
+    audit_or_rollback(
+        db,
+        action="lead_selected_estimate_changed",
+        entity_type="lead",
+        entity_id=str(lead.id),
+        actor=user,
+        request=request,
+        tenant_id=tenant_id,
+        details={"from_estimate_id": previous, "to_estimate_id": new},
+    )
+    db.commit()
+    db.refresh(lead)
+    return _serialize_lead(lead)
+
 
 @router.post(
     "/api/leads",
@@ -1369,6 +1488,7 @@ def start_estimate(
         tenant_id=tenant_id,
         customer_id=customer.id,
         jobsite_address=lead.address,
+        lead_id=lead.id,
     )
     lead.estimate_id = estimate.id
 

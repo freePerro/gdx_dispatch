@@ -433,6 +433,7 @@ gdx_dispatch/frontend/src/utils/quantity.js                  estimates-pricing
 gdx_dispatch/routers/customers.py                            customers-crm
 gdx_dispatch/routers/sub_resources.py                        customers-crm
 gdx_dispatch/routers/leads.py                                customers-crm
+gdx_dispatch/core/lead_estimates.py                          customers-crm
 gdx_dispatch/routers/segments.py                             customers-crm
 gdx_dispatch/routers/tags.py                                 customers-crm
 gdx_dispatch/routers/admin_customer_tags.py                  customers-crm
@@ -455,6 +456,7 @@ gdx_dispatch/frontend/src/views/CustomerDetailView.vue       customers-crm
 gdx_dispatch/frontend/src/views/CustomerDuplicatesView.vue   customers-crm
 gdx_dispatch/frontend/src/views/LeadsView.vue                customers-crm
 gdx_dispatch/frontend/src/components/LeadIntakeForm.vue      customers-crm
+gdx_dispatch/frontend/src/components/LeadEstimatesPanel.vue  customers-crm
 gdx_dispatch/frontend/src/views/SegmentsView.vue             customers-crm
 gdx_dispatch/frontend/src/views/TagsView.vue                 customers-crm
 gdx_dispatch/frontend/src/views/LoyaltyView.vue              customers-crm

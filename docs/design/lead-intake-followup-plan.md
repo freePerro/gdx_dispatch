@@ -1,7 +1,9 @@
 # Lead Intake, Call-Back Dates, and Start-Estimate
 
 **Date:** 2026-09-28
-**Status:** PARTIALLY BUILT — PR A (backend: migration 099, `leads.intake`, the §3 endpoints, digest, the boot-time seed of the default fields, and the Custom Fields "Lead" option — pulled forward from PR C because PR A creates the fields it labels) is #817; PR B (mobile intake form, the "+" button's Quick note / Estimate request choice, Phone and Inbox **Lead** buttons) is #818, stacked on it. Neither is merged. **Not built:** PR C (desktop Leads view, dashboard count, Inbox/Calls buttons, the estimate-screen request panel).
+**Status:** RELEASED v1.128.0 — PR A (#817: backend, migration 099, `leads.intake`, the §3 endpoints, digest, boot-time field seed, Custom Fields "Lead" option), PR B (#818: mobile intake form, the "+" choice, Phone and Inbox **Lead** buttons) and PR C (#819: desktop Leads follow-up view, comms intake, the estimate-screen request panel) all shipped in v1.128.0.
+
+Extended by `docs/design/lead-to-paid-tracking-plan.md` (2026-09-29): estimates carry their lead, and the lead follows the selected estimate through to Paid.
 
 Builds on, does not replace: `docs/design/archive/call-capture-followup-plan.md`
 (the mobile quick-capture note, BUILT 2026-07-07) and P2.2 of

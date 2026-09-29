@@ -347,6 +347,7 @@ GET /api/leads/intake-form
 GET /api/leads/pipeline-summary
 GET /api/leads/{lead_id}
 GET /api/leads/{lead_id}/custom-fields
+GET /api/leads/{lead_id}/estimates
 GET /api/locations/
 GET /api/locations/{location_id}/technicians
 GET /api/loyalty
@@ -1239,6 +1240,7 @@ PUT /api/jobs/{job_id}/custom-fields
 PUT /api/jobs/{job_id}/lead
 PUT /api/labor-pricing/items/{item_id}
 PUT /api/leads/{lead_id}/custom-fields
+PUT /api/leads/{lead_id}/selected-estimate
 PUT /api/locations/{location_id}
 PUT /api/pdf-templates/{template_type}
 PUT /api/planner/tasks/{task_id}/today
