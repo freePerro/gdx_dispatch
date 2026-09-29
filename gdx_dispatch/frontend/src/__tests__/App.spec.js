@@ -33,11 +33,11 @@ describe('App.vue — AppLayout mount contract', () => {
     // The wrapping form: AppLayout takes router-view as its slot. Allow
     // whitespace flexibility; the structural assertion is "AppLayout
     // contains router-view inside its template body".
-    expect(APP_VUE).toMatch(/<AppLayout\s+v-if="!noShell">[\s\S]*<router-view\s*\/>[\s\S]*<\/AppLayout>/);
+    expect(APP_VUE).toMatch(/<AppLayout\s+v-if="!noShell">[\s\S]*<KeyedRouterView\s*\/>[\s\S]*<\/AppLayout>/);
   });
 
   it('has a bare <router-view v-else /> fallback for noShell routes', () => {
-    expect(APP_VUE).toMatch(/<router-view\s+v-else\s*\/>/);
+    expect(APP_VUE).toMatch(/<KeyedRouterView\s+v-else\s*\/>/);
   });
 
   it('does NOT carry the :key="$route.fullPath" workaround (obsoleted by refactor)', () => {
