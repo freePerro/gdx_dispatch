@@ -966,6 +966,12 @@
           <Button label="Email Customer" icon="pi pi-send" data-testid="estimate-send"
             :disabled="estimate.status === 'Accepted' || estimate.status === 'Declined'"
             @click="emailEstimate" />
+          <!-- Text the review-and-approve link (Phone.com) — only when texting
+               is on; the server refuses finalized estimates and opt-outs. -->
+          <Button v-if="smsEnabled" label="Text Estimate" icon="pi pi-comment" severity="secondary" outlined
+            data-testid="estimate-text"
+            :disabled="estimate.status === 'Accepted' || estimate.status === 'Declined'"
+            @click="showSmsDialog = true" />
           <Button label="Accept" icon="pi pi-check" severity="success" data-testid="estimate-accept"
             :disabled="estimate.status === 'Accepted' || estimate.status === 'Declined'"
             @click="acceptEstimate" />
@@ -1205,6 +1211,14 @@
 
       <!-- ConfirmDialog removed 2026-05-12 — AppLayout.vue:49 mounts one globally. -->
       <Toast data-testid="estimate-view-toast" />
+      <SmsLinkDialog
+        v-if="isExisting"
+        v-model:visible="showSmsDialog"
+        :doc-id="String(route.params.id)"
+        base="/api/estimates"
+        title="Text estimate"
+        @sent="fetchEstimate"
+      />
     </section>
 </template>
 
@@ -1234,6 +1248,8 @@ import { useAuthStore } from "../stores/auth";
 import { formatDate, formatMoney, formatPercent, formatPhone, localDateString } from "../composables/useFormatters";
 import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
 import PaymentCaptureForm from "../components/PaymentCaptureForm.vue";
+import SmsLinkDialog from "../components/SmsLinkDialog.vue";
+import { useTenantModules } from "../composables/useTenantModules";
 import Button from "primevue/button";
 import Checkbox from "primevue/checkbox";
 import Card from "primevue/card";
@@ -1333,6 +1349,9 @@ async function loadLineCategories() {
 }
 
 const isExisting = computed(() => Boolean(route.params.id));
+const { isEnabled: isModuleEnabled } = useTenantModules();
+const smsEnabled = computed(() => isModuleEnabled("phone_com"));
+const showSmsDialog = ref(false);
 const currentEstimateId = computed(() => route.params.id || estimate.value?.id || null);
 
 // Server-side estimate metadata (read-only on existing).

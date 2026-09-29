@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session, selectinload
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.invoice_delivery import require_deliverable
+from gdx_dispatch.core.link_sms import SendLinkSmsIn as SendInvoiceSmsIn  # one composer model for every SMS route
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.pay_periods import shop_today_for, shop_today_from_settings
 from gdx_dispatch.core.pricing_provenance import (
@@ -2799,16 +2800,6 @@ def send_invoice(
     return payload
 
 
-class SendInvoiceSmsIn(BaseModel):
-    """Optional composer payload for /send-sms and /sms-preview — empty keeps
-    the customer's phone and the default message."""
-
-    model_config = ConfigDict(extra="forbid")
-    to: str | None = Field(default=None, max_length=40)
-    body: str | None = Field(default=None, max_length=1600)
-    # The operator checked the thread after an unconfirmed attempt and wants
-    # to send anyway (see core/invoice_sms.py "Re-sending").
-    resend_unconfirmed: bool = False
 
 
 @router.post(

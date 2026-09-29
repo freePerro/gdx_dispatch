@@ -1,15 +1,17 @@
 <!--
-  Text an invoice: one SMS carrying the customer's view-and-pay link.
+  Text a customer one link: an invoice's view-and-pay page or an estimate's
+  review-and-approve page.
 
-  Shared by the office invoice page (base '/api/invoices') and the tech's
-  mobile billing screen (base '/api/mobile/invoices'); the server owns every
-  rule (opt-out, verification, pay link, duplicate window) and this dialog only
-  shows what it says. Opening it previews — nothing leaves until Send.
+  `base` picks the document and the caller: '/api/invoices' / '/api/estimates'
+  (office) or '/api/mobile/invoices' / '/api/mobile/quotes' (tech). The server
+  owns every rule (opt-out, verification, link, duplicate window) and this
+  dialog only shows what it says. Opening it previews — nothing leaves until
+  Send.
 -->
 <template>
   <Dialog
     :visible="visible"
-    header="Text invoice"
+    :header="title"
     modal
     :style="{ width: '32rem', maxWidth: '95vw' }"
     data-testid="sms-dialog"
@@ -40,7 +42,7 @@
         <label for="sms-body">Message</label>
         <Textarea id="sms-body" v-model="body" rows="4" auto-resize data-testid="sms-body" />
         <small class="sms-hint">
-          {{ body.length }} characters · the pay link is always included, even if you edit it out.
+          {{ body.length }} characters · the link is always included, even if you edit it out.
         </small>
       </div>
     </div>
@@ -70,9 +72,11 @@ import { useApi } from '../composables/useApi'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
-  invoiceId: { type: String, required: true },
-  // '/api/invoices' (office) or '/api/mobile/invoices' (tech).
+  docId: { type: String, required: true },
+  // '/api/invoices' | '/api/estimates' (office), '/api/mobile/invoices' |
+  // '/api/mobile/quotes' (tech).
   base: { type: String, default: '/api/invoices' },
+  title: { type: String, default: 'Text invoice' },
 })
 const emit = defineEmits(['update:visible', 'sent'])
 
@@ -91,7 +95,7 @@ const unconfirmed = ref(null)
 
 async function preview(toOverride) {
   const res = await api.post(
-    `${props.base}/${props.invoiceId}/sms-preview`,
+    `${props.base}/${props.docId}/sms-preview`,
     toOverride ? { to: toOverride } : {},
     { suppressErrorToast: true },
   )
@@ -133,12 +137,12 @@ async function send() {
   sending.value = true
   try {
     const res = await api.post(
-      `${props.base}/${props.invoiceId}/send-sms`,
+      `${props.base}/${props.docId}/send-sms`,
       { to: to.value.trim() || null, body: body.value, resend_unconfirmed: !!unconfirmed.value },
       { suppressErrorToast: true },
     )
     const payload = res?.data || res
-    toast.add({ severity: 'success', summary: 'Texted', detail: `Invoice texted to ${payload.to}.`, life: 5000 })
+    toast.add({ severity: 'success', summary: 'Texted', detail: `Texted to ${payload.to}.`, life: 5000 })
     emit('sent', payload)
     emit('update:visible', false)
   } catch (err) {
@@ -150,7 +154,7 @@ async function send() {
       // Not a failure: it may have arrived, and the server moved the invoice
       // to sent — say so and refresh the caller's view.
       toast.add({ severity: 'warn', summary: 'Text not confirmed', detail: err.message, life: 8000 })
-      emit('sent', { to: to.value, confirmed: false })
+      emit('sent', { id: props.docId, to: to.value, confirmed: false })
       emit('update:visible', false)
       return
     }

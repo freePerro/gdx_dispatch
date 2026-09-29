@@ -980,6 +980,7 @@
         :quote="customerQuote"
         @accepted="onQuoteAccepted"
         @declined="onQuoteDeclined"
+        @texted="onQuoteTexted"
       />
       <MobileChangeOrderDialog
         v-model:visible="changeOrderOpen"
@@ -1490,6 +1491,22 @@ function patchQuote(updated) {
   const list = quotes.value || []
   const i = list.findIndex(q => q.id === updated.id)
   if (i >= 0) quotes.value = list.map((q, n) => (n === i ? { ...q, ...updated } : q))
+}
+// A texted quote is now "sent" (the send-sms response is the serialized
+// quote); keep the card and the open dialog on the server's word.
+// An unconfirmed text carries no quote body (the server still moved it to
+// sent), so re-ask for the quotes rather than show a stale status.
+async function onQuoteTexted(updated) {
+  if (!updated?.id) return
+  if (!updated.status) {
+    quotes.value = null
+    await ensureQuotesLoaded()
+    const fresh = (quotes.value || []).find(q => q.id === updated.id)
+    if (fresh && customerQuote.value?.id === fresh.id) customerQuote.value = fresh
+    return
+  }
+  patchQuote(updated)
+  if (customerQuote.value?.id === updated.id) customerQuote.value = { ...customerQuote.value, ...updated }
 }
 function onQuoteAccepted(updated) {
   patchQuote(updated)
