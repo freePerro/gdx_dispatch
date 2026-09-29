@@ -82,6 +82,19 @@
             <Badge :value="stageLabel(data.stage)" :severity="stageSeverity(data.stage)" />
           </template>
         </Column>
+        <!-- Where the lead's work is, lead to paid: its selected estimate's
+             job state (Scheduled … Paid), else Sold / Quoted / Estimate
+             started. Derived server-side on every read. -->
+        <Column field="progress_label" header="Progress" style="width:170px" sortable>
+          <template #body="{ data }">
+            <!-- JobStateChip has two roots, so attributes on it are dropped:
+                 the test id lives on this wrapper. -->
+            <span v-if="data.progress" :data-testid="`lead-progress-${data.id}`">
+              <JobStateChip :job="leadProgressAsJob(data.progress)" :show-deposit-badge="false" />
+            </span>
+            <span v-else class="lead-progress-none">—</span>
+          </template>
+        </Column>
         <Column field="follow_up_date" header="Call Back" style="width:170px" sortable>
           <template #body="{ data }">
             <div class="inline-date-cell" @click.stop>
@@ -565,7 +578,7 @@
 
 <script setup>
 import { leadStageSeverity } from '../utils/statusSeverity';
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { useToast } from 'primevue/usetoast';
@@ -595,6 +608,9 @@ import Toolbar from 'primevue/toolbar';
 import EmptyState from '../components/EmptyState.vue';
 import PhoneInput from '../components/PhoneInput.vue';
 import LeadEstimatesPanel from '../components/LeadEstimatesPanel.vue';
+import JobStateChip from '../components/JobStateChip.vue';
+import { leadProgressAsJob } from '../utils/leadProgress';
+import { jobDisplayState } from '../utils/jobDisplayState';
 
 const api = useApiWithToast();
 const toast = useToast();
@@ -728,6 +744,7 @@ function exportLeads() {
       { field: 'name', header: 'Name' },
       { field: 'email', header: 'Email' },
       { field: 'stage', header: 'Stage' },
+      { field: 'progress_label', header: 'Progress' },
       { field: 'follow_up_date', header: 'Call Back' },
       { field: 'estimated_value', header: 'Estimated Value' },
       { field: 'source', header: 'Source' },
@@ -782,7 +799,12 @@ let appliedRequest = 0;
 
 // quiet: refresh the rows in place, without swapping the table for a spinner.
 // Resolves true when its rows were applied, false when a newer load won.
+// Set when the lead dialog moved "counts as won"; see onLeadEstimateSelected.
+let pickChangedInDialog = false;
 async function loadLeads({ quiet = false } = {}) {
+  // This load already brings the newly picked estimate's progress; the
+  // dialog-close watch below must not fetch a second time.
+  pickChangedInDialog = false;
   const req = ++leadsRequest;
   if (!quiet) loading.value = true;
   try {
@@ -794,7 +816,14 @@ async function loadLeads({ quiet = false } = {}) {
     const data = await api.get(`/api/leads${queryStr}`);
     if (req !== leadsRequest) return false;
     const list = Array.isArray(data) ? data : data?.items || [];
-    leads.value = list.map((l) => ({ ...l, stage: capitalize(l.stage) || 'New' }));
+    leads.value = list.map((l) => ({
+      ...l,
+      stage: capitalize(l.stage) || 'New',
+      // Flat copy for sorting and CSV — the chip's OWN label (it relabels a
+      // dateless "Scheduled" as "Awaiting Schedule"), so the column sorts and
+      // exports exactly what it shows.
+      progress_label: l.progress ? jobDisplayState(leadProgressAsJob(l.progress)).label : '',
+    }));
     appliedRequest = req;
     return true;
   } finally {
@@ -886,8 +915,18 @@ function openEdit(lead) {
 }
 
 // The pick changed on the server; keep the row (and the open dialog) honest.
+// The row's Progress chip follows the pick, and only the server can say what
+// the newly picked estimate's job is at — reload the list when the dialog
+// closes (however it closes: Save, Cancel or the X).
+watch(showDialog, (open) => {
+  if (!open && pickChangedInDialog) {
+    pickChangedInDialog = false;
+    loadLeads({ quiet: true });
+  }
+});
 function onLeadEstimateSelected(updated) {
   if (!updated?.id) return;
+  pickChangedInDialog = true;
   const row = leads.value.find((l) => l.id === updated.id);
   if (row) row.selected_estimate_id = updated.selected_estimate_id;
   if (editingLead.value?.id === updated.id) editingLead.value.selected_estimate_id = updated.selected_estimate_id;
@@ -1408,6 +1447,9 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.lead-progress-none {
+  color: var(--p-text-muted-color);
+}
 .page-subtitle {
   margin: 0.25rem 0 0;
   color: var(--p-text-muted-color);

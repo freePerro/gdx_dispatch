@@ -672,7 +672,8 @@ def list_leads(
 
     stmt = stmt.limit(limit).offset(offset)
     rows = db.execute(stmt).scalars().all()
-    return [_serialize_lead(r) for r in rows]
+    progress = _progress_for_leads(db, list(rows))
+    return [{**_serialize_lead(r), "progress": progress.get(str(r.id))} for r in rows]
 
 
 @router.get(
@@ -859,6 +860,113 @@ def get_lead_by_estimate(
     data = _serialize_lead(lead)
     data["custom_fields"] = _list_values_for_entity(db, tenant_id, "lead", str(lead.id))
     return data
+
+# ---------------------------------------------------------------------------
+# Lead progress: where the lead's work is, from lead to paid. Derived on every
+# read, never stored — the same "derive, don't cache" rule the job display
+# state follows, so it cannot drift from the estimates, job and invoices.
+# ---------------------------------------------------------------------------
+
+def _state(stage: str, type_: str, label: str) -> dict[str, Any]:
+    return {"stage": stage, "type": type_, "label": label,
+            "is_finished": type_ in ("won", "lost"), "deposit_paid": False}
+
+
+def _progress_for_leads(db: Session, leads: list[Lead]) -> dict[str, dict[str, Any] | None]:
+    """{lead_id: display_state | None}, batched (four queries, no N+1).
+
+    The selected estimate (the lead's live pick) drives it:
+      * with a live job  -> that job's display state (Scheduled, In Progress,
+        Ready to Bill, Invoiced, Partially Paid, Overdue, Paid, Cancelled),
+        plus the job's scheduled_at so the chip can say "Awaiting Schedule";
+      * without a job    -> Sold.
+    No pick: any accepted -> Sold (a won lead never reads as merely quoted
+    just because staff cleared the pick while another option was out); else
+    any sent (or bounced) -> Quoted; any draft -> Estimate started; all
+    declined -> Declined; all expired -> Expired; none -> None.
+    A failure degrades to an empty map — the Leads list never breaks over a
+    display field (the jobs list's rule).
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from gdx_dispatch.models.tenant_models import Job
+    from gdx_dispatch.modules.proposals.models import Estimate
+    from gdx_dispatch.routers.jobs import _display_state_for_jobs
+
+    ids = [lead.id for lead in leads if lead.id is not None]
+    if not ids:
+        return {}
+    try:
+        by_lead: dict[str, list[Any]] = {}
+        for row in db.execute(
+            select(Estimate.id, Estimate.lead_id, Estimate.status, Estimate.job_id).where(
+                Estimate.lead_id.in_(ids), Estimate.deleted_at.is_(None)
+            )
+        ).all():
+            by_lead.setdefault(str(row.lead_id), []).append(row)
+
+        picked: dict[str, Any] = {}
+        for lead in leads:
+            pick = lead.selected_estimate_id
+            if pick is None:
+                continue
+            hit = next((e for e in by_lead.get(str(lead.id), []) if e.id == pick), None)
+            if hit is not None:
+                picked[str(lead.id)] = hit
+
+        job_ids = [e.job_id for e in picked.values() if e.job_id is not None]
+        jobs: dict[str, Any] = {}
+        if job_ids:
+            for row in db.execute(
+                select(Job.id, Job.lifecycle_stage, Job.scheduled_at).where(
+                    Job.id.in_(job_ids), Job.deleted_at.is_(None)
+                )
+            ).all():
+                jobs[str(row.id)] = row
+        states = _display_state_for_jobs(
+            db, [(j.id, j.lifecycle_stage) for j in jobs.values()]
+        ) if jobs else {}
+    except SQLAlchemyError:
+        log.exception("lead_progress_failed")
+        return {}
+
+    out: dict[str, dict[str, Any] | None] = {}
+    for lead in leads:
+        lid = str(lead.id)
+        est = picked.get(lid)
+        if est is not None:
+            job = jobs.get(str(est.job_id)) if est.job_id is not None else None
+            if job is None:
+                out[lid] = _state("sold", "open", "Sold")
+                continue
+            state = states.get(str(job.id))
+            # A live job whose state could not be derived (the jobs helper
+            # degrades to {} on a DB error) is UNKNOWN, not "Sold" — a paid
+            # lead must never read as merely sold because a read failed.
+            out[lid] = {
+                **state,
+                "scheduled_at": job.scheduled_at.isoformat() if job.scheduled_at else None,
+            } if state else None
+            continue
+        statuses = {e.status for e in by_lead.get(lid, [])}
+        if not statuses:
+            out[lid] = None
+        elif "accepted" in statuses:
+            # Sold, but no estimate is picked to follow — staff choose one in
+            # the lead dialog and the chip then tracks its job.
+            out[lid] = _state("sold", "open", "Sold")
+        elif statuses & {"sent", "rejected"}:
+            out[lid] = _state("quoted", "open", "Quoted")
+        elif "draft" in statuses:
+            out[lid] = _state("estimate_started", "open", "Estimate started")
+        elif statuses <= {"declined"}:
+            out[lid] = _state("declined", "lost", "Declined")
+        elif statuses <= {"expired", "declined"}:
+            out[lid] = _state("expired", "lost", "Expired")
+        else:
+            out[lid] = None
+    return out
+
 
 def _selected_estimate_id(db: Session, lead: Lead) -> str | None:
     """The lead's pick, if it still names one of its live estimates.

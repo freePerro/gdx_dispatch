@@ -1,7 +1,7 @@
 # Lead-to-Paid Tracking: a Lead Follows Its Estimates Through to Payment
 
 **Date:** 2026-09-29
-**Status:** PARTIALLY BUILT — PR A (§1–§4: estimates carry their lead; duplicate keeps it; accept marks the lead won and picks the estimate; staff move the pick in the lead dialog) is built on `feat/lead-estimate-link`. **Not built:** PR B (§5, the lead's progress through to Paid on the Leads list).
+**Status:** BUILT, NOT YET RELEASED — PR A (§1–§4) merged as #824; PR B (§5, the lead's progress through to Paid on the Leads list) is the follow-up PR from `feat/lead-progress`. Out of scope and not built: the shared status on the estimate and invoice pages.
 
 Extends, does not replace: `docs/design/lead-intake-followup-plan.md`
 (RELEASED v1.128.0: #817, #818, #819), which added `leads.estimate_id` so **Start
@@ -139,6 +139,17 @@ Roles with `leads.read` but no invoice read (sales, dispatcher) see the
 state label (e.g. **Paid**, **Overdue**) and never an amount. A lead's
 `stage` and its `progress` can differ (a PR C lead reads `quoted` while its
 only estimate is a draft) — they answer different questions, and both show.
+
+PR B as built: `GET /api/leads` carries `progress` in the job display-state
+shape (`stage`, `type`, `label`), plus the job's `scheduled_at` when a job
+exists, so the existing status chip renders it unchanged — including its
+"Awaiting Schedule" refinement for a scheduled job with no appointment. An
+accepted estimate with no live pick (staff cleared it) reads **Sold**. A
+failure in the derivation degrades to no progress, never a broken list, and
+a job whose state cannot be derived shows no progress rather than a false
+"Sold". Deliberate: clearing the pick makes even a paid lead read **Sold**
+until staff pick again — the pick is the only path from a lead to a job, and
+clearing it is staff saying "not that one" (PR B audit, 2026-09-29).
 
 ## PRs
 
