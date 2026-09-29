@@ -266,6 +266,7 @@ gdx_dispatch/routers/customer_statements.py                  money-billing
 gdx_dispatch/core/payments.py                                money-billing
 gdx_dispatch/core/stripe_payments.py                         money-billing
 gdx_dispatch/core/invoice_delivery.py                        money-billing
+gdx_dispatch/core/invoice_sms.py                             money-billing
 gdx_dispatch/core/invoice_invariants.py                      money-billing
 gdx_dispatch/core/invoice_paid.py                            money-billing
 gdx_dispatch/core/invoice_tax.py                             money-billing
@@ -292,6 +293,7 @@ gdx_dispatch/frontend/src/views/InvoiceRemindersView.vue     money-billing
 gdx_dispatch/frontend/src/views/BillingView.vue              money-billing
 gdx_dispatch/frontend/src/components/CustomerStatementDialog.vue money-billing
 gdx_dispatch/frontend/src/components/PaymentCaptureForm.vue  money-billing
+gdx_dispatch/frontend/src/components/InvoiceSmsDialog.vue    money-billing
 gdx_dispatch/frontend/src/utils/customerStatement.js         money-billing
 
 ## ---------------------------------------------------------------------------

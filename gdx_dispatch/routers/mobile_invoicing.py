@@ -1032,6 +1032,29 @@ def _send_invoice_email(
 # ---------------------------------------------------------------------------
 
 
+_AWAITING_VERIFICATION = (
+    "This invoice is waiting for office verification — it "
+    "will be sendable once the office has checked the hours."
+)
+
+
+def _tech_owned_invoice(db: Session, request: Request, invoice_id: str, user_id: str):
+    """The invoice, if it exists and is on the tech's own job; otherwise the
+    JSONResponse refusal (404/403)."""
+    invoice = db.execute(
+        select(Invoice).where(Invoice.id == _UUID(invoice_id), Invoice.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    if invoice is None:
+        return _jr({"detail": "invoice not found"}, 404)
+    if not _job_belongs_to_tech(db, request, str(invoice.job_id), user_id):
+        return _jr({"detail": "invoice not on a job assigned to you"}, 403)
+    return invoice
+
+
+def _awaiting_verification_refusal() -> JSONResponse:
+    return _jr({"detail": _AWAITING_VERIFICATION, "awaiting_verification": True}, 409)
+
+
 @router.post("/invoices/{invoice_id}/send", response_model=None)
 def mobile_send_invoice(
     invoice_id: str,
@@ -1042,17 +1065,12 @@ def mobile_send_invoice(
     """Re-send the invoice email. Stamps sent_at only when a provider
     acknowledged delivery; the response carries email_sent so the tech
     console can be honest about non-delivery."""
-    invoice = db.execute(
-        select(Invoice).where(Invoice.id == _UUID(invoice_id), Invoice.deleted_at.is_(None))
-    ).scalar_one_or_none()
-    if invoice is None:
-        return _jr({"detail": "invoice not found"}, 404)
-
     user = current_user or {}
     user_id = _user_id(user)
     tenant_id = _tenant_id(request)
-    if not _job_belongs_to_tech(db, request, str(invoice.job_id), user_id):
-        return _jr({"detail": "invoice not on a job assigned to you"}, 403)
+    invoice = _tech_owned_invoice(db, request, invoice_id, user_id)
+    if isinstance(invoice, JSONResponse):
+        return invoice
 
     # Plan §11 (audit A5): NOTHING a tech types from a truck reaches a
     # customer until the office has verified the invoice. On the hourly lane
@@ -1061,16 +1079,7 @@ def mobile_send_invoice(
     # office verifies from the billing screen; this endpoint just refuses
     # until then, with a message that says what happens next.
     if invoice.verified_at is None:
-        return _jr(
-            {
-                "detail": (
-                    "This invoice is waiting for office verification — it "
-                    "will be sendable once the office has checked the hours."
-                ),
-                "awaiting_verification": True,
-            },
-            409,
-        )
+        return _awaiting_verification_refusal()
 
     # PR1-billing-capture (audit catch): the desktop /send now 409s on void,
     # but this path still EMAILED voided invoices to customers. Same guard.
@@ -1100,6 +1109,79 @@ def mobile_send_invoice(
     resend_payload = _serialize_invoice(invoice, db=db)
     resend_payload["email_sent"] = bool(delivered)
     return _jr(resend_payload)
+
+
+class MobileSendSmsIn(BaseModel):
+    to: str | None = Field(default=None, max_length=40)
+    body: str | None = Field(default=None, max_length=1600)
+    resend_unconfirmed: bool = False
+
+
+def _mobile_sms_invoice(db: Session, request: Request, invoice_id: str, user_id: str):
+    """The tech-side gates shared by preview and send: the invoice exists, is
+    on the tech's own job, and the phone_com module is on. Returns the invoice
+    or a JSONResponse refusal."""
+    from gdx_dispatch.core.modules import is_module_enabled
+
+    if not is_module_enabled("phone_com", request, db):
+        return _jr({"detail": "Texting is not enabled for this company."}, 403)
+    return _tech_owned_invoice(db, request, invoice_id, user_id)
+
+
+@router.post("/invoices/{invoice_id}/sms-preview", response_model=None)
+def mobile_invoice_sms_preview(
+    invoice_id: str,
+    request: Request,
+    payload: MobileSendSmsIn | None = None,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Any:
+    """What "Text invoice" would send from the truck, or why it can't."""
+    from gdx_dispatch.core import invoice_sms
+
+    got = _mobile_sms_invoice(db, request, invoice_id, _user_id(current_user or {}))
+    if isinstance(got, JSONResponse):
+        return got
+    prep = invoice_sms.prepare(db, got, to_override=(payload.to if payload else None))
+    if prep["blocked"] is None and got.verified_at is None:
+        # Plan §11: nothing a tech types reaches a customer before the office
+        # has verified it — same rule as the email resend above.
+        prep["blocked"] = {"code": "awaiting_verification", "message": _AWAITING_VERIFICATION}
+    return _jr(prep)
+
+
+@router.post("/invoices/{invoice_id}/send-sms", response_model=None)
+def mobile_send_invoice_sms(
+    invoice_id: str,
+    request: Request,
+    payload: MobileSendSmsIn | None = None,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Text the customer the view-and-pay link from the tech's phone."""
+    from gdx_dispatch.core import invoice_sms
+
+    user_id = _user_id(current_user or {})
+    got = _mobile_sms_invoice(db, request, invoice_id, user_id)
+    if isinstance(got, JSONResponse):
+        return got
+    if got.verified_at is None:
+        return _awaiting_verification_refusal()
+    p = payload or MobileSendSmsIn()
+    result = invoice_sms.send(
+        db,
+        got,
+        tenant_id=invoice_sms.tenant_uuid(current_user, request),
+        actor_id=user_id or None,
+        to_override=p.to,
+        body_override=p.body,
+        resend_unconfirmed=p.resend_unconfirmed,
+        audit_action="mobile_invoice_sent_sms",
+        request=request,
+    )
+    out = _serialize_invoice(got, db=db)
+    out.update(result)
+    return _jr(out)
 
 
 # ---------------------------------------------------------------------------

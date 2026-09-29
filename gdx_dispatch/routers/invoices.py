@@ -2799,6 +2799,76 @@ def send_invoice(
     return payload
 
 
+class SendInvoiceSmsIn(BaseModel):
+    """Optional composer payload for /send-sms and /sms-preview — empty keeps
+    the customer's phone and the default message."""
+
+    model_config = ConfigDict(extra="forbid")
+    to: str | None = Field(default=None, max_length=40)
+    body: str | None = Field(default=None, max_length=1600)
+    # The operator checked the thread after an unconfirmed attempt and wants
+    # to send anyway (see core/invoice_sms.py "Re-sending").
+    resend_unconfirmed: bool = False
+
+
+@router.post(
+    "/{invoice_id}/sms-preview",
+    response_model=None,
+    dependencies=[Depends(require_permission("invoices.send")), Depends(require_module("phone_com"))],
+)
+def invoice_sms_preview(
+    invoice_id: UUID,
+    payload: SendInvoiceSmsIn | None = None,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """What "Text invoice" would send, and to whom — or why it can't. Writes
+    nothing; the body is exactly what /send-sms would send unedited."""
+    from gdx_dispatch.core import invoice_sms
+
+    invoice = _get_invoice_or_404(invoice_id, db)
+    prep = invoice_sms.prepare(db, invoice, to_override=(payload.to if payload else None))
+    return prep
+
+
+@router.post(
+    "/{invoice_id}/send-sms",
+    response_model=None,
+    dependencies=[Depends(require_permission("invoices.send")), Depends(require_module("phone_com"))],
+)
+def send_invoice_sms(
+    invoice_id: UUID,
+    request: Request,
+    payload: SendInvoiceSmsIn | None = None,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Text the customer a link to view and pay the invoice (Phone.com).
+
+    Flips a draft to sent and stamps sent_at / sent_via='sms' once Phone.com
+    accepts the message. Every refusal is a {code, message} 4xx. A definite
+    provider refusal is a 502 with the invoice unchanged; an unconfirmed
+    outcome (timeout / 5xx) is a 504 with the invoice moved to sent but not
+    stamped, so a link that did arrive works. See core/invoice_sms.py."""
+    from gdx_dispatch.core import invoice_sms
+
+    invoice = _get_invoice_or_404(invoice_id, db)
+    p = payload or SendInvoiceSmsIn()
+    result = invoice_sms.send(
+        db,
+        invoice,
+        tenant_id=invoice_sms.tenant_uuid(_, request),
+        actor_id=_actor_id(_),
+        to_override=p.to,
+        body_override=p.body,
+        resend_unconfirmed=p.resend_unconfirmed,
+        request=request,
+    )
+    out = _serialize_invoice(invoice)
+    out.update(result)
+    return out
+
+
 @router.post("/{invoice_id}/lines", response_model=None, status_code=201, dependencies=[Depends(require_permission("invoices.write"))])
 def add_invoice_line(
     invoice_id: UUID,
