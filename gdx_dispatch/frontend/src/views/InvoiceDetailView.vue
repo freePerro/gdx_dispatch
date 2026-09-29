@@ -784,9 +784,9 @@
         </template>
       </Dialog>
 
-      <InvoiceSmsDialog
+      <SmsLinkDialog
         v-model:visible="showSmsDialog"
-        :invoice-id="String(route.params.id)"
+        :doc-id="String(route.params.id)"
         @sent="fetchInvoice"
       />
 
@@ -1094,7 +1094,7 @@ import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
 import { usePermission } from "../composables/usePermission";
 import { invoiceStatusSeverity as statusSeverity } from "../utils/statusSeverity";
 import { useTenantModules } from "../composables/useTenantModules";
-import InvoiceSmsDialog from "../components/InvoiceSmsDialog.vue";
+import SmsLinkDialog from "../components/SmsLinkDialog.vue";
 import { openAuthedFile } from "../composables/useAuthedFile";
 import { useTenantTimezone } from "../composables/useTenantTimezone";
 import Button from "primevue/button";

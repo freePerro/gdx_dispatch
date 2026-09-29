@@ -37,7 +37,9 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_unpermissioned_bas
 # reason recorded in the baseline file.
 # 372 → 374 (2026-09-28): the tech's text-an-invoice routes; reason recorded
 # in the baseline file.
-BASELINE_SIZE = 374
+# 374 → 376 (2026-09-29): the tech's text-an-estimate routes; reason recorded
+# in the baseline file.
+BASELINE_SIZE = 376
 
 
 def _baseline() -> set[str]:

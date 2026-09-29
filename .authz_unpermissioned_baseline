@@ -42,6 +42,12 @@
 # lines beside them: a technician holds no invoices permission, so these are
 # authorized in the handler — the invoice must be on the caller's own job
 # (_tech_owned_invoice → 403), office-verified (409), and phone_com enabled.
+# 374 → 376 (2026-09-29, text an estimate): POST /api/mobile/quotes/{estimate_id}/
+# send-sms and /sms-preview. ADDED, same shape as the /accept and /decline
+# lines beside them: techs do not hold estimates.send (docs/tech_mobile.md), so
+# these are authorized in the handler — the quote must sit on a job assigned
+# to the caller via the shared core/job_access gate (_tech_textable_quote →
+# 403; a quote with no job is refused) and phone_com must be enabled.
 
 # ── customer portal ───────────────────────────────────────────────────────
 # These authenticate a CUSTOMER, not a tenant user, so no role or permission
@@ -315,6 +321,8 @@ POST /api/mobile/jobs/{job_id}/quote
 POST /api/mobile/location
 POST /api/mobile/quotes/{estimate_id}/accept
 POST /api/mobile/quotes/{estimate_id}/decline
+POST /api/mobile/quotes/{estimate_id}/send-sms
+POST /api/mobile/quotes/{estimate_id}/sms-preview
 POST /api/mobile/today/reorder
 POST /api/mobile/voice-note
 POST /api/notifications/send

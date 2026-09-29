@@ -21,15 +21,20 @@ import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
 import PaymentCaptureForm from './PaymentCaptureForm.vue'
+import SmsLinkDialog from './SmsLinkDialog.vue'
+import { useTenantModules } from '../composables/useTenantModules'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
   quote: { type: Object, default: null },
 })
-const emit = defineEmits(['update:visible', 'accepted', 'declined'])
+const emit = defineEmits(['update:visible', 'accepted', 'declined', 'texted'])
 
 const api = useApi()
 const toast = useToast()
+const { isEnabled } = useTenantModules()
+const smsEnabled = computed(() => isEnabled('phone_com'))
+const smsOpen = ref(false)
 
 const open = computed({
   get: () => props.visible,
@@ -418,6 +423,15 @@ async function submitDecline() {
       </template>
       <template v-else-if="!declining">
         <Button label="Decline" text severity="secondary" @click="declining = true" />
+        <!-- The customer wants to think it over: text them the approval link. -->
+        <Button
+          v-if="smsEnabled && quote?.id && !['accepted', 'declined'].includes(quote.status)"
+          label="Text"
+          icon="pi pi-comment"
+          text
+          data-testid="mobile-quote-text"
+          @click="smsOpen = true"
+        />
         <Button
           label="Accept & sign"
           icon="pi pi-check"
@@ -433,6 +447,14 @@ async function submitDecline() {
       </template>
     </template>
   </Dialog>
+  <SmsLinkDialog
+    v-if="quote?.id"
+    v-model:visible="smsOpen"
+    :doc-id="String(quote.id)"
+    base="/api/mobile/quotes"
+    title="Text estimate"
+    @sent="(q) => emit('texted', q)"
+  />
 </template>
 
 <style scoped>

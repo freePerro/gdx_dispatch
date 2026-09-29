@@ -1,5 +1,5 @@
 /**
- * InvoiceSmsDialog — text the view-and-pay link.
+ * SmsLinkDialog — text a customer the view-and-pay / review-and-approve link.
  *
  * Pins:
  *  1. Opening previews (POST {base}/{id}/sms-preview) and fills To + Message;
@@ -22,7 +22,7 @@ vi.mock('primevue/usetoast', () => ({
   useToast: () => ({ add: toastAdd }),
 }));
 
-import InvoiceSmsDialog from '../InvoiceSmsDialog.vue';
+import SmsLinkDialog from '../SmsLinkDialog.vue';
 
 const stubs = {
   Dialog: {
@@ -56,8 +56,8 @@ const PREVIEW = {
 };
 
 function mountDialog(props = {}) {
-  return mount(InvoiceSmsDialog, {
-    props: { visible: true, invoiceId: 'inv-1', ...props },
+  return mount(SmsLinkDialog, {
+    props: { visible: true, docId: 'inv-1', ...props },
     global: { stubs },
   });
 }
@@ -69,7 +69,7 @@ beforeEach(() => {
   toastAdd.mockReset();
 });
 
-describe('InvoiceSmsDialog', () => {
+describe('SmsLinkDialog', () => {
   it('previews on open and sends nothing until Send', async () => {
     apiPost.mockResolvedValueOnce(PREVIEW);
     const w = mountDialog();

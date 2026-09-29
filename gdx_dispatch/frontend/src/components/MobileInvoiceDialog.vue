@@ -22,7 +22,7 @@ import Tag from 'primevue/tag'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
 import AuthedImage from './AuthedImage.vue'
-import InvoiceSmsDialog from './InvoiceSmsDialog.vue'
+import SmsLinkDialog from './SmsLinkDialog.vue'
 import { useTenantModules } from '../composables/useTenantModules'
 import { formatMoney } from '../composables/useFormatters'
 import { useTenantTimezone } from '../composables/useTenantTimezone'
@@ -466,10 +466,10 @@ async function sendReceipt(inv) {
       />
     </template>
   </Dialog>
-  <InvoiceSmsDialog
+  <SmsLinkDialog
     v-if="smsInvoiceId"
     :visible="!!smsInvoiceId"
-    :invoice-id="smsInvoiceId"
+    :doc-id="smsInvoiceId"
     base="/api/mobile/invoices"
     @update:visible="(v) => { if (!v) smsInvoiceId = null }"
     @sent="loadSummary"

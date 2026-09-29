@@ -284,7 +284,7 @@ describe('MobileBillingView — Mark paid records a real payment (2026-07-21)', 
       await flushPromises();
       w.vm.detail = { id: 'inv-1', status: 'sent', balance_due: 100, total: 100 };
       await flushPromises();
-      expect(w.findComponent({ name: 'InvoiceSmsDialog' }).props('base')).toBe(base);
+      expect(w.findComponent({ name: 'SmsLinkDialog' }).props('base')).toBe(base);
       w.unmount();
     }
   });

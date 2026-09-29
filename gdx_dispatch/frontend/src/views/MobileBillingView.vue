@@ -158,10 +158,10 @@
           <Button label="Close" severity="secondary" @click="closeDetail" />
         </template>
       </Dialog>
-      <InvoiceSmsDialog
+      <SmsLinkDialog
         v-if="detail"
         v-model:visible="smsOpen"
-        :invoice-id="String(detail.id)"
+        :doc-id="String(detail.id)"
         :base="officeTier ? '/api/invoices' : '/api/mobile/invoices'"
         @sent="onTexted"
       />
@@ -173,7 +173,7 @@ import { computed, onMounted, ref } from 'vue'
 import { recordedQuantity } from '../utils/quantity'
 import { useApi } from '../composables/useApi'
 import { useTenantModules } from '../composables/useTenantModules'
-import InvoiceSmsDialog from '../components/InvoiceSmsDialog.vue'
+import SmsLinkDialog from '../components/SmsLinkDialog.vue'
 import { useToast } from 'primevue/usetoast'
 
 import Button from 'primevue/button'

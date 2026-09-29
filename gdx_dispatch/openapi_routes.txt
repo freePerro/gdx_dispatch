@@ -899,6 +899,8 @@ POST /api/estimates/{estimate_id}/proposal/accept
 POST /api/estimates/{estimate_id}/reassign-customer
 POST /api/estimates/{estimate_id}/reopen
 POST /api/estimates/{estimate_id}/send
+POST /api/estimates/{estimate_id}/send-sms
+POST /api/estimates/{estimate_id}/sms-preview
 POST /api/expenses
 POST /api/expenses/promote-from-receipt
 POST /api/expenses/{expense_id}/lines
@@ -1020,6 +1022,8 @@ POST /api/mobile/jobs/{job_id}/quote
 POST /api/mobile/location
 POST /api/mobile/quotes/{estimate_id}/accept
 POST /api/mobile/quotes/{estimate_id}/decline
+POST /api/mobile/quotes/{estimate_id}/send-sms
+POST /api/mobile/quotes/{estimate_id}/sms-preview
 POST /api/mobile/today/reorder
 POST /api/mobile/voice-note
 POST /api/next-actions

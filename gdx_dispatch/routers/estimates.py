@@ -23,6 +23,7 @@ from gdx_dispatch.core.audit import (
     utcnow,
 )
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.link_sms import SendLinkSmsIn as SendEstimateSmsIn  # one composer model for every SMS route
 from gdx_dispatch.core.modules import require_module, require_permission, require_role
 from gdx_dispatch.core.pricing_provenance import derive_margin_pct
 from gdx_dispatch.core.quantities import recorded_quantity
@@ -2119,6 +2120,91 @@ def estimate_email_preview(
     }
 
 
+
+
+@router.post(
+    "/{estimate_id}/sms-preview",
+    response_model=None,
+    dependencies=[Depends(require_permission("estimates.send")), Depends(require_module("phone_com"))],
+)
+def estimate_sms_preview(
+    estimate_id: UUID,
+    payload: SendEstimateSmsIn | None = None,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """What "Text estimate" would send, and to whom — or why it can't. Writes
+    nothing; the body is exactly what /send-sms would send unedited."""
+    from gdx_dispatch.core import estimate_sms
+
+    estimate = _get_estimate_or_404(estimate_id, db)
+    return estimate_sms.prepare(db, estimate, to_override=(payload.to if payload else None))
+
+
+@router.post(
+    "/{estimate_id}/send-sms",
+    response_model=None,
+    dependencies=[Depends(require_permission("estimates.send")), Depends(require_module("phone_com"))],
+)
+def send_estimate_sms(
+    estimate_id: UUID,
+    request: Request,
+    payload: SendEstimateSmsIn | None = None,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Text the customer a link to review and approve the estimate (Phone.com).
+
+    Marks it sent (sent_at, sent_via='sms', expiry, estimate.sent event) once
+    Phone.com accepts the message. Every refusal is a {code, message} 4xx. A
+    definite provider refusal is a 502 with the estimate unchanged; an
+    unconfirmed outcome (timeout / 5xx) is a 504 with sent_at set, so a link
+    that did arrive works, but sent_via unset. See core/link_sms.py."""
+    from gdx_dispatch.core import estimate_sms, link_sms
+
+    estimate = _get_estimate_or_404(estimate_id, db)
+    p = payload or SendEstimateSmsIn()
+    result = estimate_sms.send(
+        db,
+        estimate,
+        tenant_id=link_sms.tenant_uuid(_, request),
+        actor_id=_actor_id(_),
+        to_override=p.to,
+        body_override=p.body,
+        resend_unconfirmed=p.resend_unconfirmed,
+        request=request,
+    )
+    out = _serialize_estimate(estimate, include_lines=False)
+    out.update(result)
+    return out
+
+
+def _emit_estimate_sent(db: Session, estimate: Estimate) -> None:
+    """The estimate.sent domain event (audit round 2: SUPPORTED_TRIGGERS
+    advertised it but nothing ever emitted it — a rule on the marquee trigger
+    of an email branch sat dead forever). One emitter for every channel that
+    delivers an estimate (email here, SMS in core/estimate_sms.py). Never
+    raises into a send."""
+    try:
+        from gdx_dispatch.core.webhooks.emit import emit_domain_event
+        tid_ev = str(estimate.company_id or "")
+        emit_domain_event(
+            db,
+            "estimate.sent",
+            str(estimate.id),
+            {
+                "estimate_id": str(estimate.id),
+                "estimate_number": estimate.estimate_number,
+                "status": "sent",
+                "customer_id": str(estimate.customer_id) if estimate.customer_id else None,
+                "company_id": tid_ev,
+            },
+            tenant_id=tid_ev or None,
+        )
+    except Exception:
+        log.exception("estimate_sent_event_emit_failed")
+
+
 @router.post("/{estimate_id}/send", response_model=None)
 def send_estimate(
     estimate_id: UUID,
@@ -2231,32 +2317,18 @@ def send_estimate(
         email_skip_reason = "exception"
 
     if email_sent:
-        estimate.status = "sent"
-        estimate.sent_at = utcnow()
+        # Re-read under a row lock before stamping: the email took seconds, and
+        # the customer may have accepted/declined meanwhile (a link from an
+        # earlier send). A delivery never undoes their decision — only the
+        # channel is noted.
+        db.refresh(estimate, with_for_update=True)
         estimate.sent_via = "email"
-        _apply_send_expiry(estimate)
         estimate.updated_at = utcnow()
-        # estimate.sent domain event (audit round 2: SUPPORTED_TRIGGERS
-        # advertised it but nothing ever emitted it — a rule on the marquee
-        # trigger of an email branch sat dead forever).
-        try:
-            from gdx_dispatch.core.webhooks.emit import emit_domain_event
-            tid_ev = str(estimate.company_id or "")
-            emit_domain_event(
-                db,
-                "estimate.sent",
-                str(estimate.id),
-                {
-                    "estimate_id": str(estimate.id),
-                    "estimate_number": estimate.estimate_number,
-                    "status": "sent",
-                    "customer_id": str(estimate.customer_id) if estimate.customer_id else None,
-                    "company_id": tid_ev,
-                },
-                tenant_id=tid_ev or None,
-            )
-        except Exception:
-            log.exception("estimate_sent_event_emit_failed")
+        if estimate.status not in {"accepted", "declined"}:
+            estimate.status = "sent"
+            estimate.sent_at = utcnow()
+            _apply_send_expiry(estimate)
+            _emit_estimate_sent(db, estimate)
         db.commit()
         db.refresh(estimate)
         log_audit_event_sync(

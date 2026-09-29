@@ -45,6 +45,7 @@ from starlette.responses import JSONResponse
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.invoice_paid import paid_to_date
+from gdx_dispatch.core.link_sms import SendLinkSmsIn as MobileSendSmsIn  # one composer model for every SMS route
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.core.quantities import recorded_quantity, zero_quantity_verdict
@@ -1111,10 +1112,6 @@ def mobile_send_invoice(
     return _jr(resend_payload)
 
 
-class MobileSendSmsIn(BaseModel):
-    to: str | None = Field(default=None, max_length=40)
-    body: str | None = Field(default=None, max_length=1600)
-    resend_unconfirmed: bool = False
 
 
 def _mobile_sms_invoice(db: Session, request: Request, invoice_id: str, user_id: str):
