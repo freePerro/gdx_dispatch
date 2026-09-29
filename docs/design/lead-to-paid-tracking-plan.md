@@ -1,7 +1,7 @@
 # Lead-to-Paid Tracking: a Lead Follows Its Estimates Through to Payment
 
 **Date:** 2026-09-29
-**Status:** BUILT, NOT YET RELEASED — PR A (§1–§4) merged as #824; PR B (§5, the lead's progress through to Paid on the Leads list) is the follow-up PR from `feat/lead-progress`. Out of scope and not built: the shared status on the estimate and invoice pages.
+**Status:** RELEASED v1.131.0 — PR A (§1–§4, #824) and PR B (§5, #825); deployed to production 2026-09-29. Out of scope and not built: the shared status on the estimate and invoice pages.
 
 Extends, does not replace: `docs/design/lead-intake-followup-plan.md`
 (RELEASED v1.128.0: #817, #818, #819), which added `leads.estimate_id` so **Start
