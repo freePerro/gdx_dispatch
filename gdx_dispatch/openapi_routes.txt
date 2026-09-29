@@ -944,6 +944,8 @@ POST /api/invoices/{invoice_id}/refund
 POST /api/invoices/{invoice_id}/send
 POST /api/invoices/{invoice_id}/send-receipt
 POST /api/invoices/{invoice_id}/send-reminder
+POST /api/invoices/{invoice_id}/send-sms
+POST /api/invoices/{invoice_id}/sms-preview
 POST /api/invoices/{invoice_id}/verify
 POST /api/invoices/{invoice_id}/void
 POST /api/jobs
@@ -1000,6 +1002,8 @@ POST /api/messages/mark-all-read
 POST /api/mobile/chat/{message_id}/read
 POST /api/mobile/invoices/{invoice_id}/send
 POST /api/mobile/invoices/{invoice_id}/send-receipt
+POST /api/mobile/invoices/{invoice_id}/send-sms
+POST /api/mobile/invoices/{invoice_id}/sms-preview
 POST /api/mobile/jobs/{job_id}/arrived
 POST /api/mobile/jobs/{job_id}/chat
 POST /api/mobile/jobs/{job_id}/claim

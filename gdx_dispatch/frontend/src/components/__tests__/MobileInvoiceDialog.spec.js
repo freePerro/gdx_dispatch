@@ -27,6 +27,12 @@ vi.mock('../../composables/useTenantTimezone', () => ({
   useTenantTimezone: () => ({ zonedDateKey: () => '2026-07-30' }),
 }));
 
+// Texting on/off per test (the Text button is gated on the phone_com module).
+const smsState = { enabled: true };
+vi.mock('../../composables/useTenantModules', () => ({
+  useTenantModules: () => ({ isEnabled: (k) => (k === 'phone_com' ? smsState.enabled : true) }),
+}));
+
 import MobileInvoiceDialog from '../MobileInvoiceDialog.vue';
 
 const stubs = {
@@ -268,5 +274,44 @@ describe('M38 already_billed 409', () => {
     const toasts = toastAdd.mock.calls.map((c) => c[0]);
     expect(toasts.find((t) => t.summary === 'Could not invoice')).toBeTruthy();
     expect(toasts.find((t) => t.summary === 'Already billed')).toBeFalsy();
+  });
+});
+
+describe('MobileInvoiceDialog — Text button placement (2026-09-28)', () => {
+  const verified = (over) => ({
+    id: 'inv-v', invoice_number: '2001', status: 'sent', total: 300, balance_due: 300,
+    verified_at: '2026-09-28T12:00:00Z', ...over,
+  });
+  const mountWith = async (inv, sms) => {
+    smsState.enabled = sms;
+    apiGet.mockReset().mockResolvedValue({ ...SUMMARY, invoices: [inv] });
+    const w = mountDialog();
+    await flushPromises();
+    return w;
+  };
+
+  it.each([
+    ['texting off', verified(), false],
+    ['nothing owed', verified({ balance_due: 0, status: 'paid' }), true],
+    ['void', verified({ status: 'void' }), true],
+  ])('a verified invoice never shows the "unlocks when verified" note (%s)', async (_label, inv, sms) => {
+    // The Text button once sat between Re-send's v-if and this v-else, so the
+    // v-else attached to Text and the note appeared on verified invoices.
+    const w = await mountWith(inv, sms);
+    expect(w.find('[data-label="Re-send"]').exists()).toBe(true);
+    expect(w.find('[data-testid="mid-send-blocked"]').exists()).toBe(false);
+    expect(w.find('[data-testid="mid-text-invoice"]').exists()).toBe(false);
+  });
+
+  it('shows Text for a verified invoice with a balance when texting is on', async () => {
+    const w = await mountWith(verified(), true);
+    expect(w.find('[data-testid="mid-text-invoice"]').exists()).toBe(true);
+    expect(w.find('[data-testid="mid-send-blocked"]').exists()).toBe(false);
+  });
+
+  it('an unverified invoice shows the note and no Text', async () => {
+    const w = await mountWith(verified({ verified_at: null }), true);
+    expect(w.find('[data-testid="mid-send-blocked"]').exists()).toBe(true);
+    expect(w.find('[data-testid="mid-text-invoice"]').exists()).toBe(false);
   });
 });

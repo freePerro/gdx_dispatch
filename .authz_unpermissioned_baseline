@@ -37,6 +37,11 @@
 # caller's own records: the pin refuses a task outside the caller's own set
 # (services/planner_today.py NotYours → 403) and the note is keyed to the
 # caller's user id. See the 2026-09-28 planner Today plan.
+# 372 → 374 (2026-09-28, text an invoice): POST /api/mobile/invoices/{invoice_id}/
+# send-sms and /sms-preview. ADDED, same shape as the /send and /send-receipt
+# lines beside them: a technician holds no invoices permission, so these are
+# authorized in the handler — the invoice must be on the caller's own job
+# (_tech_owned_invoice → 403), office-verified (409), and phone_com enabled.
 
 # ── customer portal ───────────────────────────────────────────────────────
 # These authenticate a CUSTOMER, not a tenant user, so no role or permission
@@ -294,6 +299,8 @@ POST /api/messages/mark-all-read
 POST /api/mobile/chat/{message_id}/read
 POST /api/mobile/invoices/{invoice_id}/send
 POST /api/mobile/invoices/{invoice_id}/send-receipt
+POST /api/mobile/invoices/{invoice_id}/send-sms
+POST /api/mobile/invoices/{invoice_id}/sms-preview
 POST /api/mobile/jobs/{job_id}/arrived
 POST /api/mobile/jobs/{job_id}/chat
 POST /api/mobile/jobs/{job_id}/claim

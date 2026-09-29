@@ -35,7 +35,9 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_unpermissioned_bas
 # worked down to 370, so the ceiling was carrying 52 lines of slack.
 # 370 → 372 (2026-09-28): the planner Today tab's two own-records routes;
 # reason recorded in the baseline file.
-BASELINE_SIZE = 372
+# 372 → 374 (2026-09-28): the tech's text-an-invoice routes; reason recorded
+# in the baseline file.
+BASELINE_SIZE = 374
 
 
 def _baseline() -> set[str]:

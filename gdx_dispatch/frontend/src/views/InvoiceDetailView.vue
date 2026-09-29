@@ -389,6 +389,17 @@
             :disabled="String(invoice.status || '').toLowerCase() === 'void'"
             @click="sendInvoice"
           />
+          <!-- Text the view-and-pay link (Phone.com). Only while money is
+               owed — the text IS a pay link — and only when texting is on. -->
+          <Button
+            v-if="smsEnabled && !['paid','void'].includes(String(invoice.status || '').toLowerCase()) && balanceDue > 0"
+            label="Text Invoice"
+            icon="pi pi-comment"
+            severity="secondary"
+            outlined
+            data-testid="text-invoice-btn"
+            @click="showSmsDialog = true"
+          />
           <!-- Paper invoices: printed + posted, no email involved. Stamps the
                delivery fact with channel 'mail' so the row leaves the Billing
                "Unsent" tab honestly. Hidden once mailed (re-mailing the same
@@ -773,6 +784,12 @@
         </template>
       </Dialog>
 
+      <InvoiceSmsDialog
+        v-model:visible="showSmsDialog"
+        :invoice-id="String(route.params.id)"
+        @sent="fetchInvoice"
+      />
+
       <!-- Record Payment Dialog -->
       <Dialog
         v-model:visible="showPaymentDialog"
@@ -1077,6 +1094,7 @@ import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
 import { usePermission } from "../composables/usePermission";
 import { invoiceStatusSeverity as statusSeverity } from "../utils/statusSeverity";
 import { useTenantModules } from "../composables/useTenantModules";
+import InvoiceSmsDialog from "../components/InvoiceSmsDialog.vue";
 import { openAuthedFile } from "../composables/useAuthedFile";
 import { useTenantTimezone } from "../composables/useTenantTimezone";
 import Button from "primevue/button";
@@ -1437,6 +1455,8 @@ const customerForEdit = ref(null);
 // is technically true but pure noise for a tenant that doesn't use QB).
 const { isEnabled } = useTenantModules();
 const qbEnabled = computed(() => isEnabled("quickbooks"));
+const smsEnabled = computed(() => isEnabled("phone_com"));
+const showSmsDialog = ref(false);
 const qbSync = computed(() => qbSyncLabel(invoice.value, formatStampDateTime));
 
 // --- Computed ---

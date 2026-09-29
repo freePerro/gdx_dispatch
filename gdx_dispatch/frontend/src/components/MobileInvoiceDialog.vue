@@ -22,6 +22,8 @@ import Tag from 'primevue/tag'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
 import AuthedImage from './AuthedImage.vue'
+import InvoiceSmsDialog from './InvoiceSmsDialog.vue'
+import { useTenantModules } from '../composables/useTenantModules'
 import { formatMoney } from '../composables/useFormatters'
 import { useTenantTimezone } from '../composables/useTenantTimezone'
 import { invoiceStatusSeverity as statusSeverity } from '../utils/statusSeverity'
@@ -33,6 +35,9 @@ const props = defineProps({
 const emit = defineEmits(['update:visible', 'invoiced'])
 
 const api = useApi()
+const { isEnabled } = useTenantModules()
+const smsEnabled = computed(() => isEnabled('phone_com'))
+const smsInvoiceId = ref(null)
 const { zonedDateKey } = useTenantTimezone()
 const toast = useToast()
 
@@ -351,6 +356,15 @@ async function sendReceipt(inv) {
               Send unlocks when the office verifies the hours.
             </span>
             <Button
+              v-if="smsEnabled && inv.verified_at && inv.balance_due > 0 && inv.status !== 'void'"
+              label="Text"
+              icon="pi pi-comment"
+              size="small"
+              text
+              data-testid="mid-text-invoice"
+              @click="smsInvoiceId = inv.id"
+            />
+            <Button
               label="Send receipt"
               icon="pi pi-receipt"
               size="small"
@@ -452,6 +466,14 @@ async function sendReceipt(inv) {
       />
     </template>
   </Dialog>
+  <InvoiceSmsDialog
+    v-if="smsInvoiceId"
+    :visible="!!smsInvoiceId"
+    :invoice-id="smsInvoiceId"
+    base="/api/mobile/invoices"
+    @update:visible="(v) => { if (!v) smsInvoiceId = null }"
+    @sent="loadSummary"
+  />
 </template>
 
 <style scoped>

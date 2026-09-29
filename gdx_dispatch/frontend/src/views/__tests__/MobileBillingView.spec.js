@@ -271,4 +271,21 @@ describe('MobileBillingView — Mark paid records a real payment (2026-07-21)', 
     expect(urls).not.toContain('/api/invoices');
     expect(urls).not.toContain('/api/invoices/summary');
   });
+
+  it('Text sends through the endpoint the viewer is allowed to use', async () => {
+    // A technician has no invoices.send, so the office /api/invoices/{id}/send-sms
+    // would 403 — the tech texts through /api/mobile/invoices (own jobs,
+    // office-verified only). Office tiers keep the office endpoint.
+    for (const [office, base] of [[true, '/api/invoices'], [false, '/api/mobile/invoices']]) {
+      hasPermissionMock.mockReturnValue(office);
+      apiGetMock.mockResolvedValue(office ? [] : { invoices: [] });
+      apiPostMock.mockResolvedValue({ to: null, body: '', blocked: null });
+      const w = mount(MobileBillingView, { global: { stubs } });
+      await flushPromises();
+      w.vm.detail = { id: 'inv-1', status: 'sent', balance_due: 100, total: 100 };
+      await flushPromises();
+      expect(w.findComponent({ name: 'InvoiceSmsDialog' }).props('base')).toBe(base);
+      w.unmount();
+    }
+  });
 });
