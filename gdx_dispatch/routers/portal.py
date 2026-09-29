@@ -1145,6 +1145,10 @@ def portal_estimate_accept(
         details={"customer_id": str(principal.customer_id)},
     )
     db.commit()
+    # The accept is durable; win its lead (own commit, never raises).
+    from gdx_dispatch.core.lead_estimates import mark_lead_won_for_estimate
+
+    mark_lead_won_for_estimate(db, estimate, actor=actor, tenant_id=tenant_id, request=request)
 
     # Office alert — same gap as the public link: a portal accept was
     # invisible until someone reopened the estimate. Rides the bell badge;

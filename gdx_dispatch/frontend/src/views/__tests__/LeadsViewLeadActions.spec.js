@@ -207,9 +207,11 @@ describe('LeadsView — lead actions', () => {
 
     const convBody = apiPost.mock.calls.find((c) => c[0] === '/api/leads/lead-new/convert-to-customer')[1];
     expect(convBody).toEqual({ stage: 'quoted' });
+    // lead_id: the estimate belongs to the lead it was started from
+    // — the promoted lead, not the landing row.
     expect(push).toHaveBeenCalledWith({
       path: '/estimates/new',
-      query: { customer_id: 'cust-7' },
+      query: { customer_id: 'cust-7', lead_id: 'lead-new' },
     });
   });
 });

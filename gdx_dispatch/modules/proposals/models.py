@@ -14,6 +14,10 @@ class Estimate(TenantBase):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("jobs.id"), nullable=True)
     customer_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("customers.id"), nullable=True)
+    # The lead this estimate was made for (migration 101). Many estimates per
+    # lead; set by Start estimate, the Leads page's Create estimate, and
+    # Duplicate. Accepting it wins the lead (core/lead_estimates.py).
+    lead_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
     estimate_number: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     label: Mapped[str] = mapped_column(String(200), nullable=True)
     jobsite_address: Mapped[str] = mapped_column(Text, nullable=True)

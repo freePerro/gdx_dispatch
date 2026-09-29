@@ -2715,6 +2715,17 @@ const autosaveError = ref("");
 let _autosaveDraftTimer = null;
 let _autosaveCreating = false;
 
+// Opened from a lead's "Create estimate" (/estimates/new?customer_id=&lead_id=):
+// the estimate belongs to that lead — but only while it is still for the
+// customer the lead came with. Picking someone else ends "this person's
+// estimate" (the server would refuse the link), so the link is not sent.
+function leadIdFor(customerId) {
+  const leadId = route.query?.lead_id;
+  const leadCustomer = route.query?.customer_id;
+  if (!leadId || !customerId || !leadCustomer) return null;
+  return String(customerId) === String(leadCustomer) ? String(leadId) : null;
+}
+
 async function _createDraftFromForm() {
   if (_autosaveCreating || isExisting.value) return;
   if (!form.value.customer_id) return;
@@ -2734,6 +2745,7 @@ async function _createDraftFromForm() {
       tax_rate: persistTax ? formPct / 100 : null,
       discount: Number(form.value.discount) > 0 ? Number(form.value.discount) : null,
       hide_line_prices: form.value.hide_line_prices ?? null,
+      lead_id: leadIdFor(form.value.customer_id),
     };
     const result = await apiRaw.post("/api/estimates", payload);
     const created = result?.data || result;
@@ -3141,6 +3153,7 @@ async function createEstimate() {
       tax_rate: persistTax ? formPct / 100 : null,
       discount: Number(form.value.discount) > 0 ? Number(form.value.discount) : null,
       hide_line_prices: form.value.hide_line_prices ?? null,
+      lead_id: leadIdFor(customerId),
       // M31+M33: keep zero-priced described lines (the display sums them and
       // $0 scope lines are legit); divergent lines were refused above.
       line_items: form.value.line_items

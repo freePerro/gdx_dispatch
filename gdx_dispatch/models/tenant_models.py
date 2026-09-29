@@ -1724,6 +1724,11 @@ class Lead(Base):
         Uuid(as_uuid=True), nullable=True, index=True
     )
     origin_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Which of the lead's estimates counts as won (migration 101). Written by
+    # the accept helper on the lead's FIRST accepted estimate, then only by
+    # staff (PUT /api/leads/{id}/selected-estimate). Stored, not derived:
+    # accept_tier re-stamps accepted_at, so "earliest accepted" can flip.
+    selected_estimate_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
     # -- columns from production schema not yet in ORM --
     contacted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     score: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=True)

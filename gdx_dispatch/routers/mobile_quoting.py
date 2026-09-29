@@ -671,6 +671,10 @@ def accept_quote(
         request=request,
     )
     db.commit()
+    # The accept is durable; win its lead (own commit, never raises).
+    from gdx_dispatch.core.lead_estimates import mark_lead_won_for_estimate
+
+    mark_lead_won_for_estimate(db, estimate, actor=user_id, tenant_id=tenant_id, request=request)
 
     # Deposit at acceptance (2026-07-23) — opt-IN on mobile (see
     # AcceptQuoteIn): the tech flips the Collect-deposit toggle (auto tenant

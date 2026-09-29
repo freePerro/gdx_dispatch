@@ -506,6 +506,10 @@ def public_proposal_accept(
         },
     )
     db.commit()
+    # The accept is durable; win its lead (own commit, never raises).
+    from gdx_dispatch.core.lead_estimates import mark_lead_won_for_estimate
+
+    mark_lead_won_for_estimate(db, est, actor=_PUBLIC_ACTOR, tenant_id=tenant_id, request=request)
 
     # Office alert — the audit row above is forensics, not a ping: without
     # this, a customer says YES from the emailed link and nobody in the shop

@@ -23,12 +23,13 @@ from gdx_dispatch.core.audit import (
     utcnow,
 )
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.lead_estimates import lead_for_estimate, mark_lead_won_for_estimate, resolve_lead_link
 from gdx_dispatch.core.link_sms import SendLinkSmsIn as SendEstimateSmsIn  # one composer model for every SMS route
-from gdx_dispatch.core.modules import require_module, require_permission, require_role
+from gdx_dispatch.core.modules import has_permission, require_module, require_permission, require_role
 from gdx_dispatch.core.pricing_provenance import derive_margin_pct
 from gdx_dispatch.core.quantities import recorded_quantity
 from gdx_dispatch.core.upload_limits import assert_upload_within_limit
-from gdx_dispatch.models.tenant_models import Customer, Document, Job, JobPartNeeded
+from gdx_dispatch.models.tenant_models import Customer, Document, Job, JobPartNeeded, Lead
 from gdx_dispatch.modules.deposits import (
     DepositError,
     adopt_orphan_deposit_invoices,
@@ -181,6 +182,7 @@ def _serialize_estimate(estimate: Estimate, include_lines: bool = False) -> dict
         "id": str(estimate.id),
         "job_id": str(estimate.job_id) if estimate.job_id else None,
         "customer_id": str(estimate.customer_id) if estimate.customer_id else None,
+        "lead_id": str(estimate.lead_id) if getattr(estimate, "lead_id", None) else None,
         "estimate_number": estimate.estimate_number,
         "label": estimate.label,
         "jobsite_address": estimate.jobsite_address,
@@ -490,6 +492,10 @@ class EstimateCreateIn(BaseModel):
     valid_until: str | None = None
     # "Total-only" override at create time. None = inherit tenant default.
     hide_line_prices: bool | None = None
+    # The lead this estimate is for (the Leads page's Create estimate). Gated
+    # in core.lead_estimates.resolve_lead_link: leads.write, a live lead, and
+    # the lead's own customer.
+    lead_id: UUID | None = None
 
 
 class EstimatePatchIn(BaseModel):
@@ -782,6 +788,7 @@ def create_draft_estimate_record(
     tax_rate: Decimal | None = None,
     discount: Decimal | None = None,
     hide_line_prices: bool | None = None,
+    lead_id: UUID | None = None,
 ) -> Estimate:
     """Stage a draft estimate (flush, no commit, no audit) — the body of
     POST /api/estimates, shared with lead start-estimate so numbering and
@@ -798,6 +805,7 @@ def create_draft_estimate_record(
         tax_rate=tax_rate,
         discount=discount,
         hide_line_prices=hide_line_prices,
+        lead_id=lead_id,
         status="draft",
         total=Decimal("0.00"),
         public_token=secrets.token_urlsafe(48)[:64],
@@ -831,6 +839,7 @@ def stage_estimate_created_audit(
             "status": estimate.status,
             "line_count": line_count,
             "total": float(estimate.total or 0),
+            "lead_id": str(estimate.lead_id) if getattr(estimate, "lead_id", None) else None,
         },
         request=request,
     )
@@ -861,6 +870,8 @@ def create_estimate(
         if not customer:
             raise HTTPException(status_code=404, detail="customer not found")
 
+    lead = resolve_lead_link(db, request, lead_id=payload.lead_id, customer_id=customer_id)
+
     # Tenant binding — previously relied on company_id being nullable. Now
     # that the model enforces NOT NULL we must pull tenant from the request.
     tenant_id = str((getattr(request.state, "tenant", {}) or {}).get("id") or "tenant-test")
@@ -877,6 +888,7 @@ def create_estimate(
         tax_rate=Decimal(str(payload.tax_rate)) if payload.tax_rate is not None else None,
         discount=Decimal(str(payload.discount)) if payload.discount is not None else None,
         hide_line_prices=payload.hide_line_prices,
+        lead_id=lead.id if lead is not None else None,
     )
 
     # Persist nested line_items if the client sent them. The Estimate.total is
@@ -2807,6 +2819,8 @@ def accept_estimate(
         details={"status": estimate.status},
     )
     db.commit()
+    # The accept is durable; win its lead (own commit, never raises).
+    mark_lead_won_for_estimate(db, estimate, actor=actor)
 
     # 2026-05-13 directive: accept = job created. The dispatcher used to
     # have to click a separate "Convert to Job" button, which left accepted
@@ -3080,6 +3094,24 @@ def reassign_estimate_customer(
     token_rotated = rotate_public_token(estimate)
     estimate.customer_id = payload.customer_id
     estimate.updated_at = utcnow()
+    # A lead link means "this person's estimate". Moving it to someone who is
+    # not the lead's customer ends that, so the link goes (and the row says so).
+    estimate_lead_cleared = None
+    if estimate.lead_id is not None:
+        linked_lead = lead_for_estimate(db, estimate)
+        if linked_lead is None or linked_lead.converted_customer_id != payload.customer_id:
+            estimate_lead_cleared = str(estimate.lead_id)
+            estimate.lead_id = None
+    # The lead's own pointer (the draft Start estimate reopens) goes too, or
+    # Start estimate on that lead would reopen another customer's estimate.
+    lead_pointers_cleared: list[str] = []
+    for started_by in db.execute(
+        select(Lead).where(Lead.estimate_id == estimate.id, Lead.deleted_at.is_(None))
+    ).scalars().all():
+        if started_by.converted_customer_id != payload.customer_id:
+            started_by.estimate_id = None
+            started_by.updated_at = utcnow()
+            lead_pointers_cleared.append(str(started_by.id))
 
     # Audit BEFORE the commit: an untraced reassignment is worse than a failed
     # one. Names, not contact details — a customer's email and phone do not
@@ -3100,6 +3132,11 @@ def reassign_estimate_customer(
             "reason": payload.reason,
             "previous_status": previous_status,
             "token_rotated": token_rotated,
+            # Both lead links this move ends, so the trail can say which
+            # lead lost this estimate: the estimate's own lead_id, and any
+            # lead whose Start estimate pointed at it.
+            "estimate_lead_cleared": estimate_lead_cleared,
+            "lead_start_pointers_cleared": lead_pointers_cleared,
         },
     )
     db.commit()
@@ -3278,6 +3315,15 @@ def duplicate_estimate(
     new_estimate = Estimate(
         job_id=None,  # duplicates start unattached; original Job keeps its estimate
         customer_id=cloned_customer_id,
+        # A copy is another option for the same lead — unless the customer
+        # fell away (deleted/merged), when "this person's estimate" no longer
+        # holds, or the caller could not have linked it directly (the same
+        # leads.write gate resolve_lead_link applies on create).
+        lead_id=(
+            source.lead_id
+            if cloned_customer_id is not None and has_permission(request, db, "leads.write")
+            else None
+        ),
         # Option variant of the same base — EST-000042-1, -2, -3 (Doug 2026-07-30).
         estimate_number=_next_duplicate_estimate_number(db, source.estimate_number),
         label=_next_duplicate_label(db, source.label),

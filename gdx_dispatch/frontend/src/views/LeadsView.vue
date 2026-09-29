@@ -419,6 +419,15 @@
               </div>
             </div>
           </div>
+
+          <!-- Every estimate made for this lead, and which one counts as won -->
+          <div v-if="editingLead && canSeeLeadEstimates" class="form-field full-width">
+            <LeadEstimatesPanel
+              :lead-id="editingLead.id"
+              :can-write="canWrite"
+              @selected="onLeadEstimateSelected"
+            />
+          </div>
         </div>
         <template #footer>
           <Button
@@ -585,6 +594,7 @@ import Tab from 'primevue/tab';
 import Toolbar from 'primevue/toolbar';
 import EmptyState from '../components/EmptyState.vue';
 import PhoneInput from '../components/PhoneInput.vue';
+import LeadEstimatesPanel from '../components/LeadEstimatesPanel.vue';
 
 const api = useApiWithToast();
 const toast = useToast();
@@ -600,6 +610,8 @@ const route = useRoute();
 const canWrite = computed(() => auth.hasPermission('leads.write'));
 const canDelete = computed(() => auth.hasPermission('leads.delete'));
 const canStartEstimate = computed(() => auth.hasPermission('leads.write') && auth.hasPermission('estimates.write'));
+// GET /api/leads/{id}/estimates needs both (accounting has leads.read only).
+const canSeeLeadEstimates = computed(() => auth.hasPermission('leads.read') && auth.hasPermission('estimates.read_all'));
 
 const leads = ref([]);
 const landingLeads = ref([]);
@@ -871,6 +883,14 @@ function openEdit(lead) {
   formOriginal.value = leadPayload(form.value);
   loadLeadCustomFields(lead.id);
   showDialog.value = true;
+}
+
+// The pick changed on the server; keep the row (and the open dialog) honest.
+function onLeadEstimateSelected(updated) {
+  if (!updated?.id) return;
+  const row = leads.value.find((l) => l.id === updated.id);
+  if (row) row.selected_estimate_id = updated.selected_estimate_id;
+  if (editingLead.value?.id === updated.id) editingLead.value.selected_estimate_id = updated.selected_estimate_id;
 }
 
 function openLanding(landingLead) {
@@ -1184,7 +1204,8 @@ async function createEstimateFromLead(lead) {
     // Route through /estimates/new (customer pre-selected) instead of
     // POSTing a bare estimate: line items go in through the real create
     // path, so no zero-line $0.00 estimate rows (the EST-000014 trap).
-    router.push({ path: '/estimates/new', query: { customer_id: customerId } });
+    // lead_id: the estimate belongs to this lead; accepting it wins the lead.
+    router.push({ path: '/estimates/new', query: { customer_id: customerId, lead_id: lead.id } });
   } finally {
     estimateLeadId.value = null;
   }

@@ -208,7 +208,13 @@ def accept_tier(estimate_id: UUID, tier_id: UUID, db: Session, actor: str = SYST
     est.total = tier_contract_subtotal(db, tier)
     est.updated_at = utcnow()
     asyncio.run(log_audit_event(db, "proposal_tier_accepted", actor, "estimate", str(est.id), {"tier_id": str(tier_id), "tier_name": tier.tier_name, "contract_total": str(est.total)}))
-    db.commit(); db.refresh(est); return est  # noqa: E701,E702
+    db.commit(); db.refresh(est)  # noqa: E701,E702
+    # The accept is durable; win its lead (own commit, never raises). A
+    # re-accept of an already-accepted estimate is a no-op there.
+    from gdx_dispatch.core.lead_estimates import mark_lead_won_for_estimate
+
+    mark_lead_won_for_estimate(db, est, actor=actor)
+    return est
 
 
 # ── tier line items (2026-08-14: tiers built like estimates) ─────────────────
