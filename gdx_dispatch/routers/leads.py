@@ -891,6 +891,7 @@ def _progress_for_leads(db: Session, leads: list[Lead]) -> dict[str, dict[str, A
 
     from gdx_dispatch.models.tenant_models import Job
     from gdx_dispatch.modules.proposals.models import Estimate
+    from gdx_dispatch.modules.vendor_orders.hubx import door_order_status_for_jobs
     from gdx_dispatch.routers.jobs import _display_state_for_jobs
 
     ids = [lead.id for lead in leads if lead.id is not None]
@@ -926,6 +927,9 @@ def _progress_for_leads(db: Session, leads: list[Lead]) -> dict[str, dict[str, A
         states = _display_state_for_jobs(
             db, [(j.id, j.lifecycle_stage) for j in jobs.values()]
         ) if jobs else {}
+        # Captured doors on the job and how many are ordered — flipped by the
+        # HubX order email or the office's "Mark Ordered" (vendor_orders/hubx.py).
+        doors = door_order_status_for_jobs(db, [j.id for j in jobs.values()]) if jobs else {}
     except SQLAlchemyError:
         log.exception("lead_progress_failed")
         return {}
@@ -946,6 +950,7 @@ def _progress_for_leads(db: Session, leads: list[Lead]) -> dict[str, dict[str, A
             out[lid] = {
                 **state,
                 "scheduled_at": job.scheduled_at.isoformat() if job.scheduled_at else None,
+                "doors": doors.get(str(job.id)),
             } if state else None
             continue
         statuses = {e.status for e in by_lead.get(lid, [])}

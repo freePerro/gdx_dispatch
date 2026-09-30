@@ -134,7 +134,12 @@ with suppress(ImportError):
 with suppress(ImportError):
     from gdx_dispatch.modules.inventory.models import JobPart, Part  # noqa: F401
 with suppress(ImportError):
-    from gdx_dispatch.modules.vendor_orders.models import VendorOrder, VendorOrderLine  # noqa: F401
+    from gdx_dispatch.modules.vendor_orders.models import (  # noqa: F401
+        HubxDoorOrder,
+        HubxOrderEmail,
+        VendorOrder,
+        VendorOrderLine,
+    )
     from gdx_dispatch.modules.vendor_statements.models import VendorStatement, VendorStatementLine  # noqa: F401
 with suppress(ImportError):
     from gdx_dispatch.modules.door_listings.models import DoorListing, DoorListingPhoto  # noqa: F401
