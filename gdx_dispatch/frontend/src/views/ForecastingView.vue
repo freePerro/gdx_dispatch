@@ -57,6 +57,9 @@
             · {{ projection.recurring.qbo_overridden }} dup'd
           </span>
         </div>
+        <div class="kpi-sub" v-if="projection?.recurring?.outflow_total" data-testid="recurring-outflow">
+          {{ money(projection.recurring.outflow_total) }} going out · not counted as revenue
+        </div>
       </div>
     </div>
 
