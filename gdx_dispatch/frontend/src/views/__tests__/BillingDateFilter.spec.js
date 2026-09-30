@@ -141,4 +141,19 @@ describe('BillingView — KPI cards follow the date filter', () => {
     const span = SRC.slice(start, start + 800);
     expect(span).toMatch(/inv\.status !== "Void"/);
   });
+
+  it('client Outstanding excludes non-positive balances, matching AR reports', () => {
+    const start = SRC.indexOf('const totalOutstanding = computed');
+    expect(start).toBeGreaterThan(-1);
+    const span = SRC.slice(start, start + 900);
+    expect(span).toMatch(/toNum\(inv\.balance_due \?\? inv\.total\) > 0/);
+  });
+
+  it('client Overdue excludes non-positive balances, matching the server fallback', () => {
+    const start = SRC.indexOf('const overdueAmount = computed');
+    expect(start).toBeGreaterThan(-1);
+    const span = SRC.slice(start, start + 700);
+    expect(span).toMatch(/inv\.status === "Overdue"/);
+    expect(span).toMatch(/toNum\(inv\.balance_due \?\? inv\.total\) > 0/);
+  });
 });

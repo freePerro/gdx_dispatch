@@ -966,7 +966,8 @@ def billing_summary(
     money KPIs the desktop /billing and mobile /mobile/billing render at
     the top of the page:
 
-    - total_outstanding: SUM(balance_due) for non-Paid, non-Draft, non-Void.
+    - total_outstanding: SUM(balance_due) for open positive receivables:
+      non-Paid, non-Draft, non-Void with a positive balance.
       Drafts excluded because they aren't yet receivables (S111 fix).
     - overdue: SUM(balance_due) for invoices past due_date with status
       not in (paid, void, draft).
@@ -974,10 +975,10 @@ def billing_summary(
       calendar month (paid_at >= 1st of month).
     - ready_for_billing: count of completed jobs that have no invoice yet.
 
-    All sums use COALESCE(total_amount, total) to match the legacy data
-    shape across QB-imported and GDX-native rows. The query is a single
-    aggregate over the full table, not a windowed scan — fast even at
-    100k+ invoices.
+    Balance sums use COALESCE(balance_due, total) so legacy rows with a null
+    balance still contribute their invoice total. The query is a single
+    aggregate over the full table, not a windowed scan — fast even at 100k+
+    invoices.
     """
     # Overdue compares due DATES, written on the shop's calendar (#444): use
     # the shop's today. "Paid this month" compares a UTC timestamp, so its
@@ -991,6 +992,7 @@ def billing_summary(
         select(func.coalesce(func.sum(_balance), 0)).where(
             Invoice.deleted_at.is_(None),
             Invoice.status.notin_(("paid", "draft", "void")),
+            _balance > 0,
         )
     ) or 0)
 
@@ -998,7 +1000,7 @@ def billing_summary(
         select(func.coalesce(func.sum(_balance), 0)).where(
             Invoice.deleted_at.is_(None),
             Invoice.status.notin_(("paid", "draft", "void")),
-            Invoice.balance_due > 0,
+            _balance > 0,
             Invoice.due_date.is_not(None),
             Invoice.due_date < today,
         )

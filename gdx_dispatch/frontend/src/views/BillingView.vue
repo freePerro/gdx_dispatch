@@ -1139,7 +1139,8 @@ const kpiWindowInvoices = computed(() =>
 
 // Outstanding = receivables only. Prefer server-side aggregator (full-table
 // SUM, no pagination cap) and fall back to client-side over the loaded
-// list. Drafts excluded — they aren't yet receivables.
+// list. Drafts excluded — they aren't yet receivables. Non-positive balances
+// are not money still owed, so they stay out of AR too.
 const totalOutstanding = computed(() => {
   if (!dateFilterActive.value && billingSummary.value && typeof billingSummary.value.total_outstanding === 'number') {
     return billingSummary.value.total_outstanding;
@@ -1149,6 +1150,7 @@ const totalOutstanding = computed(() => {
     // status NOT IN paid/draft/void); voids normally carry a zeroed
     // balance_due but legacy rows may not.
     .filter((inv) => inv.status !== "Paid" && inv.status !== "Draft" && inv.status !== "Void")
+    .filter((inv) => toNum(inv.balance_due ?? inv.total) > 0)
     .reduce((sum, inv) => sum + toNum(inv.balance_due ?? inv.total), 0);
 });
 
@@ -1158,6 +1160,7 @@ const overdueAmount = computed(() => {
   }
   return kpiWindowInvoices.value
     .filter((inv) => inv.status === "Overdue")
+    .filter((inv) => toNum(inv.balance_due ?? inv.total) > 0)
     .reduce((sum, inv) => sum + toNum(inv.balance_due ?? inv.total), 0);
 });
 
