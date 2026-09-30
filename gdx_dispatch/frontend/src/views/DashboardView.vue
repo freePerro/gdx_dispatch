@@ -207,6 +207,10 @@
         </template>
       </Card>
 
+      <!-- Forward cash: the next 14 days against the bank balance. Self-gates
+           on accounting.read and links to the full calendar on Forecasting. -->
+      <CashCalendarSummaryCard />
+
       <!-- Cash & Risk KPIs -->
       <Card v-if="canSeePipeline && cashLoaded" class="cash-card" data-testid="cash-risk-card">
         <template #title><i class="pi pi-dollar" style="color:#dc2626" /> Cash & Risk</template>
@@ -398,6 +402,7 @@ import InputText from "primevue/inputtext";
 import Textarea from "primevue/textarea";
 import Select from "primevue/select";
 import PhoneInput from "../components/PhoneInput.vue";
+import CashCalendarSummaryCard from "../components/forecasting/CashCalendarSummaryCard.vue";
 
 const api = useApi();
 const router = useRouter();

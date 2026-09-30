@@ -274,6 +274,7 @@ GET /api/exports/leads
 GET /api/exports/payments
 GET /api/exports/technicians
 GET /api/follow-ups
+GET /api/forecast/cash-calendar
 GET /api/forecast/recurring/streams
 GET /api/forecast/recurring/streams/{stream_id}
 GET /api/forecast/revenue

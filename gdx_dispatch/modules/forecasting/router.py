@@ -16,6 +16,7 @@ from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, re
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission, require_role
 from gdx_dispatch.core.quickbooks import QBAuthError, QBError
+from gdx_dispatch.modules.forecasting import cash_calendar as cash_calendar_service
 from gdx_dispatch.modules.forecasting import observed_recurring
 from gdx_dispatch.modules.forecasting import qb_recurring as qb_recurring_helper
 from gdx_dispatch.modules.forecasting import service as forecast_service
@@ -79,6 +80,9 @@ class ForecastSettingsPayload(BaseModel):
     collect_rate_90_plus: float | None = Field(default=None, ge=0.0, le=1.0)
     scheduled_realization_rate: float | None = Field(default=None, ge=0.0, le=1.0)
     include_recurring: bool | None = None
+    cash_floor: float | None = Field(default=None, ge=0, le=100_000_000)
+    clear_cash_floor: bool | None = None
+    operating_account_ids: list[str] | None = Field(default=None, max_length=50)
 
 
 # Every forecasting GET carries require_permission("accounting.read"): these
@@ -106,6 +110,13 @@ def update_forecast_settings(
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request, current_user)
     body = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if "operating_account_ids" in body:
+        try:
+            body["operating_account_ids"] = cash_calendar_service.parse_account_ids(
+                db, body["operating_account_ids"]
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     ensure_audit_table(db)  # before staging: its first run on an engine commits
     current = forecast_service.get_or_create_settings(db)
     # Staged BEFORE update_settings, whose commit then lands the change and
@@ -122,6 +133,25 @@ def update_forecast_settings(
     )
     s = forecast_service.update_settings(db, body)
     return forecast_service._settings_dict(s)
+
+
+@router.get("/forecast/cash-calendar", dependencies=[Depends(require_permission("accounting.read"))])
+def get_cash_calendar(
+    request: FastAPIRequest,
+    days: int = cash_calendar_service.DEFAULT_DAYS,
+    current_user: dict[str, str] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """The next ``days`` dates (today first) against the operating accounts'
+    synced balance: every dated money-in and money-out row with its running
+    balance, the low point, and the first day under the cash floor. Read-only."""
+    _tenant_id(request, current_user)
+    if not cash_calendar_service.MIN_DAYS <= days <= cash_calendar_service.MAX_DAYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"days must be between {cash_calendar_service.MIN_DAYS} and {cash_calendar_service.MAX_DAYS}",
+        )
+    return cash_calendar_service.cash_calendar(db, days=days)
 
 
 @router.get("/forecast/revenue", dependencies=[Depends(require_permission("accounting.read"))])

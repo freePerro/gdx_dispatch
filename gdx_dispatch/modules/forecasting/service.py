@@ -106,6 +106,8 @@ def _settings_dict(s: ForecastSettings) -> dict[str, Any]:
         "collect_rate_90_plus": float(s.collect_rate_90_plus),
         "scheduled_realization_rate": float(s.scheduled_realization_rate),
         "include_recurring": bool(s.include_recurring),
+        "cash_floor": float(s.cash_floor) if s.cash_floor is not None else None,
+        "operating_account_ids": list(s.operating_account_ids or []),
     }
 
 
@@ -129,6 +131,15 @@ def update_settings(db: Session, payload: dict[str, Any]) -> ForecastSettings:
             if f in _DECIMAL_FIELDS and not isinstance(value, Decimal):
                 value = Decimal(str(value))
             setattr(s, f, value)
+    # Cash calendar choices. cash_floor 0 is a real floor; clearing it is an
+    # explicit clear_cash_floor. An empty operating_account_ids list goes back
+    # to the default selection. Ids are validated by the caller.
+    if payload.get("clear_cash_floor"):
+        s.cash_floor = None
+    elif payload.get("cash_floor") is not None:
+        s.cash_floor = Decimal(str(payload["cash_floor"]))
+    if "operating_account_ids" in payload and payload["operating_account_ids"] is not None:
+        s.operating_account_ids = list(payload["operating_account_ids"]) or None
     s.updated_at = datetime.now(UTC)
     db.commit()
     db.refresh(s)

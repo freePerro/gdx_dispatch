@@ -90,6 +90,15 @@ class ForecastSettings(TenantBase):
     collect_rate_90_plus: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False, default=DEFAULT_COLLECT_90_PLUS)
     scheduled_realization_rate: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False, default=DEFAULT_SCHEDULED_REALIZATION)
     include_recurring: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    # Cash calendar (migration 102). The floor is the balance the operating
+    # accounts should not fall below; the calendar names the first day they
+    # would. NULL means no floor has been set, and the calendar says so rather
+    # than inventing one.
+    cash_floor: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    # Bank-feed account ids (strings) whose balances make up "operating cash".
+    # NULL or empty means not chosen yet: the calendar then uses every synced,
+    # active account with a non-negative balance and says that is a default.
+    operating_account_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
