@@ -563,6 +563,7 @@ gdx_dispatch/frontend/src/composables/useForecasting.js      back-office-books
 gdx_dispatch/frontend/src/composables/useOverhead.js         back-office-books
 gdx_dispatch/frontend/src/composables/useQBSync.js           back-office-books
 gdx_dispatch/frontend/src/composables/useRecurringStreams.js back-office-books
+gdx_dispatch/frontend/src/composables/useCashCalendar.js     back-office-books
 gdx_dispatch/frontend/src/composables/qbSyncLabel.js         back-office-books
 
 ## ---------------------------------------------------------------------------
