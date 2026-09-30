@@ -9,9 +9,9 @@ from types import SimpleNamespace
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy import text as _text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -2115,6 +2115,346 @@ def get_invoice(
             payload["customer_phone"] = c.phone or ""
             payload["customer_address"] = c.address or ""
     return payload
+
+
+# ── Activity — "who did what, when" on one invoice ──────────────────────
+# The invoice twin of GET /api/estimates/{id}/activity. Customer views of the
+# pay page have been recorded since 2026-07-29 (core/customer_views.py) and
+# nothing on the invoice showed them; the only place they surfaced was the
+# dashboard's last-20 feed, which scrolls them off within hours.
+#
+# Everything recorded against the invoice is shown, except an explicit list.
+# A whitelist hid real history: ops scripts write invoice rows the app code
+# never does (a void-and-replace, a reissue without tax, a settlement
+# write-off with its approval reference — all on prod, 2026-09-30), and a
+# whitelist can only ever know about the writers in this repo. An action with
+# no friendly label below still shows, under a readable form of its name.
+#
+# Payment movements are the exclusion. The page already has Payment History,
+# built from the payments table, and the audit trail cannot stand in for it:
+# an online Stripe payment is audited against the *payment* row, not the
+# invoice, so the trail would show the check the office keyed in and silently
+# omit the card the customer paid by.
+_INVOICE_ACTIVITY_LABELS: dict[str, str] = {
+    "invoice_created": "Created",
+    "mobile_invoice_created": "Created on mobile",
+    "invoice_autodrafted": "Drafted automatically from the job",
+    "deposit_invoice_created": "Deposit invoice created",
+    "invoice_verified": "Verified",
+    "invoice_finalized": "Finalized",
+    # The send rows are written BEFORE the email is attempted (and whether or
+    # not it goes out), so they say "Sent", never "Emailed". What the email
+    # actually did is its own row, from outbound_emails.
+    "invoice_sent": "Sent",
+    "mobile_invoice_sent": "Sent from mobile",
+    # Texts: core/link_sms.send_link records the caller's action on success
+    # and "<entity>_sms_*" on a failed, unconfirmed or half-recorded send.
+    "invoice_sent_sms": "Texted to customer",
+    "mobile_invoice_sent_sms": "Texted to customer from mobile",
+    "invoice_sent_sms_scheduled": "Scheduled text sent to customer",
+    "mobile_invoice_sent_sms_scheduled": "Scheduled text sent to customer (from mobile)",
+    "invoice_sms_failed": "Text failed to send",
+    "invoice_sms_unconfirmed": "Text not confirmed by Phone.com — it may have been delivered",
+    "invoice_sms_sent_unrecorded": "Texted to customer — the invoice could not be updated",
+    "invoice_marked_sent": "Marked sent",
+    "invoice_email_rejected": "Email bounced — the customer did not receive it",
+    "invoice_viewed_by_customer": "Viewed by customer",
+    "invoice_dunning_pause": "Automatic reminders paused",
+    "invoice_dunning_resume": "Automatic reminders resumed",
+    "payment_receipt_sent": "Receipt sent",
+    "mobile_invoice_receipt_sent": "Receipt sent from mobile",
+    "mobile_invoice_receipt_send_failed": "Receipt failed to send from mobile",
+    "collection_updated": "Collections status updated",
+    "credit_memo_issued": "Credit memo issued",
+    "customer_credit_applied": "Customer credit applied",
+    "payment_plan_created": "Payment plan set up",
+    "payment_plan_cancelled": "Payment plan cancelled",
+    "invoice_voided": "Voided",
+    # Money anomalies flagged by core/payments.py. Shown on purpose: they are
+    # warnings about this invoice, not the payment record itself.
+    "payment_exceeds_receivable": "Payment exceeded the balance due — review",
+    "payment_on_voided_invoice": "Payment received on a voided invoice — review",
+    "payment_recovered_from_stripe": "Payment recovered from Stripe",
+    # Written by one-off ops scripts, not by app code — present on prod.
+    "invoice_void_and_replace": "Voided and replaced",
+    "invoice_reissued_without_tax": "Reissued without tax",
+    "settlement_writeoff_executed": "Settlement write-off",
+    "invoice_linked_estimate": "Linked to an estimate",
+}
+# Actions deliberately NOT shown, each with its reason.
+_INVOICE_ACTIVITY_EXCLUDED: dict[str, str] = {
+    "patch_invoice": "field-edit noise",
+    "invoice_email_bounce_ignored_non_document": "detector bookkeeping, not an event on the invoice",
+    **{
+        a: "payment movement — Payment History is the record (online payments are audited on the payment row)"
+        for a in (
+            "payment_recorded", "payment_recorded_after_the_fact", "payment_voided", "payment_intent",
+            "refund_processed", "stripe_partial_refund_received", "stale_payment_intents_canceled",
+            "ach_in_flight_blocked_new_payment", "ach_payment_awaiting_verification",
+            "ach_payment_failed", "ach_payment_processing",
+        )
+    },
+}
+
+
+def _invoice_activity_label(action: str) -> str:
+    """The friendly label, or a readable form of an unlabelled action's name
+    ("invoice.hard_deleted" -> "Invoice hard deleted") — shown, not hidden."""
+    if action in _INVOICE_ACTIVITY_LABELS:
+        return _INVOICE_ACTIVITY_LABELS[action]
+    words = action.replace(".", " ").replace("_", " ").strip()
+    return words[:1].upper() + words[1:] if words else action
+
+
+_INVOICE_VIEW_ACTION = "invoice_viewed_by_customer"
+# Texts whose audit row is written only after Phone.com accepted the send —
+# each carries the /pay link. An unconfirmed text is left out: it may never
+# have arrived. Emails are judged from outbound_emails instead (below).
+_INVOICE_LINK_TEXT_ACTIONS = (
+    "invoice_sent_sms", "mobile_invoice_sent_sms",
+    "invoice_sent_sms_scheduled", "mobile_invoice_sent_sms_scheduled",
+    "invoice_sms_sent_unrecorded",
+)
+_EMAIL_KIND_NOUN = {"document": "Invoice", "receipt": "Receipt", "reminder": "Reminder"}
+# core/customer_views.py began recording views on this day; a link sent
+# before it may well have been opened with nothing written down.
+_INVOICE_VIEWS_RECORDED_SINCE = datetime(2026, 7, 29, tzinfo=UTC)
+# Payment reminders are rows in payment_reminders, not audit rows: the
+# automatic sweep (tasks/invoice_reminders_auto.py) writes the reminder row
+# and no audit row at all, so the table is the only complete record.
+_REMINDER_LABEL = {"sent": "Payment reminder emailed", "skipped": "Payment reminder not sent"}
+
+
+def _invoice_activity_iso(dt: datetime | None) -> str | None:
+    """ISO-8601 with an explicit offset. SQLite hands tz-aware columns back
+    naive; a bare timestamp would be read as browser-local time."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.isoformat()
+
+
+def _reminder_activity_item(r: Any) -> dict[str, object]:
+    notes = str(r.notes or "")
+    channel = str(r.channel or "email")
+    # The system appends its marker after any staff note, so the LAST marker
+    # is the system's verdict; a note that happens to quote one comes first.
+    skipped = notes.rfind("[skipped:") > notes.rfind("[delivered]")
+    if skipped:
+        label = _REMINDER_LABEL["skipped"]
+        reason = notes.rsplit("[skipped:", 1)[1].split("]", 1)[0].strip()
+    elif "[delivered]" in notes:
+        label, reason = _REMINDER_LABEL["sent"], None
+    else:
+        # Only a "[delivered]" marker proves an email went out. Rows without
+        # one are logs: a manual "I called them", or a pre-2026-07-07 row
+        # from before reminders were actually sent (every reminder on prod
+        # is one of those, measured 2026-09-30) — "emailed" would be a lie.
+        label, reason = f"Payment reminder logged ({channel})", None
+    return {
+        "id": f"reminder:{r.id}",
+        "action": "payment_reminder_skipped" if skipped else "payment_reminder",
+        "label": label,
+        "user_id": r.sent_by,
+        "entity_type": "invoice",
+        "entity_id": str(r.invoice_id),
+        "details": {"stage": r.stage, "channel": channel, "skip_reason": reason},
+        "created_at": _invoice_activity_iso(r.sent_at or r.created_at),
+    }
+
+
+def _email_activity_item(e: Any) -> dict[str, object]:
+    """One row per email, stamped when it was sent. The bounce of an invoice
+    email is NOT this row's to tell: the bounce detector writes its own
+    invoice_email_rejected row (and on its subject-match path never stamps
+    bounced_at at all), so this row stays "sent" and the bounce appears once,
+    as the detector's row. A reminder bounce is the exception — the detector
+    writes nothing on the invoice for it — so a bounced reminder email is
+    shown as the bounce. A receipt bounce is recorded nowhere: the detector
+    only looks at sent/overdue invoices and a receipt goes out once paid."""
+    what = f"{_EMAIL_KIND_NOUN[e.kind]} email" if e.kind in _EMAIL_KIND_NOUN else "Email"
+    to = e.to_email or "no address"
+    at = e.created_at
+    if e.status != "sent":
+        action, label = "email_failed", f"{what} not sent"
+    elif e.kind == "reminder" and e.bounced_at is not None:
+        action, label, at = "email_bounced", f"{what} bounced", e.bounced_at
+    else:
+        action, label = "email_sent", f"{what} sent to {to}"
+    return {
+        "id": f"email:{e.id}",
+        "action": action,
+        "label": label,
+        # A person-initiated send carries the user's id in initiator_ref (none
+        # recorded reads "System", not a raw word); any other initiator
+        # (reminder_task, workflow_rule, …) is named by its kind, which
+        # core/audit_labels.SLUG_ACTORS turns into "System — …".
+        "user_id": (e.initiator_ref or "system") if e.initiator_kind == "user" else e.initiator_kind,
+        "entity_type": "invoice",
+        "entity_id": e.entity_id,
+        "details": {"to_email": e.to_email, "skip_reason": e.skip_reason, "kind": e.kind},
+        "created_at": _invoice_activity_iso(at),
+    }
+
+
+@router.get("/{invoice_id}/activity", response_model=None)
+def get_invoice_activity(
+    invoice_id: UUID,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, object]:
+    """Curated trail for one invoice, newest first, plus a customer-view
+    summary the header can show while the panel is collapsed.
+
+    Scoped by the invoice lookup, not by audit_logs.tenant_id: several
+    invoice writers pass tenant_id=None, and one tenant per database means
+    the invoice this connection can see is the boundary (same reasoning as
+    the estimate endpoint).
+    """
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.core.audit_labels import decorate_rows
+    from gdx_dispatch.models.tenant_models import OutboundEmail, PaymentReminder
+
+    invoice = _get_invoice_or_404(invoice_id, db)
+    ensure_audit_table(db)
+    scope = (
+        AuditLog.entity_type == "invoice",
+        AuditLog.entity_id == str(invoice.id),
+        AuditLog.action.notin_(tuple(_INVOICE_ACTIVITY_EXCLUDED)),
+    )
+    audit_rows = db.execute(
+        select(AuditLog)
+        .where(*scope)
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(limit)
+    ).scalars().all()
+    audit_total = int(db.execute(select(func.count()).select_from(AuditLog).where(*scope)).scalar() or 0)
+
+    reminder_rows = db.execute(
+        select(PaymentReminder)
+        .where(PaymentReminder.invoice_id == invoice.id)
+        .order_by(PaymentReminder.created_at.desc())
+        .limit(limit)
+    ).scalars().all()
+    reminder_total = int(
+        db.execute(
+            select(func.count()).select_from(PaymentReminder).where(PaymentReminder.invoice_id == invoice.id)
+        ).scalar() or 0
+    )
+
+    items: list[dict[str, object]] = [
+        {
+            "id": str(r.id),
+            "action": r.action,
+            "label": _invoice_activity_label(r.action),
+            "user_id": r.user_id,
+            "entity_type": r.entity_type,
+            "entity_id": r.entity_id,
+            "details": r.details or {},
+            "created_at": _invoice_activity_iso(r.created_at),
+        }
+        for r in audit_rows
+    ]
+    items.extend(_reminder_activity_item(r) for r in reminder_rows)
+
+    # What each invoice email that reached the mail sender actually did — the
+    # delivery record the send rows cannot be. (A send refused before that —
+    # no customer email, a suppressed duplicate — leaves no email row; the
+    # trail then shows a bare "Sent".) Reminder emails have one owner per
+    # outcome: payment_reminders already says "emailed" or "not sent" (both
+    # reminder writers record a [skipped: …] row on failure), so the only
+    # thing outbound_emails adds for a reminder is that it bounced.
+    email_scope = (
+        OutboundEmail.entity_type == "invoice",
+        OutboundEmail.entity_id == str(invoice.id),
+        or_(
+            OutboundEmail.kind.is_(None),
+            OutboundEmail.kind != "reminder",
+            OutboundEmail.bounced_at.is_not(None),
+        ),
+    )
+    email_rows = db.execute(
+        select(OutboundEmail).where(*email_scope)
+        .order_by(OutboundEmail.created_at.desc()).limit(limit)
+    ).scalars().all()
+    email_total = int(
+        db.execute(select(func.count()).select_from(OutboundEmail).where(*email_scope)).scalar() or 0
+    )
+    items.extend(_email_activity_item(e) for e in email_rows)
+    # ISO strings with an explicit offset sort chronologically only when the
+    # offsets match; every writer here stores UTC, so compare parsed values.
+    items.sort(
+        key=lambda it: datetime.fromisoformat(str(it["created_at"])) if it["created_at"] else datetime.min.replace(tzinfo=UTC),
+        reverse=True,
+    )
+    items = decorate_rows(db, items[:limit])
+
+    view_scope = (
+        AuditLog.entity_type == "invoice",
+        AuditLog.entity_id == str(invoice.id),
+        AuditLog.action == _INVOICE_VIEW_ACTION,
+    )
+    view_count, last_view = db.execute(
+        select(func.count(), func.max(AuditLog.created_at)).where(*view_scope)
+    ).one()
+
+    # When a pay link last reached the customer — the only condition under
+    # which "hasn't opened it" is a true statement. Proven, not inferred: an
+    # email counts only if outbound_emails shows it went out, was not bounced,
+    # and its exact HTML contains this invoice's /pay link (a zero-balance or
+    # unconfigured send carries none); a text counts only on a confirmed send.
+    # A mobile email is not tagged with its invoice in outbound_emails, so it
+    # cannot count — the panel under-claims rather than guess. Nothing before
+    # views were first recorded counts either.
+    #
+    # A bounce voids every email sent before it. The detector's main path
+    # (subject match) writes invoice_email_rejected and never stamps
+    # bounced_at, so bounced_at alone would miss it; an email sent AFTER the
+    # latest bounce — the office re-sent to a fixed address — counts again.
+    link_sends = []
+    if invoice.public_token:
+        last_bounce = db.execute(
+            select(func.max(AuditLog.created_at)).where(
+                AuditLog.entity_type == "invoice",
+                AuditLog.entity_id == str(invoice.id),
+                AuditLog.action == "invoice_email_rejected",
+            )
+        ).scalar()
+        email_proof = [
+            OutboundEmail.entity_type == "invoice",
+            OutboundEmail.entity_id == str(invoice.id),
+            OutboundEmail.status == "sent",
+            OutboundEmail.bounced_at.is_(None),
+            OutboundEmail.body_html.contains(f"/pay/{invoice.public_token}", autoescape=True),
+        ]
+        if last_bounce is not None:
+            email_proof.append(OutboundEmail.created_at > last_bounce)
+        link_sends.append(db.execute(
+            select(func.max(OutboundEmail.created_at)).where(*email_proof)
+        ).scalar())
+    link_sends.append(db.execute(
+        select(func.max(AuditLog.created_at)).where(
+            AuditLog.entity_type == "invoice",
+            AuditLog.entity_id == str(invoice.id),
+            AuditLog.action.in_(_INVOICE_LINK_TEXT_ACTIONS),
+        )
+    ).scalar())
+    stamps = [d if d.tzinfo else d.replace(tzinfo=UTC) for d in link_sends if d is not None]
+    stamps = [d for d in stamps if d >= _INVOICE_VIEWS_RECORDED_SINCE]
+    link_sent_at = _invoice_activity_iso(max(stamps)) if stamps else None
+    return {
+        "items": items,
+        "total": audit_total + reminder_total + email_total,
+        "context": {
+            "customer_views": {
+                "count": int(view_count or 0),
+                "last_at": _invoice_activity_iso(last_view),
+                "link_sent_at": link_sent_at,
+            },
+        },
+    }
 
 
 @router.patch("/{invoice_id}", response_model=None, dependencies=[Depends(require_permission("invoices.write"))])
