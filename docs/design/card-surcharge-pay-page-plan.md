@@ -1,7 +1,7 @@
 # Credit-card surcharge on the customer pay page, off by default
 
 **Date:** 2026-09-16
-**Status:** **PLAN** — built and verified on PR #744 (opened 2026-09-16, not merged); flip to `MERGED #744` when it lands, `RELEASED vX.Y.Z` after the prod walk. The fee stays **off** in production until Doug has given Stripe (the acquirer) Visa's 30-day written notice and turns the setting on.
+**Status:** **MERGED #744** (2026-09-16), first shipped in `v1.122.0`. The office set the rate to 2.9% on production 2026-09-30. Debit refusal, a separate setting, is added by the 2026-09-30 addendum below.
 **Branch:** `feat/card-surcharge-pay-page`
 **Rulings (Doug, 2026-09-16):** rate 2.9%; the fee is shown before the customer commits; the page says bank transfer has no fee; booking per the recommendation below.
 
@@ -66,3 +66,13 @@ Notice surfaces: the pay page (statutory) and the invoice email carry it; paymen
 2. Confirm Stripe's customer receipt emails are on in the Dashboard, so the fee is itemised on Stripe's receipt as well as on the page.
 3. Then set the rate on Settings → Billing terms.
 4. The probe runs on Stripe's preview API version (`2026-03-25.preview`). If Stripe withdraws it, every card attempt fails at "Continue" while the rate is set; the lever is turning the rate off (the page is then today's one-step flow) until the code moves to the released version.
+
+## Addendum 2026-09-30: refusing US debit cards
+
+Doug ruled 2026-09-30 that the office may refuse debit cards on the pay page, as its **own** setting (`tenant_settings.refuse_debit_cards`, migration 103, default off), not tied to the rate. Stripe will not surcharge debit, so without it a debit card is charged fee-free.
+
+- `create-intent` reads the card's PaymentMethod **before** any intent exists and refuses `funding = debit` with `country = US` (402, "We don't accept debit cards…"). Debit issued outside the US is still taken: the networks' US credit-only acceptance requires honoring every valid foreign-issued card. Prepaid and `unknown` funding are taken.
+- With the setting on the page is two-step whether or not a rate is set. A card request with no PaymentMethod (a page opened before the setting went on) gets a 409 asking for a refresh.
+- **Rollback, updated from item 4 above.** With the refusal on and **no** rate, the card is checked but not attached, and the preview version and probe are **not** used (audit 2026-09-30): turning the rate off is still the way back off the preview API. With both on, the preview is used exactly as before.
+- **Enforcement is two layers.** The pay page's check is what a customer meets: a US debit card is refused at "Continue" with a message naming the alternatives. It is not a hard gate: the intent's client secret can be confirmed with any card by someone driving Stripe.js by hand, and nothing after `create-intent` reads `funding` (audit round 2). The hard gate is Stripe's own: a Radar block rule, `Block if :card_funding: = 'debit' and :card_country: = 'US'`. It needs a Radar tier with custom rules, and it applies to the whole Stripe account, so turning the setting off also means deleting the rule.
+- Verified 2026-09-30 in a throwaway container against Stripe **test mode**: the US Visa debit test card `4000056655665556` was refused with a 402 at "Continue", with the rate at 0 and at 2.9%; the `4242…` credit card paid $162.00 unattached (rate 0) and $166.70 including a $4.70 fee attached (rate 2.9%). Not verified: live mode, and whether a card entered through Link autofill reports `card.funding` and `card.country` the same way. Field names (`card.funding`, `card.country`) read from the Stripe API reference, version `2026-08-26.dahlia`, 2026-09-30.

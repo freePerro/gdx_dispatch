@@ -309,16 +309,76 @@ def card_surcharge_rate(db: Session, tenant_id: str) -> Decimal:
     return rate if rate > 0 else Decimal(0)
 
 
+def refuses_debit_cards(db: Session, tenant_id: str) -> bool:
+    """Whether the office has chosen to refuse US-issued debit cards on the
+    pay page (`tenant_settings.refuse_debit_cards`, migration 103).
+
+    Same ORM-by-primary-key read as `card_surcharge_rate`. Fails OPEN to
+    False: a settings read that breaks takes the card, which is what the page
+    did before this setting existed. The Stripe Radar block rule is the
+    backstop for that case.
+    """
+    try:
+        tid = UUID(str(tenant_id or ""))
+    except ValueError:
+        return False
+    try:
+        from gdx_dispatch.core.tenant_settings import TenantSettings  # noqa: PLC0415
+
+        row = db.get(TenantSettings, tid)
+        return bool(getattr(row, "refuse_debit_cards", False))
+    except Exception:
+        logger.exception("refuse_debit_cards_read_failed tenant=%s — taking debit cards", tenant_id)
+        return False
+
+
+# What the customer reads when the card they entered is refused. Pinned by
+# tests/test_payments.py; the pay page shows it in its error box.
+DEBIT_REFUSED_DETAIL = (
+    "We don't accept debit cards. Please use a credit card, "
+    "or pay by bank transfer (ACH) on the other tab."
+)
+
+# An open pay page from before the office turned the refusal on still runs
+# the one-step card flow, which never shows the server the card. Refusing it
+# is the only way to keep the rule; reloading gives the two-step flow.
+STALE_CARD_FLOW_DETAIL = "This payment page is out of date. Please refresh the page and try again."
+
+
+def is_refused_debit(card: Any) -> bool:
+    """A US-issued debit card. Everything else is taken: credit, prepaid,
+    `unknown` funding, and debit issued outside the US, which Visa and
+    Mastercard's US credit-only acceptance option still requires honoring.
+    A card with no reported country is taken too, the same answer the
+    Radar backstop's `:card_country: = 'US'` gives it."""
+    funding = str(_field(card, "funding") or "").lower()
+    country = str(_field(card, "country") or "").upper()
+    return funding == "debit" and country == "US"
+
+
 def card_surcharge_notice(db: Session, tenant_id: str) -> str:
-    """The one sentence every customer-facing surface shows when the fee is
-    on. Empty when it is off, so nothing mentions a fee that does not exist."""
+    """The sentence every customer-facing surface shows about what a card
+    costs and which cards are taken. Empty when neither the fee nor the debit
+    refusal is on, so nothing mentions a rule that does not exist."""
     rate = card_surcharge_rate(db, tenant_id)
-    if rate <= 0:
-        return ""
-    return (
-        f"Credit cards carry a {_percent_label(rate)} processing fee. "
-        "Debit cards and bank transfer (ACH): no fee."
-    )
+    refuse = refuses_debit_cards(db, tenant_id)
+    return _card_notice(rate, refuse)
+
+
+def _card_notice(rate: Decimal, refuse_debit: bool) -> str:
+    if rate > 0 and refuse_debit:
+        return (
+            f"Credit cards carry a {_percent_label(rate)} processing fee. "
+            "We don't accept debit cards. Bank transfer (ACH): no fee."
+        )
+    if rate > 0:
+        return (
+            f"Credit cards carry a {_percent_label(rate)} processing fee. "
+            "Debit cards and bank transfer (ACH): no fee."
+        )
+    if refuse_debit:
+        return "We don't accept debit cards. Please pay by credit card or bank transfer (ACH)."
+    return ""
 
 
 def _percent_label(rate: Decimal) -> str:
@@ -1570,6 +1630,36 @@ def create_intent(
         )
         raise HTTPException(status_code=409, detail="This invoice has no balance due.")
 
+    # Debit refusal (2026-09-30). When the office refuses US debit cards, the
+    # card is looked at BEFORE any intent exists, so a refused card leaves
+    # nothing at Stripe to clean up and nothing is charged. The page sends the
+    # card's PaymentMethod first whenever this is on; a card request without
+    # one comes from a page opened before the office turned it on, and is
+    # sent back to reload rather than charged unseen. Placed after the
+    # "already paid" answers above, which must win over any card question.
+    pm_id_in = (body.payment_method_id or "").strip() or None
+    retrieved_pm: Any = None
+    refusing_debit = method == "card" and refuses_debit_cards(db, str(tenant.get("id", "")))
+    if refusing_debit:
+        if pm_id_in is None:
+            logger.info("create_intent_card_without_pm_refused invoice=%s — stale one-step page", invoice.id)
+            raise HTTPException(status_code=409, detail=STALE_CARD_FLOW_DETAIL)
+        try:
+            retrieved_pm = stripe.PaymentMethod.retrieve(pm_id_in, **_stripe_extra(tenant))
+        except stripe.StripeError as exc:
+            # Cannot tell debit from credit, so cannot keep the rule. Nothing
+            # has been created yet; the customer retries or pays by bank.
+            logger.error("create_intent_pm_read_failed invoice=%s pm=%s: %s", invoice.id, pm_id_in, exc)
+            raise HTTPException(
+                status_code=402, detail="We couldn't read that card. Please try again."
+            ) from None
+        if is_refused_debit(_field(retrieved_pm, "card") or {}):
+            logger.info(
+                "create_intent_debit_refused invoice=%s pm=%s — US debit card, office refuses debit",
+                invoice.id, pm_id_in,
+            )
+            raise HTTPException(status_code=402, detail=DEBIT_REFUSED_DETAIL)
+
     rail: dict[str, Any] = {}
     if method == "ach":
         # Named explicitly, not via automatic_payment_methods: the Dashboard's
@@ -1588,9 +1678,18 @@ def create_intent(
     # if the office toggled the rate meanwhile (a different mint under the same
     # key is refused by Stripe): a fee the customer was shown and agreed to is
     # kept, and a card that was never sized never gains one (audit round 2).
+    #
+    # Debit refusal with NO rate (2026-09-30 audit): the page is two-step only
+    # so the server can see the card, not to size a fee, so the card is NOT
+    # attached and the preview surcharge probe is NOT used — the intent is the
+    # plain one-step card intent and the page confirms it with the card's id.
+    # The refusal must not depend on a preview API it does not need, and
+    # turning the rate off must stay the way back off the preview. The key
+    # differs from the attached mint's (it carries no card), so a rate toggled
+    # mid-session mints a fresh intent the page re-shows, never a collision.
     pm_id = (body.payment_method_id or "").strip() or None
     rate = card_surcharge_rate(db, str(tenant.get("id", ""))) if method == "card" else Decimal(0)
-    attached = method == "card" and pm_id is not None
+    attached = method == "card" and pm_id is not None and not (refusing_debit and rate <= 0)
     probing = attached and rate > 0
     if attached:
         rail["payment_method"] = pm_id
@@ -1649,9 +1748,12 @@ def create_intent(
         elif already:
             surcharge_cents = already
             surcharge_status = "applied"
-    if attached:
+    if attached or retrieved_pm is not None:
         try:
-            pm = stripe.PaymentMethod.retrieve(pm_id, **_stripe_extra(tenant))
+            # Already read by the debit check when that is on; one read, not two.
+            pm = retrieved_pm if retrieved_pm is not None else stripe.PaymentMethod.retrieve(
+                pm_id, **_stripe_extra(tenant)
+            )
             c = _field(pm, "card") or {}
             card = {
                 "brand": str(_field(c, "brand") or ""),
@@ -1674,6 +1776,9 @@ def create_intent(
         "surcharge_status": surcharge_status,
         "surcharge_rate": str(rate) if probing else None,
         "card": card,
+        # False when the card was checked but not attached (debit refusal
+        # with no rate): the page must then confirm with the card's id.
+        "payment_method_attached": attached,
         "method": method,
     }
 
@@ -1827,7 +1932,9 @@ def pay_invoice(
             invoice, tenant=getattr(request.state, "tenant", {}) or {}
         )
 
-    rate = card_surcharge_rate(db, str((getattr(request.state, "tenant", {}) or {}).get("id", "")))
+    tenant_id = str((getattr(request.state, "tenant", {}) or {}).get("id", ""))
+    rate = card_surcharge_rate(db, tenant_id)
+    refuse_debit = refuses_debit_cards(db, tenant_id)
     return templates.TemplateResponse(
         request,
         "payment_form.html",
@@ -1842,6 +1949,12 @@ def pay_invoice(
             # two-step flow and puts the statutory notice on the page.
             "surcharge_rate": float(rate),
             "surcharge_percent_label": _percent_label(rate) if rate > 0 else "",
+            # Debit refusal (2026-09-30): also switches the card tab to the
+            # two-step flow, so the server sees the card before it is charged.
+            "refuse_debit": refuse_debit,
+            "card_two_step": rate > 0 or refuse_debit,
+            # The statutory notice, worded for whichever of the two is on.
+            "card_notice": _card_notice(rate, refuse_debit),
             # The photos the office attached to THIS invoice (Doug 2026-08-12:
             # photos are customer-facing). They already ride the PDF; showing
             # them on the page the customer actually opens is the same
