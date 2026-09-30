@@ -752,6 +752,10 @@ class InvoiceCreateIn(BaseModel):
     # page's "linked estimate" chip was dead for every office-created invoice.
     # This field records where the numbers came from without touching them.
     source_estimate_id: UUID | None = None
+    # "Total-only" PDF display. None = inherit from the estimate this invoice
+    # came from (either field above), else show prices. An explicit value is
+    # the operator's choice on the create screen and wins over the estimate.
+    hide_line_prices: bool | None = None
 
     @model_validator(mode="after")
     def _source_estimate_is_not_the_copy_field(self) -> "InvoiceCreateIn":
@@ -1238,6 +1242,7 @@ def create_invoice(
     # linked to an estimate that never existed — the exact shape the contract
     # calls incoherent for its sibling field. Provenance that cannot be
     # resolved is not provenance.
+    src_estimate: Estimate | None = None
     if payload.source_estimate_id:
         src_estimate = db.execute(
             select(Estimate).where(
@@ -1370,17 +1375,30 @@ def create_invoice(
     # the invoice PDF the customer receives matches the estimate they already
     # saw. Best-effort — a features read must never block invoicing (capture
     # beats presentation), mirroring the zero-price policy contract above.
+    #
+    # Either estimate field counts. The office create screen sends only
+    # `source_estimate_id` (provenance), and keying this on the copy field
+    # alone meant no office-created invoice ever inherited the estimate's
+    # total-only setting. An explicit `hide_line_prices` wins over both.
     invoice_hide_line_prices = False
-    if estimate is not None:
+    # Audited: who decided the display. "company_default" is what
+    # get_features returned, and that call falls back to show-prices on a
+    # read error without telling us, so it can be the fallback in an outage.
+    hide_line_prices_origin = "default"
+    hide_source = estimate if estimate is not None else src_estimate
+    if payload.hide_line_prices is not None:
+        invoice_hide_line_prices = payload.hide_line_prices
+        hide_line_prices_origin = "operator"
+    elif hide_source is not None and hide_source.hide_line_prices is not None:
+        invoice_hide_line_prices = bool(hide_source.hide_line_prices)
+        hide_line_prices_origin = "estimate"
+    elif hide_source is not None:
         try:
-            from gdx_dispatch.modules.estimates_features import (
-                effective_hide_line_prices,
-                get_features,
+            from gdx_dispatch.modules.estimates_features import get_features
+            invoice_hide_line_prices = bool(
+                get_features(str(_["tenant_id"])).hide_line_prices
             )
-            _hide_default = get_features(str(_["tenant_id"])).hide_line_prices
-            invoice_hide_line_prices = effective_hide_line_prices(
-                estimate.hide_line_prices, _hide_default
-            )
+            hide_line_prices_origin = "company_default"
         except Exception:
             log.exception("invoice_create_hide_line_prices_resolve_failed")
             invoice_hide_line_prices = False
@@ -1921,6 +1939,10 @@ def create_invoice(
         details={
             "invoice_number": invoice.invoice_number,
             "status": invoice.status,
+            # Total-only display and who decided it: the operator on the
+            # create screen, inherited from the estimate, or the plain default.
+            "hide_line_prices": bool(invoice.hide_line_prices),
+            "hide_line_prices_origin": hide_line_prices_origin,
             # Which estimate this came from, and HOW — "copied" means the
             # server built the lines, "prefilled" means the operator arrived
             # with them and may have edited them before saving. Those are
@@ -2437,6 +2459,9 @@ def _prepare_invoice_email(
         branding=branding,
         intro_html=intro_html,
         is_receipt=_is_paid,
+        # Same flag the PDF reads — the body must not list the prices the
+        # attached PDF hides.
+        hide_prices=bool(getattr(invoice, "hide_line_prices", False)),
     )
     return {
         "customer": customer,

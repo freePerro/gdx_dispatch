@@ -239,6 +239,104 @@ def test_create_invoice_inherits_tenant_default_hide_line_prices(tenant_db_sessi
     assert created["hide_line_prices"] is True
 
 
+def _created_audit(db, invoice_id):
+    from gdx_dispatch.core.audit import AuditLog
+    return (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "invoice_created", AuditLog.entity_id == invoice_id)
+        .one()
+        .details
+    )
+
+
+def test_create_invoice_via_source_estimate_snapshots_hide_line_prices(tenant_db_session):
+    """The field the office create screen actually sends is `source_estimate_id`
+    (provenance), never `estimate_id`. The snapshot used to key on the copy
+    field only, so every office-created invoice showed prices even when the
+    estimate the customer saw was total-only."""
+    job = _seed_job(tenant_db_session)
+    est = _seed_estimate(tenant_db_session, job.id, Decimal("150.00"))
+    est.hide_line_prices = True
+    tenant_db_session.commit()
+
+    created = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            source_estimate_id=est.id,
+            line_items=[{"description": "Door", "quantity": 1, "unit_price": 150}],
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    assert created["hide_line_prices"] is True
+    row = tenant_db_session.get(Invoice, UUID(created["id"]))
+    assert row.hide_line_prices is True
+    assert row.estimate_id is None  # still provenance-only, lines not re-copied
+    assert _created_audit(tenant_db_session, created["id"])["hide_line_prices_origin"] == "estimate"
+
+
+def test_create_invoice_via_source_estimate_inherits_tenant_default(tenant_db_session, monkeypatch):
+    """A NULL-override estimate reached through the office path inherits the
+    company default, same as the copy path."""
+    from gdx_dispatch.modules import estimates_features as ef
+    monkeypatch.setattr(ef, "get_features", lambda tid: ef.EstimatesFeatures(hide_line_prices=True))
+
+    job = _seed_job(tenant_db_session)
+    est = _seed_estimate(tenant_db_session, job.id, Decimal("100.00"))  # override NULL
+    created = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            source_estimate_id=est.id,
+            line_items=[{"description": "Door", "quantity": 1, "unit_price": 100}],
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    assert created["hide_line_prices"] is True
+    assert _created_audit(tenant_db_session, created["id"])["hide_line_prices_origin"] == "company_default"
+
+
+def test_create_invoice_explicit_hide_line_prices_wins(tenant_db_session):
+    """The create screen shows the inherited setting and lets the operator flip
+    it. Their explicit choice wins over the estimate in both directions."""
+    job = _seed_job(tenant_db_session)
+    est = _seed_estimate(tenant_db_session, job.id, Decimal("100.00"))
+    est.hide_line_prices = True
+    tenant_db_session.commit()
+
+    shown = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            source_estimate_id=est.id,
+            hide_line_prices=False,
+            line_items=[{"description": "Door", "quantity": 1, "unit_price": 100}],
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    assert shown["hide_line_prices"] is False
+    details = _created_audit(tenant_db_session, shown["id"])
+    assert details["hide_line_prices"] is False
+    assert details["hide_line_prices_origin"] == "operator"
+
+    # No estimate at all (counter-style job invoice) and an explicit hide.
+    hidden = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            hide_line_prices=True,
+            force=True,
+            line_items=[{"description": "Spring", "quantity": 1, "unit_price": 50}],
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    assert hidden["hide_line_prices"] is True
+
+
 def test_create_invoice_validation_allows_missing_job_id():
     """Counter-sale invoices have no job. customer_id stays required; job_id
     is optional after the 2026-05-14 counter-sale flip."""
@@ -1985,3 +2083,25 @@ def test_send_invoice_on_paid_honors_tenant_receipt_template(tenant_db_session, 
     assert captured["subject"].startswith("Thanks — Invoice ")
     assert "Cheers Receipt Customer" in captured["html_body"].replace("&nbsp;", " ")
     assert "Thank you for your payment" not in captured["html_body"]
+
+
+def test_prepare_invoice_email_honours_hide_line_prices(tenant_db_session, monkeypatch):
+    """The invoice email body must not list the prices the attached PDF hides.
+    It used to render every unit price and line total regardless of the
+    invoice's total-only flag, while the estimate email already honoured it."""
+    from gdx_dispatch.routers.invoices import _prepare_invoice_email
+
+    _stub_features(monkeypatch)
+    inv = _seed_unpaid_invoice(tenant_db_session)
+
+    shown = _prepare_invoice_email(tenant_db_session, inv, mint_token=False)["html"]
+    assert ">Price</th>" in shown
+    assert shown.count("$320.00") >= 3  # unit price + line total + totals
+
+    inv.hide_line_prices = True
+    tenant_db_session.commit()
+    hidden = _prepare_invoice_email(tenant_db_session, inv, mint_token=False)["html"]
+    assert ">Price</th>" not in hidden
+    assert "Torsion spring" in hidden  # the line itself still lists
+    # Only the totals block carries the amount now, never a per-line cell.
+    assert hidden.count("$320.00") < shown.count("$320.00")

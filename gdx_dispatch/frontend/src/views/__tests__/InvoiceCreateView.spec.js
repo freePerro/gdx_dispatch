@@ -68,6 +68,12 @@ const stubs = {
     inheritAttrs: false,
   },
   Divider: { template: '<hr />' },
+  ToggleSwitch: {
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    template: '<input type="checkbox" :data-testid="$attrs[\'data-testid\']" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" />',
+    inheritAttrs: false,
+  },
   LineItemEditor: {
     props: {
       lines: Array,
@@ -726,3 +732,127 @@ describe('InvoiceCreateView — M31+M33: screen and payload never disagree silen
   });
 });
 
+
+describe('InvoiceCreateView — total-only display follows the estimate', () => {
+  // The office path sends source_estimate_id, and the invoice used to start
+  // with prices shown no matter what the estimate the customer saw said.
+  function mockWithEstimate({ estHide, companyHide, featuresFail = false }) {
+    apiGet.mockImplementation((url) => {
+      if (url.startsWith('/api/customers')) return Promise.resolve(CUSTOMERS);
+      if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
+      if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0, rate_pct: 0 });
+      if (url.startsWith('/api/estimates-features')) {
+        return featuresFail
+          ? Promise.reject(new Error('down'))
+          : Promise.resolve({ estimates_hide_line_prices: companyHide });
+      }
+      if (url.startsWith('/api/estimates?')) {
+        return Promise.resolve([{ id: 'est-1', status: 'accepted' }]);
+      }
+      if (url.startsWith('/api/estimates/est-1')) {
+        return Promise.resolve({
+          id: 'est-1',
+          estimate_number: 'EST-1042',
+          hide_line_prices: estHide,
+          lines: [{ description: 'Door', quantity: 1, unit_price: 2400 }],
+        });
+      }
+      return Promise.resolve([]);
+    });
+    apiPost.mockResolvedValue({ id: 'inv-11', invoice_number: 'INV-0011' });
+  }
+
+  async function mountAndSubmit() {
+    routeQuery.value = { job_id: 'job-1' };
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+    const toggle = wrapper.find('[data-testid="invoice-create-hide-line-prices"]');
+    const shownBefore = toggle.element.checked;
+    const hint = wrapper.find('[data-testid="invoice-create-hide-prices-source"]').text();
+    await wrapper.find('[data-testid="invoice-create-submit"]').trigger('click');
+    await flushPromises();
+    const [, payload] = apiPost.mock.calls[0];
+    return { shownBefore, hint, payload };
+  }
+
+  it("shows and sends the estimate's own override", async () => {
+    mockWithEstimate({ estHide: true, companyHide: false });
+    const { shownBefore, hint, payload } = await mountAndSubmit();
+    expect(shownBefore).toBe(true);
+    expect(hint).toContain('EST-1042');
+    expect(hint).toContain('hides prices');
+    // Untouched: the server inherits it, so the audit says "estimate".
+    expect('hide_line_prices' in payload).toBe(false);
+    expect(payload.source_estimate_id).toBe('est-1');
+  });
+
+  it('falls back to the company default when the estimate has no override', async () => {
+    mockWithEstimate({ estHide: null, companyHide: true });
+    const { shownBefore, hint, payload } = await mountAndSubmit();
+    expect(shownBefore).toBe(true);
+    expect(hint).toContain('company default');
+    expect('hide_line_prices' in payload).toBe(false);
+  });
+
+  it("the operator's flip wins and says so", async () => {
+    mockWithEstimate({ estHide: true, companyHide: false });
+    routeQuery.value = { job_id: 'job-1' };
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+    const toggle = wrapper.find('[data-testid="invoice-create-hide-line-prices"]');
+    toggle.element.checked = false;
+    await toggle.trigger('change');
+    await flushPromises();
+    expect(wrapper.find('[data-testid="invoice-create-hide-prices-source"]').text())
+      .toContain('Changed for this invoice');
+    await wrapper.find('[data-testid="invoice-create-submit"]').trigger('click');
+    await flushPromises();
+    expect(apiPost.mock.calls[0][1].hide_line_prices).toBe(false);
+  });
+
+  it('says the estimate decides when the company default cannot be read', async () => {
+    // Showing `false` here would present a guess as the answer. The server
+    // resolves the real value.
+    mockWithEstimate({ estHide: null, companyHide: true, featuresFail: true });
+    const { hint, payload } = await mountAndSubmit();
+    expect(hint).toContain("follow the estimate");
+    expect('hide_line_prices' in payload).toBe(false);
+    expect(payload.source_estimate_id).toBe('est-1');
+  });
+
+  it("a flip does not survive a switch to another customer's job", async () => {
+    // The flip was a decision about job-1's estimate. Carried over, it would
+    // ship on customer 2's invoice, audited as an operator choice.
+    mockWithEstimate({ estHide: true, companyHide: false });
+    routeQuery.value = { job_id: 'job-1' };
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+    const toggle = wrapper.find('[data-testid="invoice-create-hide-line-prices"]');
+    toggle.element.checked = false;
+    await toggle.trigger('change');
+    await flushPromises();
+
+    const custSelect = wrapper.find('[data-testid="invoice-customer-dropdown"]');
+    custSelect.element.value = 'cust-2';
+    await custSelect.trigger('change');
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="invoice-create-hide-line-prices"]').element.checked).toBe(false);
+    expect(wrapper.find('[data-testid="invoice-create-hide-prices-source"]').text())
+      .not.toContain('Changed');
+    await wrapper.find('[data-testid="le-set-line"]').trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-testid="invoice-create-submit"]').trigger('click');
+    await flushPromises();
+    const [, payload] = apiPost.mock.calls[0];
+    expect('hide_line_prices' in payload).toBe(false);
+    expect(payload.source_estimate_id).toBeUndefined();
+  });
+
+  it('defaults to showing prices when there is no estimate', async () => {
+    apiPost.mockResolvedValue({ id: 'inv-12', invoice_number: 'INV-0012' });
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="invoice-create-hide-line-prices"]').element.checked).toBe(false);
+  });
+});
