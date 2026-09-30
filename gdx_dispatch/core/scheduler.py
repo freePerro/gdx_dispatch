@@ -15,6 +15,16 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(minute="*"),
             "options": {"queue": "priority:low"},
         },
+        "send-due-scheduled-sms-every-minute": {
+            # Texts the office or a tech chose to "send later" (Phone.com
+            # cannot schedule one itself). On priority:high, not the
+            # phone_com.* default of low: a text promised for 8:00 must not
+            # queue behind a 15-minute Phone.com resync. The beat option
+            # outranks the task route. No-ops instantly when nothing is due.
+            "task": "phone_com.send_due_scheduled_sms",
+            "schedule": crontab(minute="*"),
+            "options": {"queue": "priority:high"},
+        },
         "planner-digest-daily": {
             # First staff-facing scheduled reminder. Emails a summary of open
             # planner tasks so call-notes taken on a busy day don't scroll away.

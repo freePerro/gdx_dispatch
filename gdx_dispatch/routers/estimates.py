@@ -42,6 +42,7 @@ from gdx_dispatch.modules.estimates_features import (
     get_features,
     require_line_margin_override_allowed,
 )
+from gdx_dispatch.modules.phone_com.scheduled import ScheduleLinkSmsIn  # the /schedule-sms composer
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -2189,6 +2190,39 @@ def send_estimate_sms(
     out = _serialize_estimate(estimate, include_lines=False)
     out.update(result)
     return out
+
+
+@router.post(
+    "/{estimate_id}/schedule-sms",
+    response_model=None,
+    status_code=201,
+    dependencies=[Depends(require_permission("estimates.send")), Depends(require_module("phone_com"))],
+)
+def schedule_estimate_sms(
+    estimate_id: UUID,
+    request: Request,
+    payload: ScheduleLinkSmsIn,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Text the review-and-approve link later (modules/phone_com/scheduled.py).
+    Refused now for anything /send-sms would refuse, and judged again when
+    it sends — an estimate accepted overnight is not texted."""
+    from gdx_dispatch.core import estimate_sms, link_sms
+    from gdx_dispatch.modules.phone_com import scheduled
+
+    estimate = _get_estimate_or_404(estimate_id, db)
+    return scheduled.schedule_link(
+        db,
+        estimate,
+        kind=scheduled.KIND_ESTIMATE,
+        prepare=estimate_sms.prepare,
+        payload=payload,
+        audit_action=scheduled.ACTION_ESTIMATE,
+        tenant_id=link_sms.tenant_uuid(_, request),
+        user_id=_actor_id(_),
+        request=request,
+    )
 
 
 def _emit_estimate_sent(db: Session, estimate: Estimate) -> None:

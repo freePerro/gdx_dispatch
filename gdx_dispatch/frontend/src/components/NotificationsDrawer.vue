@@ -139,6 +139,14 @@ function _destinationFor(category) {
     case 'part_shipped':
     case 'parts_to_order':
       return mobile ? '/mobile/parts-to-order' : '/purchase-orders';
+    // A scheduled REPLY that did not go (modules/phone_com/scheduled.py) —
+    // the thread shows what happened and is where to resend. Only the office
+    // can schedule a reply (both SMS views need nav.office), though the bell
+    // row reaches everyone, like the lead and payment broadcasts. Scheduled
+    // invoice and estimate texts alert under 'invoice' / 'estimate' instead,
+    // so an alert about a tech's own text opens a page a tech can reach.
+    case 'sms':
+      return mobile ? '/mobile/sms' : '/phone-com/messages';
     case 'inbox':
     case 'message':
       // Desktop goes to /inbox (InboxView -> /api/outlook/*), the real

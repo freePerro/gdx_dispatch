@@ -7,6 +7,11 @@
   owns every rule (opt-out, verification, link, duplicate window) and this
   dialog only shows what it says. Opening it previews — nothing leaves until
   Send.
+
+  "Send later" schedules the same text (POST …/schedule-sms); texts already
+  waiting for this document are listed with Cancel. Unless the operator edits
+  the message, the server rebuilds it when it sends — the invoice wording
+  quotes the balance, which can change overnight.
 -->
 <template>
   <Dialog
@@ -45,10 +50,44 @@
           {{ body.length }} characters · the link is always included, even if you edit it out.
         </small>
       </div>
+      <Message
+        v-if="quiet && !later && !blocked"
+        severity="info"
+        :closable="false"
+        data-testid="sms-quiet-hours"
+      >
+        It is late — "Send later" holds the text until the morning.
+      </Message>
+      <SendLaterPanel
+        v-if="later"
+        :busy="scheduling"
+        :hint="laterHint"
+        @schedule="schedule"
+        @cancel="later = false"
+      />
+      <div v-if="scheduledItems.length" class="sms-scheduled">
+        <div class="sms-scheduled-title">Scheduled for this {{ noun }}</div>
+        <ScheduledTextsList
+          :items="scheduledItems"
+          :default-text="`The standard ${noun} text, rebuilt with current details when it sends.`"
+          @changed="loadScheduled"
+        />
+      </div>
     </div>
     <template #footer>
       <Button label="Cancel" text data-testid="sms-cancel" @click="emit('update:visible', false)" />
       <Button
+        v-if="!later"
+        label="Send later"
+        icon="pi pi-clock"
+        severity="secondary"
+        outlined
+        :disabled="loading || !!blocked || !body.trim()"
+        data-testid="sms-send-later"
+        @click="later = true"
+      />
+      <Button
+        v-if="!later"
         :label="unconfirmed ? 'Send anyway' : 'Send text'"
         icon="pi pi-comment"
         :loading="sending"
@@ -61,7 +100,7 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
@@ -69,6 +108,9 @@ import Textarea from 'primevue/textarea'
 import Message from 'primevue/message'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
+import { isQuietHours, whenLabel } from '../utils/sendLater'
+import SendLaterPanel from './SendLaterPanel.vue'
+import ScheduledTextsList from './ScheduledTextsList.vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -78,7 +120,7 @@ const props = defineProps({
   base: { type: String, default: '/api/invoices' },
   title: { type: String, default: 'Text invoice' },
 })
-const emit = defineEmits(['update:visible', 'sent'])
+const emit = defineEmits(['update:visible', 'sent', 'scheduled'])
 
 const api = useApi()
 const toast = useToast()
@@ -93,6 +135,56 @@ const blocked = ref(null)
 // next Send is then an explicit "send anyway" (resend_unconfirmed).
 const unconfirmed = ref(null)
 
+// Send later: the panel, the post, and what is already waiting for this doc.
+const later = ref(false)
+const scheduling = ref(false)
+const scheduledItems = ref([])
+const quiet = ref(false)
+const isInvoice = computed(() => props.base.includes('invoices'))
+const noun = computed(() => (isInvoice.value ? 'invoice' : 'estimate'))
+const defaultBody = ref('')
+const laterHint = computed(() => (
+  body.value.trim() === defaultBody.value.trim()
+    ? `The ${noun.value} text is rebuilt when it sends${isInvoice.value ? ', with the balance due then' : ''}. It is not sent if the ${noun.value} no longer can be.`
+    : `Your edited text is sent as written. It is not sent if the ${noun.value} no longer can be.`
+))
+
+async function loadScheduled() {
+  try {
+    const res = await api.get(
+      `/api/phone-com/scheduled?kind=${noun.value}&entity_id=${encodeURIComponent(props.docId)}`,
+      { suppressErrorToast: true },
+    )
+    scheduledItems.value = (res?.data || res)?.items || []
+  } catch {
+    scheduledItems.value = [] // the list is a convenience; the send path owns the rules
+  }
+}
+
+async function schedule(at) {
+  scheduling.value = true
+  try {
+    const res = await api.post(
+      `${props.base}/${props.docId}/schedule-sms`,
+      { to: to.value.trim() || null, body: body.value, send_at: at.toISOString() },
+      { suppressErrorToast: true },
+    )
+    const payload = res?.data || res
+    toast.add({
+      severity: 'success',
+      summary: 'Text scheduled',
+      detail: `Sends ${whenLabel(new Date(payload.send_at))} to ${payload.to_number}.`,
+      life: 6000,
+    })
+    emit('scheduled', payload)
+    emit('update:visible', false)
+  } catch (err) {
+    toast.add({ severity: 'error', summary: 'Not scheduled', detail: err?.message || '', life: 6000 })
+  } finally {
+    scheduling.value = false
+  }
+}
+
 async function preview(toOverride) {
   const res = await api.post(
     `${props.base}/${props.docId}/sms-preview`,
@@ -106,10 +198,14 @@ async function load() {
   loading.value = true
   blocked.value = null
   unconfirmed.value = null
+  later.value = false
+  quiet.value = isQuietHours()
+  loadScheduled()
   try {
     const p = await preview(null)
     to.value = p.to || ''
     body.value = p.body || ''
+    defaultBody.value = p.body || ''
     customerName.value = p.customer_name || ''
     blocked.value = p.blocked
   } catch (err) {
@@ -173,4 +269,6 @@ watch(() => props.visible, (open) => { if (open) load() }, { immediate: true })
 .form-field :deep(input), .form-field :deep(textarea) { width: 100%; }
 .sms-hint { color: var(--p-text-muted-color); }
 .sms-loading { padding: 1rem 0; color: var(--p-text-muted-color); }
+.sms-scheduled { display: flex; flex-direction: column; gap: 0.4rem; }
+.sms-scheduled-title { font-weight: 600; font-size: 0.9rem; }
 </style>

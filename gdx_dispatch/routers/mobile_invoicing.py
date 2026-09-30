@@ -57,6 +57,7 @@ from gdx_dispatch.models.tenant_models import (
     TimeEntry,
 )
 from gdx_dispatch.modules.ledger.service import transition_invoice_status
+from gdx_dispatch.modules.phone_com.scheduled import ScheduleLinkSmsIn  # the /schedule-sms composer
 from gdx_dispatch.modules.proposals.models import Estimate
 
 log = logging.getLogger(__name__)
@@ -1125,6 +1126,18 @@ def _mobile_sms_invoice(db: Session, request: Request, invoice_id: str, user_id:
     return _tech_owned_invoice(db, request, invoice_id, user_id)
 
 
+def _verified_sms_invoice(db: Session, request: Request, invoice_id: str, user_id: str):
+    """The tech's own invoice, texting on, AND office-verified — the gate for
+    sending a text now or scheduling one (the preview shows the verification
+    refusal as ``blocked`` instead). Otherwise the JSONResponse refusal."""
+    got = _mobile_sms_invoice(db, request, invoice_id, user_id)
+    if isinstance(got, JSONResponse):
+        return got
+    if got.verified_at is None:
+        return _awaiting_verification_refusal()
+    return got
+
+
 @router.post("/invoices/{invoice_id}/sms-preview", response_model=None)
 def mobile_invoice_sms_preview(
     invoice_id: str,
@@ -1159,11 +1172,9 @@ def mobile_send_invoice_sms(
     from gdx_dispatch.core import invoice_sms
 
     user_id = _user_id(current_user or {})
-    got = _mobile_sms_invoice(db, request, invoice_id, user_id)
+    got = _verified_sms_invoice(db, request, invoice_id, user_id)
     if isinstance(got, JSONResponse):
         return got
-    if got.verified_at is None:
-        return _awaiting_verification_refusal()
     p = payload or MobileSendSmsIn()
     result = invoice_sms.send(
         db,
@@ -1179,6 +1190,37 @@ def mobile_send_invoice_sms(
     out = _serialize_invoice(got, db=db)
     out.update(result)
     return _jr(out)
+
+
+@router.post("/invoices/{invoice_id}/schedule-sms", response_model=None, status_code=201)
+def mobile_schedule_invoice_sms(
+    invoice_id: str,
+    request: Request,
+    payload: ScheduleLinkSmsIn,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Text the view-and-pay link later from the tech's phone — same gate as
+    /send-sms (own job, office-verified). Verification is checked again when
+    it sends (modules/phone_com/scheduled.py)."""
+    from gdx_dispatch.core import invoice_sms
+    from gdx_dispatch.modules.phone_com import scheduled
+
+    user_id = _user_id(current_user or {})
+    got = _verified_sms_invoice(db, request, invoice_id, user_id)
+    if isinstance(got, JSONResponse):
+        return got
+    return _jr(scheduled.schedule_link(
+        db,
+        got,
+        kind=scheduled.KIND_INVOICE,
+        prepare=invoice_sms.prepare,
+        payload=payload,
+        audit_action=scheduled.ACTION_TECH_INVOICE,
+        tenant_id=invoice_sms.tenant_uuid(current_user, request),
+        user_id=user_id or None,
+        request=request,
+    ), 201)
 
 
 # ---------------------------------------------------------------------------

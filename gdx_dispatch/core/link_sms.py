@@ -182,6 +182,33 @@ def prior_attempt(db: Session, to: str, link: str) -> str | None:
     return "unconfirmed" if unresolved else None
 
 
+def definitely_not_sent(exc: Exception) -> bool:
+    """True when a failed send provably never reached the customer: a 4xx
+    (Phone.com refused it) or no connection at all. Anything else — a read
+    timeout, a 5xx — may have been delivered. Shared by every sender that must
+    never text a customer twice (this module, the scheduled-text drain)."""
+    status_code = getattr(exc, "status_code", None)
+    return (status_code is not None and 400 <= status_code < 500) or isinstance(
+        exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+    )
+
+
+def adopt_message_id(db: Session, msg: Any, message_id: str) -> None:
+    """Give the pending row Phone.com's real id — unless Phone.com's
+    webhook/poll already imported this message under it (UNIQUE): then the
+    pending row keeps its own id rather than colliding and failing a text that
+    did go out."""
+    from gdx_dispatch.modules.phone_com.models import PhoneComMessage
+
+    taken = db.execute(
+        select(PhoneComMessage.id).where(
+            PhoneComMessage.phone_com_message_id == message_id, PhoneComMessage.id != msg.id
+        )
+    ).first()
+    if not taken:
+        msg.phone_com_message_id = message_id
+
+
 def send_link(
     db: Session,
     doc: Any,
@@ -307,11 +334,7 @@ def send_link(
     except (PhoneComAPIError, httpx.HTTPError) as exc:
         db.rollback()
         status_code = getattr(exc, "status_code", None)
-        # 4xx: Phone.com refused it. No connection at all: it never left.
-        # Anything else (read timeout, 5xx) may have been delivered.
-        definite = (status_code is not None and 400 <= status_code < 500) or isinstance(
-            exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
-        )
+        definite = definitely_not_sent(exc)
         msg.delivery_status = "failed" if definite else "unknown"
         msg.delivery_failed_reason = str(exc)[:500]
         if not definite:
@@ -345,16 +368,7 @@ def send_link(
         # loaded before the call. (Postgres waits for, then returns, the
         # latest committed row; the lock is a no-op on SQLite.)
         db.refresh(doc, with_for_update=True)
-        # Phone.com's webhook/poll may already have imported this message
-        # under its real id (UNIQUE); then the pending row keeps its own id
-        # rather than colliding and failing a text that did go out.
-        taken = db.execute(
-            select(PhoneComMessage.id).where(
-                PhoneComMessage.phone_com_message_id == message_id, PhoneComMessage.id != msg.id
-            )
-        ).first()
-        if not taken:
-            msg.phone_com_message_id = message_id
+        adopt_message_id(db, msg, message_id)
         msg.delivery_status = result.get("status") or "queued"
         msg.raw_payload = result
         stage()
