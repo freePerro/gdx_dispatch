@@ -217,7 +217,7 @@ class TenantSettings(Base):
     # Stripe's own 3% network cap binds per payment. Migration 096. Turned on
     # by the office only after Visa's 30-day notice.
     card_surcharge_percent: Mapped[Decimal | None] = mapped_column(Numeric(5, 4), nullable=True)
-    # Refuse US-issued debit cards on the customer pay page (migration 103).
+    # Refuse US-issued debit cards on the customer pay page (migration 104).
     # Non-US debit is still taken: the networks' US credit-only option
     # requires honoring every valid card issued outside the US.
     refuse_debit_cards: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))

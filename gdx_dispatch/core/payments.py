@@ -311,7 +311,7 @@ def card_surcharge_rate(db: Session, tenant_id: str) -> Decimal:
 
 def refuses_debit_cards(db: Session, tenant_id: str) -> bool:
     """Whether the office has chosen to refuse US-issued debit cards on the
-    pay page (`tenant_settings.refuse_debit_cards`, migration 103).
+    pay page (`tenant_settings.refuse_debit_cards`, migration 104).
 
     Same ORM-by-primary-key read as `card_surcharge_rate`. Fails OPEN to
     False: a settings read that breaks takes the card, which is what the page

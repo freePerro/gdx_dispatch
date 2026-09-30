@@ -1,4 +1,4 @@
-"""Migration 103: tenant_settings.refuse_debit_cards, on both engines,
+"""Migration 104: tenant_settings.refuse_debit_cards, on both engines,
 rerunnable, reversible, a no-op without the table, and the existing settings
 row survives with the new column false (debit cards still taken)."""
 
@@ -14,13 +14,13 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import create_engine, inspect
 
-MIGRATION = pathlib.Path(__file__).resolve().parents[1] / "migrations/versions/103_refuse_debit_cards.py"
+MIGRATION = pathlib.Path(__file__).resolve().parents[1] / "migrations/versions/104_refuse_debit_cards.py"
 TABLE = "tenant_settings"
 COLUMN = "refuse_debit_cards"
 
 
 def _load(conn):
-    spec = importlib.util.spec_from_file_location("m103", MIGRATION)
+    spec = importlib.util.spec_from_file_location("m104", MIGRATION)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     mod.op = Operations(MigrationContext.configure(conn))
@@ -31,16 +31,16 @@ def _cols(conn):
     return {c["name"] for c in inspect(conn).get_columns(TABLE)}
 
 
-def test_it_chains_onto_102_and_is_the_only_reviser() -> None:
+def test_it_chains_onto_103_and_is_the_only_reviser() -> None:
     source = MIGRATION.read_text()
-    assert 'revision = "103_refuse_debit_cards"' in source
-    assert 'down_revision = "102_cash_calendar_settings"' in source
-    assert len("103_refuse_debit_cards") <= 32  # alembic_version.version_num is VARCHAR(32)
+    assert 'revision = "104_refuse_debit_cards"' in source
+    assert 'down_revision = "103_scheduled_sms"' in source
+    assert len("104_refuse_debit_cards") <= 32  # alembic_version.version_num is VARCHAR(32)
     revising = [
         p.name for p in MIGRATION.parent.glob("*.py")
-        if re.search(r'^down_revision = "102_cash_calendar_settings"', p.read_text(), re.M)
+        if re.search(r'^down_revision = "103_scheduled_sms"', p.read_text(), re.M)
     ]
-    assert revising == ["103_refuse_debit_cards.py"], revising
+    assert revising == ["104_refuse_debit_cards.py"], revising
 
 
 def test_no_unescaped_percent_signs() -> None:
@@ -56,7 +56,7 @@ def test_the_orm_model_carries_the_same_column() -> None:
 
 
 def test_sqlite_upgrade_keeps_the_row_rerun_and_round_trip(tmp_path):
-    eng = create_engine(f"sqlite:///{tmp_path / 'm103.db'}", future=True)
+    eng = create_engine(f"sqlite:///{tmp_path / 'm104.db'}", future=True)
     with eng.begin() as c:
         c.exec_driver_sql(
             "CREATE TABLE tenant_settings (tenant_id CHAR(32) PRIMARY KEY, card_surcharge_percent NUMERIC(5,4))"
@@ -92,7 +92,7 @@ def test_sqlite_without_the_table_is_a_no_op(tmp_path):
 _URL = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL") or ""
 _requires_pg = pytest.mark.skipif(
     "postgresql" not in _URL,
-    reason="the Postgres arm of 103 needs a real Postgres; set DATABASE_URL "
+    reason="the Postgres arm of 104 needs a real Postgres; set DATABASE_URL "
     "or TEST_DATABASE_URL to a postgres url",
 )
 
@@ -105,7 +105,7 @@ def test_these_tests_actually_run_in_ci() -> None:
 @_requires_pg
 def test_postgres_round_trip():
     eng = create_engine(_URL, future=True)
-    schema = "m103_test"
+    schema = "m104_test"
     with eng.begin() as c:
         c.exec_driver_sql(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         c.exec_driver_sql(f"CREATE SCHEMA {schema}")
