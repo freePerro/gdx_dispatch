@@ -231,3 +231,36 @@ def test_the_create_on_read_lives_in_one_place():
         assert "read_settings_row(" in src, f"{rel} does not read through the helper"
     helper = (REPO / "gdx_dispatch/core/settings_row.py").read_text(encoding="utf-8")
     assert helper.count(seed) == 1
+
+
+def test_billing_terms_stores_a_null_refuse_debit_as_off_and_true_as_on():
+    """2026-09-30. `tenant_settings.refuse_debit_cards` is NOT NULL, so an
+    explicit null in the PATCH body is stored as off rather than failing the
+    write (this fixture's column is nullable, which is what lets a missing
+    coercion show up here). True must round-trip as on, and both changes are
+    audited."""
+    m = importlib.import_module("gdx_dispatch.modules.billing_terms.router")
+    client, engine = _client(m.router, list(m._COLS))
+    try:
+        assert client.get("/api/billing/terms").status_code == 200
+        r = client.patch("/api/billing/terms", json={"refuse_debit_cards": None})
+        assert r.status_code == 200, r.text
+        with engine.connect() as conn:
+            stored = conn.execute(text("SELECT refuse_debit_cards FROM tenant_settings")).scalar()
+            assert stored is not None and stored in (False, 0), f"null must be stored as off, got {stored!r}"
+        r = client.patch("/api/billing/terms", json={"refuse_debit_cards": True})
+        assert r.status_code == 200, r.text
+        assert r.json()["refuse_debit_cards"] in (True, 1)
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT refuse_debit_cards FROM tenant_settings")).scalar() in (True, 1)
+            rows = conn.execute(text(
+                "SELECT details FROM audit_logs WHERE action = 'billing_terms_updated' ORDER BY created_at"
+            )).scalars().all()
+        assert len(rows) == 2, rows
+        import json as _json
+
+        last = rows[-1] if isinstance(rows[-1], dict) else _json.loads(rows[-1])
+        change = last["changed"]["refuse_debit_cards"]
+        assert change["to"] in (True, 1) and change["from"] in (False, 0, None), change
+    finally:
+        engine.dispose()

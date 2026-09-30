@@ -33,6 +33,7 @@ _COLS = (
     "interest_rate_monthly_percent",
     "interest_grace_days",
     "card_surcharge_percent",
+    "refuse_debit_cards",
 )
 
 
@@ -52,6 +53,12 @@ class TermsPayload(BaseModel):
     # Minnesota's 5% (Minn. Stat. § 325G.051); Stripe's 3% network cap and the
     # cost-of-acceptance rule bind lower per payment. NULL/0 = off.
     card_surcharge_percent: Decimal | None = Field(None, ge=0, le=Decimal("0.05"))
+    # Refuse US-issued debit cards on the customer pay page. Independent of
+    # the surcharge: Stripe will not surcharge debit, so without this a debit
+    # card is simply charged fee-free.
+    # The column is NOT NULL (default false); an explicit null in the body is
+    # stored as off (below) rather than failing the write.
+    refuse_debit_cards: bool | None = False
 
 
 def _tenant_uuid(request: Request) -> UUID:
@@ -94,7 +101,10 @@ def update_terms(
         request,
         user,
         tenant_id=tid,
-        values={c: getattr(payload, c) for c in _COLS},
+        values={
+            **{c: getattr(payload, c) for c in _COLS},
+            "refuse_debit_cards": bool(payload.refuse_debit_cards),
+        },
         action="billing_terms_updated",
         read=_read,
     )
