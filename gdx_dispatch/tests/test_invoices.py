@@ -1321,6 +1321,54 @@ def test_billing_summary_overdue_uses_due_date_and_balance(tenant_db_session):
     assert res["total_outstanding"] == 750.0
 
 
+def test_billing_summary_total_outstanding_ignores_open_credit_balances(tenant_db_session):
+    """Outstanding AR is money owed to the shop, not open negative balances."""
+    bs = _import_billing_summary()
+    job = _seed_job(tenant_db_session)
+    owed = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            due_date=date.today() + timedelta(days=10),
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    add_invoice_line(
+        invoice_id=UUID(owed["id"]),
+        payload=InvoiceLineCreateIn(description="Service", quantity=1, unit_price=500.0),
+        current_user=_current_user(),
+        db=tenant_db_session,
+    )
+    _verify(tenant_db_session, owed)
+    send_invoice(invoice_id=UUID(owed["id"]), _=_current_user(), db=tenant_db_session)
+
+    credit = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            due_date=date.today() + timedelta(days=10),
+            force=True,
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    add_invoice_line(
+        invoice_id=UUID(credit["id"]),
+        payload=InvoiceLineCreateIn(description="Credit balance carrier", quantity=1, unit_price=100.0),
+        current_user=_current_user(),
+        db=tenant_db_session,
+    )
+    _verify(tenant_db_session, credit)
+    send_invoice(invoice_id=UUID(credit["id"]), _=_current_user(), db=tenant_db_session)
+    credit_row = tenant_db_session.get(Invoice, UUID(credit["id"]))
+    credit_row.balance_due = -50.0
+    tenant_db_session.commit()
+
+    res = bs(request=_mock_request(), _=_current_user(), db=tenant_db_session)
+    assert res["total_outstanding"] == 500.0
+
+
 def test_list_invoices_filters_overdue(tenant_db_session):
     job = _seed_job(tenant_db_session)
     inv = create_invoice(
