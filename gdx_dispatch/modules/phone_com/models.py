@@ -1,6 +1,6 @@
 """Sprint 1.x — phone_com tenant-plane data tables.
 
-Six tables on the per-tenant DB:
+Tables on the per-tenant DB:
 
 - ``phone_com_calls``       — every inbound/outbound call
 - ``phone_com_messages``    — every SMS send/receive
@@ -8,8 +8,11 @@ Six tables on the per-tenant DB:
 - ``phone_com_extensions``  — cached extension catalog (refreshed nightly)
 - ``phone_com_numbers``     — cached DID catalog
 - ``phone_com_stats_daily`` — rolled-up daily metrics for the dashboard
+- ``scheduled_sms``         — texts queued to send later
 
-No ``tenant_id`` columns — isolation is by connection (per-tenant DB).
+No ``tenant_id`` columns for isolation — that is the connection (per-tenant
+DB). ``scheduled_sms.tenant_id`` is not isolation: it is the key the Phone.com
+token is stored under, which a worker has no login claim to read it from.
 FKs to ``customers``/``jobs``/``users`` use string refs (no Python
 imports — keeps the module decoupled from ``tenant_models.py`` at
 import time).
@@ -273,3 +276,57 @@ class PhoneComStatsDaily(Base):
     total_call_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     raw_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ScheduledSms(Base):
+    """A text the office or a tech chose to send later (modules/phone_com/scheduled.py).
+
+    Phone.com v4 cannot schedule a message, so the queue lives here and the
+    ``phone_com.send_due_scheduled_sms`` beat task drains it. ``kind`` picks
+    the sender: ``message`` is a plain reply; ``invoice`` / ``estimate`` go
+    through their core adapters so the link is live when it lands.
+
+    ``body`` is NULL unless the operator edited the text: the default wording
+    quotes the amount due, so it is rebuilt at send time rather than replayed.
+    ``send_at`` is stored in UTC. Statuses: scheduled → sending → sent |
+    failed | unknown | skipped; scheduled → canceled. Never deleted, never
+    resent automatically.
+    """
+
+    __tablename__ = "scheduled_sms"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    entity_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
+    to_number: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    customer_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("customers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    job_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("jobs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    send_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="scheduled", index=True)
+    # The audit action the send writes (invoice_sent_sms_scheduled, …) — also
+    # tells the drain which caller scheduled it (office vs. tech).
+    audit_action: Mapped[str] = mapped_column(String(60), nullable=False)
+    # The id the Phone.com token is stored under (the login's tenant_id claim).
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    created_by_user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    canceled_by_user_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    phone_com_message_row_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )

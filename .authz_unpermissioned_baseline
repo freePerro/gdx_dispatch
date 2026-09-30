@@ -48,6 +48,17 @@
 # these are authorized in the handler — the quote must sit on a job assigned
 # to the caller via the shared core/job_access gate (_tech_textable_quote →
 # 403; a quote with no job is refused) and phone_com must be enabled.
+# 376 → 380 (2026-09-30, scheduled texts): POST /api/mobile/invoices/{invoice_id}/
+# schedule-sms and /api/mobile/quotes/{estimate_id}/schedule-sms — ADDED, the
+# same handler gates as their /send-sms twins above (_mobile_sms_invoice +
+# office verification; _tech_textable_quote). POST /api/phone-com/messages/
+# schedule and /api/phone-com/scheduled/{scheduled_id}/cancel — ADDED, the same
+# gate as POST /api/phone-com/messages (the phone_com module; any staff user
+# who can reply can reply later, and cancel a text not yet sending). Every
+# scheduled text is re-judged when it fires: the scheduler must still be an
+# active user, and an office invoice/estimate text still needs invoices.send /
+# estimates.send (modules/phone_com/scheduled.py). Plan:
+# docs/design/scheduled-sms-plan.md.
 
 # ── customer portal ───────────────────────────────────────────────────────
 # These authenticate a CUSTOMER, not a tenant user, so no role or permission
@@ -306,6 +317,7 @@ POST /api/mobile/chat/{message_id}/read
 POST /api/mobile/invoices/{invoice_id}/send
 POST /api/mobile/invoices/{invoice_id}/send-receipt
 POST /api/mobile/invoices/{invoice_id}/send-sms
+POST /api/mobile/invoices/{invoice_id}/schedule-sms
 POST /api/mobile/invoices/{invoice_id}/sms-preview
 POST /api/mobile/jobs/{job_id}/arrived
 POST /api/mobile/jobs/{job_id}/chat
@@ -322,6 +334,7 @@ POST /api/mobile/location
 POST /api/mobile/quotes/{estimate_id}/accept
 POST /api/mobile/quotes/{estimate_id}/decline
 POST /api/mobile/quotes/{estimate_id}/send-sms
+POST /api/mobile/quotes/{estimate_id}/schedule-sms
 POST /api/mobile/quotes/{estimate_id}/sms-preview
 POST /api/mobile/today/reorder
 POST /api/mobile/voice-note
@@ -351,6 +364,8 @@ POST /api/phone-com/blocked-calls
 POST /api/phone-com/calls/originate
 POST /api/phone-com/calls/{call_id}/mark-heard
 POST /api/phone-com/messages
+POST /api/phone-com/messages/schedule
+POST /api/phone-com/scheduled/{scheduled_id}/cancel
 POST /api/phone-com/messages/threads/{thread_key}/mark-read
 POST /api/planner/plans
 POST /api/planner/tasks

@@ -401,3 +401,18 @@ def roll_up_all_phone_com_stats(self) -> dict[str, int]:
 
     log.info("phone_com.roll_up_all_phone_com_stats dispatched=%d", len(tenant_ids))
     return {"dispatched": len(tenant_ids)}
+
+
+@celery_app.task(name="phone_com.send_due_scheduled_sms", bind=True)
+def send_due_scheduled_sms(self) -> dict[str, int]:
+    """Beat task — send every scheduled text whose time has come (see
+    modules/phone_com/scheduled.py). Claims each row before sending, so an
+    overlapping run cannot send one twice; never retries a failed text."""
+    _ = self
+    from gdx_dispatch.modules.phone_com.scheduled import drain
+
+    with contextlib.closing(SessionLocal()) as db:
+        result = drain(db)
+    if result["claimed"] or result["reaped"]:
+        log.info("phone_com.send_due_scheduled_sms %s", result)
+    return result

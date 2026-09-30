@@ -448,6 +448,7 @@ GET /api/phone-com/messages/threads/{thread_key}
 GET /api/phone-com/messages/unread-count
 GET /api/phone-com/messages/{message_id}/media/{idx}
 GET /api/phone-com/numbers
+GET /api/phone-com/scheduled
 GET /api/phone-com/stats/summary
 GET /api/phone-com/strategy
 GET /api/photos/recent
@@ -900,6 +901,7 @@ POST /api/estimates/{estimate_id}/proposal-tiers/{tier_id}/lines
 POST /api/estimates/{estimate_id}/proposal/accept
 POST /api/estimates/{estimate_id}/reassign-customer
 POST /api/estimates/{estimate_id}/reopen
+POST /api/estimates/{estimate_id}/schedule-sms
 POST /api/estimates/{estimate_id}/send
 POST /api/estimates/{estimate_id}/send-sms
 POST /api/estimates/{estimate_id}/sms-preview
@@ -946,6 +948,7 @@ POST /api/invoices/{invoice_id}/payment-plan
 POST /api/invoices/{invoice_id}/payments
 POST /api/invoices/{invoice_id}/payments/{payment_id}/void
 POST /api/invoices/{invoice_id}/refund
+POST /api/invoices/{invoice_id}/schedule-sms
 POST /api/invoices/{invoice_id}/send
 POST /api/invoices/{invoice_id}/send-receipt
 POST /api/invoices/{invoice_id}/send-reminder
@@ -1005,6 +1008,7 @@ POST /api/me/tours/{tour_id}/step
 POST /api/messages
 POST /api/messages/mark-all-read
 POST /api/mobile/chat/{message_id}/read
+POST /api/mobile/invoices/{invoice_id}/schedule-sms
 POST /api/mobile/invoices/{invoice_id}/send
 POST /api/mobile/invoices/{invoice_id}/send-receipt
 POST /api/mobile/invoices/{invoice_id}/send-sms
@@ -1024,6 +1028,7 @@ POST /api/mobile/jobs/{job_id}/quote
 POST /api/mobile/location
 POST /api/mobile/quotes/{estimate_id}/accept
 POST /api/mobile/quotes/{estimate_id}/decline
+POST /api/mobile/quotes/{estimate_id}/schedule-sms
 POST /api/mobile/quotes/{estimate_id}/send-sms
 POST /api/mobile/quotes/{estimate_id}/sms-preview
 POST /api/mobile/today/reorder
@@ -1067,7 +1072,9 @@ POST /api/phone-com/blocked-calls
 POST /api/phone-com/calls/originate
 POST /api/phone-com/calls/{call_id}/mark-heard
 POST /api/phone-com/messages
+POST /api/phone-com/messages/schedule
 POST /api/phone-com/messages/threads/{thread_key}/mark-read
+POST /api/phone-com/scheduled/{scheduled_id}/cancel
 POST /api/planner/plans
 POST /api/planner/tasks
 POST /api/planner/tasks/{task_id}/link-customer

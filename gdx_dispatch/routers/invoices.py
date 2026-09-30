@@ -55,6 +55,7 @@ from gdx_dispatch.modules.ledger.service import (
     ledger_posting_enabled,
     transition_invoice_status,
 )
+from gdx_dispatch.modules.phone_com.scheduled import ScheduleLinkSmsIn  # the /schedule-sms composer
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.tasks.stale_intent_sweep import enqueue_stale_intent_sweep
@@ -2858,6 +2859,40 @@ def send_invoice_sms(
     out = _serialize_invoice(invoice)
     out.update(result)
     return out
+
+
+@router.post(
+    "/{invoice_id}/schedule-sms",
+    response_model=None,
+    status_code=201,
+    dependencies=[Depends(require_permission("invoices.send")), Depends(require_module("phone_com"))],
+)
+def schedule_invoice_sms(
+    invoice_id: UUID,
+    request: Request,
+    payload: ScheduleLinkSmsIn,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Text the view-and-pay link later (modules/phone_com/scheduled.py).
+    Refused now for anything /send-sms would refuse; every refusal is made
+    again when it sends, and the default wording — which quotes the amount
+    due — is rebuilt then."""
+    from gdx_dispatch.core import invoice_sms
+    from gdx_dispatch.modules.phone_com import scheduled
+
+    invoice = _get_invoice_or_404(invoice_id, db)
+    return scheduled.schedule_link(
+        db,
+        invoice,
+        kind=scheduled.KIND_INVOICE,
+        prepare=invoice_sms.prepare,
+        payload=payload,
+        audit_action=scheduled.ACTION_INVOICE,
+        tenant_id=invoice_sms.tenant_uuid(_, request),
+        user_id=_actor_id(_),
+        request=request,
+    )
 
 
 @router.post("/{invoice_id}/lines", response_model=None, status_code=201, dependencies=[Depends(require_permission("invoices.write"))])

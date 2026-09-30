@@ -43,6 +43,7 @@ from gdx_dispatch.core.service_presets import (
     list_default_services,
 )
 from gdx_dispatch.core.tenant_mobile_settings import get_tenant_mobile_setting
+from gdx_dispatch.modules.phone_com.scheduled import ScheduleLinkSmsIn  # the /schedule-sms composer
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine, ProposalTier
 from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
 
@@ -870,3 +871,34 @@ def mobile_send_quote_sms(
     out = _serialize_quote(got, db=db)
     out.update(result)
     return _jr(out)
+
+
+@router.post("/quotes/{estimate_id}/schedule-sms", response_model=None, status_code=201)
+def mobile_schedule_quote_sms(
+    estimate_id: str,
+    request: Request,
+    payload: ScheduleLinkSmsIn,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Text the approval link later from the tech's phone — same gate as
+    /send-sms (a quote on a job assigned to this tech). Judged again when it
+    sends (modules/phone_com/scheduled.py)."""
+    from gdx_dispatch.core import estimate_sms, link_sms
+    from gdx_dispatch.modules.phone_com import scheduled
+
+    user = current_user or {}
+    got = _tech_textable_quote(db, request, estimate_id, user)
+    if isinstance(got, JSONResponse):
+        return got
+    return _jr(scheduled.schedule_link(
+        db,
+        got,
+        kind=scheduled.KIND_ESTIMATE,
+        prepare=estimate_sms.prepare,
+        payload=payload,
+        audit_action=scheduled.ACTION_TECH_ESTIMATE,
+        tenant_id=link_sms.tenant_uuid(user, request),
+        user_id=_user_id(user) or None,
+        request=request,
+    ), 201)

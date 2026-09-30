@@ -271,6 +271,8 @@ gdx_dispatch/core/invoice_sms.py                             money-billing
 gdx_dispatch/core/estimate_sms.py                            estimates-pricing
 gdx_dispatch/core/link_sms.py                                comms-email-phone
 gdx_dispatch/frontend/src/components/SmsLinkDialog.vue       comms-email-phone
+gdx_dispatch/frontend/src/components/SendLaterPanel.vue      comms-email-phone
+gdx_dispatch/frontend/src/components/ScheduledTextsList.vue  comms-email-phone
 gdx_dispatch/core/invoice_invariants.py                      money-billing
 gdx_dispatch/core/invoice_paid.py                            money-billing
 gdx_dispatch/core/invoice_tax.py                             money-billing
@@ -516,6 +518,7 @@ gdx_dispatch/frontend/src/stores/notifications.js            comms-email-phone
 gdx_dispatch/frontend/src/composables/usePushSubscription.js comms-email-phone
 gdx_dispatch/frontend/src/utils/composerRecipient.js         comms-email-phone
 gdx_dispatch/frontend/src/utils/phoneComLabels.js            comms-email-phone
+gdx_dispatch/frontend/src/utils/sendLater.js                 comms-email-phone
 
 ## ---------------------------------------------------------------------------
 ## back-office-books — QuickBooks, bank feeds, vendor bills & statements (AP),

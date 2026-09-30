@@ -8,15 +8,19 @@
  *  3. Send posts the (edited) number and body to {base}/{id}/send-sms and
  *     emits `sent`; a failure toasts and does not emit.
  *  4. The mobile base is honored for both calls.
+ *  5. Send later posts {base}/{id}/schedule-sms with an ISO send_at, the
+ *     number and the body, and emits `scheduled`; texts already waiting for
+ *     this document are listed (GET /api/phone-com/scheduled).
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 
 const apiPost = vi.fn();
+const apiGet = vi.fn();
 const toastAdd = vi.fn();
 
 vi.mock('../../composables/useApi', () => ({
-  useApi: () => ({ post: apiPost }),
+  useApi: () => ({ post: apiPost, get: apiGet }),
 }));
 vi.mock('primevue/usetoast', () => ({
   useToast: () => ({ add: toastAdd }),
@@ -46,6 +50,16 @@ const stubs = {
     template: '<textarea data-testid="sms-body" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
   },
   Message: { template: '<div class="msg"><slot /></div>' },
+  // The real panel's DatePicker is not what these pin; the stub hands back a
+  // fixed time the way the panel's confirm button does.
+  SendLaterPanel: {
+    emits: ['schedule', 'cancel'],
+    template: '<div data-testid="send-later"><button data-testid="send-later-confirm" @click="$emit(\'schedule\', new Date(\'2026-10-01T13:00:00Z\'))">confirm</button></div>',
+  },
+  ScheduledTextsList: {
+    props: ['items', 'defaultText'],
+    template: '<ul data-testid="scheduled-list"><li v-for="i in items" :key="i.id" data-testid="scheduled-item">{{ i.status }}</li></ul>',
+  },
 };
 
 const PREVIEW = {
@@ -66,6 +80,8 @@ const sendBtn = (w) => w.find('[data-label="Send text"]');
 
 beforeEach(() => {
   apiPost.mockReset();
+  apiGet.mockReset();
+  apiGet.mockResolvedValue({ items: [] });
   toastAdd.mockReset();
 });
 
@@ -203,5 +219,46 @@ describe('SmsLinkDialog', () => {
     expect(toast.summary).toBe('Text not confirmed');
     expect(w.emitted('sent')).toHaveLength(1);
     expect(w.emitted('update:visible').at(-1)).toEqual([false]);
+  });
+
+  it('schedules the text for later instead of sending it', async () => {
+    apiPost.mockResolvedValueOnce(PREVIEW);
+    const w = mountDialog();
+    await flushPromises();
+
+    await w.find('[data-label="Send later"]').trigger('click');
+    expect(w.find('[data-label="Send text"]').exists()).toBe(false); // one decision at a time
+    apiPost.mockResolvedValueOnce({ id: 's-1', send_at: '2026-10-01T13:00:00Z', to_number: PREVIEW.to });
+    await w.find('[data-testid="send-later-confirm"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPost).toHaveBeenCalledTimes(2);
+    const [url, body] = apiPost.mock.calls[1];
+    expect(url).toBe('/api/invoices/inv-1/schedule-sms');
+    expect(body).toEqual({ to: PREVIEW.to, body: PREVIEW.body, send_at: '2026-10-01T13:00:00.000Z' });
+    expect(w.emitted('scheduled')[0][0].id).toBe('s-1');
+    expect(w.emitted('sent')).toBeUndefined();
+  });
+
+  it('lists what is already scheduled for this document', async () => {
+    apiPost.mockResolvedValueOnce(PREVIEW);
+    apiGet.mockResolvedValue({ items: [{ id: 's-1', status: 'scheduled', send_at: '2026-10-01T13:00:00Z' }] });
+    const w = mountDialog({ base: '/api/estimates', docId: 'est-9', title: 'Text estimate' });
+    await flushPromises();
+
+    expect(apiGet.mock.calls[0][0]).toBe('/api/phone-com/scheduled?kind=estimate&entity_id=est-9');
+    expect(w.findAll('[data-testid="scheduled-item"]')).toHaveLength(1);
+  });
+
+  it('uses the tech endpoint for a mobile base', async () => {
+    apiPost.mockResolvedValueOnce(PREVIEW);
+    const w = mountDialog({ base: '/api/mobile/quotes', docId: 'q-2' });
+    await flushPromises();
+    await w.find('[data-label="Send later"]').trigger('click');
+    apiPost.mockResolvedValueOnce({ id: 's-2', send_at: '2026-10-01T13:00:00Z', to_number: PREVIEW.to });
+    await w.find('[data-testid="send-later-confirm"]').trigger('click');
+    await flushPromises();
+    expect(apiPost.mock.calls[1][0]).toBe('/api/mobile/quotes/q-2/schedule-sms');
+    expect(apiGet.mock.calls[0][0]).toContain('kind=estimate');
   });
 });
