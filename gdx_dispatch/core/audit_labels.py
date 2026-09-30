@@ -57,6 +57,11 @@ PUBLIC_CUSTOMER_ACTOR = "customer"
 SLUG_ACTORS: dict[str, str] = {
     "bounce-detector": "System — email bounce detector",   # modules/outlook/bounce_detect.py
     "resend-detector": "System — re-send detector",        # modules/outlook/resend_detect.py
+    "auto-dunning": "System — automatic payment reminders",  # tasks/invoice_reminders_auto.py (payment_reminders.sent_by)
+    # outbound_emails.initiator_kind for non-person sends (core/transactional_email.py)
+    "reminder_task": "System — automatic payment reminders",
+    "workflow_rule": "System — automation rule",
+    "plugin": "System — plugin",
 }
 #: A customer acting from the emailed estimate link (modules/proposals/router.py
 #: `_PUBLIC_ACTOR`). Not a CustomerUser — the link identifies a document.

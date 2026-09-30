@@ -290,6 +290,7 @@ gdx_dispatch/tasks/billing_followup.py                       money-billing
 gdx_dispatch/tasks/invoice_reminders_auto.py                 money-billing
 gdx_dispatch/tasks/stale_intent_sweep.py                     money-billing
 gdx_dispatch/frontend/src/views/InvoiceDetailView.vue        money-billing
+gdx_dispatch/frontend/src/components/InvoiceActivityPanel.vue money-billing
 gdx_dispatch/frontend/src/views/InvoiceCreateView.vue        money-billing
 gdx_dispatch/frontend/src/views/PaymentsView.vue             money-billing
 gdx_dispatch/frontend/src/views/AccountingLedgerView.vue     money-billing

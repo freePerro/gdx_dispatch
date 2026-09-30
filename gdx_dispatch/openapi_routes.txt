@@ -303,6 +303,7 @@ GET /api/invoices
 GET /api/invoices/closeout-discrepancies
 GET /api/invoices/summary
 GET /api/invoices/{invoice_id}
+GET /api/invoices/{invoice_id}/activity
 GET /api/invoices/{invoice_id}/email-compose
 GET /api/invoices/{invoice_id}/payment-plan
 GET /api/invoices/{invoice_id}/payments
