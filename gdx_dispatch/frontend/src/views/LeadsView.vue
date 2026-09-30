@@ -91,6 +91,7 @@
                  the test id lives on this wrapper. -->
             <span v-if="data.progress" :data-testid="`lead-progress-${data.id}`">
               <JobStateChip :job="leadProgressAsJob(data.progress)" :show-deposit-badge="false" />
+              <DoorOrderTag v-if="data.progress.doors" :doors="data.progress.doors" class="lead-door-order" />
             </span>
             <span v-else class="lead-progress-none">—</span>
           </template>
@@ -610,6 +611,7 @@ import PhoneInput from '../components/PhoneInput.vue';
 import LeadEstimatesPanel from '../components/LeadEstimatesPanel.vue';
 import JobStateChip from '../components/JobStateChip.vue';
 import { leadProgressAsJob } from '../utils/leadProgress';
+import DoorOrderTag from '../components/DoorOrderTag.vue';
 import { jobDisplayState } from '../utils/jobDisplayState';
 
 const api = useApiWithToast();
@@ -1447,6 +1449,9 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.lead-door-order {
+  margin-left: 0.35rem;
+}
 .lead-progress-none {
   color: var(--p-text-muted-color);
 }

@@ -678,6 +678,7 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
 
         folders_up = folders_del = msgs_up = msgs_rem = 0
         ingest_totals = new_totals()
+        hubx_totals: dict = {}
         failed: list[dict] = []
         try:
             with with_outlook_client(cdb2, tdb, account.user_id, tid) as gc:
@@ -734,6 +735,17 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
                         tenant_id=tid,
                         max_llm_extractions=LLM_MAX_EXTRACTIONS_PER_RUN,
                     )
+
+                # HubX order submissions → the job's doors go "ordered" and the
+                # job leaves the order-doors lane. Reads the now-committed
+                # mirror; needs gc (one body fetch per unprocessed message).
+                # Never breaks the sync — a failure retries next run.
+                try:
+                    from gdx_dispatch.modules.vendor_orders.hubx import process_hubx_orders
+                    hubx_totals = process_hubx_orders(tdb, gc, account)
+                except Exception:  # noqa: BLE001
+                    log.exception("hubx order ingest failed for account %s (sync unaffected)", aid)
+                    tdb.rollback()
         except OutlookReconnectRequired as exc:
             log.warning("sync_outlook_mailbox: reconnect required for %s: %s", aid, exc)
             account.last_error = str(exc)[:500]
@@ -775,6 +787,7 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
             "messages_removed": msgs_rem,
             "failed_folders": failed,
             "vendor_bills": ingest_totals,
+            "hubx_orders": hubx_totals,
             "bounces": bounce_totals,
             "resends": resend_totals,
         }
