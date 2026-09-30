@@ -69,7 +69,7 @@ Notice surfaces: the pay page (statutory) and the invoice email carry it; paymen
 
 ## Addendum 2026-09-30: refusing US debit cards
 
-Doug ruled 2026-09-30 that the office may refuse debit cards on the pay page, as its **own** setting (`tenant_settings.refuse_debit_cards`, migration 103, default off), not tied to the rate. Stripe will not surcharge debit, so without it a debit card is charged fee-free.
+Doug ruled 2026-09-30 that the office may refuse debit cards on the pay page, as its **own** setting (`tenant_settings.refuse_debit_cards`, migration 104 — renumbered from 103 after it collided with `103_scheduled_sms` on main, default off), not tied to the rate. Stripe will not surcharge debit, so without it a debit card is charged fee-free.
 
 - `create-intent` reads the card's PaymentMethod **before** any intent exists and refuses `funding = debit` with `country = US` (402, "We don't accept debit cards…"). Debit issued outside the US is still taken: the networks' US credit-only acceptance requires honoring every valid foreign-issued card. Prepaid and `unknown` funding are taken.
 - With the setting on the page is two-step whether or not a rate is set. A card request with no PaymentMethod (a page opened before the setting went on) gets a 409 asking for a refresh.

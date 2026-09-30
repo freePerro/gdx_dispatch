@@ -19,8 +19,8 @@ then builds it from the model with the column present.
 Rollback: ``downgrade()`` drops the column (``batch_alter_table`` so SQLite
 rebuilds the table). The only thing lost is the office's yes/no choice.
 
-Revision ID: 103_refuse_debit_cards
-Revises: 102_cash_calendar_settings
+Revision ID: 104_refuse_debit_cards
+Revises: 103_scheduled_sms
 Create Date: 2026-09-30
 """
 from __future__ import annotations
@@ -29,8 +29,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import inspect
 
-revision = "103_refuse_debit_cards"
-down_revision = "102_cash_calendar_settings"
+revision = "104_refuse_debit_cards"
+down_revision = "103_scheduled_sms"
 branch_labels = None
 depends_on = None
 
