@@ -12,6 +12,7 @@ corresponds to something that was exploitable before 2026-08-04 — keep them.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from unittest.mock import MagicMock, patch
 
@@ -1832,3 +1833,97 @@ def test_the_pay_link_email_says_debit_is_refused_when_it_is(db_session):
     with patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0.029")), \
             patch("gdx_dispatch.core.payments.refuses_debit_cards", return_value=True):
         assert "We don't accept debit cards." in card_surcharge_notice(db_session, "t")
+
+
+# ---------------------------------------------------------------------------
+# Staff preview (?preview=, core/customer_page_preview.py) — the text dialog's
+# "See the page your customer will get".
+# ---------------------------------------------------------------------------
+
+_BROWSER = {"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0 Safari/537.36"}
+
+
+def _customer_views(db):
+    from gdx_dispatch.core.audit import AuditLog
+
+    return db.query(AuditLog).filter(AuditLog.action == "invoice_viewed_by_customer").count()
+
+
+def _get_pay(client, token, **params):
+    with patch("stripe.PaymentIntent.list", return_value=MagicMock(data=[], has_more=False)):
+        return client.get(f"/pay/{token}", params=params, headers=_BROWSER)
+
+
+def test_a_preview_shows_a_draft_with_payment_switched_off_and_records_no_view(client, db_session):
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    draft = _mk_invoice(db_session, token="tok-draft-preview", number="INV-DRAFT-1", status="draft")
+    assert _get_pay(client, "tok-draft-preview").status_code == 404  # the customer rule is unchanged
+
+    resp = _get_pay(client, "tok-draft-preview", preview=mint("invoice", draft.id))
+    assert resp.status_code == 200, resp.text
+    html = resp.text
+    assert 'data-testid="pay-preview-banner"' in html
+    # Both first-step pay buttons are disabled, which also blocks Enter-to-submit.
+    assert re.search(r'id="card-submit"[^>]*\sdisabled', html)
+    assert re.search(r'id="ach-submit"[^>]*\sdisabled', html)
+    # The Stripe script never starts, so nothing on the page can create an
+    # intent — and Stripe.js is not even loaded, so the signed URL stays here.
+    assert "Stripe(STRIPE_KEY)" not in html
+    assert "js.stripe.com" not in html
+    assert _customer_views(db_session) == 0
+
+
+def test_a_preview_of_a_sent_invoice_records_no_view_but_the_customer_still_does(client, db_session, invoice):
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    assert _get_pay(client, TOKEN, preview=mint("invoice", invoice.id)).status_code == 200
+    assert _customer_views(db_session) == 0
+    plain = _get_pay(client, TOKEN)
+    assert plain.status_code == 200
+    assert "pay-preview-banner" not in plain.text
+    assert "Stripe(STRIPE_KEY)" in plain.text
+    assert _customer_views(db_session) == 1
+
+
+def test_a_bad_preview_is_refused_and_never_falls_back_to_a_customer_visit(client, db_session, invoice, other_invoice):
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    expired = mint("invoice", invoice.id, now=0)
+    made_up = _get_pay(client, "no-such-token", preview="garbage")
+    assert made_up.status_code == 404
+    # Staff open this in a browser tab: a page, not a JSON blob.
+    assert made_up.headers["content-type"].startswith("text/html")
+    assert 'data-testid="pay-preview-expired"' in made_up.text
+    for sig in ("garbage", expired, mint("invoice", other_invoice.id), mint("estimate", invoice.id)):
+        resp = _get_pay(client, TOKEN, preview=sig)
+        assert resp.status_code == 404, sig
+        # Byte-identical to the made-up token: a bad preview cannot confirm
+        # that a draft's token is real.
+        assert resp.content == made_up.content, sig
+    assert _customer_views(db_session) == 0
+
+
+def test_a_preview_does_not_resurrect_a_deleted_invoice(client, db_session):
+    from datetime import UTC, datetime
+
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    gone = _mk_invoice(db_session, token="tok-gone", number="INV-GONE")
+    gone.deleted_at = datetime.now(UTC)
+    db_session.commit()
+    assert _get_pay(client, "tok-gone", preview=mint("invoice", gone.id)).status_code == 404
+
+
+def test_a_preview_hides_the_microdeposit_verification_link(client, invoice):
+    """A bank transfer awaiting verification shows the customer a live link to
+    Stripe's verification page. In preview every action is off, that one too."""
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    verifying = {"stage": "verifying", "hosted_verification_url": "https://payments.stripe.com/microdeposit/x"}
+    with patch("gdx_dispatch.core.payments._ach_in_flight", return_value=verifying):
+        plain = _get_pay(client, TOKEN)
+        preview = _get_pay(client, TOKEN, preview=mint("invoice", invoice.id))
+    assert 'data-testid="ach-verifying-link"' in plain.text
+    assert 'data-testid="ach-verifying-link"' not in preview.text
+    assert 'data-testid="pay-preview-banner"' in preview.text

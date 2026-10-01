@@ -21,7 +21,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core import link_sms
+from gdx_dispatch.core import customer_page_preview, link_sms
 
 FINALIZED = {"accepted", "declined"}
 # The only statuses a text may move back to "sent" (see stage()).
@@ -39,6 +39,24 @@ def default_body(db: Session, estimate: Any, link: str) -> str:
     number = estimate.estimate_number or str(estimate.id)[:8]
     prefix = f"{who}: " if who else ""
     return f"{prefix}Your estimate #{number} is ready. Review and approve: {link}"
+
+
+def as_texted(estimate: Any, now: Any) -> dict[str, Any] | None:
+    """What a text delivered at ``now`` leaves the customer looking at:
+    ``{"status", "valid_until"}``, or None for an accepted/declined estimate,
+    which a text never changes.
+
+    Read-only twin of ``stamp()`` in ``send()`` below — the last write a
+    delivered text makes, so the one the customer sees: any estimate not
+    finalized goes to "sent" with sent_at = now and the send expiry
+    re-applied, including one already "sent" whose date has lapsed. For the
+    staff preview of the customer page (core/customer_page_preview.py).
+    Change one, change both."""
+    from gdx_dispatch.routers.estimates import send_expiry
+
+    if estimate.status in FINALIZED:
+        return None
+    return {"status": "sent", "valid_until": send_expiry(estimate, now)}
 
 
 def prepare(db: Session, estimate: Any, *, to_override: str | None = None) -> dict[str, Any]:
@@ -63,6 +81,9 @@ def prepare(db: Session, estimate: Any, *, to_override: str | None = None) -> di
         "customer_name": customer.name if customer is not None else None,
         "body": default_body(db, estimate, link) if link else None,
         "blocked": blocked,
+        # The approval page the link opens, for staff, without counting as
+        # the customer opening it (core/customer_page_preview.py).
+        "preview_url": customer_page_preview.preview_url("estimate", estimate.id, estimate.public_token),
     }
 
 
@@ -113,6 +134,8 @@ def send(
         # if the customer accepted/declined while the text was in flight, only
         # the delivery channel is recorded: status, expiry and the
         # estimate.sent event would all contradict their decision.
+        # as_texted() above is this block's read-only twin (the staff
+        # preview of the customer page). Change one, change both.
         estimate.sent_via = "sms"
         estimate.updated_at = now
         if estimate.status in FINALIZED:

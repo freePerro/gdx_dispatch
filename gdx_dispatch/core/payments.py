@@ -44,6 +44,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core import customer_page_preview
 from gdx_dispatch.core.customer_views import record_customer_view
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.models.tenant_models import AppSettings, Invoice, Payment
@@ -1884,44 +1885,77 @@ def confirm_payment(
 # GET /pay/{invoice_token}  — public, no auth
 # ---------------------------------------------------------------------------
 
+#: What a staff preview link (``/pay/{token}?preview=``) shows once it no
+#: longer verifies. Static on purpose: it is the same bytes for a real token
+#: and a made-up one. The reader is staff, not the customer.
+PREVIEW_EXPIRED_HTML = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Preview expired</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f3f4f6;color:#111827;
+margin:0;padding:3rem 1rem;display:flex;justify-content:center}
+.card{background:#fff;border-radius:12px;padding:2rem;max-width:420px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+h1{font-size:1.15rem;margin:0 0 .75rem}p{margin:0;color:#4b5563;line-height:1.5}
+</style></head><body><div class="card" data-testid="pay-preview-expired">
+<h1>This preview has expired</h1>
+<p>Preview links last 30 minutes. Open the text dialog again and use its preview link.</p>
+</div></body></html>
+"""
+
+
 @public_router.get("/pay/{invoice_token}", response_class=HTMLResponse)
 def pay_invoice(
     invoice_token: str,
     request: Request,
     db: Session = Depends(get_db),
+    preview: str | None = None,
 ) -> HTMLResponse:
     """Serve the Stripe Elements payment form for a public invoice link.
 
     The invoice is looked up by its ``public_token`` (a unique random string
     sent to customers in payment-request emails). No authentication is
     required — the token itself acts as the secret.
+
+    ``?preview=`` is staff looking at this page from the text dialog
+    (core/customer_page_preview.py): a valid one shows a draft too, records
+    no customer view and renders the form switched off. Any other request
+    carrying ``preview`` — expired, tampered, or for a token that matches
+    nothing — gets one identical HTML page, so it cannot tell a real token
+    from a made-up one, and is never treated as a customer visit.
     """
     invoice = (
         db.query(Invoice)
         .filter(Invoice.public_token == invoice_token, Invoice.deleted_at.is_(None))
         .first()
     )
+    is_preview = preview is not None
+    if is_preview and (invoice is None or not customer_page_preview.verify(preview, "invoice", invoice.id)):
+        return HTMLResponse(PREVIEW_EXPIRED_HTML, status_code=404)
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found or expired")
     # §11 rail (2026-08-08 audit): the form rendered for DRAFTS — an
     # unreviewed autodraft presented a full Stripe payment page, and the
     # render also logged invoice_viewed_by_customer as if it were a
     # delivered invoice. Un-issued = not found (never reveal pre-issue
-    # invoices to a leaked token).
-    if str(invoice.status or "").lower() == "draft":
+    # invoices to a leaked token). A signed staff preview is not a leaked
+    # token, and its page cannot pay.
+    if str(invoice.status or "").lower() == "draft" and not is_preview:
         raise HTTPException(status_code=404, detail="Invoice not found or expired")
 
     # The customer clicked the link we emailed them. Never blocks the page.
-    record_customer_view(
-        db,
-        action="invoice_viewed_by_customer",
-        entity_type="invoice",
-        entity_id=invoice.id,
-        tenant_id=getattr(invoice, "company_id", None),
-        request=request,
-        sent_at=getattr(invoice, "sent_at", None),
-        details={"invoice_number": getattr(invoice, "invoice_number", None)},
-    )
+    # Staff previewing it is not the customer.
+    if not is_preview:
+        record_customer_view(
+            db,
+            action="invoice_viewed_by_customer",
+            entity_type="invoice",
+            entity_id=invoice.id,
+            tenant_id=getattr(invoice, "company_id", None),
+            request=request,
+            sent_at=getattr(invoice, "sent_at", None),
+            details={"invoice_number": getattr(invoice, "invoice_number", None)},
+        )
 
     # M16: while an ACH debit is processing, the page must say so instead of
     # presenting a live payment form. Best-effort — a Stripe outage renders
@@ -1961,6 +1995,9 @@ def pay_invoice(
             # disclosure, one click earlier — "here is the work you're paying
             # for". Strictly the attached set, never the job's whole roll.
             "job_photos": _invoice_public_photos(invoice, db),
+            # Staff preview: the page as the customer will see it, with the
+            # Stripe script never started, so nothing on it can charge.
+            "preview": is_preview,
         },
     )
 

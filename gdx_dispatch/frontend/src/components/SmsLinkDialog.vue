@@ -50,6 +50,21 @@
           {{ body.length }} characters · the link is always included, even if you edit it out.
         </small>
       </div>
+      <!-- The page on the other side of the link, opened in preview mode: a
+           draft shows too, nothing on it can be paid or accepted, and it does
+           not count as the customer opening it (core/customer_page_preview.py).
+           Good for 30 minutes from when this dialog opened. -->
+      <a
+        v-if="previewUrl"
+        :href="previewUrl"
+        target="_blank"
+        rel="noopener"
+        class="sms-preview-link"
+        data-testid="sms-preview-link"
+      >
+        <i class="pi pi-external-link" aria-hidden="true" />
+        See the page your customer will get
+      </a>
       <Message
         v-if="quiet && !later && !blocked"
         severity="info"
@@ -131,6 +146,9 @@ const to = ref('')
 const body = ref('')
 const customerName = ref('')
 const blocked = ref(null)
+// Same-origin link to the customer's page in preview mode (sms-preview's
+// preview_url); empty when the document has no public token.
+const previewUrl = ref('')
 // Set when the server refuses because an earlier attempt never confirmed; the
 // next Send is then an explicit "send anyway" (resend_unconfirmed).
 const unconfirmed = ref(null)
@@ -198,6 +216,7 @@ async function load() {
   loading.value = true
   blocked.value = null
   unconfirmed.value = null
+  previewUrl.value = ''
   later.value = false
   quiet.value = isQuietHours()
   loadScheduled()
@@ -208,6 +227,7 @@ async function load() {
     defaultBody.value = p.body || ''
     customerName.value = p.customer_name || ''
     blocked.value = p.blocked
+    previewUrl.value = p.preview_url || ''
   } catch (err) {
     blocked.value = { message: err?.message || 'Could not load the text preview.' }
   } finally {
@@ -268,6 +288,17 @@ watch(() => props.visible, (open) => { if (open) load() }, { immediate: true })
 .form-field { display: flex; flex-direction: column; gap: 0.35rem; }
 .form-field :deep(input), .form-field :deep(textarea) { width: 100%; }
 .sms-hint { color: var(--p-text-muted-color); }
+.sms-preview-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  align-self: flex-start;
+  min-height: 44px;
+  color: var(--p-primary-color);
+  font-weight: 500;
+  text-decoration: none;
+}
+.sms-preview-link:hover { text-decoration: underline; }
 .sms-loading { padding: 1rem 0; color: var(--p-text-muted-color); }
 .sms-scheduled { display: flex; flex-direction: column; gap: 0.4rem; }
 .sms-scheduled-title { font-weight: 600; font-size: 0.9rem; }

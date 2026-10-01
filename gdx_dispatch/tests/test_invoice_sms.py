@@ -621,3 +621,21 @@ def test_client_still_retries_idempotent_reads_on_5xx():
     c._backoff_seconds = lambda attempt: 0
     c.get_account()
     assert route.call_count == 2
+
+
+def test_preview_carries_a_signed_link_to_the_pay_page(db):
+    """The dialog's "See the page your customer will get": same-origin, this
+    invoice's pay page, signed for this invoice only — office and tech alike."""
+    from gdx_dispatch.core.customer_page_preview import verify
+
+    inv = _seed(db)
+    for prep in (
+        invoice_sms_preview(invoice_id=inv.id, payload=None, _=OFFICE, db=db),
+        json.loads(mobile_invoice_sms_preview(invoice_id=str(inv.id), request=_Req(), payload=None,
+                                              current_user=TECH, db=db).body),
+    ):
+        url = prep["preview_url"]
+        assert url.startswith(f"/pay/{inv.public_token}?preview=")
+        sig = url.split("?preview=", 1)[1]
+        assert verify(sig, "invoice", inv.id)
+        assert not verify(sig, "estimate", inv.id)

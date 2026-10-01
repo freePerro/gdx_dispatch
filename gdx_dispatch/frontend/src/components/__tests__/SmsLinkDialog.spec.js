@@ -261,4 +261,33 @@ describe('SmsLinkDialog', () => {
     expect(apiPost.mock.calls[1][0]).toBe('/api/mobile/quotes/q-2/schedule-sms');
     expect(apiGet.mock.calls[0][0]).toContain('kind=estimate');
   });
+
+  it('links to the page on the other side of the text, in a new tab', async () => {
+    apiPost.mockResolvedValueOnce({ ...PREVIEW, preview_url: '/pay/tok?preview=sig.abc' });
+    const w = mountDialog();
+    await flushPromises();
+    const a = w.find('[data-testid="sms-preview-link"]');
+    expect(a.attributes('href')).toBe('/pay/tok?preview=sig.abc');
+    expect(a.attributes('target')).toBe('_blank');
+    expect(a.attributes('rel')).toContain('noopener');
+  });
+
+  it('still offers the page when the text itself is refused', async () => {
+    apiPost.mockResolvedValueOnce({
+      ...PREVIEW,
+      preview_url: '/proposals/tok?preview=sig.abc',
+      blocked: { code: 'sms_opt_out', message: 'This customer has opted out of text messages.' },
+    });
+    const w = mountDialog({ base: '/api/estimates' });
+    await flushPromises();
+    expect(w.find('[data-testid="sms-preview-link"]').exists()).toBe(true);
+  });
+
+  it('shows no link when the server has none', async () => {
+    apiPost.mockResolvedValueOnce(PREVIEW);
+    const w = mountDialog();
+    await flushPromises();
+    expect(w.find('[data-testid="sms-preview-link"]').exists()).toBe(false);
+  });
 });
+

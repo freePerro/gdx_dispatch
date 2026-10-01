@@ -1739,9 +1739,15 @@ def _apply_send_expiry(estimate: Estimate) -> None:
     helper to distinguish a default from an override.
 
     Best-effort: a features read failure must not block the send."""
-    sent_at = estimate.sent_at
-    if not sent_at:
+    if not estimate.sent_at:
         return
+    estimate.valid_until = send_expiry(estimate, estimate.sent_at)
+
+
+def send_expiry(estimate: Estimate, sent_at: datetime):
+    """The valid_until a send at ``sent_at`` leaves on ``estimate`` — the rule
+    above, without writing it. Also what the staff preview of the customer
+    page shows (modules/proposals/router.py), so the two cannot drift."""
     existing = getattr(estimate, "valid_until", None)
     if existing is not None:
         # SQLite (tests) returns naive datetimes; PG returns aware. Normalize
@@ -1750,14 +1756,14 @@ def _apply_send_expiry(estimate: Estimate) -> None:
             existing = existing.replace(tzinfo=timezone.utc)
         sent_cmp = sent_at if sent_at.tzinfo is not None else sent_at.replace(tzinfo=timezone.utc)
         if existing > sent_cmp:
-            return
+            return estimate.valid_until
     try:
         days = int(get_features(str(estimate.company_id or "")).estimate_expiry_days or 60)
     except Exception:
         days = 60
     if days < 1:
         days = 60
-    estimate.valid_until = estimate.sent_at + timedelta(days=days)
+    return sent_at + timedelta(days=days)
 
 
 class MarkEstimateSentIn(BaseModel):

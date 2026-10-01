@@ -495,6 +495,7 @@ gdx_dispatch/core/office_notifications.py                    comms-email-phone
 gdx_dispatch/core/push_notifications.py                      comms-email-phone
 gdx_dispatch/core/push_subscriptions.py                      comms-email-phone
 gdx_dispatch/core/customer_views.py                          comms-email-phone
+gdx_dispatch/core/customer_page_preview.py                   comms-email-phone
 gdx_dispatch/modules/outlook/*                               comms-email-phone
 gdx_dispatch/modules/phone_com/*                             comms-email-phone
 gdx_dispatch/modules/notifications/*                         comms-email-phone
