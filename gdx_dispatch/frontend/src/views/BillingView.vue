@@ -2,8 +2,12 @@
     <section class="billing-view view-card">
       <!-- Summary Cards -->
       <div class="summary-cards">
-        <Card data-testid="billing-total-outstanding">
-          <template #title>Total Outstanding</template>
+        <!-- Click to re-cut the outstanding balance by age (0–30, 31–60, …
+             with the office's own day ranges). -->
+        <Card data-testid="billing-total-outstanding" class="outstanding-card" title="Break down by age"
+          role="button" tabindex="0" aria-label="Total Outstanding — break down by age"
+          @click="showAgingDialog = true" @keydown.enter.prevent="showAgingDialog = true" @keydown.space.prevent="showAgingDialog = true">
+          <template #title>Total Outstanding <i class="pi pi-chart-bar card-hint" /></template>
           <template #content><p class="stat-value outstanding">{{ currency(totalOutstanding) }}</p></template>
         </Card>
         <Card data-testid="billing-overdue-amount">
@@ -446,6 +450,14 @@
       <!-- S122: Create-invoice dialog retired. + New Invoice and per-row
            "Create Invoice for Job" buttons now route to /billing/new. -->
 
+      <OutstandingAgingDialog
+        v-model:visible="showAgingDialog"
+        :invoices="kpiWindowInvoices"
+        :card-total="totalOutstanding"
+        :today="todayKey()"
+        :scope-note="agingScopeNote"
+      />
+
       <!-- Record Payment Dialog -->
       <Dialog
         v-model:visible="showPaymentDialog"
@@ -623,6 +635,7 @@ import InputText from "primevue/inputtext";
 import Tag from "primevue/tag";
 import Toast from "primevue/toast";
 import EmptyState from "../components/EmptyState.vue";
+import OutstandingAgingDialog from "../components/OutstandingAgingDialog.vue";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { invoiceStatusSeverity as statusSeverity } from "../utils/statusSeverity";
 const { confirmAsync, confirmDestructive } = useDestructiveConfirm();
@@ -646,6 +659,7 @@ const customers = ref([]);
 const jobs = ref([]);
 const searchQuery = ref("");
 const activeStatus = ref("All");
+const showAgingDialog = ref(false);
 
 // Date filter — preset + optional custom range
 const datePreset = ref("all");
@@ -1156,6 +1170,14 @@ const kpiWindowInvoices = computed(() =>
 // SUM, no pagination cap) and fall back to client-side over the loaded
 // list. Drafts excluded — they aren't yet receivables. Non-positive balances
 // are not money still owed, so they stay out of AR too.
+// The aging dialog breaks down exactly what the card covers: with a date
+// filter on, that is invoices ISSUED in the window — say so in the dialog.
+const agingScopeNote = computed(() => {
+  if (!dateFilterActive.value) return "";
+  const preset = datePresetOptions.find((o) => o.value === datePreset.value);
+  return `Only invoices issued in the page's date filter (${preset?.label || "custom range"}), matching the card. Clear the filter to see everything owed.`;
+});
+
 const totalOutstanding = computed(() => {
   if (!dateFilterActive.value && billingSummary.value && typeof billingSummary.value.total_outstanding === 'number') {
     return billingSummary.value.total_outstanding;
@@ -1614,7 +1636,8 @@ onMounted(async () => {
 .stat-value.overdue { color: var(--p-red-500, #ef4444); }
 .stat-value.paid { color: var(--p-green-500, #22c55e); }
 .stat-value.drafts { color: var(--p-amber-500, #f59e0b); }
-.draft-card { cursor: pointer; }
+.draft-card, .outstanding-card { cursor: pointer; }
+.card-hint { font-size: 0.8rem; color: var(--p-text-muted-color, #6b7280); }
 .draft-total {
   font-size: 0.9rem;
   color: var(--p-text-muted-color, #6b7280);
