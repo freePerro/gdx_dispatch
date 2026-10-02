@@ -2153,3 +2153,77 @@ def test_prepare_invoice_email_honours_hide_line_prices(tenant_db_session, monke
     assert "Torsion spring" in hidden  # the line itself still lists
     # Only the totals block carries the amount now, never a per-line cell.
     assert hidden.count("$320.00") < shown.count("$320.00")
+
+
+# ----------------------------------------------------------------------------
+# Billing list "Viewed" column: did the customer open the view-and-pay link?
+# ----------------------------------------------------------------------------
+
+def test_list_invoices_reports_when_the_customer_viewed_it(tenant_db_session):
+    from datetime import UTC, datetime
+
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.core.customer_views import record_customer_view
+
+    db = tenant_db_session
+
+    class _Req:
+        headers = {"user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Safari/604.1"}
+
+    job = _seed_job(db)
+    seen = create_invoice(
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id),
+        _=_current_user(), db=db,
+    )
+    unseen = create_invoice(
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id, force=True),
+        _=_current_user(), db=db,
+    )
+
+    # Two genuine visits a day apart. audit_logs is immutable, so yesterday's
+    # visit is inserted already dated; today's goes through the real recorder.
+    yesterday = datetime.now(UTC) - timedelta(days=1)
+    db.add(AuditLog(
+        user_id="public:customer", action="invoice_viewed_by_customer",
+        entity_type="invoice", entity_id=seen["id"], created_at=yesterday,
+    ))
+    db.commit()
+    assert record_customer_view(
+        db, action="invoice_viewed_by_customer", entity_type="invoice",
+        entity_id=UUID(seen["id"]), request=_Req(),
+    )
+    # A proposal view sharing the id string must not count as an invoice view.
+    assert record_customer_view(
+        db, action="estimate_viewed_by_customer", entity_type="estimate",
+        entity_id=UUID(unseen["id"]), request=_Req(),
+    )
+
+    items = {i["id"]: i for i in list_invoices(
+        request=_mock_request(), status=None, customer_id=None, _=_current_user(), db=db,
+    )}
+
+    assert items[seen["id"]]["customer_view_count"] == 2
+    last = datetime.fromisoformat(items[seen["id"]]["customer_viewed_at"])
+    assert last > yesterday + timedelta(hours=1)  # the latest visit, not the first
+    assert items[unseen["id"]]["customer_viewed_at"] is None
+    assert items[unseen["id"]]["customer_view_count"] == 0
+
+
+def test_list_invoices_view_lookup_failure_blanks_the_column(tenant_db_session, monkeypatch):
+    """A failed view lookup blanks the column; the list still loads."""
+    from gdx_dispatch.core import customer_views
+
+    db = tenant_db_session
+    job = _seed_job(db)
+    inv = create_invoice(
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id),
+        _=_current_user(), db=db,
+    )
+
+    def _boom(*a, **k):
+        raise RuntimeError("view lookup down")
+
+    monkeypatch.setattr(customer_views, "customer_view_summary", _boom)
+    items = list_invoices(request=_mock_request(), status=None, customer_id=None, _=_current_user(), db=db)
+    assert [i["id"] for i in items] == [inv["id"]]
+    assert items[0]["customer_viewed_at"] is None

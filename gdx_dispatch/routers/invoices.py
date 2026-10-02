@@ -1151,6 +1151,27 @@ def list_invoices(
 
     if status is not None:
         items = [item for item in items if item["effective_status"] == status]
+
+    # "Did the customer look at it?" — the /pay/{token} page (the link in the
+    # invoice email and text) writes an audit row when it is opened
+    # (core/customer_views.py). Surfaced so the Billing list can show it
+    # without opening each invoice's activity timeline. Only a positive is
+    # shown: no row does not prove "not opened" (mailed, manual, bounced, or
+    # sent before views were recorded) — the activity panel makes that call.
+    try:
+        from gdx_dispatch.core.customer_views import customer_view_summary
+
+        views = customer_view_summary(db, action=_INVOICE_VIEW_ACTION, entity_type="invoice")
+    except Exception:
+        logging.getLogger(__name__).exception("list_invoices customer view lookup failed")
+        # A failed statement aborts the Postgres transaction; read-only
+        # handler, nothing pending to lose. The column just goes blank.
+        db.rollback()
+        views = {}
+    for item in items:
+        seen = views.get(str(item["id"]))
+        item["customer_viewed_at"] = seen["last_viewed_at"] if seen else None
+        item["customer_view_count"] = seen["view_count"] if seen else 0
     return items
 
 

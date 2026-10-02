@@ -374,6 +374,20 @@
             <small v-if="data.sent_at && data.sent_via === 'mail'" class="muted"> · Mailed</small>
           </template>
         </Column>
+        <!-- The customer opened the view-and-pay link (email, text, or the
+             portal's Pay button). Blank is NOT "not opened": a mailed,
+             manual, bounced or pre-2026-07-29 send leaves no record either
+             way. The invoice's activity panel says when "not opened" is
+             provable. -->
+        <Column field="customer_viewed_at" header="Viewed" sortable>
+          <template #body="{ data }">
+            <span
+              v-if="data.customer_viewed_at"
+              v-tooltip="`Last opened ${formatDateTime(data.customer_viewed_at)}` + (data.customer_view_count > 1 ? ` · ${data.customer_view_count} visits` : '')"
+              :data-testid="`customer-viewed-${data.id}`"
+            ><i class="pi pi-eye" aria-hidden="true" /> {{ formatStampDate(data.customer_viewed_at) }}</span>
+          </template>
+        </Column>
         <Column header="Actions" style="width: 220px">
           <template #body="{ data }">
             <div class="action-btns">
@@ -873,9 +887,9 @@ async function confirmBulkMarkPaid() {
 }
 
 function bulkExport() {
-  const headers = ["Invoice #", "Customer", "Amount", "Status", "Due Date", "Last Sent"];
+  const headers = ["Invoice #", "Customer", "Amount", "Status", "Due Date", "Last Sent", "Viewed"];
   const rows = selectedInvoices.value.map((i) => [
-    i.invoice_number || "", i.customer_name || "", i.total || 0, i.status || "", i.due_date || "", i.sent_at || "",
+    i.invoice_number || "", i.customer_name || "", i.total || 0, i.status || "", i.due_date || "", i.sent_at || "", i.customer_viewed_at || "",
   ]);
   const csv = [headers, ...rows].map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
@@ -1079,6 +1093,7 @@ function exportInvoices() {
       { field: "status", header: "Status" },
       { field: "due_date", header: "Due Date" },
       { field: "sent_at", header: "Last Sent" },
+      { field: "customer_viewed_at", header: "Viewed" },
     ],
     "invoices",
   );
@@ -1274,6 +1289,10 @@ function normalizeInvoice(raw, customerMap = {}) {
     created_at: raw.created_at || "",
     sent_at: raw.sent_at || "",
     sent_via: raw.sent_via || "",
+    // Last time a person opened the view-and-pay link (GET /api/invoices
+    // reads it from the customer-view audit rows). Null = never opened.
+    customer_viewed_at: raw.customer_viewed_at || null,
+    customer_view_count: Number(raw.customer_view_count) || 0,
     paid_at: raw.paid_at || "",
     updated_at: raw.updated_at || "",
     notes: raw.notes || "",
