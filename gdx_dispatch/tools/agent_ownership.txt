@@ -428,6 +428,7 @@ gdx_dispatch/frontend/src/catalog/*                          estimates-pricing
 gdx_dispatch/frontend/src/tours/catalog.js                   estimates-pricing
 gdx_dispatch/frontend/src/utils/doorSizeLabel.js             estimates-pricing
 gdx_dispatch/frontend/src/utils/quantity.js                  estimates-pricing
+gdx_dispatch/frontend/src/utils/lineCategories.js            estimates-pricing
 
 ## ---------------------------------------------------------------------------
 ## customers-crm — customers, contacts, locations, leads, segments, tags,

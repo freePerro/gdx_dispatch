@@ -40,6 +40,7 @@ from gdx_dispatch.modules.proposals.service import (
 )
 from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
 from gdx_dispatch.routers.auth import get_current_user
+from gdx_dispatch.routers.pdf import line_category_mode_for
 
 log = logging.getLogger(__name__)
 
@@ -248,6 +249,13 @@ def _serialize_public_estimate(est: Estimate, db: Session, request: Request | No
     except Exception:
         log.exception("public_proposal_features_failed estimate=%s", est.id)
     hide_prices = effective_hide_line_prices(getattr(est, "hide_line_prices", None), default_hide)
+    # Line categories follow the estimate PDF's template setting (Settings →
+    # PDF Templates → line items): the page and the PDF must show the same
+    # document. 'off' strips category off the wire entirely, like prices.
+    cat_mode = line_category_mode_for(db, "estimate")
+
+    def _cat(line: Any) -> dict[str, Any]:
+        return {} if cat_mode == "off" else {"category": (line.category or "").strip() or None}
 
     tiers = list(
         db.execute(
@@ -298,6 +306,7 @@ def _serialize_public_estimate(est: Estimate, db: Session, request: Request | No
             "accepted_tier_id": str(est.accepted_tier_id) if est.accepted_tier_id else None,
             "proposal_mode": proposal_mode,
             "hide_line_prices": hide_prices,
+            "line_category": cat_mode,
         },
         "tiers": [
             {
@@ -315,6 +324,7 @@ def _serialize_public_estimate(est: Estimate, db: Session, request: Request | No
                     {
                         "description": tl.description,
                         "quantity": float(tl.quantity or 0),
+                        **_cat(tl),
                         **(
                             {}
                             if hide_prices
@@ -336,6 +346,7 @@ def _serialize_public_estimate(est: Estimate, db: Session, request: Request | No
             {
                 "description": ln.description,
                 "quantity": float(ln.quantity or 0),
+                **_cat(ln),
                 **(
                     {}
                     if hide_prices
