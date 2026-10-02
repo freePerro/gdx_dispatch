@@ -164,6 +164,19 @@ describe('PdfTemplateEditorView — line-item options', () => {
     expect(preview.findAll('.preview-nontax')).toHaveLength(1);
   });
 
+  it('tells the office the estimate category setting also drives the customer web pages', async () => {
+    // The approval page and the portal follow this switch (2026-10-01);
+    // invoices have no such page, so the hint is estimate-only.
+    const wrapper = await mountEditor();
+    await selectLineItemsBlock(wrapper);
+    expect(wrapper.find('[data-testid="li-category-web-hint"]').text()).toContain('customer portal');
+
+    await wrapper.find('[data-testid="template-type-select"]').setValue('invoice');
+    await flushPromises();
+    await selectLineItemsBlock(wrapper);
+    expect(wrapper.find('[data-testid="li-category-web-hint"]').exists()).toBe(false);
+  });
+
   it('saves the normalized config back with the new keys', async () => {
     apiPut.mockResolvedValue({ status: 'saved' });
     const wrapper = await mountEditor({ show_unit_price: true });

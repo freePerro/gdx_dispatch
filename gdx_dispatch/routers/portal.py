@@ -35,6 +35,7 @@ from gdx_dispatch.modules.door_listings import service as _listing_service
 from gdx_dispatch.modules.door_listings.models import DoorListing
 from gdx_dispatch.modules.estimates_features import effective_hide_line_prices, get_features
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
+from gdx_dispatch.routers.pdf import line_category_mode_for
 
 log = logging.getLogger(__name__)
 
@@ -1004,6 +1005,10 @@ def portal_estimate_detail(
         getattr(estimate, "hide_line_prices", None), get_features(tenant_id).hide_line_prices
     )
     body["hide_line_prices"] = hide_prices
+    # Same rule as the public approval page: line categories follow the
+    # estimate PDF's template setting, and 'off' keeps them off the wire.
+    cat_mode = line_category_mode_for(db, "estimate")
+    body["line_category"] = cat_mode
 
     lines = db.execute(
         select(EstimateLine)
@@ -1015,6 +1020,7 @@ def portal_estimate_detail(
             "id": str(line.id),
             "description": line.description,
             "quantity": float(line.quantity or 0),
+            **({} if cat_mode == "off" else {"category": (line.category or "").strip() or None}),
             **(
                 {}
                 if hide_prices

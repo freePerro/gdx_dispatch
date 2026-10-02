@@ -1508,3 +1508,123 @@ def test_sms_preview_hands_the_dialog_a_preview_link(client: TestClient):
     assert url.startswith(f"/proposals/{row.public_token}?preview=")
     sig = url.split("?preview=", 1)[1]
     assert client.get(f"/api/proposals/{row.public_token}", params={"preview": sig}).status_code == 200
+
+
+# ── line categories follow the estimate PDF's template setting (2026-10-01) ─
+
+def _save_estimate_pdf_template(client: TestClient, *, show_category: bool, category_display: str = "column") -> None:
+    """Save the tenant's estimate PDF template the way the editor does — the
+    line_items block's settings carry the category switch."""
+    import json
+
+    from gdx_dispatch.core import pdf_generator
+    from gdx_dispatch.models.tenant_models import PdfTemplate
+
+    blocks = pdf_generator.default_blocks("estimate")
+    for b in blocks:
+        if b["type"] == "line_items":
+            b["settings"] = {**b["settings"], "show_category": show_category, "category_display": category_display}
+    db = _db(client)
+    try:
+        db.add(PdfTemplate(
+            id=str(uuid4()), company_id=TENANT, template_type="estimate", blocks=json.dumps(blocks),
+            created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+
+def _categorize_lines(client: TestClient, est_id: str, *categories: str | None) -> None:
+    db = _db(client)
+    try:
+        rows = db.execute(
+            select(EstimateLine).where(EstimateLine.estimate_id == UUID(est_id)).order_by(EstimateLine.sort_order)
+        ).scalars().all()
+        for row, cat in zip(rows, categories, strict=True):
+            row.category = cat
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_public_payload_line_category_off_without_a_saved_template(client: TestClient, monkeypatch):
+    """No saved template: the PDF prints no category, so the page gets none —
+    not even on the wire (the office turned it off; off means off)."""
+    _fake_features(monkeypatch)
+    est = _create_estimate(client)
+    _add_lines(client, est["id"], 100.0, 50.0)
+    _categorize_lines(client, est["id"], "Doors", "Labor")
+    token = _publish(client, est["id"])
+
+    body = client.get(f"/api/proposals/{token}").json()
+    assert body["estimate"]["line_category"] == "off"
+    assert all("category" not in ln for ln in body["lines"])
+    assert "Doors" not in str(body)
+
+
+@pytest.mark.parametrize("display", ["column", "grouped"])
+def test_public_payload_line_category_follows_the_pdf_template(client: TestClient, monkeypatch, display):
+    """The customer's approval page shows category exactly as the estimate PDF
+    does: same switch, same display mode. Uncategorized lines read None."""
+    _fake_features(monkeypatch)
+    _save_estimate_pdf_template(client, show_category=True, category_display=display)
+    est = _create_estimate(client)
+    _add_lines(client, est["id"], 100.0, 50.0, 25.0)
+    _categorize_lines(client, est["id"], "Doors", "  ", "Labor")
+    token = _publish(client, est["id"])
+
+    body = client.get(f"/api/proposals/{token}").json()
+    assert body["estimate"]["line_category"] == display
+    assert [ln["category"] for ln in body["lines"]] == ["Doors", None, "Labor"]
+
+
+def test_public_payload_line_category_switched_off_in_the_template(client: TestClient, monkeypatch):
+    """A saved template with show_category off — even with 'grouped' picked —
+    is 'off', the same reading the PDF render makes."""
+    _fake_features(monkeypatch)
+    _save_estimate_pdf_template(client, show_category=False, category_display="grouped")
+    est = _create_estimate(client)
+    _add_lines(client, est["id"], 100.0)
+    _categorize_lines(client, est["id"], "Doors")
+    token = _publish(client, est["id"])
+
+    body = client.get(f"/api/proposals/{token}").json()
+    assert body["estimate"]["line_category"] == "off"
+    assert "category" not in body["lines"][0]
+
+
+def test_public_payload_tier_lines_carry_category_when_shown(client: TestClient, monkeypatch):
+    """Good/better/best tier items follow the same switch as estimate lines."""
+    _fake_features(monkeypatch)
+    _save_estimate_pdf_template(client, show_category=True, category_display="grouped")
+    est = _create_estimate(client)
+    client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    tier = _add_tier(client, est["id"], "best")
+    _add_tier_line(client, est["id"], tier["id"], "Belt drive opener", 1, 600.0, category="Openers")
+    _add_tier_line(client, est["id"], tier["id"], "Haul away", 1, 50.0)
+    token = _publish(client, est["id"])
+
+    body = client.get(f"/api/proposals/{token}").json()
+    assert [ln["category"] for ln in body["tiers"][0]["lines"]] == ["Openers", None]
+
+
+def test_page_category_mode_is_the_pdf_render_decision():
+    """Real invocation, no mocks: the page's mode is read through the same
+    normalization the PDF render uses (_normalize_template_config), so the
+    two cannot read one template two ways. The render side of each mode is
+    pinned in test_pdf_template_render.py."""
+    from gdx_dispatch.core import pdf_generator
+
+    def cfg(**settings):
+        blocks = pdf_generator.default_blocks("estimate")
+        for b in blocks:
+            if b["type"] == "line_items":
+                b["settings"] = {**b["settings"], **settings}
+        return {"blocks": blocks}
+
+    assert pdf_generator.line_category_mode(None) == "off"
+    assert pdf_generator.line_category_mode(cfg(show_category=True)) == "column"
+    assert pdf_generator.line_category_mode(cfg(show_category=True, category_display="grouped")) == "grouped"
+    assert pdf_generator.line_category_mode(cfg(show_category=True, category_display="bogus")) == "column"
+    assert pdf_generator.line_category_mode(cfg(show_category=False, category_display="grouped")) == "off"
