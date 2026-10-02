@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core import customer_page_preview, estimate_sms
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor, utcnow
 from gdx_dispatch.core.customer_views import record_customer_view
 from gdx_dispatch.core.database import get_db
@@ -401,8 +402,43 @@ def _serialize_public_estimate(est: Estimate, db: Session, request: Request | No
     return body
 
 
+def _preview_estimate_or_404(token: str, preview: str, db: Session) -> Estimate:
+    """Staff preview from the text dialog (core/customer_page_preview.py).
+
+    No ``sent_at`` gate — a text is usually composed from a draft — but the
+    signature must name exactly this estimate and be unexpired. A bad one is
+    the same 404 as a bad token, whatever the estimate's state."""
+    est = db.execute(
+        select(Estimate).where(Estimate.public_token == token, Estimate.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    if est is None or not customer_page_preview.verify(preview, "estimate", est.id):
+        raise HTTPException(status_code=404, detail=_PUBLIC_LOOKUP_DETAIL)
+    return est
+
+
 @router.get("/proposals/{token}")
-def get_public_proposal(token: str, request: Request = None, db: Session = Depends(get_db)) -> dict[str, object]:
+def get_public_proposal(
+    token: str,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    preview: str | None = None,
+) -> dict[str, object]:
+    if preview is not None:
+        est = _preview_estimate_or_404(token, preview, db)
+        body = _serialize_public_estimate(est, db, request)
+        # Show the page the customer gets once the text goes: sending moves a
+        # not-yet-decided estimate to "sent" with the send expiry re-applied
+        # (core/estimate_sms.as_texted, the read-only twin of its stamp()).
+        # Accepted/declined are shown as-is. Nothing here is written.
+        texted = estimate_sms.as_texted(est, utcnow())
+        if texted is not None:
+            body["estimate"]["status"] = texted["status"]
+            vu = texted["valid_until"]
+            body["estimate"]["valid_until"] = vu.isoformat() if vu else None
+        # The page turns every action off on this flag; the action endpoints
+        # never see it, which is why they keep their own sent_at gate.
+        body["preview"] = True
+        return body
     est = _get_public_estimate_or_404(token, db)
     # The customer opened the estimate we sent. Never blocks the response.
     # (Known limit: mail-scanner prefetch also lands here — "viewed" is a

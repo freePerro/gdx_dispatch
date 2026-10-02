@@ -19,8 +19,9 @@ import { mount, flushPromises } from '@vue/test-utils';
 
 const toastAdd = vi.fn();
 vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: toastAdd }) }));
+const mockRoute = vi.hoisted(() => ({ query: {}, params: { token: 'tok-abc' } }));
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ query: {}, params: { token: 'tok-abc' } }),
+  useRoute: () => mockRoute,
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
 }));
 
@@ -97,6 +98,7 @@ async function mountPage() {
 
 beforeEach(() => {
   toastAdd.mockClear();
+  mockRoute.query = {};
 });
 
 describe('ProposalPublicView', () => {
@@ -336,5 +338,37 @@ describe('ProposalPublicView', () => {
 
     await w.find('[data-testid="tier-good"]').trigger('click');
     expect(w.find('[data-testid="action-bar-total"]').text()).toContain('$2,500.00');
+  });
+
+  // Staff preview from the text dialog (?preview=, core/customer_page_preview.py).
+  describe('staff preview', () => {
+    it('passes the signature through, shows the banner and switches every action off', async () => {
+      mockRoute.query = { preview: 'sig.abc' };
+      const fetch = mockFetch({ 'GET /api/proposals/tok-abc?preview=sig.abc': { ...LINE_PAYLOAD, preview: true } });
+      const w = await mountPage();
+      expect(fetch).toHaveBeenCalledWith('/api/proposals/tok-abc?preview=sig.abc');
+      expect(w.find('[data-testid="proposal-preview-banner"]').exists()).toBe(true);
+      // The buttons are there, as the customer will see them, but dead.
+      expect(w.find('[data-testid="accept-btn"]').attributes('disabled')).toBeDefined();
+      expect(w.find('[data-testid="decline-btn"]').attributes('disabled')).toBeDefined();
+      await w.find('[data-testid="accept-btn"]').trigger('click');
+      await flushPromises();
+      expect(fetch.mock.calls.some(([, o]) => (o?.method || 'GET') === 'POST')).toBe(false);
+    });
+
+    it('a customer visit has no banner and live buttons', async () => {
+      mockFetch({ 'GET /api/proposals/tok-abc': LINE_PAYLOAD });
+      const w = await mountPage();
+      expect(w.find('[data-testid="proposal-preview-banner"]').exists()).toBe(false);
+      expect(w.find('[data-testid="accept-btn"]').attributes('disabled')).toBeUndefined();
+    });
+
+    it('an expired preview tells staff to reopen it, not to reply to an email', async () => {
+      mockRoute.query = { preview: 'old.sig' };
+      mockFetch({});
+      const w = await mountPage();
+      expect(w.find('[data-testid="proposal-preview-expired"]').exists()).toBe(true);
+      expect(w.find('[data-testid="proposal-not-found"]').exists()).toBe(false);
+    });
   });
 });

@@ -10,6 +10,15 @@
     <main class="proposal-content">
       <div v-if="loading" class="loading-wrap"><ProgressSpinner /></div>
 
+      <!-- An expired staff preview is a staff dead end, not a customer one:
+           send them back to the dialog that minted it. -->
+      <Card v-else-if="notFound && previewSig" class="state-card" data-testid="proposal-preview-expired">
+        <template #title>This preview has expired</template>
+        <template #content>
+          <p class="meta">Preview links last 30 minutes. Open the text dialog again and use its preview link.</p>
+        </template>
+      </Card>
+
       <!-- Wrong/expired-link 404: friendly dead end, no probe surface. -->
       <Card v-else-if="notFound" class="state-card" data-testid="proposal-not-found">
         <template #title>This link isn't available</template>
@@ -24,6 +33,13 @@
       </Card>
 
       <template v-else-if="data">
+        <!-- Staff preview from the text dialog (?preview=): the page the
+             customer gets, with every action off. The server recorded no
+             customer view for this load. -->
+        <Message v-if="isPreview" severity="info" :closable="false" class="preview-banner" data-testid="proposal-preview-banner">
+          <b>Preview.</b> This is the page your customer will see. Accept, decline and
+          pay are turned off here, and opening it does not count as the customer viewing it.
+        </Message>
         <Card class="estimate-card" data-testid="proposal-card">
           <template #title>
             <div class="card-title-row">
@@ -132,7 +148,7 @@
                   icon="pi pi-check"
                   severity="success"
                   class="flex-1"
-                  :disabled="needsTierPick || totalsMissing"
+                  :disabled="isPreview || needsTierPick || totalsMissing"
                   :loading="busy"
                   data-testid="accept-btn"
                   @click="confirmOpen = true"
@@ -142,6 +158,7 @@
                   icon="pi pi-times"
                   severity="secondary"
                   outlined
+                  :disabled="isPreview"
                   :loading="busy"
                   data-testid="decline-btn"
                   @click="declineOpen = true"
@@ -175,6 +192,7 @@
                 icon="pi pi-credit-card"
                 severity="success"
                 class="flex-1"
+                :disabled="isPreview"
                 data-testid="pay-deposit-btn"
                 @click="openPayUrl(deposit.pay_url)"
               />
@@ -189,6 +207,7 @@
                 icon="pi pi-credit-card"
                 severity="success"
                 class="flex-1"
+                :disabled="isPreview"
                 :loading="busy"
                 data-testid="pay-deposit-ask-btn"
                 @click="startDepositPay"
@@ -287,6 +306,10 @@ const route = useRoute();
 const toast = useToast();
 
 const token = computed(() => String(route.params.token || ""));
+// Signed staff preview (core/customer_page_preview.py), minted by the text
+// dialog. Passed through to the API, which skips the view record and answers
+// with `preview: true`; the page then switches every action off.
+const previewSig = computed(() => (typeof route.query.preview === "string" ? route.query.preview : ""));
 const loading = ref(true);
 const notFound = ref(false);
 const data = ref(null);
@@ -307,6 +330,7 @@ const lightboxOpen = computed({
 });
 
 const est = computed(() => data.value?.estimate || {});
+const isPreview = computed(() => data.value?.preview === true);
 const photos = computed(() => data.value?.photos || []);
 const tiers = computed(() => data.value?.tiers || []);
 const lines = computed(() => data.value?.lines || []);
@@ -351,6 +375,7 @@ function openPayUrl(url) { window.location.assign(url); }
 // the customer actually moves to pay online. Idempotent server-side, so a
 // double click or a re-visit lands on the same invoice.
 async function startDepositPay() {
+  if (isPreview.value) return;
   busy.value = true;
   try {
     const res = await fetch(`/api/proposals/${encodeURIComponent(token.value)}/deposit/pay`, {
@@ -393,7 +418,8 @@ async function load() {
   loading.value = true;
   notFound.value = false;
   try {
-    const res = await fetch(`/api/proposals/${encodeURIComponent(token.value)}`);
+    const qs = previewSig.value ? `?preview=${encodeURIComponent(previewSig.value)}` : "";
+    const res = await fetch(`/api/proposals/${encodeURIComponent(token.value)}${qs}`);
     if (!res.ok) { notFound.value = true; return; }
     data.value = await res.json();
   } catch {
@@ -404,6 +430,7 @@ async function load() {
 }
 
 async function post(action, body) {
+  if (isPreview.value) return null;
   busy.value = true;
   try {
     const res = await fetch(`/api/proposals/${encodeURIComponent(token.value)}/${action}`, {
@@ -455,6 +482,7 @@ onMounted(load);
 </script>
 
 <style scoped>
+.preview-banner { margin-bottom: 1rem; }
 /* PrimeVue v4 --p-* tokens flip with data-theme (portal convention). */
 .proposal-wrapper { min-height: 100vh; background: color-mix(in srgb, var(--p-content-background, #f3f4f6) 96%, var(--p-text-color, #000)); color: var(--p-text-color, #1e293b); }
 .proposal-header { background: var(--p-content-background, #fff); padding: 1rem 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; justify-content: center; border-bottom: 1px solid var(--p-content-border-color, transparent); }

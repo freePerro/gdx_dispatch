@@ -19,7 +19,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core import link_sms
+from gdx_dispatch.core import customer_page_preview, link_sms
 from gdx_dispatch.core.link_sms import prior_attempt as _prior_attempt  # noqa: F401 — re-exported for callers/tests
 from gdx_dispatch.core.link_sms import tenant_uuid  # noqa: F401 — the routes import it from here
 
@@ -72,6 +72,9 @@ def prepare(db: Session, invoice: Any, *, to_override: str | None = None) -> dic
         "customer_name": customer.name if customer is not None else None,
         "body": default_body(db, invoice, pay_url) if pay_url else None,
         "blocked": blocked,
+        # The pay page the link opens, for staff, without counting as the
+        # customer opening it (core/customer_page_preview.py).
+        "preview_url": customer_page_preview.preview_url("invoice", invoice.id, invoice.public_token),
     }
 
 
