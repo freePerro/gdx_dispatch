@@ -203,3 +203,38 @@ def record_customer_view(
         except Exception:
             log.exception("record_customer_view_rollback_failed")
         return False
+
+
+def customer_view_summary(
+    db: Any, *, action: str, entity_type: str
+) -> dict[str, dict[str, Any]]:
+    """Per document: when the customer last opened it, and how many visits.
+
+    Keyed by the audit row's ``entity_id`` string (``str(uuid)``, the same
+    string list endpoints already return as ``id``). One grouped query over
+    every view row of this kind, deliberately unfiltered by id: view rows are
+    bounded by the de-dupe window, and an id ``IN (...)`` over a whole invoice
+    book is the bigger query. A visit is one de-duped row, not one page load.
+    """
+    from sqlalchemy import func
+
+    rows = db.execute(
+        select(
+            AuditLog.entity_id,
+            func.max(AuditLog.created_at),
+            func.count(AuditLog.id),
+        )
+        .where(AuditLog.action == action)
+        .where(AuditLog.entity_type == entity_type)
+        .where(AuditLog.entity_id.is_not(None))
+        .group_by(AuditLog.entity_id)
+    ).all()
+    out: dict[str, dict[str, Any]] = {}
+    for entity_id, last_at, count in rows:
+        if last_at is not None and last_at.tzinfo is None:
+            last_at = last_at.replace(tzinfo=UTC)
+        out[str(entity_id)] = {
+            "last_viewed_at": last_at.isoformat() if last_at else None,
+            "view_count": int(count or 0),
+        }
+    return out
