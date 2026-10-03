@@ -301,6 +301,8 @@ gdx_dispatch/frontend/src/views/BillingView.vue              money-billing
 gdx_dispatch/frontend/src/components/CustomerStatementDialog.vue money-billing
 gdx_dispatch/frontend/src/components/PaymentCaptureForm.vue  money-billing
 gdx_dispatch/frontend/src/utils/customerStatement.js         money-billing
+gdx_dispatch/frontend/src/utils/arAging.js                   money-billing
+gdx_dispatch/frontend/src/components/OutstandingAgingDialog.vue money-billing
 
 ## ---------------------------------------------------------------------------
 ## jobs-dispatch — jobs, closeouts, scheduling, dispatch board, planner,
