@@ -43,7 +43,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.invoice_paid import paid_to_date
 from gdx_dispatch.core.link_sms import SendLinkSmsIn as MobileSendSmsIn  # one composer model for every SMS route
 from gdx_dispatch.core.modules import require_module
@@ -932,6 +932,32 @@ def mobile_create_invoice(
     return _jr(resp_payload, 201)
 
 
+def _invoice_customer(db: Session, invoice: Invoice) -> Customer | None:
+    """The invoice's live customer, or None — with the read contained.
+
+    One helper rather than the same six lines in the send path and the receipt
+    path: GDXA-156 wrapped both identically and the duplicate-block scanner was
+    right to say so. Both callers go on to commit on this same session, so on
+    Postgres an uncontained failure here would abort their transaction and the
+    degraded None would be read as "no customer" while the real damage surfaced
+    later, on an unrelated line.
+
+    Each caller keeps its own meaning for None — "nobody to mail" on the send
+    path, `skip_reason="customer_not_found"` on the receipt path — and its own
+    `except`: `contained_read` re-raises, and both call sites already sit inside
+    a `try` that swallows, which is where rule 1 wants the savepoint.
+    """
+    if invoice.customer_id is None:
+        return None
+    with contained_read(db):
+        return db.execute(
+            select(Customer).where(
+                Customer.id == invoice.customer_id,
+                Customer.deleted_at.is_(None),
+            )
+        ).scalar_one_or_none()
+
+
 def _send_invoice_email(
     db: Session,
     invoice: Invoice,
@@ -947,16 +973,28 @@ def _send_invoice_email(
 
     Returns True only when a provider acknowledged delivery, so callers can
     gate the sent_at stamp on a real send instead of an attempt.
+
+    **What GDXA-156 did NOT close here, named rather than left to be found
+    again.** The two reads below are `contained_read`-wrapped, but two other
+    statements inside the same `try` are not, and neither can be:
+    `_prepare_invoice_email` ends in `db.commit()`, and `send_transactional_email`
+    WRITES its outbound-email row — a commit released inside a SAVEPOINT and a
+    write under `contained_read` are rule-2/rule-5 misuse, worse than the gap.
+    So if either fails on Postgres, `return False` still reads to the caller as
+    "no email", and `mobile_send_invoice` then runs `transition_invoice_status`
+    (a GL posting) and `db.commit()` into an aborted transaction: 500, no
+    `sent_at`, no GL transition, no audit row. Closing it means restructuring
+    this function around the commit, which is money-billing's call, not a
+    containment change (GDXA-156 audit, round 2).
     """
     try:
-        cust = None
-        if invoice.customer_id is not None:
-            cust = db.execute(
-                select(Customer).where(
-                    Customer.id == invoice.customer_id,
-                    Customer.deleted_at.is_(None),
-                )
-            ).scalar_one_or_none()
+        # Contained (GDXA-156) — see _invoice_customer. `return False` below
+        # reads to the caller as "no customer email", and it goes on to
+        # transition the invoice to `sent` and commit, so an uncontained failure
+        # would 500 the send and lose the GL transition and the audit row with
+        # it. Not an observed incident: prod carries `customers` (checked live,
+        # GDXA-156 audit). Insurance on the mechanism.
+        cust = _invoice_customer(db, invoice)
         if cust is None or not cust.email:
             log.info("mobile_invoice_email_skipped no_customer_email invoice=%s", invoice.id)
             return False
@@ -975,10 +1013,35 @@ def _send_invoice_email(
             from gdx_dispatch.core.pdf_generator import generate_invoice_pdf
             from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
             from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload, _template_config
+
+            # `_template_config` is resolved OUTSIDE the savepoint on purpose
+            # (GDXA-156, contained_read rule 5): it catches its own failure,
+            # calls `db.rollback()` and returns None (routers/pdf.py). Inside
+            # the block that rollback would destroy the savepoint the context
+            # manager then tries to RELEASE, and the block would exit *clean* so
+            # nothing below would ever see the failure — strictly worse than not
+            # wrapping. It manages its own damage; the reads that do not are the
+            # ones contained here.
+            #
+            # It stays LAST, which is where it already was — these three used to
+            # be keyword arguments to one call and Python evaluates those left to
+            # right. Hoisting it above the block (the first draft of this fix)
+            # moved its `db.rollback()` to BEFORE `_invoice_payload`, expiring
+            # the `cust` loaded further up. Keeping the original order is free,
+            # so it is kept; but do not oversell it, because `cust` gets expired
+            # a few lines down regardless — `_prepare_invoice_email` calls
+            # `db.commit()` (mint_token defaults True) and `expire_on_commit` is
+            # on. Both measured by the GDXA-156 audit.
+            with contained_read(db):
+                _inv_data = _invoice_payload(invoice, cust, db)
+                _branding = _branding_payload(db)
+            _tpl = _template_config(db, "invoice")
+            # Rendering is CPU, not SQL — kept outside so the savepoint spans
+            # only the statements that can poison the transaction.
             pdf_bytes = generate_invoice_pdf(
-                invoice_data=_invoice_payload(invoice, cust, db),
-                tenant_branding=_branding_payload(db),
-                template_config=_template_config(db, "invoice"),
+                invoice_data=_inv_data,
+                tenant_branding=_branding,
+                template_config=_tpl,
             )
             if len(pdf_bytes) > MAX_INLINE_ATTACHMENT_BYTES:
                 log.warning(
@@ -1427,14 +1490,13 @@ def mobile_send_receipt(
     sent = False
     skip_reason: str | None = None
     try:
-        cust = None
-        if invoice.customer_id is not None:
-            cust = db.execute(
-                select(Customer).where(
-                    Customer.id == invoice.customer_id,
-                    Customer.deleted_at.is_(None),
-                )
-            ).scalar_one_or_none()
+        # GDXA-156 — see _invoice_customer. `db` here is the route's own
+        # session, so this is NOT the caller-owned shape; the judgement goes the
+        # same way because what follows the swallow is `log_audit_event_sync` +
+        # `db.commit()` on this same session. Uncontained on Postgres, the
+        # handler recording a receipt-send failure would destroy the only trace
+        # of it and 500 instead of returning `skip_reason`.
+        cust = _invoice_customer(db, invoice)
         if cust is None:
             skip_reason = "customer_not_found"
         else:

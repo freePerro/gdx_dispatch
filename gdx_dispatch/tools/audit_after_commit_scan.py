@@ -125,6 +125,16 @@ ALLOWED: dict[tuple[str, str], str] = {
         "a wrapper the scan cannot resolve, so it was invisible here while it was "
         "swallowing refusals"
     ),
+    ("routers/mobile.py", "_audit_state_change"): (
+        "helper: the 'commit' before the row is ensure_audit_table's own bootstrap, "
+        "which GDXA-156 hoisted OUT of the two db.begin_nested() blocks below it — "
+        "inside one, its first-call-per-engine transaction control RELEASES the very "
+        "savepoint meant to contain the write (core/audit.py::audit_best_effort point "
+        "1). Same shape as the _log_audit_event_impl allowance above: it primes the "
+        "guard, and all seven callers are mutation routes whose own commit lands the "
+        "row. New to this scan because the hoist made the prime legible here, not "
+        "because anything moved after a commit"
+    ),
     ("routers/commission.py", "set_rules"): "commission is leaving core for a plugin; not fixed in core (#700)",
     ("routers/commission.py", "update_rule"): "commission is leaving core for a plugin; not fixed in core (#700)",
     ("routers/commission.py", "calculate_commission"): (
