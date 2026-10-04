@@ -5,7 +5,7 @@ from typing import Any
 
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
-from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid
+from gdx_dispatch.core.mcp_tools._helpers import agent_visible_message, coerce_uuid
 
 DESCRIPTOR = ToolDescriptor(
     name="email.read",
@@ -40,29 +40,51 @@ async def handler(
     message_id: str,
     **_: Any,
 ) -> dict[str, Any]:
-    from gdx_dispatch.modules.outlook.models import OutlookAttachment, OutlookMessage
+    from gdx_dispatch.core.database import contained_read
+    from gdx_dispatch.modules.outlook.models import OutlookAttachment
 
     mid = coerce_uuid(message_id)
     if mid is None:
         return {"error": "invalid message_id"}
 
-    msg = db.get(OutlookMessage, mid)
+    # GDXA-159: all three reads in this handler are contained. Two of them —
+    # the message load and the agent privacy gate — now live in
+    # `_helpers.agent_visible_message`, which carries the full rationale; the
+    # third is the attachment read below. The census predicate missed the
+    # first two because they sit in no `try` at all: the frame that swallows
+    # is `mcp_invoke.invoke_tool`, one up.
+    msg = agent_visible_message(db, mid)
     if msg is None:
-        return {"error": "message not found"}
-    # Agent privacy gate — same "not found" as truly-missing, so a machine
-    # caller can't probe whether a hidden message exists. (visibility.py)
-    from gdx_dispatch.modules.outlook.visibility import visible_to_agent
-
-    if not visible_to_agent(msg, db):
         return {"error": "message not found"}
 
     attachments = []
     try:
         from sqlalchemy import select
 
-        rows = db.execute(
-            select(OutlookAttachment).where(OutlookAttachment.message_id == mid)
-        ).scalars().all()
+        # GDXA-159 (child of GDXA-86). The `except` below degrades to "no
+        # attachments", and on SQLite that is honest. On Postgres it was not:
+        # a failed SELECT aborts the whole transaction, and `db` is the
+        # INVOKER's session, not ours.
+        #
+        # What that costs, stated only as far as it was actually verified:
+        # `routers/ai.py`'s ask-loop invokes every tool of one agent turn on
+        # this one session (`invoke_tool(..., db=tenant_db)` inside
+        # `for block in tool_use_blocks`), so one failed attachment read
+        # poisoned every LATER tool call in the same turn — each of which then
+        # degraded or errored naming a table that was never the problem. This
+        # is the one read of the three that swallows IN THIS FRAME; see the
+        # block above for the other two.
+        #
+        # That includes the `mcp.tool_invoke` audit row. `invoke_tool` only
+        # flushes it; nothing on this path commits it except a LATER tool in
+        # the same turn that calls `db.commit()`. So in a single-tool turn the
+        # row is lost either way, and in a multi-tool turn it is durable only
+        # if this read does not abort the transaction (measured on PG: 1 row
+        # with containment, 0 and `InternalError` on commit without).
+        with contained_read(db):
+            rows = db.execute(
+                select(OutlookAttachment).where(OutlookAttachment.message_id == mid)
+            ).scalars().all()
         for a in rows:
             attachments.append(
                 {

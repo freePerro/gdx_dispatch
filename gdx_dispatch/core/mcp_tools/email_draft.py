@@ -73,33 +73,43 @@ async def handler(
             user_id = str(v)
             break
 
+    # GDXA-159: every read in this handler is contained, as in the other email
+    # tools. `db` is the invoker's session and `routers/ai.py` reuses it for
+    # every tool in the turn, so a failed read here used to cost the turn's
+    # LATER tools their commits. `contained_read` re-raises, so this tool
+    # still errors exactly as before; only the invoker's transaction survives.
+    from gdx_dispatch.core.database import contained_read
+    from gdx_dispatch.core.mcp_tools._helpers import agent_visible_message, coerce_uuid
+
     account = None
     if user_id:
-        account = db.execute(
-            select(OutlookAccount).where(OutlookAccount.user_id == user_id).limit(1)
-        ).scalar_one_or_none()
+        with contained_read(db):
+            account = db.execute(
+                select(OutlookAccount).where(OutlookAccount.user_id == user_id).limit(1)
+            ).scalar_one_or_none()
     if account is None:
         # Fall back to any account on the tenant — single-mailbox tenants
         # are the common case while we ship per-user accounts.
-        account = db.execute(select(OutlookAccount).limit(1)).scalar_one_or_none()
+        with contained_read(db):
+            account = db.execute(select(OutlookAccount).limit(1)).scalar_one_or_none()
     if account is None:
         return {"error": "no Outlook account connected for this tenant"}
 
     in_reply_to_internet_id: str | None = None
-    if in_reply_to_message_id:
+    parent_id = coerce_uuid(in_reply_to_message_id) if in_reply_to_message_id else None
+    if parent_id is not None:
+        # Agent privacy gate — a hidden (personal / owner_only) parent is
+        # treated exactly like a missing one, so a machine caller can't
+        # probe existence or harvest its internet_message_id. A corrupt rules
+        # row makes `_load_rules` raise ValueError; as before this change, the
+        # draft is still made, just unthreaded. The catch sits outside the
+        # helper's `contained_read` blocks, so the savepoint is already undone.
         try:
-            from uuid import UUID
-
-            parent = db.get(OutlookMessage, UUID(str(in_reply_to_message_id)))
-            # Agent privacy gate — a hidden (personal / owner_only) parent is
-            # treated exactly like a missing one, so a machine caller can't
-            # probe existence or harvest its internet_message_id.
-            from gdx_dispatch.modules.outlook.visibility import visible_to_agent
-
-            if parent is not None and visible_to_agent(parent, db):
-                in_reply_to_internet_id = parent.internet_message_id
+            parent = agent_visible_message(db, parent_id)
         except (ValueError, TypeError):
-            pass
+            parent = None
+        if parent is not None:
+            in_reply_to_internet_id = parent.internet_message_id
 
     draft = OutlookMessage(
         account_id=account.id,

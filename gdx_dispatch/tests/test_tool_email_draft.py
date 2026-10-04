@@ -135,3 +135,41 @@ async def test_reply_parent_hidden_from_agent_not_harvested():
     assert r.ok is True, f"unexpected: {r.error_type} {r.error_body}"
     # hidden parent yields NO threading header — same as a missing parent
     assert r.result["draft"]["in_reply_to"] is None
+
+
+@pytest.mark.asyncio
+async def test_reply_parent_with_corrupt_visibility_rules_still_drafts(monkeypatch):
+    """A corrupt rules row makes ``_load_rules`` raise ValueError. The draft is
+    still made, unthreaded, as it was before GDXA-159 moved the privacy gate
+    into ``_helpers.agent_visible_message``."""
+    from types import SimpleNamespace as _NS
+
+    from gdx_dispatch.modules.outlook import visibility
+
+    def _corrupt(_db):
+        raise ValueError("corrupt visibility_rules")
+
+    monkeypatch.setattr(visibility, "_load_rules", _corrupt)
+    db, _account = _mock_db_with_account()
+    db.get.return_value = _NS(
+        is_personal=False,
+        linked_customer_id=None,
+        linked_job_id=None,
+        internet_message_id="<parent@example.com>",
+    )
+    p = _Principal(capabilities=[("write", "email.draft")])
+    r = await invoke_tool(
+        "email.draft",
+        {
+            "to": ["x@example.com"],
+            "subject": "re: hi",
+            "body": "reply text",
+            "in_reply_to_message_id": str(uuid4()),
+        },
+        principal=p,
+        db=db,
+    )
+    assert r.ok is True, f"unexpected: {r.error_type} {r.error_body}"
+    assert "error" not in r.result
+    assert r.result["draft"]["in_reply_to"] is None
+    assert db.commit.called
