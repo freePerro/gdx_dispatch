@@ -960,6 +960,7 @@ POST /api/invoices/{invoice_id}/void
 POST /api/jobs
 POST /api/jobs/{job_id}/assignments
 POST /api/jobs/{job_id}/checklist
+POST /api/jobs/{job_id}/close-without-work
 POST /api/jobs/{job_id}/closeout
 POST /api/jobs/{job_id}/complete
 POST /api/jobs/{job_id}/dependencies

@@ -1078,6 +1078,17 @@ def _lifecycle_stage_for_write(status: str | None) -> str | None:
     return s if s in _VALID_LIFECYCLE_STAGES else None
 
 
+def _job_patch_result(job: Job) -> dict:
+    return {
+        "id": job.id, "title": job.title, "status": job.status,
+        "lifecycle_stage": job.lifecycle_stage, "customer_id": job.customer_id,
+        "scheduled_at": job.scheduled_at, "priority": job.priority,
+        "job_type": job.job_type, "assigned_to": job.assigned_to,
+        "location_id": job.location_id,
+        "updated_at": job.updated_at,
+    }
+
+
 @router.patch("/{job_id}", response_model=None)
 def update_job(
     job_id: str,
@@ -1208,6 +1219,40 @@ def update_job(
         if not job:
             return jsonable_response({"detail": "job not found"}, 404)
 
+        # Stage guard (2026-10-04, job-stage-paths plan §4.1).
+        # This PATCH used to write any stage it was handed: the desktop's
+        # "Complete Job" and stage strip finished jobs here with no
+        # completed_at, no dispatch_status, no closeout record and none of
+        # the tenant's completion requirements, and moved finished jobs
+        # anywhere with no reason recorded. Completion now belongs to
+        # /closeout or /close-without-work, leaving a finished job to
+        # /uncomplete or /reactivate. A patch that resends the stored stage
+        # (the Jobs list edit dialog does, on every save) is dropped rather
+        # than rewritten, so it can't flip a closeout's "Completed" to
+        # "Complete". Cancelling stays open here: it has no endpoint yet.
+        requested_stage = updates.get("lifecycle_stage")
+        stored_stage = (job.lifecycle_stage or "").lower()
+        if requested_stage is not None:
+            if requested_stage == stored_stage:
+                updates.pop("lifecycle_stage", None)
+                updates.pop("status", None)
+            elif stored_stage in ("completed", "cancelled"):
+                return jsonable_response({
+                    "detail": f"This job is {stored_stage}. Use Re-open on the job "
+                              "page to change its stage, so the reason is recorded.",
+                    "use": "reopen",
+                }, 409)
+            elif requested_stage == "completed":
+                return jsonable_response({
+                    "detail": "Finish a job with Close out (or Close without work "
+                              "when there is nothing to attest), not a status change.",
+                    "use": "closeout",
+                }, 409)
+            elif requested_stage == "in_progress" and not job.started_at:
+                updates["started_at"] = now
+            if len(updates) == 1:  # only updated_at left — nothing to change
+                return jsonable_response(_job_patch_result(job))
+
         # Sprint customer-multi-location: validate against the resolved
         # customer_id (whichever the patch ends with, not just the payload).
         if "location_id" in updates:
@@ -1293,14 +1338,7 @@ def update_job(
         if apply_assignments or any(k in updates for k in ("scheduled_at", "title", "customer_id")):
             _sync_job_appointment(db, job, tenant_id, current_user)
             db.commit()
-        result = {
-            "id": job.id, "title": job.title, "status": job.status,
-            "lifecycle_stage": job.lifecycle_stage, "customer_id": job.customer_id,
-            "scheduled_at": job.scheduled_at, "priority": job.priority,
-            "job_type": job.job_type, "assigned_to": job.assigned_to,
-            "location_id": job.location_id,
-            "updated_at": job.updated_at,
-        }
+        result = _job_patch_result(job)
         log_audit_event_sync(
             db=db,
             tenant_id=tenant_id,
@@ -1535,6 +1573,26 @@ def start_job(
         return jsonable_response({"detail": "A database error occurred"}, 500)
 
 
+def _completed_result(job: Job) -> dict:
+    return {
+        "ok": True, "id": str(job.id),
+        "completed_at": job.completed_at, "lifecycle_stage": job.lifecycle_stage,
+    }
+
+
+def _mark_job_completed(db: Session, job: Job, now: datetime, tenant_id: str) -> None:
+    """The completion write shared by /complete and /close-without-work: the
+    stage, the "Completed" spelling, completed_at, dispatch done, and the
+    job.completed webhook staged before the caller's commit."""
+    job.lifecycle_stage = "completed"
+    job.status = "Completed"
+    job.completed_at = now
+    job.dispatch_status = "done"
+    job.updated_at = now
+    db.flush()
+    _emit_job_event(db, job, "job.completed", tenant_id)
+
+
 class JobCompletePayload(BaseModel):
     hours: float | None = None
     notes: str | None = None
@@ -1618,15 +1676,9 @@ def complete_job(
                 422,
             )
 
-        job.lifecycle_stage = "completed"
-        job.status = "Completed"
-        job.completed_at = now
-        job.dispatch_status = "done"
         if payload.notes:
             job.notes = (job.notes + "\n\n" if job.notes else "") + payload.notes.strip()
-        job.updated_at = now
-        db.flush()
-        _emit_job_event(db, job, "job.completed", tenant_id)
+        _mark_job_completed(db, job, now, tenant_id)
         db.commit()
 
         log_audit_event_sync(
@@ -1640,13 +1692,92 @@ def complete_job(
             ip_address=request.client.host if request.client else None, request=request,
         )
         db.commit()
-        return jsonable_response({
-            "ok": True, "id": str(job.id),
-            "completed_at": job.completed_at, "lifecycle_stage": job.lifecycle_stage,
-        })
+        return jsonable_response(_completed_result(job))
     except SQLAlchemyError:
         db.rollback()
         log.exception("complete_job_failed", extra={"tenant_id": tenant_id, "job_id": job_id})
+        return jsonable_response({"detail": "A database error occurred"}, 500)
+
+
+class CloseWithoutWorkPayload(BaseModel):
+    reason: str
+
+
+@router.post(
+    "/{job_id}/close-without-work", response_model=None,
+    dependencies=[Depends(require_permission("jobs.write"))],
+)
+def close_job_without_work(
+    payload: CloseWithoutWorkPayload,
+    job_id: str,
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Finish a job that has no work to attest — an old job being tidied up, a
+    no-show, a duplicate. Doug 2026-10-04 (job-stage-paths-plan D4): closeout
+    requires hours > 0, so without this verb the office could only finish such
+    a job by typing hours nobody worked, which closeout would then attest and
+    bill. No closeout row, time entry, parts or invoice draft is written, and
+    the tenant's completion requirements are deliberately not evaluated — the
+    audit row records which ones were skipped and the mandatory reason. The
+    job still shows in Ready-for-Billing; billing a trip charge or marking it
+    not billable stays the office's call."""
+    cleaned = _validate_reason(payload.reason)
+    if not cleaned:
+        return jsonable_response({"detail": "reason is required (≥4 characters)"}, 422)
+    try:
+        job_uuid = uuid.UUID(job_id)
+    except (ValueError, AttributeError):
+        return jsonable_response({"detail": "job not found"}, 404)
+    tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    denial = job_write_denial(db, tenant_id, request, current_user, job_id)
+    if denial:
+        return jsonable_response({"detail": denial[1]}, denial[0])
+    now = datetime.now(UTC)
+    flags = _load_workflow_flags(tenant_id)
+    try:
+        job = db.execute(
+            select(Job).where(Job.id == job_uuid, Job.deleted_at.is_(None))
+        ).scalar_one_or_none()
+        if not job:
+            return jsonable_response({"detail": "job not found"}, 404)
+        if job.lifecycle_stage in ("completed", "cancelled"):
+            return jsonable_response(
+                {"detail": f"This job is already {job.lifecycle_stage}."}, 409,
+            )
+
+        prior_stage = job.lifecycle_stage
+        # A no-show after the tech tapped "I'm here" leaves an arrival timer
+        # open, and closeout is otherwise the only thing that ends one. Close
+        # them at zero minutes exactly as closeout does for unattested timers
+        # — nothing was attested, so nothing is payable or costed.
+        timers = _open_job_timers(db, job.id)
+        for timer in timers:
+            _close_labor_entry(timer, now, 0, None)
+        _mark_job_completed(db, job, now, tenant_id)
+        db.commit()
+
+        log_audit_event_sync(
+            db=db, tenant_id=tenant_id, user_id=_user_id(current_user),
+            action="job_closed_without_work", entity_type="job", entity_id=str(job.id),
+            details={
+                "reason": cleaned,
+                "prior_stage": prior_stage,
+                "timers_closed_at_zero": [str(t.id) for t in timers],
+                "requirements_skipped": [
+                    k for k in ("require_parts_on_complete", "require_hours_on_complete",
+                                "require_signature_on_complete", "require_invoice_on_complete")
+                    if flags.get(k)
+                ],
+            },
+            request=request,  # audit derives the IP, X-Forwarded-For first
+        )
+        db.commit()
+        return jsonable_response(_completed_result(job))
+    except SQLAlchemyError:
+        db.rollback()
+        log.exception("close_without_work_failed", extra={"tenant_id": tenant_id, "job_id": job_id})
         return jsonable_response({"detail": "A database error occurred"}, 500)
 
 
