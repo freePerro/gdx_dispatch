@@ -160,7 +160,7 @@
             </div>
             <div class="detail-row">
               <span>Scheduled For</span>
-              <strong>{{ job.scheduled_at ? formatDate(job.scheduled_at) : 'Not yet scheduled' }}</strong>
+              <strong data-testid="job-detail-scheduled-for">{{ scheduledForDisplay }}</strong>
             </div>
             <div class="detail-row">
               <span>Priority</span>
@@ -1567,6 +1567,20 @@ const awaitingSchedule = computed(() => isAwaitingSchedule(job.value));
 const lifecycleStageDisplay = computed(() => {
   if (awaitingSchedule.value) return "Awaiting Schedule";
   return job.value.lifecycle_stage || job.value.status || "Unknown";
+});
+// A job finished or cancelled without ever going on the calendar (walk-ins,
+// same-day calls, imported history) read "Complete" over "Not yet scheduled"
+// — as if it were still waiting to be booked. "Yet" only fits an open job.
+// A completed job shows when it was finished instead; most imported completed
+// jobs carry no completed_at either, so those fall back to "Not scheduled".
+const scheduledForDisplay = computed(() => {
+  if (job.value.scheduled_at) return formatDate(job.value.scheduled_at);
+  const stage = job.value.lifecycle_stage || job.value.status;
+  if (stage === "Complete" && job.value.completed_at) {
+    return `Completed ${formatDate(job.value.completed_at)}`;
+  }
+  if (stage === "Complete" || stage === "Cancelled") return "Not scheduled";
+  return "Not yet scheduled";
 });
 // Sprint customer-multi-location (2026-05-21) — if the job is bound to
 // a specific customer_locations row, that wins. Otherwise fall back to
