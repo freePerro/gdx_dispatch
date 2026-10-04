@@ -385,12 +385,17 @@ def test_pg_a_callee_that_swallows_its_own_failure_is_not_contained(pg_test_engi
     wrong. Only ``RELEASE`` is illegal on an aborted transaction; ``ROLLBACK TO
     SAVEPOINT`` is legal, so an always-rollback variant DOES contain a
     self-swallowing callee from the caller's file (measured on PG 15.17 and
-    16.14, GDXA-86 audit round 2). No such variant exists here and none is
-    needed — the two call sites that would want one sit below
-    ``_automation_email_settings``' ``skipped_disabled`` return in
-    ``modules/workflows/engine.py``, on a path prod has switched off. So read
-    this as "``contained_read`` is the wrong tool for a swallowing callee", never
-    as "a swallowing callee cannot be contained".
+    16.14, GDXA-86 audit round 2). No such variant exists here. It IS needed
+    now, though — this sentence used to say "and none is needed", naming two
+    call sites in ``modules/workflows/engine.py`` that sit on a path prod has
+    switched off, and GDXA-160 made that false: four money sites want one
+    (``core/closeout_billing.py``, ``routers/invoices.py::create_invoice``,
+    ``modules/deposits/service.py`` twice), all swallowing
+    ``modules/proposals/totals.py``. See rule 5 in ``core/database.py``, which
+    is the ONE place that argument lives; this note exists only so the rival
+    copy here cannot drift from it again. So read this as "``contained_read`` is
+    the wrong tool for a swallowing callee", never as "a swallowing callee
+    cannot be contained".
     """
     Session = _pg_sessions(pg_test_engine)
     db = Session()

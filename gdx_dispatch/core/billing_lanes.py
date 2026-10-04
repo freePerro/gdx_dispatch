@@ -166,6 +166,27 @@ def install_labor_line(db: Session, item_id: str) -> InstallLaborLine | None:
     never guesses."""
     from gdx_dispatch.models.labor_pricing import LaborPriceItem
 
+    # Deliberately NOT `contained_read`-wrapped — GDXA-160 traced this one out
+    # and it is a false positive for the swallowed-read class, by the check the
+    # parent issue asks for (follow the DB error to the frame that CATCHES it,
+    # do not stop at this `except`). The tuple here is for `_as_uuid` on a
+    # malformed `item_id`; `ProgrammingError`/`OperationalError` propagate. All
+    # three callers were read:
+    #   * `closeout_billing.autodraft_invoice_for_closeout` → `closeout_job`,
+    #     where the call is already inside `db.begin_nested()` with the flush
+    #     done first, so a failure rolls back to the savepoint and the tech's
+    #     closeout survives — the containment is there, one frame up.
+    #   * `routers/jobs.py`'s read-only `closeout_billing_suggestion`: the error
+    #     reaches the route and 500s, with no pending work behind it.
+    #   * `routers/mobile_invoicing.py::mobile_create_invoice`, which DOES hold
+    #     pending work — the tech's Invoice is `db.add`ed well before this and
+    #     not committed until the end of the handler. Be exact: that work is
+    #     lost, but losing it is CORRECT, because nothing swallows here. The
+    #     error reaches the route, the request fails, and the session closes
+    #     without committing a half-built invoice. That is the difference
+    #     between this site and the class — a swallow would have returned a
+    #     degraded line and then lost the invoice while reporting success.
+    # Nothing here swallows a DB error, so there is nothing to contain.
     try:
         item = db.execute(
             select(LaborPriceItem).where(LaborPriceItem.id == _as_uuid(item_id))
