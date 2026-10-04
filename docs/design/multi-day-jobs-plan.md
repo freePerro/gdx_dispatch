@@ -266,8 +266,8 @@ buy.
   separate job (`MobileJobCloseoutDialog.vue:853-858`), so it must stop
   reading as the way to continue unfinished work. It shows only after
   "Yes", for genuinely new work. Proposed label: **"Needs a follow-up job
-  (new work)"**, with the hint "Not finished? Answer No above instead." The
-  exact wording is Doug's to confirm at PR 3 review.
+  (new work)"**, with the hint "Not finished? Answer No above instead."
+  Doug confirmed the wording on 2026-10-04.
 
 ### 5.5 Billing: once, at final closeout (resolves A6's multi-visit half)
 
@@ -367,7 +367,7 @@ status line ships with the code").
 | D5 | Can the crew differ by day? | **Yes** (recommendation accepted). |
 | D6 | A separate "Done for today" button, or the closeout sheet asking "Is this job finished?" | **The closeout sheet asks.** Doug's idea: "No" makes it a daily log of the job. |
 | D7 | What does a "No" day require? | **Hours.** Parts optional. |
-| D8 | What happens to the "needs a return visit" checkbox? | **Keep it, label it differently.** Shown on "Yes" only; wording proposed in §5.4, to confirm at review. |
+| D8 | What happens to the "needs a return visit" checkbox? | **Keep it, label it differently.** Shown on "Yes" only; wording in §5.4, confirmed 2026-10-04. |
 | D9 | Does the customer see anything on a "No" day? | **Nothing.** It is one job; the logs are for us. |
 
 ## 9. Out of scope (found, not filed)
