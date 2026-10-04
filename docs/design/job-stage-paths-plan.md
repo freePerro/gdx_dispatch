@@ -1,9 +1,9 @@
 # Job stage changes go through the paths that own them
 
 **Date:** 2026-10-04
-**Status:** PARTIALLY BUILT — §4.1, §4.1b, §4.2 and §4.3 are built on branch `fix/job-stage-paths` (PR open, stacked on #841; flips to MERGED #N on merge). Not built: §4.4 backfill, dropped by D2. Revised after `/audit` 2026-10-04 (§8); Doug ruled on every product question on 2026-10-04 (§2).
+**Status:** PARTIALLY BUILT — §4.1, §4.1b, §4.2 and §4.3 are built on branch `fix/job-stage-paths` (PR #842, open; flips to MERGED #842 on merge). Not built: §4.4 backfill, dropped by D2. Revised after `/audit` 2026-10-04 (§8); Doug ruled on every product question on 2026-10-04 (§2).
 
-**Trigger:** the 2026-10-03 lifecycle audit (`FOUND_NOT_FILED.md`, "job lifecycle
+**Trigger:** the 2026-10-03 lifecycle audit (the local found-not-filed ledger, "job lifecycle
 audit") found that every desktop stage change goes through `PATCH /api/jobs/{id}`,
 which has no transition guard and doesn't sync the fields that go with a stage.
 Its sibling finding, the Re-open dialog never offering Un-complete or Reactivate,
@@ -46,9 +46,9 @@ is fixed by PR #841, which this plan's PR A stacks on.
 
 Doug's note on D1: the closeout sheet also needs a way to say "this job needs
 another visit" without opening a new job. That is not in this plan. It is the
-subject of `multi-day-jobs-plan.md` (unmerged, branch
-`docs/multi-day-jobs-plan`), whose phone "Done for today" covers part of it.
-The closeout sheet's own option is recorded there as a gap, not built here.
+subject of the multi-day jobs plan (PR #843), where Doug ruled on 2026-10-04
+that the closeout sheet asks "Is this job finished?" and "No" saves a daily
+log on the same job. Not built here.
 
 ## 3. What already exists (do not rebuild)
 
@@ -160,7 +160,7 @@ Kept for the record; not built.
 
 ## 7. Out of scope (found, not filed)
 
-- "Needs another visit" on the closeout sheet without a new job → `multi-day-jobs-plan.md`.
+- "Needs another visit" on the closeout sheet without a new job → the multi-day jobs plan (PR #843).
 - No real cancel flow; cancelled jobs on the tech's Today list.
 - `status` spelled "Complete" by PATCH vs "Completed" by `/complete` and closeout; reports that count only one.
 - The public API's own stage writes (`api/public_router.py`) bypass `update_job` and this guard.
