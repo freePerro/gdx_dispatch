@@ -2185,6 +2185,90 @@ def mobile_job_en_route(
     )
 
 
+def _arrival_visit(
+    db: Session, job_id: Any, technician_id: str | None, when: datetime,
+) -> Appointment | None:
+    """The visit an "I'm here" belongs to. One rule, in order:
+
+    1. this tech's (or an unassigned) open visit on today's shop day — the
+       tech's own over an unassigned one, one not yet arrived at first, so a
+       same-day return is stamped rather than the morning visit;
+    2. else the job's ONLY live visit, if it is not closed in the sync's
+       sense (``jobs._visit_closed``), whoever holds it and whatever its
+       day (a tech swap, an early arrival, a drifted date) —
+       ``_stamp_arrival`` then moves it onto the day it was worked;
+    3. else nothing. On a job with several visits and none today, no visit
+       is stamped: any choice would mark the wrong day worked, and the sync
+       never moves a worked visit. The tap still lands on the assignment
+       and in the audit log.
+
+    Open (rule 1) means not completed or cancelled. A job can hold one
+    visit per tech per day, so the old ``scalar_one_or_none()`` over the whole job
+    raised once a second visit existed. Never raises.
+    """
+    from gdx_dispatch.core.pay_periods import shop_day_of, shop_tz_name_from_settings
+    from gdx_dispatch.routers.jobs import _visit_closed  # noqa: PLC0415 — lazy: jobs imports mobile
+
+    live = db.execute(
+        select(Appointment).where(
+            Appointment.job_id == job_id,
+            Appointment.deleted_at.is_(None),
+        ).order_by(Appointment.start_at, Appointment.id)
+    ).scalars().all()
+    open_visits = [v for v in live if v.status not in ("completed", "cancelled")]
+    tech = str(technician_id) if technician_id else None
+    tz_name = shop_tz_name_from_settings(db)
+    today = shop_day_of(when, tz_name)
+
+    todays = [
+        v for v in open_visits
+        if (v.tech_id is None or (tech and v.tech_id == tech))
+        and shop_day_of(v.start_at, tz_name) == today
+    ]
+    if todays:
+        pick = [v for v in todays if tech and v.tech_id == tech] or todays
+        return ([v for v in pick if v.arrived_at is None] or pick)[0]
+    # Rule 2 uses the sync's own test for a worked day: a visit the office
+    # marked "arrived" (no time) must not be moved onto today.
+    if len(live) == 1 and not _visit_closed(live[0]):
+        return live[0]
+    return None
+
+
+def _stamp_arrival(
+    db: Session, appt: Appointment, job: Job | None, when: datetime,
+) -> dict[str, Any] | None:
+    """Stamp ``appt`` arrived at ``when``. A visit on another shop day (only
+    ever a job's single visit, see ``_arrival_visit``) moves onto the day it
+    was worked, and so does the job's date: an arrived visit counts as a
+    worked day that the sync never moves, so leaving it on Wednesday after a
+    Monday arrival would freeze a phantom Wednesday. Returns what moved,
+    for the arrival's audit row; else None.
+    """
+    from gdx_dispatch.core.pay_periods import shop_day_of, shop_tz_name_from_settings
+
+    if appt.arrived_at is not None:
+        return None
+    appt.arrived_at = when
+    tz_name = shop_tz_name_from_settings(db)
+    if shop_day_of(appt.start_at, tz_name) == shop_day_of(when, tz_name):
+        return None
+    moved = {
+        "visit_id": str(appt.id),
+        "visit_start_from": appt.start_at.isoformat(),
+        "job_scheduled_at_from": (
+            job.scheduled_at.isoformat() if job is not None and job.scheduled_at else None
+        ),
+    }
+    length = (appt.end_at - appt.start_at) if appt.end_at else timedelta(hours=1)
+    appt.start_at = when
+    appt.end_at = when + length
+    appt.updated_at = datetime.now(UTC)
+    if job is not None:
+        job.scheduled_at = when
+    return moved
+
+
 @router.post("/jobs/{job_id}/arrived", response_model=None)
 def mobile_job_arrived(
     job_id: str,
@@ -2211,6 +2295,7 @@ def mobile_job_arrived(
 
     arrived_payload = payload or ArrivedBody()
     arrival_time = datetime.now(UTC)
+    visit_moved = None
 
     try:
         _jid = _UUID(job_id)
@@ -2238,14 +2323,9 @@ def mobile_job_arrived(
         # S1-B1 — stamp the appointment too if one exists. lat/lng come
         # from the tech's device; accuracy lives on the audit row only
         # (no accuracy column on Appointment) so we don't lose it.
-        appt = db.execute(
-            select(Appointment).where(
-                Appointment.job_id == _jid,
-                Appointment.deleted_at.is_(None),
-            )
-        ).scalar_one_or_none()
+        appt = _arrival_visit(db, _jid, _get_technician_id(db, tenant_id, user_id), arrival_time)
         if appt is not None and appt.arrived_at is None:
-            appt.arrived_at = arrival_time
+            visit_moved = _stamp_arrival(db, appt, _job_obj, arrival_time)
             if arrived_payload.lat is not None and arrived_payload.lng is not None:
                 # Don't clobber a geocoded appointment lat/lng with the
                 # tech's device location — those are different signals.
@@ -2306,6 +2386,7 @@ def mobile_job_arrived(
             "lat": arrived_payload.lat,
             "lng": arrived_payload.lng,
             "accuracy": arrived_payload.accuracy,
+            "visit_moved": visit_moved,
         },
         request=request,
         actor_role=user.get("role"),
