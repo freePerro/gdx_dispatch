@@ -32,13 +32,13 @@
         <strong>Warranty / callback</strong>
         <span>Spawn a new linked job. The original stays {{ stateLabel }}.</span>
       </button>
-      <button v-if="job?.lifecycle_stage === 'completed'" class="path-card" :class="{ active: path === 'uncomplete' }"
+      <button v-if="storedStage === 'completed'" class="path-card" :class="{ active: path === 'uncomplete' }"
               @click="path = 'uncomplete'" data-testid="path-uncomplete">
         <i class="pi pi-undo" />
         <strong>Un-complete (mistake)</strong>
         <span>Revert this job back to in-progress.</span>
       </button>
-      <button v-if="job?.lifecycle_stage === 'cancelled'" class="path-card" :class="{ active: path === 'reactivate' }"
+      <button v-if="storedStage === 'cancelled'" class="path-card" :class="{ active: path === 'reactivate' }"
               @click="path = 'reactivate'" data-testid="path-reactivate">
         <i class="pi pi-refresh" />
         <strong>Reactivate (was cancelled in error)</strong>
@@ -106,8 +106,21 @@ const busy = ref(false);
 const error = ref("");
 
 const jobTitle = computed(() => props.job?.title || "");
+// /api/jobs/{id} overwrites `lifecycle_stage` with the display label
+// ("Complete", "Cancelled") and carries the stored enum value in
+// `lifecycle_stage_raw`. /uncomplete and /reactivate gate on the stored value,
+// so this dialog must too — comparing the label against 'completed' meant
+// Un-complete and Reactivate never rendered, and "Other" on a cancelled job
+// posted /uncomplete and got a 409. Normalized so a payload that still sends
+// either form resolves the same way.
+const STAGE_ALIASES = { complete: "completed", canceled: "cancelled" };
+const storedStage = computed(() => {
+  const s = String(props.job?.lifecycle_stage_raw || props.job?.lifecycle_stage || "")
+    .trim().toLowerCase();
+  return STAGE_ALIASES[s] || s;
+});
 const stateLabel = computed(() =>
-  props.job?.lifecycle_stage === "cancelled" ? "cancelled" : "completed",
+  storedStage.value === "cancelled" ? "cancelled" : "completed",
 );
 const needsReason = computed(() => path.value !== "warranty");
 const needsSchedule = computed(() =>
@@ -167,7 +180,7 @@ async function apply() {
     } else if (path.value === "other") {
       // "Other" defaults to un-complete-style override on a completed job,
       // reactivate-style on a cancelled one — the audit row carries the reason.
-      const target = props.job.lifecycle_stage === "cancelled" ? "reactivate" : "uncomplete";
+      const target = storedStage.value === "cancelled" ? "reactivate" : "uncomplete";
       result = await api.post(`/api/jobs/${id}/${target}`, {
         reason: `[other] ${reason.value}`,
         scheduled_at: scheduledAt.value || null,
