@@ -64,6 +64,13 @@ owed by Doug before PR A. Nothing starts until the exit condition above is met.
 - **One issue per session** (CLAUDE.md). Doug can widen it; Claude does not.
 - **No new feature work** without Doug saying so explicitly. A feature request
   from Doug overrides this file; a feature idea from Claude does not.
+- **UI and workflow fixes are hardening, not features** (Doug, 2026-10-03).
+  When the people using the app cannot finish real work in the existing
+  screens, closing that gap is in phase. The first example is multi-day jobs:
+  a job that runs past one day had no proper path, because a tech's only
+  options were to leave it hanging or close it out and spawn a "callback". Doug
+  decides what qualifies. A gap Claude finds still goes on the *found, not
+  filed* list first.
 - `live-defect` work is **never** rate-limited. If a user can hit it on prod
   today, it gets fixed regardless of budget.
 

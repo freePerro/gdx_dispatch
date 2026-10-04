@@ -719,6 +719,10 @@ number. Doug's call whether the office review is a hard gate or a warning.
 
 ### A6 — Multi-tech and multi-visit jobs will underbill
 
+> **2026-10-03:** the *multi-visit* half is now planned in
+> `docs/design/multi-day-jobs-plan.md` §5.5: per-day attested hours, summed at the final
+> closeout (decision D1 owed). The *multi-tech* half below remains unresolved.
+
 **Severity: high. Revenue, silent.**
 
 `hours_worked` is a **single number per job** (one `JobCloseout`, re-closeout
