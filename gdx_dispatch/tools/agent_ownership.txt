@@ -325,6 +325,7 @@ gdx_dispatch/routers/service_calls.py                        jobs-dispatch
 gdx_dispatch/routers/service_triggers.py                     jobs-dispatch
 gdx_dispatch/routers/service_agreements.py                   jobs-dispatch
 gdx_dispatch/routers/holding_areas.py                        jobs-dispatch
+gdx_dispatch/core/holding_areas.py                           jobs-dispatch
 gdx_dispatch/routers/checklists.py                           jobs-dispatch
 gdx_dispatch/routers/safety_checklist.py                     jobs-dispatch
 gdx_dispatch/routers/install_sheet.py                        jobs-dispatch
