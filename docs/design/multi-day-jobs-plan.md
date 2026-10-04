@@ -1,7 +1,7 @@
 # Multi-day jobs: one job, many visit days
 
 **Date:** 2026-10-03
-**Status:** PLAN. Nothing is built. Three PRs are proposed (§6). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); this revision has not been re-audited.
+**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) is built on branch `feat/multi-day-visits-sync`. Not built: PR 2 (office booking, the board, `recompute_job_schedule`) and PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, billing). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); this revision has not been re-audited.
 
 **Trigger:** Doug asked, "What happens if a job is not finished and turns into a
 multi-day job? Can a tech or anyone go back to it?" The answer, traced on
@@ -165,6 +165,77 @@ buy.
 - When `scheduled_at` is cleared, it still retires every *open* visit
   (today's "unschedule" meaning). Closed visits stay.
 - Duplicate cleanup applies only within one (tech, day, open).
+- **A drifted single-day job is moved, not duplicated** (added in PR 1
+  after `/audit`). Before this plan, a visit whose day drifted from
+  `scheduled_at` (an Appointments-page edit, `/uncomplete`, `/reactivate`)
+  was pulled back by the next sync. That stays true for a job with no worked
+  visit and every open visit on one shop day. A visit cancelled before
+  anyone arrived is not a worked visit, unless the same tech holds an open
+  visit on another day — a cancel-and-rebook, whose new day is kept
+  (round-14 and round-15 audits). A cancelled visit beside *another* tech's
+  visit on a different day stays ambiguous: it is read as drift, and the
+  open visit is pulled back to the job's day. Otherwise a multi-day job
+  never qualifies, so a helper's day-2 visit is not moved to day 1. (A helper
+  on the job's crew still gets a day-1 visit of their own; whether a
+  day-2-only helper belongs on the crew is PR 2's call.)
+- **A closed visit is the last word on that tech's day — unless the office
+  rebooks it.** Closed means completed, cancelled, **or arrived at**: the
+  tech's "I'm here" stamps `arrived_at` and leaves the status `scheduled`, so
+  an arrival is the only trace of a worked day until PR 3's sheet closes
+  visits itself. The sync never moves, merges or retires a closed visit. An
+  edit that keeps the date (title, time, crew) gives a tech whose day already
+  holds a closed visit no new one, so a typo fix never turns a finished day
+  back into a "scheduled" one. Two **rebooks** are the exceptions: setting
+  the date again after clearing it books the day whatever it holds (a
+  same-afternoon return), and moving the date onto a *cancelled* day books
+  it. Moving the date onto a day the tech already worked books nothing: an
+  open visit that would have moved there is retired into the worked one,
+  with a `visit_merged` audit row (round-4 to round-13 audits).
+- **Worked days with no trace are still movable.** On prod (2026-10-04), 16
+  of 37 live visits on Complete jobs carry neither an arrival nor a closed
+  status. The sync cannot tell those from an unworked visit: it moves them
+  as it always did, and when the new date already holds an open visit for
+  that tech it merges the untraced one away (soft-deleted, with a
+  `visit_merged` audit row naming both). PR 3's sheet is what closes a day
+  for real.
+- **"I'm here" lands on today's visit, or on the job's only visit.** The
+  arrival lookup takes this tech's (or an unassigned) open visit today —
+  a not-yet-arrived one first, so a same-afternoon return is stamped — else
+  the job's single live visit, if it is not closed (a visit the office
+  marked "arrived" stays put), whoever holds it and whatever its day (a tech
+  swap, an early arrival, a date written without the sync). That visit, and
+  the job's date, then move onto the arrival time, with the old values on the
+  arrival's audit row: an arrived visit is a worked day the sync never moves,
+  so leaving it on Wednesday after a Monday arrival would freeze a phantom
+  Wednesday (round-10 to round-13 audits). On a job with several visits and
+  none today, **no visit is stamped** — any pick marks the wrong day worked;
+  the tap still lands on the job assignment and the audit log. PR 2's office
+  booking makes the unbooked day rare.
+- **Known PR 1 trade-offs** (round-3 and round-8 audits). Re-measured
+  on prod 2026-10-04 after arrivals began counting as closed: 0 jobs hold a
+  closed visit beside an open visit off the job's day, 1 job holds more than
+  one live visit, and no visit carries status "arrived" without a time.
+  Dragging *one* tech's visit to another day on a two-tech job makes the
+  job look multi-day: the next sync keeps the moved visit and adds a
+  primary-day visit for that tech, where the old sync pulled it back. Under
+  this plan's model, where the crew can differ by day, that is a multi-day
+  job; PR 2's recompute does not change it, and PR 2's Visits card makes it
+  visible and editable. Cancelling a tech's visit and rebooking it on
+  another day keeps the rebooked visit and books nothing new on the
+  cancelled day; if the office then moves the job to a *third* day, the
+  rebooked visit stays where it is and the third day gets a new one, so
+  that tech holds two (round-16 audit). That comes from the job's date
+  staying on the cancelled day, which PR 2's recompute (next bullet) ends.
+- **PR 2 must keep `scheduled_at` on a live visit day.** PR 1 can't tell
+  "day 1's visit was deleted, day 2 remains" from drift, and would pull day 2
+  back to day 1. PR 2's appointment DELETE and PATCH run
+  `recompute_job_schedule` (§5.1), so the job's date moves to day 2 first.
+  The mobile Today reorder (`reorder_mobile_today`) also writes
+  `scheduled_at` from whichever visit is reordered, without the sync; PR 2
+  must route it through the same recompute.
+  Until PR 2 there is no booking flow designed for a second day; the
+  Appointments page can already link a plain appointment to a job, and
+  that is the live way in for the trade-offs above.
 - **Tests:**
   - a 3-day job survives a title edit, a tech change, a time change and a
     **date move** on day 1;
