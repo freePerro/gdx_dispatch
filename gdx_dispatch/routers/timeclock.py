@@ -26,7 +26,7 @@ from gdx_dispatch.core.audit import (
     log_audit_event,
     log_audit_event_sync,
 )
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pay_periods import (
     CADENCE_LABELS,
@@ -41,7 +41,7 @@ from gdx_dispatch.core.pay_periods import (
     shop_today,
 )
 from gdx_dispatch.core.permissions import is_dispatch_manager
-from gdx_dispatch.core.timesheet_delivery import send_period_timesheet
+from gdx_dispatch.core.timesheet_delivery import BLOCKED_UNREADABLE, SendOutcome, send_period_timesheet
 from gdx_dispatch.core.timesheet_export import (
     build_csv,
     build_pdf,
@@ -726,6 +726,12 @@ def get_timeclock_status(
                     )
                     today_hours = round(max(today_hours - running, 0.0), 2)
         except (SQLAlchemyError, ValueError, TypeError):
+            # Counted by the GDXA-164 sweep and deliberately NOT given a
+            # savepoint: this is the same shape, but nothing touches the
+            # database between here and the `return` below, and the session is
+            # the route's own (`Depends(get_db)`, which only closes). There is
+            # no later read to poison and no caller holding staged work, so
+            # containment would buy two round trips and change no outcome.
             # Degrade to the pre-#645 gross figure rather than 500 the screen
             # every client polls on load. SQLAlchemyError alone did NOT deliver
             # that: `_as_aware` raises ValueError on a malformed stamp (the
@@ -1106,14 +1112,30 @@ def _export_context(
     period = PayPeriod(start, end)
 
     try:
-        ids = {
-            str(r) for r in db.execute(
-                select(TimeclockEntry.technician_id).where(
-                    TimeclockEntry.tenant_id == tenant_id,
-                    TimeclockEntry.deleted_at.is_(None),
-                ).distinct()
-            ).scalars().all() if r
-        }
+        # SAVEPOINT around the id read only. Without it this "cosmetic only"
+        # swallow is anything but on Postgres: the aborted transaction takes
+        # `build_timesheet` below with it, and the office gets a 503 on the
+        # payroll export because a NAME lookup failed.
+        #
+        # `_tech_names` is deliberately OUTSIDE the block, but NOT because
+        # wrapping it would be unsafe — it would be safe, and the first draft of
+        # this comment wrongly cited rule 5 to say otherwise. Rule 5's hazard
+        # (a self-swallowing callee leaves the block clean, so RELEASE SAVEPOINT
+        # runs on an aborted transaction and raises 25P02) stopped applying the
+        # moment `_tech_names` gained its own `contained_read`: the docstring's
+        # corollary says a contained callee is safe to wrap again, and measured
+        # here it is — wrapped, `out={}`, nothing raised. It stays outside
+        # simply because it already contains itself, so a second savepoint
+        # around it would buy nothing but two more round trips.
+        with contained_read(db):
+            ids = {
+                str(r) for r in db.execute(
+                    select(TimeclockEntry.technician_id).where(
+                        TimeclockEntry.tenant_id == tenant_id,
+                        TimeclockEntry.deleted_at.is_(None),
+                    ).distinct()
+                ).scalars().all() if r
+            }
         names = _tech_names(db, tenant_id, ids)
     except SQLAlchemyError:
         # Cosmetic only — ids still resolve to rows, they just carry no label.
@@ -1244,6 +1266,24 @@ def export_pay_period_pdf(
     )
 
 
+def _audit_send(
+    db: Session, request: Request, user: dict[str, Any], period: PayPeriod, outcome
+) -> None:
+    """The send's trail, whether it went or was refused — one shape for both
+    refusals (unreadable hours, a blocking outcome) and the send itself.
+    `audit_best_effort`: the caller has nothing staged and it never raises."""
+    audit_best_effort(
+        db,
+        tenant_id=_tenant_id(request),
+        user_id=_user_id(user),
+        action="timesheet_sent" if outcome.sent else "timesheet_send_blocked",
+        entity_type="timesheet",
+        entity_id=f"{period.start.isoformat()}..{period.end.isoformat()}",
+        details=outcome.as_dict(),
+        request=request,
+    )
+
+
 class SendTimesheetIn(BaseModel):
     """The range to send. Explicit, for the same reason the export is: the
     button sits on a screen whose dates the operator can move."""
@@ -1278,9 +1318,21 @@ def send_pay_period(
     if not is_dispatch_manager(current_user):
         raise HTTPException(status_code=403, detail="dispatcher or admin role required")
 
-    sheet, _branding, _paid, _tz = _export_context(
-        request, db, payload.start, payload.end, payload.technician_id
-    )
+    try:
+        sheet, _branding, _paid, _tz = _export_context(
+            request, db, payload.start, payload.end, payload.technician_id
+        )
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        # The hours could not be read, so nothing was mailed — a refusal like
+        # the 409 below, and it gets the same trail (GDXA-197 audit). Rolled
+        # back first: the entries read in `build_timesheet` is not contained,
+        # and on Postgres it leaves this session aborted; nothing was staged.
+        db.rollback()
+        unread = SendOutcome(sent=False, blocked=BLOCKED_UNREADABLE, detail=str(exc.detail))
+        _audit_send(db, request, current_user, PayPeriod(payload.start, payload.end), unread)
+        raise
     tenant_id = _tenant_id(request)
     settings_row = db.query(AppSettings).first()
 
@@ -1316,18 +1368,7 @@ def send_pay_period(
         log.exception("timesheet_send_delivery_row_lost")
         db.rollback()
 
-    audit_best_effort(
-        db,
-        tenant_id=tenant_id,
-        user_id=_user_id(current_user),
-        action="timesheet_sent" if outcome.sent else "timesheet_send_blocked",
-        entity_type="timesheet",
-        entity_id=(
-            f"{sheet.period.start.isoformat()}..{sheet.period.end.isoformat()}"
-        ),
-        details=outcome.as_dict(),
-        request=request,
-    )
+    _audit_send(db, request, current_user, sheet.period, outcome)
 
     if outcome.blocked:
         # 409, not 422: the request is well formed and the operator did
@@ -1485,7 +1526,9 @@ async def start_break(
             ).order_by(TimeclockEntry.clock_in_at.desc()).limit(1)
         ).scalars().first()
         if open_shift is not None:
-            active = open_break_in_shift(db, tenant_id, open_shift)
+            # strict: an unanswerable duplicate check refuses the punch (the
+            # SQLAlchemyError handler below) rather than reading as "none open".
+            active = open_break_in_shift(db, tenant_id, open_shift, strict=True)
         else:
             # NOT clocked in: fall back to the original unbounded guard. Leaving
             # `active = None` here made this endpoint a no-op for anyone off the
@@ -1829,14 +1872,33 @@ def _tech_names(db: Session, tenant_id: str, ids: set[str]) -> dict[str, str]:
     if not ids:
         return {}
     try:
-        rows = db.execute(
-            text(
-                "SELECT id::text AS id, "
-                "COALESCE(NULLIF(full_name,''), NULLIF(name,''), NULLIF(username,''), email) AS label "
-                "FROM users WHERE company_id = :tenant_id AND id::text = ANY(:ids)"
-            ),
-            {"tenant_id": tenant_id, "ids": list(ids)},
-        ).mappings().all()
+        # SAVEPOINT: this function swallows its own failure, which is exactly
+        # the shape that strands a caller on Postgres — `_export_context` goes
+        # on to build the whole timesheet on this session. Containing it here
+        # rather than at the call site is deliberate; see rule 5 there.
+        #
+        # DUPLICATE-BLOCK BLESSING, recorded here because two hex strings in
+        # `.duplicate_block_baseline` are not a reviewable diff. Adding the
+        # `with contained_read(db):` line made this block byte-identical to two
+        # siblings that were already near-clones of it — the same
+        # `SELECT id::text, COALESCE(NULLIF(full_name,''), ...) FROM users`
+        # label lookup in `timeclock_roster` below and in
+        # `tasks/payroll_timesheet.py::_names`. GDXA-164 blessed the two
+        # resulting hashes (`fb2a4ce0e4a46e98`, 3 copies;
+        # `c35a60d213d7afd1`, 2 copies) with `--baseline --allow-new` rather
+        # than extracting a shared `_user_labels()`: the three have three
+        # different WHERE clauses and live in two routers and a task, so that
+        # is a refactor with its own test surface, not a containment change.
+        # The duplication predates this commit; only the hashes are new.
+        with contained_read(db):
+            rows = db.execute(
+                text(
+                    "SELECT id::text AS id, "
+                    "COALESCE(NULLIF(full_name,''), NULLIF(name,''), NULLIF(username,''), email) AS label "
+                    "FROM users WHERE company_id = :tenant_id AND id::text = ANY(:ids)"
+                ),
+                {"tenant_id": tenant_id, "ids": list(ids)},
+            ).mappings().all()
     except SQLAlchemyError:
         # Never fail the card over a cosmetic label (SQLite has no ANY()).
         log.exception("labor_exception_names_failed", extra={"tenant_id": tenant_id})
@@ -1897,18 +1959,24 @@ def timeclock_roster(
     # Active staff, so a person with no entries yet is still pickable.
     active: dict[str, str] = {}
     try:
-        rows = db.execute(
-            text(
-                "SELECT id::text AS id, "
-                "COALESCE(NULLIF(full_name,''), NULLIF(name,''), NULLIF(username,''), email) AS label "
-                # COALESCE, not `active = true`: NULL means active everywhere
-                # else in this codebase (users._serialize reads NULL as True),
-                # and `= true` would silently make those people unpickable.
-                "FROM users WHERE company_id = :tenant_id AND deleted_at IS NULL "
-                "AND COALESCE(active, true) = true"
-            ),
-            {"tenant_id": tenant_id},
-        ).mappings().all()
+        # SAVEPOINT (GDXA-164 sibling sweep): `_tech_names` reads this same
+        # session immediately after the swallow, and `contained_read` cannot
+        # rescue a caller that is ALREADY poisoned — so without containment
+        # here the roster loses BOTH label sources on Postgres, not the one
+        # this handler is willing to lose.
+        with contained_read(db):
+            rows = db.execute(
+                text(
+                    "SELECT id::text AS id, "
+                    "COALESCE(NULLIF(full_name,''), NULLIF(name,''), NULLIF(username,''), email) AS label "
+                    # COALESCE, not `active = true`: NULL means active everywhere
+                    # else in this codebase (users._serialize reads NULL as True),
+                    # and `= true` would silently make those people unpickable.
+                    "FROM users WHERE company_id = :tenant_id AND deleted_at IS NULL "
+                    "AND COALESCE(active, true) = true"
+                ),
+                {"tenant_id": tenant_id},
+            ).mappings().all()
         active = {str(r["id"]): r["label"] for r in rows if r["label"]}
     except SQLAlchemyError:
         # Cosmetic-only degradation, same rule as _tech_names: ids still resolve

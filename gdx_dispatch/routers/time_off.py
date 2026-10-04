@@ -34,7 +34,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_module, require_role
 from gdx_dispatch.core.pay_periods import shop_today
 from gdx_dispatch.core.permissions import is_dispatch_manager
@@ -137,11 +137,29 @@ def _user_id(current_user: Any) -> str:
     return str(user.get("user_id") or user.get("sub") or "system")
 
 
-def _settings(db: Session) -> AppSettings | None:
+def _settings(db: Session, *, strict: bool = False) -> AppSettings | None:
+    """The shop's settings row, or None when there is none (use the defaults).
+
+    ``strict=True`` is for the four callers that WRITE paid time off on the
+    answer (create, approve, record, holiday). For them an UNREADABLE row is
+    not "no settings": the defaults would compute the minutes, the schedule
+    and the shop day, and those hours reach payroll. So they get a 503 with
+    nothing written instead of a silent default (GDXA-194 audit).
+    """
     try:
-        return db.query(AppSettings).first()
+        # SAVEPOINT (GDXA-164 sibling sweep): most callers keep reading on this
+        # session afterwards (`person_schedule`, the request list), and on
+        # Postgres an uncontained failure would abort the transaction under
+        # them. See core.database.contained_read.
+        with contained_read(db):
+            return db.query(AppSettings).first()
     except SQLAlchemyError:
         log.exception("time_off_settings_read_failed")
+        if strict:
+            raise HTTPException(
+                status_code=503,
+                detail="shop settings could not be read; nothing was recorded — try again",
+            ) from None
         return None
 
 
@@ -352,7 +370,7 @@ def create_request(
         )
     _validate_range(payload.start_date, payload.end_date)
 
-    settings = _settings(db)
+    settings = _settings(db, strict=True)
     tz_name = _tz(settings)
     today = shop_today(tz_name)
     default_minutes = _default_minutes(settings)
@@ -433,7 +451,7 @@ def approve_request(
     row = _load_request(db, request_id)
     if row.status != STATUS_PENDING:
         raise HTTPException(status_code=409, detail=f"request is already {row.status}")
-    settings = _settings(db)
+    settings = _settings(db, strict=True)
     schedule = person_schedule(db, settings, str(row.technician_id))
     days = workdays_between(row.start_date, row.end_date, schedule.workdays)
     if not days:
@@ -612,7 +630,7 @@ def create_entries(
     if kind not in TIME_OFF_TYPES:
         raise HTTPException(status_code=422, detail=f"entry_type must be one of: {', '.join(TIME_OFF_TYPES)}")
     _validate_range(payload.start_date, payload.end_date)
-    settings = _settings(db)
+    settings = _settings(db, strict=True)
     minutes = int(payload.minutes_per_day or _default_minutes(settings))
     schedule = person_schedule(db, settings, payload.technician_id)
     days = workdays_between(payload.start_date, payload.end_date, schedule.workdays)
@@ -697,7 +715,7 @@ def post_holiday(
     """Give the named people the calendar's paid hours for that day. Anyone
     who already holds a time-off entry on the day is skipped and named, so
     posting twice pays nobody twice."""
-    settings = _settings(db)
+    settings = _settings(db, strict=True)
     holiday = holiday_on(settings, payload.date)
     if holiday is None:
         raise HTTPException(

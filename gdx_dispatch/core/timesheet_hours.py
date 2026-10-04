@@ -48,6 +48,7 @@ from sqlalchemy.orm import Session
 # → routers.timeclock → here, and a from-import of a not-yet-defined name
 # breaks that cycle loudly when core.time_off happens to load first.
 from gdx_dispatch.core import time_off as time_off_rules
+from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.core.pay_periods import PayPeriod, shop_day_of
 from gdx_dispatch.models.tenant_models import TimeclockBreak, TimeclockEntry
 
@@ -332,7 +333,11 @@ def build_timesheet(
     # every lunch.
     # Clamp the break window to the period this timesheet covers, so an open
     # shift cannot drag in breaks taken after the period ended.
-    breaks = break_minutes_by_entry(db, tenant_id, list(rows), window_hi=hi_text)
+    # Strict: an unread break table must stop the timesheet, not report gross
+    # hours as worked ones — same rule as the entries read above.
+    breaks = break_minutes_by_entry(
+        db, tenant_id, list(rows), window_hi=hi_text, strict=True
+    )
 
     cards: dict[str, Timecard] = {}
     for row in rows:
@@ -405,14 +410,19 @@ def break_minutes_started_on(
     if not by_entry:
         return 0
     try:
-        rows = db.execute(
-            select(TimeclockBreak.id, TimeclockBreak.duration_minutes).where(
-                # No tenant_id filter — see open_break_in_shift.
-                TimeclockBreak.user_id == str(user_id),
-                TimeclockBreak.duration_minutes.isnot(None),
-                func.date(TimeclockBreak.started_at) == day_iso,
-            )
-        ).all()
+        # SAVEPOINT: `db` is the caller's. On Postgres a failed read aborts the
+        # whole transaction, so without this the `return 0` below would be a
+        # lie twice over — the caller would believe it got a break total AND
+        # would find its own session dead. See core.database.contained_read.
+        with contained_read(db):
+            rows = db.execute(
+                select(TimeclockBreak.id, TimeclockBreak.duration_minutes).where(
+                    # No tenant_id filter — see open_break_in_shift.
+                    TimeclockBreak.user_id == str(user_id),
+                    TimeclockBreak.duration_minutes.isnot(None),
+                    func.date(TimeclockBreak.started_at) == day_iso,
+                )
+            ).all()
     except SQLAlchemyError:
         log.exception("break_minutes_started_on_failed", extra={"tenant_id": tenant_id})
         return 0
@@ -426,8 +436,13 @@ def open_break_in_shift(
     db: Session,
     tenant_id: str,  # noqa: ARG001 — kept for symmetry with the sibling helpers
     entry: TimeclockEntry,
+    *,
+    strict: bool = False,
 ) -> TimeclockBreak | None:
     """The break running INSIDE this shift, or None.
+
+    ``strict=True`` re-raises a failed read instead of answering None — for a
+    caller that WRITES on the answer (see the note at the read below).
 
     Bounded to the shift on purpose. Nothing closes a break AUTOMATICALLY:
     `POST /api/timeclock/break/end` exists and both timeclock screens call it,
@@ -450,22 +465,37 @@ def open_break_in_shift(
     if started is None:
         return None
     try:
-        rows = db.execute(
-            select(TimeclockBreak)
-            .where(
-                # No tenant_id filter: the tenant plane is a per-tenant database
-                # and isolation is the connection, so the predicate is redundant
-                # — and actively harmful on a row whose tenant_id is NULL, which
-                # is how the 2026-04-22 documents bug hid every legacy row.
-                # user_id is the isolation that matters here.
-                TimeclockBreak.user_id == str(entry.technician_id or ""),
-                TimeclockBreak.ended_at.is_(None),
-            )
-            .order_by(TimeclockBreak.started_at.desc())
-            .limit(10)
-        ).scalars().all()
+        # SAVEPOINT — same contract as break_minutes_started_on above. The
+        # readers (`open_shift_worked_minutes`, and through it the /status and
+        # mobile GETs) want "unknown" to read as "not on break" and the session
+        # left alive; that is what the swallow below gives them.
+        #
+        # `start_break` is the one WRITER, and for it this is the guard against
+        # a second open break, not advice. A swallowed None there would let the
+        # duplicate through — fail OPEN, the unclosable-break row the guard
+        # exists to stop (GDXA-194 audit, measured on PG: 201, two open
+        # breaks). So it passes `strict=True` and gets the error back; its own
+        # handler refuses the punch with nothing written.
+        with contained_read(db):
+            rows = db.execute(
+                select(TimeclockBreak)
+                .where(
+                    # No tenant_id filter: the tenant plane is a per-tenant
+                    # database and isolation is the connection, so the predicate
+                    # is redundant — and actively harmful on a row whose
+                    # tenant_id is NULL, which is how the 2026-04-22 documents
+                    # bug hid every legacy row. user_id is the isolation that
+                    # matters here.
+                    TimeclockBreak.user_id == str(entry.technician_id or ""),
+                    TimeclockBreak.ended_at.is_(None),
+                )
+                .order_by(TimeclockBreak.started_at.desc())
+                .limit(10)
+            ).scalars().all()
     except SQLAlchemyError:
         log.exception("open_break_lookup_failed", extra={"tenant_id": tenant_id})
+        if strict:
+            raise
         return None
     for row in rows:
         when = _as_aware(row.started_at)
@@ -528,8 +558,12 @@ def break_minutes_by_entry(
     entries: list[TimeclockEntry],
     *,
     window_hi: str | None = None,
+    strict: bool = False,
 ) -> dict[str, int]:
     """{entry_id: total ended-break minutes} for the given entries.
+
+    ``strict=True`` re-raises a failed read instead of answering ``{}`` — for
+    a caller whose output leaves the app as payroll (see the handler below).
 
     `TimeclockEntry.minutes` is gross elapsed — clock-out writes
     `_minutes_between(clock_in, now)` and never subtracts breaks, which live in
@@ -601,18 +635,33 @@ def break_minutes_by_entry(
             # scanning years of breaks to discard them.
             clauses.append(func.date(TimeclockBreak.started_at) >= span_lo[:10])
             clauses.append(func.date(TimeclockBreak.started_at) <= span_hi[:10])
-        rows = db.execute(
-            select(
-                TimeclockBreak.time_entry_id,
-                TimeclockBreak.user_id,
-                TimeclockBreak.started_at,
-                TimeclockBreak.duration_minutes,
-            ).where(*clauses)
-        ).all()
+        # SAVEPOINT around the read only — the clause list above touches no
+        # database. `build_timesheet` calls this and then keeps reading on the
+        # same session to finish the period, so on Postgres an uncontained
+        # failure here would not merely overstate hours (the documented
+        # degradation) but take the rest of the timesheet down with it.
+        with contained_read(db):
+            rows = db.execute(
+                select(
+                    TimeclockBreak.time_entry_id,
+                    TimeclockBreak.user_id,
+                    TimeclockBreak.started_at,
+                    TimeclockBreak.duration_minutes,
+                ).where(*clauses)
+            ).all()
     except SQLAlchemyError:
-        # Never fail the timesheet over this — gross hours are still correct and
-        # still correctable. Logged so a silent overstatement is traceable.
         log.exception("timeclock_break_join_failed", extra={"tenant_id": tenant_id})
+        # `{}` means "no breaks", which nets nothing and reports GROSS hours.
+        # For a screen that is a tolerable overstatement. For `build_timesheet`
+        # it is not: its PeriodTimesheet is what the CSV, the PDF and both sends
+        # (the beat in tasks/payroll_timesheet.py and the manual Send route)
+        # render, and no send gate checks break minutes — so a swallowed read
+        # here mailed payroll every lunch as paid time (GDXA-197). It passes
+        # `strict=True` and gets the error back: the route answers 503 and the
+        # beat holds the period and tells the office, both with nothing sent. The failure was already
+        # contained above, so the caller's session is still usable either way.
+        if strict:
+            raise
         return {}
     if not rows:
         return {}

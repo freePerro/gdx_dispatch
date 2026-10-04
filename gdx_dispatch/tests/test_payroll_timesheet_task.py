@@ -154,6 +154,118 @@ def test_it_sends_the_closed_period_the_morning_after(session_factory):
     assert send.call_count == 1
 
 
+def test_an_unreadable_break_table_holds_the_send_instead_of_mailing_gross_hours(
+    session_factory,
+):
+    """GDXA-197. With the breaks read swallowed to "no breaks", this beat
+    mailed the period with every lunch counted as worked time. It must hold
+    with nothing sent, tell the office once — a silent failure is
+    indistinguishable from a run that never happened — and keep retrying,
+    because no `timesheet_sent` audit row was written."""
+    _good_shift(session_factory)
+    _drop_breaks(session_factory)
+
+    result, send = _run(session_factory)
+
+    assert result["held"] == task_mod.BLOCKED_UNREADABLE
+    assert result["notified"] is True
+    assert send.call_count == 0
+    alerts = [n for n in _notifications(session_factory) if "not sent" in n[1]]
+    assert len(alerts) == 1
+    assert "could not be read" in alerts[0][1]
+
+    again, send = _run(session_factory)
+    assert again["held"] == task_mod.BLOCKED_UNREADABLE
+    assert again["notified"] is False, "it must not nag every hour"
+    assert send.call_count == 0
+    assert len([n for n in _notifications(session_factory) if "not sent" in n[1]]) == 1
+
+
+def _drop_breaks(SessionLocal):
+    db = SessionLocal()
+    db.execute(text("DROP TABLE timeclock_breaks_router"))
+    db.commit()
+    db.close()
+
+
+def test_an_earlier_flagged_hold_does_not_silence_the_unreadable_alert(session_factory):
+    """The flagged alert says "correct them and it sends itself". Once the
+    hours cannot be read that stops being true, so the office must hear it
+    — a dedupe on "held for any reason" swallowed this alert."""
+    _good_shift(session_factory)
+    _shift(session_factory, entry_id="e-unknown", clock_in="2026-08-18T13:00:00+00:00",
+           clock_out="2026-08-18T22:00:00+00:00", minutes=None)
+    first, _ = _run(session_factory)
+    assert first["held"] == "flagged_shifts"
+
+    _drop_breaks(session_factory)
+    second, send = _run(session_factory, at=datetime(2026, 8, 24, 13, 30, tzinfo=UTC))
+
+    assert second["held"] == task_mod.BLOCKED_UNREADABLE
+    assert second["notified"] is True
+    assert send.call_count == 0
+    assert any("could not be read" in n[1] for n in _notifications(session_factory))
+
+
+def test_an_earlier_unreadable_hold_does_not_silence_the_flagged_alert(session_factory):
+    """The mirror of the test above, which the first fix missed. The office
+    was told "it tries again every hour"; once the table is back and a shift
+    is unresolved, waiting will never send it — they must hear what to fix."""
+    from gdx_dispatch.models.tenant_models import TimeclockBreak
+
+    _good_shift(session_factory)
+    _shift(session_factory, entry_id="e-unknown", clock_in="2026-08-18T13:00:00+00:00",
+           clock_out="2026-08-18T22:00:00+00:00", minutes=None)
+    _drop_breaks(session_factory)
+    first, _ = _run(session_factory)
+    assert first["held"] == task_mod.BLOCKED_UNREADABLE
+
+    TimeclockBreak.__table__.create(bind=session_factory.kw["bind"])
+    second, send = _run(session_factory, at=datetime(2026, 8, 24, 13, 30, tzinfo=UTC))
+
+    assert second["held"] == "flagged_shifts"
+    assert second["notified"] is True
+    assert send.call_count == 0
+    assert any("2026-08-18" in n[1] for n in _notifications(session_factory))
+
+
+def test_a_hold_that_comes_back_is_said_again(session_factory):
+    """flagged → unreadable → flagged: the office's last message promised a
+    retry, so the flagged hold must be repeated — and then not nag."""
+    from gdx_dispatch.models.tenant_models import TimeclockBreak
+
+    _shift(session_factory, entry_id="e-unknown", clock_in="2026-08-18T13:00:00+00:00",
+           clock_out="2026-08-18T22:00:00+00:00", minutes=None)
+    ticks = [datetime(2026, 8, 24, h, 30, tzinfo=UTC) for h in (12, 13, 14, 15)]
+    first, _ = _run(session_factory, at=ticks[0])
+    _drop_breaks(session_factory)
+    second, _ = _run(session_factory, at=ticks[1])
+    TimeclockBreak.__table__.create(bind=session_factory.kw["bind"])
+    third, _ = _run(session_factory, at=ticks[2])
+    fourth, _ = _run(session_factory, at=ticks[3])
+
+    assert [r["held"] for r in (first, second, third, fourth)] == [
+        "flagged_shifts", task_mod.BLOCKED_UNREADABLE, "flagged_shifts", "flagged_shifts",
+    ]
+    assert [r["notified"] for r in (first, second, third, fourth)] == [True, True, True, False]
+    assert len(_notifications(session_factory)) == 3
+
+
+def test_a_readable_period_after_an_unreadable_one_sends_by_itself(session_factory):
+    """"It tries again every hour" is a promise in the alert — keep it."""
+    from gdx_dispatch.models.tenant_models import TimeclockBreak
+
+    _good_shift(session_factory)
+    _drop_breaks(session_factory)
+    held, _ = _run(session_factory)
+    assert held["held"] == task_mod.BLOCKED_UNREADABLE
+
+    TimeclockBreak.__table__.create(bind=session_factory.kw["bind"])
+    sent, send = _run(session_factory, at=datetime(2026, 8, 24, 13, 30, tzinfo=UTC))
+    assert sent["sent"] is True
+    assert send.call_count == 1
+
+
 def test_it_sends_the_period_being_paid_not_the_one_being_worked(session_factory):
     """On 8/24 the live period is 8/24–9/6. Sending that would mail one day
     of hours and look entirely plausible."""
