@@ -451,16 +451,20 @@
             <label>Status</label>
             <div class="status-transition-bar">
               <Button
-                v-for="s in statusFlow"
+                v-for="s in editStatusOptions"
                 :key="s"
                 :label="s"
                 :severity="jobForm.status === s ? 'primary' : 'secondary'"
                 :outlined="jobForm.status !== s"
                 size="small"
+                :disabled="editStatusLocked"
                 :data-testid="`job-status-${s.toLowerCase().replace(/ /g, '-')}`"
                 @click="jobForm.status = s"
               />
             </div>
+            <small v-if="editStatusLocked" class="optional-hint" data-testid="job-status-locked-hint">
+              This job is {{ editStartStatus.toLowerCase() }}. Use Re-open on the job page to change its stage.
+            </small>
           </div>
 
           <div v-if="formError" class="inline-error" data-testid="job-form-error">{{ formError }}</div>
@@ -639,6 +643,15 @@ const deleteTarget = ref(null);
 // Phase D audit fix: dropped "Sold" (not in enum, write would silently
 // fail) and "Invoiced" (lives on billing_status, not lifecycle).
 const statusFlow = ["Service Call", "Estimate", "Scheduled", "In Progress", "Complete", "Cancelled"];
+// job-stage-paths-plan §4.3: the server refuses to complete a job, or to move
+// a finished one, through this PATCH (409). So "Complete" is offered only when
+// the job already is (a re-save resends it unchanged), and a finished job's
+// bar is read-only — finishing and re-opening live on the job page.
+const editStartStatus = ref("");
+const editStatusLocked = computed(() => ["Complete", "Cancelled"].includes(editStartStatus.value));
+const editStatusOptions = computed(() =>
+  statusFlow.filter((s) => s !== "Complete" || editStartStatus.value === "Complete"),
+);
 // Plan §9: ONE vocabulary, shared with CustomerDetailView and pinned against
 // core/job_taxonomy.py by a backend test. This list diverging from the other
 // dropdown is exactly how prod ended up with four spellings of two work kinds.
@@ -945,6 +958,7 @@ function openJobDetail(job) {
 async function openEditDialog(job) {
   formMode.value = "edit";
   formError.value = "";
+  editStartStatus.value = job.status || "";
   _seedingLocation.value = true;
   jobForm.value = {
     id: job.id,
