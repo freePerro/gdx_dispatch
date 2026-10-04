@@ -1,7 +1,7 @@
 # Multi-day jobs: one job, many visit days
 
 **Date:** 2026-10-03
-**Status:** PLAN, revised after `/audit` 2026-10-04 (five findings, all accepted, §10). Nothing is built. Three PRs are proposed (§6), and five decisions are owed by Doug before PR 3 (§8).
+**Status:** PLAN. Nothing is built. Three PRs are proposed (§6). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); this revision has not been re-audited.
 
 **Trigger:** Doug asked, "What happens if a job is not finished and turns into a
 multi-day job? Can a tech or anyone go back to it?" The answer, traced on
@@ -9,10 +9,15 @@ multi-day job? Can a tech or anyone go back to it?" The answer, traced on
 
 - **One job, many days.** A job keeps one number and gets a visit for each
   day. It is billed once.
-- **A "Done for today" button on the phone.** It records the day's work and
+- **A "Done for today" button on the phone** (revised 2026-10-04, below). It records the day's work and
   leaves the job open.
 - **Multi-day support is in phase.** `PHASE.md` was amended the same day:
   UI and workflow fixes count as hardening.
+
+On 2026-10-04 Doug revised the second ruling: the closeout sheet itself asks
+**"Is this job finished?"** instead of a separate button. "No" saves the day
+as a daily log entry on the same job. The logs are internal: in the end it is
+one job, and the customer sees one invoice (§5.4, §8).
 
 Related plan: `job-closeout-billing-visibility-plan.md` §A6, "Multi-tech
 and multi-visit jobs will underbill", which is still unresolved. This plan
@@ -119,7 +124,7 @@ buy.
   - `assigned` once every tech on today's visits has closed the day;
   - `done` only at closeout.
 
-  One tech's "Done for today" never resets a job another tech is still
+  One tech's daily log never resets a job another tech is still
   working.
 - **`Job.scheduled_at` stays a stored column with one rule:** it equals the
   start of the earliest *open* visit (not completed or cancelled), or the job
@@ -136,7 +141,7 @@ buy.
   | reactivate | `jobs.py:4272` |
   | mobile route reorder | `mobile.py:1487` |
   | public API PATCH | `api/public_router.py:546` |
-  | the visits API, appointment PATCH and DELETE, "Done for today" | new |
+  | the visits API, appointment PATCH and DELETE, the daily-log closeout | new |
 
   A writer missing from this list keeps a second source of truth, so each
   one gets its own test in PR 2.
@@ -190,7 +195,7 @@ buy.
   has no later visit gets a **"Continuing — book next day"** label. It keeps
   the same card and doesn't start a new queue.
 
-### 5.4 Phone: "Done for today" (fixes B2, B3, B4, B7)
+### 5.4 The closeout sheet asks "Is this job finished?" (fixes B2, B3, B4, B7)
 
 - **Arrival (B2):** finds the appointment by `job_id` + this tech + today's
   shop day, not `scalar_one_or_none()` over the whole job. This fix ships
@@ -199,15 +204,30 @@ buy.
   `lifecycle_stage='in_progress'` and `started_at` if null. This also closes
   the "phone never reaches In Progress" gap from the 2026-10-03 lifecycle
   audit.
-- **The "Done for today" button** sits on MobileJobDetail beside Closeout,
-  shown when the tech is on site. The sheet asks for:
-  - **Hours worked today**, required and attested, for this tech. Billed
-    labor comes from attested hours only (CLAUDE.md domain rule).
-  - A note for the office. Optional, but encouraged ("what's left").
-  - Parts and photos, through the existing live capture. No new capture.
+- **One sheet, one question.** `MobileJobCloseoutDialog` opens with
+  **"Is this job finished?"** (Yes / No) before anything else. There is no
+  separate button. The sheet is already mounted on the phone
+  (`MobileJobDetailView.vue`) and the dispatch board (`DispatchView.vue`),
+  and #842 (open) mounts it on the desktop job page, so the question reaches
+  every surface that can close out.
+  - **Yes:** today's closeout, unchanged — completion, autodraft invoice,
+    the tenant's requirement gates.
+  - **No:** a **daily log** entry for this tech on this job. The job stays
+    open. Nothing is shown or sent to the customer (Doug, 2026-10-04: the
+    logs are for us). The "No" sheet asks for:
+    - **Hours worked today**, required and attested, for this tech (Doug,
+      2026-10-04). Billed labor comes from attested hours only (CLAUDE.md
+      domain rule). This holds even on a tenant whose
+      `require_hours_on_complete` is off.
+    - A note for the office. Optional, but encouraged ("what's left").
+    - Parts, optional. Parts and photos go through the existing live
+      capture. The `require_parts_on_complete`, signature and invoice
+      gates apply to the final "Yes" only.
+  - The job page lists the daily log entries by day (tech, hours, note),
+    for the office.
 - **The day's hours go on the timer that already exists.** Arrival already
   opens a per-tech job timer in `time_entries` (`mobile.py:2270-2285`;
-  `user_id` = the tech, `clock_in` = today's arrival). "Done for today"
+  `user_id` = the tech, `clock_in` = today's arrival). A "No" closeout
   **closes that timer** with `duration_minutes` = the attested hours and
   labels it a day row (§8 D2). It does not create a second row.
   - **Pay period:** `clock_in` is today, so payroll (`payroll.py:245-262`
@@ -240,9 +260,14 @@ buy.
     visit, or the job is flagged as continuing if there is none.
   - **No invoice, no closeout, no completion.** Audited as `job_day_closed`
     with job, visit, tech, hours, timer row id, note and next visit.
-- **On the last day, the tech does the normal Closeout.** The closeout's
-  return-visit checkbox stays for genuine come-backs, such as parts on order.
-  The sheet says: "Not finished? Use Done for today."
+- **On the last day, the tech answers "Yes"** and gets the normal closeout.
+- **The return-visit checkbox stays, relabelled, and only on "Yes"** (Doug,
+  2026-10-04: keep it but label it differently). It still creates a
+  separate job (`MobileJobCloseoutDialog.vue:853-858`), so it must stop
+  reading as the way to continue unfinished work. It shows only after
+  "Yes", for genuinely new work. Proposed label: **"Needs a follow-up job
+  (new work)"**, with the hint "Not finished? Answer No above instead." The
+  exact wording is Doug's to confirm at PR 3 review.
 
 ### 5.5 Billing: once, at final closeout (resolves A6's multi-visit half)
 
@@ -250,7 +275,7 @@ buy.
   final closeout bills as today.
 - **Hourly lane:** billing today reads **only** `closeout.hours_worked`
   (`core/closeout_billing.py:240`) and never touches `time_entries`, so
-  "sum the days" needs an explicit mechanism. Two candidates (D1):
+  "sum the days" needs an explicit mechanism. Two candidates (D1, ruled (a)):
   - **(a) Recommended: a separate "Previous days" labor line.**
     `build_closeout_lines` gains one read: the job's day rows (§8 D2),
     summed as **man-hours** across techs and days. They are emitted as their
@@ -273,7 +298,7 @@ buy.
   through the office estimate→invoice path. PR 3 must check whether that
   path reads closeout labor at all before claiming those jobs bill
   correctly.
-- **This changes money math, so it waits on D1.**
+- **This changes money math.** D1 was ruled (a) on 2026-10-04.
 - **Parts:** unchanged. Every unbilled live-captured row across all days is
   picked up.
 - **Deposits:** unchanged. Netted on the final invoice.
@@ -306,11 +331,12 @@ appointment rows.
 2. **The office books days (B5).** Covers §5.3: the visits API, the Visits
    card, the board showing each day, `recompute_job_schedule` wired into
    every writer in §5.1 (one test per writer), and the continuing label.
-3. **The phone's "Done for today" and summed billing (B3, B4, B6, B7).**
+3. **"Is this job finished?" and summed billing (B3, B4, B6, B7).**
    Covers §5.4 and §5.5.
-   - Decisions D1–D5 come first.
-   - If D2 picks a column, this PR adds an Alembic migration that runs on
-     SQLite and Postgres and has a downgrade.
+   - D2 picked the column, so this PR adds an Alembic migration
+     (`time_entries.appointment_id`, nullable) that runs on SQLite and
+     Postgres and has a downgrade. Existing rows stay NULL.
+   - If #842 has not merged by then, the desktop surface waits for it.
 
 Each PR updates this doc's status line in the same commit (CLAUDE.md, "The
 status line ships with the code").
@@ -322,21 +348,27 @@ status line ships with the code").
 - A throwaway container plus a real browser:
   - **Office (desktop):** book a 3-day, 2-tech job, see it on three board
     days, move day 2.
-  - **Tech (Pixel 8 AVD):** day 1 On my way → I'm here → Done for today; day
-    2 shows on Today, On my way works; day 3 Closeout.
+  - **Tech (Pixel 8 AVD):** day 1 On my way → I'm here → Closeout, "No",
+    hours; day 2 shows on Today, On my way works; day 3 Closeout, "Yes".
+  - **Office (desktop):** answer "No" from the job page; the daily log shows
+    on the job; the relabelled follow-up option appears only after "Yes".
   - **Invoice:** one invoice, every day's parts, labor per D1.
   - Light and dark mode.
 - After deploy, walk it on prod with a real job.
 
-## 8. Decisions owed (Doug)
+## 8. Decisions (ruled by Doug, 2026-10-04)
 
-| # | Question | Recommendation |
+| # | Question | Ruling |
 |---|---|---|
-| D1 | Hourly-lane labor on a multi-day job: (a) a separate "Previous days" invoice line built from the attested day rows, or (b) the final closeout's hours pre-filled with the day total for the tech to confirm (§5.5)? | **(a) Separate line.** Every hour stays traceable to a day and a tech. (b) is the A6 failure mode with a pre-fill on it. |
-| D2 | How a day row is marked: a nullable `time_entries.appointment_id` column (migration), or a note label like the existing `"Closeout-attached"`? | **The column.** It ties hours to the exact visit for audit. The note pattern is fragile string matching. |
-| D3 | When a tech taps Done for today and no next day is booked: the office books it (late-open card, "Continuing"), or the tech picks the next day on the phone? | **The office books it.** It matches the ServiceTitan pause flow and keeps scheduling with dispatch. |
-| D4 | Does the customer get an "on my way" text each day? | **Yes, each day.** Day 2 is a real arrival. |
-| D5 | Can the crew differ by day? | **Yes.** A visit is per tech per day, which costs nothing extra in this model. |
+| D1 | Hourly-lane labor on a multi-day job: (a) a separate "Previous days" invoice line built from the attested day rows, or (b) the final closeout's hours pre-filled with the day total? | **(a) Separate line** (recommendation accepted). |
+| D2 | How a day row is marked: a nullable `time_entries.appointment_id` column, or a note label? | **The column** (recommendation accepted). |
+| D3 | After a "No" day with no next day booked: the office books it, or the tech picks the day? | **The office books it** (recommendation accepted). |
+| D4 | Does the customer get an "on my way" text each day? | **Yes, each day** (recommendation accepted). |
+| D5 | Can the crew differ by day? | **Yes** (recommendation accepted). |
+| D6 | A separate "Done for today" button, or the closeout sheet asking "Is this job finished?" | **The closeout sheet asks.** Doug's idea: "No" makes it a daily log of the job. |
+| D7 | What does a "No" day require? | **Hours.** Parts optional. |
+| D8 | What happens to the "needs a return visit" checkbox? | **Keep it, label it differently.** Shown on "Yes" only; wording proposed in §5.4, to confirm at review. |
+| D9 | Does the customer see anything on a "No" day? | **Nothing.** It is one job; the logs are for us. |
 
 ## 9. Out of scope (found, not filed)
 
