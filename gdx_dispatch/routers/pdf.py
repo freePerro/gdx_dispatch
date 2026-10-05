@@ -170,6 +170,73 @@ def _estimate_attachments_for_pdf(
     return images, files
 
 
+def _estimate_line_row(line: Any) -> dict[str, Any]:
+    """One printed row — the same shape for an estimate line and a tier line."""
+    return {
+        "description": line.description,
+        "category": line.category or "",
+        "quantity": line.quantity,
+        "unit_price": _to_float(line.unit_price),
+        "line_total": _to_float(line.line_total),
+    }
+
+
+def _estimate_tiers_for_pdf(
+    estimate: Estimate, db: Session | None
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """(accepted tier, open options) for a Good/Better/Best estimate.
+
+    Same rules as the public proposal page (modules/proposals/router.py): an
+    accepted tier IS the contract, priced by `tier_contract_subtotal` (which
+    compute_estimate_totals also uses); an open proposal_mode estimate offers
+    every tier at its own price. A tier with no lines of its own is a flat
+    tier: it prints as one row at its total_price, so its table is never
+    empty. (None, []) means "not tiered": print estimate.lines as before.
+    """
+    if db is None:
+        return None, []
+    from gdx_dispatch.modules.proposals.models import ProposalTier
+    from gdx_dispatch.modules.proposals.service import tier_contract_lines, tier_contract_subtotal
+
+    accepted_tier_id = getattr(estimate, "accepted_tier_id", None)
+    if accepted_tier_id is None and not getattr(estimate, "proposal_mode", False):
+        return None, []
+    tiers = db.execute(
+        select(ProposalTier)
+        .where(ProposalTier.estimate_id == estimate.id)
+        .order_by(ProposalTier.display_order.asc(), ProposalTier.id.asc())
+    ).scalars().all()
+
+    def _option(tier: ProposalTier) -> dict[str, Any]:
+        name = (tier.tier_name or "").title()
+        description = (tier.description or "").strip()
+        price = _to_float(tier_contract_subtotal(db, tier))
+        rows = [_estimate_line_row(ln) for ln in tier_contract_lines(db, tier)]
+        if not rows:
+            rows = [{
+                "description": f"{name} option",
+                "category": "",
+                "quantity": 1,
+                "unit_price": price,
+                "line_total": price,
+            }]
+        return {
+            "name": name,
+            "description": description,
+            "warranty_months": int(tier.warranty_months or 0),
+            "price": price,
+            "lines": rows,
+        }
+
+    if accepted_tier_id is not None:
+        for tier in tiers:
+            if tier.id == accepted_tier_id:
+                return _option(tier), []
+        # A dangling pointer: the totals engine falls back to est.total too.
+        return None, []
+    return None, [_option(tier) for tier in tiers]
+
+
 def _estimate_payload(
     estimate: Estimate,
     customer: Customer | None,
@@ -182,7 +249,6 @@ def _estimate_payload(
     db: Session | None = None,
 ) -> dict[str, Any]:
     from gdx_dispatch.modules.estimates_features import effective_hide_line_prices
-    lines = sorted(estimate.lines, key=lambda row: (row.sort_order, row.created_at, row.id))
     totals = compute_estimate_totals(estimate, db)
     pct = max(0, min(100, int(deposit_pct or 0)))
     deposit_amount = round(totals["total"] * pct / 100.0, 2) if pct > 0 else 0.0
@@ -191,6 +257,24 @@ def _estimate_payload(
         getattr(estimate, "hide_line_prices", None), hide_line_prices_default
     )
     valid_until = getattr(estimate, "valid_until", None)
+    accepted_tier, tier_options = _estimate_tiers_for_pdf(estimate, db)
+    if accepted_tier is not None:
+        # The contract is the accepted tier: its lines, never estimate.lines
+        # (which accept_tier does not touch, and which on a mobile-built quote
+        # hold every tier's items untagged). The totals engine already prices
+        # off the same tier, so table and Total agree.
+        line_rows = accepted_tier["lines"]
+    elif tier_options:
+        # An open Good/Better/Best proposal has no single total: each option
+        # prints with its own price, as on the public page. estimate.lines is
+        # not the customer's content here either.
+        line_rows = []
+        deposit_amount = 0.0
+        for option in tier_options:
+            option["hide_line_prices"] = hide_line_prices
+    else:
+        lines = sorted(estimate.lines, key=lambda row: (row.sort_order, row.created_at, row.id))
+        line_rows = [_estimate_line_row(line) for line in lines]
     return {
         "estimate_number": estimate.estimate_number,
         "customer": _customer_payload(customer),
@@ -200,16 +284,13 @@ def _estimate_payload(
         # Captured acceptance signature — rendered as the image + signed-by
         # line instead of the blank signature line when present.
         "signature": _signature_payload(estimate),
-        "lines": [
-            {
-                "description": line.description,
-                "category": line.category or "",
-                "quantity": line.quantity,
-                "unit_price": _to_float(line.unit_price),
-                "line_total": _to_float(line.line_total),
-            }
-            for line in lines
-        ],
+        "lines": line_rows,
+        "accepted_tier": (
+            {"name": accepted_tier["name"], "description": accepted_tier["description"]}
+            if accepted_tier is not None
+            else None
+        ),
+        "tier_options": tier_options if accepted_tier is None else [],
         "subtotal": totals["subtotal"],
         "discount": totals["discount"],
         "tax": totals["tax"],

@@ -55,13 +55,10 @@
                  and the email attaches. This page is a summary; a customer
                  reported it "missing a lot of details" next to that PDF
                  (2026-10-04). A plain link so a phone opens its own viewer,
-                 where save and share already live.
-                 Not on a tiered (Good/Better/Best) estimate: the PDF renders
-                 estimate.lines only, never tiers, so it would read $0.00 next
-                 to the options — and accepting a tier sets the total without
-                 copying its lines (modules/proposals/service.py accept_tier). -->
+                 where save and share already live. Tiered estimates too: the
+                 PDF prints each option at its own price, or the accepted
+                 tier's lines (GDXA-233). -->
             <a
-              v-if="!est.proposal_mode"
               :href="pdfUrl"
               target="_blank"
               rel="noopener"
