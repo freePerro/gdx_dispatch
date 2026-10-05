@@ -3104,8 +3104,8 @@ def reassign_estimate_customer(
     # customer_id write and the rotated token BEFORE the audit row exists —
     # and audit_or_rollback would have nothing left to roll back, which is the
     # entire promise this endpoint makes. Run it here, where committing has
-    # nothing to disturb. Same reasoning, and the same NOT-Depends(audit_ready_db)
-    # caveat, as routers/customers.py's create_customer_contact.
+    # nothing to disturb. Same reasoning as routers/customers.py's
+    # create_customer_contact.
     ensure_audit_table(db)
     estimate = _get_estimate_or_404(estimate_id, db)
 

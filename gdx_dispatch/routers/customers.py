@@ -1928,11 +1928,6 @@ async def make_contact_primary(
     # handler's staged row before the audit row is written, and
     # audit_or_rollback would have nothing left to roll back. Run it here, where
     # committing has nothing to disturb; every later call is a no-op.
-    #
-    # NOT `Depends(audit_ready_db)`: that dependency resolves its own session
-    # and would bypass every existing get_db override in the test suite —
-    # two tests in test_outbound_email_log.py went 404 that way, querying a
-    # different database than the one the test had seeded.
     ensure_audit_table(db)
     _assert_customer_exists(db, customer_id)
     target = db.execute(
@@ -2087,11 +2082,6 @@ async def create_customer_contact(
     # handler's staged row before the audit row is written, and
     # audit_or_rollback would have nothing left to roll back. Run it here, where
     # committing has nothing to disturb; every later call is a no-op.
-    #
-    # NOT `Depends(audit_ready_db)`: that dependency resolves its own session
-    # and would bypass every existing get_db override in the test suite —
-    # two tests in test_outbound_email_log.py went 404 that way, querying a
-    # different database than the one the test had seeded.
     ensure_audit_table(db)
     _assert_customer_exists(db, customer_id)
 
@@ -2166,11 +2156,6 @@ async def update_customer_contact(
     # handler's staged row before the audit row is written, and
     # audit_or_rollback would have nothing left to roll back. Run it here, where
     # committing has nothing to disturb; every later call is a no-op.
-    #
-    # NOT `Depends(audit_ready_db)`: that dependency resolves its own session
-    # and would bypass every existing get_db override in the test suite —
-    # two tests in test_outbound_email_log.py went 404 that way, querying a
-    # different database than the one the test had seeded.
     ensure_audit_table(db)
     _assert_customer_exists(db, customer_id)
     contact = _load_contact(db, customer_id, contact_id)
@@ -2257,11 +2242,6 @@ async def delete_customer_contact(
     # handler's staged row before the audit row is written, and
     # audit_or_rollback would have nothing left to roll back. Run it here, where
     # committing has nothing to disturb; every later call is a no-op.
-    #
-    # NOT `Depends(audit_ready_db)`: that dependency resolves its own session
-    # and would bypass every existing get_db override in the test suite —
-    # two tests in test_outbound_email_log.py went 404 that way, querying a
-    # different database than the one the test had seeded.
     ensure_audit_table(db)
     _assert_customer_exists(db, customer_id)
     contact = _load_contact(db, customer_id, contact_id)

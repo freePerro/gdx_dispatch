@@ -38,7 +38,6 @@ from sqlalchemy.pool import StaticPool
 from gdx_dispatch.core.audit import (
     AuditLog,
     TenantBase,
-    _get_db_dep,
     log_audit_event_sync,
 )
 from gdx_dispatch.core.database import get_db
@@ -64,14 +63,9 @@ def env():
     one fixture shares the engine, so an admin write is visible to a later
     read.
 
-    `_get_db_dep` is overridden alongside `get_db` on purpose. The handlers
-    call `ensure_audit_table(db)` inline today, so only `get_db` is strictly
-    needed — but `audit_ready_db` (the alternative wiring) declares
-    `Depends(_get_db_dep)`, a separate function that calls `get_db()` directly,
-    and a handler moved onto it would silently start talking to the real
-    database and surface as a confusing "no such table". Overriding the inner
-    dependency keeps this harness honest either way. What it must NOT do is
-    override `audit_ready_db` itself — that replaces the dependency wholesale,
+    Only `get_db` is overridden: `audit_ready_db` declares `Depends(get_db)`,
+    so a handler on either wiring reaches the test database. What this must
+    NOT do is override `audit_ready_db` itself — that replaces the dependency wholesale,
     so the real thing never runs and these tests would pass against a handler
     that never initialized the audit table at all.
     """
@@ -97,7 +91,6 @@ def env():
         app = FastAPI()
         app.include_router(tax_router)
         app.dependency_overrides[get_db] = _override_db
-        app.dependency_overrides[_get_db_dep] = _override_db
         if user is not None:
             app.dependency_overrides[get_current_user] = lambda: user
         tc = TestClient(app, raise_server_exceptions=True)

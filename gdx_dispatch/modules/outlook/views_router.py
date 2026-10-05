@@ -315,15 +315,6 @@ def get_db_for_views(db: Session = Depends(get_db)) -> Session:
     itself it commits whatever the handler has already staged — the mutation
     lands early and its audit row is no longer bound to it. Every later call
     for that engine is a no-op.
-
-    Deliberately ``Depends(get_db)`` and NOT ``Depends(audit_ready_db)``,
-    which looks like it does exactly this and is a trap: that dependency
-    resolves its own session via ``_get_db_dep``, which *calls* ``get_db()``
-    imperatively instead of declaring ``Depends(get_db)``, so it bypasses
-    every ``app.dependency_overrides[get_db]`` in the suite.
-    ``routers/customers.py`` records two tests that went 404 that way, and
-    switching routers to it during #558 silently pointed two more at the REAL
-    database while they still passed green.
     """
     ensure_audit_table(db)
     return db
