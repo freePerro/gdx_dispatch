@@ -26,7 +26,7 @@ from typing import Any
 from sqlalchemy import select
 
 from gdx_dispatch.core.celery_app import celery_app
-from gdx_dispatch.core.database import SessionLocal
+from gdx_dispatch.core.database import SessionLocal, contained_read
 
 log = logging.getLogger(__name__)
 
@@ -130,23 +130,34 @@ def _aware(dt: datetime) -> datetime:
 
 
 def _digest_sender_user_id(db) -> str | None:
-    """A connected Outlook mailbox to send as; None ⇒ SMTP fallback."""
+    """A connected Outlook mailbox to send as; None ⇒ SMTP fallback.
+
+    ``contained_read`` (GDXA-158). The session is the digest task's own, but it
+    is the CALLER's relative to this helper, and the caller keeps using it: the
+    return value is passed straight into ``send_transactional_email(tenant_db=db,
+    …)``, which writes the outbound-email log row. On Postgres a bare swallow
+    aborted the transaction, so falling back to SMTP was the harmless half —
+    the send's own bookkeeping then died on a poisoned session. Reads only
+    (core.database rule 2); inside the ``try`` so the ``None`` still happens
+    (rule 1).
+    """
     try:
         from gdx_dispatch.modules.outlook.models import OutlookAccount
 
-        row = (
-            db.execute(
-                select(OutlookAccount)
-                .where(
-                    OutlookAccount.provider == "outlook",
-                    OutlookAccount.refresh_token_enc.isnot(None),
+        with contained_read(db):
+            row = (
+                db.execute(
+                    select(OutlookAccount)
+                    .where(
+                        OutlookAccount.provider == "outlook",
+                        OutlookAccount.refresh_token_enc.isnot(None),
+                    )
+                    .order_by(OutlookAccount.connected_at.desc().nullslast())
+                    .limit(1)
                 )
-                .order_by(OutlookAccount.connected_at.desc().nullslast())
-                .limit(1)
+                .scalars()
+                .first()
             )
-            .scalars()
-            .first()
-        )
         return row.user_id if row else None
     except Exception:
         log.exception("planner_digest_sender_lookup_failed")
@@ -154,15 +165,30 @@ def _digest_sender_user_id(db) -> str | None:
 
 
 def _cold_lead_count(db) -> int:
-    """Unmatched inbound calls — the 'never called back' leak. Best-effort."""
+    """Unmatched inbound calls — the 'never called back' leak. Best-effort.
+
+    ``contained_read`` (GDXA-158), same reasoning as ``_digest_sender_user_id``
+    and a worse blast radius: this runs BEFORE the digest is rendered and sent,
+    so on Postgres a failed read here turned ``return 0`` into a digest that
+    never went out at all. Reads only (core.database rule 2).
+
+    The trigger is NOT a missing ``phone_com_calls`` table — that is a fixture
+    state, not a prod one (``TenantBase`` + unconditional ``create_all`` at boot,
+    878 rows on prod checked 2026-09-27). See ``routers/planner.py``'s
+    ``link_customer`` for the honest list of what can still fire.
+    """
     try:
         from gdx_dispatch.modules.phone_com.models import PhoneComCall
 
-        return (
-            db.query(PhoneComCall)
-            .filter(PhoneComCall.direction == "in", PhoneComCall.customer_id.is_(None))
-            .count()
-        )
+        with contained_read(db):
+            return (
+                db.query(PhoneComCall)
+                .filter(
+                    PhoneComCall.direction == "in",
+                    PhoneComCall.customer_id.is_(None),
+                )
+                .count()
+            )
     except Exception:
         return 0
 

@@ -17,7 +17,8 @@ from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
-from gdx_dispatch.core.database import SessionLocal, get_db
+from gdx_dispatch.core.database import SessionLocal, contained_read, get_db
+from gdx_dispatch.core.holding_areas import holding_area_id_by_name as _holding_area_id_by_name
 from gdx_dispatch.core.invoice_paid import paid_amount_sq, paid_to_date_bulk
 from gdx_dispatch.core.job_access import can_read_job, job_write_denial
 from gdx_dispatch.core.job_display_state import derive_job_display_state
@@ -261,27 +262,6 @@ def _caller_technician_id(db: Session, user_id: str) -> str | None:
         .first()
     )
     return str(row[0]) if row else None
-
-
-def _holding_area_id_by_name(db: Any, name: str) -> str | None:
-    """Resolve a holding-area row by name. Returns id (str) or None if missing.
-
-    Used by create_job (auto-route service-call jobs into 'Ready to
-    Schedule') and the estimate accept path (auto-route accepted estimates
-    into 'Order Doors'). Per the 2026-05-13 directive these two routes are
-    automatic; if the area row is missing on this tenant (the migration
-    script is the source of truth) we return None and let the job be
-    created without a holding area rather than failing the request.
-    """
-    try:
-        row = db.execute(
-            _text("SELECT id FROM holding_areas WHERE name = :n LIMIT 1"),
-            {"n": name},
-        ).first()
-        return str(row[0]) if row else None
-    except Exception:
-        log.exception("holding_area_lookup_failed name=%s", name)
-        return None
 
 
 def _holding_area_exists(db: Any, holding_area_id: str) -> bool:
@@ -684,6 +664,17 @@ def _display_state_for_jobs(
     status). Strictly additive: any failure degrades to an empty map so
     the jobs list never breaks over a display field. Pass the RAW
     ``lifecycle_stage`` — never the ``_canon_status``-normalized form.
+
+    ``contained_read`` (GDXA-158) is what makes "never breaks" true on
+    Postgres. Every caller is a GET (``list_jobs``, ``get_job``, the customer
+    job list, the dispatch board, the leads list's job progress), so no caller
+    holds pending work to lose —
+    but they all keep querying after this returns: ``list_jobs`` calls
+    ``resolve_job_sites(db, …)`` on the very next statement. A bare swallow
+    aborted the transaction, so the degraded ``{}`` bought nothing and the
+    whole list 500'd on the following query. Pure reads throughout —
+    ``paid_to_date_bulk`` re-raises rather than swallowing, which is what
+    core.database rule 5's corollary requires of an intervening frame.
     """
     # job.id is a Uuid(as_uuid=True) column — its bind processor expects
     # UUID objects, so coerce (inputs may be str from the raw-SQL list
@@ -701,45 +692,46 @@ def _display_state_for_jobs(
     inv_by_job: dict[str, list[dict[str, Any]]] = {}
     est_by_job: dict[str, str] = {}
     try:
-        _inv_rows: list = []
-        # M35: `Invoice.amount_paid` is a cache nothing maintains, and
-        # job_display_state keys "Partially Paid" and the deposit_paid badge on
-        # it — so a partial payment recorded after 2026-07-31 read as $0 and the
-        # job showed "Invoiced". Derive paid-to-date from the payments table.
-        for row in db.execute(
-            select(
-                Invoice.id,
-                Invoice.job_id,
-                Invoice.status,
-                Invoice.balance_due,
-                Invoice.billing_type,
-            ).where(Invoice.job_id.in_(uuid_ids), Invoice.deleted_at.is_(None))
-        ).all():
-            if row.job_id is None:
-                continue
-            _inv_rows.append(row)
-        _paid_by_invoice = paid_to_date_bulk(db, [r.id for r in _inv_rows])
-        for row in _inv_rows:
-            inv_by_job.setdefault(str(row.job_id), []).append(
-                {
-                    "status": row.status,
-                    "balance_due": row.balance_due,
-                    "amount_paid": _paid_by_invoice.get(str(row.id), 0),
-                    "billing_type": row.billing_type,
-                }
-            )
-        if _HAS_ESTIMATE_ORM:
+        with contained_read(db):
+            _inv_rows: list = []
+            # M35: `Invoice.amount_paid` is a cache nothing maintains, and
+            # job_display_state keys "Partially Paid" and the deposit_paid badge
+            # on it — so a partial payment recorded after 2026-07-31 read as $0
+            # and the job showed "Invoiced". Derive paid-to-date from payments.
             for row in db.execute(
-                select(Estimate.job_id, Estimate.status).where(
-                    Estimate.job_id.in_(uuid_ids),
-                    Estimate.deleted_at.is_(None),
-                )
+                select(
+                    Invoice.id,
+                    Invoice.job_id,
+                    Invoice.status,
+                    Invoice.balance_due,
+                    Invoice.billing_type,
+                ).where(Invoice.job_id.in_(uuid_ids), Invoice.deleted_at.is_(None))
             ).all():
-                if row.job_id is not None:
-                    # Last-seen wins — a job's most-recent estimate status.
-                    # Multi-estimate jobs are a display nicety, not a
-                    # correctness boundary, in Wave 0a.
-                    est_by_job[str(row.job_id)] = row.status
+                if row.job_id is None:
+                    continue
+                _inv_rows.append(row)
+            _paid_by_invoice = paid_to_date_bulk(db, [r.id for r in _inv_rows])
+            for row in _inv_rows:
+                inv_by_job.setdefault(str(row.job_id), []).append(
+                    {
+                        "status": row.status,
+                        "balance_due": row.balance_due,
+                        "amount_paid": _paid_by_invoice.get(str(row.id), 0),
+                        "billing_type": row.billing_type,
+                    }
+                )
+            if _HAS_ESTIMATE_ORM:
+                for row in db.execute(
+                    select(Estimate.job_id, Estimate.status).where(
+                        Estimate.job_id.in_(uuid_ids),
+                        Estimate.deleted_at.is_(None),
+                    )
+                ).all():
+                    if row.job_id is not None:
+                        # Last-seen wins — a job's most-recent estimate status.
+                        # Multi-estimate jobs are a display nicety, not a
+                        # correctness boundary, in Wave 0a.
+                        est_by_job[str(row.job_id)] = row.status
     except SQLAlchemyError:
         log.exception("display_state_enrichment_failed")
         return {}
@@ -2010,18 +2002,27 @@ def _resolve_technician_id(db: Session, user_id: str) -> str | None:
     `mobile._get_technician_id`, minus its unused tenant_id arg, plus the
     `deleted_at` filter it omits. `created_at` is nullable, so NULLs sort
     per-dialect — tie-break on id to keep SQLite and Postgres agreeing.
+
+    ``contained_read`` (GDXA-158): the sole caller is ``closeout_job``, which
+    reaches here mid-write with the closeout already staged. On Postgres a bare
+    swallow aborted that transaction, so ``return None`` (read downstream as
+    "this user is not a technician", costing the labor row its rate) was
+    followed by the tech's whole attested closeout failing to commit — the
+    degraded answer was never the real damage. Reads only (core.database
+    rule 2); inside the ``try`` so the ``except`` still runs (rule 1).
     """
     try:
-        row = (
-            db.query(Technician.id)
-            .filter(
-                Technician.user_id == user_id,
-                Technician.active.isnot(False),
-                Technician.deleted_at.is_(None),
+        with contained_read(db):
+            row = (
+                db.query(Technician.id)
+                .filter(
+                    Technician.user_id == user_id,
+                    Technician.active.isnot(False),
+                    Technician.deleted_at.is_(None),
+                )
+                .order_by(Technician.created_at.desc().nullslast(), Technician.id)
+                .first()
             )
-            .order_by(Technician.created_at.desc().nullslast(), Technician.id)
-            .first()
-        )
     except SQLAlchemyError:
         log.exception("closeout_resolve_technician_failed")
         return None
@@ -2895,15 +2896,26 @@ def closeout_job(
                 # keeps job_number NULL — this code has no fallback; the
                 # jobs list renders the UUID prefix for NULL numbers — and
                 # the closeout is never blocked on numbering.
+                #
+                # GDXA-158: that last promise was false on Postgres. The
+                # counter runs on its OWN session (``cdb``), but the customer
+                # name is read on the CALLER's (``db``) — so a failed read
+                # there aborted this request's transaction, and the
+                # ``db.add(child)``/``commit()`` below died with 25P02. The
+                # closeout WAS blocked on numbering, by the one read nobody
+                # counted as part of numbering. ``contained_read`` wraps only
+                # that read: pure, on ``db``, inside the existing ``try``
+                # (core.database rules 1/2).
                 assigned_number: str | None = None
                 try:
                     with SessionLocal() as cdb:
                         cust_name = None
                         if job.customer_id:
-                            cust = db.execute(
-                                _text("SELECT name FROM customers WHERE id = :cid"),
-                                {"cid": str(job.customer_id)},
-                            ).first()
+                            with contained_read(db):
+                                cust = db.execute(
+                                    _text("SELECT name FROM customers WHERE id = :cid"),
+                                    {"cid": str(job.customer_id)},
+                                ).first()
                             if cust:
                                 cust_name = cust[0]
                         assigned_number = next_job_number(cdb, tenant_id, customer_name=cust_name)
@@ -4382,15 +4394,21 @@ def spawn_return_visit(
         new_id = uuid.uuid4()
         title = (payload.title or f"Return visit: {original.title}")[:200]
         # Allocate a job_number for the child — same atomic counter as create_job.
+        # GDXA-158: ``contained_read`` on the customer-name read for the same
+        # reason as the closeout copy above — the counter is on ``cdb``, but this
+        # read is on the caller's ``db``, so its failure aborted the request's
+        # transaction and killed the ``db.add(child)`` that follows. Pure read,
+        # inside the existing ``try`` (core.database rules 1/2).
         assigned_number: str | None = None
         try:
             with SessionLocal() as cdb:
                 cust_name = None
                 if original.customer_id:
-                    cust = db.execute(
-                        _text("SELECT name FROM customers WHERE id = :cid"),
-                        {"cid": str(original.customer_id)},
-                    ).first()
+                    with contained_read(db):
+                        cust = db.execute(
+                            _text("SELECT name FROM customers WHERE id = :cid"),
+                            {"cid": str(original.customer_id)},
+                        ).first()
                     if cust:
                         cust_name = cust[0]
                 assigned_number = next_job_number(cdb, tenant_id, customer_name=cust_name)

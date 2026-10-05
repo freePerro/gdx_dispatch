@@ -931,6 +931,7 @@ LANDED_FIXES = (
     ("core/webhooks/emit.py", "_emit", "a78db59b / #807"),
     ("modules/workflows/engine.py", "_resolve_rule_customer", "a78db59b / #807"),
     ("core/plugin_consent.py", "any_event_consent", "193395fa / #808"),
+    ("core/holding_areas.py", "holding_area_id_by_name", "GDXA-157 #852 / GDXA-158"),
 )
 
 CONTAINMENT_TOKENS = ("contained_read", "begin_nested")

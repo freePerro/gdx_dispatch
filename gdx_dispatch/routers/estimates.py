@@ -12,7 +12,6 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
-from sqlalchemy import text as _text
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import (
@@ -22,7 +21,8 @@ from gdx_dispatch.core.audit import (
     resolve_audit_actor,
     utcnow,
 )
-from gdx_dispatch.core.database import contained_read, get_db
+from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.holding_areas import holding_area_id_by_name as _holding_area_id_by_name
 from gdx_dispatch.core.lead_estimates import lead_for_estimate, mark_lead_won_for_estimate, resolve_lead_link
 from gdx_dispatch.core.link_sms import SendLinkSmsIn as SendEstimateSmsIn  # one composer model for every SMS route
 from gdx_dispatch.core.modules import has_permission, require_module, require_permission, require_role
@@ -2425,40 +2425,6 @@ def send_estimate(
     if email_skip_reason:
         out["email_skip_reason"] = email_skip_reason
     return out
-
-
-def _holding_area_id_by_name(db: Session, name: str) -> str | None:
-    """Resolve a tenant holding-area row by name. Returns None if missing.
-
-    Used by the accept/convert flow to land an accepted estimate's new Job
-    in the "Order Doors" lane automatically (2026-05-13 directive). Missing
-    area is logged and the job is created without holding_area_id rather
-    than failing the customer-facing accept — the dispatcher can re-route.
-
-    GDXA-157: that promise was false on Postgres, and this is the site where it
-    cost the most. This runs as an ARGUMENT to the ``Job(...)`` constructor in
-    ``_create_job_from_estimate``, so a bare swallow aborted the transaction and
-    then the ``db.add(new_job); db.flush()`` two lines later died with 25P02.
-    Following it out: ``public_proposal_accept`` catches that, and the
-    ``log_audit_event_sync`` + ``commit`` it uses to RECORD the failure runs on
-    the same dead session and is swallowed too — so the only trace was destroyed
-    by the handler writing it. Its ``db.refresh(est)`` then raised
-    PendingRollbackError out of the route. Net effect of a missing
-    ``holding_areas`` row: the customer's accept commits, the customer gets a
-    500, no job reaches the dispatch board, nothing says why — and the re-click
-    path returns early on ``status == "accepted"``, so the job is never created
-    at all. The SAVEPOINT keeps the read's failure the read's.
-    """
-    try:
-        with contained_read(db):
-            row = db.execute(
-                _text("SELECT id FROM holding_areas WHERE name = :n LIMIT 1"),
-                {"n": name},
-            ).first()
-        return str(row[0]) if row else None
-    except Exception:
-        logging.getLogger(__name__).exception("holding_area_lookup_failed name=%s", name)
-        return None
 
 
 def _copy_tier_package_to_job(estimate, new_job, db: Session) -> int | None:
