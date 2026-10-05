@@ -28,7 +28,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from gdx_dispatch.core.audit import TenantBase, _get_db_dep
+from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.settings_row import read_settings_row, settings_column
 from gdx_dispatch.routers.auth import get_current_user
@@ -146,7 +146,6 @@ def _client(router, columns):
 
     app.include_router(router)
     app.dependency_overrides[get_db] = _override_db
-    app.dependency_overrides[_get_db_dep] = _override_db
     app.dependency_overrides[get_current_user] = lambda: {
         "user_id": "user-42", "role": "admin", "tenant_id": TID,
     }
