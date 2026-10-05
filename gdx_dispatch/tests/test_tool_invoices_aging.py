@@ -26,7 +26,7 @@ def _row(due_days_ago: int, amount: float = 100.0) -> SimpleNamespace:
     now = datetime.now(timezone.utc)
     return SimpleNamespace(
         id=str(uuid4()),
-        amount_due=amount,
+        balance_due=amount,
         due_date=(now - timedelta(days=due_days_ago)).date() if due_days_ago > 0 else now.date(),
         status="unpaid",
         deleted_at=None,
@@ -41,6 +41,8 @@ def _mock_db(rows: list[SimpleNamespace]) -> Any:
     result.scalars.return_value = scalars
     result.all.return_value = [(r,) for r in rows]
     db.execute.return_value = result
+    db.info = {}
+    db.query.return_value.limit.return_value.scalar.return_value = None  # shop zone: default
     return db
 
 
