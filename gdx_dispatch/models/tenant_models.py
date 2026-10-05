@@ -3131,6 +3131,14 @@ class CustomerLocation(Base):
     lng: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=True)
     state: Mapped[str] = mapped_column(String(20), nullable=True)
     zip: Mapped[str] = mapped_column(String(20), nullable=True)
+    # When a human last edited this location's address in GDX. Informational —
+    # the authority is local_edit_fields below. See migration 105.
+    local_edit_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # WHICH address fields a human owns (address/city/state/zip subset), so a
+    # QuickBooks pull leaves them alone. Per field, as on Customer.
+    local_edit_fields: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class TaxJurisdiction(Base):
