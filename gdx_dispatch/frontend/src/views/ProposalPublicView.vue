@@ -51,6 +51,23 @@
             <span v-if="est.estimate_number">Estimate #{{ est.estimate_number }}</span>
           </template>
           <template #content>
+            <!-- The full estimate document — the same PDF the office previews
+                 and the email attaches. This page is a summary; a customer
+                 reported it "missing a lot of details" next to that PDF
+                 (2026-10-04). A plain link so a phone opens its own viewer,
+                 where save and share already live.
+                 Not on a tiered (Good/Better/Best) estimate: the PDF renders
+                 estimate.lines only, never tiers, so it would read $0.00 next
+                 to the options — and accepting a tier sets the total without
+                 copying its lines (modules/proposals/service.py accept_tier). -->
+            <a
+              v-if="!est.proposal_mode"
+              :href="pdfUrl"
+              target="_blank"
+              rel="noopener"
+              class="pdf-link"
+              data-testid="proposal-pdf-link"
+            ><i class="pi pi-file-pdf" /> View / download PDF</a>
             <p v-if="est.jobsite_address" class="meta">
               <i class="pi pi-map-marker" /> {{ est.jobsite_address }}
             </p>
@@ -346,6 +363,11 @@ const token = computed(() => String(route.params.token || ""));
 // dialog. Passed through to the API, which skips the view record and answers
 // with `preview: true`; the page then switches every action off.
 const previewSig = computed(() => (typeof route.query.preview === "string" ? route.query.preview : ""));
+// Same token and, for staff, the same preview signature as the page fetch.
+const pdfUrl = computed(() => {
+  const qs = previewSig.value ? `?preview=${encodeURIComponent(previewSig.value)}` : "";
+  return `/api/proposals/${encodeURIComponent(token.value)}/pdf${qs}`;
+});
 const loading = ref(true);
 const notFound = ref(false);
 const data = ref(null);
@@ -525,6 +547,13 @@ onMounted(load);
 
 <style scoped>
 .preview-banner { margin-bottom: 1rem; }
+/* Label in the theme text colour, accent on border + icon only. No single
+   accent reads as text in both themes (measured 2026-10-04): emerald
+   --p-primary-color is 2.5:1 on the light card, the brand-blue alias (MH-2,
+   assets/primevue-cta-contrast.css) 3.4:1 on the dark one. Non-text needs 3:1. */
+.pdf-link { display: inline-flex; align-items: center; gap: 0.4rem; min-height: 2.5rem; padding: 0.4rem 0.9rem; margin-bottom: 0.5rem; border: 1px solid var(--p-button-outlined-primary-border-color, var(--p-primary-color)); border-radius: 6px; color: var(--p-text-color, #1e293b); font-weight: 600; text-decoration: none; }
+.pdf-link .pi { color: var(--p-button-outlined-primary-color, var(--p-primary-color)); }
+.pdf-link:hover { background: var(--p-button-outlined-primary-hover-background, transparent); }
 /* PrimeVue v4 --p-* tokens flip with data-theme (portal convention). */
 .proposal-wrapper { min-height: 100vh; background: color-mix(in srgb, var(--p-content-background, #f3f4f6) 96%, var(--p-text-color, #000)); color: var(--p-text-color, #1e293b); }
 .proposal-header { background: var(--p-content-background, #fff); padding: 1rem 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; justify-content: center; border-bottom: 1px solid var(--p-content-border-color, transparent); }

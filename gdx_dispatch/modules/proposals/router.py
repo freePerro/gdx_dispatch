@@ -529,6 +529,53 @@ def get_public_proposal(
     return _serialize_public_estimate(est, db, request)
 
 
+@router.get("/proposals/{token}/pdf")
+def get_public_proposal_pdf(
+    token: str,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    preview: str | None = None,
+) -> Response:
+    """The estimate PDF — the same bytes the office previews and the email
+    attaches (routers/estimates.py `_estimate_pdf_bytes`). A customer reported
+    the texted page "missing a lot of details" against that preview: the page
+    is a summary, the PDF is the document (terms, customer block, logo,
+    signature line, every photo). Notes print here as they do in the email —
+    Doug, 2026-10-04: the texted PDF matches the emailed one exactly. Rendered
+    on every request, so a Notes edit made after sending shows here; that is
+    intended (Doug, 2026-10-04), unlike the email's attachment, frozen at send.
+
+    Same gates as the page: a customer token needs sent_at and no deleted_at,
+    a staff ``?preview=`` needs a live signature for this estimate, and every
+    miss is the same 404. Read-only, and no view is recorded — loading the
+    page that carries the button already recorded one."""
+    from gdx_dispatch.models.tenant_models import Customer
+    from gdx_dispatch.routers.estimates import _estimate_pdf_bytes  # lazy: import cycle
+
+    est = (
+        _preview_estimate_or_404(token, preview, db)
+        if preview is not None
+        else _get_public_estimate_or_404(token, db)
+    )
+    customer = None
+    if est.customer_id:
+        customer = db.execute(
+            select(Customer).where(Customer.id == est.customer_id, Customer.deleted_at.is_(None))
+        ).scalar_one_or_none()
+    pdf = _estimate_pdf_bytes(db, est, customer, _public_tenant_id(request, est))
+    number = "".join(c for c in str(est.estimate_number or "") if c.isalnum() or c in "-_") or "estimate"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            # inline: a phone opens it in its viewer, where save/share live;
+            # attachment would drop it in Downloads with nothing on screen.
+            "Content-Disposition": f'inline; filename="estimate-{number}.pdf"',
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
 class PublicAcceptIn(BaseModel):
     tier_id: UUID | None = None
 

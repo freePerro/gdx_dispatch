@@ -1628,3 +1628,106 @@ def test_page_category_mode_is_the_pdf_render_decision():
     assert pdf_generator.line_category_mode(cfg(show_category=True, category_display="grouped")) == "grouped"
     assert pdf_generator.line_category_mode(cfg(show_category=True, category_display="bogus")) == "column"
     assert pdf_generator.line_category_mode(cfg(show_category=False, category_display="grouped")) == "off"
+
+
+# ── the estimate PDF from the customer page (GET /api/proposals/{token}/pdf) ─
+# A customer said the texted page was "missing a lot of details" next to the
+# PDF the office previews. The page now links the PDF itself.
+
+
+def _pdf_text(raw: bytes) -> str:
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    return "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(raw)).pages)
+
+
+def test_the_customer_page_serves_the_real_estimate_pdf(client: TestClient):
+    """A real render, not a mock: the bytes are a PDF carrying what the page
+    leaves out — the customer block and the notes, which print here exactly
+    as they do in the emailed PDF (Doug, 2026-10-04)."""
+    est = _create_estimate(client, notes="Bring the long ladder")
+    _add_lines(client, est["id"], 1250.0)
+    token = _publish(client, est["id"])
+
+    r = client.get(f"/api/proposals/{token}/pdf", headers=_BROWSER_UA)
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "application/pdf"
+    assert r.headers["content-disposition"] == f'inline; filename="estimate-{est["estimate_number"]}.pdf"'
+    assert r.headers["cache-control"] == "private, no-store"
+    assert r.content.startswith(b"%PDF")
+    text = _pdf_text(r.content)
+    assert "Acme Customer" in text
+    assert "Bring the long ladder" in text
+    assert est["estimate_number"] in text
+
+
+def test_the_pdf_has_the_same_gates_as_the_page(client: TestClient):
+    """Unsent, soft-deleted and unknown tokens are all the same 404 as the
+    page, so the PDF route is no new way to probe or to read a draft."""
+    est = _create_estimate(client)
+    row = _row(client, est["id"])
+    draft = client.get(f"/api/proposals/{row.public_token}/pdf")
+    unknown = client.get("/api/proposals/not-a-real-token/pdf")
+    assert draft.status_code == unknown.status_code == 404
+    assert draft.json() == unknown.json()
+
+    token = _publish(client, est["id"])
+    assert client.get(f"/api/proposals/{token}/pdf").status_code == 200
+
+    db = _db(client)
+    try:
+        db.get(Estimate, UUID(est["id"])).deleted_at = datetime.now(UTC)
+        db.commit()
+    finally:
+        db.close()
+    assert client.get(f"/api/proposals/{token}/pdf").status_code == 404
+
+
+def test_a_staff_preview_gets_the_pdf_of_a_draft_and_changes_nothing(client: TestClient):
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    est = _create_estimate(client)
+    row = _row(client, est["id"])
+    r = client.get(
+        f"/api/proposals/{row.public_token}/pdf",
+        params={"preview": mint("estimate", row.id)},
+        headers=_BROWSER_UA,
+    )
+    assert r.status_code == 200, r.text
+    assert r.content.startswith(b"%PDF")
+    # A signature for another estimate, or garbage, is refused outright.
+    other = _row(client, _create_estimate(client)["id"])
+    assert client.get(
+        f"/api/proposals/{row.public_token}/pdf", params={"preview": mint("estimate", other.id)}
+    ).status_code == 404
+    assert client.get(f"/api/proposals/{row.public_token}/pdf", params={"preview": "x.y"}).status_code == 404
+    after = _row(client, est["id"])
+    assert (after.status, after.sent_at) == ("draft", None)
+    assert _estimate_views(client) == 0
+
+
+def test_downloading_the_pdf_writes_nothing(client: TestClient):
+    """The page load that carries the button already records the view; the
+    PDF fetch adds no audit row and touches no estimate column."""
+    from gdx_dispatch.core.audit import AuditLog
+
+    est = _create_estimate(client)
+    token = _publish(client, est["id"])
+    db = _db(client)
+    try:
+        before_rows = db.query(AuditLog).count()
+    finally:
+        db.close()
+    before = _row(client, est["id"])
+
+    assert client.get(f"/api/proposals/{token}/pdf", headers=_BROWSER_UA).status_code == 200
+
+    db = _db(client)
+    try:
+        assert db.query(AuditLog).count() == before_rows
+    finally:
+        db.close()
+    after = _row(client, est["id"])
+    assert (after.status, after.sent_at, after.updated_at) == (before.status, before.sent_at, before.updated_at)
