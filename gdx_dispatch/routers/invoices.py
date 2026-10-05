@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, resolve_audit_actor
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.invoice_delivery import require_deliverable
 from gdx_dispatch.core.link_sms import SendLinkSmsIn as SendInvoiceSmsIn  # one composer model for every SMS route
 from gdx_dispatch.core.modules import require_module, require_permission
@@ -137,7 +137,13 @@ def _labor_price_was_overridden(line: object, item_id: object, db: Session | Non
     try:
         from gdx_dispatch.models.labor_pricing import LaborPriceItem
 
-        row = db.get(LaborPriceItem, item_id)
+        # SAVEPOINT-wrapped (GDXA-160, child of GDXA-86). This runs while the
+        # caller is COPYING estimate lines onto a new invoice, with those lines
+        # pending in the session; on Postgres a failed lookup here aborted the
+        # transaction and the invoice was lost at a later `commit()`.
+        # `contained_read` re-raises, so the `except` below still returns False.
+        with contained_read(db):
+            row = db.get(LaborPriceItem, item_id)
     except Exception:  # pragma: no cover - defensive
         log.exception("labor_provenance_matrix_lookup_failed")
         return False
@@ -1127,6 +1133,12 @@ def list_invoices(
     # Enrich customer names via Job → Customer lookup
     job_ids = list({str(i["job_id"]) for i in items if i.get("job_id")})
     if job_ids:
+        # Counted by GDXA-160 and deliberately left bare. Same swallowed-read
+        # shape as the wrapped sites, but this is a GET with nothing pending
+        # behind it and NO DB work after the `except` — the list is already
+        # materialised above — so an abort here costs nothing and surfaces
+        # nowhere. Counted rather than skipped, because the sweep rule counts
+        # instances, not consequences.
         try:
             job_rows = db.execute(
                 select(Job.id, Job.customer_id).where(Job.id.in_([_uuid.UUID(j) for j in job_ids]))
@@ -1304,13 +1316,18 @@ def create_invoice(
             customer_id = payload.customer_id or getattr(job, "customer_id", None)
             cust_row = None
             if customer_id:
-                cust_row = db.execute(
-                    _text(
-                        "SELECT pricing_class, payment_terms_days FROM customers "
-                        "WHERE id = :cid"
-                    ),
-                    {"cid": str(customer_id)},
-                ).first()
+                # SAVEPOINT-wrapped (GDXA-160). The only read in this block that
+                # touches the REQUEST's session — `resolve_effective_terms` opens
+                # its own — so it is the only one that can leave the transaction
+                # aborted and cost the invoice this handler goes on to commit.
+                with contained_read(db):
+                    cust_row = db.execute(
+                        _text(
+                            "SELECT pricing_class, payment_terms_days FROM customers "
+                            "WHERE id = :cid"
+                        ),
+                        {"cid": str(customer_id)},
+                    ).first()
             pricing_class = cust_row[0] if cust_row else None
             cust_terms = cust_row[1] if cust_row else None
             # Tenant comes from the auth context, not the job — counter-sale
@@ -1358,7 +1375,25 @@ def create_invoice(
     else:
         try:
             from gdx_dispatch.modules.tax.service import resolve_rate as _resolve_tax
-            candidate = _resolve_tax(db, customer_id_value)
+            # SAVEPOINT-wrapped (GDXA-160). A request-scoped session is not
+            # normally "caller-owned", but this handler COMMITS at the end, so
+            # the swallow below was losing the office's whole new invoice — the
+            # judgement call the parent issue's check 2 asks you to name.
+            # Measured on PG: without this, `commit()` raised 25P02 and zero
+            # rows persisted. `resolve_rate` and `is_customer_exempt` both raise
+            # rather than swallowing, so rule 5 is satisfied.
+            #
+            # Narrow the claim, because the first version of this comment did
+            # not and an audit measured it down: this saves the invoice on the
+            # NO-ESTIMATE path only. On the estimate-copy path the deferred
+            # `_load_tax_labor_flag` below reads the SAME `tax_config` table and
+            # runs AFTER this, so a tax_config failure re-poisons the
+            # transaction and the invoice is lost anyway (measured: 25P02,
+            # 0 rows, with this wrap in place). A wrap helps per call PATH, not
+            # per site; that path is only whole once the deferral is fixed in
+            # `modules/proposals/totals.py`.
+            with contained_read(db):
+                candidate = _resolve_tax(db, customer_id_value)
             if candidate is not None and candidate > 0:
                 resolved_rate = candidate
         except Exception:
@@ -1540,6 +1575,18 @@ def create_invoice(
         # Reuse the estimate's own helpers, not a reimplementation — the whole
         # point is that the two sides agree, and a second copy of the
         # category convention is how they drift apart again.
+        # NOT `contained_read`-wrapped — GDXA-160's fourth rule-5 deferral, same
+        # shape as `closeout_billing.build_closeout_lines` and the two in
+        # `modules/deposits/service.py`. `_load_tax_labor_flag` swallows its own
+        # DB failure and returns cleanly, so a savepoint here would be RELEASEd
+        # on an aborted transaction and raise 25P02 out of the `with`. The
+        # containment belongs in `modules/proposals/totals.py` (estimates-
+        # pricing). This one costs an invoice when it fires, because the handler
+        # commits below — the worst of the four, and the reason it is named
+        # rather than left silent. Rule 5 names a second cure too: a variant of
+        # `contained_read` that always ROLLBACK-TO-SAVEPOINTs instead of
+        # RELEASEing, measured to work on PG 15.17 and 16.14. Two live cures,
+        # not "unfixable" — and this site is why one of them should be built.
         try:
             from gdx_dispatch.modules.proposals.totals import (
                 _is_labor_line,
@@ -2068,6 +2115,19 @@ def get_invoice(
     # — GET /api/customers/{id} 404s on a deleted record.
     payload["customer_deleted"] = False
     if not cn:
+        # SAVEPOINT-wrapped (GDXA-160). No pending work behind this one — it is
+        # a GET — so nothing is lost, but the handler keeps reading afterwards
+        # (the contact enrichment below, at the `select(Customer)` a few dozen
+        # lines on), and on Postgres THAT is what raised: a 500 on the invoice
+        # detail page, naming `customers`, for a failure this `except` says it
+        # already handled.
+        #
+        # Narrower than that sounds: the wraps contain a TRANSIENT failure only
+        # (a timeout, a lock, a cancelled statement). The `select(Customer)`
+        # below re-reads the same `customers` columns unwrapped, so a
+        # persistent fault there — a column missing mid-migration — fails again
+        # on its own and still 500s the page, now naming the right line. A wrap
+        # helps per call path, not per site; see `create_invoice`'s tax read.
         try:
             # The invoice's OWN customer first. `invoices` has no customer_name
             # column — _serialize_invoice's getattr always yields "" — so before
@@ -2076,11 +2136,12 @@ def get_invoice(
             # a customer it could name. Measured 2026-09-24 on the local book:
             # 43 of 415 invoices are in exactly that state.
             if invoice.customer_id:
-                own = db.execute(
-                    select(Customer.name, Customer.deleted_at).where(
-                        Customer.id == invoice.customer_id
-                    )
-                ).first()
+                with contained_read(db):
+                    own = db.execute(
+                        select(Customer.name, Customer.deleted_at).where(
+                            Customer.id == invoice.customer_id
+                        )
+                    ).first()
                 if own and own[0]:
                     payload["customer_name"] = own[0]
                     payload["customer_deleted"] = own[1] is not None
@@ -2091,15 +2152,17 @@ def get_invoice(
             # real name, sourced via the Job. This branch sets the id too, so
             # the pair it writes always describes one customer.
             if not cn and invoice.job_id:
-                row = db.execute(
-                    select(Job.customer_id).where(Job.id == invoice.job_id)
-                ).first()
-                if row and row[0]:
-                    cust = db.execute(
-                        select(Customer.id, Customer.name, Customer.deleted_at).where(
-                            Customer.id == row[0]
-                        )
+                with contained_read(db):
+                    row = db.execute(
+                        select(Job.customer_id).where(Job.id == invoice.job_id)
                     ).first()
+                if row and row[0]:
+                    with contained_read(db):
+                        cust = db.execute(
+                            select(Customer.id, Customer.name, Customer.deleted_at).where(
+                                Customer.id == row[0]
+                            )
+                        ).first()
                     if cust and cust[1]:
                         payload["customer_id"] = str(cust[0])
                         payload["customer_name"] = cust[1]
@@ -3086,6 +3149,30 @@ def send_invoice(
     pdf_attached = False
     p = payload or SendInvoiceIn()
     try:
+        # NOT savepoint-wrapped — GDXA-160 counted this site and then REMOVED
+        # its own `db.begin_nested()` here under audit, because the wrap did not
+        # work and added a failure mode of its own.
+        #
+        # The defect is real and measured on PG: `db.commit()` above EXPIRED
+        # `invoice`, and when the email is skipped nothing refreshes it, so
+        # `_serialize_invoice(invoice)` at the end of this route issues an
+        # implicit SELECT on the aborted transaction — the office clicks Send,
+        # the status flip is already committed, and the response is a 500 naming
+        # a table nobody touched.
+        #
+        # Why the savepoint is the wrong tool anyway: this block contains its OWN
+        # swallowing `except` (the PDF-attach block below, around
+        # `_branding_payload` / `_template_config` / `_invoice_payload`, all of
+        # which read `db`). A failure there is swallowed, the block exits CLEAN,
+        # and RELEASE on an aborted transaction raises 25P02 while the
+        # transaction stays dead — `contained_read` rule 5, which applies to
+        # `db.begin_nested()` exactly as much. Measured both ways.
+        # `_prepare_invoice_email` also holds a `db.commit()` (unreachable today
+        # only because `public_token` is minted above), and committing inside an
+        # open SAVEPOINT closes the SessionTransaction.
+        #
+        # Fixing it means containing the INNER swallow first, or refreshing
+        # `invoice` before serializing. Counted, not bodged.
         from gdx_dispatch.core.transactional_email import recently_sent, send_transactional_email
         tid = str(invoice.company_id) if invoice.company_id else None
         _dup_kind = "receipt" if invoice.status == "paid" else "document"
@@ -3853,10 +3940,31 @@ def record_payment(
     # Sprint 1.0.6 — refresh the customer's rolling-volume cache so the
     # next estimate sees the new payment immediately. Best-effort: never
     # block payment recording on a downstream refresh failure.
+    # SAVEPOINT-wrapped (GDXA-160), and with `db.begin_nested()` rather than
+    # `contained_read` because this is a WRITE — `refresh_cached_volume`
+    # mutates the Customer row and flushes, so the ORM's unit of work has to
+    # participate in the savepoint to know what to un-stage (contained_read's
+    # rule 2). "Never block payment recording on a downstream refresh failure"
+    # was true on SQLite only: on Postgres the failed refresh aborted the
+    # transaction and `db.commit()` on the next line lost the payment, the GL
+    # posting `post_payment_received` had just made, and the audit row — money
+    # captured on a tech's phone, gone, reported as success. Measured on PG 15
+    # under audit: commit raised 25P02, zero rows persisted.
+    #
+    # One thing this does NOT contain, so do not read it as total: rule 3 —
+    # `begin_nested()` flushes at `_take_snapshot`, BEFORE the savepoint exists.
+    # With GL posting off, `post_payment_received` returns without flushing and
+    # `_recalculate_invoice` never does, so `invoice` is dirty here and that
+    # flush is the caller's own work going out uncontained. If IT fails, the
+    # handler below swallows it as `rolling_volume_refresh_failed_post_payment`
+    # and the commit reports `PendingRollbackError` — measured; not data loss,
+    # but a triage trail pointing at the cache refresh for someone else's
+    # defect. Flushing deliberately before this block is the fix if that bites.
     if invoice.customer_id:
         try:
             from gdx_dispatch.services.customer_rolling_volume import refresh_cached_volume
-            refresh_cached_volume(invoice.customer_id, db)
+            with db.begin_nested():
+                refresh_cached_volume(invoice.customer_id, db)
         except Exception:
             log.exception("rolling_volume_refresh_failed_post_payment")
 
@@ -4631,7 +4739,14 @@ def _plan_out(plan, installments, *, invoice=None, db: Session) -> dict[str, obj
         from gdx_dispatch.core.invoice_paid import paid_to_date
 
         try:
-            paid = float(paid_to_date(db, invoice.id))
+            # SAVEPOINT-wrapped (GDXA-160, child of GDXA-86). `paid_to_date`
+            # raises rather than swallowing, so `contained_read` is the right
+            # tool (rule 5). Without it a failed payments SUM left the
+            # transaction aborted and `shop_today_from_settings(db)` on the
+            # very next line — a settings read — died instead, naming a table
+            # that has nothing to do with the failure.
+            with contained_read(db):
+                paid = float(paid_to_date(db, invoice.id))
         except Exception:
             paid = 0.0
     # Shop day, the calendar the installment due dates are set in (#444).

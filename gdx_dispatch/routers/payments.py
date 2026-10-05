@@ -424,6 +424,35 @@ def charge_method(
         try:
             from gdx_dispatch.core.payments import _mark_invoice_paid
 
+            # NOT savepoint-wrapped — GDXA-160 counted this site, WROTE a
+            # `db.begin_nested()` here, and removed it again under audit when
+            # the wrap turned out to break the happy path. Recorded in full,
+            # because the wrong fix here is more tempting than the defect.
+            #
+            # The defect is the sharpest in the territory and is real. On
+            # Postgres a recording failure aborts the transaction, so the audit
+            # block below dies at its own `_audit_db.commit()` and is swallowed
+            # by its own handler — and this route still returns 200. The card is
+            # charged at Stripe with NO Payment row and NO audit row: money
+            # moved at a third party with nothing on the record, which is
+            # invariant #1. Measured on PG 15: zero rows after the swallow.
+            #
+            # Why a SAVEPOINT cannot fix it: `_mark_invoice_paid` COMMITS
+            # (`core/payments.py`) and then keeps using the session —
+            # `enqueue_stale_intent_sweep` reads `invoice.id`, which that commit
+            # expired, and `notify_payment_received` follows. A commit inside an
+            # open SAVEPOINT closes the SessionTransaction, so the next touch
+            # raises InvalidRequestError. Measured on PG 15.17 / SQLAlchemy
+            # 2.0.54: with the wrap, EVERY SUCCESSFUL charge logged
+            # `portal_charge_payment_recording_failed` (a false reconciliation
+            # cue), skipped the stale-intent sweep — whose own comment says
+            # another open intent could collect again — and skipped the office
+            # notification. Its IntegrityError branch also calls `db.rollback()`
+            # inside the savepoint, on the documented /confirm-vs-webhook race.
+            #
+            # The honest fix is inside `_mark_invoice_paid` (it should not own
+            # the commit), or a rule-6 tool for a committing callee. Neither is
+            # a comment change, and neither is this issue. Counted, not bodged.
             _mark_invoice_paid(
                 invoice, db,
                 external_ref=intent.id,

@@ -35,6 +35,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.core.quantities import recorded_quantity, zero_quantity_verdict
 from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Job, JobCloseout, JobPartNeeded
@@ -175,6 +176,29 @@ def build_closeout_lines(
     # must see them even with autoflush off.
     db.flush()
 
+    # NOT `contained_read`-wrapped, on purpose — GDXA-160 counted this site and
+    # deferred it rather than reaching across an ownership line with the wrong
+    # tool. `_load_tax_labor_flag` swallows its OWN DB failure
+    # (`except Exception: return False`), so on an aborted Postgres transaction
+    # it returns cleanly, the `with` block would exit clean, and the CM's
+    # RELEASE SAVEPOINT raises 25P02 out of the `with` itself while the caller's
+    # commit stays just as dead — `contained_read` rule 5, strictly worse than
+    # leaving it alone. The containment has to go inside the helper, and
+    # `modules/proposals/totals.py` is estimates-pricing's file, not this one.
+    # Rule 5 names a second cure too — a variant of `contained_read` that always
+    # ROLLBACK-TO-SAVEPOINTs instead of RELEASEing, measured to work on PG 15.17
+    # and 16.14 — so this is a deferral with two live cures, not "unfixable".
+    # Until then the failure mode is real: the flag reads False, labor is billed
+    # untaxed (which is the correct answer for MN garage-door work anyway), and
+    # the caller's transaction is dead.
+    #
+    # WHICH caller matters, and this builder has two. `closeout_job` calls it
+    # inside `db.begin_nested()`, so the damage is bounded to the autodraft.
+    # `routers/mobile_invoicing.py::mobile_create_invoice` does NOT: the tech's
+    # Invoice is `db.add`ed and flushed long before this line and is not
+    # committed until the end of that handler, with no savepoint anywhere on
+    # the frame. That is the path where this deferral costs a real invoice, and
+    # it is the reason the deferral is worth fixing rather than living with.
     try:
         from gdx_dispatch.modules.proposals.totals import _load_tax_labor_flag  # noqa: PLC0415
         labor_taxable = bool(_load_tax_labor_flag(db))
@@ -569,7 +593,28 @@ def autodraft_invoice_for_closeout(
     try:
         from gdx_dispatch.modules.tax.service import resolve_rate  # noqa: PLC0415
 
-        candidate = resolve_rate(db, inv.customer_id)
+        # SAVEPOINT-wrapped (GDXA-160). Be precise about what this buys, because
+        # the first version of this comment overclaimed and an audit measured it
+        # down: it does NOT save the tech's closeout. `closeout_job` already
+        # flushes and calls this inside `db.begin_nested()`, and SQLAlchemy
+        # recovers from the failed RELEASE by rolling back to that savepoint, so
+        # the closeout committed either way (measured on PG 15.17: 1 survivor
+        # pre-fix and post-fix). What it buys is the AUTODRAFT: without it the
+        # whole draft is rolled away and logged `closeout_autodraft_failed`, so
+        # Ready-for-Billing shows a blank form; with it the draft survives with
+        # `tax_rate=None`, which is the documented degraded answer.
+        #
+        # It can also be inert. `build_closeout_lines` ran first, and its
+        # `_load_tax_labor_flag` read is a deferred, unwrapped site — if THAT is
+        # what failed, the transaction is already aborted and SAVEPOINT is
+        # illegal on it, so this block raises at `__enter__` into the same
+        # `except`. Contains the failure it can reach, not every failure.
+        #
+        # `resolve_rate` and its `is_customer_exempt` both RAISE on a DB error
+        # rather than swallowing, which is what makes `contained_read` the right
+        # tool here rather than the wrong one — its rule 5.
+        with contained_read(db):
+            candidate = resolve_rate(db, inv.customer_id)
         if candidate is not None and candidate > 0:
             rate = Decimal(str(candidate))
     except Exception:  # noqa: BLE001 — tax resolution must never block a closeout

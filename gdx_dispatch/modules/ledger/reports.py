@@ -30,6 +30,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.modules.ledger.cash_basis import (
     invoice_components,
     prorate_event_cents,
@@ -392,65 +393,73 @@ def _source_descriptor(session: Session, entry: GlJournalEntry) -> dict:
 
     out: dict = {"source_type": entry.source_type, "source_id": entry.source_id}
     try:
-        source_uuid = UUID(entry.source_id) if entry.source_id else None
-        if entry.source_type == "invoice" and source_uuid:
-            invoice = session.get(Invoice, source_uuid)
-            if invoice is not None:
-                out.update(
-                    invoice_id=str(invoice.id), invoice_number=invoice.invoice_number
-                )
-        elif entry.source_type == "payment" and source_uuid:
-            payment = session.get(Payment, source_uuid)
-            if payment is not None and payment.invoice_id:
-                out["invoice_id"] = str(payment.invoice_id)
-                invoice = session.get(Invoice, payment.invoice_id)
+        # SAVEPOINT-wrapped (GDXA-160, child of GDXA-86). "A broken source row
+        # must never 500 the journal" was only true on SQLite. On Postgres the
+        # failed `session.get` aborts the transaction, so the drill-down JSON
+        # comes back with `source_lookup_failed` and the request then dies on
+        # its next statement — and `journal_page` calls this in a LOOP, so one
+        # bad row took the whole page down on a later, unrelated query.
+        # `contained_read` re-raises; the `except` below is unchanged.
+        with contained_read(session):
+            source_uuid = UUID(entry.source_id) if entry.source_id else None
+            if entry.source_type == "invoice" and source_uuid:
+                invoice = session.get(Invoice, source_uuid)
                 if invoice is not None:
-                    out["invoice_number"] = invoice.invoice_number
-        elif entry.source_type == "bank_account" and source_uuid:
-            # Opening-balance entries (sweep M7): say WHICH account, not the
-            # raw string "bank_account".
-            try:
-                from gdx_dispatch.modules.bank_feeds.statement_models import BankAccount
-
-                bank_account = session.get(BankAccount, source_uuid)
-                if bank_account is not None:
-                    out["bank_account_label"] = f"{bank_account.name} …{bank_account.last4}"
-            except ImportError:
-                pass
-        elif entry.source_type == "adjustment" and source_uuid:
-            from gdx_dispatch.models.tenant_models import InvoiceAdjustment
-
-            adjustment = session.get(InvoiceAdjustment, source_uuid)
-            if adjustment is not None:
-                out["adjustment_kind"] = adjustment.kind
-                out["invoice_id"] = str(adjustment.invoice_id)
-                invoice = session.get(Invoice, adjustment.invoice_id)
-                if invoice is not None:
-                    out["invoice_number"] = invoice.invoice_number
-        elif entry.source_type == "expense" and source_uuid:
-            expense = session.get(Expense, source_uuid)
-            if expense is not None:
-                out.update(
-                    expense_id=str(expense.id),
-                    vendor=expense.vendor,
-                    category=expense.category,
-                )
-                from gdx_dispatch.modules.ledger.models import ExpenseReceipt
-
-                receipts = session.scalars(
-                    select(ExpenseReceipt).where(
-                        ExpenseReceipt.expense_id == expense.id,
-                        ExpenseReceipt.deleted_at.is_(None),
+                    out.update(
+                        invoice_id=str(invoice.id), invoice_number=invoice.invoice_number
                     )
-                ).all()
-                out["receipts"] = [
-                    {
-                        "id": str(r.id),
-                        "filename": r.filename,
-                        "download_url": f"/api/expenses/{expense.id}/receipts/{r.id}/download",
-                    }
-                    for r in receipts
-                ]
+            elif entry.source_type == "payment" and source_uuid:
+                payment = session.get(Payment, source_uuid)
+                if payment is not None and payment.invoice_id:
+                    out["invoice_id"] = str(payment.invoice_id)
+                    invoice = session.get(Invoice, payment.invoice_id)
+                    if invoice is not None:
+                        out["invoice_number"] = invoice.invoice_number
+            elif entry.source_type == "bank_account" and source_uuid:
+                # Opening-balance entries (sweep M7): say WHICH account, not the
+                # raw string "bank_account".
+                try:
+                    from gdx_dispatch.modules.bank_feeds.statement_models import BankAccount
+
+                    bank_account = session.get(BankAccount, source_uuid)
+                    if bank_account is not None:
+                        out["bank_account_label"] = f"{bank_account.name} …{bank_account.last4}"
+                except ImportError:
+                    pass
+            elif entry.source_type == "adjustment" and source_uuid:
+                from gdx_dispatch.models.tenant_models import InvoiceAdjustment
+
+                adjustment = session.get(InvoiceAdjustment, source_uuid)
+                if adjustment is not None:
+                    out["adjustment_kind"] = adjustment.kind
+                    out["invoice_id"] = str(adjustment.invoice_id)
+                    invoice = session.get(Invoice, adjustment.invoice_id)
+                    if invoice is not None:
+                        out["invoice_number"] = invoice.invoice_number
+            elif entry.source_type == "expense" and source_uuid:
+                expense = session.get(Expense, source_uuid)
+                if expense is not None:
+                    out.update(
+                        expense_id=str(expense.id),
+                        vendor=expense.vendor,
+                        category=expense.category,
+                    )
+                    from gdx_dispatch.modules.ledger.models import ExpenseReceipt
+
+                    receipts = session.scalars(
+                        select(ExpenseReceipt).where(
+                            ExpenseReceipt.expense_id == expense.id,
+                            ExpenseReceipt.deleted_at.is_(None),
+                        )
+                    ).all()
+                    out["receipts"] = [
+                        {
+                            "id": str(r.id),
+                            "filename": r.filename,
+                            "download_url": f"/api/expenses/{expense.id}/receipts/{r.id}/download",
+                        }
+                        for r in receipts
+                    ]
     except Exception:  # a broken source row must never 500 the journal
         out["source_lookup_failed"] = True
     return out

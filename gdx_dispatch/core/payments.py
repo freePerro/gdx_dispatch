@@ -46,7 +46,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core import customer_page_preview
 from gdx_dispatch.core.customer_views import record_customer_view
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.models.tenant_models import AppSettings, Invoice, Payment
 
 logger = logging.getLogger(__name__)
@@ -293,6 +293,19 @@ def card_surcharge_rate(db: Session, tenant_id: str) -> Decimal:
     primary key, which matches on both engines — raw SQL on the dashed id
     never matches SQLite's dashless storage (audit round 2). Fails OPEN to
     zero: a settings read that breaks must never invent a fee.
+
+    SAVEPOINT-wrapped (GDXA-160, child of GDXA-86). "Fails open to zero" was
+    only true on SQLite. On Postgres the failed read aborts the transaction, so
+    the caller gets its zero and then dies on its next statement — and the
+    caller here is the customer's pay page: it would 500 on an unrelated line
+    instead of quietly showing no fee. `contained_read` re-raises, so the
+    `except` below is unchanged and still returns zero.
+
+    This wrap alone did not deliver that, and an audit measured it: every
+    production caller (the pay page render, `create_intent`,
+    `card_surcharge_notice`) also calls `refuses_debit_cards` below on the SAME
+    session and the SAME row, so its unwrapped twin read re-poisoned the
+    transaction in either order. Both are wrapped; the test runs them as a pair.
     """
     try:
         tid = UUID(str(tenant_id or ""))
@@ -301,7 +314,8 @@ def card_surcharge_rate(db: Session, tenant_id: str) -> Decimal:
     try:
         from gdx_dispatch.core.tenant_settings import TenantSettings  # noqa: PLC0415
 
-        row = db.get(TenantSettings, tid)
+        with contained_read(db):
+            row = db.get(TenantSettings, tid)
         raw = getattr(row, "card_surcharge_percent", None)
         rate = Decimal(str(raw)) if raw is not None else Decimal(0)
     except Exception:
@@ -318,6 +332,10 @@ def refuses_debit_cards(db: Session, tenant_id: str) -> bool:
     False: a settings read that breaks takes the card, which is what the page
     did before this setting existed. The Stripe Radar block rule is the
     backstop for that case.
+
+    SAVEPOINT-wrapped (GDXA-160) for the same reason as `card_surcharge_rate`:
+    on Postgres "fails open" otherwise means the customer's pay page 500s on
+    the next statement.
     """
     try:
         tid = UUID(str(tenant_id or ""))
@@ -326,7 +344,8 @@ def refuses_debit_cards(db: Session, tenant_id: str) -> bool:
     try:
         from gdx_dispatch.core.tenant_settings import TenantSettings  # noqa: PLC0415
 
-        row = db.get(TenantSettings, tid)
+        with contained_read(db):
+            row = db.get(TenantSettings, tid)
         return bool(getattr(row, "refuse_debit_cards", False))
     except Exception:
         logger.exception("refuse_debit_cards_read_failed tenant=%s — taking debit cards", tenant_id)
