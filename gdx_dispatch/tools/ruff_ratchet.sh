@@ -248,10 +248,14 @@ fi
 #   I001 — import-block sorting, zeroed by #748
 #   F401 — unused imports, zeroed by #755 (full read: zero re-exports, zero
 #          load-bearing side-effect imports; deletions are always safe to ask)
+#   F601/F602 — a dict literal repeating a key (literal / variable). The
+#          later value silently wins, so an edit to the earlier entry does
+#          nothing. Zeroed by GDXA-214: core/feature_defaults.py defined
+#          tech_mobile.gps_retention_days twice and the blended count hid it.
 #
 # Add a family here the day its sweep lands at zero; remove one only with a
 # ruling. Output captured so a ruff failure (exit >= 2) fails closed.
-ZEROED_FAMILIES="I001,F401"
+ZEROED_FAMILIES="I001,F401,F601,F602"
 ZF_RC=0
 ZF_OUT=$(ruff check "$TARGET" --select "$ZEROED_FAMILIES" --quiet 2>&1) || ZF_RC=$?
 if [ "$ZF_RC" -ne 0 ]; then

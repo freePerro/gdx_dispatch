@@ -212,14 +212,6 @@ TECH_MOBILE_SETTINGS: dict[str, dict[str, Any]] = {
         "label": "GPS breadcrumb interval (seconds)",
         "help": "How often the tech's device reports its position while clocked in.",
     },
-    "tech_mobile.gps_retention_days": {
-        "type": "int",
-        "default": 45,
-        "bounds": (7, 365),
-        "phase": "5.3",
-        "label": "GPS retention (days)",
-        "help": "Auto-delete breadcrumbs older than this many days.",
-    },
     "tech_mobile.auto_arrival_radius_m": {
         "type": "int",
         "default": 100,
