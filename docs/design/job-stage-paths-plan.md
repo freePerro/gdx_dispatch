@@ -1,7 +1,7 @@
 # Job stage changes go through the paths that own them
 
 **Date:** 2026-10-04
-**Status:** PARTIALLY BUILT — §4.1, §4.1b, §4.2 and §4.3 are built on branch `fix/job-stage-paths` (PR #842, open; flips to MERGED #842 on merge). Not built: §4.4 backfill, dropped by D2. Revised after `/audit` 2026-10-04 (§8); Doug ruled on every product question on 2026-10-04 (§2).
+**Status:** MERGED #842 — §4.1, §4.1b, §4.2 and §4.3. Two §7 gaps closed after it on branch `fix/job-stage-guard-gaps` (2026-10-05): a label naming no stage, and the public API's PATCH. Not built: §4.4 backfill, dropped by D2. Revised after `/audit` 2026-10-04 (§8); Doug ruled on every product question on 2026-10-04 (§2).
 
 **Trigger:** the 2026-10-03 lifecycle audit (the local found-not-filed ledger, "job lifecycle
 audit") found that every desktop stage change goes through `PATCH /api/jobs/{id}`,
@@ -164,6 +164,7 @@ Kept for the record; not built.
 - No real cancel flow; cancelled jobs on the tech's Today list.
 - `status` spelled "Complete" by PATCH vs "Completed" by `/complete` and closeout; reports that count only one.
 - The public API's own stage writes (`api/public_router.py`) bypass `update_job` and this guard.
+  **Closed 2026-10-05** (`fix/job-stage-guard-gaps`): its PATCH shares `_stage_change_refusal`. Create is not covered: on Postgres its INSERT omits NOT NULL `dispatch_status`/`company_id` and cannot insert at all — a separate defect.
 - The 162 completed jobs with blank status and no `completed_at` (no audit trail to date them), and the 31 left blank by D2.
 - `/start` assigns the clicker and has no stage check (/audit finding 5).
 - The Dispatch board drawer offers Close out but not Close without work.
@@ -173,6 +174,7 @@ Kept for the record; not built.
 - `PATCH /api/jobs/{id}` still rewrites a finished job's `status` when the
   label maps to no stage (e.g. "Scheduled Later"); no frontend sends one.
   Predates this change.
+  **Closed 2026-10-05** (`fix/job-stage-guard-gaps`): such a label is now a 422.
 - The MCP `jobs.update_status` tool previews and never writes.
 
 ## 8. Audit findings (2026-10-04, on the first draft)
