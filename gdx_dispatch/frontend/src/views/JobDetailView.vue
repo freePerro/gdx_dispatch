@@ -24,6 +24,13 @@
               v-tooltip.bottom="`Return visit within ${job.callback_window_days || 90} days — different P&L treatment`"
             />
             <Tag
+              v-else-if="job.callback_undetermined"
+              value="CALLBACK?"
+              severity="secondary"
+              data-testid="job-detail-callback-undetermined"
+              v-tooltip.bottom="'The parent job is completed but has no completion date, so the callback window cannot be checked'"
+            />
+            <Tag
               v-if="job.is_return_visit"
               value="RETURN VISIT"
               severity="warn"

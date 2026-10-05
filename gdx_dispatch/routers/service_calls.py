@@ -108,7 +108,7 @@ def active_service_calls(
 ) -> list[dict[str, Any]]:
     """List active service calls (not complete/invoiced)."""
     try:
-        from sqlalchemy import case, select
+        from sqlalchemy import case, or_, select
 
         from gdx_dispatch.core.job_taxonomy import SERVICE_LANE_TYPES
         from gdx_dispatch.models.tenant_models import Customer, Job
@@ -122,7 +122,14 @@ def active_service_calls(
                 # work). The old single-literal filter made the 12 legacy
                 # "Service" jobs invisible to this queue for months.
                 Job.job_type.in_(SERVICE_LANE_TYPES),
-                Job.status.notin_(["Complete", "Completed", "Invoiced", "done"]),
+                # GDXA-227: done is lifecycle_stage. A bare status NOT IN
+                # dropped every NULL-status job (SQL NULL NOT IN → NULL), open
+                # ones included; the legacy spellings still exclude.
+                Job.lifecycle_stage.notin_(["completed", "cancelled"]),
+                or_(
+                    Job.status.is_(None),
+                    Job.status.notin_(["Complete", "Completed", "Invoiced", "done"]),
+                ),
                 Job.deleted_at.is_(None),
             )
             .order_by(
@@ -147,7 +154,6 @@ def active_service_calls(
                 "created_at": str(j.created_at) if j.created_at else None,
             }
             for j, cname in rows
-            for r in rows
         ]
     except Exception:
         log.exception("active_service_calls_failed")
