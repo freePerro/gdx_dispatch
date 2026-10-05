@@ -18,6 +18,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from sqlalchemy.types import Uuid
 
 from gdx_dispatch.core.audit import TenantBase, utcnow
+from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.models.tenant_models import Invoice, Job
 
 logger = logging.getLogger(__name__)
@@ -136,17 +137,25 @@ class NextActionQueue:
         now = _utcnow()
         results: list[dict] = []
 
-        # Persisted actions from DB
+        # Persisted actions from DB.
+        #
+        # GDXA-159: contained because this frame keeps USING the session after
+        # the swallow. `get_auto_actions` below runs three more reads on it, so
+        # on Postgres one failure here aborted the transaction and took all of
+        # them with it — the user got an empty queue and four log lines where
+        # the ephemeral half would have worked perfectly. The degraded return
+        # this `except` promises was only ever honest on SQLite.
         try:
-            rows = (
-                tenant_db.query(NextAction)
-                .filter(
-                    NextAction.tenant_id == tenant_id,
-                    NextAction.deleted_at.is_(None),
-                    NextAction.status != "completed",
+            with contained_read(tenant_db):
+                rows = (
+                    tenant_db.query(NextAction)
+                    .filter(
+                        NextAction.tenant_id == tenant_id,
+                        NextAction.deleted_at.is_(None),
+                        NextAction.status != "completed",
+                    )
+                    .all()
                 )
-                .all()
-            )
             for row in rows:
                 # Exclude snoozed items that haven't woken yet
                 if row.status == "snoozed" and row.snoozed_until:
@@ -312,15 +321,16 @@ class NextActionQueue:
             # tautology (the column is only ever written "unbilled"), so its
             # deletion changes nothing — kept out rather than "fixed" because
             # estimate-stage jobs are pre-billing by definition.
-            stale_estimates = (
-                tenant_db.query(Job)
-                .filter(
-                    Job.lifecycle_stage == "estimate",
-                    Job.created_at < cutoff_72h,
-                    Job.deleted_at.is_(None),
+            with contained_read(tenant_db):
+                stale_estimates = (
+                    tenant_db.query(Job)
+                    .filter(
+                        Job.lifecycle_stage == "estimate",
+                        Job.created_at < cutoff_72h,
+                        Job.deleted_at.is_(None),
+                    )
+                    .all()
                 )
-                .all()
-            )
             for job in stale_estimates:
                 actions.append({
                     "id": f"auto:follow_up_estimate:{job.id}",
@@ -349,15 +359,16 @@ class NextActionQueue:
 
         # Rule: call on overdue sent invoices
         try:
-            overdue_invoices = (
-                tenant_db.query(Invoice)
-                .filter(
-                    Invoice.status == "sent",
-                    Invoice.sent_at < cutoff_14d,
-                    Invoice.deleted_at.is_(None),
+            with contained_read(tenant_db):
+                overdue_invoices = (
+                    tenant_db.query(Invoice)
+                    .filter(
+                        Invoice.status == "sent",
+                        Invoice.sent_at < cutoff_14d,
+                        Invoice.deleted_at.is_(None),
+                    )
+                    .all()
                 )
-                .all()
-            )
             for inv in overdue_invoices:
                 actions.append({
                     "id": f"auto:call_overdue_invoice:{inv.id}",
@@ -389,55 +400,65 @@ class NextActionQueue:
 
         # Rule: schedule maintenance for return-visit customers
         try:
-            return_jobs = (
-                tenant_db.query(Job)
-                .filter(
-                    Job.lifecycle_stage == "completed",
-                    Job.is_return_visit.is_(True),
-                    Job.deleted_at.is_(None),
-                    Job.customer_id.isnot(None),
-                )
-                .all()
-            )
-            seen_customers: set[str] = set()
-            for job in return_jobs:
-                cid = str(job.customer_id)
-                if cid in seen_customers:
-                    continue
-                # Check no recent job for this customer
-                recent = (
+            # ONE savepoint for the whole rule, including the per-customer N+1
+            # below. A per-iteration savepoint was tried and reverted under this
+            # change's own audit: there is no `try` inside the loop, so the first
+            # failed read re-raises straight out to this rule's `except` either
+            # way — the loop cannot continue, so the finer granularity buys
+            # nothing. It is not free, though. Measured on `GET /next-actions`
+            # at 100 candidate rows: SAVEPOINT/RELEASE 103 each against 3, and
+            # 250-289 ms against 56-66 ms — 4.1-4.5x, +190-220 ms. `return_jobs`
+            # has no LIMIT, so that is the ordinary case, not the tail.
+            with contained_read(tenant_db):
+                return_jobs = (
                     tenant_db.query(Job)
                     .filter(
-                        Job.customer_id == job.customer_id,
-                        Job.created_at >= cutoff_180d,
+                        Job.lifecycle_stage == "completed",
+                        Job.is_return_visit.is_(True),
                         Job.deleted_at.is_(None),
+                        Job.customer_id.isnot(None),
                     )
-                    .first()
+                    .all()
                 )
-                if recent is None:
-                    seen_customers.add(cid)
-                    actions.append({
-                        "id": f"auto:schedule_maintenance:{cid}",
-                        "tenant_id": tenant_id,
-                        "user_id": None,
-                        "action_type": "schedule_maintenance",
-                        "title": "Schedule Maintenance Follow-Up",
-                        "description": (
-                            "This return-visit customer has had no activity in 180 days. "
-                            "Schedule a maintenance check-up."
-                        ),
-                        "priority": "medium",
-                        # No customer-scoped scheduling route exists. JobsView
-                        # opens its new-job form from ?new=1 and pre-fills the
-                        # customer from ?customer_id= (JobsView.vue:1410).
-                        "action_url": f"/jobs?new=1&customer_id={cid}",
-                        "estimated_value": 150.0,
-                        "reference_id": cid,
-                        "status": "pending",
-                        "snoozed_until": None,
-                        "completed_at": None,
-                        "created_at": now.isoformat(),
-                    })
+                seen_customers: set[str] = set()
+                for job in return_jobs:
+                    cid = str(job.customer_id)
+                    if cid in seen_customers:
+                        continue
+                    # Check no recent job for this customer
+                    recent = (
+                        tenant_db.query(Job)
+                        .filter(
+                            Job.customer_id == job.customer_id,
+                            Job.created_at >= cutoff_180d,
+                            Job.deleted_at.is_(None),
+                        )
+                        .first()
+                    )
+                    if recent is None:
+                        seen_customers.add(cid)
+                        actions.append({
+                            "id": f"auto:schedule_maintenance:{cid}",
+                            "tenant_id": tenant_id,
+                            "user_id": None,
+                            "action_type": "schedule_maintenance",
+                            "title": "Schedule Maintenance Follow-Up",
+                            "description": (
+                                "This return-visit customer has had no activity in 180 days. "
+                                "Schedule a maintenance check-up."
+                            ),
+                            "priority": "medium",
+                            # No customer-scoped scheduling route exists. JobsView
+                            # opens its new-job form from ?new=1 and pre-fills the
+                            # customer from ?customer_id= (JobsView.vue:1410).
+                            "action_url": f"/jobs?new=1&customer_id={cid}",
+                            "estimated_value": 150.0,
+                            "reference_id": cid,
+                            "status": "pending",
+                            "snoozed_until": None,
+                            "completed_at": None,
+                            "created_at": now.isoformat(),
+                        })
         except Exception as exc:
             logger.warning(
                 "auto schedule_maintenance rule failed for tenant %s: %s",
