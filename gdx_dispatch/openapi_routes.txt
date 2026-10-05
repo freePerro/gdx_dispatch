@@ -154,6 +154,7 @@ GET /api/appointments
 GET /api/appointments/available-slots
 GET /api/appointments/unconfirmed
 GET /api/appointments/{appt_id}
+GET /api/appointments/{appt_id}/undo-arrival
 GET /api/audit-events
 GET /api/audit-integrity
 GET /api/audit-summary
@@ -338,6 +339,7 @@ GET /api/jobs/{job_id}/receipts
 GET /api/jobs/{job_id}/suggested-duration
 GET /api/jobs/{job_id}/tags
 GET /api/jobs/{job_id}/time-entries
+GET /api/jobs/{job_id}/undo-arrival
 GET /api/labor-pricing/items
 GET /api/labor-pricing/items/{item_id}
 GET /api/labor/jobs/{job_id}/time-entries
@@ -815,6 +817,7 @@ POST /api/appointments/{appt_id}/cancel
 POST /api/appointments/{appt_id}/complete
 POST /api/appointments/{appt_id}/confirm
 POST /api/appointments/{appt_id}/on-my-way
+POST /api/appointments/{appt_id}/undo-arrival
 POST /api/audit-export
 POST /api/audit/ux-event
 POST /api/bank-feeds/connect
@@ -981,6 +984,7 @@ POST /api/jobs/{job_id}/start
 POST /api/jobs/{job_id}/tags
 POST /api/jobs/{job_id}/time-entries
 POST /api/jobs/{job_id}/uncomplete
+POST /api/jobs/{job_id}/undo-arrival
 POST /api/labor-pricing/items
 POST /api/landing-leads
 POST /api/landing-leads/{ll_id}/convert-to-lead

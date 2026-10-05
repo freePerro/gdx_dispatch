@@ -280,4 +280,21 @@ describe('JobsView submitForm — a saved job never looks unsaved', () => {
     // The old missing-id throw is gone (the other route to a hidden save).
     expect(fn).not.toMatch(/throw new Error\("Job creation did not return an ID for the appointment\."\)/);
   });
+  it('a refused visit change shows its own sentence and the Appointments link (static guard)', async () => {
+    // Multi-day jobs plan §5.2a: a 409 from the job PATCH (crew_on_site,
+    // onto_booked_day, two_open_visits, double_booked, needs_answer /
+    // status_only_arrival) carries a `detail` written for the office. The
+    // save shows it verbatim — never "Failed to save job." — and offers the
+    // Appointments page when that is the way out. refusalOf /
+    // pointsAtAppointments are exercised for real in utils/visitRefusals.spec.js.
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const SRC = readFileSync(join(__dirname, '..', 'JobsView.vue'), 'utf8');
+    const fnStart = SRC.indexOf('async function submitForm');
+    const fn = SRC.slice(fnStart, SRC.indexOf('async function confirmDelete', fnStart));
+    expect(fn).toMatch(/const refusal = refusalOf\(error\);/);
+    expect(fn).toMatch(/const msg = refusal\?\.detail \|\| error\?\.message \|\| "Failed to save job\.";/);
+    expect(fn).toMatch(/formError\.value = msg;\s*formErrorToAppointments\.value = pointsAtAppointments\(refusal\);/);
+    expect(SRC).toMatch(/v-if="formErrorToAppointments"[^>]*data-testid="job-form-error-appointments"/);
+  });
 });
