@@ -346,6 +346,7 @@ def _assert_job_access(db: Session, request: Request, current_user: Any, job_id:
         return
     tenant_id = _tenant_id(request)
     user_id = _user_id(current_user or {})
+    _refuse_deactivated_technician(db, user_id)
     technician_id = _get_technician_id(db, tenant_id, user_id)
     if not _job_belongs_to_user(db, tenant_id, job_id, user_id, technician_id):
         raise HTTPException(status_code=404, detail="job not found")
@@ -385,6 +386,7 @@ def _assert_job_read_access(db: Session, request: Request, current_user: Any, jo
         return "manager"
     tenant_id = _tenant_id(request)
     user_id = _user_id(current_user or {})
+    _refuse_deactivated_technician(db, user_id)
     technician_id = _get_technician_id(db, tenant_id, user_id)
     if _job_belongs_to_user(db, tenant_id, job_id, user_id, technician_id):
         return "assigned"
@@ -408,6 +410,37 @@ def _get_technician_id(db: Session, tenant_id: str, user_id: str) -> str | None:
     if not row:
         return None
     return str(row[0])
+
+
+def _refuse_deactivated_technician(db: Session, user_id: str | None, actor: Any = None) -> None:
+    """403 when every technician record on this account is deactivated.
+
+    The ownership gate (core/job_access.job_belongs_to_user) matches
+    ``technicians.user_id`` with no active filter, while _get_technician_id
+    above resolves only active rows. Without this refusal a deactivated tech
+    passed the gate and then the arrived/complete/en-route stamps silently
+    skipped because the resolver returned None (GDXA-207/208). On the mobile
+    routes the two now agree: a deactivated tech is refused up front, with a
+    reason the phone can show. The shared gate itself is unchanged, so routes
+    outside this file still admit a deactivated tech on ownership alone.
+    An account with no technician row at all is not refused here — the
+    legacy ``jobs.assigned_to == users.id`` path still applies to it.
+    Pass ``actor`` (the caller's user dict) where the route has no manager
+    early-return of its own: dispatch/admin are never refused, here or in
+    _assert_job_access, so one office user gets one answer on every route."""
+    if not user_id or (actor is not None and is_dispatch_manager(actor)):
+        return
+    flags = [
+        r[0]
+        for r in db.query(Technician.active)
+        .filter(Technician.user_id == user_id)
+        .all()
+    ]
+    if flags and all(f is False for f in flags):
+        raise HTTPException(
+            status_code=403,
+            detail="Your technician profile is deactivated. Ask the office to reactivate it.",
+        )
 
 
 def _job_is_billed(db: Session, job_id: Any) -> bool:
@@ -1241,6 +1274,10 @@ async def get_mobile_today(
     if not user_id:
         return jsonable_response({"detail": "unauthorized"}, 401)
 
+    # A deactivated tech would otherwise get the empty payload below and an
+    # empty route with no reason (GDXA-208); say why instead. Office roles
+    # share the bottom nav and keep the empty day.
+    _refuse_deactivated_technician(db, user_id, current_user)
     technician_id = _get_technician_id(db, tenant_id, user_id)
     tzinfo = _resolve_tzinfo(tz)
     target_date = date or datetime.now(tzinfo).date()
@@ -1263,6 +1300,15 @@ async def get_mobile_today(
         Job.id.in_(ja_job_uuids) if ja_job_uuids else Job.id.is_(None),
     )
 
+    # A cancelled job is off the route whatever its date says: the cancel
+    # endpoint moves lifecycle_stage only and leaves scheduled_at and the
+    # appointment row in place (GDXA-208). Completed jobs deliberately stay —
+    # the dated route is also the tech's record of the day they worked; only
+    # the undated area list drops them (_AREA_EXCLUDED_STAGES).
+    _not_cancelled = or_(
+        Job.lifecycle_stage.is_(None), Job.lifecycle_stage != "cancelled"
+    )
+
     # 1) Today's appointments for this tech (coarse SQL date filter, exact
     #    window refined in Python — see _window_utc_dates).
     appts = [
@@ -1273,6 +1319,10 @@ async def get_mobile_today(
                 Appointment.company_id == tenant_id,
                 Appointment.tech_id == technician_id,
                 Appointment.deleted_at.is_(None),
+                # A visit cancelled on its own (POST /api/appointments/{id}/
+                # cancel) keeps its date; it is off the route too. The job
+                # itself still surfaces below if it is dated today.
+                Appointment.status != "cancelled",
                 func.date(Appointment.start_at).in_(utc_dates),
             )
             .order_by(Appointment.start_at.asc())
@@ -1287,7 +1337,7 @@ async def get_mobile_today(
     if job_ids:
         for j in (
             db.query(Job)
-            .filter(Job.id.in_(job_ids), Job.deleted_at.is_(None))
+            .filter(Job.id.in_(job_ids), Job.deleted_at.is_(None), _not_cancelled)
             .all()
         ):
             jobs_by_id[j.id] = j
@@ -1305,6 +1355,7 @@ async def get_mobile_today(
                 Job.deleted_at.is_(None),
                 Job.scheduled_at.isnot(None),
                 func.date(Job.scheduled_at).in_(utc_dates),
+                _not_cancelled,
             )
             .order_by(Job.scheduled_at.asc())
             .all()
@@ -1505,6 +1556,7 @@ def reorder_mobile_today(
     if not user_id:
         return jsonable_response({"detail": "unauthorized"}, 401)
 
+    _refuse_deactivated_technician(db, user_id)
     technician_id = _get_technician_id(db, tenant_id, user_id)
     if not technician_id:
         raise HTTPException(status_code=400, detail="caller is not a technician")
@@ -1643,6 +1695,8 @@ def mobile_all_my_jobs(
     if not user_id:
         return jsonable_response({"detail": "unauthorized"}, 401)
     technician_id = _get_technician_id(db, tenant_id, user_id)
+    # Same as /today: a deactivated tech hears why, not an empty list.
+    _refuse_deactivated_technician(db, user_id, current_user)
 
     # Company-wide scope (2026-07-22, Doug: "company wide option and a spot
     # in mobile for tech to see all jobs"). Server-authoritative: the 403
@@ -2122,6 +2176,7 @@ def mobile_job_claim(
     job = _get_job(db, tenant_id, job_id)
     if not job:
         return jsonable_response({"detail": "job not found"}, 404)
+    _refuse_deactivated_technician(db, user_id)
     technician_id = _get_technician_id(db, tenant_id, user_id)
     if not technician_id:
         return jsonable_response({"detail": "no technician record for this account"}, 409)
