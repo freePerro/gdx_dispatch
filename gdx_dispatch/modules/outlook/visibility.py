@@ -37,6 +37,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookMessage, OutlookSettings
 
 log = logging.getLogger("gdx_dispatch.modules.outlook.visibility")
@@ -277,7 +278,11 @@ def _accounts_role_is_tech(tenant_db: Session, user_id: str) -> bool:
     """
     try:
         from gdx_dispatch.models.tenant_models import User
-        user = tenant_db.get(User, str(user_id))
+        # SAVEPOINT (GDXA-155): reached from the send path as well as the read
+        # path, so "defaulting to False" must not also cost the caller its
+        # transaction.
+        with contained_read(tenant_db):
+            user = tenant_db.get(User, str(user_id))
         if user is None:
             return False
         role = getattr(user, "role", None) or getattr(user, "user_role", None)
@@ -318,11 +323,16 @@ def build_visibility_context(
     if user_ids:
         try:
             from gdx_dispatch.models.tenant_models import User
-            rows = (
-                tenant_db.query(User.id, User.role)
-                .filter(User.id.in_(list(user_ids)))
-                .all()
-            )
+            # SAVEPOINT (GDXA-155): the per-row fallback the handler below falls
+            # back to cannot run at all on a poisoned Postgres transaction, so
+            # uncontained this degradation is not the N+1 slowdown it claims —
+            # it is every subsequent read failing too.
+            with contained_read(tenant_db):
+                rows = (
+                    tenant_db.query(User.id, User.role)
+                    .filter(User.id.in_(list(user_ids)))
+                    .all()
+                )
             ctx.user_is_tech = {
                 str(uid): _is_tech(role) for uid, role in rows
             }

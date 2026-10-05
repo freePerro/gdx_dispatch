@@ -32,6 +32,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.database import contained_read
+
 log = logging.getLogger(__name__)
 
 # Graph /me/sendMail rejects the WHOLE message (not just the attachment) when
@@ -315,7 +317,16 @@ def recently_sent(
         )
         if kind:
             q = q.where(OutboundEmail.kind == kind)
-        return db.execute(q.limit(1)).first() is not None
+        # SAVEPOINT (GDXA-155): the `return False` below is the guard failing
+        # OPEN, which is the right call — but on Postgres a failed SELECT aborts
+        # the whole transaction, so without this the caller ALSO loses whatever
+        # it had pending and its commit dies with 25P02. That makes the degraded
+        # answer a lie twice over, and the visible symptom is a duplicate
+        # customer email: the guard says "not recently sent" and the send goes
+        # again. Contained, the read still fails, this still returns False, and
+        # the caller's transaction is still committable.
+        with contained_read(db):
+            return db.execute(q.limit(1)).first() is not None
     except Exception:
         # The guard must never block a legitimate send.
         log.exception("recently_sent_check_failed entity=%s", entity_id)
@@ -329,7 +340,17 @@ def _designated_sender_user_id(tenant_db: Session) -> str | None:
     try:
         from gdx_dispatch.models.tenant_models import AppSettings
 
-        row = tenant_db.query(AppSettings).first()
+        # SAVEPOINT (GDXA-155): sits on the send path, so the caller is usually
+        # mid-send. What a poisoned transaction costs is the caller's BUSINESS
+        # write — the estimate status flip, the invoice sent_at — not the audit
+        # trail: be precise, because an earlier draft of this comment said "a send
+        # with no trace, the worst class in this repo" and that is false.
+        # `_record_outbound` above (~line 269) already falls back to a SEPARATE
+        # Session on the same bind and commits the outbound_emails row, and its
+        # own comment names this exact case. Measured on PG 15.17 with the caller
+        # poisoned: outbound_emails = 1 row, caller business rows = 0.
+        with contained_read(tenant_db):
+            row = tenant_db.query(AppSettings).first()
         if row is None:
             return None
         return getattr(row, "automation_sender_user_id", None) or None

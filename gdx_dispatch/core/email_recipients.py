@@ -28,6 +28,8 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.database import contained_read
+
 log = logging.getLogger(__name__)
 
 
@@ -78,30 +80,40 @@ def resolve_recipient(
         )
 
     try:
-        if contact_id:
-            contact = db.execute(
-                select(CustomerContact).where(
-                    CustomerContact.id == str(contact_id),
-                    CustomerContact.customer_id == customer.id,
-                    CustomerContact.deleted_at.is_(None),
+        # SAVEPOINT (GDXA-155): every send path calls this, and the caller is
+        # holding the send it is about to audit. "Resolution must never block a
+        # send" is only true on Postgres with this — a failed contact read
+        # otherwise aborts the caller's transaction, so the fallthrough below
+        # still returns the account address, the email still goes out, and then
+        # the caller's status flip cannot be written. (Not the outbound_emails
+        # row — `_record_outbound` commits that on a separate Session.) Both
+        # reads are inside one block: they are alternatives, so the first one's
+        # failure means the second is about to hit the same broken table.
+        with contained_read(db):
+            if contact_id:
+                contact = db.execute(
+                    select(CustomerContact).where(
+                        CustomerContact.id == str(contact_id),
+                        CustomerContact.customer_id == customer.id,
+                        CustomerContact.deleted_at.is_(None),
+                    )
+                ).scalar_one_or_none()
+                if contact and (contact.email or "").strip():
+                    return _contact_result(contact, "contact")
+                log.info(
+                    "recipient_contact_fallback contact=%s customer=%s (missing/stale/no-email)",
+                    contact_id, getattr(customer, "id", None),
                 )
-            ).scalar_one_or_none()
-            if contact and (contact.email or "").strip():
-                return _contact_result(contact, "contact")
-            log.info(
-                "recipient_contact_fallback contact=%s customer=%s (missing/stale/no-email)",
-                contact_id, getattr(customer, "id", None),
-            )
 
-        primary = db.execute(
-            select(CustomerContact).where(
-                CustomerContact.customer_id == customer.id,
-                CustomerContact.is_primary.is_(True),
-                CustomerContact.deleted_at.is_(None),
-            ).order_by(CustomerContact.created_at)
-        ).scalars().first()
-        if primary and (primary.email or "").strip():
-            return _contact_result(primary, "primary_contact")
+            primary = db.execute(
+                select(CustomerContact).where(
+                    CustomerContact.customer_id == customer.id,
+                    CustomerContact.is_primary.is_(True),
+                    CustomerContact.deleted_at.is_(None),
+                ).order_by(CustomerContact.created_at)
+            ).scalars().first()
+            if primary and (primary.email or "").strip():
+                return _contact_result(primary, "primary_contact")
     except Exception:
         # Resolution must never block a send; fall through to the account.
         log.exception("recipient_resolution_failed customer=%s", getattr(customer, "id", None))

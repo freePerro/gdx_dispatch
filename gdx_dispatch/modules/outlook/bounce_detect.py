@@ -60,6 +60,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookMessage
 
 log = logging.getLogger(__name__)
@@ -418,7 +419,22 @@ def _outbound_row(tdb: Session, recipients: set[str] | None, entity_type: str,
             q = q.where(func.lower(OutboundEmail.to_email).in_(recipients))
         if kind is not None:
             q = q.where(OutboundEmail.kind == kind)
-        rows = tdb.execute(q.order_by(OutboundEmail.created_at.desc()).limit(10)).scalars().all()
+        # SAVEPOINT (GDXA-155): "never block processing" is the contract, and on
+        # Postgres it was not kept — the failed read aborts the transaction the
+        # bounce processor is holding, so _stamp_bounced's estimate flip and its
+        # audit row die at the caller's commit instead.
+        #
+        # NOT unrecoverable, and an earlier draft of this comment said it was
+        # ("the message is marked processed and the bounce is never seen again").
+        # That was invented: nothing in this module writes a processed marker —
+        # `grep -n processed bounce_detect.py` matched only that sentence. The
+        # caller (`tasks.py:~760`) wraps this phase in
+        # `except Exception: tdb.rollback()` and logs "sync unaffected", and
+        # `process_bounces` is documented safe to re-run, so the real cost is one
+        # sync's bounce processing lost and redone — not permanent. Contained, the
+        # phase does not fail at all.
+        with contained_read(tdb):
+            rows = tdb.execute(q.order_by(OutboundEmail.created_at.desc()).limit(10)).scalars().all()
         for row in rows:
             if _in_window(row.created_at, ndr_received):
                 return row

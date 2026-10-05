@@ -24,7 +24,7 @@ import logging
 from typing import Any
 
 from gdx_dispatch.core.celery_app import celery_app
-from gdx_dispatch.core.database import SessionLocal
+from gdx_dispatch.core.database import SessionLocal, contained_read
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +45,17 @@ def _automation_sender(db) -> str | None:
     try:
         from gdx_dispatch.models.tenant_models import AppSettings
 
-        row = db.query(AppSettings).first()
+        # SAVEPOINT (GDXA-155): drain_plugin_email_outbox holds this session and
+        # commits the row's outcome on it after _deliver returns. Uncontained on
+        # Postgres that commit raises out of the task: the rest of the batch is
+        # abandoned, and row.attempts is never saved, so MAX_ATTEMPTS never stops
+        # the row — it sits as 'sending', is reclaimed after STALE_CLAIM_MINUTES,
+        # and goes round again for as long as the read keeps failing. (Not a
+        # duplicate send: with no sender id Graph is never tried, and on the
+        # poisoned session get_email_config reads None, so the send ends
+        # smtp_not_configured and nothing went out on that pass.)
+        with contained_read(db):
+            row = db.query(AppSettings).first()
         return getattr(row, "automation_sender_user_id", None) or None if row else None
     except Exception:
         log.exception("plugin_email_sender_read_failed")
@@ -89,12 +99,27 @@ def _deliver(db, row) -> tuple[bool, str | None]:
         from sqlalchemy import select as _select
 
         try:
-            customer = db.execute(
-                _select(Customer).where(
-                    Customer.id == _UUID(str(row.customer_id)),
-                    Customer.deleted_at.is_(None),
-                )
-            ).scalar_one_or_none()
+            # SAVEPOINT (GDXA-155). This `except` catches (ValueError, TypeError)
+            # — a malformed customer_id — so a DB error does NOT land here; it
+            # propagates to drain_plugin_email_outbox's `except Exception`, which
+            # then sets row.status and calls db.commit() on THIS session. On
+            # Postgres that commit is already dead, so it raises out of the task:
+            # the batch is abandoned, row.attempts is never saved, and the row
+            # stays claimed as 'sending' until STALE_CLAIM_MINUTES reclaims it —
+            # with MAX_ATTEMPTS unable to retire it. Containing it here lets that
+            # handler's outcome write actually land.
+            #
+            # (This is the shape GDXA-155's check 1 warns about: the frame that
+            # catches is not this one, so "this except can't swallow a DB error"
+            # is not a reason to leave it — ask what the frame that DOES catch it
+            # goes on to write.)
+            with contained_read(db):
+                customer = db.execute(
+                    _select(Customer).where(
+                        Customer.id == _UUID(str(row.customer_id)),
+                        Customer.deleted_at.is_(None),
+                    )
+                ).scalar_one_or_none()
         except (ValueError, TypeError):
             customer = None
         if customer is None:

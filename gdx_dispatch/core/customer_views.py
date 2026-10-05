@@ -35,6 +35,7 @@ from sqlalchemy import select
 
 from gdx_dispatch.core.audit import AuditLog, log_audit_event_sync
 from gdx_dispatch.core.audit_labels import PUBLIC_CUSTOMER_ACTOR
+from gdx_dispatch.core.database import contained_read
 
 log = logging.getLogger(__name__)
 
@@ -125,13 +126,21 @@ def within_scanner_grace_period(sent_at: Any) -> bool:
 def _recently_recorded(db: Any, action: str, entity_id: str) -> bool:
     try:
         cutoff = datetime.now(UTC) - VIEW_DEDUPE_WINDOW
-        existing = db.execute(
-            select(AuditLog.id)
-            .where(AuditLog.action == action)
-            .where(AuditLog.entity_id == str(entity_id))
-            .where(AuditLog.created_at >= cutoff)
-            .limit(1)
-        ).first()
+        # SAVEPOINT (GDXA-155): the caller, record_customer_view, WRITES the
+        # audit row on this same session immediately after this probe answers.
+        # On Postgres a failed probe aborts the transaction, so that write — the
+        # only record that the customer opened their invoice — dies too, and the
+        # comment below ("we would rather write a duplicate row than lose the
+        # event") becomes exactly backwards: uncontained, the failure loses the
+        # event and writes nothing.
+        with contained_read(db):
+            existing = db.execute(
+                select(AuditLog.id)
+                .where(AuditLog.action == action)
+                .where(AuditLog.entity_id == str(entity_id))
+                .where(AuditLog.created_at >= cutoff)
+                .limit(1)
+            ).first()
         return existing is not None
     except Exception:
         # If the de-dupe probe fails we would rather write a duplicate row than

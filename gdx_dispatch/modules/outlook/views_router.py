@@ -29,7 +29,7 @@ from gdx_dispatch.core.audit import (
     log_audit_event_sync,
     resolve_audit_actor,
 )
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.modules.outlook.models import OutlookMessage
 from gdx_dispatch.modules.outlook.visibility import can_view, filter_visible, mailbox_owner_id
@@ -177,25 +177,37 @@ def _link_labels(
     try:
         from gdx_dispatch.models.tenant_models import Customer, Job  # noqa: PLC0415
 
-        if cust_ids:
-            for cid, name, deleted_at in (
-                tenant_db.query(Customer.id, Customer.name, Customer.deleted_at)
-                .filter(Customer.id.in_(cust_ids))
-                .all()
-            ):
-                if name:
-                    customers[str(cid)] = name
-                if deleted_at is not None:
-                    deleted_customers.add(str(cid))
-        if job_ids:
-            for jid, number, title in (
-                tenant_db.query(Job.id, Job.job_number, Job.title)
-                .filter(Job.id.in_(job_ids))
-                .all()
-            ):
-                # job_number is NULL on legacy rows — fall back to the title,
-                # then to a short id, so the badge always says something.
-                jobs[str(jid)] = number or title or f"Job {str(jid)[:8]}"
+        # SAVEPOINT (GDXA-155): unlabeled badges are the intended degradation;
+        # a transaction that can no longer execute anything is not.
+        #
+        # One block around BOTH reads, and the reason is the shared `except`, not
+        # the schema: whichever read fails, contained_read re-raises into the one
+        # handler below, so the second read cannot run either way. Splitting this
+        # into a savepoint per table was tried and reverted — it buys nothing
+        # while two blocks suggest independent failure that the control flow does
+        # not provide. (That a customers failure also costs the job badges is
+        # pre-existing, from the shared `try`; this change neither causes nor
+        # fixes it. Giving each read its own handler would, and is out of scope.)
+        with contained_read(tenant_db):
+            if cust_ids:
+                for cid, name, deleted_at in (
+                    tenant_db.query(Customer.id, Customer.name, Customer.deleted_at)
+                    .filter(Customer.id.in_(cust_ids))
+                    .all()
+                ):
+                    if name:
+                        customers[str(cid)] = name
+                    if deleted_at is not None:
+                        deleted_customers.add(str(cid))
+            if job_ids:
+                for jid, number, title in (
+                    tenant_db.query(Job.id, Job.job_number, Job.title)
+                    .filter(Job.id.in_(job_ids))
+                    .all()
+                ):
+                    # job_number is NULL on legacy rows — fall back to the title,
+                    # then to a short id, so the badge always says something.
+                    jobs[str(jid)] = number or title or f"Job {str(jid)[:8]}"
     except Exception:  # noqa: BLE001
         log.warning("views_router: link-label lookup failed — badges render unlabeled", exc_info=True)
     return customers, jobs, deleted_customers
@@ -251,11 +263,14 @@ def _mailbox_address(tenant_db: Session, msg: OutlookMessage) -> str | None:
     try:
         from gdx_dispatch.modules.outlook.models import OutlookAccount  # noqa: PLC0415
 
-        row = (
-            tenant_db.query(OutlookAccount.upn)
-            .filter(OutlookAccount.id == msg.account_id)
-            .first()
-        )
+        # SAVEPOINT (GDXA-155): reply/reply-all routes call this and then write
+        # (the sent message row, the audit row) on the same session.
+        with contained_read(tenant_db):
+            row = (
+                tenant_db.query(OutlookAccount.upn)
+                .filter(OutlookAccount.id == msg.account_id)
+                .first()
+            )
         value = row[0] if row else None
         return value.strip().lower() if isinstance(value, str) and value.strip() else None
     except Exception:  # noqa: BLE001
@@ -375,11 +390,15 @@ def _load_tech_emails(tenant_db: Session) -> set[str]:
     Empty set when the User model is unavailable (test envs)."""
     try:
         from gdx_dispatch.models.tenant_models import User
-        rows = (
-            tenant_db.query(User)
-            .filter(User.role.in_(["technician", "tech"]), User.deleted_at.is_(None))
-            .all()
-        )
+        # SAVEPOINT (GDXA-155): "Don't crash the request" is only half true on
+        # Postgres — the request continues on a transaction that can no longer
+        # execute anything, including the read-state writes these list routes do.
+        with contained_read(tenant_db):
+            rows = (
+                tenant_db.query(User)
+                .filter(User.role.in_(["technician", "tech"]), User.deleted_at.is_(None))
+                .all()
+            )
         return {r.email.lower().strip() for r in rows if r.email}
     except Exception:  # noqa: BLE001
         # Don't crash the request — but log loudly so a broken User model
@@ -677,11 +696,14 @@ def _unbadged_folder_ids(tenant_db: Session) -> list[str]:
     try:
         from gdx_dispatch.modules.outlook.models import OutlookFolder  # noqa: PLC0415
 
-        rows = (
-            tenant_db.query(OutlookFolder.graph_folder_id)
-            .filter(OutlookFolder.well_known_name.in_(_UNBADGED_FOLDERS))
-            .all()
-        )
+        # SAVEPOINT (GDXA-155): the badge count route reads this; an inflated
+        # badge is the intended nuisance, a dead transaction is not.
+        with contained_read(tenant_db):
+            rows = (
+                tenant_db.query(OutlookFolder.graph_folder_id)
+                .filter(OutlookFolder.well_known_name.in_(_UNBADGED_FOLDERS))
+                .all()
+            )
         return [r[0] for r in rows if r and isinstance(r[0], str)]
     except Exception:  # noqa: BLE001
         log.warning("unread_message_count: folder-exclusion lookup failed", exc_info=True)
