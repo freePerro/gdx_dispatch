@@ -189,10 +189,6 @@ def patch_config(
     # would harden this handler's staged edit a moment before the audit row is
     # written, so the change and its trail stop being atomic. Run it here, where
     # committing has nothing to disturb; every later call is a no-op.
-    #
-    # NOT `Depends(audit_ready_db)`: that dependency resolves its OWN session
-    # and would bypass the `get_db` override the tax tests install — the same
-    # trap documented at routers/customers.py:1880.
     ensure_audit_table(db)
     cfg = get_or_create_config(db)
     updates = payload.model_dump(exclude_unset=True)

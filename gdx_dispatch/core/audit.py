@@ -14,14 +14,11 @@ from sqlalchemy import JSON, DateTime, String, event, func, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import Uuid
 
-
-def _get_db_dep(db: Any = None) -> Any:  # pragma: no cover - replaced below
-    """Placeholder so ``audit_ready_db`` can declare its dependency without
-    importing core.database at module scope (core.database is imported by
-    almost everything; audit.py is imported by it in some app wirings)."""
-    from gdx_dispatch.core.database import get_db
-
-    yield from get_db()
+# Module scope on purpose: ``audit_ready_db`` must declare ``Depends(get_db)``
+# itself, so ``app.dependency_overrides[get_db]`` reaches it. Its old wrapper
+# called ``get_db()`` inside a function and silently ignored every override
+# (GDXA-218). No cycle: core.database imports nothing from gdx_dispatch.
+from gdx_dispatch.core.database import get_db
 
 
 class TenantBase(DeclarativeBase):
@@ -474,7 +471,7 @@ def log_audit_event_sync(db: Any, *args: Any, **kwargs: Any) -> AuditLog:
     return _log_audit_event_impl(db, *args, **kwargs)
 
 
-def audit_ready_db(db: Any = Depends(_get_db_dep)) -> Any:
+def audit_ready_db(db: Any = Depends(get_db)) -> Any:
     """A session whose audit table is already initialized, for use as a FastAPI
     dependency: ``db: Session = Depends(audit_ready_db)``.
 
@@ -585,14 +582,9 @@ def audit_best_effort(
     **Calling it.** Pass your own session positionally; everything else is
     keyword-only. It never raises — a failure is logged and reported as a
     ``False`` return, which you are free to ignore. You need nothing else:
-    ``ensure_audit_table`` is hoisted inside (see 1 below), so do **not** reach
-    for ``Depends(audit_ready_db)`` and do not call ``ensure_audit_table``
-    yourself first. That dependency resolves its own session through
-    ``_get_db_dep`` rather than ``core.database.get_db``, so it silently
-    bypasses ``app.dependency_overrides[get_db]`` and hands the handler a
-    different database than the test seeded — measured 2026-09-25, and already
-    written up at ``routers/customers.py:1931`` after it 404ed two
-    ``test_outbound_email_log.py`` tests.
+    ``ensure_audit_table`` is hoisted inside (see 1 below), so there is no
+    need for ``Depends(audit_ready_db)`` or an ``ensure_audit_table`` call of
+    your own first.
 
     **Precondition, load-bearing: the caller has nothing staged.** Either it
     already committed, or it never wrote anything (a GET-side export, a webhook

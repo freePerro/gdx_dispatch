@@ -23,7 +23,6 @@ from sqlalchemy.pool import StaticPool
 from gdx_dispatch.core.audit import (
     AuditLog,
     TenantBase,
-    _get_db_dep,
     log_audit_event_sync,
 )
 from gdx_dispatch.core.database import get_db
@@ -114,19 +113,12 @@ def _env(router, columns):
         return await call_next(request)
 
     app.include_router(router)
-    # Override `_get_db_dep`, NOT `audit_ready_db` itself.
-    #
-    # `audit_ready_db` declares `Depends(_get_db_dep)` — a separate function
-    # that calls `get_db()` directly (core/audit.py), so overriding only
-    # `get_db` leaves the handler on the REAL database and surfaces as
-    # "no such table: tenant_settings". But overriding `audit_ready_db` is
-    # worse: it replaces the dependency wholesale, so `ensure_audit_table`
+    # Override `get_db`, NOT `audit_ready_db` itself. `audit_ready_db`
+    # declares `Depends(get_db)`, so this override reaches it. Overriding
+    # `audit_ready_db` would be wrong: it replaces the dependency wholesale, so `ensure_audit_table`
     # never runs and these tests pass identically against handlers wired to
     # plain `get_db` — the change's central claim would have zero coverage.
-    # Overriding the inner dependency keeps the real `audit_ready_db` in the
-    # path while still pointing it at the test database.
     app.dependency_overrides[get_db] = _override_db
-    app.dependency_overrides[_get_db_dep] = _override_db
     app.dependency_overrides[get_current_user] = lambda: {
         "user_id": "user-42", "role": "admin", "tenant_id": TID,
     }
