@@ -477,3 +477,62 @@ def test_f811_gate_passes_when_clean_and_excludes_only_the_test_tree(tmp_path: P
     assert "--force-exclude" in args, (
         "without --force-exclude a RUFF_TARGET inside gdx_dispatch/tests is checked anyway"
     )
+
+
+# ── duplicate dict keys: zero-gated (GDXA-214) ───────────────────────────
+#
+# core/feature_defaults.py defined tech_mobile.gps_retention_days twice; the
+# later entry silently won, so the earlier label/help were dead and any edit
+# to them did nothing. F601 was already selected, but the blended count hid
+# the one instance under baseline. The ratchet now zero-gates F601/F602. The
+# stub below fails only when its --select names the rule under test, so
+# dropping that code from ZEROED_FAMILIES turns this red. That a REAL ruff
+# 0.15.18 reports F601 for a repeated literal key was proven by planting one
+# under gdx_dispatch/ and running this script; see GDXA-214's report.
+
+
+def _run_with_dup_key(tmp_path: Path, rule: str) -> subprocess.CompletedProcess[str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _stub_git(bin_dir, dirty=False)
+    stub = bin_dir / "ruff"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$1" = "--version" ]; then echo "ruff {_CI_PIN}"; exit 0; fi\n'
+        'prev=""\n'
+        'for a in "$@"; do\n'
+        '  if [ "$prev" = "--select" ]; then\n'
+        '    case ",$a," in\n'
+        f"      *,{rule},*) echo 'gdx_dispatch/core/example.py:9:5: {rule} Dictionary key repeated'; exit 1 ;;\n"
+        "      *) exit 0 ;;\n"
+        "    esac\n"
+        "  fi\n"
+        '  case "$a" in --statistics) exit 0 ;; esac\n'
+        '  prev="$a"\n'
+        "done\n"
+        "echo 'Found 1 error.'\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    baseline_file = tmp_path / "baseline"
+    baseline_file.write_text("3", encoding="utf-8")
+    return subprocess.run(
+        ["bash", str(RATCHET)],
+        capture_output=True, text=True, timeout=60, cwd=str(REPO_ROOT),
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "RUFF_BASELINE_FILE": str(baseline_file),
+            "RUFF_TARGET": "gdx_dispatch/",
+            "HOME": str(tmp_path),
+        },
+    )
+
+
+@pytest.mark.parametrize("rule", ["F601", "F602"])
+def test_a_repeated_dict_key_fails_the_gate_under_baseline(tmp_path: Path, rule: str) -> None:
+    result = _run_with_dup_key(tmp_path, rule)
+    assert result.returncode != 0, (
+        f"a {rule} duplicate dict key passed because the count was under baseline — stdout={result.stdout!r}"
+    )
+    assert "core/example.py" in result.stdout, "the offending line must be shown"
