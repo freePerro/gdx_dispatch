@@ -18,6 +18,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import AuditLog, TenantBase
+from gdx_dispatch.core.database import get_db
 from gdx_dispatch.plugin_host.app import create_plugin_host
 from gdx_dispatch.routers import browser_proxy
 from gdx_dispatch.routers.auth import get_current_user
@@ -113,7 +114,9 @@ def _core_client(monkeypatch, *, role="owner", permissions=("browser",), consent
                            poolclass=StaticPool)
     TenantBase.metadata.create_all(engine, checkfirst=True)
     session = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
-    app.dependency_overrides[browser_proxy.audit_ready_db] = lambda: session
+    # Override `get_db`, not `audit_ready_db`, so the real dependency runs and
+    # `ensure_audit_table` is exercised on this session (GDXA-221).
+    app.dependency_overrides[get_db] = lambda: session
     client = TestClient(app)
     client.audit_session = session  # so tests can assert on the trail
     return client

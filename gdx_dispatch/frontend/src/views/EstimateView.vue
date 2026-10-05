@@ -331,7 +331,11 @@
             <div class="form-field">
               <label for="est-valid-until">Valid Until</label>
               <DatePicker id="est-valid-until" v-model="form.valid_until" dateFormat="yy-mm-dd"
-                :showIcon="true" class="w-full" :disabled="estimateLocked" data-testid="estimate-valid-until" />
+                :showIcon="true" showButtonBar class="w-full" :disabled="estimateLocked"
+                :placeholder="expiryDaysHint" data-testid="estimate-valid-until" />
+              <small v-if="!form.valid_until" class="muted" data-testid="estimate-valid-until-hint">
+                Blank: expires {{ expiryDaysHint }} (company setting)
+              </small>
             </div>
             <!-- The jobsite ask (jobsite plan PR 3, D4-revised): blank/NULL
                  means "same as the customer's address" everywhere (PDF,
@@ -2029,10 +2033,22 @@ async function submitSaveToCatalog() {
 }
 
 // --- Form state ---
-function defaultValidUntil() {
-  const d = new Date();
-  d.setDate(d.getDate() + 30);
-  return d;
+// valid_until starts null and stays null until the user picks a date (GDXA-232).
+// A seeded "today + 30" went out on every autosave PATCH, and send keeps any
+// future valid_until — so the tenant's estimate_expiry_days never applied to
+// an estimate built here. Null lets send stamp sent_at + that setting.
+// Every send (re-sends and reopened estimates included) stamps a NULL or past
+// date, so blank means "N days after the next send" whatever the status.
+const expiryDaysHint = computed(() => {
+  const days = Number(estimateFeatures.value.estimate_expiry_days) || 60;
+  return `${days} days after the next send`;
+});
+// The valid_until the server last returned (yy-mm-dd or null). Autosave sends
+// the field only when the form differs from it, so a date the server stamped
+// (send, mark-sent) is never overwritten by a form that was not refreshed.
+let _syncedValidUntil = null;
+function _validUntilString(v) {
+  return (v instanceof Date ? localDateString(v) : v) || null;
 }
 
 // The API returns valid_until as UTC midnight ("2026-10-31T00:00:00+00:00").
@@ -2055,7 +2071,7 @@ const form = ref({
   label: "",
   description: "",
   jobsite_address: "",
-  valid_until: defaultValidUntil(),
+  valid_until: null,
   notes: "",
   // tax_rate is a percent (e.g. 8.25). null = "use tenant default" — we
   // don't bind null directly to the InputNumber; the form watcher copies
@@ -2342,6 +2358,7 @@ async function fetchEstimate() {
         : Math.round(rate * 1000000) / 10000;
     }
     const lineSrc = data.lines || data.line_items || data.items || [];
+    _syncedValidUntil = _validUntilString(_parseDateOnly(data.valid_until || data.expires_at));
     form.value = {
       customer_id: data.customer_id ?? null,
       new_customer: false,
@@ -2349,7 +2366,7 @@ async function fetchEstimate() {
       label: data.label || "",
       description: data.description || "",
       jobsite_address: data.jobsite_address || "",
-      valid_until: _parseDateOnly(data.valid_until || data.expires_at) || defaultValidUntil(),
+      valid_until: _parseDateOnly(data.valid_until || data.expires_at),
       notes: data.notes || "",
       tax_rate: taxPct,
       discount: toNum(data.discount ?? 0),
@@ -2974,21 +2991,24 @@ async function _flushNow() {
     const formPct = Number(form.value.tax_rate) || 0;
     const persistTax = Math.abs(formPct - tenantDefaultTaxPct.value) > 0.001;
     // Same Date→yy-mm-dd conversion createEstimate does — the DatePicker model
-    // is a Date object. Local calendar parts: the default is now + 30 days WITH
-    // the clock, so a UTC slice after ~7pm Central was a day late (#698).
-    const validUntil = form.value.valid_until instanceof Date
-      ? localDateString(form.value.valid_until)
-      : form.value.valid_until;
-    await apiRaw.patch(`/api/estimates/${id}`, {
+    // is a Date object. Local calendar parts: a picked Date can carry the
+    // clock, so a UTC slice after ~7pm Central was a day late (#698). Blank
+    // stays null so send applies estimate_expiry_days (GDXA-232).
+    // Sent only when the user changed it: send stamps valid_until server-side
+    // without refreshing this form, and an unconditional null would wipe it.
+    const validUntil = _validUntilString(form.value.valid_until);
+    const header = {
       label: form.value.label || null,
       jobsite_address: form.value.jobsite_address || null,
-      valid_until: validUntil || null,
       description: form.value.description || null,
       notes: form.value.notes || null,
       tax_rate: persistTax ? formPct / 100 : null,
       discount: Number(form.value.discount) > 0 ? Number(form.value.discount) : null,
       hide_line_prices: form.value.hide_line_prices ?? null,
-    });
+    };
+    if (validUntil !== _syncedValidUntil) header.valid_until = validUntil;
+    await apiRaw.patch(`/api/estimates/${id}`, header);
+    if ("valid_until" in header) _syncedValidUntil = validUntil;
 
     // 2. Pending deletes — drain first so newly-added lines don't collide.
     if (pendingLineDeletes.value.length > 0) {

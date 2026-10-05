@@ -116,6 +116,35 @@ class TestFinishedJobsDoNotMoveThroughPatch:
         assert n == 0
 
 
+class TestAStatusThatNamesNoStage:
+    """A label mapping to no stage used to be written to `status` alone, so the
+    guard above never ran: "Scheduled Later" on a completed job answered 200
+    and rewrote its status (found 2026-10-04, after #842)."""
+
+    def test_it_cannot_rewrite_a_completed_job(self, ctx):
+        client, db, job, _dep, be, _ = ctx  # fixture job is completed
+        _office(be)
+        before = _row(db, job.id, "lifecycle_stage, status, updated_at")
+        for body in ({"status": "Scheduled Later"}, {"lifecycle_stage": "On Hold"}):
+            r = _call(client, "PATCH", f"/api/jobs/{job.id}", body)
+            assert r.status_code == 422, (body, r.text[:300])
+        db.expire_all()
+        assert _row(db, job.id, "lifecycle_stage, status, updated_at") == before
+
+    def test_it_is_refused_on_an_open_job_too(self, ctx):
+        """Otherwise `status` drifts from `lifecycle_stage` on the open job."""
+        client, db, job, _dep, be, _ = ctx
+        _set(db, job, lifecycle_stage="scheduled", status="Scheduled", completed_at=None)
+        _office(be)
+        before = _row(db, job.id, "status, title")
+        assert before[0] == "Scheduled"
+        r = _call(client, "PATCH", f"/api/jobs/{job.id}",
+                  {"status": "Scheduled Later", "title": "Renamed"})
+        assert r.status_code == 422, r.text[:300]
+        db.expire_all()
+        assert _row(db, job.id, "status, title") == before
+
+
 class TestCompletionDoesNotGoThroughPatch:
     def test_completing_an_open_job_is_refused(self, ctx):
         client, db, job, _dep, be, _ = ctx

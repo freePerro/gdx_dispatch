@@ -1731,12 +1731,17 @@ def _apply_send_expiry(estimate: Estimate) -> None:
     just re-expire the next night. A still-future valid_until (a deliberately
     hand-picked date) is respected and left alone.
 
-    Note: this relies on create NOT persisting a valid_until — the /estimates
-    create handler drops the field, so a fresh estimate reaches send with
-    valid_until = NULL. If create is ever changed to honor payload.valid_until,
-    a create-time default would look like a hand-picked future date here and
-    silently defeat the tenant setting. Keep create dropping it, or teach this
-    helper to distinguish a default from an override.
+    Note: a stored future date is indistinguishable from a hand-picked one,
+    so this setting applies only where no default was stored. The /estimates
+    create handler drops the field, and the editor (EstimateView.vue) keeps
+    it null until the user picks a date, so its autosave PATCH sends null
+    rather than a seeded "today + 30" (GDXA-232: that seed defeated the
+    tenant setting for every estimate opened in the editor). The exception
+    today is mobile quoting (routers/mobile_quoting.py), which stores
+    now + tech_mobile.estimate_validity_days at create, so that setting, not
+    this one, governs a phone-built quote. Any new path that writes
+    valid_until must store only a user's choice, or teach this helper to
+    distinguish a default from an override.
 
     Best-effort: a features read failure must not block the send."""
     if not estimate.sent_at:

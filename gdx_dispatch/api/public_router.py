@@ -537,30 +537,76 @@ def update_job(
     _auth: Annotated[dict, Depends(_require_api_key)],
     db: Annotated[Session, Depends(get_db)],
 ) -> JSONResponse:
+    # The desktop PATCH's stage rules, shared so this key-authenticated writer
+    # cannot skip them: it used to write any string into lifecycle_stage (a
+    # 500 from the enum on Postgres) and could complete a job with no closeout
+    # or move a finished one with no reason recorded.
+    from gdx_dispatch.routers.jobs import (  # noqa: PLC0415 — lazy: keeps the jobs router off this module's import path
+        _lifecycle_stage_for_write,
+        _stage_change_refusal,
+    )
+
     updates: dict[str, Any] = {}
     if payload.title is not None:
         updates["title"] = payload.title.strip()
+    requested_stage = None
     if payload.status is not None:
-        updates["lifecycle_stage"] = payload.status
+        requested_stage = _lifecycle_stage_for_write(payload.status)
+        if not requested_stage:
+            raise HTTPException(
+                status_code=422, detail=f"status {payload.status!r} is not a job stage"
+            )
     if payload.scheduled_at is not None:
         updates["scheduled_at"] = payload.scheduled_at
 
-    if not updates:
+    if not updates and requested_stage is None:
         raise HTTPException(status_code=422, detail="No fields to update")
 
-    set_clauses = ", ".join(f"{col} = :{col}" for col in updates)
-    params = {**updates, "job_id": job_id}
-
     with _write_errors_as_500(db, "update_job"):
-        # First, before the UPDATE is staged: its first run on an engine commits.
+        # First, before anything is read or staged: its first run on an engine
+        # commits, and a commit between the stage read and the UPDATE below
+        # would widen the window the UPDATE's stage condition closes.
         ensure_audit_table(db)
+        stage_condition = ""
+        if requested_stage is not None:
+            current = db.execute(
+                text(
+                    "SELECT lifecycle_stage, started_at FROM jobs"
+                    " WHERE id = :job_id AND deleted_at IS NULL"
+                ),
+                {"job_id": job_id},
+            ).mappings().first()
+            if not current:
+                raise HTTPException(status_code=404, detail="Job not found")
+            stored_stage = (current["lifecycle_stage"] or "").lower()
+            if requested_stage != stored_stage:
+                refusal = _stage_change_refusal(stored_stage, requested_stage)
+                if refusal:
+                    raise HTTPException(status_code=409, detail=refusal)
+                updates["lifecycle_stage"] = requested_stage
+                # `status` is the display twin the desktop keeps in sync.
+                updates["status"] = requested_stage.replace("_", " ").title()
+                if requested_stage == "in_progress" and not current["started_at"]:
+                    updates["started_at"] = datetime.now(timezone.utc)
+                # The guard ran against the stage read above. A closeout landing
+                # between that read and this write must not be overwritten, so
+                # the UPDATE only matches while the stage is still the one read.
+                stage_condition = " AND lifecycle_stage = :expected_stage"
+            if not updates:
+                # Only the stored stage was resent: nothing to write or audit.
+                return get_job(job_id, request, _auth, db)
+
+        set_clauses = ", ".join(f"{col} = :{col}" for col in updates)
+        params = {**updates, "job_id": job_id}
+        if stage_condition:
+            params["expected_stage"] = current["lifecycle_stage"]
         row = db.execute(
             text(
                 f"""
                 UPDATE jobs
                    SET {set_clauses}
                  WHERE id = :job_id
-                   AND deleted_at IS NULL
+                   AND deleted_at IS NULL{stage_condition}
                 RETURNING id, title, lifecycle_stage AS status,
                           customer_id, scheduled_at, created_at
                 """  # noqa: S608 — SET keys are the hardcoded column names above; values are bound
@@ -585,6 +631,13 @@ def update_job(
         db.commit()
 
     if not row:
+        if stage_condition:
+            # The job was there a moment ago: its stage moved under this write.
+            raise HTTPException(
+                status_code=409,
+                detail="The job's stage changed while this update was in flight; "
+                       "read it again before retrying.",
+            )
         raise HTTPException(status_code=404, detail="Job not found")
     return _ok(dict(row))
 
