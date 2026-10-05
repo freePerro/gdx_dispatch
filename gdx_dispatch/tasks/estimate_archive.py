@@ -9,11 +9,14 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 from sqlalchemy import text
 
 from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import SessionLocal
+from gdx_dispatch.core.tenant import company_id
+from gdx_dispatch.core.tenant_settings import TenantSettings
 
 log = logging.getLogger(__name__)
 
@@ -122,18 +125,38 @@ def purge_empty_drafts_for_all_tenants() -> dict:
     return {"tenants_checked": 1, "estimates_purged": total}
 
 
+def _archive_days(db, tenant_id: str) -> int:
+    """The archive threshold from THIS tenant's settings row (default 60).
+
+    Keyed by tenant (GDXA-226): prod's table holds a stale second row, and the
+    old unkeyed `LIMIT 1` honoured whichever row came back first. A primary-key
+    `get` through the ORM, so the `Uuid` bind matches on SQLite (32 dashless
+    hex) as well as Postgres. Not `core/settings_row.read_settings_row`: that
+    seeds a missing row and commits, which a nightly reader has no business
+    doing. A GDX_TENANT_ID that is not a uuid can key no row, so it gets the
+    default rather than another row's value.
+    """
+    try:
+        tid = UUID(str(tenant_id))
+    except ValueError:
+        log.warning("estimate_archive_tenant_id_not_uuid", extra={"tenant_id": tenant_id})
+        return 60
+    row = db.get(TenantSettings, tid)
+    return int((row.estimate_draft_archive_days if row else None) or 60)
+
+
 @celery_app.task(name="estimates.archive_stale_drafts_for_all_tenants", queue="priority:low")
 def archive_stale_drafts_for_all_tenants() -> dict:
     """Soft-delete stale drafts, honoring the per-tenant archive threshold."""
-    tenant_id = os.getenv("GDX_TENANT_ID") or os.getenv("GDX_DEFAULT_TENANT_ID") or "gdx"
+    # The app's own resolver, not this module's "gdx" fallback: with
+    # GDX_TENANT_ID unset the app keys its settings row under company_id()'s
+    # default, and a keyed read has to ask for that same id.
+    tenant_id = company_id()
     total = 0
     try:
         db = SessionLocal()
         try:
-            days_row = db.execute(
-                text("SELECT estimate_draft_archive_days FROM tenant_settings LIMIT 1")
-            ).mappings().first()
-            days = int((days_row["estimate_draft_archive_days"] if days_row else None) or 60)
+            days = _archive_days(db, tenant_id)
         finally:
             db.close()
         total += _archive_for_tenant(tenant_id, days)
