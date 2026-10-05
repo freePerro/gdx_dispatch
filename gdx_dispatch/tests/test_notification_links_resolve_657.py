@@ -204,13 +204,16 @@ def test_a_failed_dispatcher_lookup_reaches_the_callers_log(chat_db, monkeypatch
     committed, exactly as the dispatcher→tech branch always has."""
     db, job_id, sent = chat_db
 
-    class _BrokenDb:
-        def execute(self, *_a, **_k):
-            raise RuntimeError("role lookup failed")
+    def _broken_execute(*_a, **_k):
+        raise RuntimeError("role lookup failed")
 
+    # The real session, not a stand-in: since GDXA-156 the lookup runs inside
+    # contained_read, which opens a savepoint on db.connection() — and must
+    # still let the failure out after rolling it back.
     msg = SimpleNamespace(id="m1", body="hi", sender_role="technician")
-    with pytest.raises(RuntimeError, match="role lookup failed"):
-        mobile_chat._push_other_party(_BrokenDb(), job_id=job_id, msg=msg, user=_TECH, request=_req())
+    with monkeypatch.context() as m, pytest.raises(RuntimeError, match="role lookup failed"):
+        m.setattr(db, "execute", _broken_execute)
+        mobile_chat._push_other_party(db, job_id=job_id, msg=msg, user=_TECH, request=_req())
     assert sent == []
 
     # …and the caller's net is what catches it: message saved (201), failure logged.

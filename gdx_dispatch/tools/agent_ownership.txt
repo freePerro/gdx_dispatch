@@ -224,6 +224,7 @@ gdx_dispatch/frontend/src/components/AppTopbar.vue           frontend-shell
 gdx_dispatch/frontend/src/components/AppTopbar.story.vue     frontend-shell
 gdx_dispatch/frontend/src/components/AuthedImage.vue         frontend-shell
 gdx_dispatch/frontend/src/components/BugReportButton.vue     frontend-shell
+gdx_dispatch/frontend/src/components/KeyedRouterView.vue     frontend-shell
 gdx_dispatch/frontend/src/components/CommandPalette.vue      frontend-shell
 gdx_dispatch/frontend/src/components/EmptyState.vue          frontend-shell
 gdx_dispatch/frontend/src/components/ErrorBoundary.vue       frontend-shell
@@ -266,6 +267,12 @@ gdx_dispatch/routers/customer_statements.py                  money-billing
 gdx_dispatch/core/payments.py                                money-billing
 gdx_dispatch/core/stripe_payments.py                         money-billing
 gdx_dispatch/core/invoice_delivery.py                        money-billing
+gdx_dispatch/core/invoice_sms.py                             money-billing
+gdx_dispatch/core/estimate_sms.py                            estimates-pricing
+gdx_dispatch/core/link_sms.py                                comms-email-phone
+gdx_dispatch/frontend/src/components/SmsLinkDialog.vue       comms-email-phone
+gdx_dispatch/frontend/src/components/SendLaterPanel.vue      comms-email-phone
+gdx_dispatch/frontend/src/components/ScheduledTextsList.vue  comms-email-phone
 gdx_dispatch/core/invoice_invariants.py                      money-billing
 gdx_dispatch/core/invoice_paid.py                            money-billing
 gdx_dispatch/core/invoice_tax.py                             money-billing
@@ -283,6 +290,7 @@ gdx_dispatch/tasks/billing_followup.py                       money-billing
 gdx_dispatch/tasks/invoice_reminders_auto.py                 money-billing
 gdx_dispatch/tasks/stale_intent_sweep.py                     money-billing
 gdx_dispatch/frontend/src/views/InvoiceDetailView.vue        money-billing
+gdx_dispatch/frontend/src/components/InvoiceActivityPanel.vue money-billing
 gdx_dispatch/frontend/src/views/InvoiceCreateView.vue        money-billing
 gdx_dispatch/frontend/src/views/PaymentsView.vue             money-billing
 gdx_dispatch/frontend/src/views/AccountingLedgerView.vue     money-billing
@@ -293,6 +301,8 @@ gdx_dispatch/frontend/src/views/BillingView.vue              money-billing
 gdx_dispatch/frontend/src/components/CustomerStatementDialog.vue money-billing
 gdx_dispatch/frontend/src/components/PaymentCaptureForm.vue  money-billing
 gdx_dispatch/frontend/src/utils/customerStatement.js         money-billing
+gdx_dispatch/frontend/src/utils/arAging.js                   money-billing
+gdx_dispatch/frontend/src/components/OutstandingAgingDialog.vue money-billing
 
 ## ---------------------------------------------------------------------------
 ## jobs-dispatch — jobs, closeouts, scheduling, dispatch board, planner,
@@ -309,6 +319,7 @@ gdx_dispatch/routers/dispatch_ws.py                          jobs-dispatch
 gdx_dispatch/routers/scheduling.py                           jobs-dispatch
 gdx_dispatch/routers/appointments.py                         jobs-dispatch
 gdx_dispatch/routers/planner.py                              jobs-dispatch
+gdx_dispatch/services/planner_today.py                       jobs-dispatch
 gdx_dispatch/routers/tasks.py                                jobs-dispatch
 gdx_dispatch/routers/service_calls.py                        jobs-dispatch
 gdx_dispatch/routers/service_triggers.py                     jobs-dispatch
@@ -347,6 +358,7 @@ gdx_dispatch/frontend/src/views/JobsView.vue                 jobs-dispatch
 gdx_dispatch/frontend/src/views/JobDetailView.vue            jobs-dispatch
 gdx_dispatch/frontend/src/views/DispatchView.vue             jobs-dispatch
 gdx_dispatch/frontend/src/views/PlannerView.vue              jobs-dispatch
+gdx_dispatch/frontend/src/components/PlannerTodayPanel.vue   jobs-dispatch
 gdx_dispatch/frontend/src/views/AppointmentsView.vue         jobs-dispatch
 gdx_dispatch/frontend/src/views/MapsView.vue                 jobs-dispatch
 gdx_dispatch/frontend/src/views/GpsView.vue                  jobs-dispatch
@@ -409,6 +421,7 @@ gdx_dispatch/frontend/src/components/CatalogPickerDialog.vue estimates-pricing
 gdx_dispatch/frontend/src/components/LaborPickerDialog.vue   estimates-pricing
 gdx_dispatch/frontend/src/components/EstimateProfitPanel.vue estimates-pricing
 gdx_dispatch/frontend/src/components/EstimateStatusContext.vue estimates-pricing
+gdx_dispatch/frontend/src/components/EstimateLeadRequestPanel.vue estimates-pricing
 gdx_dispatch/frontend/src/components/DoorSpecList.vue        estimates-pricing
 gdx_dispatch/frontend/src/components/MeasurementDiagram.vue  estimates-pricing
 gdx_dispatch/frontend/src/composables/useEstimateSources.js  estimates-pricing
@@ -417,6 +430,7 @@ gdx_dispatch/frontend/src/catalog/*                          estimates-pricing
 gdx_dispatch/frontend/src/tours/catalog.js                   estimates-pricing
 gdx_dispatch/frontend/src/utils/doorSizeLabel.js             estimates-pricing
 gdx_dispatch/frontend/src/utils/quantity.js                  estimates-pricing
+gdx_dispatch/frontend/src/utils/lineCategories.js            estimates-pricing
 
 ## ---------------------------------------------------------------------------
 ## customers-crm — customers, contacts, locations, leads, segments, tags,
@@ -425,6 +439,7 @@ gdx_dispatch/frontend/src/utils/quantity.js                  estimates-pricing
 gdx_dispatch/routers/customers.py                            customers-crm
 gdx_dispatch/routers/sub_resources.py                        customers-crm
 gdx_dispatch/routers/leads.py                                customers-crm
+gdx_dispatch/core/lead_estimates.py                          customers-crm
 gdx_dispatch/routers/segments.py                             customers-crm
 gdx_dispatch/routers/tags.py                                 customers-crm
 gdx_dispatch/routers/admin_customer_tags.py                  customers-crm
@@ -446,6 +461,8 @@ gdx_dispatch/frontend/src/views/CustomersView.vue            customers-crm
 gdx_dispatch/frontend/src/views/CustomerDetailView.vue       customers-crm
 gdx_dispatch/frontend/src/views/CustomerDuplicatesView.vue   customers-crm
 gdx_dispatch/frontend/src/views/LeadsView.vue                customers-crm
+gdx_dispatch/frontend/src/components/LeadIntakeForm.vue      customers-crm
+gdx_dispatch/frontend/src/components/LeadEstimatesPanel.vue  customers-crm
 gdx_dispatch/frontend/src/views/SegmentsView.vue             customers-crm
 gdx_dispatch/frontend/src/views/TagsView.vue                 customers-crm
 gdx_dispatch/frontend/src/views/LoyaltyView.vue              customers-crm
@@ -481,6 +498,7 @@ gdx_dispatch/core/office_notifications.py                    comms-email-phone
 gdx_dispatch/core/push_notifications.py                      comms-email-phone
 gdx_dispatch/core/push_subscriptions.py                      comms-email-phone
 gdx_dispatch/core/customer_views.py                          comms-email-phone
+gdx_dispatch/core/customer_page_preview.py                   comms-email-phone
 gdx_dispatch/modules/outlook/*                               comms-email-phone
 gdx_dispatch/modules/phone_com/*                             comms-email-phone
 gdx_dispatch/modules/notifications/*                         comms-email-phone
@@ -505,6 +523,7 @@ gdx_dispatch/frontend/src/stores/notifications.js            comms-email-phone
 gdx_dispatch/frontend/src/composables/usePushSubscription.js comms-email-phone
 gdx_dispatch/frontend/src/utils/composerRecipient.js         comms-email-phone
 gdx_dispatch/frontend/src/utils/phoneComLabels.js            comms-email-phone
+gdx_dispatch/frontend/src/utils/sendLater.js                 comms-email-phone
 
 ## ---------------------------------------------------------------------------
 ## back-office-books — QuickBooks, bank feeds, vendor bills & statements (AP),
@@ -552,6 +571,7 @@ gdx_dispatch/frontend/src/composables/useForecasting.js      back-office-books
 gdx_dispatch/frontend/src/composables/useOverhead.js         back-office-books
 gdx_dispatch/frontend/src/composables/useQBSync.js           back-office-books
 gdx_dispatch/frontend/src/composables/useRecurringStreams.js back-office-books
+gdx_dispatch/frontend/src/composables/useCashCalendar.js     back-office-books
 gdx_dispatch/frontend/src/composables/qbSyncLabel.js         back-office-books
 
 ## ---------------------------------------------------------------------------
@@ -641,6 +661,7 @@ gdx_dispatch/frontend/src/views/PurchaseOrdersView.vue       inventory-purchasin
 gdx_dispatch/frontend/src/views/PartsToOrderView.vue         inventory-purchasing
 gdx_dispatch/frontend/src/views/VendorsView.vue              inventory-purchasing
 gdx_dispatch/frontend/src/composables/usePartsSeenCutoff.js  inventory-purchasing
+gdx_dispatch/frontend/src/components/DoorOrderTag.vue        inventory-purchasing
 
 ## ---------------------------------------------------------------------------
 ## documents-media — documents, uploads, job photos, PDF generation and

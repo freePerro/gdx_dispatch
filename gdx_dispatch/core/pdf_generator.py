@@ -164,6 +164,15 @@ def _normalize_template_config(template_config: dict[str, Any] | None, template_
     }
 
 
+def line_category_mode(template_config: dict[str, Any] | None, template_type: str = "estimate") -> str:
+    """How the document's line items show category: 'off', 'column' or
+    'grouped' — the PDF Template Editor's line-items setting, normalized
+    exactly as the PDF render reads it. The customer's web pages (approval
+    page, portal) follow this too, so the PDF and the page never disagree."""
+    li = _normalize_template_config(template_config, template_type)["line_items"]
+    return li["category_display"] if li["show_category"] else "off"
+
+
 def _group_lines(lines: Any) -> list[dict[str, Any]]:
     """Bucket lines by category, preserving first-appearance order (Jinja's
     groupby sorts alphabetically, which would shuffle the operator's line

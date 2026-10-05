@@ -27,14 +27,14 @@
           <EmptyState
             icon="pi pi-sliders-h"
             title="No custom fields yet"
-            message="Define extra fields to capture on customers and jobs."
+            message="Define extra fields to capture on customers, jobs and lead intake."
             action-label="New Field"
             @action="openCreate"
           />
         </template>
         <template #groupheader="slotProps">
           <div class="group-header">
-            <strong>{{ slotProps.data.entity_type === 'job' ? 'Job Fields' : 'Customer Fields' }}</strong>
+            <strong>{{ groupLabel(slotProps.data.entity_type) }}</strong>
           </div>
         </template>
         <Column field="field_key" header="Field Key" />
@@ -68,7 +68,7 @@
         <div class="form-grid">
           <div class="form-field">
             <label>Entity Type</label>
-            <Select v-model="form.entity_type" :options="entityOptions" class="w-full" />
+            <Select v-model="form.entity_type" :options="entityOptions" option-label="label" option-value="value" class="w-full" />
           </div>
           <div class="form-field">
             <label>Field Key</label>
@@ -81,7 +81,7 @@
           </div>
           <div class="form-field">
             <label>Field Type</label>
-            <Select v-model="form.field_type" :options="fieldTypeOptions" class="w-full" />
+            <Select v-model="form.field_type" :options="fieldTypeOptions" option-label="label" option-value="value" class="w-full" />
           </div>
           <div class="form-field" v-if="form.field_type === 'select'">
             <label>Options</label>
@@ -133,7 +133,17 @@ const optionsInput = ref('');
 const entityOptions = [
   { label: 'Customer', value: 'customer' },
   { label: 'Job', value: 'job' },
+  // Asked on the lead intake form (call / email -> lead -> estimate).
+  { label: 'Lead', value: 'lead' },
 ];
+
+// Every entity gets its own heading. The old ternary labelled anything that
+// was not a job "Customer Fields" — so the seeded lead intake fields showed
+// up as five unexplained customer fields.
+const GROUP_LABELS = { customer: 'Customer Fields', job: 'Job Fields', lead: 'Lead Intake Fields' };
+function groupLabel(entityType) {
+  return GROUP_LABELS[entityType] || `${entityType} fields`;
+}
 
 const fieldTypeOptions = [
   { label: 'Text', value: 'text' },

@@ -32,6 +32,7 @@ from gdx_dispatch.core.database import get_db, get_tenant_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Job
 from gdx_dispatch.modules.phone_com import key_storage
+from gdx_dispatch.modules.phone_com import scheduled as scheduled_sms
 from gdx_dispatch.modules.phone_com.client import PhoneComAPIError, PhoneComClient
 from gdx_dispatch.modules.phone_com.customer_resolver import normalize_e164
 from gdx_dispatch.modules.phone_com.models import (
@@ -874,6 +875,79 @@ def send_message(
         "thread_key": msg.thread_key,
         "delivery_status": msg.delivery_status,
     }
+
+
+# ── scheduled texts ("send later") ───────────────────────────────────────
+# The rules live in modules/phone_com/scheduled.py. Same gate as sending now (the Phone.com
+# module); invoice / estimate texts are scheduled on their own routes, which
+# carry their own permission gates, and are listed / canceled here.
+
+
+@router.post("/messages/schedule", status_code=status.HTTP_201_CREATED)
+def schedule_message(
+    payload: scheduled_sms.ScheduleMessageIn,
+    request: Request,
+    tenant_db: Session = Depends(get_tenant_db),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Queue a reply to send at ``send_at`` (timezone-aware, 1 minute to 30
+    days out). Refused now if the customer has opted out; re-checked when it
+    sends."""
+    from gdx_dispatch.core.link_sms import active_customer, refuse
+
+    to = normalize_e164(payload.to)
+    if not to:
+        raise refuse(422, "no_valid_phone", "That is not a valid phone number.")
+    body = payload.body.strip()
+    if not body:
+        raise refuse(422, "empty_body", "Type a message to schedule.")
+    if payload.customer_id:
+        customer = active_customer(tenant_db, payload.customer_id)
+        if customer is not None and customer.sms_opt_out:
+            raise refuse(409, "sms_opt_out", "This customer has opted out of text messages.")
+    return scheduled_sms.create(
+        tenant_db,
+        kind=scheduled_sms.KIND_MESSAGE,
+        to=to,
+        body=body,
+        send_at=payload.send_at,
+        audit_action=scheduled_sms.ACTION_MESSAGE,
+        tenant_id=_coerce_tenant_uuid(user),
+        user_id=_coerce_user_uuid(user),
+        customer_id=payload.customer_id,
+        job_id=payload.job_id,
+        request=request,
+    )
+
+
+@router.get("/scheduled")
+def list_scheduled(
+    to: str | None = Query(None, max_length=40),
+    kind: str | None = Query(None, pattern="^(message|invoice|estimate)$"),
+    entity_id: UUID | None = None,
+    tenant_db: Session = Depends(get_tenant_db),
+    user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
+) -> dict[str, Any]:
+    """Texts waiting to send, and the last week's that did not go — for one
+    number (``to``, the SMS thread) or one document (``kind`` + ``entity_id``,
+    the text dialog). One filter is required: this is not a company-wide list."""
+    number = normalize_e164(to) if to else None
+    if to and not number:
+        raise HTTPException(status_code=422, detail="to: not a valid phone number")
+    if not number and not entity_id:
+        raise HTTPException(status_code=422, detail="pass to, or kind and entity_id")
+    return {"items": scheduled_sms.list_rows(tenant_db, to=number, kind=kind, entity_id=entity_id)}
+
+
+@router.post("/scheduled/{scheduled_id}/cancel")
+def cancel_scheduled(
+    scheduled_id: UUID,
+    request: Request,
+    tenant_db: Session = Depends(get_tenant_db),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Cancel a text that has not started sending. 409 once it has."""
+    return scheduled_sms.cancel(tenant_db, scheduled_id, user_id=_coerce_user_uuid(user), request=request)
 
 
 # ── pc-s11: stats + catalog ─────────────────────────────────────────────

@@ -37,6 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.core.pay_periods import resolve_zone, shop_day_of
 from gdx_dispatch.models.tenant_models import AppSettings, TimeclockEntry, User
 
@@ -158,13 +159,37 @@ def user_names(db: Session, user_ids: set[str]) -> dict[str, str]:
     if not parsed:
         return {}
     try:
-        rows = db.execute(select(User).where(User.id.in_(list(parsed)))).scalars().all()
+        # SAVEPOINT, replacing a `db.rollback()` in the handler (GDXA-164
+        # sibling sweep). Be exact about what the rollback was and was not:
+        # FIVE of the six callers reach here just after their own `db.commit()`
+        # (`create_request`, `approve_request`, `deny_request`,
+        # `cancel_request`, `revoke_request`), so for those there was indeed no
+        # pending work to discard. The sixth, `list_requests`, is a pure GET
+        # that never commits at all — it just read `rows`, and
+        # the rollback expired every one of them, buying a re-SELECT during
+        # `_serialize`. Be exact about when that bit: the rollback sat inside
+        # the `except`, so the cost landed only on the requests where the name
+        # read actually failed — a latent cost on the read path, not one paid
+        # on every list. An earlier draft implied the latter.
+        # Either way it is the wrong tool per `core.database.contained_read`
+        # rule 4 — a full rollback expires everything the caller holds, and it
+        # is silently destructive the day a seventh caller arrives with
+        # something staged. The savepoint clears the aborted transaction
+        # without either cost.
+        #
+        # One thing the swap gives up, recorded rather than glossed: a
+        # `db.rollback()` also RECOVERS a session that was already poisoned
+        # upstream, and a savepoint does not — `contained_read.__enter__`
+        # raises 25P02 on an aborted transaction and leaves it dead (limit 1 in
+        # its docstring, measured again here). No caller can reach this in that
+        # state today, since the five writers commit immediately before and
+        # `list_requests` reads nothing that could poison first. It is a
+        # recovery path removed, not one that was in use.
+        with contained_read(db):
+            rows = db.execute(select(User).where(User.id.in_(list(parsed)))).scalars().all()
     except SQLAlchemyError:
-        # Cosmetic — ids still resolve to rows. Called only AFTER the write
-        # has committed, so rolling back here clears the aborted transaction
-        # a failed statement leaves behind on Postgres without losing anything.
+        # Cosmetic — ids still resolve to rows, they just carry no label.
         log.exception("time_off_names_failed")
-        db.rollback()
         return {}
     out: dict[str, str] = {}
     for u in rows:

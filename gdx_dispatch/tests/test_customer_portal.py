@@ -656,6 +656,56 @@ def test_estimate_detail_strips_line_prices_when_hidden(tenant_db_session):
     assert body["total"] == body["totals"]["total"]
 
 
+
+def _save_estimate_pdf_template(db, *, show_category, category_display="column"):
+    import json
+
+    from gdx_dispatch.core import pdf_generator
+    from gdx_dispatch.models.tenant_models import PdfTemplate
+
+    blocks = pdf_generator.default_blocks("estimate")
+    for b in blocks:
+        if b["type"] == "line_items":
+            b["settings"] = {**b["settings"], "show_category": show_category, "category_display": category_display}
+    db.add(PdfTemplate(
+        id=str(uuid4()), company_id="tenant-test", template_type="estimate", blocks=json.dumps(blocks),
+        created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+    ))
+    db.commit()
+
+
+def test_estimate_detail_line_category_off_by_default(tenant_db_session):
+    # No saved PDF template: the PDF prints no category, so the portal sends none.
+    seeded = _seed_customer_data(tenant_db_session)
+    est = _seed_estimate_with_lines(tenant_db_session, seeded["customer_a_id"])
+    for line in tenant_db_session.execute(select(EstimateLine).where(EstimateLine.estimate_id == est.id)).scalars():
+        line.category = "Doors"
+    tenant_db_session.commit()
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    body = portal_router.portal_estimate_detail(estimate_id=est.id, request=_mock_request(), principal=principal, db=tenant_db_session)
+    assert body["line_category"] == "off"
+    assert all("category" not in line for line in body["lines"])
+
+
+@pytest.mark.parametrize("display", ["column", "grouped"])
+def test_estimate_detail_line_category_follows_the_pdf_template(tenant_db_session, display):
+    # Same rule as the public approval page: the portal matches the PDF.
+    seeded = _seed_customer_data(tenant_db_session)
+    _save_estimate_pdf_template(tenant_db_session, show_category=True, category_display=display)
+    est = _seed_estimate_with_lines(tenant_db_session, seeded["customer_a_id"])
+    first = tenant_db_session.execute(
+        select(EstimateLine).where(EstimateLine.estimate_id == est.id).order_by(EstimateLine.sort_order)
+    ).scalars().first()
+    first.category = "Doors"
+    tenant_db_session.commit()
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    body = portal_router.portal_estimate_detail(estimate_id=est.id, request=_mock_request(), principal=principal, db=tenant_db_session)
+    assert body["line_category"] == display
+    assert [line["category"] for line in body["lines"]] == ["Doors", None]
+
+
 # --- Password login (opt-in; magic-link stays as onboarding + forgot-password) ---
 
 def test_password_login_succeeds_and_issues_customer_jwt(tenant_db_session):

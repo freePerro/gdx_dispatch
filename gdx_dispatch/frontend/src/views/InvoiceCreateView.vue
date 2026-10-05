@@ -310,6 +310,23 @@
               data-testid="invoice-notes"
             />
           </div>
+
+          <!-- Total-only PDF display. Starts from the accepted estimate's
+               effective setting (its own override, else the company default)
+               so the invoice matches what the customer already saw; the
+               operator can flip it here before creating. -->
+          <div class="form-field full-width" data-testid="invoice-create-hide-prices">
+            <div class="hide-prices-row">
+              <ToggleSwitch
+                v-model="hideLinePrices"
+                inputId="inv-create-hide-line-prices"
+                data-testid="invoice-create-hide-line-prices"
+                @update:modelValue="hideLinePricesTouched = true"
+              />
+              <label for="inv-create-hide-line-prices">Hide line-item prices on PDF</label>
+            </div>
+            <small class="muted" data-testid="invoice-create-hide-prices-source">{{ hideLinePricesHint }}</small>
+          </div>
         </div>
 
         <Divider />
@@ -383,6 +400,7 @@ import DatePicker from 'primevue/datepicker';
 import InputNumber from 'primevue/inputnumber';
 import Textarea from 'primevue/textarea';
 import Divider from 'primevue/divider';
+import ToggleSwitch from 'primevue/toggleswitch';
 import { useToast } from 'primevue/usetoast';
 import { useApi } from '../composables/useApi';
 import { formatMoney as currency } from '../composables/useFormatters';
@@ -671,6 +689,73 @@ const closeoutSuggestion = ref(null);
 // this says "the numbers started here", not "these are the estimate's lines".
 const sourceEstimateId = ref(null);
 
+// "Total-only" invoice PDF. `hideLinePricesInherited` is what the source
+// estimate says ({ hide, from: 'estimate' | 'company', number }); the toggle
+// starts there and the operator's flip wins. Only a flip is sent; otherwise
+// the server resolves the same inheritance itself.
+const hideLinePrices = ref(false);
+const hideLinePricesTouched = ref(false);
+const hideLinePricesInherited = ref(null);
+const hideLinePricesUnresolved = ref(false);
+
+const hideLinePricesHint = computed(() => {
+  const inh = hideLinePricesInherited.value;
+  if (hideLinePricesUnresolved.value && !hideLinePricesTouched.value) {
+    return 'Will follow the estimate\'s setting.';
+  }
+  if (!inh) return 'Customers see each line\'s price unless this is on.';
+  const est = inh.number ? `estimate ${inh.number}` : 'the estimate';
+  const said = inh.hide ? 'hides prices' : 'shows prices';
+  const base = inh.from === 'estimate'
+    ? `From ${est}, which ${said}.`
+    : `From the company default for estimates, which ${said} (${est} has no override).`;
+  return hideLinePricesTouched.value && hideLinePrices.value !== inh.hide
+    ? `${base} Changed for this invoice.`
+    : base;
+});
+
+// Any change of estimate (job change, customer switch, a job with no accepted
+// estimate) starts over: an operator's flip was a decision about the OLD
+// estimate's invoice, and carrying it across would send it, audited as theirs,
+// for a job they never decided about.
+watch(sourceEstimateId, () => {
+  hideLinePricesInherited.value = null;
+  hideLinePricesUnresolved.value = false;
+  hideLinePricesTouched.value = false;
+  hideLinePrices.value = false;
+  // `sync`: the reset must land at the assignment, BEFORE the prefill resolves
+  // the new estimate's value. A default (pre-flush) watcher runs afterwards
+  // and would wipe what the prefill just set.
+}, { flush: 'sync' });
+
+async function resolveInheritedHidePrices(est) {
+  let hide = null;
+  let from = null;
+  if (est.hide_line_prices === true || est.hide_line_prices === false) {
+    hide = est.hide_line_prices;
+    from = 'estimate';
+  } else {
+    try {
+      const f = await api.get('/api/estimates-features', { suppressErrorToast: true });
+      const d = f?.data || f || {};
+      hide = Boolean(d.estimates_hide_line_prices);
+      from = 'company';
+    } catch {
+      hide = null;
+    }
+  }
+  // The job may have changed while the default was loading.
+  if (sourceEstimateId.value !== est.id) return;
+  if (hide === null) {
+    hideLinePricesInherited.value = null;
+    hideLinePricesUnresolved.value = true;
+    return;
+  }
+  hideLinePricesUnresolved.value = false;
+  hideLinePricesInherited.value = { hide, from, number: est.estimate_number || null };
+  if (!hideLinePricesTouched.value) hideLinePrices.value = hide;
+}
+
 function appendNoteToInvoiceNotes(note) {
   const body = (note?.body || '').trim();
   if (!body) return;
@@ -817,6 +902,7 @@ async function prefillFromJobEstimate(jobId) {
     // yielded no lines did not price this invoice.
     sourceEstimateId.value = latest.id;
     if (!form.value.notes) form.value.notes = est.description || est.notes || '';
+    await resolveInheritedHidePrices({ ...est, id: latest.id });
   } catch (e) {
     // estimate prefill is best-effort
   }
@@ -937,6 +1023,13 @@ async function createInvoice() {
     // estimate's lines and ignore ours, which would discard whatever the
     // operator just edited.
     if (sourceEstimateId.value) payload.source_estimate_id = sourceEstimateId.value;
+    // Sent only when the operator flipped the toggle. Untouched, the server
+    // inherits from the same estimate and company default this screen read,
+    // and the audit trail records "estimate" instead of claiming an operator
+    // decision nobody made.
+    if (hideLinePricesTouched.value) {
+      payload.hide_line_prices = Boolean(hideLinePrices.value);
+    }
 
     let created;
     try {
@@ -1136,6 +1229,14 @@ watch(() => form.value.customer_id, () => onCustomerChange());
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+}
+.hide-prices-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.hide-prices-row label {
+  margin: 0;
 }
 .form-field.full-width {
   grid-column: 1 / -1;

@@ -59,7 +59,16 @@ async def handler(
     # Agent privacy gate, in the WHERE clause so hidden rows never consume
     # the page window (audit round 2: a post-fetch filter after LIMIT made
     # personal-heavy windows return short/empty pages with truncated=False).
-    rules = _load_rules(db)
+    # GDXA-159: both reads in this handler are contained. `db` is the
+    # invoker's session and `routers/ai.py` reuses it for every tool in the
+    # turn, so a failure here used to cost the turn's LATER tools their work —
+    # over twenty `mcp_tools/*` modules call `db.commit()` on this same
+    # session. `contained_read` re-raises, so this tool still errors exactly
+    # as before; only the invoker's transaction survives.
+    from gdx_dispatch.core.database import contained_read
+
+    with contained_read(db):
+        rules = _load_rules(db)
     stmt = select(OutlookMessage).where(OutlookMessage.is_personal.is_(False))
     if rules.get("tagged_visibility_above_role") == "owner_only":
         stmt = stmt.where(
@@ -80,7 +89,8 @@ async def handler(
         stmt = stmt.where(OutlookMessage.received_at <= until)
 
     stmt = stmt.order_by(desc(OutlookMessage.received_at)).limit(capped_limit + 1)
-    rows = list(db.execute(stmt).scalars().all())
+    with contained_read(db):
+        rows = list(db.execute(stmt).scalars().all())
     # Belt to the WHERE-clause braces above: visible_to_agent re-checks each
     # row in Python so the privacy rules can't silently drift apart from the
     # SQL translation of them (and so mock-DB tests exercise the gate).

@@ -125,6 +125,18 @@
           </div>
         </header>
 
+        <!-- Sends, texts, bounces, customer views and payment reminders, with
+             a one-line "did they open it?" that shows while the panel is
+             collapsed. Payments stay in Payment History below. -->
+        <InvoiceActivityPanel
+          :items="activity.items"
+          :total="activity.total"
+          :loading="activityLoading"
+          :error="activityError"
+          :customer-views="activity.context.customer_views"
+          :status="invoice.status || ''"
+        />
+
         <!-- Bill To panel — surfaces customer contact on the invoice so the
              office can email/call without bouncing through /customers/<id>.
              "Edit" opens the shared CustomerFormDialog. -->
@@ -388,6 +400,17 @@
             data-testid="send-invoice-btn"
             :disabled="String(invoice.status || '').toLowerCase() === 'void'"
             @click="sendInvoice"
+          />
+          <!-- Text the view-and-pay link (Phone.com). Only while money is
+               owed — the text IS a pay link — and only when texting is on. -->
+          <Button
+            v-if="smsEnabled && !['paid','void'].includes(String(invoice.status || '').toLowerCase()) && balanceDue > 0"
+            label="Text Invoice"
+            icon="pi pi-comment"
+            severity="secondary"
+            outlined
+            data-testid="text-invoice-btn"
+            @click="showSmsDialog = true"
           />
           <!-- Paper invoices: printed + posted, no email involved. Stamps the
                delivery fact with channel 'mail' so the row leaves the Billing
@@ -773,6 +796,12 @@
         </template>
       </Dialog>
 
+      <SmsLinkDialog
+        v-model:visible="showSmsDialog"
+        :doc-id="String(route.params.id)"
+        @sent="fetchInvoice"
+      />
+
       <!-- Record Payment Dialog -->
       <Dialog
         v-model:visible="showPaymentDialog"
@@ -1077,6 +1106,8 @@ import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
 import { usePermission } from "../composables/usePermission";
 import { invoiceStatusSeverity as statusSeverity } from "../utils/statusSeverity";
 import { useTenantModules } from "../composables/useTenantModules";
+import SmsLinkDialog from "../components/SmsLinkDialog.vue";
+import InvoiceActivityPanel from "../components/InvoiceActivityPanel.vue";
 import { openAuthedFile } from "../composables/useAuthedFile";
 import { useTenantTimezone } from "../composables/useTenantTimezone";
 import Button from "primevue/button";
@@ -1437,6 +1468,8 @@ const customerForEdit = ref(null);
 // is technically true but pure noise for a tenant that doesn't use QB).
 const { isEnabled } = useTenantModules();
 const qbEnabled = computed(() => isEnabled("quickbooks"));
+const smsEnabled = computed(() => isEnabled("phone_com"));
+const showSmsDialog = ref(false);
 const qbSync = computed(() => qbSyncLabel(invoice.value, formatStampDateTime));
 
 // --- Computed ---
@@ -1752,6 +1785,37 @@ async function fetchUnbilledJobParts() {
   }
 }
 
+// GET /api/invoices/{id}/activity — re-read on every fetchInvoice(), which
+// every send / mark-sent / void / reminder action on this page already
+// calls, so the panel never lags the invoice.
+const EMPTY_ACTIVITY = () => ({ items: [], total: 0, context: { customer_views: { count: 0, last_at: null, link_sent_at: null } } });
+const activity = ref(EMPTY_ACTIVITY());
+const activityLoading = ref(false);
+const activityError = ref(false);
+
+async function loadActivity() {
+  if (!route.params.id) return;
+  activityLoading.value = true;
+  try {
+    const d = await api.get(`/api/invoices/${route.params.id}/activity`, { suppressErrorToast: true });
+    const items = Array.isArray(d?.items) ? d.items : [];
+    activity.value = {
+      items,
+      total: Number.isFinite(d?.total) ? d.total : items.length,
+      context: { customer_views: d?.context?.customer_views || { count: 0, last_at: null, link_sent_at: null } },
+    };
+    activityError.value = false;
+  } catch {
+    // The trail is context, not the record — a failed read must not
+    // disturb the invoice itself. The panel says it couldn't load rather
+    // than showing an empty trail, which would read as "nothing happened".
+    activity.value = EMPTY_ACTIVITY();
+    activityError.value = true;
+  } finally {
+    activityLoading.value = false;
+  }
+}
+
 async function fetchInvoice() {
   loading.value = true;
   try {
@@ -1759,6 +1823,7 @@ async function fetchInvoice() {
     normalizeInvoice(result?.data || result || {});
     fetchJobPhotos(); // fire-and-forget — the picker card fills in when it lands
     fetchUnbilledJobParts(); // fire-and-forget — banner fills in when it lands
+    loadActivity(); // fire-and-forget — the trail fills in when it lands
   } catch {
     toast.add({ severity: "warn", summary: "Offline", detail: "Using placeholder data", life: 3000 });
     normalizeInvoice({

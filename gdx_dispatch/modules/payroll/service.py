@@ -11,6 +11,8 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.database import contained_read
+
 log = logging.getLogger(__name__)
 
 
@@ -51,19 +53,38 @@ def effective_labor_cost(
     # 1) True rate from payroll_entries (most recent containing period).
     true_row = None
     try:
-        true_row = tenant_db.execute(
-            text(
-                "SELECT id, hours_paid, gross_pay "
-                "FROM payroll_entries "
-                "WHERE tech_user_id = :tid "
-                "  AND deleted_at IS NULL "
-                "  AND period_start <= :when "
-                "  AND period_end   >= :when "
-                "  AND hours_paid > 0 "
-                "ORDER BY period_end DESC LIMIT 1"
-            ),
-            {"tid": tech_id_str, "when": when_ts},
-        ).first()
+        # SAVEPOINT: `tenant_db` belongs to the caller. On Postgres a failed
+        # read aborts the whole transaction, so without containment this
+        # swallow takes the estimated-rate read below with it — both degrade to
+        # None, source "none", labor cost 0.00 — and kills the caller's
+        # transaction besides. `routers/jobs.py::get_job_costing` calls this
+        # once per time entry and then reads revenue on the same session.
+        #
+        # Do NOT cite the handler's own "table may not exist yet on this
+        # tenant" as the live trigger; that was this change's first draft and
+        # it is false. Checked on prod 2026-09-27: `payroll_entries` is there
+        # (PG 16.13), `PayrollEntry` is declared on `TenantBase`, and the
+        # entrypoint runs migrations before serving. It is absent only from
+        # `tests/fixtures/structure.sql`, which is 93 tables stale — a fixture
+        # artifact, which is exactly the trap `contained_read`'s docstring
+        # already had to correct once for `tenant_settings`. What is left as a
+        # real mechanism is the migration window, a future `statement_timeout`,
+        # and a genuinely raw table. Cheap insurance on a real mechanism, not a
+        # repair for an observed outage. See core.database.contained_read.
+        with contained_read(tenant_db):
+            true_row = tenant_db.execute(
+                text(
+                    "SELECT id, hours_paid, gross_pay "
+                    "FROM payroll_entries "
+                    "WHERE tech_user_id = :tid "
+                    "  AND deleted_at IS NULL "
+                    "  AND period_start <= :when "
+                    "  AND period_end   >= :when "
+                    "  AND hours_paid > 0 "
+                    "ORDER BY period_end DESC LIMIT 1"
+                ),
+                {"tid": tech_id_str, "when": when_ts},
+            ).first()
     except Exception:
         # payroll_entries table may not exist yet on this tenant
         log.debug("payroll_entries lookup failed; falling back to estimated", exc_info=True)
@@ -78,14 +99,20 @@ def effective_labor_cost(
     # 2) Estimated rate from technicians.hourly_rate.
     est_rate: Decimal | None = None
     try:
-        est_row = tenant_db.execute(
-            text(
-                "SELECT hourly_rate FROM technicians "
-                "WHERE (user_id = :tid OR id = :tid) AND deleted_at IS NULL "
-                "LIMIT 1"
-            ),
-            {"tid": tech_id_str},
-        ).first()
+        # SAVEPOINT for the same reason as the true-rate read above. This is the
+        # LAST rate this function can fall back to: degrade here and the entry
+        # is costed at 0.00 with source "none", so containing the failure to
+        # this one statement is what keeps the caller's other entries — and the
+        # caller's transaction — alive.
+        with contained_read(tenant_db):
+            est_row = tenant_db.execute(
+                text(
+                    "SELECT hourly_rate FROM technicians "
+                    "WHERE (user_id = :tid OR id = :tid) AND deleted_at IS NULL "
+                    "LIMIT 1"
+                ),
+                {"tid": tech_id_str},
+            ).first()
         if est_row and est_row[0] is not None:
             est_rate = Decimal(str(est_row[0]))
     except Exception:

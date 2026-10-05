@@ -5,7 +5,7 @@ from typing import Any
 
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
-from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid
+from gdx_dispatch.core.mcp_tools._helpers import agent_visible_message, coerce_uuid
 
 DESCRIPTOR = ToolDescriptor(
     name="email.move",
@@ -53,26 +53,26 @@ async def handler(
 ) -> dict[str, Any]:
     from sqlalchemy import select
 
-    from gdx_dispatch.modules.outlook.models import OutlookFolder, OutlookMessage
+    from gdx_dispatch.modules.outlook.models import OutlookFolder
 
     mid = coerce_uuid(message_id)
     if mid is None:
         return {"error": "invalid message_id"}
 
-    msg = db.get(OutlookMessage, mid)
+    # GDXA-159: the reads are contained; the `db.commit()` further down is a
+    # WRITE and deliberately stays outside (rule 2 — a write wants
+    # `db.begin_nested()`, not this). The message load and privacy gate live
+    # in `_helpers.agent_visible_message`; the folder lookup is below.
+    from gdx_dispatch.core.database import contained_read
+
+    msg = agent_visible_message(db, mid)
     if msg is None:
         return {"error": "message not found"}
-    # Agent privacy gate — a machine caller may not act on (or learn the
-    # existence of) personal / owner_only-hidden mail. Same "not found" as
-    # truly-missing so hidden ids can't be probed. (visibility.py)
-    from gdx_dispatch.modules.outlook.visibility import visible_to_agent
 
-    if not visible_to_agent(msg, db):
-        return {"error": "message not found"}
-
-    folder = db.execute(
-        select(OutlookFolder).where(OutlookFolder.graph_folder_id == target_folder_id).limit(1)
-    ).scalar_one_or_none()
+    with contained_read(db):
+        folder = db.execute(
+            select(OutlookFolder).where(OutlookFolder.graph_folder_id == target_folder_id).limit(1)
+        ).scalar_one_or_none()
     if folder is None:
         return {"error": f"folder {target_folder_id!r} not found"}
 

@@ -46,9 +46,18 @@
         </div>
         <div class="header-actions">
           <Button label="Edit" icon="pi pi-pencil" aria-label="Edit" severity="secondary" @click="openEditDialog" />
-          <Button v-if="job.status !== 'Complete' && job.status !== 'Invoiced'"
+          <!-- 2026-10-04 (job-stage-paths-plan): Complete Job opens the same
+               closeout sheet as the Dispatch board and the phone. It used to
+               PATCH the status, which skipped the tenant's parts/hours gates
+               and stamped no completed_at. Close without work is for a job
+               with nothing to attest (old, duplicate, no-show) — closeout
+               requires hours, and typing hours nobody worked would bill them. -->
+          <Button v-if="!jobFinished && job.status !== 'Invoiced'"
             label="Complete Job" icon="pi pi-check" severity="success"
             @click="completeJob" data-testid="job-detail-complete" />
+          <Button v-if="!jobFinished && patchable"
+            label="Close without work" icon="pi pi-times-circle" severity="secondary" outlined
+            @click="openCloseWithoutWork" data-testid="job-detail-close-without-work" />
           <!-- 2026-07-23 deposit/progress billing: invoicing is no longer
                gated on completion — deposits and progress invoices happen
                mid-job. Green when Complete (the normal moment), muted
@@ -160,7 +169,7 @@
             </div>
             <div class="detail-row">
               <span>Scheduled For</span>
-              <strong>{{ job.scheduled_at ? formatDate(job.scheduled_at) : 'Not yet scheduled' }}</strong>
+              <strong data-testid="job-detail-scheduled-for">{{ scheduledForDisplay }}</strong>
             </div>
             <div class="detail-row">
               <span>Priority</span>
@@ -1322,6 +1331,44 @@
       @applied="onStateOverrideApplied"
     />
 
+    <MobileJobCloseoutDialog
+      v-model:visible="closeoutOpen"
+      :job-id="String(job.id || route.params.id || '')"
+      :job-title="job.title || ''"
+      :job-type="job.job_type || ''"
+      :customer-name="customerDisplayName"
+      @closed-out="fetchJob"
+    />
+
+    <Dialog
+      v-model:visible="closeWithoutWorkOpen"
+      header="Close without work"
+      modal
+      :style="{ width: '480px' }"
+      :breakpoints="{ '768px': '95vw' }"
+      data-testid="close-without-work-dialog"
+    >
+      <p class="muted">
+        Finishes the job with no hours, parts or invoice draft. Use it for a job
+        nobody worked — an old job, a duplicate, a no-show. If work was done,
+        use Complete Job instead.
+      </p>
+      <div class="schedule-form">
+        <div class="form-field">
+          <label for="close-without-work-reason">Reason *</label>
+          <Textarea id="close-without-work-reason" v-model="closeWithoutWorkReason" rows="3"
+            placeholder="At least 4 characters. Recorded in the audit log."
+            data-testid="close-without-work-reason" />
+        </div>
+      </div>
+      <template #footer>
+        <Button label="Cancel" severity="secondary" @click="closeWithoutWorkOpen = false" />
+        <Button label="Close job" icon="pi pi-check" :loading="closingWithoutWork"
+          :disabled="closeWithoutWorkReason.trim().length < 4"
+          @click="submitCloseWithoutWork" data-testid="close-without-work-submit" />
+      </template>
+    </Dialog>
+
     <Dialog
       v-model:visible="customerEditDialog"
       header="Edit Customer"
@@ -1363,6 +1410,7 @@
 import { ref, computed, onMounted, nextTick, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import JobStateOverrideDialog from "../components/JobStateOverrideDialog.vue";
+import MobileJobCloseoutDialog from "../components/MobileJobCloseoutDialog.vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
 import { formatDate, formatDateTime, formatMoney, formatMoney as formatCurrency, formatPercent as fmtPercent, formatPhone } from "../composables/useFormatters";
@@ -1567,6 +1615,20 @@ const awaitingSchedule = computed(() => isAwaitingSchedule(job.value));
 const lifecycleStageDisplay = computed(() => {
   if (awaitingSchedule.value) return "Awaiting Schedule";
   return job.value.lifecycle_stage || job.value.status || "Unknown";
+});
+// A job finished or cancelled without ever going on the calendar (walk-ins,
+// same-day calls, imported history) read "Complete" over "Not yet scheduled"
+// — as if it were still waiting to be booked. "Yet" only fits an open job.
+// A completed job shows when it was finished instead; most imported completed
+// jobs carry no completed_at either, so those fall back to "Not scheduled".
+const scheduledForDisplay = computed(() => {
+  if (job.value.scheduled_at) return formatDate(job.value.scheduled_at);
+  const stage = job.value.lifecycle_stage || job.value.status;
+  if (stage === "Complete" && job.value.completed_at) {
+    return `Completed ${formatDate(job.value.completed_at)}`;
+  }
+  if (stage === "Complete" || stage === "Cancelled") return "Not scheduled";
+  return "Not yet scheduled";
 });
 // Sprint customer-multi-location (2026-05-21) — if the job is bound to
 // a specific customer_locations row, that wins. Otherwise fall back to
@@ -2267,8 +2329,20 @@ async function saveCustomerEdit() {
   }
 }
 
+// The stage strip routes each move to the path that owns it (job-stage-paths
+// plan §4.2): finishing goes through the closeout sheet, and moving a finished
+// job goes through the Re-open dialog so the reason is recorded. The server
+// refuses both as a bare status PATCH (409), so these are not just UI sugar.
 async function applyStage(stage) {
-  if (!job.value.id) return;
+  if (!job.value.id || stage === job.value.status) return;
+  if (jobFinished.value) {
+    showStateOverride.value = true;
+    return;
+  }
+  if (stage === "Complete") {
+    closeoutOpen.value = true;
+    return;
+  }
   try {
     await api.patch(`/api/jobs/${job.value.id}`, { status: stage }, { successMessage: `Status set to ${stage}` });
     await fetchJob();
@@ -2651,11 +2725,37 @@ async function savePart() {
   }
 }
 
-async function completeJob() {
+// Stored stage, not the display label /api/jobs/{id} puts in lifecycle_stage
+// (same reading as JobStateOverrideDialog, #841).
+const jobFinished = computed(() => {
+  const s = String(job.value.lifecycle_stage_raw || job.value.lifecycle_stage || "").trim().toLowerCase();
+  return ["completed", "complete", "cancelled", "canceled"].includes(s);
+});
+
+const closeoutOpen = ref(false);
+function completeJob() {
+  closeoutOpen.value = true;
+}
+
+const closeWithoutWorkOpen = ref(false);
+const closeWithoutWorkReason = ref("");
+const closingWithoutWork = ref(false);
+function openCloseWithoutWork() {
+  closeWithoutWorkReason.value = "";
+  closeWithoutWorkOpen.value = true;
+}
+async function submitCloseWithoutWork() {
+  closingWithoutWork.value = true;
   try {
-    await api.patch(`/api/jobs/${route.params.id}`, { status: "Complete" }, { successMessage: "Job completed" });
+    await api.post(`/api/jobs/${route.params.id}/close-without-work`,
+      { reason: closeWithoutWorkReason.value.trim() },
+      { successMessage: "Job closed without work" });
+    closeWithoutWorkOpen.value = false;
     await fetchJob();
   } catch {
+    // handled in composable; the dialog stays open so the reason isn't lost
+  } finally {
+    closingWithoutWork.value = false;
   }
 }
 

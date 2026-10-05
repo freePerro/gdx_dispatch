@@ -240,8 +240,12 @@ def build_invoice_email_html(
     branding: dict[str, str] | None = None,
     intro_html: str | None = None,
     is_receipt: bool = False,
+    hide_prices: bool = False,
 ) -> str:
     """Branded invoice email; is_receipt flips the copy to a paid thank-you.
+
+    hide_prices: the invoice's "total-only" flag (invoices.hide_line_prices).
+    The PDF already honoured it; the email body listed every price anyway.
 
     Settlement rows (Paid to Date / Credits Applied) stay — without them the
     totals don't foot on partially-paid invoices (Tier-9.4).
@@ -292,7 +296,7 @@ def build_invoice_email_html(
         parts.append(
             f'<p style="margin:0 0 12px;"><strong>Due Date:</strong> {esc(due_date)}</p>'
         )
-    parts.append(line_items_table(line_items))
+    parts.append(line_items_table(line_items, hide_prices=hide_prices))
     parts.append(totals_table(totals_rows, accent))
     if notes:
         parts.append(f'<p style="margin:12px 0;"><strong>Notes:</strong> {nl2br(notes)}</p>')

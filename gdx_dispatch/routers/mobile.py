@@ -22,8 +22,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
-from gdx_dispatch.core.audit import log_audit_event, log_audit_event_sync, resolve_audit_actor
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.audit import (
+    ensure_audit_table,
+    log_audit_event,
+    log_audit_event_sync,
+    resolve_audit_actor,
+)
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.door_specs import door_specs_for_job
 from gdx_dispatch.core.job_site import (
     JobSite,
@@ -247,13 +252,31 @@ def _user_id(user: dict[str, Any]) -> str:
 
 
 def _table_columns(db: Session, table_name: str) -> set[str]:
+    """Which columns the live table actually has, or an empty set.
+
+    The `set()` degradation is load-bearing — every caller treats a missing
+    column as "skip that clause" — so if the read ever fails, the empty set is
+    wrong twice over on Postgres: the caller believes the schema lacks the
+    column, and the caller's staged work is already dead. `contained_read`
+    keeps the transaction (GDXA-156).
+
+    Be honest about how likely that is, because the first draft of this comment
+    called it "the likeliest site in this class to fire in production" and that
+    is backwards. A missing table or column is precisely what this read CANNOT
+    fail on: `information_schema.columns` returns 0 rows for a name that does
+    not exist, and `PRAGMA table_info` returns `[]` (measured, GDXA-156 audit).
+    Reddening its own guard needed `DROP SCHEMA information_schema CASCADE`.
+    What is left is what the `contained_read` docstring leaves for every site —
+    a statement timeout, the window during a migration — so this is cheap
+    insurance on a real mechanism, not a fix for anything observed.
+    """
     try:
-        # Detect dialect
+        # Detect dialect — no statement, so it stays outside the savepoint.
         dialect = db.bind.dialect.name if db.bind else "unknown"
-        if dialect == "sqlite":
-            rows = db.execute(_text(f"PRAGMA table_info({table_name})")).mappings().all()
-            return {str(r.get("name") or "") for r in rows}
-        else:
+        with contained_read(db):
+            if dialect == "sqlite":
+                rows = db.execute(_text(f"PRAGMA table_info({table_name})")).mappings().all()
+                return {str(r.get("name") or "") for r in rows}
             rows = db.execute(
                 _text("SELECT column_name FROM information_schema.columns WHERE table_name = :t AND table_schema = 'public'"),
                 {"t": table_name},
@@ -414,11 +437,20 @@ def _job_is_billed(db: Session, job_id: Any) -> bool:
         return True
 
     try:
-        return bool(
-            db.execute(
-                select(Job.id).where(Job.id == jid, job_billed_exists()).limit(1)
-            ).first()
-        )
+        # Contained (GDXA-156). The only caller of this and the two helpers
+        # below is the read-only GET /job/{job_id}, which commits nothing — so
+        # the harm is not lost work but a cascade: on Postgres a failed SELECT
+        # aborts the request's transaction; this helper reads True (Bill
+        # stays hidden), but `_job_deposit_summary` then fails on the dead
+        # transaction and the tech sees "no deposits" on a job that has one,
+        # and every read after it on the job screen degrades or 500s. No production instance; cheap insurance on a real
+        # mechanism, per the contained_read docstring's own honesty note.
+        with contained_read(db):
+            return bool(
+                db.execute(
+                    select(Job.id).where(Job.id == jid, job_billed_exists()).limit(1)
+                ).first()
+            )
     except SQLAlchemyError:
         # Never break the job screen over one button's guard. Failing to
         # "billed" hides Bill rather than inviting a second invoice — but it is
@@ -442,11 +474,12 @@ def _job_not_billable(db: Session, job_id: Any) -> bool:
     except (ValueError, AttributeError, TypeError):
         return False
     try:
-        return bool(
-            db.execute(
-                select(Job.id).where(Job.id == jid, Job.not_billable_at.is_not(None)).limit(1)
-            ).first()
-        )
+        with contained_read(db):  # GDXA-156 — see _job_is_billed
+            return bool(
+                db.execute(
+                    select(Job.id).where(Job.id == jid, Job.not_billable_at.is_not(None)).limit(1)
+                ).first()
+            )
     except SQLAlchemyError:
         log.exception("mobile_job_not_billable_check_failed", extra={"job_id": str(job_id)})
         return False
@@ -464,24 +497,29 @@ def _job_deposit_summary(db: Session, job_id: Any) -> dict[str, float] | None:
     except (ValueError, AttributeError, TypeError):
         return None
     try:
-        rows = db.execute(
-            select(Invoice).where(
-                Invoice.job_id == jid,
-                Invoice.billing_type == "deposit",
-                Invoice.deleted_at.is_(None),
-                Invoice.status != "void",
-            )
-        ).scalars().all()
-        if not rows:
-            return None
-        paid = 0.0
-        for r in rows:
-            paid += float(db.execute(
-                select(func.coalesce(func.sum(Payment.amount), 0)).where(
-                    Payment.invoice_id == r.id,
-                    Payment.voided_at.is_(None),
+        # One savepoint over both reads (GDXA-156). The per-invoice payment sum
+        # runs inside it on purpose: a failure on invoice #3 of 3 aborts the
+        # caller's transaction just as thoroughly as one on #1, and the `None`
+        # this returns is read as "no deposits" by the job screen.
+        with contained_read(db):
+            rows = db.execute(
+                select(Invoice).where(
+                    Invoice.job_id == jid,
+                    Invoice.billing_type == "deposit",
+                    Invoice.deleted_at.is_(None),
+                    Invoice.status != "void",
                 )
-            ).scalar_one() or 0)
+            ).scalars().all()
+            if not rows:
+                return None
+            paid = 0.0
+            for r in rows:
+                paid += float(db.execute(
+                    select(func.coalesce(func.sum(Payment.amount), 0)).where(
+                        Payment.invoice_id == r.id,
+                        Payment.voided_at.is_(None),
+                    )
+                ).scalar_one() or 0)
         return {
             "deposit_total": round(sum(float(r.total or 0) for r in rows), 2),
             "deposit_paid": round(paid, 2),
@@ -523,73 +561,130 @@ def _audit_state_change(
     actor_role: str | None,
 ) -> None:
     actor = actor_id or "system"
+
+    # Hoisted out of both savepoints below. On its first call per engine
+    # `ensure_audit_table` does transaction control — commits on SQLite, rolls
+    # back on a Postgres without the bootstrap guard — and inside a savepoint
+    # that releases the very savepoint meant to contain the write
+    # (core/audit.py::audit_best_effort, point 1). Idempotent afterwards, and
+    # `log_audit_event` calls it itself, so this only moves the FIRST call; the
+    # sequence the caller sees is unchanged.
+    #
+    # Not absolute, and saying so because the first draft of this comment did
+    # not: `_AUDIT_GUARD_INITIALIZED.add(engine)` is the LAST line of
+    # `ensure_audit_table`, after its commit. A first call that RAISES therefore
+    # leaves the engine unregistered, so `log_audit_event` re-enters
+    # `ensure_audit_table` inside the savepoint below — the case this hoist
+    # exists to prevent. Measured on SQLite (GDXA-156 round-3 audit) for the
+    # DDL-fails path; the DDL-succeeds-but-commit-fails path is narrower still
+    # and was not reproducible. The hoist covers the ordinary path, which is
+    # every path that has ever run here; it is not a proof.
+    #
+    # And it does NOT contain the hoisted call itself. On a Postgres that
+    # already has the guard — production — the first call per process is a
+    # bare `SELECT EXISTS(... pg_proc ...)` on the tech's session, and the
+    # except below swallows its failure exactly as this PR's sites used to.
+    # Worse than loud: when the route's write is raw SQL or already flushed —
+    # clock-in and clock-out are — psycopg2's COMMIT on the aborted
+    # transaction returns normally, the route answers 200, the time entry is
+    # gone, and the post-commit audit records a clock-in that never happened
+    # (reproduced by the GDXA-189 audit with a forced `SELECT 1/0`; only
+    # still-pending ORM work raises PendingRollbackError). It
+    # cannot be wrapped here — the same call does DDL and transaction control
+    # when the guard is missing — so the containment belongs inside
+    # core/audit.py::ensure_audit_table, which is platform-core's. Recorded,
+    # not fixed here.
     try:
-        asyncio.run(
-            log_audit_event(
-                db,
-                event_type,
-                actor,
-                entity_type,
-                entity_id,
-                payload,
-                request=request,
-                actor_role=actor_role,
+        ensure_audit_table(db)
+    except Exception:
+        log.exception("audit_state_change_ensure_table_failed")
+
+    # GDXA-156. `db.begin_nested()` and NOT `contained_read`, for both halves,
+    # and the reason differs between them:
+    #
+    #   - the first WRITES through the ORM (`log_audit_event` ends in `add()` +
+    #     `flush()`), so rule 2 applies literally: the unit of work has to know
+    #     what to un-stage. Its flush also makes `begin_nested()`'s own flush
+    #     free here.
+    #   - the second is raw `_text()` SQL, which stages nothing in the ORM, so
+    #     `contained_read` would in fact contain it and add no flush (GDXA-156
+    #     round-3 audit was right about that). It uses `begin_nested()` anyway
+    #     because it is still a WRITE, and `contained_read`'s contract is
+    #     reads-only — its guard cannot see a flushed write, so keeping a write
+    #     out of it is the boundary that stays true when this code moves.
+    #
+    # No `db.rollback()` in either handler, unlike `audit_best_effort` — its
+    # precondition is "the caller has nothing staged", and every caller here is
+    # a mutation route holding the tech's work.
+    try:
+        with db.begin_nested():
+            asyncio.run(
+                log_audit_event(
+                    db,
+                    event_type,
+                    actor,
+                    entity_type,
+                    entity_id,
+                    payload,
+                    request=request,
+                    actor_role=actor_role,
+                )
             )
-        )
     except Exception:
         log.exception("audit_state_change_log_event_failed")
 
     # Keep audit logging resilient in lightweight test schemas where ORM mapping
     # and ad-hoc table DDL can diverge.
     try:
-        existing = db.execute(
-            _text(
-                """
-                SELECT 1
-                FROM audit_logs
-                WHERE event_type = :event_type
-                  AND entity_type = :entity_type
-                  AND entity_id = :entity_id
-                ORDER BY created_at DESC
-                LIMIT 1
-                """
-            ),
-            {
-                "event_type": event_type,
-                "entity_type": entity_type,
-                "entity_id": entity_id,
-            },
-        ).scalar()
-        if not existing:
-            prev_hash = "0" * 64
-            digest = hashlib.sha256(
-                f"{prev_hash}{event_type}{actor}{entity_id}{json.dumps(payload, sort_keys=True, default=str)}".encode()
-            ).hexdigest()
-            db.execute(
+        with db.begin_nested():
+            existing = db.execute(
                 _text(
                     """
-                    INSERT INTO audit_logs (
-                        id, event_type, actor_id, actor_role, entity_type, entity_id,
-                        payload, created_at, hash, prev_hash
-                    ) VALUES (
-                        :id, :event_type, :actor_id, :actor_role, :entity_type, :entity_id,
-                        :payload, :created_at, :hash, :prev_hash
-                    )
+                    SELECT 1
+                    FROM audit_logs
+                    WHERE event_type = :event_type
+                      AND entity_type = :entity_type
+                      AND entity_id = :entity_id
+                    ORDER BY created_at DESC
+                    LIMIT 1
                     """
                 ),
                 {
-                    "id": str(uuid.uuid4()),
                     "event_type": event_type,
-                    "actor_id": actor,
-                    "actor_role": actor_role,
                     "entity_type": entity_type,
                     "entity_id": entity_id,
-                    "payload": json.dumps(payload, default=str),
-                    "created_at": datetime.now(UTC),
-                    "hash": digest,
-                    "prev_hash": prev_hash,
                 },
-            )
+            ).scalar()
+            if not existing:
+                prev_hash = "0" * 64
+                digest = hashlib.sha256(
+                    f"{prev_hash}{event_type}{actor}{entity_id}{json.dumps(payload, sort_keys=True, default=str)}".encode()
+                ).hexdigest()
+                db.execute(
+                    _text(
+                        """
+                        INSERT INTO audit_logs (
+                            id, event_type, actor_id, actor_role, entity_type, entity_id,
+                            payload, created_at, hash, prev_hash
+                        ) VALUES (
+                            :id, :event_type, :actor_id, :actor_role, :entity_type, :entity_id,
+                            :payload, :created_at, :hash, :prev_hash
+                        )
+                        """
+                    ),
+                    {
+                        "id": str(uuid.uuid4()),
+                        "event_type": event_type,
+                        "actor_id": actor,
+                        "actor_role": actor_role,
+                        "entity_type": entity_type,
+                        "entity_id": entity_id,
+                        "payload": json.dumps(payload, default=str),
+                        "created_at": datetime.now(UTC),
+                        "hash": digest,
+                        "prev_hash": prev_hash,
+                    },
+                )
     except Exception:
         log.exception("audit_state_change_fallback_insert_failed")
 
@@ -2185,6 +2280,90 @@ def mobile_job_en_route(
     )
 
 
+def _arrival_visit(
+    db: Session, job_id: Any, technician_id: str | None, when: datetime,
+) -> Appointment | None:
+    """The visit an "I'm here" belongs to. One rule, in order:
+
+    1. this tech's (or an unassigned) open visit on today's shop day — the
+       tech's own over an unassigned one, one not yet arrived at first, so a
+       same-day return is stamped rather than the morning visit;
+    2. else the job's ONLY live visit, if it is not closed in the sync's
+       sense (``jobs._visit_closed``), whoever holds it and whatever its
+       day (a tech swap, an early arrival, a drifted date) —
+       ``_stamp_arrival`` then moves it onto the day it was worked;
+    3. else nothing. On a job with several visits and none today, no visit
+       is stamped: any choice would mark the wrong day worked, and the sync
+       never moves a worked visit. The tap still lands on the assignment
+       and in the audit log.
+
+    Open (rule 1) means not completed or cancelled. A job can hold one
+    visit per tech per day, so the old ``scalar_one_or_none()`` over the whole job
+    raised once a second visit existed. Never raises.
+    """
+    from gdx_dispatch.core.pay_periods import shop_day_of, shop_tz_name_from_settings
+    from gdx_dispatch.routers.jobs import _visit_closed  # noqa: PLC0415 — lazy: jobs imports mobile
+
+    live = db.execute(
+        select(Appointment).where(
+            Appointment.job_id == job_id,
+            Appointment.deleted_at.is_(None),
+        ).order_by(Appointment.start_at, Appointment.id)
+    ).scalars().all()
+    open_visits = [v for v in live if v.status not in ("completed", "cancelled")]
+    tech = str(technician_id) if technician_id else None
+    tz_name = shop_tz_name_from_settings(db)
+    today = shop_day_of(when, tz_name)
+
+    todays = [
+        v for v in open_visits
+        if (v.tech_id is None or (tech and v.tech_id == tech))
+        and shop_day_of(v.start_at, tz_name) == today
+    ]
+    if todays:
+        pick = [v for v in todays if tech and v.tech_id == tech] or todays
+        return ([v for v in pick if v.arrived_at is None] or pick)[0]
+    # Rule 2 uses the sync's own test for a worked day: a visit the office
+    # marked "arrived" (no time) must not be moved onto today.
+    if len(live) == 1 and not _visit_closed(live[0]):
+        return live[0]
+    return None
+
+
+def _stamp_arrival(
+    db: Session, appt: Appointment, job: Job | None, when: datetime,
+) -> dict[str, Any] | None:
+    """Stamp ``appt`` arrived at ``when``. A visit on another shop day (only
+    ever a job's single visit, see ``_arrival_visit``) moves onto the day it
+    was worked, and so does the job's date: an arrived visit counts as a
+    worked day that the sync never moves, so leaving it on Wednesday after a
+    Monday arrival would freeze a phantom Wednesday. Returns what moved,
+    for the arrival's audit row; else None.
+    """
+    from gdx_dispatch.core.pay_periods import shop_day_of, shop_tz_name_from_settings
+
+    if appt.arrived_at is not None:
+        return None
+    appt.arrived_at = when
+    tz_name = shop_tz_name_from_settings(db)
+    if shop_day_of(appt.start_at, tz_name) == shop_day_of(when, tz_name):
+        return None
+    moved = {
+        "visit_id": str(appt.id),
+        "visit_start_from": appt.start_at.isoformat(),
+        "job_scheduled_at_from": (
+            job.scheduled_at.isoformat() if job is not None and job.scheduled_at else None
+        ),
+    }
+    length = (appt.end_at - appt.start_at) if appt.end_at else timedelta(hours=1)
+    appt.start_at = when
+    appt.end_at = when + length
+    appt.updated_at = datetime.now(UTC)
+    if job is not None:
+        job.scheduled_at = when
+    return moved
+
+
 @router.post("/jobs/{job_id}/arrived", response_model=None)
 def mobile_job_arrived(
     job_id: str,
@@ -2211,6 +2390,7 @@ def mobile_job_arrived(
 
     arrived_payload = payload or ArrivedBody()
     arrival_time = datetime.now(UTC)
+    visit_moved = None
 
     try:
         _jid = _UUID(job_id)
@@ -2238,14 +2418,9 @@ def mobile_job_arrived(
         # S1-B1 — stamp the appointment too if one exists. lat/lng come
         # from the tech's device; accuracy lives on the audit row only
         # (no accuracy column on Appointment) so we don't lose it.
-        appt = db.execute(
-            select(Appointment).where(
-                Appointment.job_id == _jid,
-                Appointment.deleted_at.is_(None),
-            )
-        ).scalar_one_or_none()
+        appt = _arrival_visit(db, _jid, _get_technician_id(db, tenant_id, user_id), arrival_time)
         if appt is not None and appt.arrived_at is None:
-            appt.arrived_at = arrival_time
+            visit_moved = _stamp_arrival(db, appt, _job_obj, arrival_time)
             if arrived_payload.lat is not None and arrived_payload.lng is not None:
                 # Don't clobber a geocoded appointment lat/lng with the
                 # tech's device location — those are different signals.
@@ -2306,6 +2481,7 @@ def mobile_job_arrived(
             "lat": arrived_payload.lat,
             "lng": arrived_payload.lng,
             "accuracy": arrived_payload.accuracy,
+            "visit_moved": visit_moved,
         },
         request=request,
         actor_role=user.get("role"),

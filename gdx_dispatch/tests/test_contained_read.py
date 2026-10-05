@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import re
 from contextlib import suppress
 from pathlib import Path
 
@@ -384,12 +385,17 @@ def test_pg_a_callee_that_swallows_its_own_failure_is_not_contained(pg_test_engi
     wrong. Only ``RELEASE`` is illegal on an aborted transaction; ``ROLLBACK TO
     SAVEPOINT`` is legal, so an always-rollback variant DOES contain a
     self-swallowing callee from the caller's file (measured on PG 15.17 and
-    16.14, GDXA-86 audit round 2). No such variant exists here and none is
-    needed — the two call sites that would want one sit below
-    ``_automation_email_settings``' ``skipped_disabled`` return in
-    ``modules/workflows/engine.py``, on a path prod has switched off. So read
-    this as "``contained_read`` is the wrong tool for a swallowing callee", never
-    as "a swallowing callee cannot be contained".
+    16.14, GDXA-86 audit round 2). No such variant exists here. It IS needed
+    now, though — this sentence used to say "and none is needed", naming two
+    call sites in ``modules/workflows/engine.py`` that sit on a path prod has
+    switched off, and GDXA-160 made that false: four money sites want one
+    (``core/closeout_billing.py``, ``routers/invoices.py::create_invoice``,
+    ``modules/deposits/service.py`` twice), all swallowing
+    ``modules/proposals/totals.py``. See rule 5 in ``core/database.py``, which
+    is the ONE place that argument lives; this note exists only so the rival
+    copy here cannot drift from it again. So read this as "``contained_read`` is
+    the wrong tool for a swallowing callee", never as "a swallowing callee
+    cannot be contained".
     """
     Session = _pg_sessions(pg_test_engine)
     db = Session()
@@ -940,140 +946,186 @@ def test_no_dispatched_entity_resolver_swallows_its_own_read():
     )
 
 
-# ── the docstring's call-site count is a number, so pin it ──────────────────
+# ── rule 2's justification is a property, not a number ───────────────────────
 
 _SKIP_DIRS = {"tests", "node_modules", ".git", "frontend", ".venv"}
 
-_ONES = (
-    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
-    "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
-    "sixteen", "seventeen", "eighteen", "nineteen",
+_WRITE_METHODS = frozenset({
+    "add",
+    "add_all",
+    "bulk_insert_mappings",
+    "bulk_save_objects",
+    "bulk_update_mappings",
+    "commit",
+    "delete",
+    "flush",
+    "merge",
+    "update",
+})
+_STATEMENT_METHODS = frozenset({"execute", "scalar", "scalars"})
+_DML_CONSTRUCTS = frozenset({"delete", "insert", "update", "upsert"})
+_DML_PREFIXES = ("delete", "insert", "update")
+_A_COUNT_OF_SITES = re.compile(
+    r"\b(?:\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|"
+    r"twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+    r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:-[a-z]+)?"
+    r"\s+(?:current\s+)?call sites\b",
+    re.IGNORECASE,
 )
-_TENS = (
-    "", "", "twenty", "thirty", "forty", "fifty",
-    "sixty", "seventy", "eighty", "ninety",
-)
 
 
-def _number_word(n: int) -> str | None:
-    """Spell ``n`` the way the docstring sentence spells it, or None past 99.
-
-    This was a hand-written dict that stopped at twelve (GDXA-151). Extending it
-    by hand each time a call site lands is the same shape as the count it
-    guards: a number a human maintains, that goes stale, and whose staleness
-    surfaces as a confusing RED on someone else's unrelated change. GDXA-152
-    took the count from nine to nineteen in one commit and ran straight off the
-    end of it; the nine sibling delegations of GDXA-46 are each expected to add
-    sites to the same sentence, so it would have run off again.
-
-    Generating the word removes that maintenance entirely below 100. It stays
-    `None` above that, deliberately — a repo with 100+ contained reads has
-    outgrown a prose count, and the assertion's message is the right place to
-    find that out rather than silently spelling ever-longer numbers.
-    """
-    if 0 <= n < 20:
-        return _ONES[n]
-    if 20 <= n < 100:
-        tens, ones = divmod(n, 10)
-        return _TENS[tens] if not ones else f"{_TENS[tens]}-{_ONES[ones]}"
-    return None
+def _callee_name(node: ast.AST) -> str | None:
+    func = getattr(node, "func", None)
+    return None if func is None else getattr(func, "id", getattr(func, "attr", None))
 
 
-def test_the_docstring_call_site_count_is_not_stale():
-    """``contained_read``'s docstring states its own call-site count. Pin it.
+def _local_names_for_contained_read(tree: ast.AST) -> set[str]:
+    names = {"contained_read"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            names.update(
+                alias.asname
+                for alias in node.names
+                if alias.name == "contained_read" and alias.asname
+            )
+    return names
 
-    That number is load-bearing: it is the stated reason the helper only warns
-    about a staged-but-unflushed write instead of policing DML on the
-    connection ("it would police a precondition nothing violates"). Let the
-    count drift and the justification is for a world that no longer exists.
 
-    It had gone stale twice before this test — six when it was seven, eight
-    when GDXA-137 made it nine — each caught by an adversarial audit rather
-    than by CI. The recipe written to stop that was itself wrong in the same
-    way (GDXA-151): it told you to subtract one when two of its matches were
-    the docstring's own prose, so it answered ten.
+def _chain_prefixes(node: ast.expr) -> list[ast.expr]:
+    out: list[ast.expr] = []
+    while True:
+        out.append(node)
+        if isinstance(node, ast.Attribute):
+            node = node.value
+        elif isinstance(node, ast.Call):
+            node = node.func
+        else:
+            return out
 
-    Counts from the FILESYSTEM, deliberately, because the recipe it replaced
-    used ``git grep`` and a call site in a brand-new module reads as zero there
-    until someone runs ``git add`` — measured in the GDXA-151 audit.
 
-    Counts by PARSING, not by grepping, and that is the whole difference
-    between this and the recipe it replaced. An ``ast`` walk sees only real
-    calls, so a commented-out line, a docstring example, or any other mention
-    inside a string cannot inflate the number — and it catches a site opened
-    through ``ExitStack.enter_context(contained_read(db))``, which a
-    ``with contained_read(`` grep misses. A text scan got both wrong in the
-    GDXA-151 audit: the docstring-example case is the nastier one, because it
-    made the guard demand a number that was not the call-site count, so
-    following its own error message would have written "ten" into the sentence
-    below — the exact defect, by the exact mechanism, as the recipe deleted here.
+def _is_trackable_session(node: ast.expr) -> bool:
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return isinstance(node, ast.Name)
 
-    Walks the whole repo, not just this package: ``tools/`` and ``scripts/``
-    sit outside ``gdx_dispatch/`` and a call site there is still a call site.
-    ``core/database.py`` is excluded because it defines the helper and calls it
-    nowhere — asserted below, so a real site landing there cannot go uncounted.
-    Tests are excluded because they wrap writes on purpose, which is also why
-    the docstring's number is about PRODUCTION call sites.
 
-    TWO LIMITS, so nobody mistakes this for more than it is:
+def _is_dml_string(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value.strip().lower().startswith(_DML_PREFIXES)
+    )
 
-    1. It pins the COUNT, not the claim that those sites "wrap pure reads".
-       Put a write inside an existing call site and this stays green while the
-       docstring goes wrong.
-    2. It does not enforce that the number is written down only once. An
-       earlier revision tried; it could only match one phrasing, in one
-       directory, and missed both historical drifts ("none of the eight call
-       sites", "six") and the whole of ``tests/`` — where the copy this commit
-       deletes actually lived. A guard that checks the easy half of a rule
-       reads as if it checked all of it, so it was removed rather than left
-       to reassure. Keeping the number in one place is a review habit here,
-       not a machine-checked invariant.
+
+def _session_writes(body: list[ast.stmt], session: ast.expr) -> list[tuple[int, str]]:
+    target = ast.dump(session)
+    found: list[tuple[int, str]] = []
+    for stmt in body:
+        for node in ast.walk(stmt):
+            if isinstance(node, (ast.Assign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for tgt in targets:
+                    if isinstance(tgt, ast.Attribute):
+                        found.append((node.lineno, f"{ast.unparse(tgt)} = ..."))
+                continue
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if not any(ast.dump(p) == target for p in _chain_prefixes(node.func.value)):
+                continue
+            attr, receiver = node.func.attr, ast.unparse(node.func.value)
+            if attr in _WRITE_METHODS:
+                found.append((node.lineno, f"{receiver}.{attr}()"))
+                continue
+            if attr not in _STATEMENT_METHODS or not node.args:
+                continue
+            arg = node.args[0]
+            inner = _callee_name(arg)
+            if inner in _DML_CONSTRUCTS:
+                found.append((node.lineno, f"{receiver}.{attr}({inner}(...))"))
+            elif _is_dml_string(arg):
+                found.append((node.lineno, f"{receiver}.{attr}('<DML>')"))
+            elif inner == "text" and arg.args and _is_dml_string(arg.args[0]):
+                found.append((node.lineno, f"{receiver}.{attr}(text('<DML>'))"))
+    return found
+
+
+def test_no_contained_read_block_stages_a_write():
+    """Rule 2's "reads only" precondition is checked instead of counted.
+
+    Turns red for the defect it exists to catch: put ``db.add(...)``,
+    ``db.flush()``, ``db.execute(text("UPDATE ..."))``, ``db.scalar(insert(T))``,
+    ``db.query(T).update({...})`` or ``row.name = "x"`` inside any non-test
+    ``with contained_read(db):`` block. It also turns red if a site is opened
+    outside a ``with`` block or with a session expression it cannot track.
+
+    Blind spots: a write hidden inside a called function, a statement variable
+    handed to ``execute``/``scalar``/``scalars``, and local aliasing such as
+    ``s = db; s.add(...)``. Those need review or the listener described in
+    ``contained_read``'s rule 2.
     """
     import gdx_dispatch
 
-    def _count(src: str) -> int:
-        """Real calls only — ``ast``, so strings and comments cannot inflate."""
-        return sum(
-            1
-            for node in ast.walk(ast.parse(src))
-            if isinstance(node, ast.Call)
-            and getattr(node.func, "id", getattr(node.func, "attr", None))
-            == "contained_read"
-        )
-
     root = Path(gdx_dispatch.__file__).resolve().parent.parent
-    database_py = Path("gdx_dispatch/core/database.py")
-    per_file: dict[str, int] = {}
+    blocks = 0
+    opaque: set[str] = set()
+    writes: set[str] = set()
+
     for path in sorted(root.rglob("*.py")):
         rel = path.relative_to(root)
         if _SKIP_DIRS & set(rel.parts):
             continue
-        hits = _count(path.read_text(encoding="utf-8"))
-        if rel == database_py:
-            assert hits == 0, (
-                "core/database.py gained a contained_read call site. It is "
-                "excluded from the count, so that site would go uncounted — "
-                "either move it or stop excluding this file."
-            )
-            continue
-        if hits:
-            per_file[rel.as_posix()] = hits
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        local_names = _local_names_for_contained_read(tree)
+        wrapped: set[int] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.With, ast.AsyncWith)):
+                continue
+            for item in node.items:
+                expr = item.context_expr
+                if not (isinstance(expr, ast.Call) and _callee_name(expr) in local_names):
+                    continue
+                wrapped.add(id(expr))
+                blocks += 1
+                if len(expr.args) != 1 or not _is_trackable_session(expr.args[0]):
+                    rendered = ast.unparse(expr.args[0]) if expr.args else "(no argument)"
+                    opaque.add(f"{rel.as_posix()}:{expr.lineno} — untrackable session {rendered!r}")
+                    continue
+                for lineno, what in _session_writes(node.body, expr.args[0]):
+                    writes.add(f"{rel.as_posix()}:{lineno} — {what}")
 
-    total = sum(per_file.values())
-    word = _number_word(total)
-    assert word is not None, (
-        f"{total} contained_read call sites {per_file} — past ninety-nine, which "
-        "is where a prose count stops being the right instrument. Replace the "
-        "sentence in core/database.py with something that is not a number, "
-        "rather than teaching _number_word to spell hundreds."
+        for call in ast.walk(tree):
+            if (
+                isinstance(call, ast.Call)
+                and _callee_name(call) in local_names
+                and id(call) not in wrapped
+            ):
+                opaque.add(f"{rel.as_posix()}:{call.lineno} — not a `with` context expression")
+
+    assert blocks, "found no production `with contained_read(...)` blocks; guard is vacuous"
+    assert not opaque, (
+        "contained_read sites whose extent or session this guard cannot see:\n    "
+        + "\n    ".join(sorted(opaque))
+        + "\nUse `with contained_read(db):` with a name or dotted-name session."
+    )
+    assert not writes, (
+        "writes on the handed-in session inside a `contained_read` block:\n    "
+        + "\n    ".join(sorted(writes))
+        + "\nA write belongs in `db.begin_nested()`, not `contained_read()`."
     )
 
-    # Whitespace-collapsed so re-WRAPPING the sentence is free. Re-WORDING it is
-    # not, and that is deliberate: this exact phrase is the anchor.
+
+def test_the_docstring_does_not_state_a_call_site_count():
+    """The retired hand-maintained count must not come back (GDXA-171).
+
+    Turns red for the defect it exists to catch: write "all twenty-three current
+    call sites", "two call sites", or the digit form back into
+    ``contained_read``'s docstring. This is a tripwire for the spellings that
+    caused the failure, not a proof against every possible rephrasing.
+    """
     doc = " ".join((inspect.getdoc(contained_read) or "").split())
-    expected = f"{word} current call sites"
-    assert expected in doc, (
-        f"contained_read has {total} call sites {per_file}, but its docstring "
-        f"does not say {expected!r}. Fix the sentence in core/database.py — and "
-        "nowhere else. A second copy of this number is what went stale twice."
+    assert len(doc) > 1000, "contained_read's rule docstring is missing or too short"
+    hit = _A_COUNT_OF_SITES.search(doc)
+    assert hit is None, (
+        f"contained_read's docstring states a call-site count again: {hit.group(0)!r}. "
+        "State the reads-only property; do not put a shared total back in prose."
     )

@@ -43,8 +43,9 @@ from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.invoice_paid import paid_to_date
+from gdx_dispatch.core.link_sms import SendLinkSmsIn as MobileSendSmsIn  # one composer model for every SMS route
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.core.quantities import recorded_quantity, zero_quantity_verdict
@@ -56,6 +57,7 @@ from gdx_dispatch.models.tenant_models import (
     TimeEntry,
 )
 from gdx_dispatch.modules.ledger.service import transition_invoice_status
+from gdx_dispatch.modules.phone_com.scheduled import ScheduleLinkSmsIn  # the /schedule-sms composer
 from gdx_dispatch.modules.proposals.models import Estimate
 
 log = logging.getLogger(__name__)
@@ -930,6 +932,32 @@ def mobile_create_invoice(
     return _jr(resp_payload, 201)
 
 
+def _invoice_customer(db: Session, invoice: Invoice) -> Customer | None:
+    """The invoice's live customer, or None — with the read contained.
+
+    One helper rather than the same six lines in the send path and the receipt
+    path: GDXA-156 wrapped both identically and the duplicate-block scanner was
+    right to say so. Both callers go on to commit on this same session, so on
+    Postgres an uncontained failure here would abort their transaction and the
+    degraded None would be read as "no customer" while the real damage surfaced
+    later, on an unrelated line.
+
+    Each caller keeps its own meaning for None — "nobody to mail" on the send
+    path, `skip_reason="customer_not_found"` on the receipt path — and its own
+    `except`: `contained_read` re-raises, and both call sites already sit inside
+    a `try` that swallows, which is where rule 1 wants the savepoint.
+    """
+    if invoice.customer_id is None:
+        return None
+    with contained_read(db):
+        return db.execute(
+            select(Customer).where(
+                Customer.id == invoice.customer_id,
+                Customer.deleted_at.is_(None),
+            )
+        ).scalar_one_or_none()
+
+
 def _send_invoice_email(
     db: Session,
     invoice: Invoice,
@@ -945,16 +973,28 @@ def _send_invoice_email(
 
     Returns True only when a provider acknowledged delivery, so callers can
     gate the sent_at stamp on a real send instead of an attempt.
+
+    **What GDXA-156 did NOT close here, named rather than left to be found
+    again.** The two reads below are `contained_read`-wrapped, but two other
+    statements inside the same `try` are not, and neither can be:
+    `_prepare_invoice_email` ends in `db.commit()`, and `send_transactional_email`
+    WRITES its outbound-email row — a commit released inside a SAVEPOINT and a
+    write under `contained_read` are rule-2/rule-5 misuse, worse than the gap.
+    So if either fails on Postgres, `return False` still reads to the caller as
+    "no email", and `mobile_send_invoice` then runs `transition_invoice_status`
+    (a GL posting) and `db.commit()` into an aborted transaction: 500, no
+    `sent_at`, no GL transition, no audit row. Closing it means restructuring
+    this function around the commit, which is money-billing's call, not a
+    containment change (GDXA-156 audit, round 2).
     """
     try:
-        cust = None
-        if invoice.customer_id is not None:
-            cust = db.execute(
-                select(Customer).where(
-                    Customer.id == invoice.customer_id,
-                    Customer.deleted_at.is_(None),
-                )
-            ).scalar_one_or_none()
+        # Contained (GDXA-156) — see _invoice_customer. `return False` below
+        # reads to the caller as "no customer email", and it goes on to
+        # transition the invoice to `sent` and commit, so an uncontained failure
+        # would 500 the send and lose the GL transition and the audit row with
+        # it. Not an observed incident: prod carries `customers` (checked live,
+        # GDXA-156 audit). Insurance on the mechanism.
+        cust = _invoice_customer(db, invoice)
         if cust is None or not cust.email:
             log.info("mobile_invoice_email_skipped no_customer_email invoice=%s", invoice.id)
             return False
@@ -973,10 +1013,35 @@ def _send_invoice_email(
             from gdx_dispatch.core.pdf_generator import generate_invoice_pdf
             from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
             from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload, _template_config
+
+            # `_template_config` is resolved OUTSIDE the savepoint on purpose
+            # (GDXA-156, contained_read rule 5): it catches its own failure,
+            # calls `db.rollback()` and returns None (routers/pdf.py). Inside
+            # the block that rollback would destroy the savepoint the context
+            # manager then tries to RELEASE, and the block would exit *clean* so
+            # nothing below would ever see the failure — strictly worse than not
+            # wrapping. It manages its own damage; the reads that do not are the
+            # ones contained here.
+            #
+            # It stays LAST, which is where it already was — these three used to
+            # be keyword arguments to one call and Python evaluates those left to
+            # right. Hoisting it above the block (the first draft of this fix)
+            # moved its `db.rollback()` to BEFORE `_invoice_payload`, expiring
+            # the `cust` loaded further up. Keeping the original order is free,
+            # so it is kept; but do not oversell it, because `cust` gets expired
+            # a few lines down regardless — `_prepare_invoice_email` calls
+            # `db.commit()` (mint_token defaults True) and `expire_on_commit` is
+            # on. Both measured by the GDXA-156 audit.
+            with contained_read(db):
+                _inv_data = _invoice_payload(invoice, cust, db)
+                _branding = _branding_payload(db)
+            _tpl = _template_config(db, "invoice")
+            # Rendering is CPU, not SQL — kept outside so the savepoint spans
+            # only the statements that can poison the transaction.
             pdf_bytes = generate_invoice_pdf(
-                invoice_data=_invoice_payload(invoice, cust, db),
-                tenant_branding=_branding_payload(db),
-                template_config=_template_config(db, "invoice"),
+                invoice_data=_inv_data,
+                tenant_branding=_branding,
+                template_config=_tpl,
             )
             if len(pdf_bytes) > MAX_INLINE_ATTACHMENT_BYTES:
                 log.warning(
@@ -1032,6 +1097,29 @@ def _send_invoice_email(
 # ---------------------------------------------------------------------------
 
 
+_AWAITING_VERIFICATION = (
+    "This invoice is waiting for office verification — it "
+    "will be sendable once the office has checked the hours."
+)
+
+
+def _tech_owned_invoice(db: Session, request: Request, invoice_id: str, user_id: str):
+    """The invoice, if it exists and is on the tech's own job; otherwise the
+    JSONResponse refusal (404/403)."""
+    invoice = db.execute(
+        select(Invoice).where(Invoice.id == _UUID(invoice_id), Invoice.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    if invoice is None:
+        return _jr({"detail": "invoice not found"}, 404)
+    if not _job_belongs_to_tech(db, request, str(invoice.job_id), user_id):
+        return _jr({"detail": "invoice not on a job assigned to you"}, 403)
+    return invoice
+
+
+def _awaiting_verification_refusal() -> JSONResponse:
+    return _jr({"detail": _AWAITING_VERIFICATION, "awaiting_verification": True}, 409)
+
+
 @router.post("/invoices/{invoice_id}/send", response_model=None)
 def mobile_send_invoice(
     invoice_id: str,
@@ -1042,17 +1130,12 @@ def mobile_send_invoice(
     """Re-send the invoice email. Stamps sent_at only when a provider
     acknowledged delivery; the response carries email_sent so the tech
     console can be honest about non-delivery."""
-    invoice = db.execute(
-        select(Invoice).where(Invoice.id == _UUID(invoice_id), Invoice.deleted_at.is_(None))
-    ).scalar_one_or_none()
-    if invoice is None:
-        return _jr({"detail": "invoice not found"}, 404)
-
     user = current_user or {}
     user_id = _user_id(user)
     tenant_id = _tenant_id(request)
-    if not _job_belongs_to_tech(db, request, str(invoice.job_id), user_id):
-        return _jr({"detail": "invoice not on a job assigned to you"}, 403)
+    invoice = _tech_owned_invoice(db, request, invoice_id, user_id)
+    if isinstance(invoice, JSONResponse):
+        return invoice
 
     # Plan §11 (audit A5): NOTHING a tech types from a truck reaches a
     # customer until the office has verified the invoice. On the hourly lane
@@ -1061,16 +1144,7 @@ def mobile_send_invoice(
     # office verifies from the billing screen; this endpoint just refuses
     # until then, with a message that says what happens next.
     if invoice.verified_at is None:
-        return _jr(
-            {
-                "detail": (
-                    "This invoice is waiting for office verification — it "
-                    "will be sendable once the office has checked the hours."
-                ),
-                "awaiting_verification": True,
-            },
-            409,
-        )
+        return _awaiting_verification_refusal()
 
     # PR1-billing-capture (audit catch): the desktop /send now 409s on void,
     # but this path still EMAILED voided invoices to customers. Same guard.
@@ -1100,6 +1174,116 @@ def mobile_send_invoice(
     resend_payload = _serialize_invoice(invoice, db=db)
     resend_payload["email_sent"] = bool(delivered)
     return _jr(resend_payload)
+
+
+
+
+def _mobile_sms_invoice(db: Session, request: Request, invoice_id: str, user_id: str):
+    """The tech-side gates shared by preview and send: the invoice exists, is
+    on the tech's own job, and the phone_com module is on. Returns the invoice
+    or a JSONResponse refusal."""
+    from gdx_dispatch.core.modules import is_module_enabled
+
+    if not is_module_enabled("phone_com", request, db):
+        return _jr({"detail": "Texting is not enabled for this company."}, 403)
+    return _tech_owned_invoice(db, request, invoice_id, user_id)
+
+
+def _verified_sms_invoice(db: Session, request: Request, invoice_id: str, user_id: str):
+    """The tech's own invoice, texting on, AND office-verified — the gate for
+    sending a text now or scheduling one (the preview shows the verification
+    refusal as ``blocked`` instead). Otherwise the JSONResponse refusal."""
+    got = _mobile_sms_invoice(db, request, invoice_id, user_id)
+    if isinstance(got, JSONResponse):
+        return got
+    if got.verified_at is None:
+        return _awaiting_verification_refusal()
+    return got
+
+
+@router.post("/invoices/{invoice_id}/sms-preview", response_model=None)
+def mobile_invoice_sms_preview(
+    invoice_id: str,
+    request: Request,
+    payload: MobileSendSmsIn | None = None,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Any:
+    """What "Text invoice" would send from the truck, or why it can't."""
+    from gdx_dispatch.core import invoice_sms
+
+    got = _mobile_sms_invoice(db, request, invoice_id, _user_id(current_user or {}))
+    if isinstance(got, JSONResponse):
+        return got
+    prep = invoice_sms.prepare(db, got, to_override=(payload.to if payload else None))
+    if prep["blocked"] is None and got.verified_at is None:
+        # Plan §11: nothing a tech types reaches a customer before the office
+        # has verified it — same rule as the email resend above.
+        prep["blocked"] = {"code": "awaiting_verification", "message": _AWAITING_VERIFICATION}
+    return _jr(prep)
+
+
+@router.post("/invoices/{invoice_id}/send-sms", response_model=None)
+def mobile_send_invoice_sms(
+    invoice_id: str,
+    request: Request,
+    payload: MobileSendSmsIn | None = None,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Text the customer the view-and-pay link from the tech's phone."""
+    from gdx_dispatch.core import invoice_sms
+
+    user_id = _user_id(current_user or {})
+    got = _verified_sms_invoice(db, request, invoice_id, user_id)
+    if isinstance(got, JSONResponse):
+        return got
+    p = payload or MobileSendSmsIn()
+    result = invoice_sms.send(
+        db,
+        got,
+        tenant_id=invoice_sms.tenant_uuid(current_user, request),
+        actor_id=user_id or None,
+        to_override=p.to,
+        body_override=p.body,
+        resend_unconfirmed=p.resend_unconfirmed,
+        audit_action="mobile_invoice_sent_sms",
+        request=request,
+    )
+    out = _serialize_invoice(got, db=db)
+    out.update(result)
+    return _jr(out)
+
+
+@router.post("/invoices/{invoice_id}/schedule-sms", response_model=None, status_code=201)
+def mobile_schedule_invoice_sms(
+    invoice_id: str,
+    request: Request,
+    payload: ScheduleLinkSmsIn,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Text the view-and-pay link later from the tech's phone — same gate as
+    /send-sms (own job, office-verified). Verification is checked again when
+    it sends (modules/phone_com/scheduled.py)."""
+    from gdx_dispatch.core import invoice_sms
+    from gdx_dispatch.modules.phone_com import scheduled
+
+    user_id = _user_id(current_user or {})
+    got = _verified_sms_invoice(db, request, invoice_id, user_id)
+    if isinstance(got, JSONResponse):
+        return got
+    return _jr(scheduled.schedule_link(
+        db,
+        got,
+        kind=scheduled.KIND_INVOICE,
+        prepare=invoice_sms.prepare,
+        payload=payload,
+        audit_action=scheduled.ACTION_TECH_INVOICE,
+        tenant_id=invoice_sms.tenant_uuid(current_user, request),
+        user_id=user_id or None,
+        request=request,
+    ), 201)
 
 
 # ---------------------------------------------------------------------------
@@ -1306,14 +1490,13 @@ def mobile_send_receipt(
     sent = False
     skip_reason: str | None = None
     try:
-        cust = None
-        if invoice.customer_id is not None:
-            cust = db.execute(
-                select(Customer).where(
-                    Customer.id == invoice.customer_id,
-                    Customer.deleted_at.is_(None),
-                )
-            ).scalar_one_or_none()
+        # GDXA-156 — see _invoice_customer. `db` here is the route's own
+        # session, so this is NOT the caller-owned shape; the judgement goes the
+        # same way because what follows the swallow is `log_audit_event_sync` +
+        # `db.commit()` on this same session. Uncontained on Postgres, the
+        # handler recording a receipt-send failure would destroy the only trace
+        # of it and 500 instead of returning `skip_reason`.
+        cust = _invoice_customer(db, invoice)
         if cust is None:
             skip_reason = "customer_not_found"
         else:

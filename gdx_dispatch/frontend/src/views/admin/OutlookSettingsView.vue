@@ -16,6 +16,7 @@ import TabPanel from 'primevue/tabpanel'
 import Select from 'primevue/select'
 import Message from 'primevue/message'
 import { useToast } from 'primevue/usetoast'
+import { useRoute } from 'vue-router'
 import { useApi } from '../../composables/useApi'
 import { useDestructiveConfirm } from '../../composables/useDestructiveConfirm';
 const { confirmAsync } = useDestructiveConfirm();
@@ -38,7 +39,12 @@ const TAB_KEYS = {
   VISIBILITY: 'visibility',
   VENDOR_BILLS: 'vendor_bills',
 }
-const activeTab = ref(TAB_KEYS.CONNECTION)
+// ?tab=vendor_bills deep-links a tab — Vendor Statements points here when no
+// payment-confirmation sender is set, and landing on Connection would be a dead end.
+const route = useRoute()
+const activeTab = ref(
+  Object.values(TAB_KEYS).includes(route?.query?.tab) ? route.query.tab : TAB_KEYS.CONNECTION,
+)
 
 // Consumer mail providers. Allowlisting one of these matches every sender at
 // that provider, not just the vendor — worth a warning, not a block, because
@@ -87,6 +93,27 @@ function commitPendingSender(event) {
 // setup, so in practice the dialog doesn't render at all here. Surfacing it
 // inline is both more visible and not dependent on that.
 const savedAllowlist = ref([])
+const savedPaymentSenders = ref([])
+
+const paymentSendersDirty = computed(() => (
+  JSON.stringify(settings.value?.payment_confirmation_sender_allowlist || [])
+  !== JSON.stringify(savedPaymentSenders.value)
+))
+
+// Same Enter-only chip commit hazard as the bill allowlist above.
+function commitPendingPaymentSender(event) {
+  const el = event?.target
+  const raw = (el?.value || '').trim()
+  if (!raw) return
+  if (!Array.isArray(settings.value.payment_confirmation_sender_allowlist)) {
+    settings.value.payment_confirmation_sender_allowlist = []
+  }
+  const list = settings.value.payment_confirmation_sender_allowlist
+  if (!list.some((e) => String(e).toLowerCase() === raw.toLowerCase())) {
+    list.push(raw)
+  }
+  if (el) el.value = ''
+}
 
 const allowlistDirty = computed(() => (
   JSON.stringify(settings.value?.vendor_bill_sender_allowlist || [])
@@ -131,6 +158,7 @@ async function load() {
     credentials.value = await api.get('/api/admin/outlook/credentials')
     settings.value = await api.get('/api/admin/outlook/settings')
     savedAllowlist.value = [...(settings.value.vendor_bill_sender_allowlist || [])]
+    savedPaymentSenders.value = [...(settings.value.payment_confirmation_sender_allowlist || [])]
   } catch (err) {
     error.value = err?.message || 'Failed to load Outlook settings'
   } finally {
@@ -183,8 +211,12 @@ async function saveSettings() {
       ...(allowlistDirty.value
         ? { vendor_bill_sender_allowlist: settings.value.vendor_bill_sender_allowlist || [] }
         : {}),
+      ...(paymentSendersDirty.value
+        ? { payment_confirmation_sender_allowlist: settings.value.payment_confirmation_sender_allowlist || [] }
+        : {}),
     })
     savedAllowlist.value = [...(settings.value.vendor_bill_sender_allowlist || [])]
+    savedPaymentSenders.value = [...(settings.value.payment_confirmation_sender_allowlist || [])]
     toast.add({ severity: 'success', summary: 'Saved', detail: 'Outlook settings updated.', life: 3000 })
   } catch (err) {
     toast.add({ severity: 'error', summary: 'Save failed', detail: err?.message || 'Unknown error', life: 5000 })
@@ -434,6 +466,31 @@ defineExpose({ load, saveCredentials, saveSettings, clearSecret, runSweep, sweep
 
             <div>
               <Button label="Save Allowlist" @click="saveSettings" />
+            </div>
+
+            <div class="sweep-block" data-test="payment-senders-block">
+              <h3 class="font-medium">Payment confirmation senders</h3>
+              <p class="text-xs hint-text mb-1">
+                When you pay a supplier through their payment portal, the portal
+                emails a <em>Payment Confirmation</em>. List that sender here and
+                <strong>Vendor Statements</strong> shows each payment beside what
+                the next statement applied, and checks it against the bank feed.
+                Nothing is filed or posted — these emails are only read. A full
+                address or a domain; press Enter after each.
+              </p>
+              <AutoComplete
+                id="pc-allowlist"
+                v-model="settings.payment_confirmation_sender_allowlist"
+                multiple
+                :typeahead="false"
+                class="w-full"
+                data-test="payment-sender-allowlist"
+                placeholder="noreply@portal.com"
+                @blur="commitPendingPaymentSender"
+              />
+              <div class="mt-2">
+                <Button label="Save Payment Senders" data-test="save-payment-senders" @click="saveSettings" />
+              </div>
             </div>
 
             <div class="sweep-block">

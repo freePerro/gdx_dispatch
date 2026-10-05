@@ -263,5 +263,12 @@ class OutlookSettings(TenantBase):
     # Doug opts in per tenant by listing the supplier's From address or domain
     # (e.g. "billing@midwestwholesaledoors.com" or "midwestwholesaledoors.com").
     vendor_bill_sender_allowlist: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # Senders of payment-portal confirmation emails ("Payment Confirmation -
+    # <payee>"). Read, never ingested: Vendor Statements sets what they say we
+    # SENT beside what each statement says was applied. EMPTY = off. Same entry
+    # grammar as the vendor-bill allowlist (address or domain).
+    payment_confirmation_sender_allowlist: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)

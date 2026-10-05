@@ -19,8 +19,9 @@ import { mount, flushPromises } from '@vue/test-utils';
 
 const toastAdd = vi.fn();
 vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: toastAdd }) }));
+const mockRoute = vi.hoisted(() => ({ query: {}, params: { token: 'tok-abc' } }));
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ query: {}, params: { token: 'tok-abc' } }),
+  useRoute: () => mockRoute,
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
 }));
 
@@ -67,8 +68,12 @@ const stubs = {
     template: '<div v-if="visible" :data-testid="$attrs[\'data-testid\']"><slot /><slot name="footer" /></div>',
     inheritAttrs: false,
   },
-  DataTable: { props: ['value'], template: '<div :data-testid="$attrs[\'data-testid\']" :data-rows="value.length" />', inheritAttrs: false },
-  Column: { template: '<div />' },
+  DataTable: {
+    props: ['value', 'rowGroupMode', 'groupRowsBy'],
+    template: '<div :data-testid="$attrs[\'data-testid\']" :data-rows="value.length" :data-group-mode="rowGroupMode" :data-group-by="groupRowsBy" :data-order="value.map((r) => r.description).join(\'|\')"><slot /></div>',
+    inheritAttrs: false,
+  },
+  Column: { props: ['header'], template: '<div class="col-stub" :data-header="header" />' },
   ProgressSpinner: { template: '<div />' },
   Textarea: {
     props: ['modelValue'],
@@ -97,6 +102,7 @@ async function mountPage() {
 
 beforeEach(() => {
   toastAdd.mockClear();
+  mockRoute.query = {};
 });
 
 describe('ProposalPublicView', () => {
@@ -202,6 +208,74 @@ describe('ProposalPublicView', () => {
     expect(included.text()).toContain('Belt drive opener');
     expect(included.text()).toContain('2× Battery backup');
     expect(included.text()).toContain('2,000');
+  });
+
+  // Line categories follow the estimate PDF's template setting, sent as
+  // estimate.line_category ('off' | 'column' | 'grouped').
+  const CAT_LINES = [
+    { description: 'Spring', category: 'Parts', quantity: 1, unit_price: 1, line_total: 1 },
+    { description: 'Door panel', category: 'Door', quantity: 1, unit_price: 1, line_total: 1 },
+    { description: 'Cable', category: 'Parts', quantity: 1, unit_price: 1, line_total: 1 },
+  ];
+  const withCategory = (mode, extra = {}) => ({
+    ...LINE_PAYLOAD,
+    estimate: { ...LINE_PAYLOAD.estimate, line_category: mode },
+    lines: CAT_LINES,
+    ...extra,
+  });
+  const headers = (w) => w.findAll('.col-stub').map((c) => c.attributes('data-header'));
+
+  it('category off (or absent): no Category column, no grouping, line order untouched', async () => {
+    mockFetch({ 'GET /api/proposals/tok-abc': withCategory('off') });
+    const w = await mountPage();
+    const table = w.find('[data-testid="lines-table"]');
+    expect(headers(w)).not.toContain('Category');
+    expect(table.attributes('data-group-mode')).toBeUndefined();
+    expect(table.attributes('data-order')).toBe('Spring|Door panel|Cable');
+  });
+
+  it("category 'column': a Category column before Description", async () => {
+    mockFetch({ 'GET /api/proposals/tok-abc': withCategory('column') });
+    const w = await mountPage();
+    expect(headers(w).slice(0, 2)).toEqual(['Category', 'Description']);
+    expect(w.find('[data-testid="lines-table"]').attributes('data-group-mode')).toBeUndefined();
+  });
+
+  it("category 'grouped': subheader rows, lines bucketed in first-appearance order like the PDF", async () => {
+    mockFetch({ 'GET /api/proposals/tok-abc': withCategory('grouped') });
+    const w = await mountPage();
+    const table = w.find('[data-testid="lines-table"]');
+    expect(headers(w)).not.toContain('Category');
+    expect(table.attributes('data-group-mode')).toBe('subheader');
+    expect(table.attributes('data-group-by')).toBe('_category');
+    expect(table.attributes('data-order')).toBe('Spring|Cable|Door panel');
+  });
+
+  it('tier items: headed by category when grouped, prefixed when column, plain when off', async () => {
+    const tierPayload = (mode) => ({
+      ...TIER_PAYLOAD,
+      estimate: { ...TIER_PAYLOAD.estimate, line_category: mode },
+      tiers: [{ ...TIER_PAYLOAD.tiers[1], lines: [
+        { description: 'Belt drive opener', category: 'Openers', quantity: 1, line_total: 600 },
+        { description: 'Haul away', category: null, quantity: 1, line_total: 50 },
+      ] }],
+    });
+
+    mockFetch({ 'GET /api/proposals/tok-abc': tierPayload('grouped') });
+    let w = await mountPage();
+    expect(w.findAll('[data-testid="tier-category-heading"]').map((h) => h.text())).toEqual(['Openers']);
+    expect(w.find('[data-testid="tier-line-category"]').exists()).toBe(false);
+
+    mockFetch({ 'GET /api/proposals/tok-abc': tierPayload('column') });
+    w = await mountPage();
+    expect(w.find('[data-testid="tier-category-heading"]').exists()).toBe(false);
+    expect(w.findAll('[data-testid="tier-line-category"]').map((h) => h.text())).toEqual(['Openers:']);
+
+    mockFetch({ 'GET /api/proposals/tok-abc': tierPayload('off') });
+    w = await mountPage();
+    expect(w.find('[data-testid="tier-category-heading"]').exists()).toBe(false);
+    expect(w.find('[data-testid="tier-line-category"]').exists()).toBe(false);
+    expect(w.find('[data-testid="tier-lines-best"]').text()).toContain('Belt drive opener');
   });
 
   it('accepted estimate with a still-owed deposit shows the pay button on load', async () => {
@@ -336,5 +410,37 @@ describe('ProposalPublicView', () => {
 
     await w.find('[data-testid="tier-good"]').trigger('click');
     expect(w.find('[data-testid="action-bar-total"]').text()).toContain('$2,500.00');
+  });
+
+  // Staff preview from the text dialog (?preview=, core/customer_page_preview.py).
+  describe('staff preview', () => {
+    it('passes the signature through, shows the banner and switches every action off', async () => {
+      mockRoute.query = { preview: 'sig.abc' };
+      const fetch = mockFetch({ 'GET /api/proposals/tok-abc?preview=sig.abc': { ...LINE_PAYLOAD, preview: true } });
+      const w = await mountPage();
+      expect(fetch).toHaveBeenCalledWith('/api/proposals/tok-abc?preview=sig.abc');
+      expect(w.find('[data-testid="proposal-preview-banner"]').exists()).toBe(true);
+      // The buttons are there, as the customer will see them, but dead.
+      expect(w.find('[data-testid="accept-btn"]').attributes('disabled')).toBeDefined();
+      expect(w.find('[data-testid="decline-btn"]').attributes('disabled')).toBeDefined();
+      await w.find('[data-testid="accept-btn"]').trigger('click');
+      await flushPromises();
+      expect(fetch.mock.calls.some(([, o]) => (o?.method || 'GET') === 'POST')).toBe(false);
+    });
+
+    it('a customer visit has no banner and live buttons', async () => {
+      mockFetch({ 'GET /api/proposals/tok-abc': LINE_PAYLOAD });
+      const w = await mountPage();
+      expect(w.find('[data-testid="proposal-preview-banner"]').exists()).toBe(false);
+      expect(w.find('[data-testid="accept-btn"]').attributes('disabled')).toBeUndefined();
+    });
+
+    it('an expired preview tells staff to reopen it, not to reply to an email', async () => {
+      mockRoute.query = { preview: 'old.sig' };
+      mockFetch({});
+      const w = await mountPage();
+      expect(w.find('[data-testid="proposal-preview-expired"]').exists()).toBe(true);
+      expect(w.find('[data-testid="proposal-not-found"]').exists()).toBe(false);
+    });
   });
 });

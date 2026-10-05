@@ -268,57 +268,67 @@ async def pull_deposits(
             continue
         seen_qb_ids.add(qb_id)
         try:
-            deposit_to_ref = raw.get("DepositToAccountRef") or {}
-            row = db.execute(
-                text("SELECT id FROM qb_deposits WHERE qb_txn_id = :qid"),
-                {"qid": qb_id},
-            ).first()
-            # Extract LinkedTxn pairs from Line[]: each line carries
-            # LinkedTxn[{TxnId, TxnType}] when the deposit swept funds from
-            # Undeposited Funds. We collapse into "TxnType:TxnId" strings for
-            # cheap display; raw_json keeps the structured form for any
-            # future reconciliation pass.
-            params = {
-                "qid": qb_id,
-                "td": _parse_date(raw.get("TxnDate")),
-                "amt": float(raw.get("TotalAmt") or 0),
-                "aid": str(deposit_to_ref.get("value") or "") or None,
-                "aname": deposit_to_ref.get("name") or None,
-                "memo": (raw.get("PrivateNote") or raw.get("Memo") or None),
-                "linked": _extract_linked_txn_ids(raw),
-                # Serialize JSON for the bind — psycopg2 can't adapt dict directly
-                # to JSONB; SQLite tolerates either. Caught by the prod 500 on
-                # GDX's first Transfer row 2026-05-20.
-                "raw": json.dumps(raw),
-            }
-            if row:
-                # Clear deleted_at on every re-sync: if a prior reconcile
-                # tombstoned this row by mistake (transient empty page,
-                # NULL date edge case, etc.), seeing it again in the
-                # response un-tombstones it. The inverse operation makes
-                # false positives recoverable.
-                db.execute(text("""
-                    UPDATE qb_deposits SET txn_date=:td, total_amount=:amt,
-                        deposit_to_account_id=:aid, deposit_to_account_name=:aname,
-                        memo=:memo, linked_qb_ids=:linked, raw_json=:raw,
-                        last_synced_at=CURRENT_TIMESTAMP,
-                        updated_at=CURRENT_TIMESTAMP, deleted_at=NULL
-                    WHERE qb_txn_id=:qid
-                """), params)
-                updated += 1
-            else:
-                params["id"] = str(uuid4())
-                # Explicit timestamps — raw text() bypasses ORM default callables.
-                db.execute(text("""
-                    INSERT INTO qb_deposits (id, qb_txn_id, txn_date, total_amount,
-                        deposit_to_account_id, deposit_to_account_name, memo,
-                        linked_qb_ids, raw_json,
-                        last_synced_at, created_at, updated_at)
-                    VALUES (:id, :qid, :td, :amt, :aid, :aname, :memo,
-                            :linked, :raw,
-                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """), params)
-                created += 1
+            # SAVEPOINT per row (GDXA-165): on Postgres the first failing
+            # statement aborts the WHOLE transaction, so every later row fails
+            # with 25P02, the db.commit() below commits nothing and
+            # _reconcile_tombstones runs on a dead session — while this function
+            # still returns created/updated counts as if it had written. The
+            # 2026-05-20 prod 500 on GDX's first Transfer row is this exact
+            # cascade. begin_nested() and not contained_read() because the block
+            # WRITES (rule 2). Containing each row keeps the good rows
+            # committable.
+            with db.begin_nested():
+                deposit_to_ref = raw.get("DepositToAccountRef") or {}
+                row = db.execute(
+                    text("SELECT id FROM qb_deposits WHERE qb_txn_id = :qid"),
+                    {"qid": qb_id},
+                ).first()
+                # Extract LinkedTxn pairs from Line[]: each line carries
+                # LinkedTxn[{TxnId, TxnType}] when the deposit swept funds from
+                # Undeposited Funds. We collapse into "TxnType:TxnId" strings for
+                # cheap display; raw_json keeps the structured form for any
+                # future reconciliation pass.
+                params = {
+                    "qid": qb_id,
+                    "td": _parse_date(raw.get("TxnDate")),
+                    "amt": float(raw.get("TotalAmt") or 0),
+                    "aid": str(deposit_to_ref.get("value") or "") or None,
+                    "aname": deposit_to_ref.get("name") or None,
+                    "memo": (raw.get("PrivateNote") or raw.get("Memo") or None),
+                    "linked": _extract_linked_txn_ids(raw),
+                    # Serialize JSON for the bind — psycopg2 can't adapt dict directly
+                    # to JSONB; SQLite tolerates either. Caught by the prod 500 on
+                    # GDX's first Transfer row 2026-05-20.
+                    "raw": json.dumps(raw),
+                }
+                if row:
+                    # Clear deleted_at on every re-sync: if a prior reconcile
+                    # tombstoned this row by mistake (transient empty page,
+                    # NULL date edge case, etc.), seeing it again in the
+                    # response un-tombstones it. The inverse operation makes
+                    # false positives recoverable.
+                    db.execute(text("""
+                        UPDATE qb_deposits SET txn_date=:td, total_amount=:amt,
+                            deposit_to_account_id=:aid, deposit_to_account_name=:aname,
+                            memo=:memo, linked_qb_ids=:linked, raw_json=:raw,
+                            last_synced_at=CURRENT_TIMESTAMP,
+                            updated_at=CURRENT_TIMESTAMP, deleted_at=NULL
+                        WHERE qb_txn_id=:qid
+                    """), params)
+                    updated += 1
+                else:
+                    params["id"] = str(uuid4())
+                    # Explicit timestamps — raw text() bypasses ORM default callables.
+                    db.execute(text("""
+                        INSERT INTO qb_deposits (id, qb_txn_id, txn_date, total_amount,
+                            deposit_to_account_id, deposit_to_account_name, memo,
+                            linked_qb_ids, raw_json,
+                            last_synced_at, created_at, updated_at)
+                        VALUES (:id, :qid, :td, :amt, :aid, :aname, :memo,
+                                :linked, :raw,
+                                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """), params)
+                    created += 1
         except Exception as exc:
             log.exception("qb_pull_deposits_row_failed qb_id=%s", qb_id)
             errors.append({"qb_id": qb_id, "error": str(exc)[:200]})
@@ -389,6 +399,35 @@ def _ensure_deposit_linked_qb_ids_column(db: Session) -> None:
 # ─────────────────────────────────────────────────────────────────────
 
 
+def drain_before_savepoint(db: Session) -> None:
+    """Flush the caller's pending ORM work before entering a per-row SAVEPOINT.
+
+    Call this immediately before a loop whose body opens ``db.begin_nested()``,
+    and OUTSIDE that loop's ``try``.
+
+    ``db.begin_nested()`` flushes as it opens (``SessionTransaction._take_snapshot``)
+    and that flush runs BEFORE the SAVEPOINT exists, so it is contained by nothing.
+    Left inside the per-row ``try``, a failing flush of the caller's earlier work is
+    eaten by that row's ``except Exception`` and logged as a failure of whichever
+    row happened to be first — which is exactly the swallowed-uncontained-failure
+    class the per-row savepoints were added to remove, reintroduced by the fix
+    itself. Measured on PG in the GDXA-165 round-2 audit against
+    ``_apply_qbo_deletes``: nothing raised out of the call, one bogus
+    ``qb_delete_apply_failed qb_id=QB-1`` was logged, and the caller's later
+    ``commit()`` raised ``PendingRollbackError``.
+
+    Draining here makes the precondition true by construction instead of relying on
+    what today's callers happen to have committed first. A failure raised from here
+    is loud and attributed to no row, which is correct: nothing is contained yet.
+
+    A no-op when the session has nothing pending, which is the common case — this
+    is a guard against the caller's state, not a per-row cost. It is one function
+    rather than the same comment six times so the duplicate-block ratchet is not
+    spent on boilerplate; ``_apply_qbo_deletes`` in ``sync.py`` imports it.
+    """
+    db.flush()
+
+
 def _upsert_banking_entry(
     db: Session,
     *,
@@ -403,42 +442,65 @@ def _upsert_banking_entry(
     memo: str | None,
     raw_json: Any,
 ) -> str:
-    """Returns 'created' or 'updated'."""
-    existing = db.execute(text(
-        "SELECT id FROM qb_banking_entries "
-        "WHERE qb_entity = :qe AND qb_txn_id = :qid AND qb_line_index = :li"
-    ), {"qe": qb_entity, "qid": qb_txn_id, "li": qb_line_index}).first()
-    # Raw text() bypasses ORM type coercion — serialize JSON ourselves so the
-    # value works on SQLite (TEXT) and Postgres (JSONB cast on the column).
-    raw_serialized = json.dumps(raw_json) if raw_json is not None else None
-    params = {
-        "qe": qb_entity, "qid": qb_txn_id, "li": qb_line_index,
-        "td": txn_date, "amt": amount,
-        "aid": account_id, "aname": account_name,
-        "cname": counterparty_name, "memo": memo, "raw": raw_serialized,
-    }
-    if existing:
+    """Returns 'created' or 'updated'.
+
+    SAVEPOINT per row (GDXA-165). This is the choke point for all SIX bank-
+    touching entity pulls — ``_pull_simple_entity`` (BillPayment, SalesReceipt,
+    RefundReceipt), ``pull_customer_payments``, ``pull_vendor_credits`` and
+    ``pull_journal_entries`` — so containing it here covers every one of them
+    with a single savepoint, where ``pull_deposits``/``pull_transfers`` each
+    needed their own.
+
+    Each caller wraps this call in a per-row ``try``/``except Exception`` that
+    collects the error and carries on. Without the savepoint, on Postgres the
+    first failing statement aborts the WHOLE transaction: every later row fails
+    with 25P02, the post-loop ``db.commit()`` commits nothing and
+    ``_reconcile_entries_for`` runs on a dead session — while the pull still
+    returns created/updated counts as if it had written. Measured on PG 15 for
+    ``pull_bill_payments`` (GDXA-165 audit): reported 2 created, persisted 0,
+    raised nothing.
+
+    ``db.begin_nested()`` and not ``contained_read()`` because this writes, so
+    the ORM's unit of work has to participate (rule 2). The swallow is one frame
+    up in the caller's loop, which satisfies rule 5 — the exception crosses this
+    context manager's ``__exit__`` before anything catches it.
+    """
+    with db.begin_nested():
+        existing = db.execute(text(
+            "SELECT id FROM qb_banking_entries "
+            "WHERE qb_entity = :qe AND qb_txn_id = :qid AND qb_line_index = :li"
+        ), {"qe": qb_entity, "qid": qb_txn_id, "li": qb_line_index}).first()
+        # Raw text() bypasses ORM type coercion — serialize JSON ourselves so the
+        # value works on SQLite (TEXT) and Postgres (JSONB cast on the column).
+        raw_serialized = json.dumps(raw_json) if raw_json is not None else None
+        params = {
+            "qe": qb_entity, "qid": qb_txn_id, "li": qb_line_index,
+            "td": txn_date, "amt": amount,
+            "aid": account_id, "aname": account_name,
+            "cname": counterparty_name, "memo": memo, "raw": raw_serialized,
+        }
+        if existing:
+            db.execute(text("""
+                UPDATE qb_banking_entries SET txn_date=:td, amount=:amt,
+                    account_id=:aid, account_name=:aname,
+                    counterparty_name=:cname, memo=:memo, raw_json=:raw,
+                    last_synced_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP,
+                    deleted_at=NULL
+                WHERE qb_entity=:qe AND qb_txn_id=:qid AND qb_line_index=:li
+            """), params)
+            return "updated"
+        params["id"] = str(uuid4())
+        # Explicit timestamps: raw text() INSERT bypasses ORM's `default=`
+        # callables, so the NOT NULL columns need CURRENT_TIMESTAMP here.
         db.execute(text("""
-            UPDATE qb_banking_entries SET txn_date=:td, amount=:amt,
-                account_id=:aid, account_name=:aname,
-                counterparty_name=:cname, memo=:memo, raw_json=:raw,
-                last_synced_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP,
-                deleted_at=NULL
-            WHERE qb_entity=:qe AND qb_txn_id=:qid AND qb_line_index=:li
+            INSERT INTO qb_banking_entries
+                (id, qb_entity, qb_txn_id, qb_line_index, txn_date, amount,
+                 account_id, account_name, counterparty_name, memo, raw_json,
+                 last_synced_at, created_at, updated_at)
+            VALUES (:id, :qe, :qid, :li, :td, :amt, :aid, :aname, :cname, :memo, :raw,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """), params)
-        return "updated"
-    params["id"] = str(uuid4())
-    # Explicit timestamps: raw text() INSERT bypasses ORM's `default=`
-    # callables, so the NOT NULL columns need CURRENT_TIMESTAMP here.
-    db.execute(text("""
-        INSERT INTO qb_banking_entries
-            (id, qb_entity, qb_txn_id, qb_line_index, txn_date, amount,
-             account_id, account_name, counterparty_name, memo, raw_json,
-             last_synced_at, created_at, updated_at)
-        VALUES (:id, :qe, :qid, :li, :td, :amt, :aid, :aname, :cname, :memo, :raw,
-                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-    """), params)
-    return "created"
+        return "created"
 
 
 def _reconcile_entries_for(
@@ -495,6 +557,9 @@ async def _pull_simple_entity(
     created = 0
     updated = 0
     errors: list[dict[str, str]] = []
+
+    drain_before_savepoint(db)  # GDXA-165; see that function's docstring
+
     for raw in rows:
         qb_id = str(raw.get("Id") or "").strip()
         if not qb_id:
@@ -619,6 +684,9 @@ async def pull_customer_payments(
     created = 0
     updated = 0
     errors: list[dict[str, str]] = []
+
+    drain_before_savepoint(db)  # GDXA-165; see that function's docstring
+
     for raw in rows:
         qb_id = str(raw.get("Id") or "").strip()
         if not qb_id:
@@ -683,6 +751,9 @@ async def pull_vendor_credits(
     created = 0
     updated = 0
     errors: list[dict[str, str]] = []
+
+    drain_before_savepoint(db)  # GDXA-165; see that function's docstring
+
     for raw in rows:
         qb_id = str(raw.get("Id") or "").strip()
         if not qb_id:
@@ -772,6 +843,9 @@ async def pull_journal_entries(tenant_id: str, db: Session, qb: QBClient, start_
     created = 0
     updated = 0
     errors: list[dict[str, str]] = []
+
+    drain_before_savepoint(db)  # GDXA-165; see that function's docstring
+
     for raw in rows:
         qb_id = str(raw.get("Id") or "").strip()
         if not qb_id:
@@ -827,52 +901,57 @@ async def pull_transfers(
     created = 0
     updated = 0
     errors: list[dict[str, str]] = []
+
+    drain_before_savepoint(db)  # GDXA-165; see that function's docstring
+
     for raw in rows:
         qb_id = str(raw.get("Id") or "").strip()
         if not qb_id:
             continue
         seen_qb_ids.add(qb_id)
         try:
-            f = raw.get("FromAccountRef") or {}
-            t = raw.get("ToAccountRef") or {}
-            existing = db.execute(
-                text("SELECT id FROM qb_transfers WHERE qb_txn_id = :qid"),
-                {"qid": qb_id},
-            ).first()
-            params = {
-                "qid": qb_id,
-                "td": _parse_date(raw.get("TxnDate")),
-                "amt": float(raw.get("Amount") or 0),
-                "fid": str(f.get("value") or "") or None,
-                "fname": f.get("name") or None,
-                "tid_": str(t.get("value") or "") or None,
-                "tname": t.get("name") or None,
-                "memo": raw.get("PrivateNote") or None,
-                # See pull_deposits comment — psycopg2 needs JSON text.
-                "raw": json.dumps(raw),
-            }
-            if existing:
-                # Clear deleted_at — same inverse-operation logic as deposits.
-                db.execute(text("""
-                    UPDATE qb_transfers SET txn_date=:td, amount=:amt,
-                        from_account_id=:fid, from_account_name=:fname,
-                        to_account_id=:tid_, to_account_name=:tname,
-                        memo=:memo, raw_json=:raw, last_synced_at=CURRENT_TIMESTAMP,
-                        updated_at=CURRENT_TIMESTAMP, deleted_at=NULL
-                    WHERE qb_txn_id=:qid
-                """), params)
-                updated += 1
-            else:
-                params["id"] = str(uuid4())
-                # Explicit timestamps — raw text() bypasses ORM default callables.
-                db.execute(text("""
-                    INSERT INTO qb_transfers (id, qb_txn_id, txn_date, amount,
-                        from_account_id, from_account_name, to_account_id, to_account_name,
-                        memo, raw_json, last_synced_at, created_at, updated_at)
-                    VALUES (:id, :qid, :td, :amt, :fid, :fname, :tid_, :tname, :memo, :raw,
-                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """), params)
-                created += 1
+            # SAVEPOINT per row (GDXA-165), same reason as pull_deposits above.
+            with db.begin_nested():
+                f = raw.get("FromAccountRef") or {}
+                t = raw.get("ToAccountRef") or {}
+                existing = db.execute(
+                    text("SELECT id FROM qb_transfers WHERE qb_txn_id = :qid"),
+                    {"qid": qb_id},
+                ).first()
+                params = {
+                    "qid": qb_id,
+                    "td": _parse_date(raw.get("TxnDate")),
+                    "amt": float(raw.get("Amount") or 0),
+                    "fid": str(f.get("value") or "") or None,
+                    "fname": f.get("name") or None,
+                    "tid_": str(t.get("value") or "") or None,
+                    "tname": t.get("name") or None,
+                    "memo": raw.get("PrivateNote") or None,
+                    # See pull_deposits comment — psycopg2 needs JSON text.
+                    "raw": json.dumps(raw),
+                }
+                if existing:
+                    # Clear deleted_at — same inverse-operation logic as deposits.
+                    db.execute(text("""
+                        UPDATE qb_transfers SET txn_date=:td, amount=:amt,
+                            from_account_id=:fid, from_account_name=:fname,
+                            to_account_id=:tid_, to_account_name=:tname,
+                            memo=:memo, raw_json=:raw, last_synced_at=CURRENT_TIMESTAMP,
+                            updated_at=CURRENT_TIMESTAMP, deleted_at=NULL
+                        WHERE qb_txn_id=:qid
+                    """), params)
+                    updated += 1
+                else:
+                    params["id"] = str(uuid4())
+                    # Explicit timestamps — raw text() bypasses ORM default callables.
+                    db.execute(text("""
+                        INSERT INTO qb_transfers (id, qb_txn_id, txn_date, amount,
+                            from_account_id, from_account_name, to_account_id, to_account_name,
+                            memo, raw_json, last_synced_at, created_at, updated_at)
+                        VALUES (:id, :qid, :td, :amt, :fid, :fname, :tid_, :tname, :memo, :raw,
+                                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """), params)
+                    created += 1
         except Exception as exc:
             log.exception("qb_pull_transfers_row_failed qb_id=%s", qb_id)
             errors.append({"qb_id": qb_id, "error": str(exc)[:200]})

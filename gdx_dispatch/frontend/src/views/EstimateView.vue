@@ -252,7 +252,14 @@
         </template>
       </Dialog>
 
-      <Card v-if="!loading">
+      <div v-if="!loading" class="estimate-layout-container">
+        <EstimateLeadRequestPanel
+          v-if="isExisting && currentEstimateId"
+          :estimate-id="currentEstimateId"
+          class="estimate-lead-panel"
+        />
+        <div class="estimate-main-form">
+          <Card>
         <template #content>
           <div class="form-grid">
             <!-- Customer & Title -->
@@ -756,7 +763,9 @@
             <EstimateProfitPanel :lines="profitPanelLines" />
           </div>
         </template>
-      </Card>
+          </Card>
+        </div>
+      </div>
 
       <div v-if="loading" class="loading-spinner"><p>Loading estimate...</p></div>
 
@@ -957,6 +966,12 @@
           <Button label="Email Customer" icon="pi pi-send" data-testid="estimate-send"
             :disabled="estimate.status === 'Accepted' || estimate.status === 'Declined'"
             @click="emailEstimate" />
+          <!-- Text the review-and-approve link (Phone.com) — only when texting
+               is on; the server refuses finalized estimates and opt-outs. -->
+          <Button v-if="smsEnabled" label="Text Estimate" icon="pi pi-comment" severity="secondary" outlined
+            data-testid="estimate-text"
+            :disabled="estimate.status === 'Accepted' || estimate.status === 'Declined'"
+            @click="showSmsDialog = true" />
           <Button label="Accept" icon="pi pi-check" severity="success" data-testid="estimate-accept"
             :disabled="estimate.status === 'Accepted' || estimate.status === 'Declined'"
             @click="acceptEstimate" />
@@ -1196,6 +1211,14 @@
 
       <!-- ConfirmDialog removed 2026-05-12 — AppLayout.vue:49 mounts one globally. -->
       <Toast data-testid="estimate-view-toast" />
+      <SmsLinkDialog
+        v-if="isExisting"
+        v-model:visible="showSmsDialog"
+        :doc-id="String(route.params.id)"
+        base="/api/estimates"
+        title="Text estimate"
+        @sent="fetchEstimate"
+      />
     </section>
 </template>
 
@@ -1206,6 +1229,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import EstimateProfitPanel from "../components/EstimateProfitPanel.vue";
+import EstimateLeadRequestPanel from "../components/EstimateLeadRequestPanel.vue";
 import CatalogPickerDialog from "../components/CatalogPickerDialog.vue";
 import ComposerPdfPreview from "../components/ComposerPdfPreview.vue";
 import {
@@ -1224,6 +1248,8 @@ import { useAuthStore } from "../stores/auth";
 import { formatDate, formatMoney, formatPercent, formatPhone, localDateString } from "../composables/useFormatters";
 import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
 import PaymentCaptureForm from "../components/PaymentCaptureForm.vue";
+import SmsLinkDialog from "../components/SmsLinkDialog.vue";
+import { useTenantModules } from "../composables/useTenantModules";
 import Button from "primevue/button";
 import Checkbox from "primevue/checkbox";
 import Card from "primevue/card";
@@ -1241,6 +1267,7 @@ import Textarea from "primevue/textarea";
 import Toast from "primevue/toast";
 import ToggleSwitch from "primevue/toggleswitch";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
+import { keepMountedThroughNextNavigation } from '../lib/viewRemount';
 import {
   VALID_BUCKETS,
   categoryToPricingCategory,
@@ -1323,6 +1350,10 @@ async function loadLineCategories() {
 }
 
 const isExisting = computed(() => Boolean(route.params.id));
+const { isEnabled: isModuleEnabled } = useTenantModules();
+const smsEnabled = computed(() => isModuleEnabled("phone_com"));
+const showSmsDialog = ref(false);
+const currentEstimateId = computed(() => route.params.id || estimate.value?.id || null);
 
 // Server-side estimate metadata (read-only on existing).
 const estimate = ref({
@@ -1843,13 +1874,16 @@ async function _attachCapturedImage(dataUrl, item, pluginKey, title) {
   // Door photo → a core Document on the estimate (best-effort; the line + spec
   // already persist via autosave regardless of the photo). `pluginKey` is
   // passed by the deferred-photo flush, where activeSource may have moved on.
+  // The id is captured before the first await, for the same reason as
+  // onAttachmentFiles: the photo belongs to the estimate it was taken on.
+  const estimateId = route.params.id;
   try {
     const blob = await (await fetch(dataUrl)).blob();
     const ext = (blob.type.split("/")[1] || "png").replace("jpeg", "jpg");
     const fd = new FormData();
     fd.append("file", blob, `${pluginKey || activeSource.value?.pluginKey || "plugin"}-${item.qcd || item.id}.${ext}`);
     if (title) fd.append("title", title); // door size → public page + PDF caption
-    await api.post(`/api/estimates/${route.params.id}/attachments`, fd);
+    await api.post(`/api/estimates/${estimateId}/attachments`, fd);
     await loadAttachments();   // refresh the panel so the photo shows immediately
     toast.add({ severity: "success", summary: "Door photo attached", life: 2500 });
   } catch {
@@ -2599,14 +2633,17 @@ async function openAttachment(att) {
 
 async function onAttachmentFiles(ev) {
   const files = Array.from(ev?.target?.files || []);
-  if (!files.length || !route.params.id) return;
+  // Captured once: route.params is the app's CURRENT route, and the user can
+  // open another estimate mid-upload — files 2..n must not land on it.
+  const estimateId = route.params.id;
+  if (!files.length || !estimateId) return;
   attachmentsUploading.value = true;
   try {
     for (const f of files) {
       const fd = new FormData();
       fd.append("file", f);
       try {
-        await api.post(`/api/estimates/${route.params.id}/attachments`, fd);
+        await api.post(`/api/estimates/${estimateId}/attachments`, fd);
       } catch (e) {
         toast.add({ severity: "error", summary: "Upload failed", detail: f.name, life: 4000 });
       }
@@ -2678,6 +2715,17 @@ const autosaveError = ref("");
 let _autosaveDraftTimer = null;
 let _autosaveCreating = false;
 
+// Opened from a lead's "Create estimate" (/estimates/new?customer_id=&lead_id=):
+// the estimate belongs to that lead — but only while it is still for the
+// customer the lead came with. Picking someone else ends "this person's
+// estimate" (the server would refuse the link), so the link is not sent.
+function leadIdFor(customerId) {
+  const leadId = route.query?.lead_id;
+  const leadCustomer = route.query?.customer_id;
+  if (!leadId || !customerId || !leadCustomer) return null;
+  return String(customerId) === String(leadCustomer) ? String(leadId) : null;
+}
+
 async function _createDraftFromForm() {
   if (_autosaveCreating || isExisting.value) return;
   if (!form.value.customer_id) return;
@@ -2697,6 +2745,7 @@ async function _createDraftFromForm() {
       tax_rate: persistTax ? formPct / 100 : null,
       discount: Number(form.value.discount) > 0 ? Number(form.value.discount) : null,
       hide_line_prices: form.value.hide_line_prices ?? null,
+      lead_id: leadIdFor(form.value.customer_id),
     };
     const result = await apiRaw.post("/api/estimates", payload);
     const created = result?.data || result;
@@ -2710,6 +2759,12 @@ async function _createDraftFromForm() {
       const preFlipLines = form.value.line_items.filter(
         (li) => li.description || Number(li.unit_price) > 0 || li.cost != null,
       );
+      // The POST can outlive this view (the user opened another estimate
+      // meanwhile). A dead view must not drive the router — its flip would
+      // put the NEXT estimate's form under this draft's URL.
+      if (_viewUnmounted) return;
+      // Same draft, now with an id — don't remount.
+      keepMountedThroughNextNavigation(`/estimates/${created.id}`);
       await router.replace(`/estimates/${created.id}`);
       // Refresh form from the server snapshot so estimate.id /
       // estimate_number / created_at populate and the existing-mode
@@ -2759,6 +2814,7 @@ let _autosaveDebounce = null;
 let _autosaveInFlight = false;
 let _autosaveInFlightPromise = null;
 let _autosaveQueued = false;
+let _viewUnmounted = false;
 const FINALIZED = new Set(["accepted", "declined", "Accepted", "Declined"]);
 
 // Autosave refuses to run for finalized estimates (below), so every line-item
@@ -2900,6 +2956,7 @@ function _linePatchPayload(li) {
 }
 
 async function _flushNow() {
+  if (_viewUnmounted) return;
   if (!isExisting.value) return;
   if (FINALIZED.has(estimate.value.status)) return;
   if (_autosaveInFlight) {
@@ -3012,6 +3069,9 @@ async function forceFlush() {
 }
 
 function _scheduleFlush() {
+  // A flush that settles after this view unmounted (the user moved to another
+  // estimate) must not re-arm: route.params.id is the NEXT estimate by then.
+  if (_viewUnmounted) return;
   if (!isExisting.value) return;
   if (FINALIZED.has(estimate.value.status)) return;
   if (_autosaveDebounce) clearTimeout(_autosaveDebounce);
@@ -3093,6 +3153,7 @@ async function createEstimate() {
       tax_rate: persistTax ? formPct / 100 : null,
       discount: Number(form.value.discount) > 0 ? Number(form.value.discount) : null,
       hide_line_prices: form.value.hide_line_prices ?? null,
+      lead_id: leadIdFor(customerId),
       // M31+M33: keep zero-priced described lines (the display sums them and
       // $0 scope lines are legit); divergent lines were refused above.
       line_items: form.value.line_items
@@ -3110,8 +3171,11 @@ async function createEstimate() {
     const result = await api.post("/api/estimates", payload, { successMessage: "Estimate created" });
     const created = result?.data || result;
     if (created?.id) {
+      if (_viewUnmounted) return;  // the user already left; don't yank them back
+      // Same draft, now with an id — don't remount.
+      keepMountedThroughNextNavigation(`/estimates/${created.id}`);
       router.push(`/estimates/${created.id}`);
-    } else {
+    } else if (!_viewUnmounted) {
       router.push("/estimates");
     }
   } finally {
@@ -3898,13 +3962,29 @@ function duplicateEstimate() {
 }
 
 async function doDuplicateEstimate() {
+  // Captured BEFORE any await: route.params is the app's current route, and
+  // the user can open another estimate while the flush is in flight.
+  const sourceId = route.params.id;
   duplicating.value = true;
   try {
-    const result = await api.post(`/api/estimates/${route.params.id}/duplicate`, {});
+    // The server copies what is SAVED. Persist in-flight edits first, or the
+    // last few seconds of typing are missing from the copy.
+    await forceFlush();
+    if (_viewUnmounted) return;  // the user left; don't copy, don't yank them back
+    // A finalized estimate never flushes, so a stale "error" there is not
+    // this estimate's unsaved work — don't let it block the copy forever.
+    if (!estimateLocked.value && autosaveState.value === "error") {
+      // forceFlush swallows its failure into autosaveState; copying now would
+      // silently duplicate the older saved version.
+      toast.add({ severity: "error", summary: "Not duplicated",
+        detail: "Your latest changes could not be saved, so the copy would be out of date. Fix the save error and try again.", life: 6000 });
+      return;
+    }
+    const result = await api.post(`/api/estimates/${sourceId}/duplicate`, {});
     const newId = result?.id || result?.data?.id;
     const newNumber = result?.estimate_number || result?.data?.estimate_number || "new estimate";
     toast.add({ severity: "success", summary: "Duplicated", detail: `Created ${newNumber}`, life: 3000 });
-    if (newId) router.push(`/estimates/${newId}`);
+    if (newId && !_viewUnmounted) router.push(`/estimates/${newId}`);
   } catch (err) {
     toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to duplicate estimate", life: 4000 });
   } finally {
@@ -3942,6 +4022,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  _viewUnmounted = true;
   if (_autosaveTickInterval) clearInterval(_autosaveTickInterval);
   if (_autosaveDebounce) clearTimeout(_autosaveDebounce);
   if (_autosaveDraftTimer) clearTimeout(_autosaveDraftTimer);
@@ -3949,6 +4030,37 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.estimate-layout-container {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+}
+
+.estimate-lead-panel {
+  width: 320px;
+  flex-shrink: 0;
+}
+
+.estimate-main-form {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 1024px) {
+  .estimate-layout-container {
+    flex-direction: column;
+  }
+  .estimate-lead-panel {
+    width: 100%;
+  }
+}
+
+@media print {
+  .estimate-lead-panel {
+    display: none !important;
+  }
+}
+
 .estimate-view {
   max-width: 1280px;
   margin: 0 auto;

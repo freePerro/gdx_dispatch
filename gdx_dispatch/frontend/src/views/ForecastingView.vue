@@ -34,6 +34,9 @@
       </template>
     </Toolbar>
 
+    <CashCalendar />
+
+    <h2 class="section-heading">Revenue forecast</h2>
     <div class="kpi-row">
       <div class="kpi">
         <div class="kpi-label">Expected revenue · next {{ windowDays }} days</div>
@@ -56,6 +59,9 @@
           <span v-if="projection.recurring.qbo_overridden">
             · {{ projection.recurring.qbo_overridden }} dup'd
           </span>
+        </div>
+        <div class="kpi-sub" v-if="projection?.recurring?.outflow_total" data-testid="recurring-outflow">
+          {{ money(projection.recurring.outflow_total) }} going out · not counted as revenue
         </div>
       </div>
     </div>
@@ -279,6 +285,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useForecasting } from '../composables/useForecasting'
 import { formatDate, formatMoney as money, formatPercent } from '../composables/useFormatters'
 import { useRecurringStreams } from '../composables/useRecurringStreams'
+import CashCalendar from '../components/forecasting/CashCalendar.vue'
 
 import Toolbar from 'primevue/toolbar'
 import Button from 'primevue/button'
@@ -491,6 +498,12 @@ onMounted(async () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.section-heading {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 0.5rem 0 0.75rem;
 }
 
 .panel-heading {

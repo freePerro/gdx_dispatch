@@ -2,8 +2,12 @@
     <section class="billing-view view-card">
       <!-- Summary Cards -->
       <div class="summary-cards">
-        <Card data-testid="billing-total-outstanding">
-          <template #title>Total Outstanding</template>
+        <!-- Click to re-cut the outstanding balance by age (0–30, 31–60, …
+             with the office's own day ranges). -->
+        <Card data-testid="billing-total-outstanding" class="outstanding-card" title="Break down by age"
+          role="button" tabindex="0" aria-label="Total Outstanding — break down by age"
+          @click="showAgingDialog = true" @keydown.enter.prevent="showAgingDialog = true" @keydown.space.prevent="showAgingDialog = true">
+          <template #title>Total Outstanding <i class="pi pi-chart-bar card-hint" /></template>
           <template #content><p class="stat-value outstanding">{{ currency(totalOutstanding) }}</p></template>
         </Card>
         <Card data-testid="billing-overdue-amount">
@@ -374,6 +378,20 @@
             <small v-if="data.sent_at && data.sent_via === 'mail'" class="muted"> · Mailed</small>
           </template>
         </Column>
+        <!-- The customer opened the view-and-pay link (email, text, or the
+             portal's Pay button). Blank is NOT "not opened": a mailed,
+             manual, bounced or pre-2026-07-29 send leaves no record either
+             way. The invoice's activity panel says when "not opened" is
+             provable. -->
+        <Column field="customer_viewed_at" header="Viewed" sortable>
+          <template #body="{ data }">
+            <span
+              v-if="data.customer_viewed_at"
+              v-tooltip="`Last opened ${formatDateTime(data.customer_viewed_at)}` + (data.customer_view_count > 1 ? ` · ${data.customer_view_count} visits` : '')"
+              :data-testid="`customer-viewed-${data.id}`"
+            ><i class="pi pi-eye" aria-hidden="true" /> {{ formatStampDate(data.customer_viewed_at) }}</span>
+          </template>
+        </Column>
         <Column header="Actions" style="width: 220px">
           <template #body="{ data }">
             <div class="action-btns">
@@ -431,6 +449,14 @@
 
       <!-- S122: Create-invoice dialog retired. + New Invoice and per-row
            "Create Invoice for Job" buttons now route to /billing/new. -->
+
+      <OutstandingAgingDialog
+        v-model:visible="showAgingDialog"
+        :invoices="kpiWindowInvoices"
+        :card-total="totalOutstanding"
+        :today="todayKey()"
+        :scope-note="agingScopeNote"
+      />
 
       <!-- Record Payment Dialog -->
       <Dialog
@@ -609,6 +635,7 @@ import InputText from "primevue/inputtext";
 import Tag from "primevue/tag";
 import Toast from "primevue/toast";
 import EmptyState from "../components/EmptyState.vue";
+import OutstandingAgingDialog from "../components/OutstandingAgingDialog.vue";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { invoiceStatusSeverity as statusSeverity } from "../utils/statusSeverity";
 const { confirmAsync, confirmDestructive } = useDestructiveConfirm();
@@ -632,6 +659,7 @@ const customers = ref([]);
 const jobs = ref([]);
 const searchQuery = ref("");
 const activeStatus = ref("All");
+const showAgingDialog = ref(false);
 
 // Date filter — preset + optional custom range
 const datePreset = ref("all");
@@ -873,9 +901,9 @@ async function confirmBulkMarkPaid() {
 }
 
 function bulkExport() {
-  const headers = ["Invoice #", "Customer", "Amount", "Status", "Due Date", "Last Sent"];
+  const headers = ["Invoice #", "Customer", "Amount", "Status", "Due Date", "Last Sent", "Viewed"];
   const rows = selectedInvoices.value.map((i) => [
-    i.invoice_number || "", i.customer_name || "", i.total || 0, i.status || "", i.due_date || "", i.sent_at || "",
+    i.invoice_number || "", i.customer_name || "", i.total || 0, i.status || "", i.due_date || "", i.sent_at || "", i.customer_viewed_at || "",
   ]);
   const csv = [headers, ...rows].map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
@@ -1079,6 +1107,7 @@ function exportInvoices() {
       { field: "status", header: "Status" },
       { field: "due_date", header: "Due Date" },
       { field: "sent_at", header: "Last Sent" },
+      { field: "customer_viewed_at", header: "Viewed" },
     ],
     "invoices",
   );
@@ -1139,7 +1168,16 @@ const kpiWindowInvoices = computed(() =>
 
 // Outstanding = receivables only. Prefer server-side aggregator (full-table
 // SUM, no pagination cap) and fall back to client-side over the loaded
-// list. Drafts excluded — they aren't yet receivables.
+// list. Drafts excluded — they aren't yet receivables. Non-positive balances
+// are not money still owed, so they stay out of AR too.
+// The aging dialog breaks down exactly what the card covers: with a date
+// filter on, that is invoices ISSUED in the window — say so in the dialog.
+const agingScopeNote = computed(() => {
+  if (!dateFilterActive.value) return "";
+  const preset = datePresetOptions.find((o) => o.value === datePreset.value);
+  return `Only invoices issued in the page's date filter (${preset?.label || "custom range"}), matching the card. Clear the filter to see everything owed.`;
+});
+
 const totalOutstanding = computed(() => {
   if (!dateFilterActive.value && billingSummary.value && typeof billingSummary.value.total_outstanding === 'number') {
     return billingSummary.value.total_outstanding;
@@ -1149,6 +1187,7 @@ const totalOutstanding = computed(() => {
     // status NOT IN paid/draft/void); voids normally carry a zeroed
     // balance_due but legacy rows may not.
     .filter((inv) => inv.status !== "Paid" && inv.status !== "Draft" && inv.status !== "Void")
+    .filter((inv) => toNum(inv.balance_due ?? inv.total) > 0)
     .reduce((sum, inv) => sum + toNum(inv.balance_due ?? inv.total), 0);
 });
 
@@ -1158,6 +1197,7 @@ const overdueAmount = computed(() => {
   }
   return kpiWindowInvoices.value
     .filter((inv) => inv.status === "Overdue")
+    .filter((inv) => toNum(inv.balance_due ?? inv.total) > 0)
     .reduce((sum, inv) => sum + toNum(inv.balance_due ?? inv.total), 0);
 });
 
@@ -1271,6 +1311,10 @@ function normalizeInvoice(raw, customerMap = {}) {
     created_at: raw.created_at || "",
     sent_at: raw.sent_at || "",
     sent_via: raw.sent_via || "",
+    // Last time a person opened the view-and-pay link (GET /api/invoices
+    // reads it from the customer-view audit rows). Null = never opened.
+    customer_viewed_at: raw.customer_viewed_at || null,
+    customer_view_count: Number(raw.customer_view_count) || 0,
     paid_at: raw.paid_at || "",
     updated_at: raw.updated_at || "",
     notes: raw.notes || "",
@@ -1592,7 +1636,8 @@ onMounted(async () => {
 .stat-value.overdue { color: var(--p-red-500, #ef4444); }
 .stat-value.paid { color: var(--p-green-500, #22c55e); }
 .stat-value.drafts { color: var(--p-amber-500, #f59e0b); }
-.draft-card { cursor: pointer; }
+.draft-card, .outstanding-card { cursor: pointer; }
+.card-hint { font-size: 0.8rem; color: var(--p-text-muted-color, #6b7280); }
 .draft-total {
   font-size: 0.9rem;
   color: var(--p-text-muted-color, #6b7280);

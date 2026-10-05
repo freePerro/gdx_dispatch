@@ -150,3 +150,83 @@ class VendorOrderLine(TenantBase):
         DateTime(timezone=True), nullable=False, default=utcnow)
 
     order: Mapped[VendorOrder] = relationship(back_populates="lines")
+
+
+class HubxDoorOrder(TenantBase):
+    """One door the office ORDERED from the manufacturer through HubX.
+
+    HubX (the manufacturer's dealer order portal) emails an "Order submission"
+    every time the office submits a cart. Each item in it carries the quote
+    number (``QCD…``) — the same number the captured door spec stores on the
+    estimate line (``line_metadata["Number"]``). That shared number is what
+    lets the order flip the job's door from "needed" to "ordered" without a
+    human (modules/vendor_orders/hubx.py).
+
+    One row per QCD, ever: this is both the record of what the email said and
+    the idempotency key. A door the office later sets BACK to "needed" (a
+    cancelled order) must not be flipped again by the next mail sync re-reading
+    the same message — the row existing is what prevents that.
+
+    ``outcome`` records what the ingest did with it, so "why didn't my door move?"
+    is answerable from the records: applied · no_estimate · ambiguous ·
+    job_closed · nothing_needed.
+
+    Tenant plane, created by ``create_orm_tables()`` at container start like its
+    siblings in this module — a new table needs no migration.
+    """
+
+    __tablename__ = "hubx_door_orders"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    qcd: Mapped[str] = mapped_column(String(40), nullable=False, unique=True, index=True)
+
+    # What the email said about the item.
+    quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    job_po_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    model_number: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    size: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    submitted_text: Mapped[str | None] = mapped_column(String(60), nullable=True)
+
+    # Where it came from — the mirrored Outlook message.
+    graph_message_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # What the ingest did with it.
+    outcome: Mapped[str] = mapped_column(String(30), nullable=False)
+    matched_estimate_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    matched_job_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("jobs.id"), nullable=True, index=True
+    )
+    parts_marked: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    moved_from_area: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    moved_to_area: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class HubxOrderEmail(TenantBase):
+    """One HubX submission email, read once.
+
+    Keyed on the RFC 822 ``Message-ID`` (``internet_message_id``), not the
+    Graph id: Graph ids change when a message moves folders, and the same mail
+    mirrored into two mailboxes has two Graph ids but one Message-ID. Every
+    fetched message gets a row — including one whose doors were all recorded
+    already, or that parsed to no items — so no message is ever fetched twice
+    (audit 2026-09-29: without this, such messages were re-fetched on every
+    sync and could fill the per-sync cap, starving new orders).
+
+    ``item_count`` of 0 means the body held no QCD: a format change shows up
+    here as a run of zero rows rather than as silence.
+    """
+
+    __tablename__ = "hubx_order_emails"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    message_key: Mapped[str] = mapped_column(String(998), nullable=False, unique=True)
+    graph_message_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    item_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    new_item_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow)

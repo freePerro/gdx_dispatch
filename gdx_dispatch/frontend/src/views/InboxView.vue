@@ -15,6 +15,7 @@ import InputText from 'primevue/inputtext'
 import TreeSelect from 'primevue/treeselect'
 import EmailBodyFrame from '../components/EmailBodyFrame.vue'
 import EmailAttachments from '../components/EmailAttachments.vue'
+import LeadIntakeForm from '../components/LeadIntakeForm.vue'
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 const { confirmAsync } = useDestructiveConfirm();
 
@@ -768,6 +769,42 @@ function clearLinkChoice() {
 
 const taskSaving = ref(false)
 
+// Same either-key gate as POST /api/leads/intake (_require_intake).
+const canIntake = computed(() => auth.hasPermission('leads.intake') || auth.hasPermission('leads.write'))
+const showLeadDialog = ref(false)
+const leadPrefill = ref({
+  email: '',
+  name: '',
+  notes: '',
+  originRef: '',
+})
+
+function openLeadFromEmail() {
+  if (!detail.value) return
+  const d = detail.value
+  const noteParts = []
+  if (d.subject) noteParts.push(`Subject: ${d.subject}`)
+  if (d.body_preview) noteParts.push(d.body_preview)
+
+  // A message the shop sent has the shop as its sender; the customer is the
+  // recipient then (mailbox_address is the account's own address).
+  const self = (d.mailbox_address || '').toLowerCase()
+  const sentByUs = self && (d.from_address || '').toLowerCase() === self
+  const customerEmail = sentByUs
+    ? (d.to_addresses || []).find((a) => a && String(a).toLowerCase() !== self) || ''
+    : d.from_address || ''
+
+  leadPrefill.value = {
+    email: customerEmail,
+    // The message API carries no sender display name, only the address; a
+    // linked customer is the one name we have. Otherwise the user types it.
+    name: d.linked_customer_name || '',
+    notes: noteParts.join('\n\n'),
+    originRef: d.id ? `outlook_message:${d.id}` : '',
+  }
+  showLeadDialog.value = true
+}
+
 async function createTaskFromEmail() {
   if (!detail.value) return
   taskSaving.value = true
@@ -1409,6 +1446,14 @@ onMounted(async () => {
             @click="startForward"
           />
           <Button
+            v-if="canIntake"
+            label="Create lead"
+            icon="pi pi-user-plus"
+            outlined
+            data-test="inbox-create-lead"
+            @click="openLeadFromEmail"
+          />
+          <Button
             label="Create task"
             icon="pi pi-check-square"
             outlined
@@ -1517,6 +1562,15 @@ onMounted(async () => {
         <Button label="Forward" :loading="forwardSending" data-test="forward-send" @click="sendForward" />
       </template>
     </Dialog>
+
+    <!-- ── Lead intake dialog ── -->
+    <LeadIntakeForm
+      v-model:visible="showLeadDialog"
+      :initial-email="leadPrefill.email"
+      :initial-name="leadPrefill.name"
+      :initial-notes="leadPrefill.notes"
+      :origin-ref="leadPrefill.originRef"
+    />
 
     <!-- ── Link to customer / job dialog (P2.1 / P2.2) ── -->
     <Dialog v-model:visible="linkOpen" header="Link this email" modal :style="{ width: '30rem' }">

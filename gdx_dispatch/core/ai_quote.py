@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.types import Uuid
 
 from gdx_dispatch.core.audit import TenantBase, utcnow
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_role
 
 logger = logging.getLogger(__name__)
@@ -299,18 +299,33 @@ def get_pricing_suggestions(part_name: str, db: Session) -> dict[str, Any]:
 
     Queries historical invoice totals first; falls back to catalog lookup, then
     sensible defaults.
+
+    The invoice read is ``contained_read``-wrapped (GDXA-159, child of GDXA-86).
+    Be precise about why, because the census that found this site over-matched:
+    today's ONLY production caller is ``api_pricing_suggest``, whose ``db`` is
+    ``Annotated[Session, Depends(get_db)]`` — a request-scoped session with no
+    caller holding pending work behind it, and ``get_db``'s teardown is a bare
+    ``close()``. So no live data loss is reachable through this function today.
+
+    It is wrapped anyway because the containment belongs to the SHAPE, not to
+    the caller: this is a helper that takes a ``db: Session`` it does not own,
+    and "the one caller happens to have nothing pending" is a property of the
+    caller that the next one will not inherit. Wrapping is behaviour-neutral on
+    the success path (no flush, ~2 µs — see the ``contained_read`` docstring's
+    rule 3), so the trade is a rounding error against being wrong later.
     """
     prices: list[float] = []
     source = "default"
 
     try:
         from gdx_dispatch.models.tenant_models import Invoice
-        rows = db.execute(
-            select(Invoice.total).where(
-                Invoice.deleted_at.is_(None),
-                Invoice.status.in_(["paid", "sent"]),
-            )
-        ).scalars().all()
+        with contained_read(db):
+            rows = db.execute(
+                select(Invoice.total).where(
+                    Invoice.deleted_at.is_(None),
+                    Invoice.status.in_(["paid", "sent"]),
+                )
+            ).scalars().all()
         prices = [float(r) for r in rows if r and float(r) > 0]
         if prices:
             source = "historical"
@@ -356,6 +371,12 @@ def analyze_pricing_health(tenant_id: str, db: Session) -> dict[str, Any]:
 
     Returns avg_margin, below/above market item names, a health_score, and
     actionable recommendations.
+
+    ``contained_read``-wrapped for the same reason, and with the same honest
+    caveat, as :func:`get_pricing_suggestions` — see its docstring. Only the
+    ``execute`` is inside the block: the loop below walks objects already loaded
+    by it, which emits no SQL, and keeping pure-Python work out of the savepoint
+    is the house style (``core/modules.py``, ``core/user_display.py``).
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=90)
     total_invoices = 0
@@ -365,12 +386,13 @@ def analyze_pricing_health(tenant_id: str, db: Session) -> dict[str, Any]:
 
     try:
         from gdx_dispatch.models.tenant_models import Invoice
-        invoices = db.execute(
-            select(Invoice).where(
-                Invoice.deleted_at.is_(None),
-                Invoice.created_at >= cutoff,
-            )
-        ).scalars().all()
+        with contained_read(db):
+            invoices = db.execute(
+                select(Invoice).where(
+                    Invoice.deleted_at.is_(None),
+                    Invoice.created_at >= cutoff,
+                )
+            ).scalars().all()
         total_invoices = len(invoices)
         for inv in invoices:
             total_val = float(inv.total or 0)

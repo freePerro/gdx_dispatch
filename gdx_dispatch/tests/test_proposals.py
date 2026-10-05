@@ -1363,3 +1363,268 @@ def test_public_payload_photo_honors_exif_orientation(client: TestClient, tmp_pa
     photos = client.get(f"/api/proposals/{token}").json()["photos"]
     out = Image.open(io.BytesIO(base64.b64decode(photos[0]["src"].split(",", 1)[1])))
     assert out.size == (48, 64)  # transposed upright, not the raw (64, 48)
+
+
+# ── staff preview (?preview=, core/customer_page_preview.py) ────────────────
+
+_BROWSER_UA = {"user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1"}
+
+
+def _estimate_views(client: TestClient) -> int:
+    from gdx_dispatch.core.audit import AuditLog
+
+    db = _db(client)
+    try:
+        return db.query(AuditLog).filter(AuditLog.action == "estimate_viewed_by_customer").count()
+    finally:
+        db.close()
+
+
+def _row(client: TestClient, est_id: str) -> Estimate:
+    db = _db(client)
+    try:
+        row = db.get(Estimate, UUID(est_id))
+        db.expunge(row)
+        return row
+    finally:
+        db.close()
+
+
+def test_a_preview_shows_a_draft_as_the_customer_will_get_it_and_records_no_view(client: TestClient):
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    est = _create_estimate(client)
+    row = _row(client, est["id"])
+    assert row.sent_at is None and row.status == "draft"
+    assert client.get(f"/api/proposals/{row.public_token}").status_code == 404  # customer rule unchanged
+
+    r = client.get(f"/api/proposals/{row.public_token}", params={"preview": mint("estimate", row.id)}, headers=_BROWSER_UA)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["preview"] is True
+    # Texting moves a draft to "sent"; the preview shows that page, buttons and all.
+    assert body["estimate"]["status"] == "sent"
+    assert _estimate_views(client) == 0
+    # Read-only: the estimate itself is untouched.
+    after = _row(client, est["id"])
+    assert (after.status, after.sent_at) == ("draft", None)
+
+
+def test_a_preview_leaks_nothing_the_customer_page_hides(client: TestClient):
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    est = _create_estimate(client, notes="internal: do not go below 3200")
+    row = _row(client, est["id"])
+    body = client.get(f"/api/proposals/{row.public_token}", params={"preview": mint("estimate", row.id)}).json()
+    leaked = {"notes", "company_id", "public_token", "id", "customer_id", "job_id"}
+    assert leaked.isdisjoint(body["estimate"].keys())
+    assert "do not go below" not in str(body)
+
+
+def test_a_preview_shows_the_expiry_the_text_will_set(client: TestClient, monkeypatch):
+    """A draft has no valid_until and an expired one has a past date; texting
+    either stamps a fresh window (routers/estimates.send_expiry). The preview
+    must show that date, not the stale one."""
+    from datetime import timedelta
+
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    _fake_features(monkeypatch)  # estimate_expiry_days falls back to 60
+    draft = _create_estimate(client)
+    row = _row(client, draft["id"])
+    body = client.get(f"/api/proposals/{row.public_token}", params={"preview": mint("estimate", row.id)}).json()
+    shown = datetime.fromisoformat(body["estimate"]["valid_until"])
+    if shown.tzinfo is None:
+        shown = shown.replace(tzinfo=UTC)
+    assert abs(shown - (datetime.now(UTC) + timedelta(days=60))) < timedelta(minutes=5)
+
+    stale = datetime(2026, 1, 1, tzinfo=UTC)
+    expired = _create_estimate(client)
+    token = _publish(client, expired["id"], status="expired", sent_at=datetime(2025, 11, 1, tzinfo=UTC), valid_until=stale)
+    body = client.get(f"/api/proposals/{token}", params={"preview": mint("estimate", UUID(expired["id"]))}).json()
+    assert body["estimate"]["status"] == "sent"
+    assert datetime.fromisoformat(body["estimate"]["valid_until"]).replace(tzinfo=UTC) > datetime.now(UTC)
+    # Read-only: the stored row still carries the stale date.
+    assert _row(client, expired["id"]).valid_until.replace(tzinfo=UTC) == stale
+
+
+@pytest.mark.parametrize("status", ["sent", "rejected"])
+def test_a_preview_of_a_lapsed_open_estimate_shows_the_fresh_window(client: TestClient, monkeypatch, status):
+    """Still "sent" (or bounced) but past its date, before the nightly job
+    expires it: a delivered text re-stamps it (estimate_sms.send's stamp()),
+    so the preview must show the new date, not the lapsed one."""
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    _fake_features(monkeypatch)
+    lapsed = datetime(2026, 1, 1, tzinfo=UTC)
+    est = _create_estimate(client)
+    token = _publish(client, est["id"], status=status, sent_at=datetime(2025, 11, 1, tzinfo=UTC), valid_until=lapsed)
+    body = client.get(f"/api/proposals/{token}", params={"preview": mint("estimate", UUID(est["id"]))}).json()
+    assert body["estimate"]["status"] == "sent"
+    assert datetime.fromisoformat(body["estimate"]["valid_until"]).replace(tzinfo=UTC) > datetime.now(UTC)
+
+
+def test_a_preview_of_a_finalized_estimate_shows_its_real_status(client: TestClient):
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    est = _create_estimate(client)
+    token = _publish(client, est["id"], status="declined")
+    r = client.get(f"/api/proposals/{token}", params={"preview": mint("estimate", UUID(est["id"]))})
+    assert r.json()["estimate"]["status"] == "declined"
+
+
+def test_a_bad_preview_is_the_same_404_as_a_bad_token(client: TestClient):
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    est = _create_estimate(client)
+    other = _create_estimate(client)
+    token = _publish(client, est["id"], sent_at=datetime(2026, 1, 1, tzinfo=UTC))
+    bad_token = client.get("/api/proposals/not-a-real-token").json()
+    for sig in ("garbage", mint("estimate", UUID(est["id"]), now=0), mint("estimate", UUID(other["id"])),
+                mint("invoice", UUID(est["id"]))):
+        r = client.get(f"/api/proposals/{token}", params={"preview": sig}, headers=_BROWSER_UA)
+        assert r.status_code == 404, sig
+        assert r.json() == bad_token
+    # Never a fallback to a customer visit.
+    assert _estimate_views(client) == 0
+    # The customer's own visit still records.
+    assert client.get(f"/api/proposals/{token}", headers=_BROWSER_UA).status_code == 200
+    assert _estimate_views(client) == 1
+
+
+def test_sms_preview_hands_the_dialog_a_preview_link(client: TestClient):
+    """The office estimate route returns ``preview_url`` from prepare(); the
+    link it names opens this estimate in preview mode."""
+    from gdx_dispatch.core import estimate_sms
+
+    est = _create_estimate(client)
+    row = _row(client, est["id"])
+    db = _db(client)
+    try:
+        prep = estimate_sms.prepare(db, db.get(Estimate, row.id))
+    finally:
+        db.close()
+    url = prep["preview_url"]
+    assert url.startswith(f"/proposals/{row.public_token}?preview=")
+    sig = url.split("?preview=", 1)[1]
+    assert client.get(f"/api/proposals/{row.public_token}", params={"preview": sig}).status_code == 200
+
+
+# ── line categories follow the estimate PDF's template setting (2026-10-01) ─
+
+def _save_estimate_pdf_template(client: TestClient, *, show_category: bool, category_display: str = "column") -> None:
+    """Save the tenant's estimate PDF template the way the editor does — the
+    line_items block's settings carry the category switch."""
+    import json
+
+    from gdx_dispatch.core import pdf_generator
+    from gdx_dispatch.models.tenant_models import PdfTemplate
+
+    blocks = pdf_generator.default_blocks("estimate")
+    for b in blocks:
+        if b["type"] == "line_items":
+            b["settings"] = {**b["settings"], "show_category": show_category, "category_display": category_display}
+    db = _db(client)
+    try:
+        db.add(PdfTemplate(
+            id=str(uuid4()), company_id=TENANT, template_type="estimate", blocks=json.dumps(blocks),
+            created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+
+def _categorize_lines(client: TestClient, est_id: str, *categories: str | None) -> None:
+    db = _db(client)
+    try:
+        rows = db.execute(
+            select(EstimateLine).where(EstimateLine.estimate_id == UUID(est_id)).order_by(EstimateLine.sort_order)
+        ).scalars().all()
+        for row, cat in zip(rows, categories, strict=True):
+            row.category = cat
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_public_payload_line_category_off_without_a_saved_template(client: TestClient, monkeypatch):
+    """No saved template: the PDF prints no category, so the page gets none —
+    not even on the wire (the office turned it off; off means off)."""
+    _fake_features(monkeypatch)
+    est = _create_estimate(client)
+    _add_lines(client, est["id"], 100.0, 50.0)
+    _categorize_lines(client, est["id"], "Doors", "Labor")
+    token = _publish(client, est["id"])
+
+    body = client.get(f"/api/proposals/{token}").json()
+    assert body["estimate"]["line_category"] == "off"
+    assert all("category" not in ln for ln in body["lines"])
+    assert "Doors" not in str(body)
+
+
+@pytest.mark.parametrize("display", ["column", "grouped"])
+def test_public_payload_line_category_follows_the_pdf_template(client: TestClient, monkeypatch, display):
+    """The customer's approval page shows category exactly as the estimate PDF
+    does: same switch, same display mode. Uncategorized lines read None."""
+    _fake_features(monkeypatch)
+    _save_estimate_pdf_template(client, show_category=True, category_display=display)
+    est = _create_estimate(client)
+    _add_lines(client, est["id"], 100.0, 50.0, 25.0)
+    _categorize_lines(client, est["id"], "Doors", "  ", "Labor")
+    token = _publish(client, est["id"])
+
+    body = client.get(f"/api/proposals/{token}").json()
+    assert body["estimate"]["line_category"] == display
+    assert [ln["category"] for ln in body["lines"]] == ["Doors", None, "Labor"]
+
+
+def test_public_payload_line_category_switched_off_in_the_template(client: TestClient, monkeypatch):
+    """A saved template with show_category off — even with 'grouped' picked —
+    is 'off', the same reading the PDF render makes."""
+    _fake_features(monkeypatch)
+    _save_estimate_pdf_template(client, show_category=False, category_display="grouped")
+    est = _create_estimate(client)
+    _add_lines(client, est["id"], 100.0)
+    _categorize_lines(client, est["id"], "Doors")
+    token = _publish(client, est["id"])
+
+    body = client.get(f"/api/proposals/{token}").json()
+    assert body["estimate"]["line_category"] == "off"
+    assert "category" not in body["lines"][0]
+
+
+def test_public_payload_tier_lines_carry_category_when_shown(client: TestClient, monkeypatch):
+    """Good/better/best tier items follow the same switch as estimate lines."""
+    _fake_features(monkeypatch)
+    _save_estimate_pdf_template(client, show_category=True, category_display="grouped")
+    est = _create_estimate(client)
+    client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    tier = _add_tier(client, est["id"], "best")
+    _add_tier_line(client, est["id"], tier["id"], "Belt drive opener", 1, 600.0, category="Openers")
+    _add_tier_line(client, est["id"], tier["id"], "Haul away", 1, 50.0)
+    token = _publish(client, est["id"])
+
+    body = client.get(f"/api/proposals/{token}").json()
+    assert [ln["category"] for ln in body["tiers"][0]["lines"]] == ["Openers", None]
+
+
+def test_page_category_mode_is_the_pdf_render_decision():
+    """Real invocation, no mocks: the page's mode is read through the same
+    normalization the PDF render uses (_normalize_template_config), so the
+    two cannot read one template two ways. The render side of each mode is
+    pinned in test_pdf_template_render.py."""
+    from gdx_dispatch.core import pdf_generator
+
+    def cfg(**settings):
+        blocks = pdf_generator.default_blocks("estimate")
+        for b in blocks:
+            if b["type"] == "line_items":
+                b["settings"] = {**b["settings"], **settings}
+        return {"blocks": blocks}
+
+    assert pdf_generator.line_category_mode(None) == "off"
+    assert pdf_generator.line_category_mode(cfg(show_category=True)) == "column"
+    assert pdf_generator.line_category_mode(cfg(show_category=True, category_display="grouped")) == "grouped"
+    assert pdf_generator.line_category_mode(cfg(show_category=True, category_display="bogus")) == "column"
+    assert pdf_generator.line_category_mode(cfg(show_category=False, category_display="grouped")) == "off"

@@ -147,6 +147,18 @@ def deposit_ask_for(
         base = _to_f(tier_contract_subtotal(db, tier))
         cap: float | None = base
     else:
+        # NOT `contained_read`-wrapped — counted and deferred by GDXA-160, same
+        # reason as `closeout_billing.build_closeout_lines`'s flag read.
+        # `compute_estimate_totals` swallows some of its own DB failures
+        # (`_resolve_tax_rate`, `_load_tax_labor_flag`) and raises on others, so
+        # on an aborted Postgres transaction it can return CLEANLY — and a clean
+        # exit makes `contained_read` RELEASE a savepoint on a dead transaction,
+        # which raises 25P02 out of the `with` and is strictly worse than
+        # leaving it alone (its rule 5). The containment belongs inside
+        # `modules/proposals/totals.py`, which is estimates-pricing's file.
+        # Rule 5 names a second cure too — a variant of `contained_read` that always
+        # ROLLBACK-TO-SAVEPOINTs instead of RELEASEing, measured to work on PG 15.17
+        # and 16.14 — so this is a deferral with two live cures, not "unfixable".
         try:
             base = _to_f(compute_estimate_totals(estimate, db)["total"])
         except Exception:
@@ -225,6 +237,14 @@ def create_deposit_invoice(
     if cap_total is not None:
         est_total = _to_f(cap_total)
     else:
+        # Counted and deferred by GDXA-160 for the same rule-5 reason as
+        # `deposit_ask_for` above — and this is the worse of the two, because
+        # the caller goes on to WRITE a deposit invoice on the session this read
+        # may have left aborted. Fixing it means containing the swallow inside
+        # `modules/proposals/totals.py` (estimates-pricing), not wrapping here.
+        # Rule 5 names a second cure too — a variant of `contained_read` that always
+        # ROLLBACK-TO-SAVEPOINTs instead of RELEASEing, measured to work on PG 15.17
+        # and 16.14 — so this is a deferral with two live cures, not "unfixable".
         try:
             from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
 

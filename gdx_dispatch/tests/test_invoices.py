@@ -239,6 +239,104 @@ def test_create_invoice_inherits_tenant_default_hide_line_prices(tenant_db_sessi
     assert created["hide_line_prices"] is True
 
 
+def _created_audit(db, invoice_id):
+    from gdx_dispatch.core.audit import AuditLog
+    return (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "invoice_created", AuditLog.entity_id == invoice_id)
+        .one()
+        .details
+    )
+
+
+def test_create_invoice_via_source_estimate_snapshots_hide_line_prices(tenant_db_session):
+    """The field the office create screen actually sends is `source_estimate_id`
+    (provenance), never `estimate_id`. The snapshot used to key on the copy
+    field only, so every office-created invoice showed prices even when the
+    estimate the customer saw was total-only."""
+    job = _seed_job(tenant_db_session)
+    est = _seed_estimate(tenant_db_session, job.id, Decimal("150.00"))
+    est.hide_line_prices = True
+    tenant_db_session.commit()
+
+    created = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            source_estimate_id=est.id,
+            line_items=[{"description": "Door", "quantity": 1, "unit_price": 150}],
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    assert created["hide_line_prices"] is True
+    row = tenant_db_session.get(Invoice, UUID(created["id"]))
+    assert row.hide_line_prices is True
+    assert row.estimate_id is None  # still provenance-only, lines not re-copied
+    assert _created_audit(tenant_db_session, created["id"])["hide_line_prices_origin"] == "estimate"
+
+
+def test_create_invoice_via_source_estimate_inherits_tenant_default(tenant_db_session, monkeypatch):
+    """A NULL-override estimate reached through the office path inherits the
+    company default, same as the copy path."""
+    from gdx_dispatch.modules import estimates_features as ef
+    monkeypatch.setattr(ef, "get_features", lambda tid: ef.EstimatesFeatures(hide_line_prices=True))
+
+    job = _seed_job(tenant_db_session)
+    est = _seed_estimate(tenant_db_session, job.id, Decimal("100.00"))  # override NULL
+    created = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            source_estimate_id=est.id,
+            line_items=[{"description": "Door", "quantity": 1, "unit_price": 100}],
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    assert created["hide_line_prices"] is True
+    assert _created_audit(tenant_db_session, created["id"])["hide_line_prices_origin"] == "company_default"
+
+
+def test_create_invoice_explicit_hide_line_prices_wins(tenant_db_session):
+    """The create screen shows the inherited setting and lets the operator flip
+    it. Their explicit choice wins over the estimate in both directions."""
+    job = _seed_job(tenant_db_session)
+    est = _seed_estimate(tenant_db_session, job.id, Decimal("100.00"))
+    est.hide_line_prices = True
+    tenant_db_session.commit()
+
+    shown = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            source_estimate_id=est.id,
+            hide_line_prices=False,
+            line_items=[{"description": "Door", "quantity": 1, "unit_price": 100}],
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    assert shown["hide_line_prices"] is False
+    details = _created_audit(tenant_db_session, shown["id"])
+    assert details["hide_line_prices"] is False
+    assert details["hide_line_prices_origin"] == "operator"
+
+    # No estimate at all (counter-style job invoice) and an explicit hide.
+    hidden = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            hide_line_prices=True,
+            force=True,
+            line_items=[{"description": "Spring", "quantity": 1, "unit_price": 50}],
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    assert hidden["hide_line_prices"] is True
+
+
 def test_create_invoice_validation_allows_missing_job_id():
     """Counter-sale invoices have no job. customer_id stays required; job_id
     is optional after the 2026-05-14 counter-sale flip."""
@@ -1223,6 +1321,54 @@ def test_billing_summary_overdue_uses_due_date_and_balance(tenant_db_session):
     assert res["total_outstanding"] == 750.0
 
 
+def test_billing_summary_total_outstanding_ignores_open_credit_balances(tenant_db_session):
+    """Outstanding AR is money owed to the shop, not open negative balances."""
+    bs = _import_billing_summary()
+    job = _seed_job(tenant_db_session)
+    owed = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            due_date=date.today() + timedelta(days=10),
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    add_invoice_line(
+        invoice_id=UUID(owed["id"]),
+        payload=InvoiceLineCreateIn(description="Service", quantity=1, unit_price=500.0),
+        current_user=_current_user(),
+        db=tenant_db_session,
+    )
+    _verify(tenant_db_session, owed)
+    send_invoice(invoice_id=UUID(owed["id"]), _=_current_user(), db=tenant_db_session)
+
+    credit = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            due_date=date.today() + timedelta(days=10),
+            force=True,
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    add_invoice_line(
+        invoice_id=UUID(credit["id"]),
+        payload=InvoiceLineCreateIn(description="Credit balance carrier", quantity=1, unit_price=100.0),
+        current_user=_current_user(),
+        db=tenant_db_session,
+    )
+    _verify(tenant_db_session, credit)
+    send_invoice(invoice_id=UUID(credit["id"]), _=_current_user(), db=tenant_db_session)
+    credit_row = tenant_db_session.get(Invoice, UUID(credit["id"]))
+    credit_row.balance_due = -50.0
+    tenant_db_session.commit()
+
+    res = bs(request=_mock_request(), _=_current_user(), db=tenant_db_session)
+    assert res["total_outstanding"] == 500.0
+
+
 def test_list_invoices_filters_overdue(tenant_db_session):
     job = _seed_job(tenant_db_session)
     inv = create_invoice(
@@ -1985,3 +2131,99 @@ def test_send_invoice_on_paid_honors_tenant_receipt_template(tenant_db_session, 
     assert captured["subject"].startswith("Thanks — Invoice ")
     assert "Cheers Receipt Customer" in captured["html_body"].replace("&nbsp;", " ")
     assert "Thank you for your payment" not in captured["html_body"]
+
+
+def test_prepare_invoice_email_honours_hide_line_prices(tenant_db_session, monkeypatch):
+    """The invoice email body must not list the prices the attached PDF hides.
+    It used to render every unit price and line total regardless of the
+    invoice's total-only flag, while the estimate email already honoured it."""
+    from gdx_dispatch.routers.invoices import _prepare_invoice_email
+
+    _stub_features(monkeypatch)
+    inv = _seed_unpaid_invoice(tenant_db_session)
+
+    shown = _prepare_invoice_email(tenant_db_session, inv, mint_token=False)["html"]
+    assert ">Price</th>" in shown
+    assert shown.count("$320.00") >= 3  # unit price + line total + totals
+
+    inv.hide_line_prices = True
+    tenant_db_session.commit()
+    hidden = _prepare_invoice_email(tenant_db_session, inv, mint_token=False)["html"]
+    assert ">Price</th>" not in hidden
+    assert "Torsion spring" in hidden  # the line itself still lists
+    # Only the totals block carries the amount now, never a per-line cell.
+    assert hidden.count("$320.00") < shown.count("$320.00")
+
+
+# ----------------------------------------------------------------------------
+# Billing list "Viewed" column: did the customer open the view-and-pay link?
+# ----------------------------------------------------------------------------
+
+def test_list_invoices_reports_when_the_customer_viewed_it(tenant_db_session):
+    from datetime import UTC, datetime
+
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.core.customer_views import record_customer_view
+
+    db = tenant_db_session
+
+    class _Req:
+        headers = {"user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Safari/604.1"}
+
+    job = _seed_job(db)
+    seen = create_invoice(
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id),
+        _=_current_user(), db=db,
+    )
+    unseen = create_invoice(
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id, force=True),
+        _=_current_user(), db=db,
+    )
+
+    # Two genuine visits a day apart. audit_logs is immutable, so yesterday's
+    # visit is inserted already dated; today's goes through the real recorder.
+    yesterday = datetime.now(UTC) - timedelta(days=1)
+    db.add(AuditLog(
+        user_id="public:customer", action="invoice_viewed_by_customer",
+        entity_type="invoice", entity_id=seen["id"], created_at=yesterday,
+    ))
+    db.commit()
+    assert record_customer_view(
+        db, action="invoice_viewed_by_customer", entity_type="invoice",
+        entity_id=UUID(seen["id"]), request=_Req(),
+    )
+    # A proposal view sharing the id string must not count as an invoice view.
+    assert record_customer_view(
+        db, action="estimate_viewed_by_customer", entity_type="estimate",
+        entity_id=UUID(unseen["id"]), request=_Req(),
+    )
+
+    items = {i["id"]: i for i in list_invoices(
+        request=_mock_request(), status=None, customer_id=None, _=_current_user(), db=db,
+    )}
+
+    assert items[seen["id"]]["customer_view_count"] == 2
+    last = datetime.fromisoformat(items[seen["id"]]["customer_viewed_at"])
+    assert last > yesterday + timedelta(hours=1)  # the latest visit, not the first
+    assert items[unseen["id"]]["customer_viewed_at"] is None
+    assert items[unseen["id"]]["customer_view_count"] == 0
+
+
+def test_list_invoices_view_lookup_failure_blanks_the_column(tenant_db_session, monkeypatch):
+    """A failed view lookup blanks the column; the list still loads."""
+    from gdx_dispatch.core import customer_views
+
+    db = tenant_db_session
+    job = _seed_job(db)
+    inv = create_invoice(
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id),
+        _=_current_user(), db=db,
+    )
+
+    def _boom(*a, **k):
+        raise RuntimeError("view lookup down")
+
+    monkeypatch.setattr(customer_views, "customer_view_summary", _boom)
+    items = list_invoices(request=_mock_request(), status=None, customer_id=None, _=_current_user(), db=db)
+    assert [i["id"] for i in items] == [inv["id"]]
+    assert items[0]["customer_viewed_at"] is None

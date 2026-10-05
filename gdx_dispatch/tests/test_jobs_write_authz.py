@@ -104,6 +104,12 @@ def _routes(job_id: str, dep_id: str) -> list[tuple[str, str, str, dict]]:
         ("start_job", "POST", f"/api/jobs/{job_id}/start", {}),
         ("complete_job", "POST", f"/api/jobs/{job_id}/complete", {}),
         (
+            "close_job_without_work",
+            "POST",
+            f"/api/jobs/{job_id}/close-without-work",
+            {"reason": "duplicate of another job"},
+        ),
+        (
             "closeout_job",
             "POST",
             f"/api/jobs/{job_id}/closeout",
@@ -584,6 +590,21 @@ class TestAdmission:
         db.expire_all()
         assert _job_row(db, job.id)[0] == "in_progress"
 
+    def test_the_office_tier_can_close_without_work(self, ctx):
+        """/close-without-work only accepts an open job, so open the fixture's
+        completed job first, through the ORM."""
+        client, db, job, _dep, be, _ = ctx
+        job.lifecycle_stage = "scheduled"
+        job.completed_at = None
+        db.commit()
+        be(str(uuid4()), "dispatcher")
+        r = _call(client, "POST", f"/api/jobs/{job.id}/close-without-work",
+                  {"reason": "duplicate of another job"})
+        assert r.status_code == 200, r.text[:400]
+        db.expire_all()
+        row = _job_row(db, job.id)
+        assert row[0] == "completed" and row[2] is not None
+
     def test_the_office_tier_can_reactivate(self, ctx):
         """/reactivate only accepts a cancelled job, so cancel it first —
         through the ORM, since the raw-SQL lifecycle write is the known hole
@@ -669,6 +690,12 @@ class TestAdmission:
         instead of the behaviour. `jobs.status` is the half a regression in
         this branch would take with it, and it does execute."""
         client, db, job, _dep, be, _ = ctx
+        # The fixture's job is completed, and update_job now refuses to move a
+        # finished job (409, job-stage-paths-plan §4.1) — so open it first,
+        # through the ORM for the reason given above.
+        job.lifecycle_stage = "scheduled"
+        job.completed_at = None
+        db.commit()
         be(ASSIGNED_USER, "technician")
         r = _call(client, "PATCH", f"/api/jobs/{job.id}",
                   {"lifecycle_stage": "in_progress"})

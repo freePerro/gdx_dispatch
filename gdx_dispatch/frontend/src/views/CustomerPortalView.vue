@@ -186,9 +186,29 @@
                      image-style="height: 120px; border-radius: 6px; object-fit: cover" />
             </div>
 
-            <DataTable :value="detail.lines" class="detail-lines" data-testid="estimate-lines-table">
+            <!-- Category follows the estimate PDF's template setting
+                 (detail.line_category) — the same rule as the public approval
+                 page, so every copy of the estimate matches the PDF. -->
+            <DataTable
+              :value="detailRows"
+              class="detail-lines"
+              data-testid="estimate-lines-table"
+              :row-group-mode="detailCatMode === 'grouped' ? 'subheader' : undefined"
+              :group-rows-by="detailCatMode === 'grouped' ? '_category' : undefined"
+            >
               <template #empty>No line items.</template>
-              <Column field="description" header="Item" />
+              <template v-if="detailCatMode === 'grouped'" #groupheader="{ data: row }">
+                <span v-if="row._category" class="line-cat-heading" data-testid="line-category-heading">{{ row._category }}</span>
+                <span v-else class="line-cat-heading-empty" />
+              </template>
+              <!-- Never drawn; PrimeVue counts it when spanning the heading row. -->
+              <Column v-if="detailCatMode === 'grouped'" field="_category" />
+              <Column v-if="detailCatMode === 'column'" field="category" header="Category" header-class="line-cat-col" body-class="line-cat-col" />
+              <Column header="Item">
+                <template #body="{ data }">
+                  <span v-if="detailCatMode === 'column' && data.category" class="line-cat-inline">{{ data.category }}</span>{{ data.description }}
+                </template>
+              </Column>
               <Column field="quantity" header="Qty" :style="{ width: '70px' }" />
               <Column v-if="!detail.hide_line_prices" field="unit_price" header="Price" :style="{ width: '110px' }"><template #body="{ data }">{{ currency(data.unit_price) }}</template></Column>
               <Column v-if="!detail.hide_line_prices" field="line_total" header="Total" :style="{ width: '110px' }"><template #body="{ data }">{{ currency(data.line_total) }}</template></Column>
@@ -328,6 +348,7 @@ import TabPanels from "primevue/tabpanels";
 import Tabs from "primevue/tabs";
 import Tag from "primevue/tag";
 import { formatDate, formatMoney } from "../composables/useFormatters";
+import { lineCategoryMode, rowsGroupedByCategory } from "../utils/lineCategories";
 
 const JWT_STORAGE_KEY = "gdx_portal_jwt";
 
@@ -346,6 +367,12 @@ const detail = ref(null);
 const detailVisible = ref(false);
 const detailLoading = ref(false);
 const detailImages = ref([]);
+// 'off' | 'column' | 'grouped' — the estimate PDF's line-items setting.
+const detailCatMode = computed(() => lineCategoryMode(detail.value?.line_category));
+const detailRows = computed(() => {
+  const rows = detail.value?.lines || [];
+  return detailCatMode.value === "grouped" ? rowsGroupedByCategory(rows) : rows;
+});
 const email = ref("");
 const password = ref("");
 const remember = ref(false);
@@ -783,4 +810,13 @@ onMounted(init);
 .remember-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; cursor: pointer; }
 .magic-fallback { display: flex; flex-direction: column; align-items: flex-start; gap: 0.4rem; }
 @media (max-width: 640px) { .card-grid { grid-template-columns: 1fr; } .company-name { font-size: 1rem; } }
+.line-cat-heading { font-weight: 700; }
+/* No heading for the uncategorized group — the PDF gives it none. */
+.detail-lines :deep(.p-datatable-row-group-header:has(.line-cat-heading-empty)) { display: none; }
+.line-cat-inline { display: none; }
+/* 'column' mode on a phone: the category moves into the item cell. */
+@media (max-width: 767px) {
+  .detail-lines :deep(.line-cat-col) { display: none; }
+  .line-cat-inline { display: block; font-size: 0.75rem; font-weight: 600; color: var(--p-text-muted-color, #6b7280); }
+}
 </style>

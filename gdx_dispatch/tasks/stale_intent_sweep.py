@@ -43,7 +43,7 @@ from __future__ import annotations
 import logging
 
 from gdx_dispatch.core.celery_app import celery_app
-from gdx_dispatch.core.database import SessionLocal
+from gdx_dispatch.core.database import SessionLocal, contained_read
 
 log = logging.getLogger(__name__)
 
@@ -59,14 +59,26 @@ def _connected_account_for(db, invoice) -> str:
     Never raises: a lookup failure falls back to the platform account, which is
     correct for the single-tenant deployments that have no connected account at
     all, and is logged when it is not.
+
+    SAVEPOINT-wrapped (GDXA-160, child of GDXA-86). "Never raises" was true on
+    SQLite and a lie on Postgres, where a failed statement aborts the whole
+    transaction: the degraded `""` came back, the sweep went on to cancel real
+    PaymentIntents at Stripe, and then `_audit_sweep`'s `log_audit_event_sync`
+    died on the same dead session and was swallowed by its OWN handler. Money
+    objects changed state at a third party with nothing on the record — the
+    invariant #1 failure, caused by the read that was supposed to be harmless.
+    `contained_read` re-raises, so the `except` below still runs and still
+    returns `""`; what changes is that the session is still usable when the
+    audit row is written.
     """
     try:
         from sqlalchemy import text as _text
 
-        row = db.execute(
-            _text("SELECT stripe_connect_account_id FROM companies WHERE id = :cid"),
-            {"cid": str(getattr(invoice, "company_id", "") or "")},
-        ).first()
+        with contained_read(db):
+            row = db.execute(
+                _text("SELECT stripe_connect_account_id FROM companies WHERE id = :cid"),
+                {"cid": str(getattr(invoice, "company_id", "") or "")},
+            ).first()
         return str((row[0] if row else "") or "")
     except Exception:
         log.warning(

@@ -22,12 +22,14 @@ from gdx_dispatch.core.audit import (
     resolve_audit_actor,
     utcnow,
 )
-from gdx_dispatch.core.database import get_db
-from gdx_dispatch.core.modules import require_module, require_permission, require_role
+from gdx_dispatch.core.database import contained_read, get_db
+from gdx_dispatch.core.lead_estimates import lead_for_estimate, mark_lead_won_for_estimate, resolve_lead_link
+from gdx_dispatch.core.link_sms import SendLinkSmsIn as SendEstimateSmsIn  # one composer model for every SMS route
+from gdx_dispatch.core.modules import has_permission, require_module, require_permission, require_role
 from gdx_dispatch.core.pricing_provenance import derive_margin_pct
 from gdx_dispatch.core.quantities import recorded_quantity
 from gdx_dispatch.core.upload_limits import assert_upload_within_limit
-from gdx_dispatch.models.tenant_models import Customer, Document, Job, JobPartNeeded
+from gdx_dispatch.models.tenant_models import Customer, Document, Job, JobPartNeeded, Lead
 from gdx_dispatch.modules.deposits import (
     DepositError,
     adopt_orphan_deposit_invoices,
@@ -40,6 +42,7 @@ from gdx_dispatch.modules.estimates_features import (
     get_features,
     require_line_margin_override_allowed,
 )
+from gdx_dispatch.modules.phone_com.scheduled import ScheduleLinkSmsIn  # the /schedule-sms composer
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -180,6 +183,7 @@ def _serialize_estimate(estimate: Estimate, include_lines: bool = False) -> dict
         "id": str(estimate.id),
         "job_id": str(estimate.job_id) if estimate.job_id else None,
         "customer_id": str(estimate.customer_id) if estimate.customer_id else None,
+        "lead_id": str(estimate.lead_id) if getattr(estimate, "lead_id", None) else None,
         "estimate_number": estimate.estimate_number,
         "label": estimate.label,
         "jobsite_address": estimate.jobsite_address,
@@ -489,6 +493,10 @@ class EstimateCreateIn(BaseModel):
     valid_until: str | None = None
     # "Total-only" override at create time. None = inherit tenant default.
     hide_line_prices: bool | None = None
+    # The lead this estimate is for (the Leads page's Create estimate). Gated
+    # in core.lead_estimates.resolve_lead_link: leads.write, a live lead, and
+    # the lead's own customer.
+    lead_id: UUID | None = None
 
 
 class EstimatePatchIn(BaseModel):
@@ -767,6 +775,77 @@ def list_estimates(
     return items
 
 
+def create_draft_estimate_record(
+    db: Session,
+    *,
+    tenant_id: str,
+    customer_id: UUID | None = None,
+    job_id: UUID | None = None,
+    estimate_number: str | None = None,
+    label: str | None = None,
+    jobsite_address: str | None = None,
+    description: str | None = None,
+    notes: str | None = None,
+    tax_rate: Decimal | None = None,
+    discount: Decimal | None = None,
+    hide_line_prices: bool | None = None,
+    lead_id: UUID | None = None,
+) -> Estimate:
+    """Stage a draft estimate (flush, no commit, no audit) — the body of
+    POST /api/estimates, shared with lead start-estimate so numbering and
+    defaults live in one place. hide_line_prices is tri-state: None inherits
+    the tenant's total-only default; False would force prices visible."""
+    estimate = Estimate(
+        job_id=job_id,
+        customer_id=customer_id,
+        estimate_number=estimate_number or _next_estimate_number(db),
+        label=label.strip() if label else None,
+        jobsite_address=jobsite_address.strip() if jobsite_address else None,
+        description=description.strip() if description else None,
+        notes=notes.strip() if notes else None,
+        tax_rate=tax_rate,
+        discount=discount,
+        hide_line_prices=hide_line_prices,
+        lead_id=lead_id,
+        status="draft",
+        total=Decimal("0.00"),
+        public_token=secrets.token_urlsafe(48)[:64],
+        company_id=tenant_id,
+    )
+    db.add(estimate)
+    db.flush()
+    return estimate
+
+
+def stage_estimate_created_audit(
+    db: Session,
+    *,
+    tenant_id: str,
+    user_id: str | None,
+    estimate: Estimate,
+    line_count: int,
+    request: Request | None = None,
+) -> None:
+    """Stage the estimate_created row (no commit) — the caller's single
+    commit lands the estimate and its record together."""
+    log_audit_event_sync(
+        db=db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="estimate_created",
+        entity_type="estimate",
+        entity_id=str(estimate.id),
+        details={
+            "estimate_number": estimate.estimate_number,
+            "status": estimate.status,
+            "line_count": line_count,
+            "total": float(estimate.total or 0),
+            "lead_id": str(estimate.lead_id) if getattr(estimate, "lead_id", None) else None,
+        },
+        request=request,
+    )
+
+
 @router.post("", response_model=None, status_code=201)
 def create_estimate(
     payload: EstimateCreateIn,
@@ -776,6 +855,7 @@ def create_estimate(
 ) -> dict[str, object]:
     if not payload.job_id and not payload.customer_id:
         raise HTTPException(status_code=400, detail="job_id or customer_id is required")
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
 
     customer_id = payload.customer_id
     if payload.job_id:
@@ -791,28 +871,26 @@ def create_estimate(
         if not customer:
             raise HTTPException(status_code=404, detail="customer not found")
 
+    lead = resolve_lead_link(db, request, lead_id=payload.lead_id, customer_id=customer_id)
+
     # Tenant binding — previously relied on company_id being nullable. Now
     # that the model enforces NOT NULL we must pull tenant from the request.
     tenant_id = str((getattr(request.state, "tenant", {}) or {}).get("id") or "tenant-test")
 
-    estimate = Estimate(
-        job_id=payload.job_id,
+    estimate = create_draft_estimate_record(
+        db,
+        tenant_id=tenant_id,
         customer_id=customer_id,
-        estimate_number=_next_estimate_number(db),
-        label=payload.label.strip() if payload.label else None,
-        jobsite_address=payload.jobsite_address.strip() if payload.jobsite_address else None,
-        description=payload.description.strip() if payload.description else None,
-        notes=payload.notes.strip() if payload.notes else None,
+        job_id=payload.job_id,
+        label=payload.label,
+        jobsite_address=payload.jobsite_address,
+        description=payload.description,
+        notes=payload.notes,
         tax_rate=Decimal(str(payload.tax_rate)) if payload.tax_rate is not None else None,
         discount=Decimal(str(payload.discount)) if payload.discount is not None else None,
         hide_line_prices=payload.hide_line_prices,
-        status="draft",
-        total=Decimal("0.00"),
-        public_token=secrets.token_urlsafe(48)[:64],
-        company_id=tenant_id,
+        lead_id=lead.id if lead is not None else None,
     )
-    db.add(estimate)
-    db.flush()
 
     # Persist nested line_items if the client sent them. The Estimate.total is
     # the sum of (quantity * unit_price) across lines (subtotal — tax/discount
@@ -886,23 +964,14 @@ def create_estimate(
         ))
         running_total += line_total
     estimate.total = running_total
-    db.commit()
-    db.refresh(estimate)
-    log_audit_event_sync(
-        db=db,
-        tenant_id=None,
-        user_id=_actor_id(_),
-        action="estimate_created",
-        entity_type="estimate",
-        entity_id=str(estimate.id),
-        details={
-            "estimate_number": estimate.estimate_number,
-            "status": estimate.status,
-            "line_count": len(payload.line_items),
-            "total": float(running_total),
-        },
+    # The estimate and its creation row commit together (#700 shape): the row
+    # used to follow a first commit, with tenant_id=None.
+    stage_estimate_created_audit(
+        db, tenant_id=tenant_id, user_id=_actor_id(_), estimate=estimate,
+        line_count=len(payload.line_items),
     )
     db.commit()
+    db.refresh(estimate)
     return _serialize_estimate(estimate, include_lines=True)
 
 
@@ -1670,9 +1739,15 @@ def _apply_send_expiry(estimate: Estimate) -> None:
     helper to distinguish a default from an override.
 
     Best-effort: a features read failure must not block the send."""
-    sent_at = estimate.sent_at
-    if not sent_at:
+    if not estimate.sent_at:
         return
+    estimate.valid_until = send_expiry(estimate, estimate.sent_at)
+
+
+def send_expiry(estimate: Estimate, sent_at: datetime):
+    """The valid_until a send at ``sent_at`` leaves on ``estimate`` — the rule
+    above, without writing it. Also what the staff preview of the customer
+    page shows (modules/proposals/router.py), so the two cannot drift."""
     existing = getattr(estimate, "valid_until", None)
     if existing is not None:
         # SQLite (tests) returns naive datetimes; PG returns aware. Normalize
@@ -1681,14 +1756,14 @@ def _apply_send_expiry(estimate: Estimate) -> None:
             existing = existing.replace(tzinfo=timezone.utc)
         sent_cmp = sent_at if sent_at.tzinfo is not None else sent_at.replace(tzinfo=timezone.utc)
         if existing > sent_cmp:
-            return
+            return estimate.valid_until
     try:
         days = int(get_features(str(estimate.company_id or "")).estimate_expiry_days or 60)
     except Exception:
         days = 60
     if days < 1:
         days = 60
-    estimate.valid_until = estimate.sent_at + timedelta(days=days)
+    return sent_at + timedelta(days=days)
 
 
 class MarkEstimateSentIn(BaseModel):
@@ -2064,6 +2139,124 @@ def estimate_email_preview(
     }
 
 
+
+
+@router.post(
+    "/{estimate_id}/sms-preview",
+    response_model=None,
+    dependencies=[Depends(require_permission("estimates.send")), Depends(require_module("phone_com"))],
+)
+def estimate_sms_preview(
+    estimate_id: UUID,
+    payload: SendEstimateSmsIn | None = None,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """What "Text estimate" would send, and to whom — or why it can't. Writes
+    nothing; the body is exactly what /send-sms would send unedited."""
+    from gdx_dispatch.core import estimate_sms
+
+    estimate = _get_estimate_or_404(estimate_id, db)
+    return estimate_sms.prepare(db, estimate, to_override=(payload.to if payload else None))
+
+
+@router.post(
+    "/{estimate_id}/send-sms",
+    response_model=None,
+    dependencies=[Depends(require_permission("estimates.send")), Depends(require_module("phone_com"))],
+)
+def send_estimate_sms(
+    estimate_id: UUID,
+    request: Request,
+    payload: SendEstimateSmsIn | None = None,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Text the customer a link to review and approve the estimate (Phone.com).
+
+    Marks it sent (sent_at, sent_via='sms', expiry, estimate.sent event) once
+    Phone.com accepts the message. Every refusal is a {code, message} 4xx. A
+    definite provider refusal is a 502 with the estimate unchanged; an
+    unconfirmed outcome (timeout / 5xx) is a 504 with sent_at set, so a link
+    that did arrive works, but sent_via unset. See core/link_sms.py."""
+    from gdx_dispatch.core import estimate_sms, link_sms
+
+    estimate = _get_estimate_or_404(estimate_id, db)
+    p = payload or SendEstimateSmsIn()
+    result = estimate_sms.send(
+        db,
+        estimate,
+        tenant_id=link_sms.tenant_uuid(_, request),
+        actor_id=_actor_id(_),
+        to_override=p.to,
+        body_override=p.body,
+        resend_unconfirmed=p.resend_unconfirmed,
+        request=request,
+    )
+    out = _serialize_estimate(estimate, include_lines=False)
+    out.update(result)
+    return out
+
+
+@router.post(
+    "/{estimate_id}/schedule-sms",
+    response_model=None,
+    status_code=201,
+    dependencies=[Depends(require_permission("estimates.send")), Depends(require_module("phone_com"))],
+)
+def schedule_estimate_sms(
+    estimate_id: UUID,
+    request: Request,
+    payload: ScheduleLinkSmsIn,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Text the review-and-approve link later (modules/phone_com/scheduled.py).
+    Refused now for anything /send-sms would refuse, and judged again when
+    it sends — an estimate accepted overnight is not texted."""
+    from gdx_dispatch.core import estimate_sms, link_sms
+    from gdx_dispatch.modules.phone_com import scheduled
+
+    estimate = _get_estimate_or_404(estimate_id, db)
+    return scheduled.schedule_link(
+        db,
+        estimate,
+        kind=scheduled.KIND_ESTIMATE,
+        prepare=estimate_sms.prepare,
+        payload=payload,
+        audit_action=scheduled.ACTION_ESTIMATE,
+        tenant_id=link_sms.tenant_uuid(_, request),
+        user_id=_actor_id(_),
+        request=request,
+    )
+
+
+def _emit_estimate_sent(db: Session, estimate: Estimate) -> None:
+    """The estimate.sent domain event (audit round 2: SUPPORTED_TRIGGERS
+    advertised it but nothing ever emitted it — a rule on the marquee trigger
+    of an email branch sat dead forever). One emitter for every channel that
+    delivers an estimate (email here, SMS in core/estimate_sms.py). Never
+    raises into a send."""
+    try:
+        from gdx_dispatch.core.webhooks.emit import emit_domain_event
+        tid_ev = str(estimate.company_id or "")
+        emit_domain_event(
+            db,
+            "estimate.sent",
+            str(estimate.id),
+            {
+                "estimate_id": str(estimate.id),
+                "estimate_number": estimate.estimate_number,
+                "status": "sent",
+                "customer_id": str(estimate.customer_id) if estimate.customer_id else None,
+                "company_id": tid_ev,
+            },
+            tenant_id=tid_ev or None,
+        )
+    except Exception:
+        log.exception("estimate_sent_event_emit_failed")
+
+
 @router.post("/{estimate_id}/send", response_model=None)
 def send_estimate(
     estimate_id: UUID,
@@ -2176,32 +2369,18 @@ def send_estimate(
         email_skip_reason = "exception"
 
     if email_sent:
-        estimate.status = "sent"
-        estimate.sent_at = utcnow()
+        # Re-read under a row lock before stamping: the email took seconds, and
+        # the customer may have accepted/declined meanwhile (a link from an
+        # earlier send). A delivery never undoes their decision — only the
+        # channel is noted.
+        db.refresh(estimate, with_for_update=True)
         estimate.sent_via = "email"
-        _apply_send_expiry(estimate)
         estimate.updated_at = utcnow()
-        # estimate.sent domain event (audit round 2: SUPPORTED_TRIGGERS
-        # advertised it but nothing ever emitted it — a rule on the marquee
-        # trigger of an email branch sat dead forever).
-        try:
-            from gdx_dispatch.core.webhooks.emit import emit_domain_event
-            tid_ev = str(estimate.company_id or "")
-            emit_domain_event(
-                db,
-                "estimate.sent",
-                str(estimate.id),
-                {
-                    "estimate_id": str(estimate.id),
-                    "estimate_number": estimate.estimate_number,
-                    "status": "sent",
-                    "customer_id": str(estimate.customer_id) if estimate.customer_id else None,
-                    "company_id": tid_ev,
-                },
-                tenant_id=tid_ev or None,
-            )
-        except Exception:
-            log.exception("estimate_sent_event_emit_failed")
+        if estimate.status not in {"accepted", "declined"}:
+            estimate.status = "sent"
+            estimate.sent_at = utcnow()
+            _apply_send_expiry(estimate)
+            _emit_estimate_sent(db, estimate)
         db.commit()
         db.refresh(estimate)
         log_audit_event_sync(
@@ -2250,12 +2429,27 @@ def _holding_area_id_by_name(db: Session, name: str) -> str | None:
     in the "Order Doors" lane automatically (2026-05-13 directive). Missing
     area is logged and the job is created without holding_area_id rather
     than failing the customer-facing accept — the dispatcher can re-route.
+
+    GDXA-157: that promise was false on Postgres, and this is the site where it
+    cost the most. This runs as an ARGUMENT to the ``Job(...)`` constructor in
+    ``_create_job_from_estimate``, so a bare swallow aborted the transaction and
+    then the ``db.add(new_job); db.flush()`` two lines later died with 25P02.
+    Following it out: ``public_proposal_accept`` catches that, and the
+    ``log_audit_event_sync`` + ``commit`` it uses to RECORD the failure runs on
+    the same dead session and is swallowed too — so the only trace was destroyed
+    by the handler writing it. Its ``db.refresh(est)`` then raised
+    PendingRollbackError out of the route. Net effect of a missing
+    ``holding_areas`` row: the customer's accept commits, the customer gets a
+    500, no job reaches the dispatch board, nothing says why — and the re-click
+    path returns early on ``status == "accepted"``, so the job is never created
+    at all. The SAVEPOINT keeps the read's failure the read's.
     """
     try:
-        row = db.execute(
-            _text("SELECT id FROM holding_areas WHERE name = :n LIMIT 1"),
-            {"n": name},
-        ).first()
+        with contained_read(db):
+            row = db.execute(
+                _text("SELECT id FROM holding_areas WHERE name = :n LIMIT 1"),
+                {"n": name},
+            ).first()
         return str(row[0]) if row else None
     except Exception:
         logging.getLogger(__name__).exception("holding_area_lookup_failed name=%s", name)
@@ -2680,6 +2874,8 @@ def accept_estimate(
         details={"status": estimate.status},
     )
     db.commit()
+    # The accept is durable; win its lead (own commit, never raises).
+    mark_lead_won_for_estimate(db, estimate, actor=actor)
 
     # 2026-05-13 directive: accept = job created. The dispatcher used to
     # have to click a separate "Convert to Job" button, which left accepted
@@ -2953,6 +3149,24 @@ def reassign_estimate_customer(
     token_rotated = rotate_public_token(estimate)
     estimate.customer_id = payload.customer_id
     estimate.updated_at = utcnow()
+    # A lead link means "this person's estimate". Moving it to someone who is
+    # not the lead's customer ends that, so the link goes (and the row says so).
+    estimate_lead_cleared = None
+    if estimate.lead_id is not None:
+        linked_lead = lead_for_estimate(db, estimate)
+        if linked_lead is None or linked_lead.converted_customer_id != payload.customer_id:
+            estimate_lead_cleared = str(estimate.lead_id)
+            estimate.lead_id = None
+    # The lead's own pointer (the draft Start estimate reopens) goes too, or
+    # Start estimate on that lead would reopen another customer's estimate.
+    lead_pointers_cleared: list[str] = []
+    for started_by in db.execute(
+        select(Lead).where(Lead.estimate_id == estimate.id, Lead.deleted_at.is_(None))
+    ).scalars().all():
+        if started_by.converted_customer_id != payload.customer_id:
+            started_by.estimate_id = None
+            started_by.updated_at = utcnow()
+            lead_pointers_cleared.append(str(started_by.id))
 
     # Audit BEFORE the commit: an untraced reassignment is worse than a failed
     # one. Names, not contact details — a customer's email and phone do not
@@ -2973,6 +3187,11 @@ def reassign_estimate_customer(
             "reason": payload.reason,
             "previous_status": previous_status,
             "token_rotated": token_rotated,
+            # Both lead links this move ends, so the trail can say which
+            # lead lost this estimate: the estimate's own lead_id, and any
+            # lead whose Start estimate pointed at it.
+            "estimate_lead_cleared": estimate_lead_cleared,
+            "lead_start_pointers_cleared": lead_pointers_cleared,
         },
     )
     db.commit()
@@ -3151,6 +3370,15 @@ def duplicate_estimate(
     new_estimate = Estimate(
         job_id=None,  # duplicates start unattached; original Job keeps its estimate
         customer_id=cloned_customer_id,
+        # A copy is another option for the same lead — unless the customer
+        # fell away (deleted/merged), when "this person's estimate" no longer
+        # holds, or the caller could not have linked it directly (the same
+        # leads.write gate resolve_lead_link applies on create).
+        lead_id=(
+            source.lead_id
+            if cloned_customer_id is not None and has_permission(request, db, "leads.write")
+            else None
+        ),
         # Option variant of the same base — EST-000042-1, -2, -3 (Doug 2026-07-30).
         estimate_number=_next_duplicate_estimate_number(db, source.estimate_number),
         label=_next_duplicate_label(db, source.label),

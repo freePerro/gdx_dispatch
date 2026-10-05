@@ -107,7 +107,12 @@ def contained_read(db: Session) -> Iterator[None]:
     Five rules, each of which something here got wrong first:
 
     1. **The savepoint goes INSIDE the existing ``try``**, not around it. Around
-       it and the ``except`` never runs, which turns a degraded read into a 500.
+       it, a degraded read becomes a 500 — but not for the reason this rule gave
+       until GDXA-162 measured it. The ``except`` DOES run and DOES return
+       (``handler_ran=True``, degraded value returned); the ``return`` then exits
+       the ``with`` *cleanly*, so ``__exit__`` issues RELEASE SAVEPOINT on an
+       already-aborted transaction and 25P02 comes out of the ``with`` itself.
+       Same 500, and it is rule 5's mechanism rather than a skipped handler.
 
     2. **READS ONLY.** A write wants ``db.begin_nested()`` instead, so the ORM's
        unit of work participates in the savepoint and knows what to un-stage
@@ -135,49 +140,38 @@ def contained_read(db: Session) -> Iterator[None]:
        new machinery" is not it: ``core/performance.py:169`` already registers an
        Engine-level ``before_cursor_execute`` (``SlowQueryMiddleware``, wired at
        ``app.py``), so the hook is already in every query's path and a
-       DML-in-savepoint check could ride it. The reason is that all twenty-one
-       current call sites wrap pure reads, so it would police a precondition nothing
-       violates, and ``tests/test_contained_read.py`` pins the hole so the next
-       person does not mistake it for coverage. When a call site does need a
-       write contained, it wants ``db.begin_nested()`` — not a louder warning.
+       DML-in-savepoint check could ride it. The reason is that no current call
+       site wraps a write, so it would police a precondition nothing violates,
+       and ``test_no_contained_read_block_stages_a_write`` checks the visible
+       half of that precondition so the next person does not mistake it for a
+       promise. When a call site does need a write contained, it wants
+       ``db.begin_nested()`` — not a louder warning.
 
-       That count is load-bearing — it IS the reason above — and it has gone
-       stale twice already, each time caught by an adversarial audit rather than
-       by a test: six when it was seven, eight when GDXA-137 made it nine. The
-       ``git grep`` recipe that used to sit here was a third instance of the
-       same class rather than a cure for it, and it is worth knowing how it
-       failed, because all three failures are one shape — a number a human has
-       to maintain by hand:
+       That precondition is load-bearing, because it IS the reason above. A
+       count used to stand in for it: this docstring spelled out how many call
+       sites existed, and a test pinned that number. The count was retired
+       because it turned one shared line into something every new call site had
+       to edit. Its spelling table ran out while a sweep was already past it,
+       hard-stopping that sweep inside a file its agents had been told not to
+       touch; and with sibling branches open at once, each merge left the rest
+       stale on that same line.
 
-       - It said to subtract one, for "the example at the top of this
-         docstring". By the time it shipped this file held TWO matches that are
-         not call sites: that example, and the recipe's own line, which
-         contained the very string it searched for. Followed in good faith it
-         answered ten.
-       - ``git grep`` reads TRACKED files, so a call site in a brand-new module
-         counted as zero until someone ran ``git add``.
+       Worth knowing that the count was itself the third try, and that all
+       three failed the same way — a number a human has to maintain by hand. The
+       prose alone went stale twice, each caught by an adversarial audit rather
+       than by a test: six when it was seven, eight when GDXA-137 made it nine.
+       The ``git grep`` recipe written to stop THAT told you to subtract one for
+       the example at the top of this docstring, while the file by then held two
+       matches that were not calls — that example, and the recipe's own line,
+       which contained the string it searched for — so followed in good faith it
+       answered ten; and ``git grep`` reads TRACKED files, so a call in a
+       brand-new module counted as zero until someone ran ``git add``. None of
+       the three was ever evidence about a write, which is what rule 2 needs.
 
-       So the number is pinned by a test now, not by an instruction:
-       ``test_the_docstring_call_site_count_is_not_stale`` in
-       ``tests/test_contained_read.py``. It parses every Python file in the
-       repo, counts the real calls, and fails with the true number and a
-       per-file breakdown. It carries no marker, so the default suite runs it
-       and there is nothing to remember.
-
-       **This sentence should be the only place the count is written down.**
-       Both stalings above were a second copy drifting from a first, and until
-       GDXA-151 the test file carried one of its own. That part is a review
-       habit, not a machine-checked one — the test pins this number, it does
-       not hunt for rival copies; see its own LIMIT 2. (``core/plugin_consent``
-       also says "nine" and it is NOT this number — it counts
-       ``emit_domain_event`` call sites, which happen to be nine too. A
-       GDXA-151 audit mistook one for the other; do not "sync" them.)
-
-       What the guard does NOT pin is the other half of the claim above, that
-       those sites wrap PURE READS. Only the count is mechanical; "pure" is the
-       precondition the unbuilt ``before_cursor_execute`` check would police,
-       so putting a write inside an existing call site keeps this docstring
-       green and makes it wrong. Reviewing that is still a human's job.
+       The static guard still has blind spots: a write performed by a function
+       CALLED inside the block is invisible to it, and so is ``db.execute(stmt)``
+       where ``stmt`` is a variable. Reviewing those is still a human's job,
+       and the listener above is the only thing that would police them.
 
        A warning and not a raise, either way — by the time it could fire the
        read has already happened, and turning a degraded read into a 500 is
@@ -237,7 +231,7 @@ def contained_read(db: Session) -> Iterator[None]:
        ``contained_read`` specifically is the wrong tool.
 
        The corollary is that a frame between the read and the swallow is fine,
-       and two call sites rely on it: ``core/webhooks/emit.py``'s reads are
+       and call sites rely on it: ``core/webhooks/emit.py``'s reads are
        swallowed by ``emit_domain_event`` one frame up, and
        ``modules/workflows/engine.py``'s ``_resolve_rule_customer`` re-raises
        into ``execute_rule``'s handler two frames up. What matters is that the

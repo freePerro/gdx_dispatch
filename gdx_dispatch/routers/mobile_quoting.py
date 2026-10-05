@@ -36,12 +36,14 @@ from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import log_audit_event_sync
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
+from gdx_dispatch.core.link_sms import SendLinkSmsIn as MobileSendQuoteSmsIn  # one composer model for every SMS route
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.service_presets import (
     list_default_services,
 )
 from gdx_dispatch.core.tenant_mobile_settings import get_tenant_mobile_setting
+from gdx_dispatch.modules.phone_com.scheduled import ScheduleLinkSmsIn  # the /schedule-sms composer
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine, ProposalTier
 from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
 
@@ -423,14 +425,28 @@ def build_quote(
     try:
         from gdx_dispatch.core.job_site import resolve_job_site  # noqa: PLC0415
 
-        _jrow = db.execute(
-            _text("SELECT location_id, customer_id FROM jobs WHERE id = :jid"),
-            {"jid": job_id},
-        ).first()
-        if _jrow is not None and _jrow[0] is not None:
-            _site = resolve_job_site(db, job_id, _jrow[0], _jrow[1])
-            if _site.source == "location":
-                quote_jobsite = _site.address
+        # GDXA-156. `db` is the route's own session, so this is not the
+        # caller-owned shape the sweep was scoped to — but the savepoint is
+        # warranted anyway, and this is the strongest case in this router for
+        # it: everything below the swallow BUILDS AND COMMITS the tech's quote.
+        # On Postgres a failed seed read aborts that transaction, so the
+        # comment's promise that "a seed miss must not block quoting" is not
+        # true there — the whole Estimate would be lost at `db.commit()` and the
+        # tech would get a 500 naming `jobs`. Nobody has produced a production
+        # instance; the mechanism is real and the blast radius is the tech's
+        # work, which is why it is worth a savepoint. `resolve_job_site`
+        # re-raises (its own handlers
+        # are ValueError/AttributeError/TypeError only), so the failure does
+        # cross this block's __exit__ as contained_read rule 5 requires.
+        with contained_read(db):
+            _jrow = db.execute(
+                _text("SELECT location_id, customer_id FROM jobs WHERE id = :jid"),
+                {"jid": job_id},
+            ).first()
+            if _jrow is not None and _jrow[0] is not None:
+                _site = resolve_job_site(db, job_id, _jrow[0], _jrow[1])
+                if _site.source == "location":
+                    quote_jobsite = _site.address
     except Exception:  # noqa: BLE001 — a seed miss must not block quoting
         log.exception("mobile_quote_jobsite_seed_failed job=%s", job_id)
 
@@ -670,6 +686,10 @@ def accept_quote(
         request=request,
     )
     db.commit()
+    # The accept is durable; win its lead (own commit, never raises).
+    from gdx_dispatch.core.lead_estimates import mark_lead_won_for_estimate
+
+    mark_lead_won_for_estimate(db, estimate, actor=user_id, tenant_id=tenant_id, request=request)
 
     # Deposit at acceptance (2026-07-23) — opt-IN on mobile (see
     # AcceptQuoteIn): the tech flips the Collect-deposit toggle (auto tenant
@@ -784,3 +804,115 @@ def decline_quote(
     )
     db.commit()
     return _jr(_serialize_quote(estimate, db=db))
+
+
+# ---------------------------------------------------------------------------
+# POST /api/mobile/quotes/{estimate_id}/sms-preview | send-sms
+# ---------------------------------------------------------------------------
+# Text the customer the approval link from the truck — the customer who wants
+# to think it over. Same engine as the office route (core/estimate_sms.py);
+# authorized by job ownership, per docs/tech_mobile.md (techs do not hold
+# estimates.send). Stricter than the other quote routes: a quote with no job
+# is not the tech's to text.
+
+
+
+
+def _tech_textable_quote(db: Session, request: Request, estimate_id: str, user: dict[str, Any]):
+    """The estimate if texting is on, it exists, and it sits on a job assigned
+    to this tech; otherwise the JSONResponse refusal."""
+    from gdx_dispatch.core.modules import is_module_enabled
+
+    if not is_module_enabled("phone_com", request, db):
+        return _jr({"detail": "Texting is not enabled for this company."}, 403)
+    found = db.get(Estimate, _UUID(estimate_id))
+    if found is None or found.deleted_at is not None:
+        return _jr({"detail": "quote not found"}, 404)
+    # The shared ownership gate (core/job_access), not this module's
+    # _job_belongs_to_tech: jobs.assigned_to holds a technician id, which that
+    # older check never matches (it survives on the job_assignments fallback).
+    from gdx_dispatch.core.job_access import job_belongs_to_user
+
+    if not found.job_id or not job_belongs_to_user(db, _tenant_id(request), str(found.job_id), _user_id(user)):
+        return _jr({"detail": "quote not on a job assigned to you"}, 403)
+    return found
+
+
+@router.post("/quotes/{estimate_id}/sms-preview", response_model=None)
+def mobile_quote_sms_preview(
+    estimate_id: str,
+    request: Request,
+    payload: MobileSendQuoteSmsIn | None = None,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Any:
+    """What "Text to customer" would send, or why it can't."""
+    from gdx_dispatch.core import estimate_sms
+
+    got = _tech_textable_quote(db, request, estimate_id, current_user or {})
+    if isinstance(got, JSONResponse):
+        return got
+    return _jr(estimate_sms.prepare(db, got, to_override=(payload.to if payload else None)))
+
+
+@router.post("/quotes/{estimate_id}/send-sms", response_model=None)
+def mobile_send_quote_sms(
+    estimate_id: str,
+    request: Request,
+    payload: MobileSendQuoteSmsIn | None = None,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Text the customer the approval link from the tech's phone."""
+    from gdx_dispatch.core import estimate_sms, link_sms
+
+    user = current_user or {}
+    got = _tech_textable_quote(db, request, estimate_id, user)
+    if isinstance(got, JSONResponse):
+        return got
+    p = payload or MobileSendQuoteSmsIn()
+    result = estimate_sms.send(
+        db,
+        got,
+        tenant_id=link_sms.tenant_uuid(user, request),
+        actor_id=_user_id(user) or None,
+        to_override=p.to,
+        body_override=p.body,
+        resend_unconfirmed=p.resend_unconfirmed,
+        audit_action="mobile_estimate_sent_sms",
+        request=request,
+    )
+    out = _serialize_quote(got, db=db)
+    out.update(result)
+    return _jr(out)
+
+
+@router.post("/quotes/{estimate_id}/schedule-sms", response_model=None, status_code=201)
+def mobile_schedule_quote_sms(
+    estimate_id: str,
+    request: Request,
+    payload: ScheduleLinkSmsIn,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Text the approval link later from the tech's phone — same gate as
+    /send-sms (a quote on a job assigned to this tech). Judged again when it
+    sends (modules/phone_com/scheduled.py)."""
+    from gdx_dispatch.core import estimate_sms, link_sms
+    from gdx_dispatch.modules.phone_com import scheduled
+
+    user = current_user or {}
+    got = _tech_textable_quote(db, request, estimate_id, user)
+    if isinstance(got, JSONResponse):
+        return got
+    return _jr(scheduled.schedule_link(
+        db,
+        got,
+        kind=scheduled.KIND_ESTIMATE,
+        prepare=estimate_sms.prepare,
+        payload=payload,
+        audit_action=scheduled.ACTION_TECH_ESTIMATE,
+        tenant_id=link_sms.tenant_uuid(user, request),
+        user_id=_user_id(user) or None,
+        request=request,
+    ), 201)

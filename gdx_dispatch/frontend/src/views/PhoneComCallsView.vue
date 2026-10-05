@@ -118,6 +118,18 @@
         <Column header="" style="width: 150px">
           <template #body="{ data }">
             <Button
+              v-if="canIntake"
+              v-tooltip="'Create Lead'"
+              icon="pi pi-user-plus"
+              text
+              rounded
+              severity="info"
+              size="small"
+              aria-label="Create Lead"
+              data-test="pc-create-lead"
+              @click.stop="openLeadFromCall(data)"
+            />
+            <Button
               v-if="customerNumber(data)"
               v-tooltip="`Call ${customerNumber(data)} — rings your extension first`"
               icon="pi pi-phone"
@@ -249,6 +261,14 @@
         </div>
       </div>
     </Dialog>
+
+    <LeadIntakeForm
+      v-model:visible="showLeadDialog"
+      :initial-phone="leadPrefill.phone"
+      :initial-name="leadPrefill.name"
+      :initial-notes="leadPrefill.notes"
+      :origin-ref="leadPrefill.originRef"
+    />
 </template>
 
 <script setup>
@@ -268,6 +288,9 @@ import InputText from 'primevue/inputtext'
 import Tag from 'primevue/tag'
 import ProgressSpinner from 'primevue/progressspinner'
 import Dialog from 'primevue/dialog'
+import LeadIntakeForm from '../components/LeadIntakeForm.vue'
+import { usePermission } from '../composables/usePermission'
+import { isCnamJunk } from '../utils/phoneComLabels'
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 const { confirmAsync } = useDestructiveConfirm();
 
@@ -284,6 +307,41 @@ const dateFrom = ref(null)
 const dateTo = ref(null)
 const loading = ref(false)
 const error = ref(null)
+
+const showLeadDialog = ref(false)
+const leadPrefill = ref({
+  phone: '',
+  name: '',
+  notes: '',
+  originRef: '',
+})
+
+const { hasPermission } = usePermission()
+// Same either-key gate as POST /api/leads/intake (_require_intake).
+const canIntake = computed(() => hasPermission('leads.intake') || hasPermission('leads.write'))
+
+// Same prefill as MobilePhoneView's: a list row carries caller_cnam but no
+// transcript, so a voicemail's words are fetched — they are the request itself.
+async function openLeadFromCall(call) {
+  const outbound = call.direction === 'out'
+  const number = outbound ? call.to_number : call.from_number
+  const cnam = !outbound && call.caller_cnam && !isCnamJunk(call.caller_cnam, call.from_number) ? call.caller_cnam : ''
+  const notes = [`${outbound ? 'Outbound call to' : 'Inbound call from'} ${number || 'unknown number'}`]
+  let text = detail.value?.id === call.id ? transcript.value : ''
+  if (!text && call.has_voicemail) {
+    try {
+      text = (await api.get(`/api/phone-com/calls/${call.id}/voicemail-transcript`, { suppressErrorToast: true }))?.transcript || ''
+    } catch { text = '' }
+  }
+  if (text) notes.push(`Voicemail transcript:\n${text}`)
+  leadPrefill.value = {
+    phone: number || '',
+    name: call.customer_name || cnam,
+    notes: notes.join('\n\n'),
+    originRef: `phone_com_call:${call.id}`,
+  }
+  showLeadDialog.value = true
+}
 
 const ownNumbers = ref([])
 

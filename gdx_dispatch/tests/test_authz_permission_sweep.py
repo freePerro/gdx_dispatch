@@ -33,7 +33,15 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_unpermissioned_bas
 # Pinned EXACTLY, not as a ceiling — see the sibling ratchet's BASELINE_SIZE.
 # The freeze was 405 lines under a 422 ceiling and the file has since been
 # worked down to 370, so the ceiling was carrying 52 lines of slack.
-BASELINE_SIZE = 370
+# 370 → 372 (2026-09-28): the planner Today tab's two own-records routes;
+# reason recorded in the baseline file.
+# 372 → 374 (2026-09-28): the tech's text-an-invoice routes; reason recorded
+# in the baseline file.
+# 374 → 376 (2026-09-29): the tech's text-an-estimate routes; reason recorded
+# in the baseline file.
+# 376 → 380 (2026-09-30): scheduled texts — the two tech schedule-sms routes
+# and the reply schedule / cancel routes; reason recorded in the baseline file.
+BASELINE_SIZE = 380
 
 
 def _baseline() -> set[str]:

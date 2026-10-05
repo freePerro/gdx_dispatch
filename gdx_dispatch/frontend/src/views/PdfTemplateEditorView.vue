@@ -76,6 +76,10 @@
               <label>Mark Non-taxable Lines</label>
               <ToggleSwitch v-model="selectedBlock.settings.show_taxable_marker" data-testid="li-taxable-marker" />
             </div>
+            <small v-if="selectedBlock.type === 'line_items' && selectedType === 'estimate'" class="field-hint"
+              data-testid="li-category-web-hint">
+              Category also shows this way on the estimate link customers open and in the customer portal.
+            </small>
             <small v-if="selectedBlock.type === 'line_items'" class="field-hint">
               Price visibility is controlled by the “hide line prices” setting on the
               estimate/invoice itself, not here.

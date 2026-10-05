@@ -1028,12 +1028,43 @@ def test_status_configured_is_provider_aware(tenant_db):
     assert row["auth_state"] == "healthy"
 
 
+class _SavepointCapableFake:
+    """The minimum ``core.database.contained_read`` needs from a session
+    stand-in, so a test can still aim a failure at the READ.
+
+    Since GDXA-165 ``tenant_zoneinfo`` wraps its read in a connection-level
+    SAVEPOINT. A stand-in offering only ``execute`` makes ``contained_read(db)``
+    raise AttributeError on ``db.connection()`` BEFORE the read runs — and the
+    helper's own ``except Exception`` catches that too, so the test below would
+    go green on the wrong failure and stop proving anything about a failed read.
+    (The sibling test four lines down does not even stay green: it never reaches
+    its invalid-zone branch.)
+    """
+
+    class _Conn:
+        def begin_nested(self):
+            return contextlib.nullcontext()
+
+    def connection(self):
+        return self._Conn()
+
+    @property
+    def no_autoflush(self):
+        return contextlib.nullcontext()
+
+    # ``_pending_counts`` reads these three to warn about a write staged inside
+    # the block. Empty is honest for a stand-in that stages nothing.
+    new: tuple = ()
+    dirty: tuple = ()
+    deleted: tuple = ()
+
+
 def test_tenant_zoneinfo_failed_read_is_logged_not_silent(caplog):
     """A failed AppSettings read falls back to the MODEL default zone — which
     is not prod's zone — so it must leave a trace. Until 2026-09-17 this was
     a bare ``except Exception: pass``."""
 
-    class _BrokenDb:
+    class _BrokenDb(_SavepointCapableFake):
         def execute(self, *_a, **_k):
             raise RuntimeError("connection lost")
 
@@ -1054,7 +1085,7 @@ def test_tenant_zoneinfo_invalid_zone_name_is_logged_not_silent(caplog):
         def __getitem__(self, _i):
             return "Not/AZone"
 
-    class _Db:
+    class _Db(_SavepointCapableFake):
         def execute(self, *_a, **_k):
             class _R:
                 def first(self_inner):

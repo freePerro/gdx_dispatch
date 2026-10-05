@@ -3,7 +3,7 @@
       <Toolbar>
         <template #start><h2 class="page-title">Planner</h2></template>
         <template #end>
-          <Button v-if="activeTab === 'tasks'" label="+ Task" icon="pi pi-plus" size="small" @click="openTaskForm" data-testid="new-task" />
+          <Button v-if="activeTab === 'tasks' || activeTab === 'today'" label="+ Task" icon="pi pi-plus" size="small" @click="openTaskForm" data-testid="new-task" />
           <Button v-if="activeTab === 'plans'" label="+ Plan" icon="pi pi-plus" size="small" @click="openPlanForm" data-testid="new-plan" />
           <Button v-if="activeTab === 'messages'" label="+ Thread" icon="pi pi-plus" size="small" @click="showThreadForm = true" data-testid="new-thread" />
         </template>
@@ -11,11 +11,17 @@
 
       <Tabs v-model:value="activeTab">
         <TabList>
+          <Tab value="today">Today</Tab>
           <Tab value="tasks">My Tasks</Tab>
           <Tab value="plans">Plans</Tab>
           <Tab value="messages">Messages <Badge v-if="totalUnread" :value="totalUnread" severity="danger" /></Tab>
         </TabList>
       </Tabs>
+
+      <!-- TODAY TAB — pinned tasks + the day's notes (planner-today-plan) -->
+      <div v-if="activeTab === 'today'" class="tab-content">
+        <PlannerTodayPanel ref="todayPanel" @open-task="editTask" @changed="loadTasks" @show-tasks="showOverdueTasks" />
+      </div>
 
       <!-- TASKS TAB -->
       <div v-if="activeTab === 'tasks'" class="tab-content">
@@ -42,6 +48,12 @@
                 <span v-if="customerLabelFor(task.customer_id)" class="meta-item"><i class="pi pi-user-edit"></i> {{ customerLabelFor(task.customer_id) }}</span>
               </div>
             </div>
+            <Button v-if="taskView === 'mine' && task.status !== 'done'" icon="pi pi-sun" text rounded
+              :severity="task.on_today ? 'warn' : 'secondary'"
+              :aria-label="task.on_today ? `Remove ${task.title} from Today` : `Add ${task.title} to Today`"
+              :aria-pressed="task.on_today ? 'true' : 'false'"
+              v-tooltip.left="task.on_today ? 'On Today — click to remove' : 'Add to Today'"
+              data-testid="task-today-toggle" @click.stop="toggleToday(task)" />
           </div>
         </div>
       </div>
@@ -183,6 +195,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { useAuthStore } from "../stores/auth";
 import { formatDate, formatTime, localDateString, parseLocalDateString } from "../composables/useFormatters";
 import { useFormDraft } from "../composables/useFormDraft";
 import Badge from "primevue/badge";
@@ -191,6 +204,7 @@ import Checkbox from "primevue/checkbox";
 import DatePicker from "primevue/datepicker";
 import Dialog from "primevue/dialog";
 import InputText from "primevue/inputtext";
+import PlannerTodayPanel from "../components/PlannerTodayPanel.vue";
 import ProgressSpinner from "primevue/progressspinner";
 import Select from "primevue/select";
 import SelectButton from "primevue/selectbutton";
@@ -202,7 +216,12 @@ import Textarea from "primevue/textarea";
 import Toolbar from "primevue/toolbar";
 
 const api = useApiWithToast();
-const activeTab = ref("tasks");
+const activeTab = ref("today");
+const todayPanel = ref(null);
+// The signed-in user's id, for "is this task mine" — from the auth store
+// (`gdx_user_id` in sessionStorage, which myId reads, is never written).
+const auth = useAuthStore();
+const myUserId = computed(() => String(auth.user?.id || auth.user?.user_id || auth.user?.sub || ""));
 const myId = ref(sessionStorage.getItem("gdx_user_id") || "");
 
 const TASK_VIEWS = [
@@ -397,13 +416,19 @@ async function createTask() {
   taskSaving.value = true;
   try {
     const due = taskForm.value.due_date instanceof Date ? localDateString(taskForm.value.due_date) : taskForm.value.due_date;
-    await api.post("/api/planner/tasks", { ...taskForm.value, due_date: due }, { successMessage: "Task created" });
+    // Today is the creator's own list: a task handed to someone else is
+    // created normally (the server refuses it on Today with a 422).
+    const assignee = taskForm.value.assigned_to;
+    const onToday = activeTab.value === "today" && (!assignee || assignee === myUserId.value);
+    await api.post("/api/planner/tasks", { ...taskForm.value, due_date: due, today: onToday },
+      { successMessage: onToday ? "Task added to Today" : "Task created" });
     // Clear and empty BEFORE closing: @hide flushes whatever the form holds,
     // so closing first would write the just-created task back as a draft.
     taskDraft.clear();
     taskForm.value = emptyTaskForm();
     showTaskForm.value = false;
     await loadTasks();
+    todayPanel.value?.reload();
   } finally { taskSaving.value = false; }
 }
 
@@ -414,6 +439,19 @@ async function toggleTask(task) {
   // Done tasks leave the active buckets and enter the Completed tab;
   // refresh so the row leaves/enters the visible list immediately.
   await loadTasks();
+}
+
+async function toggleToday(task) {
+  await api.put(`/api/planner/tasks/${task.id}/today`, { on: !task.on_today },
+    { successMessage: task.on_today ? "Removed from Today" : "Added to Today" });
+  await loadTasks();
+}
+
+// "and N more in My Tasks" — the overdue tail the Today suggestions cap.
+function showOverdueTasks() {
+  taskView.value = "mine";
+  taskSort.value = "due_date";
+  activeTab.value = "tasks";
 }
 
 function editTask(task) {
@@ -456,6 +494,7 @@ async function saveTaskEdits() {
     showTaskDetail.value = false;
     selectedTask.value = null;
     await loadTasks();
+    todayPanel.value?.reload();
   } finally {
     taskEditSaving.value = false;
   }

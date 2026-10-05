@@ -18,6 +18,7 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import SYSTEM_ACTOR, ensure_audit_table, log_audit_event_sync
+from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.core.name_normalize import humanize_name
 from gdx_dispatch.core.quickbooks import QBConnection, QBEntityMap, QBVendor
 from gdx_dispatch.models.tenant_models import (
@@ -252,9 +253,17 @@ def _delete_sync_enabled(tenant_id: str | None = None, db: Session | None = None
     """
     if tenant_id and db is not None:
         try:
-            value = db.execute(
-                select(QBConnection.delete_sync_enabled).where(QBConnection.tenant_id == tenant_id)
-            ).scalar_one_or_none()
+            # SAVEPOINT-contained (GDXA-165): `db` is the caller's session and
+            # this runs mid-pull. On Postgres a failed read here aborts the
+            # WHOLE transaction, so the env-var fallback below was handed back
+            # on a session that could no longer commit the sync it was holding
+            # — and this verdict decides whether a soft-DELETE propagates, so
+            # the caller acts on the degraded answer before discovering the
+            # transaction is dead. Reads only: see core.database.contained_read.
+            with contained_read(db):
+                value = db.execute(
+                    select(QBConnection.delete_sync_enabled).where(QBConnection.tenant_id == tenant_id)
+                ).scalar_one_or_none()
             if value is not None:
                 return bool(value)
         except Exception:
@@ -335,32 +344,68 @@ def _apply_qbo_deletes(
     ).scalars().all()
 
     deleted = 0
+
+    # Drain pending ORM work before the loop, outside the per-row `try`. Not
+    # hypothetical here: all three call sites below in this file run this
+    # immediately after a per-row ORM upsert loop and immediately before
+    # `db.commit()`, so the session is always loaded when we arrive. See
+    # `banking.drain_before_savepoint` for the mechanism and the measurement.
+    from gdx_dispatch.modules.quickbooks.banking import (  # noqa: PLC0415
+        drain_before_savepoint,
+    )
+
+    drain_before_savepoint(db)
+    # The audit write goes inside each row's savepoint below, and
+    # ensure_audit_table commits the first time it runs for an engine (on a
+    # Postgres missing its guard it installs the guard and commits; it rolls
+    # back only if that install fails). Inside an open
+    # begin_nested() that closes the savepoint under its own context manager,
+    # so run it once here, where the WeakSet in core/audit.py makes every
+    # later call a no-op. Only when there is a row to audit, as before.
+    if stale:
+        ensure_audit_table(db)
+
     for mapping in stale:
-        # Audit BEFORE the destructive ops. The mapping row gets hard-deleted
-        # below so this is the only persistent record of what was removed.
-        # Without this row, Slice 5 deletes are invisible to the UI and to
-        # any post-mortem — only a stdlib log line remains, which rotates.
-        try:
-            _audit(db, "qb_delete_sync", mapping.qb_id, {
-                "tenant_id": tenant_id,
-                "entity_type": entity_type,
-                "qb_id": mapping.qb_id,
-                "local_id": mapping.local_id,
-                "reason": "absent_from_full_set_diff",
-            })
-        except Exception:
-            log.exception("qb_delete_audit_failed tenant=%s entity=%s qb_id=%s",
-                          tenant_id, entity_type, mapping.qb_id)
+        # Capture identity first: the mapping row is hard-deleted below, and
+        # the audit row is the only persistent record of what went.
+        qb_id, local_id = mapping.qb_id, mapping.local_id
 
         try:
-            local = db.get(model, UUID(mapping.local_id))
-            if local is not None and getattr(local, "deleted_at", None) is None:
-                local.deleted_at = datetime.now(UTC)
-                deleted += 1
-            db.delete(mapping)
+            # SAVEPOINT per row (GDXA-165, found by the sibling sweep rather
+            # than on the issue's list). On Postgres one failed statement aborts
+            # the whole transaction, and the enclosing pull's db.commit() then
+            # loses the entire customer/invoice/payment pull — quietly when the
+            # error came from a raw execute, with PendingRollbackError when it
+            # came from an ORM flush. begin_nested() because this
+            # block WRITES (rule 2).
+            #
+            # The audit row is written INSIDE the savepoint, after the delete,
+            # so the effect and its record share a fate: a failed delete leaves
+            # no audit row claiming it happened, and a failed audit write
+            # (including a database-level one, which poisons the transaction)
+            # rolls the delete back with it. The mapping then survives and the
+            # next sync retries the row. Invariant #1: no delete without a trace.
+            with db.begin_nested():
+                local = db.get(model, UUID(local_id))
+                soft_deleted = local is not None and getattr(local, "deleted_at", None) is None
+                if soft_deleted:
+                    local.deleted_at = datetime.now(UTC)
+                db.delete(mapping)
+                _audit(db, "qb_delete_sync", qb_id, {
+                    "tenant_id": tenant_id,
+                    "entity_type": entity_type,
+                    "qb_id": qb_id,
+                    "local_id": local_id,
+                    "soft_deleted": soft_deleted,
+                    "reason": "absent_from_full_set_diff",
+                })
         except Exception:
             log.exception("qb_delete_apply_failed tenant=%s entity=%s qb_id=%s",
-                          tenant_id, entity_type, mapping.qb_id)
+                          tenant_id, entity_type, qb_id)
+            continue
+
+        if soft_deleted:
+            deleted += 1
     if deleted:
         log.info("qb_delete_sync tenant=%s entity_type=%s deleted=%d",
                  tenant_id, entity_type, deleted)
@@ -2086,25 +2131,32 @@ async def pull_accounts(tenant_id: str, db: Session, qb: QBClient) -> dict[str, 
         active = bool(raw.get("Active", True))
 
         try:
-            existing = db.execute(text(
-                "SELECT id FROM qb_accounts WHERE tenant_id = :tid AND qb_account_id = :qid"
-            ), {"tid": tenant_id, "qid": qb_id}).scalar()
-            if existing:
-                db.execute(text("""
-                    UPDATE qb_accounts SET name = :name, account_type = :at, account_sub_type = :ast,
-                        classification = :cls, current_balance = :bal, active = :act, synced_at = CURRENT_TIMESTAMP
-                    WHERE tenant_id = :tid AND qb_account_id = :qid
-                """), {"name": name, "at": acct_type, "ast": sub_type, "cls": classification,
-                       "bal": balance, "act": active, "tid": tenant_id, "qid": qb_id})
-                updated += 1
-            else:
-                db.execute(text("""
-                    INSERT INTO qb_accounts (id, tenant_id, qb_account_id, name, account_type, account_sub_type,
-                        classification, current_balance, active)
-                    VALUES (:id, :tid, :qid, :name, :at, :ast, :cls, :bal, :act)
-                """), {"id": str(uuid4()), "tid": tenant_id, "qid": qb_id, "name": name,
-                       "at": acct_type, "ast": sub_type, "cls": classification, "bal": balance, "act": active})
-                created += 1
+            # SAVEPOINT per row, same reason as pull_bank_transactions below:
+            # without it the first failing statement aborts the whole PG
+            # transaction, every remaining row then fails with 25P02, and the
+            # `db.commit()` after this loop commits NOTHING while the function
+            # still reports created/updated counts and calls
+            # _touch_sync_success. A silent write. (GDXA-165)
+            with db.begin_nested():
+                existing = db.execute(text(
+                    "SELECT id FROM qb_accounts WHERE tenant_id = :tid AND qb_account_id = :qid"
+                ), {"tid": tenant_id, "qid": qb_id}).scalar()
+                if existing:
+                    db.execute(text("""
+                        UPDATE qb_accounts SET name = :name, account_type = :at, account_sub_type = :ast,
+                            classification = :cls, current_balance = :bal, active = :act, synced_at = CURRENT_TIMESTAMP
+                        WHERE tenant_id = :tid AND qb_account_id = :qid
+                    """), {"name": name, "at": acct_type, "ast": sub_type, "cls": classification,
+                           "bal": balance, "act": active, "tid": tenant_id, "qid": qb_id})
+                    updated += 1
+                else:
+                    db.execute(text("""
+                        INSERT INTO qb_accounts (id, tenant_id, qb_account_id, name, account_type, account_sub_type,
+                            classification, current_balance, active)
+                        VALUES (:id, :tid, :qid, :name, :at, :ast, :cls, :bal, :act)
+                    """), {"id": str(uuid4()), "tid": tenant_id, "qid": qb_id, "name": name,
+                           "at": acct_type, "ast": sub_type, "cls": classification, "bal": balance, "act": active})
+                    created += 1
         except Exception as row_exc:
             log.exception("qb_pull_accounts_row_failed qb_id=%s", qb_id)
             errors.append({"qb_id": qb_id, "name": name, "error": str(row_exc)[:200]})
@@ -2115,6 +2167,44 @@ async def pull_accounts(tenant_id: str, db: Session, qb: QBClient) -> dict[str, 
         "tenant_id": tenant_id, "created": created, "updated": updated, "errors": len(errors),
     })
     db.commit()
+    if errors:
+        # The per-row SAVEPOINT above is a net win, but it creates a state that
+        # nothing downstream checks for: a PARTIAL chart of accounts. qb_accounts
+        # is the bank-account filter set for pull_customer_payments and
+        # pull_journal_entries, and both only test `if not bank_ids:` — so an
+        # account that is absent reads as "not a bank account" and a payment on
+        # it is silently missing from the feed, with no error.
+        #
+        # Be precise about how much this change widens that, because the first
+        # version of this comment overstated it (caught by the GDXA-165 audit).
+        # It claimed pre-SAVEPOINT a bad row "zeroed the pull" so the consumers
+        # said "skipped: qb_accounts empty, run accounts sync first". That is
+        # wrong: pull_accounts is upsert-only — it has no reconciler and issues
+        # no DELETE against qb_accounts (verified: `grep -c "DELETE FROM
+        # qb_accounts"` → 0). So on any tenant that has synced before, the
+        # previous rows survived an aborted pull and `bank_ids` stayed
+        # populated; the consumers never took the "empty" branch.
+        #
+        # What is actually new is narrower: a NEW account whose own row fails now
+        # leaves the rest of the pull committed, where before the whole pull
+        # rolled back and the account was equally absent — so the miss is the
+        # same, but it is now paired with a SUCCESS-looking return. On a
+        # first-ever sync the old behaviour did give the honest "empty" signal
+        # and this takes it away. That is the real regression, and it is why the
+        # log line below exists.
+        #
+        # A loud log line is the floor, not the fix, and nothing asserts on it —
+        # there is no test or alert for `qb_pull_accounts_partial` (verified by
+        # grep). Teaching those consumers to distinguish "incomplete" from
+        # "empty" spans their own call paths and is counted as deferred in this
+        # change's sibling-sweep block.
+        log.warning(
+            "qb_pull_accounts_partial tenant=%s created=%d updated=%d failed=%d — the "
+            "chart of accounts is INCOMPLETE; bank-account filters derived from "
+            "qb_accounts (customer payments, journal entries) will silently miss rows "
+            "on the accounts that failed",
+            tenant_id, created, updated, len(errors),
+        )
     return {"created": created, "updated": updated, "errors": errors}
 
 

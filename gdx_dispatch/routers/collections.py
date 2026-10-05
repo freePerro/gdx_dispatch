@@ -165,6 +165,10 @@ def aging_report(
         "over_90": {"label": "Over 90 Days", "min": 91, "max": 99999, "count": 0, "total": 0.0, "invoices": []},
     }
 
+    # Counted by GDXA-160 and deliberately left bare, same call as
+    # `routers/invoices.py::list_invoices`: a GET, request-scoped session,
+    # nothing pending behind it, and the handler only formats `invoices` after
+    # the `except` — no further DB work to die on. Counted rather than skipped.
     try:
         # PR1-billing-capture (2026-07-07): this filter shipped with
         # capitalized statuses ("Sent","Overdue","Partial") against the

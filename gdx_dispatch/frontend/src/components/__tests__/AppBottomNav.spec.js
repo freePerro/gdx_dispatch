@@ -75,7 +75,8 @@ import { flushPromises, mount, RouterLinkStub } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import PrimeVue from 'primevue/config';
 
-const { apiGet, routerPush, routerReplace, modules, emailModuleOn } = vi.hoisted(() => ({
+const { apiGet, routerPush, routerReplace, modules, emailModuleOn, routeQuery } = vi.hoisted(() => ({
+  routeQuery: { value: {} },
   apiGet: vi.fn(),
   routerPush: vi.fn().mockResolvedValue(undefined),
   routerReplace: vi.fn().mockResolvedValue(undefined),
@@ -97,7 +98,7 @@ vi.mock('../../composables/useTenantModules', () => ({
   }),
 }));
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ path: '/mobile/jobs', query: {}, fullPath: '/mobile/jobs' }),
+  useRoute: () => ({ path: '/mobile/jobs', query: routeQuery.value, fullPath: '/mobile/jobs' }),
   useRouter: () => ({
     push: routerPush,
     replace: routerReplace,
@@ -127,19 +128,30 @@ const DRAWER_MODULES = [
 // a cold load has that claim before /auth/me has hydrated `user`.
 const jwtFor = (role) => `h.${btoa(JSON.stringify({ role })).replace(/=+$/, '')}.s`;
 
-function mountNav(role, { signedIn = true, cachedUser = true } = {}) {
+function mountNav(role, { signedIn = true, cachedUser = true, permissions = [] } = {}) {
   const pinia = createPinia();
   setActivePinia(pinia);
   const auth = useAuthStore();
   auth.accessToken = signedIn ? jwtFor(role) : null;
   auth.user = signedIn && cachedUser ? { role } : null;
+  // Loaded up front so usePermission never fetches (and never adds an apiGet
+  // call to the poll-count assertions below).
+  auth.permissions = new Set(permissions);
+  auth.permissionsLoaded = true;
   const wrapper = mount(AppBottomNav, {
     global: {
       plugins: [PrimeVue, pinia],
       stubs: {
         Drawer: DrawerStub,
         InputText: true,
-        QuickCaptureSheet: true,
+        QuickCaptureSheet: {
+          props: ['visible'],
+          template: '<div v-if="visible" data-testid="quick-capture-stub" />',
+        },
+        LeadIntakeForm: {
+          props: ['visible'],
+          template: '<div v-if="visible" data-testid="lead-intake-stub" />',
+        },
         RouterLink: RouterLinkStub,
       },
     },
@@ -272,6 +284,66 @@ describe('AppBottomNav — Email tab for office roles', () => {
     await flushPromises();
     expect(tabLabels(wrapper)).toEqual(['Jobs', 'Customers', 'Clock', 'Planner', 'Dispatch', 'More']);
     expect(apiGet).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+});
+
+// Lead intake (lead-intake-followup-plan §4): the "+" button asks Quick note or
+// Estimate request for office, goes straight to the form for a tech holding
+// leads.intake, and stays a plain quick note where the server would 403 a lead.
+describe('AppBottomNav — capture button and lead intake', () => {
+  const fab = (w) => w.find('[data-testid="quick-capture-fab"]');
+
+  it('tech with leads.intake: opens the intake form directly', async () => {
+    const wrapper = mountNav('technician', { permissions: ['leads.intake'] });
+    await flushPromises();
+    expect(fab(wrapper).attributes('aria-label')).toBe('New estimate request');
+    await fab(wrapper).trigger('click');
+    expect(wrapper.find('[data-testid="lead-intake-stub"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="quick-capture-stub"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('tech without leads.intake: no button at all', async () => {
+    const wrapper = mountNav('technician');
+    await flushPromises();
+    expect(fab(wrapper).exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('office with leads.write: offers the choice, and each choice opens its sheet', async () => {
+    const wrapper = mountNav('dispatcher', { permissions: ['leads.write'] });
+    await flushPromises();
+    expect(fab(wrapper).attributes('aria-label')).toBe('Quick note or estimate request');
+    await fab(wrapper).trigger('click');
+    await wrapper.find('[data-testid="choice-lead-intake"]').trigger('click');
+    expect(wrapper.find('[data-testid="lead-intake-stub"]').exists()).toBe(true);
+    wrapper.unmount();
+
+    const again = mountNav('dispatcher', { permissions: ['leads.write'] });
+    await flushPromises();
+    await fab(again).trigger('click');
+    await again.find('[data-testid="choice-quick-note"]').trigger('click');
+    expect(again.find('[data-testid="quick-capture-stub"]').exists()).toBe(true);
+    again.unmount();
+  });
+
+  it('office without a leads key: the button is the plain quick note, no dead choice', async () => {
+    const wrapper = mountNav('dispatcher');
+    await flushPromises();
+    expect(fab(wrapper).attributes('aria-label')).toBe('Quick note from a call');
+    await fab(wrapper).trigger('click');
+    expect(wrapper.find('[data-testid="choice-lead-intake"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="quick-capture-stub"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('a share into the app from a tech is still refused, even with leads.intake', async () => {
+    routeQuery.value = { share_text: 'call Bob back' };
+    const wrapper = mountNav('technician', { permissions: ['leads.intake'] });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="quick-capture-stub"]').exists()).toBe(false);
+    routeQuery.value = {};
     wrapper.unmount();
   });
 });

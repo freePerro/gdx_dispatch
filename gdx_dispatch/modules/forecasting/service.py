@@ -11,8 +11,14 @@ Inputs (per-tenant):
     `scheduled_realization_rate`. (The old billing_status filter was a dead
     tautology — removed PR2-billing-capture, no output change.)
   - Recurring (optional): qb_recurring_transactions where active=true
-    and next_date in window; counted at face amount (no probability,
-    since QBO recurring schedules are deterministic).
+    and next_date in window, plus active RecurringStream rows projected
+    forward; counted at face amount (no probability).
+
+Direction matters. A RecurringStream is always a payment going OUT (the
+detector reads purchases; the UI calls them "Recurring Payments"), and a
+QBO template is income only when it is an Invoice or SalesReceipt. Only
+inflows add to ``expected_total``; outflows are reported as
+``recurring.outflow_total`` and never counted as revenue.
 """
 from __future__ import annotations
 
@@ -39,27 +45,38 @@ from gdx_dispatch.modules.forecasting.models import (
 )
 from gdx_dispatch.modules.proposals.models import Estimate
 
+# QBO RecurringTransaction template types by cash direction. The stored
+# types are the ones qb_recurring._flatten_child recognises. Invoice and
+# SalesReceipt bring money IN; Bill and Purchase send it OUT. JournalEntry,
+# Estimate and CreditMemo move no cash on their scheduled date, so they are
+# NONE and count toward neither total. An unrecognised type is also NONE, so
+# it can never inflate the revenue forecast or invent a payment.
+QBO_INFLOW_TXN_TYPES = frozenset({"Invoice", "SalesReceipt"})
+QBO_OUTFLOW_TXN_TYPES = frozenset({"Bill", "Purchase"})
+DIRECTION_IN = "in"
+DIRECTION_OUT = "out"
+DIRECTION_NONE = "none"
 
-# Cadence-aware step. Calendar-month variants use dateutil.relativedelta so a
+
+def _qbo_direction(txn_type: str | None) -> str:
+    if txn_type in QBO_INFLOW_TXN_TYPES:
+        return DIRECTION_IN
+    if txn_type in QBO_OUTFLOW_TXN_TYPES:
+        return DIRECTION_OUT
+    return DIRECTION_NONE
+
+
+def _split_by_direction(items: list[dict[str, Any]]) -> tuple[float, float]:
+    inflow = sum(float(it["amount"] or 0) for it in items if it["direction"] == DIRECTION_IN)
+    outflow = sum(float(it["amount"] or 0) for it in items if it["direction"] == DIRECTION_OUT)
+    return inflow, outflow
+
+
+# Cadence step. Calendar-month variants use dateutil.relativedelta so a
 # monthly stream anchored on the 25th lands on the 25th every month
 # (timedelta(days=30) drifts to the 24th in month 2, 23rd in month 3, etc.).
-def _advance_cursor(cursor: date, cadence: str) -> date | None:
-    if cadence == CADENCE_WEEKLY:
-        return cursor + timedelta(days=7)
-    if cadence == CADENCE_BIWEEKLY:
-        return cursor + timedelta(days=14)
-    if cadence == CADENCE_MONTHLY:
-        return cursor + relativedelta(months=1)
-    if cadence == CADENCE_QUARTERLY:
-        return cursor + relativedelta(months=3)
-    if cadence == CADENCE_SEMIANNUAL:
-        return cursor + relativedelta(months=6)
-    if cadence == CADENCE_ANNUAL:
-        return cursor + relativedelta(years=1)
-    return None
-
-
-# Step-back helper used to advance from last_observed_date when next_expected is null.
+# Callers multiply it from a fixed origin (origin + step * n) so month-end
+# anchors do not ratchet down after a short month.
 def _step_for(cadence: str) -> relativedelta | timedelta | None:
     if cadence == CADENCE_WEEKLY: return timedelta(days=7)  # noqa: E701
     if cadence == CADENCE_BIWEEKLY: return timedelta(days=14)  # noqa: E701
@@ -89,6 +106,8 @@ def _settings_dict(s: ForecastSettings) -> dict[str, Any]:
         "collect_rate_90_plus": float(s.collect_rate_90_plus),
         "scheduled_realization_rate": float(s.scheduled_realization_rate),
         "include_recurring": bool(s.include_recurring),
+        "cash_floor": float(s.cash_floor) if s.cash_floor is not None else None,
+        "operating_account_ids": list(s.operating_account_ids or []),
     }
 
 
@@ -112,6 +131,15 @@ def update_settings(db: Session, payload: dict[str, Any]) -> ForecastSettings:
             if f in _DECIMAL_FIELDS and not isinstance(value, Decimal):
                 value = Decimal(str(value))
             setattr(s, f, value)
+    # Cash calendar choices. cash_floor 0 is a real floor; clearing it is an
+    # explicit clear_cash_floor. An empty operating_account_ids list goes back
+    # to the default selection. Ids are validated by the caller.
+    if payload.get("clear_cash_floor"):
+        s.cash_floor = None
+    elif payload.get("cash_floor") is not None:
+        s.cash_floor = Decimal(str(payload["cash_floor"]))
+    if "operating_account_ids" in payload and payload["operating_account_ids"] is not None:
+        s.operating_account_ids = list(payload["operating_account_ids"]) or None
     s.updated_at = datetime.now(UTC)
     db.commit()
     db.refresh(s)
@@ -275,6 +303,7 @@ def _qbo_template_projection(db: Session, today: date, window_days: int) -> dict
                 "qb_id": r.qb_id,
                 "name": r.name,
                 "txn_type": r.txn_type,
+                "direction": _qbo_direction(r.txn_type),
                 "customer_name": r.customer_name,
                 "amount": float(r.amount or 0),
                 "next_date": r.next_date.isoformat() if r.next_date else None,
@@ -292,7 +321,11 @@ def _observed_stream_projection(db: Session, today: date, window_days: int) -> d
     until we exit the window. Skip past term limits (term_total_occurrences
     reached or term_end_date passed). Median amount = (amount_min + amount_max)/2.
 
-    These are *observed* — every stream is grounded in real bank-clear data.
+    Every stream is a payment going OUT. Observed streams were detected from
+    bank activity, but an active stream can outlive that evidence: its dates
+    only move when the nightly detector refreshes it, so a stream whose
+    expected date has passed keeps projecting its FUTURE dates. The missed
+    date itself is not projected.
     Dedup against QBO templates happens in the caller (_combined_recurring).
     """
     window_end = today + timedelta(days=window_days)
@@ -310,15 +343,17 @@ def _observed_stream_projection(db: Session, today: date, window_days: int) -> d
         step = _step_for(s.cadence)
         if step is None:
             continue
-        # Start from next_expected_date if known; otherwise advance from
-        # last_observed_date by one cadence step; otherwise today.
+        # Start from next_expected_date if known; otherwise one cadence step
+        # after last_observed_date; otherwise the stream's start_date (the
+        # create API accepts one); only with none of those, today — which is
+        # where a stream made in the current UI form still lands, because the
+        # form sends no date. A past start is rolled forward below.
         cursor = s.next_expected_date
         if cursor is None and s.last_observed_date is not None:
             cursor = s.last_observed_date + step
+        if cursor is None and s.start_date is not None:
+            cursor = s.start_date
         if cursor is None:
-            cursor = today
-        # Skip already-past projections
-        if cursor < today:
             cursor = today
 
         median_amount = (float(s.amount_min) + float(s.amount_max)) / 2.0
@@ -326,18 +361,37 @@ def _observed_stream_projection(db: Session, today: date, window_days: int) -> d
         if s.term_total_occurrences is not None:
             occurrences_remaining = max(0, int(s.term_total_occurrences) - int(s.occurrences_seen))
 
+        # A past date is rolled forward ON ITS OWN CADENCE, keeping the anchor
+        # day. It used to be moved to today, which put a monthly stream on
+        # today AND today+1 month — twice in a 30-day window — and shifted its
+        # day. A skipped date is not projected (whether it cleared is a
+        # question for the matched bank lines, not for these dates), and it is
+        # counted against a fixed term, so a stream the detector stopped
+        # refreshing does not keep its old count of remaining payments. The
+        # term is only as good as ``occurrences_seen``, which the detector
+        # counts inside its scan window, not over the stream's life.
+        # Every date is computed from the ORIGIN (origin + n steps), never from
+        # the previous date, so a stream on the 31st returns to the 31st after
+        # February instead of sliding to the 28th for good.
+        origin = cursor
+        n = 0
+        while origin + step * n < today:
+            n += 1
+            if occurrences_remaining is not None:
+                occurrences_remaining = max(0, occurrences_remaining - 1)
+
         projected_dates: list[date] = []
-        while cursor <= window_end:
+        while True:
+            d = origin + step * n
+            if d > window_end:
+                break
             # Term gates
-            if s.term_end_date is not None and cursor > s.term_end_date:
+            if s.term_end_date is not None and d > s.term_end_date:
                 break
             if occurrences_remaining is not None and len(projected_dates) >= occurrences_remaining:
                 break
-            projected_dates.append(cursor)
-            nxt = _advance_cursor(cursor, s.cadence)
-            if nxt is None or nxt == cursor:
-                break
-            cursor = nxt
+            projected_dates.append(d)
+            n += 1
 
         for d in projected_dates:
             items.append({
@@ -348,6 +402,7 @@ def _observed_stream_projection(db: Session, today: date, window_days: int) -> d
                 "cadence": s.cadence,
                 "amount": median_amount,
                 "next_date": d.isoformat(),
+                "direction": DIRECTION_OUT,
             })
             total += median_amount
             count += 1
@@ -384,8 +439,14 @@ def _combined_recurring(qbo: dict[str, Any], observed: dict[str, Any]) -> dict[s
         q_name = (q.get("name") or q.get("customer_name") or "").upper()
         q_amt = float(q.get("amount") or 0)
         q_month = (q.get("next_date") or "")[:7]
+        q_direction = _qbo_direction(q.get("txn_type"))
         matched = False
         for obs in observed["items"]:
+            # Every observed stream is a payment OUT; a template that is not
+            # itself a payment out (income, or no cash at all) is a different
+            # cash flow even when it shares a name and amount.
+            if q_direction != DIRECTION_OUT:
+                break
             obs_payee = (obs.get("payee_pattern") or "").upper()
             obs_amt = float(obs.get("amount") or 0)
             obs_month = (obs.get("next_date") or "")[:7]
@@ -403,13 +464,21 @@ def _combined_recurring(qbo: dict[str, Any], observed: dict[str, Any]) -> dict[s
         if matched:
             qbo_overridden += 1
         else:
-            qbo_kept.append({**q, "source": "qbo_template"})
+            qbo_kept.append({
+                **q,
+                "source": "qbo_template",
+                "direction": q_direction,
+            })
 
     items.extend(qbo_kept)
-    total = sum(it["amount"] for it in items)
+    inflow_total, outflow_total = _split_by_direction(items)
     return {
         "count": len(items),
-        "expected_total": total,
+        # What recurring adds to expected REVENUE: inflows only. Recurring
+        # payments going out are reported beside it, never summed into it.
+        "expected_total": inflow_total,
+        "inflow_total": inflow_total,
+        "outflow_total": outflow_total,
         "items": items,
         "qbo_overridden": qbo_overridden,
         "sources": {
@@ -436,6 +505,8 @@ def revenue_projection(db: Session, window_days: int | None = None, today: date 
         recurring = {
             "count": 0,
             "expected_total": 0.0,
+            "inflow_total": 0.0,
+            "outflow_total": 0.0,
             "items": [],
             "qbo_overridden": 0,
             "sources": {

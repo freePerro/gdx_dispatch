@@ -12,6 +12,7 @@ corresponds to something that was exploitable before 2026-08-04 — keep them.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from unittest.mock import MagicMock, patch
 
@@ -1562,3 +1563,367 @@ def test_a_sized_intent_replayed_after_the_rate_was_turned_off_keeps_the_agreed_
     assert (body["amount"], body["invoice_amount"], body["surcharge_cents"], body["surcharge_status"]) == (
         16670, 16200, 470, "applied",
     )
+
+
+# ---------------------------------------------------------------------------
+# Refusing US debit cards (2026-09-30) — an office choice, independent of the
+# surcharge, decided on the card's PaymentMethod before any intent exists
+# ---------------------------------------------------------------------------
+
+
+def _card_from(funding="credit", country="US"):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(card=SimpleNamespace(brand="visa", last4="4242", funding=funding, country=country))
+
+
+def test_is_refused_debit_refuses_only_us_debit():
+    from gdx_dispatch.core.payments import is_refused_debit
+
+    assert is_refused_debit({"funding": "debit", "country": "US"}) is True
+    assert is_refused_debit({"funding": "DEBIT", "country": "us"}) is True
+    # Visa/Mastercard US credit-only acceptance still has to take foreign cards.
+    assert is_refused_debit({"funding": "debit", "country": "CA"}) is False
+    assert is_refused_debit({"funding": "debit", "country": None}) is False
+    assert is_refused_debit({"funding": "credit", "country": "US"}) is False
+    assert is_refused_debit({"funding": "prepaid", "country": "US"}) is False
+    assert is_refused_debit({"funding": "unknown", "country": "US"}) is False
+    assert is_refused_debit({}) is False
+
+
+def test_card_notice_names_whichever_rules_are_on():
+    from gdx_dispatch.core.payments import _card_notice
+
+    assert _card_notice(_D("0.029"), True) == (
+        "Credit cards carry a 2.9% processing fee. We don't accept debit cards. Bank transfer (ACH): no fee."
+    )
+    assert _card_notice(_D("0.029"), False) == (
+        "Credit cards carry a 2.9% processing fee. Debit cards and bank transfer (ACH): no fee."
+    )
+    assert _card_notice(_D("0"), True) == (
+        "We don't accept debit cards. Please pay by credit card or bank transfer (ACH)."
+    )
+    assert _card_notice(_D("0"), False) == ""
+
+
+def test_a_us_debit_card_is_refused_before_any_intent_exists(client, invoice):
+    from gdx_dispatch.core.payments import DEBIT_REFUSED_DETAIL
+
+    with patch("gdx_dispatch.core.payments.refuses_debit_cards", return_value=True), \
+            patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0.029")), \
+            patch("stripe.PaymentIntent.list", return_value=MagicMock(data=[], has_more=False)), \
+            patch("stripe.PaymentIntent.create") as create, \
+            patch("stripe.PaymentMethod.retrieve", return_value=_card_from("debit", "US")) as retrieve:
+        resp = client.post(
+            "/api/payments/create-intent",
+            json={"invoice_token": TOKEN, "method": "card", "payment_method_id": "pm_debit"},
+        )
+    assert resp.status_code == 402, resp.text
+    assert resp.json()["detail"] == DEBIT_REFUSED_DETAIL
+    create.assert_not_called()
+    assert retrieve.call_args[0][0] == "pm_debit"
+
+
+def test_a_foreign_debit_card_is_taken_when_debit_is_refused(client, invoice):
+    pi = _probe_pi(status="unavailable", maximum=0, pm="pm_ca_debit")
+    with patch("gdx_dispatch.core.payments.refuses_debit_cards", return_value=True), \
+            patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0.029")), \
+            patch("stripe.PaymentIntent.create", return_value=pi) as create, \
+            patch("stripe.PaymentIntent.retrieve", return_value=pi), \
+            patch("stripe.PaymentIntent.modify") as modify, \
+            patch("stripe.PaymentMethod.retrieve", return_value=_card_from("debit", "CA")):
+        resp = client.post(
+            "/api/payments/create-intent",
+            json={"invoice_token": TOKEN, "method": "card", "payment_method_id": "pm_ca_debit"},
+        )
+    assert resp.status_code == 200, resp.text
+    create.assert_called_once()
+    modify.assert_not_called()  # still no fee on debit
+    assert resp.json()["surcharge_cents"] == 0
+
+
+def test_a_credit_card_goes_through_with_one_card_read(client, invoice):
+    pi = _probe_pi()
+    with patch("gdx_dispatch.core.payments.refuses_debit_cards", return_value=True), \
+            patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0.029")), \
+            patch("stripe.PaymentIntent.create", return_value=pi), \
+            patch("stripe.PaymentIntent.retrieve", return_value=pi), \
+            patch("stripe.PaymentIntent.modify", return_value=_probe_pi(surcharge_meta=470)), \
+            patch("stripe.PaymentMethod.retrieve", return_value=_card_from("credit", "US")) as retrieve:
+        resp = client.post(
+            "/api/payments/create-intent",
+            json={"invoice_token": TOKEN, "method": "card", "payment_method_id": "pm_credit"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["surcharge_cents"] == 470
+    assert resp.json()["card"]["funding"] == "credit"
+    assert retrieve.call_count == 1, "the debit check's read is reused for the card summary"
+
+
+def test_refusal_without_a_rate_mints_a_plain_intent_off_the_preview_api(client, invoice):
+    """Audit 2026-09-30: with only the refusal on, the card is checked but NOT
+    attached, and neither the preview version nor the surcharge probe is sent
+    — the refusal must not depend on a preview API it does not need, and
+    turning the rate off must stay the way back off the preview. The page is
+    told to confirm with the card's id."""
+    with patch("gdx_dispatch.core.payments.refuses_debit_cards", return_value=True), \
+            patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0")), \
+            patch("stripe.PaymentIntent.create", return_value=_pi(status="requires_payment_method")) as create, \
+            patch("stripe.PaymentIntent.modify") as modify, \
+            patch("stripe.PaymentMethod.retrieve", return_value=_card_from("credit", "US")) as retrieve:
+        resp = client.post(
+            "/api/payments/create-intent",
+            json={"invoice_token": TOKEN, "method": "card", "payment_method_id": "pm_credit"},
+        )
+    assert resp.status_code == 200, resp.text
+    kw = create.call_args[1]
+    assert "payment_method" not in kw and "amount_details" not in kw and "stripe_version" not in kw
+    assert kw["idempotency_key"] == f"gdx-pi-{invoice.id}-card-16200"
+    modify.assert_not_called()
+    assert retrieve.call_count == 1
+    body = resp.json()
+    assert body["payment_method_attached"] is False
+    assert (body["amount"], body["surcharge_cents"]) == (16200, 0)
+    assert body["card"] == {"brand": "visa", "last4": "4242", "funding": "credit"}
+
+
+def test_refusal_with_a_rate_keeps_the_surcharge_flow_attached(client, invoice):
+    pi = _probe_pi()
+    with patch("gdx_dispatch.core.payments.refuses_debit_cards", return_value=True), \
+            patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0.029")), \
+            patch("stripe.PaymentIntent.create", return_value=pi) as create, \
+            patch("stripe.PaymentIntent.retrieve", return_value=pi), \
+            patch("stripe.PaymentIntent.modify", return_value=_probe_pi(surcharge_meta=470)), \
+            patch("stripe.PaymentMethod.retrieve", return_value=_card_from("credit", "US")):
+        resp = client.post(
+            "/api/payments/create-intent",
+            json={"invoice_token": TOKEN, "method": "card", "payment_method_id": "pm_credit"},
+        )
+    assert resp.status_code == 200, resp.text
+    kw = create.call_args[1]
+    assert kw["payment_method"] == "pm_credit" and kw["stripe_version"] == _PREVIEW
+    assert resp.json()["payment_method_attached"] is True
+
+
+def test_debit_refusal_works_with_no_surcharge_rate(client, invoice):
+    from gdx_dispatch.core.payments import DEBIT_REFUSED_DETAIL
+
+    with patch("gdx_dispatch.core.payments.refuses_debit_cards", return_value=True), \
+            patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0")), \
+            patch("stripe.PaymentIntent.list", return_value=MagicMock(data=[], has_more=False)), \
+            patch("stripe.PaymentIntent.create") as create, \
+            patch("stripe.PaymentMethod.retrieve", return_value=_card_from("debit", "US")):
+        resp = client.post(
+            "/api/payments/create-intent",
+            json={"invoice_token": TOKEN, "method": "card", "payment_method_id": "pm_debit"},
+        )
+    assert resp.status_code == 402
+    assert resp.json()["detail"] == DEBIT_REFUSED_DETAIL
+    create.assert_not_called()
+
+
+def test_a_stale_one_step_page_is_sent_to_reload_when_debit_is_refused(client, invoice):
+    """A page opened before the office turned the refusal on never shows the
+    server the card. Charging it unseen would let a debit card through."""
+    from gdx_dispatch.core.payments import STALE_CARD_FLOW_DETAIL
+
+    with patch("gdx_dispatch.core.payments.refuses_debit_cards", return_value=True), \
+            patch("stripe.PaymentIntent.list", return_value=MagicMock(data=[], has_more=False)), \
+            patch("stripe.PaymentIntent.create") as create:
+        resp = client.post("/api/payments/create-intent", json={"invoice_token": TOKEN, "method": "card"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == STALE_CARD_FLOW_DETAIL
+    create.assert_not_called()
+
+
+def test_an_unreadable_card_is_not_charged_when_debit_is_refused(client, invoice):
+    import stripe as _stripe
+
+    with patch("gdx_dispatch.core.payments.refuses_debit_cards", return_value=True), \
+            patch("stripe.PaymentIntent.list", return_value=MagicMock(data=[], has_more=False)), \
+            patch("stripe.PaymentIntent.create") as create, \
+            patch("stripe.PaymentMethod.retrieve", side_effect=_stripe.error.APIConnectionError("down")):
+        resp = client.post(
+            "/api/payments/create-intent",
+            json={"invoice_token": TOKEN, "method": "card", "payment_method_id": "pm_x"},
+        )
+    assert resp.status_code == 402
+    assert resp.json()["detail"] == "We couldn't read that card. Please try again."
+    create.assert_not_called()
+
+
+def test_bank_transfer_is_never_asked_about_debit(client, invoice):
+    with patch("gdx_dispatch.core.payments.refuses_debit_cards", return_value=True) as refuse, \
+            patch("stripe.PaymentIntent.create", return_value=_pi(status="requires_payment_method")), \
+            patch("stripe.PaymentMethod.retrieve") as retrieve:
+        resp = client.post("/api/payments/create-intent", json={"invoice_token": TOKEN, "method": "ach"})
+    assert resp.status_code == 200, resp.text
+    refuse.assert_not_called()
+    retrieve.assert_not_called()
+
+
+def test_with_debit_taken_a_us_debit_card_still_pays_fee_free(client, invoice):
+    """The setting ships off: today's behavior, a debit card charged with no fee."""
+    pi = _probe_pi(status="unavailable", maximum=0, pm="pm_debit")
+    with patch("gdx_dispatch.core.payments.refuses_debit_cards", return_value=False), \
+            patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0.029")), \
+            patch("stripe.PaymentIntent.create", return_value=pi) as create, \
+            patch("stripe.PaymentIntent.retrieve", return_value=pi), \
+            patch("stripe.PaymentMethod.retrieve", return_value=_card_from("debit", "US")):
+        resp = client.post(
+            "/api/payments/create-intent",
+            json={"invoice_token": TOKEN, "method": "card", "payment_method_id": "pm_debit"},
+        )
+    assert resp.status_code == 200
+    create.assert_called_once()
+    assert resp.json()["surcharge_cents"] == 0
+
+
+def test_the_pay_page_with_debit_refused_says_so_and_uses_two_steps(client, invoice):
+    with patch("stripe.PaymentIntent.list", return_value=MagicMock(data=[], has_more=False)), \
+            patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0")), \
+            patch("gdx_dispatch.core.payments.refuses_debit_cards", return_value=True):
+        import html as _html
+
+        page = _html.unescape(client.get(f"/pay/{TOKEN}").text)  # "don't" renders as don&#39;t
+    assert 'data-testid="surcharge-notice"' in page
+    assert "We don't accept debit cards." in page
+    assert 'id="card-confirm-form"' in page and ">Continue<" in page
+    assert "const CARD_TWO_STEP = true;" in page
+    assert "Credit / Debit Card" not in page
+    assert "processing fee" not in page.split('data-testid="surcharge-notice"')[1].split("</div>")[0]
+
+
+def test_the_pay_page_with_neither_rule_is_the_one_step_flow(client, invoice):
+    with patch("stripe.PaymentIntent.list", return_value=MagicMock(data=[], has_more=False)), \
+            patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0")), \
+            patch("gdx_dispatch.core.payments.refuses_debit_cards", return_value=False):
+        import html as _html
+
+        page = _html.unescape(client.get(f"/pay/{TOKEN}").text)
+    assert "const CARD_TWO_STEP = false;" in page
+    assert "We don't accept debit cards" not in page
+    assert 'id="card-confirm-form"' not in page
+
+
+def test_refuses_debit_cards_reads_the_settings_row_on_sqlite_too():
+    from gdx_dispatch.core.payments import refuses_debit_cards  # noqa: PLC0415
+    from gdx_dispatch.core.tenant_settings import Base as ControlBase  # noqa: PLC0415
+    from gdx_dispatch.core.tenant_settings import TenantSettings  # noqa: PLC0415
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    ControlBase.metadata.create_all(engine)
+    on = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    off = uuid.UUID("00000000-0000-0000-0000-000000000002")
+    with sessionmaker(bind=engine, autoflush=False)() as db:
+        db.add(TenantSettings(tenant_id=on, refuse_debit_cards=True))
+        db.add(TenantSettings(tenant_id=off))
+        db.commit()
+        assert refuses_debit_cards(db, str(on)) is True
+        assert refuses_debit_cards(db, on.hex) is True
+        assert refuses_debit_cards(db, str(off)) is False, "ships off"
+        assert refuses_debit_cards(db, str(uuid.uuid4())) is False, "no row: take the card"
+        assert refuses_debit_cards(db, "not-a-uuid") is False
+    engine.dispose()
+
+
+def test_the_pay_link_email_says_debit_is_refused_when_it_is(db_session):
+    from gdx_dispatch.core.payments import card_surcharge_notice
+
+    with patch("gdx_dispatch.core.payments.card_surcharge_rate", return_value=_D("0.029")), \
+            patch("gdx_dispatch.core.payments.refuses_debit_cards", return_value=True):
+        assert "We don't accept debit cards." in card_surcharge_notice(db_session, "t")
+
+
+# ---------------------------------------------------------------------------
+# Staff preview (?preview=, core/customer_page_preview.py) — the text dialog's
+# "See the page your customer will get".
+# ---------------------------------------------------------------------------
+
+_BROWSER = {"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0 Safari/537.36"}
+
+
+def _customer_views(db):
+    from gdx_dispatch.core.audit import AuditLog
+
+    return db.query(AuditLog).filter(AuditLog.action == "invoice_viewed_by_customer").count()
+
+
+def _get_pay(client, token, **params):
+    with patch("stripe.PaymentIntent.list", return_value=MagicMock(data=[], has_more=False)):
+        return client.get(f"/pay/{token}", params=params, headers=_BROWSER)
+
+
+def test_a_preview_shows_a_draft_with_payment_switched_off_and_records_no_view(client, db_session):
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    draft = _mk_invoice(db_session, token="tok-draft-preview", number="INV-DRAFT-1", status="draft")
+    assert _get_pay(client, "tok-draft-preview").status_code == 404  # the customer rule is unchanged
+
+    resp = _get_pay(client, "tok-draft-preview", preview=mint("invoice", draft.id))
+    assert resp.status_code == 200, resp.text
+    html = resp.text
+    assert 'data-testid="pay-preview-banner"' in html
+    # Both first-step pay buttons are disabled, which also blocks Enter-to-submit.
+    assert re.search(r'id="card-submit"[^>]*\sdisabled', html)
+    assert re.search(r'id="ach-submit"[^>]*\sdisabled', html)
+    # The Stripe script never starts, so nothing on the page can create an
+    # intent — and Stripe.js is not even loaded, so the signed URL stays here.
+    assert "Stripe(STRIPE_KEY)" not in html
+    assert "js.stripe.com" not in html
+    assert _customer_views(db_session) == 0
+
+
+def test_a_preview_of_a_sent_invoice_records_no_view_but_the_customer_still_does(client, db_session, invoice):
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    assert _get_pay(client, TOKEN, preview=mint("invoice", invoice.id)).status_code == 200
+    assert _customer_views(db_session) == 0
+    plain = _get_pay(client, TOKEN)
+    assert plain.status_code == 200
+    assert "pay-preview-banner" not in plain.text
+    assert "Stripe(STRIPE_KEY)" in plain.text
+    assert _customer_views(db_session) == 1
+
+
+def test_a_bad_preview_is_refused_and_never_falls_back_to_a_customer_visit(client, db_session, invoice, other_invoice):
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    expired = mint("invoice", invoice.id, now=0)
+    made_up = _get_pay(client, "no-such-token", preview="garbage")
+    assert made_up.status_code == 404
+    # Staff open this in a browser tab: a page, not a JSON blob.
+    assert made_up.headers["content-type"].startswith("text/html")
+    assert 'data-testid="pay-preview-expired"' in made_up.text
+    for sig in ("garbage", expired, mint("invoice", other_invoice.id), mint("estimate", invoice.id)):
+        resp = _get_pay(client, TOKEN, preview=sig)
+        assert resp.status_code == 404, sig
+        # Byte-identical to the made-up token: a bad preview cannot confirm
+        # that a draft's token is real.
+        assert resp.content == made_up.content, sig
+    assert _customer_views(db_session) == 0
+
+
+def test_a_preview_does_not_resurrect_a_deleted_invoice(client, db_session):
+    from datetime import UTC, datetime
+
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    gone = _mk_invoice(db_session, token="tok-gone", number="INV-GONE")
+    gone.deleted_at = datetime.now(UTC)
+    db_session.commit()
+    assert _get_pay(client, "tok-gone", preview=mint("invoice", gone.id)).status_code == 404
+
+
+def test_a_preview_hides_the_microdeposit_verification_link(client, invoice):
+    """A bank transfer awaiting verification shows the customer a live link to
+    Stripe's verification page. In preview every action is off, that one too."""
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    verifying = {"stage": "verifying", "hosted_verification_url": "https://payments.stripe.com/microdeposit/x"}
+    with patch("gdx_dispatch.core.payments._ach_in_flight", return_value=verifying):
+        plain = _get_pay(client, TOKEN)
+        preview = _get_pay(client, TOKEN, preview=mint("invoice", invoice.id))
+    assert 'data-testid="ach-verifying-link"' in plain.text
+    assert 'data-testid="ach-verifying-link"' not in preview.text
+    assert 'data-testid="pay-preview-banner"' in preview.text

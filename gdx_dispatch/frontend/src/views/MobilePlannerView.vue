@@ -24,8 +24,18 @@
         />
       </header>
 
+      <!-- TODAY — pinned tasks + the day's notes (planner-today-plan) -->
+      <PlannerTodayPanel
+        v-if="activeTab === 'today'"
+        ref="todayPanel"
+        compact
+        @open-task="editTask"
+        @changed="loadTasks"
+        @show-tasks="showOverdueTasks"
+      />
+
       <!-- TASKS -->
-      <template v-if="activeTab === 'tasks'">
+      <template v-else-if="activeTab === 'tasks'">
         <div class="filter-row">
           <SelectButton
             v-model="taskView"
@@ -92,6 +102,18 @@
                   {{ jobLabelFor(task.job_id) }}
                 </span>
               </div>
+            </button>
+            <button
+              v-if="taskView === 'mine' && task.status !== 'done'"
+              type="button"
+              class="today-toggle"
+              :class="{ on: task.on_today }"
+              :aria-label="task.on_today ? `Remove ${task.title} from Today` : `Add ${task.title} to Today`"
+              :aria-pressed="task.on_today ? 'true' : 'false'"
+              data-test="mp-task-today-toggle"
+              @click="toggleToday(task)"
+            >
+              <i class="pi pi-sun" />
             </button>
           </li>
         </ol>
@@ -326,9 +348,11 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useApiWithToast } from '../composables/useApiWithToast'
+import { useAuthStore } from '../stores/auth'
 import { formatDate, localDateString, parseLocalDateString } from '../composables/useFormatters'
 import { useFormDraft } from '../composables/useFormDraft'
 import CustomerFormDialog from '../components/CustomerFormDialog.vue'
+import PlannerTodayPanel from '../components/PlannerTodayPanel.vue'
 
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
@@ -342,6 +366,7 @@ import Textarea from 'primevue/textarea'
 const api = useApiWithToast()
 
 const TABS = [
+  { label: 'Today', value: 'today' },
   { label: 'Tasks', value: 'tasks' },
   { label: 'Plans', value: 'plans' },
   { label: 'Chat', value: 'messages' },
@@ -360,7 +385,12 @@ const TASK_SORTS = [
   { label: 'Due date', value: 'due_date' },
 ]
 
-const activeTab = ref('tasks')
+const activeTab = ref('today')
+const todayPanel = ref(null)
+// The signed-in user's id, for 'is this task mine' — from the auth store
+// (`gdx_user_id` in sessionStorage, which myId reads, is never written).
+const auth = useAuthStore()
+const myUserId = computed(() => String(auth.user?.id || auth.user?.user_id || auth.user?.sub || ''))
 const myId = ref(sessionStorage.getItem('gdx_user_id') || '')
 
 // Tasks
@@ -578,7 +608,15 @@ async function createTask() {
     const due = taskForm.value.due_date instanceof Date
       ? localDateString(taskForm.value.due_date)
       : taskForm.value.due_date
-    await api.post('/api/planner/tasks', { ...taskForm.value, due_date: due }, { successMessage: 'Task created' })
+    // Today is the creator's own list: a task handed to someone else is
+    // created normally (the server refuses it on Today with a 422).
+    const assignee = taskForm.value.assigned_to
+    const onToday = activeTab.value === 'today' && (!assignee || assignee === myUserId.value)
+    await api.post(
+      '/api/planner/tasks',
+      { ...taskForm.value, due_date: due, today: onToday },
+      { successMessage: onToday ? 'Task added to Today' : 'Task created' },
+    )
     // Clear and empty the form BEFORE closing: @hide flushes whatever the form
     // holds, so closing first would write the just-created task straight back
     // as a draft and hand it to the next "+ New".
@@ -586,6 +624,7 @@ async function createTask() {
     taskForm.value = emptyTaskForm()
     showTaskForm.value = false
     await loadTasks()
+    todayPanel.value?.reload()
   } finally {
     taskSaving.value = false
   }
@@ -598,6 +637,22 @@ async function toggleTask(task) {
   // Done items disappear from active buckets and appear in the Completed tab;
   // reload so the row leaves/enters the visible list immediately.
   await loadTasks()
+}
+
+async function toggleToday(task) {
+  await api.put(
+    `/api/planner/tasks/${task.id}/today`,
+    { on: !task.on_today },
+    { successMessage: task.on_today ? 'Removed from Today' : 'Added to Today' },
+  )
+  await loadTasks()
+}
+
+// "and N more in My Tasks" — the overdue tail the Today suggestions cap.
+function showOverdueTasks() {
+  taskView.value = 'mine'
+  taskSort.value = 'needs_action'
+  activeTab.value = 'tasks'
 }
 
 function editTask(task) {
@@ -667,6 +722,7 @@ async function saveTaskEdits() {
     showTaskDetail.value = false
     selectedTask.value = null
     await loadTasks()
+    todayPanel.value?.reload()
   } finally {
     taskEditSaving.value = false
   }
@@ -730,6 +786,7 @@ watch(activeTab, (tab) => {
 // note appears without a manual refresh.
 function onExternalCapture() {
   if (activeTab.value === 'tasks') loadTasks()
+  // The Today panel listens for the same event itself.
 }
 
 onMounted(() => {
@@ -884,6 +941,24 @@ onUnmounted(() => {
   background: var(--p-content-background, #fff);
   border: 1px solid var(--p-content-border-color, #e5e7eb);
   border-radius: 0.6rem;
+}
+
+/* Today pin toggle — a 44×44 hit area like the checkbox below. */
+.today-toggle {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--p-text-muted-color);
+  cursor: pointer;
+}
+.today-toggle.on {
+  color: var(--p-amber-500, #f59e0b);
 }
 
 /* Tap-target compliance — Apple HIG (44×44 pt). The PrimeVue Checkbox

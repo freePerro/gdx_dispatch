@@ -1523,7 +1523,8 @@
               <Divider />
               <h3>Online card payments</h3>
               <p class="muted">
-                Credit-card surcharge on the customer pay page. Credit cards only — Stripe refuses it on debit — and never on bank transfer (ACH).
+                Credit-card surcharge on the customer pay page. Credit cards only, never bank transfer (ACH). Stripe will not add the fee to a
+                debit card, so a debit card is charged with no fee unless you refuse debit cards below.
                 Leave blank to charge nothing. Visa requires 30 days' written notice to Stripe before the first surcharge; the fee must not exceed your cost of acceptance.
               </p>
               <div class="form-grid" style="display:grid; grid-template-columns:repeat(3,minmax(180px,1fr)); gap:0.75rem;">
@@ -1532,6 +1533,18 @@
                   <InputNumber v-model="billingTermsPct.card_surcharge_pct" :min="0" :max="5" :minFractionDigits="1" :maxFractionDigits="2" suffix="%" data-testid="card-surcharge-pct" />
                 </div>
               </div>
+              <div class="form-field" style="margin-top:0.75rem;">
+                <label style="display:flex; align-items:center; gap:0.5rem;">
+                  <ToggleSwitch v-model="billingTerms.refuse_debit_cards" inputId="refuse-debit-cards" data-testid="refuse-debit-cards-toggle" />
+                  <span>Refuse debit cards on the pay page</span>
+                </label>
+              </div>
+              <p class="muted" style="margin-top:0.25rem;">
+                The pay page tells the customer to use a credit card or bank transfer. Cards issued outside the US are still taken, as the card
+                networks require. The page check stops ordinary customers but is not a hard block, so also add this Stripe Radar block rule, which
+                Stripe itself enforces: Block if :card_funding: = 'debit' and :card_country: = 'US'. That rule covers your whole Stripe account, so if
+                you turn this off later, delete the rule in Stripe too, or debit cards stay blocked.
+              </p>
               <Divider />
               <h3>Interest on overdue balance</h3>
               <p class="muted" style="margin-top:0">
@@ -2438,6 +2451,7 @@ const billingTerms = reactive({
   late_fee_grace_days: 0,
   interest_rate_monthly_percent: null,
   interest_grace_days: 0,
+  refuse_debit_cards: false,
 });
 // UI works in percent (7.38) but the API stores fractions (0.0738).
 const billingTermsPct = reactive({

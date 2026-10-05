@@ -66,6 +66,15 @@ def _close_stale_for_tenant(tenant_id: str) -> dict[str, int]:
     ).isoformat()
     db = SessionLocal()
     try:
+        # Counted by the GDXA-164 containment sweep and deliberately NOT given a
+        # savepoint: this is the FIRST statement on a session this task just
+        # opened, so no caller holds pending work behind it, and a failure jumps
+        # straight to the outer handler without running any later read. The
+        # per-shift UPDATE below is a WRITE, so it wants `db.begin_nested()` and
+        # not `contained_read` (rule 2) — and it already has the right tool, the
+        # `db.rollback()` in its own handler, which un-poisons between shifts so
+        # one bad row cannot fail the rest.
+        #
         # No tenant_id filter, deliberately: single-tenant deployment, one
         # tenant per database, and isolation is the connection (the app-wide
         # three-plane convention). Filtering on the env-derived tenant_id

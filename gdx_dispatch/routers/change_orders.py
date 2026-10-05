@@ -19,7 +19,7 @@ from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text, Uuid, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync, resolve_audit_actor, utcnow
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.quantities import recorded_quantity
 from gdx_dispatch.routers.auth import get_current_user
@@ -148,7 +148,24 @@ def _serialize(
         if db is not None:
             try:
                 from gdx_dispatch.modules.tax.service import resolve_rate
-                tax_rate = float(resolve_rate(db, co.customer_id))
+                # GDXA-157: `resolve_rate` reads TaxConfig and the customer's
+                # exempt flag on this session and re-raises, so the degradation
+                # to rate 0 — and the aborted Postgres transaction behind it —
+                # is this frame's.
+                #
+                # Be accurate about the exposure rather than inheriting the
+                # class's blurb: there is NO reachable victim today. Of the six
+                # `_serialize` call sites only `get_change_order` passes `db` at
+                # all, it is a read-only GET, and nothing touches the session
+                # after it returns — so the poison dies with the request. This is
+                # contained because the helper takes a session it does not own
+                # and is the shared serializer for this money surface: the next
+                # caller to hand it a session with staged work (an approve that
+                # wants totals in its response is the obvious one) would inherit
+                # the defect silently, and 25P02 surfaces on an unrelated line
+                # naming an unrelated table.
+                with contained_read(db):
+                    tax_rate = float(resolve_rate(db, co.customer_id))
             except Exception:
                 log.exception("change_order_tax_resolve_failed co=%s", co.id)
         taxable_subtotal = sum(

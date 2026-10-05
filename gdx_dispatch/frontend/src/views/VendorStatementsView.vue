@@ -92,6 +92,112 @@
             </template>
           </p>
 
+          <p
+            v-if="paymentsFor(a) && !paymentsFor(a).senders_configured"
+            class="account-note text-muted"
+            data-testid="payment-senders-unset"
+          >
+            Payments you've sent aren't shown yet.
+            <!-- The settings page is admin-only; a link there is a dead end for
+                 anyone else. -->
+            <template v-if="auth.isAdmin">
+              <router-link to="/settings/integrations/outlook?tab=vendor_bills">
+                Add your supplier's payment-portal sender
+              </router-link>
+              to see each payment beside what the statement applied.
+            </template>
+            <template v-else>
+              An admin can add your supplier's payment-portal sender in
+              Outlook settings to show each payment here.
+            </template>
+          </p>
+
+          <!-- What we SENT, from the processor's confirmation emails — the
+               other side of the "appears to have been paid" line above. -->
+          <p
+            v-if="paymentsFor(a) && paymentsFor(a).payments.length"
+            class="account-change"
+            data-testid="account-payments-sent"
+          >
+            Payments sent: <strong>{{ formatCurrency(paymentsFor(a).sent_total) }}</strong>
+            across {{ paymentsFor(a).payments.length }}
+            payment{{ paymentsFor(a).payments.length === 1 ? '' : 's' }}
+            since {{ formatDate(paymentsFor(a).payments[0].paid_on) }}
+            <span
+              class="derived-flag"
+              v-tooltip="'Read from the payment portal\'s confirmation emails. Each is checked against the bank feed below.'"
+            >(from email)</span>
+
+            <template v-if="paymentsFor(a).after_latest_count">
+              · <strong>{{ formatCurrency(paymentsFor(a).after_latest_total) }}</strong>
+              sent since this statement, not on one yet
+            </template>
+          </p>
+
+          <!-- Tenant-wide: confirmations from a listed sender that are on no
+               card. Shown so a renamed payee can't pass for "nothing sent". -->
+          <p
+            v-if="unclaimedCount(a)"
+            class="account-note mismatch-text"
+            data-testid="payments-unclaimed"
+          >
+            {{ unclaimedCount(a) }} payment confirmation
+            email{{ unclaimedCount(a) === 1 ? '' : 's' }}
+            couldn't be read or matched to a supplier, so
+            {{ unclaimedCount(a) === 1 ? 'it is' : 'they are' }} not counted here.
+          </p>
+
+          <Button
+            v-if="paymentsFor(a) && paymentsFor(a).payments.length"
+            :label="expandedPayments[a.vendor_name] ? 'Hide payments' : `Show ${paymentsFor(a).payments.length} payments`"
+            :icon="expandedPayments[a.vendor_name] ? 'pi pi-chevron-up' : 'pi pi-dollar'"
+            text
+            size="small"
+            :data-testid="`toggle-payments-${a.vendor_name}`"
+            @click="togglePayments(a.vendor_name)"
+          />
+
+          <DataTable
+            v-if="expandedPayments[a.vendor_name] && paymentsFor(a)"
+            :value="[...paymentsFor(a).payments].reverse()"
+            stripedRows
+            responsiveLayout="scroll"
+            class="open-items"
+            data-testid="payments-sent-table"
+          >
+            <Column header="Paid" style="width: 120px">
+              <template #body="{ data }">{{ formatDate(data.paid_on) }}</template>
+            </Column>
+            <Column header="Amount" style="width: 130px">
+              <template #body="{ data }"><strong>{{ formatCurrency(data.amount) }}</strong></template>
+            </Column>
+            <Column header="Paid as">
+              <template #body="{ data }">
+                {{ data.paid_as }}
+                <span
+                  v-if="data.paid_as && data.paid_as.toLowerCase() !== a.vendor_name.toLowerCase()"
+                  class="derived-flag"
+                  v-tooltip="'Confirmed under a different name at the same payment portal. Counted here because the portal merchant is the same.'"
+                >(other name)</span>
+              </template>
+            </Column>
+            <Column header="Bank" style="width: 190px">
+              <template #body="{ data }">
+                <span v-if="data.bank_posted_on" class="paid-some nowrap">
+                  <i class="pi pi-check-circle" aria-hidden="true" /> Cleared {{ formatDate(data.bank_posted_on) }}
+                </span>
+                <span
+                  v-else
+                  class="text-muted"
+                  v-tooltip="'No debit of this exact amount within 7 days in the bank feed. It may not have posted yet, or be older than the feed.'"
+                >No bank match</span>
+              </template>
+            </Column>
+            <Column header="Reference">
+              <template #body="{ data }"><span class="mono small">{{ data.reference }}</span></template>
+            </Column>
+          </DataTable>
+
           <!-- Committed spend: ordered, not yet billed. Shown next to the open
                balance but never added to it — a quote is not a debt. -->
           <p
@@ -326,6 +432,35 @@
         <Column header="Total" style="width: 140px">
           <template #body="{ data }">{{ formatCurrency(data.raw_total) }}</template>
         </Column>
+        <Column header="Paid (sent)" style="width: 140px">
+          <template #body="{ data }">
+            <span v-if="sentFor(data)?.sent_count" :data-testid="`sent-${data.id}`">
+              {{ formatCurrency(sentFor(data).sent_total) }}
+              <span class="text-muted small">({{ sentFor(data).sent_count }})</span>
+            </span>
+            <span v-else class="text-muted">—</span>
+          </template>
+        </Column>
+        <Column header="Applied" style="width: 150px">
+          <template #body="{ data }">
+            <!-- Shown whenever there is something to compare: money applied, OR
+                 money sent that the statement did not apply (the case this
+                 column exists for). -->
+            <template
+              v-if="sentFor(data) && sentFor(data).applied_total != null
+                    && (Number(sentFor(data).applied_total) > 0 || sentFor(data).sent_count > 0)"
+            >
+              {{ formatCurrency(sentFor(data).applied_total) }}
+              <i
+                v-if="Number(sentFor(data).applied_total) !== Number(sentFor(data).sent_total)"
+                class="pi pi-exclamation-triangle mismatch"
+                :data-testid="`mismatch-${data.id}`"
+                v-tooltip="'Doesn\'t match the payments sent before this statement. A credit, a return, a payment made another way, or a payment not yet applied.'"
+              />
+            </template>
+            <span v-else class="text-muted">—</span>
+          </template>
+        </Column>
         <Column header="Status" style="width: 120px">
           <template #body="{ data }">
             <Tag :value="data.status" :severity="statusSeverity(data.status)" />
@@ -381,6 +516,8 @@ const router = useRouter()
 const items = ref([])
 const accounts = ref([])
 const onOrder = ref([])
+const payments = ref([])
+const expandedPayments = ref({})
 const loading = ref(false)
 const error = ref(null)
 const duplicate = ref(null)
@@ -425,6 +562,31 @@ function onOrderFor(account) {
   return all.find((o) => o.vendor_name === account.vendor_name
                       && o.vendor_code === account.vendor_code)
       || all.find((o) => o.vendor_name === account.vendor_name)
+}
+
+// Payments are keyed on the same (name, code) account the card is.
+function paymentsFor(account) {
+  return (payments.value || []).find((p) => p.vendor_name === account.vendor_name
+                                         && p.vendor_code === account.vendor_code)
+}
+
+// Sent/applied for one history row. A re-uploaded twin of a period is not in
+// the account's history, so it shows a dash rather than a second copy.
+function sentFor(statement) {
+  for (const p of payments.value || []) {
+    const row = p.statements.find((r) => r.statement_id === statement.id)
+    if (row) return row
+  }
+  return null
+}
+
+function unclaimedCount(account) {
+  const p = paymentsFor(account)
+  return p ? (p.unreadable_count || 0) + (p.unattributed_count || 0) : 0
+}
+
+function togglePayments(name) {
+  expandedPayments.value = { ...expandedPayments.value, [name]: !expandedPayments.value[name] }
 }
 
 function statusLabel(status) {
@@ -511,14 +673,17 @@ const fetchItems = async () => {
   loading.value = true
   error.value = null
   try {
-    const [statements, accts, orders] = await Promise.all([
+    const [statements, accts, orders, sent] = await Promise.all([
       api.get('/api/vendor-statements'),
       api.get('/api/vendor-statements/accounts'),
       api.get('/api/vendor-statements/on-order'),
+      // Supplementary: a failure here must not blank the statements.
+      api.get('/api/vendor-statements/payments').catch(() => []),
     ])
     items.value = statements || []
     accounts.value = accts || []
     onOrder.value = orders || []
+    payments.value = sent || []
   } catch (err) {
     error.value = err.message || 'Failed to load'
   } finally {
@@ -655,6 +820,9 @@ onMounted(fetchItems)
 .order-line .qty { color: var(--p-text-muted-color); margin-right: 0.35rem; }
 .order-line .spec { color: var(--p-text-color); }
 .paid-some { color: var(--p-green-500, #22c55e); }
+.nowrap { white-space: nowrap; }
+.mismatch-text { color: var(--p-orange-500, #f59e0b); }
+.mismatch { color: var(--p-orange-500, #f59e0b); margin-left: 0.3rem; cursor: help; }
 .carried { font-size: 0.8rem; color: var(--p-orange-500, #f59e0b); }
 .po-ref, .small { font-size: 0.8rem; color: var(--p-text-muted-color); }
 .section-heading { margin: 0.5rem 0 0; font-size: 1rem; font-weight: 600; }

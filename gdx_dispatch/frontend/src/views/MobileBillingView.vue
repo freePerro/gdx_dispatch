@@ -154,9 +154,17 @@
         </div>
         <template #footer>
           <Button v-if="detail && canSend" label="Send" icon="pi pi-send" :loading="actionSaving" @click="sendInvoice" data-test="mb-send" />
+          <Button v-if="detail && smsEnabled && canMarkPaid" label="Text" icon="pi pi-comment" severity="secondary" outlined @click="smsOpen = true" data-test="mb-text" />
           <Button label="Close" severity="secondary" @click="closeDetail" />
         </template>
       </Dialog>
+      <SmsLinkDialog
+        v-if="detail"
+        v-model:visible="smsOpen"
+        :doc-id="String(detail.id)"
+        :base="officeTier ? '/api/invoices' : '/api/mobile/invoices'"
+        @sent="onTexted"
+      />
     </section>
 </template>
 
@@ -164,6 +172,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { recordedQuantity } from '../utils/quantity'
 import { useApi } from '../composables/useApi'
+import { useTenantModules } from '../composables/useTenantModules'
+import SmsLinkDialog from '../components/SmsLinkDialog.vue'
 import { useToast } from 'primevue/usetoast'
 
 import Button from 'primevue/button'
@@ -278,6 +288,15 @@ const paidThisMonth = computed(() => {
     })
     .reduce((sum, inv) => sum + Number(inv.total || 0), 0)
 })
+
+const { isEnabled } = useTenantModules()
+const smsEnabled = computed(() => isEnabled('phone_com'))
+const smsOpen = ref(false)
+
+async function onTexted() {
+  detail.value = await api.get(`/api/invoices/${detail.value.id}`)
+  await fetchInvoices()
+}
 
 const canSend = computed(() => {
   const s = String(detail.value?.status || '').toLowerCase()

@@ -82,7 +82,7 @@ describe('manifest.webmanifest', () => {
   });
 
   it('a share blocked by the office-only gate gets visible feedback, not silence', () => {
-    const gated = bottomNavSrc.match(/if \(!showCapture\.value\) \{([\s\S]*?)\} else \{/);
+    const gated = bottomNavSrc.match(/if \(!showQuickNote\.value\) \{([\s\S]*?)\} else \{/);
     expect(gated, 'gated branch not found in AppBottomNav').toBeTruthy();
     expect(gated[1]).toContain('toast.add');
   });

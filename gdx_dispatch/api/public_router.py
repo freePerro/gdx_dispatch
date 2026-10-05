@@ -232,7 +232,28 @@ def _audit_public_write(
 
 @contextlib.contextmanager
 def _write_errors_as_500(db: Session, route: str) -> Iterator[None]:
-    """Translate a failed write into the opaque 500 — nothing more.
+    """Translate anything raised in the body into the opaque 500 — nothing more.
+
+    Read that first line literally: *anything raised*, not "a failed write". The
+    body is only the pre-commit region of a write, and it is the caller's job to
+    keep it that way — `db.commit()` must be the last statement in the block.
+    A statement left after the commit is still inside this translation, and the
+    500 it produces would name a failure that did not happen: the row is on
+    disk, this wrapper's `db.rollback()` is a no-op on an already-committed
+    transaction, and the consumer retries into a duplicate row with a duplicate
+    `*_created` trail entry (GDXA-145 — three handlers held a `db.refresh()`
+    there). Build the response body off the flushed instance *before* the
+    commit; `id` and `created_at` are populated by the flush on all three ORM
+    models here. `test_every_write_block_ends_at_its_commit` is the guard, and
+    it checks position, not semantics — see its docstring for what it cannot see.
+
+    What this does NOT fix, so that nobody reads the class as closed: these
+    routes have no idempotency key and no unique constraint on what they insert
+    (measured: two identical `POST /api/v1/webhooks` calls produce two endpoints
+    for one URL). A connection that dies *during* the COMMIT is still an
+    ambiguous write the wrapper answers as 500, and any 500 a consumer retries
+    still duplicates the row. Closing that needs an idempotency contract on the
+    public API, which is a design decision and not this helper's job.
 
     Deliberately named for what it does and not for where it is used: all five
     of this file's write handlers wrap their primary write in it, but it audits
@@ -259,9 +280,18 @@ def _write_errors_as_500(db: Session, route: str) -> Iterator[None]:
 
     On the success path this wrapper executes no statement of its own — the
     `db.rollback()` above is the only one, and it runs only on the way to a 500.
-    So the caller still owns `ensure_audit_table(db)` as the first line of its
-    body and its single `db.commit()`, for the reasons `_audit_public_write`
-    gives.
+    So the caller still owns its own `db.commit()` as the LAST statement in its
+    body, for the reasons `_audit_public_write` gives and the reason above.
+    ("Its own", not "its single": on a cold engine `ensure_audit_table` commits
+    the table creation too, so the block can hold two.)
+
+    The four handlers that audit *inside* the block also open it with
+    `ensure_audit_table(db)`. `create_public_landing_lead` does not — it opens on
+    `db.add(ll)`, audits after the block in a best-effort tail, and
+    `log_audit_event_sync` ensures the table itself; so read that as a
+    four-of-five convention, not a rule. Only the commit half is enforced:
+    `test_every_write_block_ends_at_its_commit` never looks at the first
+    statement.
     """
     try:
         yield
@@ -272,6 +302,30 @@ def _write_errors_as_500(db: Session, route: str) -> Iterator[None]:
         with contextlib.suppress(Exception):
             db.rollback()
         raise HTTPException(status_code=500, detail="A database error occurred") from None
+
+
+def _swallow_post_commit_failure(db: Session, what: str, entity_id: str) -> None:
+    """Contain a failed best-effort write that follows a commit.
+
+    Both of `create_public_landing_lead`'s trailing blocks end this way, and the
+    containment is the point: the rollback is suppressed because a rollback on a
+    session that just failed raises again, and out of an `except` block that
+    raise escapes the response the handler already owes for a committed row —
+    measured as a bare "Internal Server Error", with nothing logged (GDXA-145).
+    `_write_errors_as_500` suppresses its own rollback for the same reason.
+
+    Call it from inside the `except` block: `logging.exception` reads the live
+    `sys.exc_info()`, so the traceback is the caller's, not this frame's.
+
+    `what` is a description, not a format string, and deliberately: a caller
+    passing a message with two placeholders and one argument gets no exception
+    and no log line — `logging` prints "--- Logging error ---" to stderr and
+    returns (measured). Owning the format here means the one thing this helper
+    exists to leave behind cannot be lost to a caller's typo.
+    """
+    with contextlib.suppress(Exception):
+        db.rollback()
+    logging.getLogger(__name__).exception("%s for id=%s", what, entity_id)
 
 
 class _PageParams:
@@ -633,20 +687,33 @@ def create_customer(
             # email, phone and the encrypted address stay out of the trail.
             details={"name": customer.name},
         )
-        db.commit()
-        db.refresh(customer)
-
-    return _ok(
-        {
+        # Read the response off the instance while the session is still known
+        # good, and BEFORE the commit. Every column named here is populated by
+        # the flush above (`id` from default=uuid4, `created_at` from
+        # default=utcnow), so none of it needs a re-read — and none of it may
+        # take one: a statement after the commit is inside
+        # `_write_errors_as_500`, so a connection lost in that window would
+        # answer 500 for a customer that exists (GDXA-145). This replaces the
+        # `db.refresh(customer)` that used to sit below the commit.
+        #
+        # "Needs no re-read" is not "identical to one". On SQLite a
+        # `DateTime(timezone=True)` round-trip drops tzinfo, so `created_at`
+        # here serializes as `...+00:00` where the old post-commit refresh
+        # yielded a naive string — and a later GET on this row still returns the
+        # naive form. Postgres round-trips it aware, and prod and demo are
+        # Postgres, so the difference is confined to SQLite (tests, and the
+        # `sqlite:///./app.db` DATABASE_URL fallback). No test pins the format.
+        body = {
             "id": str(customer.id),
             "name": customer.name,
             "email": customer.email,
             "phone": customer.phone,
             "address": customer.address,
             "created_at": customer.created_at.isoformat() if customer.created_at else None,
-        },
-        status_code=201,
-    )
+        }
+        db.commit()  # last statement in the block, by contract
+
+    return _ok(body, status_code=201)
 
 
 # ---------------------------------------------------------------------------
@@ -764,8 +831,20 @@ async def create_public_landing_lead(
     # best-effort block below, and that is deliberate — see `_audit_public_write`.
     with _write_errors_as_500(db, "create_public_landing_lead"):
         db.add(ll)
-        db.commit()
-        db.refresh(ll)
+        db.flush()  # assigns ll.id, which the snapshot below and the trail name
+        # Everything the rest of this handler needs about the lead, read while
+        # the session is still known good. `SessionLocal` leaves
+        # `expire_on_commit` at its default True, so each of these reads would
+        # otherwise be a SELECT after the commit — one of them inside this block
+        # (the `db.refresh(ll)` this replaces), which answered 500 for a lead
+        # that was on disk and invited the visitor's form to submit it twice
+        # (GDXA-145). The two best-effort blocks below are allowed to lose their
+        # own writes; they are not allowed to lose the lead's id.
+        lead_id = str(ll.id)
+        lead_status = ll.status
+        lead_source = ll.source
+        lead_campaign = ll.utm_campaign
+        db.commit()  # last statement in the block, by contract
 
     try:
         from gdx_dispatch.core.audit import log_audit_event_sync  # noqa: PLC0415
@@ -776,15 +855,15 @@ async def create_public_landing_lead(
             user_id=key_prefix or "api_key",
             action="landing_lead_created",
             entity_type="landing_lead",
-            entity_id=str(ll.id),
+            entity_id=lead_id,
             details={
-                "source": ll.source,
+                "source": lead_source,
                 "origin": request.headers.get("origin"),
                 "ip": remote_ip,
                 "turnstile_pass": turnstile_ok,
                 "honeypot_pass": True,
                 "key_prefix": key_prefix,
-                "utm_campaign": ll.utm_campaign,
+                "utm_campaign": lead_campaign,
             },
             request=request,
         )
@@ -793,12 +872,9 @@ async def create_public_landing_lead(
         db.commit()
     except Exception:
         # Audit-log write failure must NOT break the lead insert (which is
-        # the user-facing contract). Log and continue.
-        db.rollback()
-        import logging  # noqa: PLC0415
-        logging.getLogger(__name__).exception(
-            "landing-lead audit write failed for id=%s", ll.id
-        )
+        # the user-facing contract). Roll back, log, continue — and see
+        # `_swallow_post_commit_failure` for why the rollback is suppressed.
+        _swallow_post_commit_failure(db, "landing-lead audit write failed", lead_id)
 
     # In-app notification — user_id=NULL means visible to every user on this
     # tenant (the topbar badge query joins on `OR user_id IS NULL`). The
@@ -815,7 +891,7 @@ async def create_public_landing_lead(
             tenant_id=tenant_id,
             user_id=None,  # broadcast to all users on this tenant
             title="New lead",
-            message=f"{display_name} — {ll.source or 'website'}",
+            message=f"{display_name} — {lead_source or 'website'}",
             category="lead",
             is_read=0,
             created_at=datetime.now(timezone.utc).isoformat(),
@@ -823,15 +899,11 @@ async def create_public_landing_lead(
         db.add(notif)
         db.commit()
     except Exception:
-        db.rollback()
-        import logging  # noqa: PLC0415
-        logging.getLogger(__name__).exception(
-            "landing-lead notification write failed for id=%s", ll.id
-        )
+        _swallow_post_commit_failure(db, "landing-lead notification write failed", lead_id)
 
     return JSONResponse(
         status_code=201,
-        content={"data": {"id": str(ll.id), "status": ll.status}},
+        content={"data": {"id": lead_id, "status": lead_status}},
     )
 
 
@@ -888,19 +960,20 @@ def register_webhook(
                 "secret_set": bool(payload.secret),
             },
         )
-        db.commit()
-        db.refresh(endpoint)
-
-    return _ok(
-        {
+        # Before the commit, off the flushed instance — see `create_customer`
+        # and `_write_errors_as_500`. A 500 for a registration that landed is
+        # the worst of the three: the key holder retries and a second endpoint
+        # delivers every event to the same URL (GDXA-145).
+        body = {
             "id": str(endpoint.id),
             "url": endpoint.url,
             "events": list(endpoint.events or []),
             "active": endpoint.is_active,
             "created_at": endpoint.created_at.isoformat() if endpoint.created_at else None,
-        },
-        status_code=201,
-    )
+        }
+        db.commit()  # last statement in the block, by contract
+
+    return _ok(body, status_code=201)
 
 
 # ---------------------------------------------------------------------------

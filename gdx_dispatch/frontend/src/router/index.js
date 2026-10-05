@@ -4,6 +4,7 @@ import { isTechnician } from '../constants/roles';
 import { getLoginRedirectLocation } from '../lib/auth-urls';
 import { useViewMode } from '../composables/useViewMode';
 import { applyScroll, installScrollRestore, sameViewComponent } from '../lib/scrollRestore';
+import { navigationRemounted } from '../lib/viewRemount';
 
 // Critical views — loaded eagerly
 import LoginView from '../views/LoginView.vue';
@@ -458,7 +459,11 @@ export function createAppRouter() {
       // EstimateView replaces /estimates/new → /estimates/:id after autosaving
       // a draft, and several views strip query params the same way. Scrolling
       // to the top there would yank the user out of the form they are filling.
-      if (!savedPosition && sameViewComponent(to, from)) return false;
+      // A record switch in the same view (/estimates/A -> /estimates/B) IS a
+      // screen change: KeyedRouterView remounted the view, so go to the top.
+      // Ask what actually happened rather than re-deriving it, so the two
+      // can never disagree (the draft flip is kept mounted AND kept in place).
+      if (!savedPosition && sameViewComponent(to, from) && !navigationRemounted(to)) return false;
       applyScroll(to.fullPath, Boolean(savedPosition));
       return false;
     },

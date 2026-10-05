@@ -92,7 +92,8 @@ def test_sync_is_idempotent_and_updates_existing(db):
     job.title = "Install 10x8 — rescheduled"
     db.flush()
 
-    _sync_job_appointment(db, job, "tenant-test", {"sub": "user-1"})
+    # update_job passes the pre-edit date: the sync moves that day's visit.
+    _sync_job_appointment(db, job, "tenant-test", {"sub": "user-1"}, previous_scheduled_at=start)
     db.commit()
 
     active = db.execute(

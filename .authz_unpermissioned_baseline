@@ -29,6 +29,36 @@
 # DELETED, not gated — routers/portal.py:644 records the removal (2026-09-16):
 # nothing called it, and a second card-mint site that could not carry the card
 # surcharge would have breached the networks' surcharge-consistency rule.
+#
+# 370 → 372 (2026-09-28, planner Today tab): PUT /api/planner/tasks/{task_id}/today
+# and PUT /api/planner/today/note. ADDED, deliberately open to any authenticated
+# staff user of the jobs module — like every other /api/planner mutation listed
+# below, and there is no planner permission key to gate on. Each acts only on the
+# caller's own records: the pin refuses a task outside the caller's own set
+# (services/planner_today.py NotYours → 403) and the note is keyed to the
+# caller's user id. See the 2026-09-28 planner Today plan.
+# 372 → 374 (2026-09-28, text an invoice): POST /api/mobile/invoices/{invoice_id}/
+# send-sms and /sms-preview. ADDED, same shape as the /send and /send-receipt
+# lines beside them: a technician holds no invoices permission, so these are
+# authorized in the handler — the invoice must be on the caller's own job
+# (_tech_owned_invoice → 403), office-verified (409), and phone_com enabled.
+# 374 → 376 (2026-09-29, text an estimate): POST /api/mobile/quotes/{estimate_id}/
+# send-sms and /sms-preview. ADDED, same shape as the /accept and /decline
+# lines beside them: techs do not hold estimates.send (docs/tech_mobile.md), so
+# these are authorized in the handler — the quote must sit on a job assigned
+# to the caller via the shared core/job_access gate (_tech_textable_quote →
+# 403; a quote with no job is refused) and phone_com must be enabled.
+# 376 → 380 (2026-09-30, scheduled texts): POST /api/mobile/invoices/{invoice_id}/
+# schedule-sms and /api/mobile/quotes/{estimate_id}/schedule-sms — ADDED, the
+# same handler gates as their /send-sms twins above (_mobile_sms_invoice +
+# office verification; _tech_textable_quote). POST /api/phone-com/messages/
+# schedule and /api/phone-com/scheduled/{scheduled_id}/cancel — ADDED, the same
+# gate as POST /api/phone-com/messages (the phone_com module; any staff user
+# who can reply can reply later, and cancel a text not yet sending). Every
+# scheduled text is re-judged when it fires: the scheduler must still be an
+# active user, and an office invoice/estimate text still needs invoices.send /
+# estimates.send (modules/phone_com/scheduled.py). Plan:
+# docs/design/scheduled-sms-plan.md.
 
 # ── customer portal ───────────────────────────────────────────────────────
 # These authenticate a CUSTOMER, not a tenant user, so no role or permission
@@ -286,6 +316,9 @@ POST /api/messages/mark-all-read
 POST /api/mobile/chat/{message_id}/read
 POST /api/mobile/invoices/{invoice_id}/send
 POST /api/mobile/invoices/{invoice_id}/send-receipt
+POST /api/mobile/invoices/{invoice_id}/send-sms
+POST /api/mobile/invoices/{invoice_id}/schedule-sms
+POST /api/mobile/invoices/{invoice_id}/sms-preview
 POST /api/mobile/jobs/{job_id}/arrived
 POST /api/mobile/jobs/{job_id}/chat
 POST /api/mobile/jobs/{job_id}/claim
@@ -300,6 +333,9 @@ POST /api/mobile/jobs/{job_id}/quote
 POST /api/mobile/location
 POST /api/mobile/quotes/{estimate_id}/accept
 POST /api/mobile/quotes/{estimate_id}/decline
+POST /api/mobile/quotes/{estimate_id}/send-sms
+POST /api/mobile/quotes/{estimate_id}/schedule-sms
+POST /api/mobile/quotes/{estimate_id}/sms-preview
 POST /api/mobile/today/reorder
 POST /api/mobile/voice-note
 POST /api/notifications/send
@@ -328,6 +364,8 @@ POST /api/phone-com/blocked-calls
 POST /api/phone-com/calls/originate
 POST /api/phone-com/calls/{call_id}/mark-heard
 POST /api/phone-com/messages
+POST /api/phone-com/messages/schedule
+POST /api/phone-com/scheduled/{scheduled_id}/cancel
 POST /api/phone-com/messages/threads/{thread_key}/mark-read
 POST /api/planner/plans
 POST /api/planner/tasks
@@ -413,6 +451,8 @@ PUT /api/commissions/rules/{rule_id}
 PUT /api/holding-areas/{area_id}
 PUT /api/integrations/{integration_id}
 PUT /api/pdf-templates/{template_type}
+PUT /api/planner/tasks/{task_id}/today
+PUT /api/planner/today/note
 PUT /api/plugins
 PUT /api/plugins/{path:path}
 PUT /api/qb/schedule

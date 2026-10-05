@@ -106,6 +106,14 @@
                     <span v-if="m.delivery_status"> · {{ m.delivery_status }}</span>
                   </div>
                 </div>
+                <!-- Texts waiting to go to this number (and recent ones that
+                     did not), after the real messages: they are the future. -->
+                <ScheduledTextsList
+                  v-if="!threadLoading && scheduledItems.length"
+                  class="thread-scheduled"
+                  :items="scheduledItems"
+                  @changed="loadScheduled"
+                />
               </div>
 
               <div class="compose-row">
@@ -116,14 +124,39 @@
                   class="compose-input"
                   data-test="pc-compose-body"
                 />
-                <Button
-                  label="Send"
-                  icon="pi pi-send"
-                  :disabled="!composeBody.trim()"
-                  @click="sendReply"
-                  data-test="pc-compose-send"
-                />
+                <div class="compose-actions">
+                  <Button
+                    label="Send"
+                    icon="pi pi-send"
+                    :disabled="!composeBody.trim()"
+                    @click="sendReply"
+                    data-test="pc-compose-send"
+                  />
+                  <Button
+                    label="Later"
+                    icon="pi pi-clock"
+                    severity="secondary"
+                    outlined
+                    :disabled="!composeBody.trim()"
+                    @click="laterOpen = !laterOpen"
+                    data-test="pc-compose-later"
+                  />
+                </div>
               </div>
+              <div
+                v-if="quiet && composeBody.trim() && !laterOpen"
+                class="quiet-hint text-muted"
+                data-test="pc-quiet-hint"
+              >
+                <i class="pi pi-moon" /> It is late — "Later" holds this reply until the morning.
+              </div>
+              <SendLaterPanel
+                v-if="laterOpen"
+                class="compose-later"
+                :busy="scheduling"
+                @schedule="scheduleReply"
+                @cancel="laterOpen = false"
+              />
               <div
                 v-if="composeStatus"
                 :class="['status-line', composeStatus.ok ? 'status-ok' : 'error-banner']"
@@ -151,6 +184,9 @@ import Button from 'primevue/button'
 import Card from 'primevue/card'
 import Textarea from 'primevue/textarea'
 import ProgressSpinner from 'primevue/progressspinner'
+import SendLaterPanel from '../components/SendLaterPanel.vue'
+import ScheduledTextsList from '../components/ScheduledTextsList.vue'
+import { isQuietHours, whenLabel } from '../utils/sendLater'
 
 const api = useApi()
 const smsUnread = useSmsUnreadStore()
@@ -166,6 +202,45 @@ const threadLoading = ref(false)
 const composeBody = ref('')
 const composeStatus = ref(null)
 const markReadLoading = ref(false)
+
+// Send later — the server side is modules/phone_com/scheduled.py.
+const laterOpen = ref(false)
+const scheduling = ref(false)
+const scheduledItems = ref([])
+const quiet = ref(isQuietHours())
+
+const loadScheduled = async () => {
+  const number = selectedThread.value?.other_party_number
+  if (!number) { scheduledItems.value = []; return }
+  try {
+    const r = await api.get(`/api/phone-com/scheduled?to=${encodeURIComponent(number)}`, { suppressErrorToast: true })
+    scheduledItems.value = r.items || []
+  } catch {
+    scheduledItems.value = []
+  }
+}
+
+const scheduleReply = async (at) => {
+  if (!selectedThread.value || !composeBody.value.trim()) return
+  scheduling.value = true
+  composeStatus.value = null
+  try {
+    const r = await api.post('/api/phone-com/messages/schedule', {
+      to: selectedThread.value.other_party_number,
+      body: composeBody.value.trim(),
+      customer_id: selectedThread.value.customer_id || undefined,
+      send_at: at.toISOString(),
+    }, { suppressErrorToast: true })
+    composeStatus.value = { ok: true, message: `Scheduled · sends ${whenLabel(new Date(r.send_at))}` }
+    composeBody.value = ''
+    laterOpen.value = false
+    await loadScheduled()
+  } catch (err) {
+    composeStatus.value = { ok: false, message: err.message || 'Could not schedule the text' }
+  } finally {
+    scheduling.value = false
+  }
+}
 
 // MMS media is auth'd; like the call-audio proxy it can't ride an <img src>
 // header, so fetch each attachment as a blob (Bearer + same-origin cookie)
@@ -230,6 +305,9 @@ const fetchThreads = async () => {
 const openThread = async (thread) => {
   selectedThread.value = thread
   threadMessages.value = []
+  quiet.value = isQuietHours()
+  laterOpen.value = false
+  loadScheduled()
   _revokeMedia()
   threadLoading.value = true
   try {
@@ -295,6 +373,8 @@ const markThreadRead = async () => {
 const closeThread = () => {
   selectedThread.value = null
   threadMessages.value = []
+  scheduledItems.value = []
+  laterOpen.value = false
   composeBody.value = ''
   composeStatus.value = null
   _revokeMedia()
@@ -464,6 +544,23 @@ onUnmounted(() => {
 }
 .compose-input {
   flex: 1;
+}
+.compose-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.compose-later {
+  margin-top: 0.5rem;
+}
+.quiet-hint {
+  margin-top: 0.4rem;
+  font-size: 0.85rem;
+}
+.thread-scheduled {
+  align-self: flex-end;
+  max-width: 80%;
+  width: 100%;
 }
 .status-line {
   margin-top: 0.5rem;

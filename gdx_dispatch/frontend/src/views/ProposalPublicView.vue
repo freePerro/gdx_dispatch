@@ -10,6 +10,15 @@
     <main class="proposal-content">
       <div v-if="loading" class="loading-wrap"><ProgressSpinner /></div>
 
+      <!-- An expired staff preview is a staff dead end, not a customer one:
+           send them back to the dialog that minted it. -->
+      <Card v-else-if="notFound && previewSig" class="state-card" data-testid="proposal-preview-expired">
+        <template #title>This preview has expired</template>
+        <template #content>
+          <p class="meta">Preview links last 30 minutes. Open the text dialog again and use its preview link.</p>
+        </template>
+      </Card>
+
       <!-- Wrong/expired-link 404: friendly dead end, no probe surface. -->
       <Card v-else-if="notFound" class="state-card" data-testid="proposal-not-found">
         <template #title>This link isn't available</template>
@@ -24,6 +33,13 @@
       </Card>
 
       <template v-else-if="data">
+        <!-- Staff preview from the text dialog (?preview=): the page the
+             customer gets, with every action off. The server recorded no
+             customer view for this load. -->
+        <Message v-if="isPreview" severity="info" :closable="false" class="preview-banner" data-testid="proposal-preview-banner">
+          <b>Preview.</b> This is the page your customer will see. Accept, decline and
+          pay are turned off here, and opening it does not count as the customer viewing it.
+        </Message>
         <Card class="estimate-card" data-testid="proposal-card">
           <template #title>
             <div class="card-title-row">
@@ -74,20 +90,55 @@
                 <span class="tier-name">{{ tierLabel(t.tier_name) }}</span>
                 <span class="tier-price">{{ currency(t.total_price) }}</span>
                 <span v-if="t.description" class="meta">{{ t.description }}</span>
-                <ul v-if="t.lines?.length" class="tier-included" :data-testid="`tier-lines-${t.tier_name}`">
-                  <li v-for="(ln, i) in t.lines" :key="i" class="meta">
-                    {{ recordedQuantity(ln.quantity) !== 1 ? `${recordedQuantity(ln.quantity)}× ` : "" }}{{ ln.description }}<template
-                      v-if="ln.line_total != null"> — {{ currency(ln.line_total) }}</template>
-                  </li>
-                </ul>
+                <!-- Categories follow the estimate PDF's template setting
+                     (est.line_category): 'grouped' puts a heading over each
+                     category's items, 'column' prefixes each item with it. -->
+                <div v-if="t.lines?.length" class="tier-included-wrap" :data-testid="`tier-lines-${t.tier_name}`">
+                  <template v-for="(g, gi) in tierLineGroups(t.lines)" :key="gi">
+                    <span v-if="g.category" class="tier-cat-heading" data-testid="tier-category-heading">{{ g.category }}</span>
+                    <ul class="tier-included">
+                      <li v-for="(ln, i) in g.lines" :key="i" class="meta">
+                        <span v-if="catMode === 'column' && ln.category" class="tier-line-cat" data-testid="tier-line-category">{{ ln.category }}: </span>{{
+                          recordedQuantity(ln.quantity) !== 1 ? `${recordedQuantity(ln.quantity)}× ` : "" }}{{ ln.description }}<template
+                          v-if="ln.line_total != null"> — {{ currency(ln.line_total) }}</template>
+                      </li>
+                    </ul>
+                  </template>
+                </div>
                 <span v-if="t.warranty_months" class="meta">{{ t.warranty_months }} month warranty</span>
                 <Tag v-if="est.accepted_tier_id === t.id" value="Selected" severity="success" />
               </button>
             </div>
 
             <template v-else>
-              <DataTable v-if="lines.length" :value="lines" class="lines-table" data-testid="lines-table">
-                <Column field="description" header="Description" />
+              <!-- Category follows the estimate PDF's template setting
+                   (est.line_category), so page and PDF match: 'column' adds a
+                   Category column (on a phone it moves above the description —
+                   a fifth column cannot fit), 'grouped' heads each category's
+                   rows. Uncategorized rows get no heading, as in the PDF. -->
+              <DataTable
+                v-if="lines.length"
+                :value="tableRows"
+                class="lines-table"
+                data-testid="lines-table"
+                :row-group-mode="catMode === 'grouped' ? 'subheader' : undefined"
+                :group-rows-by="catMode === 'grouped' ? '_category' : undefined"
+              >
+                <template v-if="catMode === 'grouped'" #groupheader="{ data: row }">
+                  <span v-if="row._category" class="line-cat-heading" data-testid="line-category-heading">{{ row._category }}</span>
+                  <span v-else class="line-cat-heading-empty" />
+                </template>
+                <!-- PrimeVue's subheader mode wants the grouping field as a column:
+                     it never draws it, but counts it when spanning the heading
+                     row (colspan = columns - 1). Without it the heading stops a
+                     cell short of the table edge. -->
+                <Column v-if="catMode === 'grouped'" field="_category" />
+                <Column v-if="catMode === 'column'" field="category" header="Category" header-class="line-cat-col" body-class="line-cat-col" />
+                <Column header="Description">
+                  <template #body="{ data: row }">
+                    <span v-if="catMode === 'column' && row.category" class="line-cat-inline">{{ row.category }}</span>{{ row.description }}
+                  </template>
+                </Column>
                 <Column field="quantity" header="Qty" style="width: 4.5rem" />
                 <template v-if="!est.hide_line_prices">
                   <Column header="Price" style="width: 7rem">
@@ -132,7 +183,7 @@
                   icon="pi pi-check"
                   severity="success"
                   class="flex-1"
-                  :disabled="needsTierPick || totalsMissing"
+                  :disabled="isPreview || needsTierPick || totalsMissing"
                   :loading="busy"
                   data-testid="accept-btn"
                   @click="confirmOpen = true"
@@ -142,6 +193,7 @@
                   icon="pi pi-times"
                   severity="secondary"
                   outlined
+                  :disabled="isPreview"
                   :loading="busy"
                   data-testid="decline-btn"
                   @click="declineOpen = true"
@@ -175,6 +227,7 @@
                 icon="pi pi-credit-card"
                 severity="success"
                 class="flex-1"
+                :disabled="isPreview"
                 data-testid="pay-deposit-btn"
                 @click="openPayUrl(deposit.pay_url)"
               />
@@ -189,6 +242,7 @@
                 icon="pi pi-credit-card"
                 severity="success"
                 class="flex-1"
+                :disabled="isPreview"
                 :loading="busy"
                 data-testid="pay-deposit-ask-btn"
                 @click="startDepositPay"
@@ -282,11 +336,16 @@ import ProgressSpinner from "primevue/progressspinner";
 import Tag from "primevue/tag";
 import Textarea from "primevue/textarea";
 import { formatDate, formatMoney } from "../composables/useFormatters";
+import { groupLinesByCategory, lineCategoryMode, rowsGroupedByCategory } from "../utils/lineCategories";
 
 const route = useRoute();
 const toast = useToast();
 
 const token = computed(() => String(route.params.token || ""));
+// Signed staff preview (core/customer_page_preview.py), minted by the text
+// dialog. Passed through to the API, which skips the view record and answers
+// with `preview: true`; the page then switches every action off.
+const previewSig = computed(() => (typeof route.query.preview === "string" ? route.query.preview : ""));
 const loading = ref(true);
 const notFound = ref(false);
 const data = ref(null);
@@ -307,9 +366,16 @@ const lightboxOpen = computed({
 });
 
 const est = computed(() => data.value?.estimate || {});
+const isPreview = computed(() => data.value?.preview === true);
 const photos = computed(() => data.value?.photos || []);
 const tiers = computed(() => data.value?.tiers || []);
 const lines = computed(() => data.value?.lines || []);
+// 'off' | 'column' | 'grouped' — the estimate PDF's line-items setting.
+const catMode = computed(() => lineCategoryMode(est.value.line_category));
+const tableRows = computed(() => (catMode.value === "grouped" ? rowsGroupedByCategory(lines.value) : lines.value));
+function tierLineGroups(tierLines) {
+  return catMode.value === "grouped" ? groupLinesByCategory(tierLines) : [{ category: "", lines: tierLines }];
+}
 const totals = computed(() => data.value?.totals || null);
 const deposit = computed(() => data.value?.deposit || null);
 // The ASK: amount we'd like, no invoice behind it yet (2026-08-18).
@@ -351,6 +417,7 @@ function openPayUrl(url) { window.location.assign(url); }
 // the customer actually moves to pay online. Idempotent server-side, so a
 // double click or a re-visit lands on the same invoice.
 async function startDepositPay() {
+  if (isPreview.value) return;
   busy.value = true;
   try {
     const res = await fetch(`/api/proposals/${encodeURIComponent(token.value)}/deposit/pay`, {
@@ -393,7 +460,8 @@ async function load() {
   loading.value = true;
   notFound.value = false;
   try {
-    const res = await fetch(`/api/proposals/${encodeURIComponent(token.value)}`);
+    const qs = previewSig.value ? `?preview=${encodeURIComponent(previewSig.value)}` : "";
+    const res = await fetch(`/api/proposals/${encodeURIComponent(token.value)}${qs}`);
     if (!res.ok) { notFound.value = true; return; }
     data.value = await res.json();
   } catch {
@@ -404,6 +472,7 @@ async function load() {
 }
 
 async function post(action, body) {
+  if (isPreview.value) return null;
   busy.value = true;
   try {
     const res = await fetch(`/api/proposals/${encodeURIComponent(token.value)}/${action}`, {
@@ -455,6 +524,7 @@ onMounted(load);
 </script>
 
 <style scoped>
+.preview-banner { margin-bottom: 1rem; }
 /* PrimeVue v4 --p-* tokens flip with data-theme (portal convention). */
 .proposal-wrapper { min-height: 100vh; background: color-mix(in srgb, var(--p-content-background, #f3f4f6) 96%, var(--p-text-color, #000)); color: var(--p-text-color, #1e293b); }
 .proposal-header { background: var(--p-content-background, #fff); padding: 1rem 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; justify-content: center; border-bottom: 1px solid var(--p-content-border-color, transparent); }
@@ -486,6 +556,14 @@ onMounted(load);
 .tier-name { font-weight: 700; }
 .tier-price { font-size: 1.25rem; font-weight: 700; color: var(--p-primary-color); }
 .tier-included { margin: 0.25rem 0 0; padding-left: 1.1rem; }
+.tier-included-wrap { display: flex; flex-direction: column; align-self: stretch; }
+.tier-cat-heading { margin-top: 0.4rem; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+.tier-line-cat { font-weight: 600; }
+.line-cat-heading { font-weight: 700; }
+/* PrimeVue renders a group-header row for every group, the uncategorized one
+   included; the PDF gives that group no heading, so neither does the page. */
+.lines-table :deep(.p-datatable-row-group-header:has(.line-cat-heading-empty)) { display: none; }
+.line-cat-inline { display: none; }
 .tier-included li { margin-bottom: 0.15rem; }
 .action-row { display: flex; gap: 0.5rem; margin-top: 1rem; }
 .flex-1 { flex: 1; }
@@ -531,6 +609,14 @@ onMounted(load);
   .lines-table :deep(.p-datatable-tbody > tr > td:first-child) { padding-left: 0; }
   .lines-table :deep(.p-datatable-thead > tr > th:last-child),
   .lines-table :deep(.p-datatable-tbody > tr > td:last-child) { padding-right: 0; }
+  /* 'column' mode on a phone: a fifth column would push Total under the cut
+     (see above), so the category moves into the description cell instead. */
+  .lines-table :deep(.line-cat-col) { display: none; }
+  /* The hidden category cell is still :first-child, so the flush-left rule
+     above lands on it; give Description its flush edge back. */
+  .lines-table :deep(.p-datatable-thead > tr > th.line-cat-col + th),
+  .lines-table :deep(.p-datatable-tbody > tr > td.line-cat-col + td) { padding-left: 0; }
+  .line-cat-inline { display: block; font-size: 0.75rem; font-weight: 600; color: var(--p-text-muted-color, #6b7280); }
 
   /* The decision bar rides the bottom of the viewport until the page is
      scrolled far enough for it to sit in its natural place. `sticky` (not

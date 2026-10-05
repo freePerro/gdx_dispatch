@@ -7,7 +7,11 @@
        (docs.stripe.com/payments/ach-direct-debit/accept-a-payment, read 2026-09-16). -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1" />
   <title>Pay Invoice {{ invoice.invoice_number }}</title>
+  {% if not preview %}
+  <!-- Not on a staff preview: nothing there charges, so there is no reason to
+       load a third-party script on a page whose URL carries the signature. -->
   <script src="https://js.stripe.com/v3/"></script>
+  {% endif %}
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -300,6 +304,19 @@
     .alert.success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; }
     .alert.visible { display: block; }
 
+    /* Staff preview banner (?preview=, core/customer_page_preview.py). */
+    .preview-banner {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      color: #1e3a8a;
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 1.25rem;
+      font-size: 0.875rem;
+      line-height: 1.4;
+    }
+    .preview-card-slot { color: #9ca3af; font-size: 0.875rem; }
+
     .secure-note {
       display: flex;
       align-items: center;
@@ -314,6 +331,17 @@
 <body>
 
 <div class="card">
+
+  {% if preview %}
+  <!-- Staff preview: what the customer will see. Every pay button is disabled
+       (which also stops Enter from submitting a form) and the Stripe script
+       below never starts, so nothing here can charge. No customer view was
+       recorded for this load. -->
+  <div class="preview-banner" role="status" data-testid="pay-preview-banner">
+    <strong>Preview.</strong> This is the page your customer will see. Payment is
+    turned off here, and opening it does not count as the customer viewing it.
+  </div>
+  {% endif %}
 
   <!-- Brand -->
   <div class="brand">
@@ -382,7 +410,7 @@
     A bank transfer for this invoice is waiting for you to confirm a small test
     deposit. Stripe emailed you the link; your payment starts once you confirm
     it &mdash; you don't need to pay again.
-    {% if ach_processing.get("hosted_verification_url") %}
+    {% if ach_processing.get("hosted_verification_url") and not preview %}
     <a href="{{ ach_processing.get("hosted_verification_url") }}" target="_blank" rel="noopener" style="display:block;margin-top:0.5rem;" data-testid="ach-verifying-link">Confirm the deposit</a>
     {% endif %}
   </div>
@@ -399,12 +427,14 @@
   <div id="payment-errors" class="alert error" role="alert"></div>
   <div id="payment-success" class="alert success" role="alert"></div>
 
-  {% if surcharge_rate and surcharge_rate > 0 %}
+  {% if card_notice %}
   <!-- Minn. Stat. § 325G.051 subd. 1(a)(2): the surcharge notice "conspicuously
-       posted ... on the checkout page". Credit only — Stripe refuses the fee on
-       debit — and never on bank transfer, which is what makes it avoidable. -->
+       posted ... on the checkout page". Credit only — Stripe will not add the
+       fee to a debit card — and never on bank transfer, which is what makes it
+       avoidable. When the office refuses debit (2026-09-30) it says so here,
+       before the customer types a card. Worded server-side (`_card_notice`). -->
   <div class="fee-notice" data-testid="surcharge-notice">
-    Credit cards carry a {{ surcharge_percent_label }} processing fee. Debit cards and bank transfer (ACH): no fee.
+    {{ card_notice }}
   </div>
   {% endif %}
 
@@ -414,7 +444,7 @@
       <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
       </svg>
-      Credit / Debit Card
+      {% if refuse_debit %}Credit Card{% else %}Credit / Debit Card{% endif %}
     </button>
     <button class="tab-btn" role="tab" data-tab="ach" id="tab-ach" aria-selected="false">
       <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -428,20 +458,21 @@
        collected first so Stripe can say whether it may carry the fee (credit)
        or not (debit), then the fee and the total are shown and the customer
        confirms — Stripe requires the disclosure before confirmation and a way
-       to pick another method. Without the surcharge it is the one step it
-       always was. -->
+       to pick another method. Refusing debit (2026-09-30) uses the same two
+       steps: the server refuses a US debit card at "Continue", before any
+       charge exists. With neither on it is the one step it always was. -->
   <div id="panel-card" class="tab-panel active" role="tabpanel">
     <form id="card-form" data-testid="card-form">
       <div class="element-wrapper" id="card-element-wrapper">
-        <div id="card-element"><!-- Stripe Elements mounts here --></div>
+        <div id="card-element">{% if preview %}<span class="preview-card-slot">Card number · MM / YY · CVC · ZIP</span>{% endif %}<!-- Stripe Elements mounts here --></div>
       </div>
-      <button type="submit" class="btn-pay" id="card-submit" data-testid="card-submit">
+      <button type="submit" class="btn-pay" id="card-submit" data-testid="card-submit"{% if preview %} disabled{% endif %}>
         <span class="spinner"></span>
-        <span class="btn-text">{% if surcharge_rate and surcharge_rate > 0 %}Continue{% else %}Pay ${{ "%.2f"|format(invoice.balance_due) }}{% endif %}</span>
+        <span class="btn-text">{% if card_two_step %}Continue{% else %}Pay ${{ "%.2f"|format(invoice.balance_due) }}{% endif %}</span>
       </button>
     </form>
 
-    {% if surcharge_rate and surcharge_rate > 0 %}
+    {% if card_two_step %}
     <form id="card-confirm-form" data-testid="card-confirm-form" hidden>
       <div class="breakdown" data-testid="card-breakdown">
         <div class="invoice-row"><span id="card-desc">Card</span><span></span></div>
@@ -475,7 +506,7 @@
         <input type="text" id="ach-name" class="form-input" placeholder="Jane Smith" required autocomplete="name" />
       </div>
       <p class="hint">Next, Stripe opens a secure window to link your bank account. Most banks verify instantly; the debit itself takes up to 4 business days to clear.</p>
-      <button type="submit" class="btn-pay" id="ach-submit" data-testid="ach-continue">
+      <button type="submit" class="btn-pay" id="ach-submit" data-testid="ach-continue"{% if preview %} disabled{% endif %}>
         <span class="spinner"></span>
         <span class="btn-text">Link bank account</span>
       </button>
@@ -516,6 +547,25 @@
 
 </div><!-- .card -->
 
+{% if preview %}
+<script>
+  // Staff preview: the payment script below never starts, but the tabs are
+  // part of what the customer sees, so they still switch. Same behaviour as
+  // the tab switching inside the payment script.
+  document.querySelectorAll(".tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tab-btn").forEach(b => {
+        b.classList.remove("active");
+        b.setAttribute("aria-selected", "false");
+      });
+      document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+      btn.classList.add("active");
+      btn.setAttribute("aria-selected", "true");
+      document.getElementById("panel-" + btn.dataset.tab).classList.add("active");
+    });
+  });
+</script>
+{% endif %}
 <script>
   const STRIPE_KEY = "{{ stripe_publishable_key }}";
   // The token already addresses this page (/pay/<token>), so exposing it to
@@ -523,11 +573,12 @@
   // payment calls below. AMOUNT_CENTS is gone on purpose: the server charges
   // the balance due and the client no longer gets a say.
   const INVOICE_TOKEN = "{{ invoice.public_token }}";
-  // Card surcharge (2026-09-16): >0 means the office turned it on; the
-  // server sizes the fee per card, this only drives the two-step display.
-  const SURCHARGE_RATE = {{ (surcharge_rate or 0)|float }};
+  // Two-step card flow: on when the surcharge is on OR the office refuses
+  // debit cards (2026-09-30). Either way the server has to see the card
+  // before it is charged, to size the fee or to refuse a US debit card.
+  const CARD_TWO_STEP = {{ "true" if card_two_step else "false" }};
 
-  {% if invoice.status != "paid" and not ach_processing %}
+  {% if invoice.status != "paid" and not ach_processing and not preview %}
 
   const stripe = Stripe(STRIPE_KEY);
   const elements = stripe.elements();
@@ -674,12 +725,17 @@
   let cardPaymentMethodId = null;
   let cardTotalCents = 0;
   let cardFeeCents = 0;
+  // Whether the server attached the card to the intent (surcharge flow). With
+  // only the debit refusal on it checks the card but does not attach it, and
+  // step 2 then confirms with the card's id (2026-09-30).
+  let cardAttached = true;
 
   function renderCardBreakdown(intent) {
     cardClientSecret = intent.client_secret;
     cardIntentId = intent.payment_intent_id;
     cardTotalCents = intent.amount;
     cardFeeCents = intent.surcharge_cents || 0;
+    cardAttached = intent.payment_method_attached !== false;
     const card = intent.card || {};
     const brand = card.brand ? card.brand.charAt(0).toUpperCase() + card.brand.slice(1) : "Card";
     const funding = card.funding === "debit" ? " debit" : (card.funding === "credit" ? " credit" : "");
@@ -742,7 +798,7 @@
     setLoading(btn, true);
 
     try {
-      if (SURCHARGE_RATE > 0) {
+      if (CARD_TWO_STEP) {
         // Step 1: the card first, so the server can ask Stripe whether it
         // may carry the fee. Nothing is charged here.
         const created = await stripe.createPaymentMethod({ type: "card", card: cardElement });
@@ -767,7 +823,7 @@
     }
   });
 
-  if (SURCHARGE_RATE > 0) {
+  if (CARD_TWO_STEP) {
     // Step 2: the customer has seen the fee and the total; confirm the card
     // already attached to the intent.
     document.getElementById("card-confirm-form").addEventListener("submit", async (e) => {
@@ -796,7 +852,10 @@
           showError("The amount changed since you last looked. Please review the total and confirm again.");
           return;
         }
-        await settleCard(await stripe.confirmCardPayment(cardClientSecret));
+        await settleCard(await stripe.confirmCardPayment(
+          cardClientSecret,
+          cardAttached ? undefined : { payment_method: cardPaymentMethodId },
+        ));
       } catch (err) {
         if (isAlreadySettled(err)) { finishSettled(err.detail); return; }
         showError(err.message || "An unexpected error occurred.");

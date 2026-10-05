@@ -14,6 +14,7 @@
  */
 import { mount, flushPromises } from '@vue/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createPinia, setActivePinia } from 'pinia';
 import PlannerView from '../PlannerView.vue';
 
 vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }));
@@ -92,6 +93,7 @@ async function dismiss(w) {
 const titleInput = (w) => w.find('.dlg input.in');
 
 beforeEach(() => {
+  setActivePinia(createPinia());
   sessionStorage.clear();
   apiGetMock.mockReset().mockResolvedValue({ items: [] });
   apiPostMock.mockReset().mockResolvedValue({ id: 'task_1' });
@@ -169,5 +171,48 @@ describe('PlannerView — New Task draft survives navigation', () => {
     await openNewTask(w);
     expect(selects()[2].props('modelValue')).toBe('job_22222222');
     expect(selects()[3].props('modelValue')).toBe('cus_11111111');
+  });
+});
+
+describe('PlannerView — creating from the Today tab', () => {
+  // COUNTERFACTUAL: compare the assignee to the never-written
+  // sessionStorage `gdx_user_id` (the old `myId`) and the self-assign case
+  // goes red — the task is created off Today.
+  async function createWithAssignee(assignee) {
+    const { useAuthStore } = await import('../../stores/auth');
+    useAuthStore().user = { id: 'me-1', email: 'me@example.com' };
+    const w = mountView();
+    await flushPromises();
+    await openNewTask(w);
+    await titleInput(w).setValue('from Today');
+    const dlg = w.findAllComponents(DialogStub)[0];
+    dlg.findAllComponents({ name: 'Select' })[1].vm.$emit('update:modelValue', assignee);
+    await flushPromises();
+    await w.findAll('.dlg button.pbtn').find((b) => b.text() === 'Create Task').trigger('click');
+    await flushPromises();
+    return apiPostMock.mock.calls.find((c) => c[0] === '/api/planner/tasks')[1];
+  }
+
+  it('a task assigned to yourself lands on Today', async () => {
+    expect((await createWithAssignee('me-1')).today).toBe(true);
+  });
+
+  it('a task assigned to someone else is created normally, off Today', async () => {
+    expect((await createWithAssignee('someone-else')).today).toBe(false);
+  });
+
+  // COUNTERFACTUAL: drop the `activeTab === 'today'` half of onToday and
+  // every unassigned task created from the Tasks tab lands pinned on Today.
+  it('an unassigned task created from the Tasks tab stays off Today', async () => {
+    const w = mountView();
+    await flushPromises();
+    w.vm.activeTab = 'tasks';
+    await flushPromises();
+    await openNewTask(w);
+    await titleInput(w).setValue('from the Tasks tab');
+    await w.findAll('.dlg button.pbtn').find((b) => b.text() === 'Create Task').trigger('click');
+    await flushPromises();
+    const body = apiPostMock.mock.calls.find((c) => c[0] === '/api/planner/tasks')[1];
+    expect(body.today).toBe(false);
   });
 });

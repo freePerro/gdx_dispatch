@@ -172,6 +172,31 @@ def test_a_clean_period_is_sent(client):
     assert send.call_count == 1
 
 
+def test_an_unreadable_break_table_blocks_the_send(client):
+    """GDXA-197. A failed breaks read used to answer "no breaks", so the
+    timesheet netted nothing and was mailed with GROSS hours — every lunch
+    paid. No send gate looks at break minutes, so the read itself must
+    refuse: 503, nothing mailed, nothing recorded as sent — and the refusal
+    audited like the 409 is, or it reads as nobody having tried."""
+    tc, SessionLocal = client
+    _good_shift(SessionLocal)
+    session = SessionLocal()
+    session.execute(text("DROP TABLE timeclock_breaks_router"))
+    session.commit()
+    session.close()
+
+    with patch(SEND_TARGET, return_value=(True, "outlook_graph", None)) as send:
+        r = tc.post(SEND_PATH, json=RANGE)
+
+    assert r.status_code == 503
+    assert send.call_count == 0
+    actions = _audit_actions(SessionLocal)
+    assert all(a[0] != "timesheet_sent" for a in actions)
+    blocked = [a for a in actions if a[0] == "timesheet_send_blocked"]
+    assert len(blocked) == 1
+    assert "hours_unreadable" in str(blocked[0][2])
+
+
 def test_both_files_are_attached(client):
     """A PDF to read and a CSV to key in — and the PDF must really be one."""
     tc, SessionLocal = client

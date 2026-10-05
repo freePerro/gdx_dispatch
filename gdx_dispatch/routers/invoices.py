@@ -9,16 +9,17 @@ from types import SimpleNamespace
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy import text as _text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, resolve_audit_actor
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.invoice_delivery import require_deliverable
+from gdx_dispatch.core.link_sms import SendLinkSmsIn as SendInvoiceSmsIn  # one composer model for every SMS route
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.pay_periods import shop_today_for, shop_today_from_settings
 from gdx_dispatch.core.pricing_provenance import (
@@ -54,6 +55,7 @@ from gdx_dispatch.modules.ledger.service import (
     ledger_posting_enabled,
     transition_invoice_status,
 )
+from gdx_dispatch.modules.phone_com.scheduled import ScheduleLinkSmsIn  # the /schedule-sms composer
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.tasks.stale_intent_sweep import enqueue_stale_intent_sweep
@@ -135,7 +137,13 @@ def _labor_price_was_overridden(line: object, item_id: object, db: Session | Non
     try:
         from gdx_dispatch.models.labor_pricing import LaborPriceItem
 
-        row = db.get(LaborPriceItem, item_id)
+        # SAVEPOINT-wrapped (GDXA-160, child of GDXA-86). This runs while the
+        # caller is COPYING estimate lines onto a new invoice, with those lines
+        # pending in the session; on Postgres a failed lookup here aborted the
+        # transaction and the invoice was lost at a later `commit()`.
+        # `contained_read` re-raises, so the `except` below still returns False.
+        with contained_read(db):
+            row = db.get(LaborPriceItem, item_id)
     except Exception:  # pragma: no cover - defensive
         log.exception("labor_provenance_matrix_lookup_failed")
         return False
@@ -750,6 +758,10 @@ class InvoiceCreateIn(BaseModel):
     # page's "linked estimate" chip was dead for every office-created invoice.
     # This field records where the numbers came from without touching them.
     source_estimate_id: UUID | None = None
+    # "Total-only" PDF display. None = inherit from the estimate this invoice
+    # came from (either field above), else show prices. An explicit value is
+    # the operator's choice on the create screen and wins over the estimate.
+    hide_line_prices: bool | None = None
 
     @model_validator(mode="after")
     def _source_estimate_is_not_the_copy_field(self) -> "InvoiceCreateIn":
@@ -960,7 +972,8 @@ def billing_summary(
     money KPIs the desktop /billing and mobile /mobile/billing render at
     the top of the page:
 
-    - total_outstanding: SUM(balance_due) for non-Paid, non-Draft, non-Void.
+    - total_outstanding: SUM(balance_due) for open positive receivables:
+      non-Paid, non-Draft, non-Void with a positive balance.
       Drafts excluded because they aren't yet receivables (S111 fix).
     - overdue: SUM(balance_due) for invoices past due_date with status
       not in (paid, void, draft).
@@ -968,10 +981,10 @@ def billing_summary(
       calendar month (paid_at >= 1st of month).
     - ready_for_billing: count of completed jobs that have no invoice yet.
 
-    All sums use COALESCE(total_amount, total) to match the legacy data
-    shape across QB-imported and GDX-native rows. The query is a single
-    aggregate over the full table, not a windowed scan — fast even at
-    100k+ invoices.
+    Balance sums use COALESCE(balance_due, total) so legacy rows with a null
+    balance still contribute their invoice total. The query is a single
+    aggregate over the full table, not a windowed scan — fast even at 100k+
+    invoices.
     """
     # Overdue compares due DATES, written on the shop's calendar (#444): use
     # the shop's today. "Paid this month" compares a UTC timestamp, so its
@@ -985,6 +998,7 @@ def billing_summary(
         select(func.coalesce(func.sum(_balance), 0)).where(
             Invoice.deleted_at.is_(None),
             Invoice.status.notin_(("paid", "draft", "void")),
+            _balance > 0,
         )
     ) or 0)
 
@@ -992,7 +1006,7 @@ def billing_summary(
         select(func.coalesce(func.sum(_balance), 0)).where(
             Invoice.deleted_at.is_(None),
             Invoice.status.notin_(("paid", "draft", "void")),
-            Invoice.balance_due > 0,
+            _balance > 0,
             Invoice.due_date.is_not(None),
             Invoice.due_date < today,
         )
@@ -1119,6 +1133,12 @@ def list_invoices(
     # Enrich customer names via Job → Customer lookup
     job_ids = list({str(i["job_id"]) for i in items if i.get("job_id")})
     if job_ids:
+        # Counted by GDXA-160 and deliberately left bare. Same swallowed-read
+        # shape as the wrapped sites, but this is a GET with nothing pending
+        # behind it and NO DB work after the `except` — the list is already
+        # materialised above — so an abort here costs nothing and surfaces
+        # nowhere. Counted rather than skipped, because the sweep rule counts
+        # instances, not consequences.
         try:
             job_rows = db.execute(
                 select(Job.id, Job.customer_id).where(Job.id.in_([_uuid.UUID(j) for j in job_ids]))
@@ -1143,6 +1163,27 @@ def list_invoices(
 
     if status is not None:
         items = [item for item in items if item["effective_status"] == status]
+
+    # "Did the customer look at it?" — the /pay/{token} page (the link in the
+    # invoice email and text) writes an audit row when it is opened
+    # (core/customer_views.py). Surfaced so the Billing list can show it
+    # without opening each invoice's activity timeline. Only a positive is
+    # shown: no row does not prove "not opened" (mailed, manual, bounced, or
+    # sent before views were recorded) — the activity panel makes that call.
+    try:
+        from gdx_dispatch.core.customer_views import customer_view_summary
+
+        views = customer_view_summary(db, action=_INVOICE_VIEW_ACTION, entity_type="invoice")
+    except Exception:
+        logging.getLogger(__name__).exception("list_invoices customer view lookup failed")
+        # A failed statement aborts the Postgres transaction; read-only
+        # handler, nothing pending to lose. The column just goes blank.
+        db.rollback()
+        views = {}
+    for item in items:
+        seen = views.get(str(item["id"]))
+        item["customer_viewed_at"] = seen["last_viewed_at"] if seen else None
+        item["customer_view_count"] = seen["view_count"] if seen else 0
     return items
 
 
@@ -1236,6 +1277,7 @@ def create_invoice(
     # linked to an estimate that never existed — the exact shape the contract
     # calls incoherent for its sibling field. Provenance that cannot be
     # resolved is not provenance.
+    src_estimate: Estimate | None = None
     if payload.source_estimate_id:
         src_estimate = db.execute(
             select(Estimate).where(
@@ -1274,13 +1316,18 @@ def create_invoice(
             customer_id = payload.customer_id or getattr(job, "customer_id", None)
             cust_row = None
             if customer_id:
-                cust_row = db.execute(
-                    _text(
-                        "SELECT pricing_class, payment_terms_days FROM customers "
-                        "WHERE id = :cid"
-                    ),
-                    {"cid": str(customer_id)},
-                ).first()
+                # SAVEPOINT-wrapped (GDXA-160). The only read in this block that
+                # touches the REQUEST's session — `resolve_effective_terms` opens
+                # its own — so it is the only one that can leave the transaction
+                # aborted and cost the invoice this handler goes on to commit.
+                with contained_read(db):
+                    cust_row = db.execute(
+                        _text(
+                            "SELECT pricing_class, payment_terms_days FROM customers "
+                            "WHERE id = :cid"
+                        ),
+                        {"cid": str(customer_id)},
+                    ).first()
             pricing_class = cust_row[0] if cust_row else None
             cust_terms = cust_row[1] if cust_row else None
             # Tenant comes from the auth context, not the job — counter-sale
@@ -1328,7 +1375,25 @@ def create_invoice(
     else:
         try:
             from gdx_dispatch.modules.tax.service import resolve_rate as _resolve_tax
-            candidate = _resolve_tax(db, customer_id_value)
+            # SAVEPOINT-wrapped (GDXA-160). A request-scoped session is not
+            # normally "caller-owned", but this handler COMMITS at the end, so
+            # the swallow below was losing the office's whole new invoice — the
+            # judgement call the parent issue's check 2 asks you to name.
+            # Measured on PG: without this, `commit()` raised 25P02 and zero
+            # rows persisted. `resolve_rate` and `is_customer_exempt` both raise
+            # rather than swallowing, so rule 5 is satisfied.
+            #
+            # Narrow the claim, because the first version of this comment did
+            # not and an audit measured it down: this saves the invoice on the
+            # NO-ESTIMATE path only. On the estimate-copy path the deferred
+            # `_load_tax_labor_flag` below reads the SAME `tax_config` table and
+            # runs AFTER this, so a tax_config failure re-poisons the
+            # transaction and the invoice is lost anyway (measured: 25P02,
+            # 0 rows, with this wrap in place). A wrap helps per call PATH, not
+            # per site; that path is only whole once the deferral is fixed in
+            # `modules/proposals/totals.py`.
+            with contained_read(db):
+                candidate = _resolve_tax(db, customer_id_value)
             if candidate is not None and candidate > 0:
                 resolved_rate = candidate
         except Exception:
@@ -1368,17 +1433,30 @@ def create_invoice(
     # the invoice PDF the customer receives matches the estimate they already
     # saw. Best-effort — a features read must never block invoicing (capture
     # beats presentation), mirroring the zero-price policy contract above.
+    #
+    # Either estimate field counts. The office create screen sends only
+    # `source_estimate_id` (provenance), and keying this on the copy field
+    # alone meant no office-created invoice ever inherited the estimate's
+    # total-only setting. An explicit `hide_line_prices` wins over both.
     invoice_hide_line_prices = False
-    if estimate is not None:
+    # Audited: who decided the display. "company_default" is what
+    # get_features returned, and that call falls back to show-prices on a
+    # read error without telling us, so it can be the fallback in an outage.
+    hide_line_prices_origin = "default"
+    hide_source = estimate if estimate is not None else src_estimate
+    if payload.hide_line_prices is not None:
+        invoice_hide_line_prices = payload.hide_line_prices
+        hide_line_prices_origin = "operator"
+    elif hide_source is not None and hide_source.hide_line_prices is not None:
+        invoice_hide_line_prices = bool(hide_source.hide_line_prices)
+        hide_line_prices_origin = "estimate"
+    elif hide_source is not None:
         try:
-            from gdx_dispatch.modules.estimates_features import (
-                effective_hide_line_prices,
-                get_features,
+            from gdx_dispatch.modules.estimates_features import get_features
+            invoice_hide_line_prices = bool(
+                get_features(str(_["tenant_id"])).hide_line_prices
             )
-            _hide_default = get_features(str(_["tenant_id"])).hide_line_prices
-            invoice_hide_line_prices = effective_hide_line_prices(
-                estimate.hide_line_prices, _hide_default
-            )
+            hide_line_prices_origin = "company_default"
         except Exception:
             log.exception("invoice_create_hide_line_prices_resolve_failed")
             invoice_hide_line_prices = False
@@ -1497,6 +1575,18 @@ def create_invoice(
         # Reuse the estimate's own helpers, not a reimplementation — the whole
         # point is that the two sides agree, and a second copy of the
         # category convention is how they drift apart again.
+        # NOT `contained_read`-wrapped — GDXA-160's fourth rule-5 deferral, same
+        # shape as `closeout_billing.build_closeout_lines` and the two in
+        # `modules/deposits/service.py`. `_load_tax_labor_flag` swallows its own
+        # DB failure and returns cleanly, so a savepoint here would be RELEASEd
+        # on an aborted transaction and raise 25P02 out of the `with`. The
+        # containment belongs in `modules/proposals/totals.py` (estimates-
+        # pricing). This one costs an invoice when it fires, because the handler
+        # commits below — the worst of the four, and the reason it is named
+        # rather than left silent. Rule 5 names a second cure too: a variant of
+        # `contained_read` that always ROLLBACK-TO-SAVEPOINTs instead of
+        # RELEASEing, measured to work on PG 15.17 and 16.14. Two live cures,
+        # not "unfixable" — and this site is why one of them should be built.
         try:
             from gdx_dispatch.modules.proposals.totals import (
                 _is_labor_line,
@@ -1919,6 +2009,10 @@ def create_invoice(
         details={
             "invoice_number": invoice.invoice_number,
             "status": invoice.status,
+            # Total-only display and who decided it: the operator on the
+            # create screen, inherited from the estimate, or the plain default.
+            "hide_line_prices": bool(invoice.hide_line_prices),
+            "hide_line_prices_origin": hide_line_prices_origin,
             # Which estimate this came from, and HOW — "copied" means the
             # server built the lines, "prefilled" means the operator arrived
             # with them and may have edited them before saving. Those are
@@ -2021,6 +2115,19 @@ def get_invoice(
     # — GET /api/customers/{id} 404s on a deleted record.
     payload["customer_deleted"] = False
     if not cn:
+        # SAVEPOINT-wrapped (GDXA-160). No pending work behind this one — it is
+        # a GET — so nothing is lost, but the handler keeps reading afterwards
+        # (the contact enrichment below, at the `select(Customer)` a few dozen
+        # lines on), and on Postgres THAT is what raised: a 500 on the invoice
+        # detail page, naming `customers`, for a failure this `except` says it
+        # already handled.
+        #
+        # Narrower than that sounds: the wraps contain a TRANSIENT failure only
+        # (a timeout, a lock, a cancelled statement). The `select(Customer)`
+        # below re-reads the same `customers` columns unwrapped, so a
+        # persistent fault there — a column missing mid-migration — fails again
+        # on its own and still 500s the page, now naming the right line. A wrap
+        # helps per call path, not per site; see `create_invoice`'s tax read.
         try:
             # The invoice's OWN customer first. `invoices` has no customer_name
             # column — _serialize_invoice's getattr always yields "" — so before
@@ -2029,11 +2136,12 @@ def get_invoice(
             # a customer it could name. Measured 2026-09-24 on the local book:
             # 43 of 415 invoices are in exactly that state.
             if invoice.customer_id:
-                own = db.execute(
-                    select(Customer.name, Customer.deleted_at).where(
-                        Customer.id == invoice.customer_id
-                    )
-                ).first()
+                with contained_read(db):
+                    own = db.execute(
+                        select(Customer.name, Customer.deleted_at).where(
+                            Customer.id == invoice.customer_id
+                        )
+                    ).first()
                 if own and own[0]:
                     payload["customer_name"] = own[0]
                     payload["customer_deleted"] = own[1] is not None
@@ -2044,15 +2152,17 @@ def get_invoice(
             # real name, sourced via the Job. This branch sets the id too, so
             # the pair it writes always describes one customer.
             if not cn and invoice.job_id:
-                row = db.execute(
-                    select(Job.customer_id).where(Job.id == invoice.job_id)
-                ).first()
-                if row and row[0]:
-                    cust = db.execute(
-                        select(Customer.id, Customer.name, Customer.deleted_at).where(
-                            Customer.id == row[0]
-                        )
+                with contained_read(db):
+                    row = db.execute(
+                        select(Job.customer_id).where(Job.id == invoice.job_id)
                     ).first()
+                if row and row[0]:
+                    with contained_read(db):
+                        cust = db.execute(
+                            select(Customer.id, Customer.name, Customer.deleted_at).where(
+                                Customer.id == row[0]
+                            )
+                        ).first()
                     if cust and cust[1]:
                         payload["customer_id"] = str(cust[0])
                         payload["customer_name"] = cust[1]
@@ -2091,6 +2201,346 @@ def get_invoice(
             payload["customer_phone"] = c.phone or ""
             payload["customer_address"] = c.address or ""
     return payload
+
+
+# ── Activity — "who did what, when" on one invoice ──────────────────────
+# The invoice twin of GET /api/estimates/{id}/activity. Customer views of the
+# pay page have been recorded since 2026-07-29 (core/customer_views.py) and
+# nothing on the invoice showed them; the only place they surfaced was the
+# dashboard's last-20 feed, which scrolls them off within hours.
+#
+# Everything recorded against the invoice is shown, except an explicit list.
+# A whitelist hid real history: ops scripts write invoice rows the app code
+# never does (a void-and-replace, a reissue without tax, a settlement
+# write-off with its approval reference — all on prod, 2026-09-30), and a
+# whitelist can only ever know about the writers in this repo. An action with
+# no friendly label below still shows, under a readable form of its name.
+#
+# Payment movements are the exclusion. The page already has Payment History,
+# built from the payments table, and the audit trail cannot stand in for it:
+# an online Stripe payment is audited against the *payment* row, not the
+# invoice, so the trail would show the check the office keyed in and silently
+# omit the card the customer paid by.
+_INVOICE_ACTIVITY_LABELS: dict[str, str] = {
+    "invoice_created": "Created",
+    "mobile_invoice_created": "Created on mobile",
+    "invoice_autodrafted": "Drafted automatically from the job",
+    "deposit_invoice_created": "Deposit invoice created",
+    "invoice_verified": "Verified",
+    "invoice_finalized": "Finalized",
+    # The send rows are written BEFORE the email is attempted (and whether or
+    # not it goes out), so they say "Sent", never "Emailed". What the email
+    # actually did is its own row, from outbound_emails.
+    "invoice_sent": "Sent",
+    "mobile_invoice_sent": "Sent from mobile",
+    # Texts: core/link_sms.send_link records the caller's action on success
+    # and "<entity>_sms_*" on a failed, unconfirmed or half-recorded send.
+    "invoice_sent_sms": "Texted to customer",
+    "mobile_invoice_sent_sms": "Texted to customer from mobile",
+    "invoice_sent_sms_scheduled": "Scheduled text sent to customer",
+    "mobile_invoice_sent_sms_scheduled": "Scheduled text sent to customer (from mobile)",
+    "invoice_sms_failed": "Text failed to send",
+    "invoice_sms_unconfirmed": "Text not confirmed by Phone.com — it may have been delivered",
+    "invoice_sms_sent_unrecorded": "Texted to customer — the invoice could not be updated",
+    "invoice_marked_sent": "Marked sent",
+    "invoice_email_rejected": "Email bounced — the customer did not receive it",
+    "invoice_viewed_by_customer": "Viewed by customer",
+    "invoice_dunning_pause": "Automatic reminders paused",
+    "invoice_dunning_resume": "Automatic reminders resumed",
+    "payment_receipt_sent": "Receipt sent",
+    "mobile_invoice_receipt_sent": "Receipt sent from mobile",
+    "mobile_invoice_receipt_send_failed": "Receipt failed to send from mobile",
+    "collection_updated": "Collections status updated",
+    "credit_memo_issued": "Credit memo issued",
+    "customer_credit_applied": "Customer credit applied",
+    "payment_plan_created": "Payment plan set up",
+    "payment_plan_cancelled": "Payment plan cancelled",
+    "invoice_voided": "Voided",
+    # Money anomalies flagged by core/payments.py. Shown on purpose: they are
+    # warnings about this invoice, not the payment record itself.
+    "payment_exceeds_receivable": "Payment exceeded the balance due — review",
+    "payment_on_voided_invoice": "Payment received on a voided invoice — review",
+    "payment_recovered_from_stripe": "Payment recovered from Stripe",
+    # Written by one-off ops scripts, not by app code — present on prod.
+    "invoice_void_and_replace": "Voided and replaced",
+    "invoice_reissued_without_tax": "Reissued without tax",
+    "settlement_writeoff_executed": "Settlement write-off",
+    "invoice_linked_estimate": "Linked to an estimate",
+}
+# Actions deliberately NOT shown, each with its reason.
+_INVOICE_ACTIVITY_EXCLUDED: dict[str, str] = {
+    "patch_invoice": "field-edit noise",
+    "invoice_email_bounce_ignored_non_document": "detector bookkeeping, not an event on the invoice",
+    **{
+        a: "payment movement — Payment History is the record (online payments are audited on the payment row)"
+        for a in (
+            "payment_recorded", "payment_recorded_after_the_fact", "payment_voided", "payment_intent",
+            "refund_processed", "stripe_partial_refund_received", "stale_payment_intents_canceled",
+            "ach_in_flight_blocked_new_payment", "ach_payment_awaiting_verification",
+            "ach_payment_failed", "ach_payment_processing",
+        )
+    },
+}
+
+
+def _invoice_activity_label(action: str) -> str:
+    """The friendly label, or a readable form of an unlabelled action's name
+    ("invoice.hard_deleted" -> "Invoice hard deleted") — shown, not hidden."""
+    if action in _INVOICE_ACTIVITY_LABELS:
+        return _INVOICE_ACTIVITY_LABELS[action]
+    words = action.replace(".", " ").replace("_", " ").strip()
+    return words[:1].upper() + words[1:] if words else action
+
+
+_INVOICE_VIEW_ACTION = "invoice_viewed_by_customer"
+# Texts whose audit row is written only after Phone.com accepted the send —
+# each carries the /pay link. An unconfirmed text is left out: it may never
+# have arrived. Emails are judged from outbound_emails instead (below).
+_INVOICE_LINK_TEXT_ACTIONS = (
+    "invoice_sent_sms", "mobile_invoice_sent_sms",
+    "invoice_sent_sms_scheduled", "mobile_invoice_sent_sms_scheduled",
+    "invoice_sms_sent_unrecorded",
+)
+_EMAIL_KIND_NOUN = {"document": "Invoice", "receipt": "Receipt", "reminder": "Reminder"}
+# core/customer_views.py began recording views on this day; a link sent
+# before it may well have been opened with nothing written down.
+_INVOICE_VIEWS_RECORDED_SINCE = datetime(2026, 7, 29, tzinfo=UTC)
+# Payment reminders are rows in payment_reminders, not audit rows: the
+# automatic sweep (tasks/invoice_reminders_auto.py) writes the reminder row
+# and no audit row at all, so the table is the only complete record.
+_REMINDER_LABEL = {"sent": "Payment reminder emailed", "skipped": "Payment reminder not sent"}
+
+
+def _invoice_activity_iso(dt: datetime | None) -> str | None:
+    """ISO-8601 with an explicit offset. SQLite hands tz-aware columns back
+    naive; a bare timestamp would be read as browser-local time."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.isoformat()
+
+
+def _reminder_activity_item(r: Any) -> dict[str, object]:
+    notes = str(r.notes or "")
+    channel = str(r.channel or "email")
+    # The system appends its marker after any staff note, so the LAST marker
+    # is the system's verdict; a note that happens to quote one comes first.
+    skipped = notes.rfind("[skipped:") > notes.rfind("[delivered]")
+    if skipped:
+        label = _REMINDER_LABEL["skipped"]
+        reason = notes.rsplit("[skipped:", 1)[1].split("]", 1)[0].strip()
+    elif "[delivered]" in notes:
+        label, reason = _REMINDER_LABEL["sent"], None
+    else:
+        # Only a "[delivered]" marker proves an email went out. Rows without
+        # one are logs: a manual "I called them", or a pre-2026-07-07 row
+        # from before reminders were actually sent (every reminder on prod
+        # is one of those, measured 2026-09-30) — "emailed" would be a lie.
+        label, reason = f"Payment reminder logged ({channel})", None
+    return {
+        "id": f"reminder:{r.id}",
+        "action": "payment_reminder_skipped" if skipped else "payment_reminder",
+        "label": label,
+        "user_id": r.sent_by,
+        "entity_type": "invoice",
+        "entity_id": str(r.invoice_id),
+        "details": {"stage": r.stage, "channel": channel, "skip_reason": reason},
+        "created_at": _invoice_activity_iso(r.sent_at or r.created_at),
+    }
+
+
+def _email_activity_item(e: Any) -> dict[str, object]:
+    """One row per email, stamped when it was sent. The bounce of an invoice
+    email is NOT this row's to tell: the bounce detector writes its own
+    invoice_email_rejected row (and on its subject-match path never stamps
+    bounced_at at all), so this row stays "sent" and the bounce appears once,
+    as the detector's row. A reminder bounce is the exception — the detector
+    writes nothing on the invoice for it — so a bounced reminder email is
+    shown as the bounce. A receipt bounce is recorded nowhere: the detector
+    only looks at sent/overdue invoices and a receipt goes out once paid."""
+    what = f"{_EMAIL_KIND_NOUN[e.kind]} email" if e.kind in _EMAIL_KIND_NOUN else "Email"
+    to = e.to_email or "no address"
+    at = e.created_at
+    if e.status != "sent":
+        action, label = "email_failed", f"{what} not sent"
+    elif e.kind == "reminder" and e.bounced_at is not None:
+        action, label, at = "email_bounced", f"{what} bounced", e.bounced_at
+    else:
+        action, label = "email_sent", f"{what} sent to {to}"
+    return {
+        "id": f"email:{e.id}",
+        "action": action,
+        "label": label,
+        # A person-initiated send carries the user's id in initiator_ref (none
+        # recorded reads "System", not a raw word); any other initiator
+        # (reminder_task, workflow_rule, …) is named by its kind, which
+        # core/audit_labels.SLUG_ACTORS turns into "System — …".
+        "user_id": (e.initiator_ref or "system") if e.initiator_kind == "user" else e.initiator_kind,
+        "entity_type": "invoice",
+        "entity_id": e.entity_id,
+        "details": {"to_email": e.to_email, "skip_reason": e.skip_reason, "kind": e.kind},
+        "created_at": _invoice_activity_iso(at),
+    }
+
+
+@router.get("/{invoice_id}/activity", response_model=None)
+def get_invoice_activity(
+    invoice_id: UUID,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, object]:
+    """Curated trail for one invoice, newest first, plus a customer-view
+    summary the header can show while the panel is collapsed.
+
+    Scoped by the invoice lookup, not by audit_logs.tenant_id: several
+    invoice writers pass tenant_id=None, and one tenant per database means
+    the invoice this connection can see is the boundary (same reasoning as
+    the estimate endpoint).
+    """
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.core.audit_labels import decorate_rows
+    from gdx_dispatch.models.tenant_models import OutboundEmail, PaymentReminder
+
+    invoice = _get_invoice_or_404(invoice_id, db)
+    ensure_audit_table(db)
+    scope = (
+        AuditLog.entity_type == "invoice",
+        AuditLog.entity_id == str(invoice.id),
+        AuditLog.action.notin_(tuple(_INVOICE_ACTIVITY_EXCLUDED)),
+    )
+    audit_rows = db.execute(
+        select(AuditLog)
+        .where(*scope)
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(limit)
+    ).scalars().all()
+    audit_total = int(db.execute(select(func.count()).select_from(AuditLog).where(*scope)).scalar() or 0)
+
+    reminder_rows = db.execute(
+        select(PaymentReminder)
+        .where(PaymentReminder.invoice_id == invoice.id)
+        .order_by(PaymentReminder.created_at.desc())
+        .limit(limit)
+    ).scalars().all()
+    reminder_total = int(
+        db.execute(
+            select(func.count()).select_from(PaymentReminder).where(PaymentReminder.invoice_id == invoice.id)
+        ).scalar() or 0
+    )
+
+    items: list[dict[str, object]] = [
+        {
+            "id": str(r.id),
+            "action": r.action,
+            "label": _invoice_activity_label(r.action),
+            "user_id": r.user_id,
+            "entity_type": r.entity_type,
+            "entity_id": r.entity_id,
+            "details": r.details or {},
+            "created_at": _invoice_activity_iso(r.created_at),
+        }
+        for r in audit_rows
+    ]
+    items.extend(_reminder_activity_item(r) for r in reminder_rows)
+
+    # What each invoice email that reached the mail sender actually did — the
+    # delivery record the send rows cannot be. (A send refused before that —
+    # no customer email, a suppressed duplicate — leaves no email row; the
+    # trail then shows a bare "Sent".) Reminder emails have one owner per
+    # outcome: payment_reminders already says "emailed" or "not sent" (both
+    # reminder writers record a [skipped: …] row on failure), so the only
+    # thing outbound_emails adds for a reminder is that it bounced.
+    email_scope = (
+        OutboundEmail.entity_type == "invoice",
+        OutboundEmail.entity_id == str(invoice.id),
+        or_(
+            OutboundEmail.kind.is_(None),
+            OutboundEmail.kind != "reminder",
+            OutboundEmail.bounced_at.is_not(None),
+        ),
+    )
+    email_rows = db.execute(
+        select(OutboundEmail).where(*email_scope)
+        .order_by(OutboundEmail.created_at.desc()).limit(limit)
+    ).scalars().all()
+    email_total = int(
+        db.execute(select(func.count()).select_from(OutboundEmail).where(*email_scope)).scalar() or 0
+    )
+    items.extend(_email_activity_item(e) for e in email_rows)
+    # ISO strings with an explicit offset sort chronologically only when the
+    # offsets match; every writer here stores UTC, so compare parsed values.
+    items.sort(
+        key=lambda it: datetime.fromisoformat(str(it["created_at"])) if it["created_at"] else datetime.min.replace(tzinfo=UTC),
+        reverse=True,
+    )
+    items = decorate_rows(db, items[:limit])
+
+    view_scope = (
+        AuditLog.entity_type == "invoice",
+        AuditLog.entity_id == str(invoice.id),
+        AuditLog.action == _INVOICE_VIEW_ACTION,
+    )
+    view_count, last_view = db.execute(
+        select(func.count(), func.max(AuditLog.created_at)).where(*view_scope)
+    ).one()
+
+    # When a pay link last reached the customer — the only condition under
+    # which "hasn't opened it" is a true statement. Proven, not inferred: an
+    # email counts only if outbound_emails shows it went out, was not bounced,
+    # and its exact HTML contains this invoice's /pay link (a zero-balance or
+    # unconfigured send carries none); a text counts only on a confirmed send.
+    # A mobile email is not tagged with its invoice in outbound_emails, so it
+    # cannot count — the panel under-claims rather than guess. Nothing before
+    # views were first recorded counts either.
+    #
+    # A bounce voids every email sent before it. The detector's main path
+    # (subject match) writes invoice_email_rejected and never stamps
+    # bounced_at, so bounced_at alone would miss it; an email sent AFTER the
+    # latest bounce — the office re-sent to a fixed address — counts again.
+    link_sends = []
+    if invoice.public_token:
+        last_bounce = db.execute(
+            select(func.max(AuditLog.created_at)).where(
+                AuditLog.entity_type == "invoice",
+                AuditLog.entity_id == str(invoice.id),
+                AuditLog.action == "invoice_email_rejected",
+            )
+        ).scalar()
+        email_proof = [
+            OutboundEmail.entity_type == "invoice",
+            OutboundEmail.entity_id == str(invoice.id),
+            OutboundEmail.status == "sent",
+            OutboundEmail.bounced_at.is_(None),
+            OutboundEmail.body_html.contains(f"/pay/{invoice.public_token}", autoescape=True),
+        ]
+        if last_bounce is not None:
+            email_proof.append(OutboundEmail.created_at > last_bounce)
+        link_sends.append(db.execute(
+            select(func.max(OutboundEmail.created_at)).where(*email_proof)
+        ).scalar())
+    link_sends.append(db.execute(
+        select(func.max(AuditLog.created_at)).where(
+            AuditLog.entity_type == "invoice",
+            AuditLog.entity_id == str(invoice.id),
+            AuditLog.action.in_(_INVOICE_LINK_TEXT_ACTIONS),
+        )
+    ).scalar())
+    stamps = [d if d.tzinfo else d.replace(tzinfo=UTC) for d in link_sends if d is not None]
+    stamps = [d for d in stamps if d >= _INVOICE_VIEWS_RECORDED_SINCE]
+    link_sent_at = _invoice_activity_iso(max(stamps)) if stamps else None
+    return {
+        "items": items,
+        "total": audit_total + reminder_total + email_total,
+        "context": {
+            "customer_views": {
+                "count": int(view_count or 0),
+                "last_at": _invoice_activity_iso(last_view),
+                "link_sent_at": link_sent_at,
+            },
+        },
+    }
 
 
 @router.patch("/{invoice_id}", response_model=None, dependencies=[Depends(require_permission("invoices.write"))])
@@ -2435,6 +2885,9 @@ def _prepare_invoice_email(
         branding=branding,
         intro_html=intro_html,
         is_receipt=_is_paid,
+        # Same flag the PDF reads — the body must not list the prices the
+        # attached PDF hides.
+        hide_prices=bool(getattr(invoice, "hide_line_prices", False)),
     )
     return {
         "customer": customer,
@@ -2696,6 +3149,30 @@ def send_invoice(
     pdf_attached = False
     p = payload or SendInvoiceIn()
     try:
+        # NOT savepoint-wrapped — GDXA-160 counted this site and then REMOVED
+        # its own `db.begin_nested()` here under audit, because the wrap did not
+        # work and added a failure mode of its own.
+        #
+        # The defect is real and measured on PG: `db.commit()` above EXPIRED
+        # `invoice`, and when the email is skipped nothing refreshes it, so
+        # `_serialize_invoice(invoice)` at the end of this route issues an
+        # implicit SELECT on the aborted transaction — the office clicks Send,
+        # the status flip is already committed, and the response is a 500 naming
+        # a table nobody touched.
+        #
+        # Why the savepoint is the wrong tool anyway: this block contains its OWN
+        # swallowing `except` (the PDF-attach block below, around
+        # `_branding_payload` / `_template_config` / `_invoice_payload`, all of
+        # which read `db`). A failure there is swallowed, the block exits CLEAN,
+        # and RELEASE on an aborted transaction raises 25P02 while the
+        # transaction stays dead — `contained_read` rule 5, which applies to
+        # `db.begin_nested()` exactly as much. Measured both ways.
+        # `_prepare_invoice_email` also holds a `db.commit()` (unreachable today
+        # only because `public_token` is minted above), and committing inside an
+        # open SAVEPOINT closes the SessionTransaction.
+        #
+        # Fixing it means containing the INNER swallow first, or refreshing
+        # `invoice` before serializing. Counted, not bodged.
         from gdx_dispatch.core.transactional_email import recently_sent, send_transactional_email
         tid = str(invoice.company_id) if invoice.company_id else None
         _dup_kind = "receipt" if invoice.status == "paid" else "document"
@@ -2797,6 +3274,100 @@ def send_invoice(
     if email_skip_reason:
         payload["email_skip_reason"] = email_skip_reason
     return payload
+
+
+
+
+@router.post(
+    "/{invoice_id}/sms-preview",
+    response_model=None,
+    dependencies=[Depends(require_permission("invoices.send")), Depends(require_module("phone_com"))],
+)
+def invoice_sms_preview(
+    invoice_id: UUID,
+    payload: SendInvoiceSmsIn | None = None,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """What "Text invoice" would send, and to whom — or why it can't. Writes
+    nothing; the body is exactly what /send-sms would send unedited."""
+    from gdx_dispatch.core import invoice_sms
+
+    invoice = _get_invoice_or_404(invoice_id, db)
+    prep = invoice_sms.prepare(db, invoice, to_override=(payload.to if payload else None))
+    return prep
+
+
+@router.post(
+    "/{invoice_id}/send-sms",
+    response_model=None,
+    dependencies=[Depends(require_permission("invoices.send")), Depends(require_module("phone_com"))],
+)
+def send_invoice_sms(
+    invoice_id: UUID,
+    request: Request,
+    payload: SendInvoiceSmsIn | None = None,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Text the customer a link to view and pay the invoice (Phone.com).
+
+    Flips a draft to sent and stamps sent_at / sent_via='sms' once Phone.com
+    accepts the message. Every refusal is a {code, message} 4xx. A definite
+    provider refusal is a 502 with the invoice unchanged; an unconfirmed
+    outcome (timeout / 5xx) is a 504 with the invoice moved to sent but not
+    stamped, so a link that did arrive works. See core/invoice_sms.py."""
+    from gdx_dispatch.core import invoice_sms
+
+    invoice = _get_invoice_or_404(invoice_id, db)
+    p = payload or SendInvoiceSmsIn()
+    result = invoice_sms.send(
+        db,
+        invoice,
+        tenant_id=invoice_sms.tenant_uuid(_, request),
+        actor_id=_actor_id(_),
+        to_override=p.to,
+        body_override=p.body,
+        resend_unconfirmed=p.resend_unconfirmed,
+        request=request,
+    )
+    out = _serialize_invoice(invoice)
+    out.update(result)
+    return out
+
+
+@router.post(
+    "/{invoice_id}/schedule-sms",
+    response_model=None,
+    status_code=201,
+    dependencies=[Depends(require_permission("invoices.send")), Depends(require_module("phone_com"))],
+)
+def schedule_invoice_sms(
+    invoice_id: UUID,
+    request: Request,
+    payload: ScheduleLinkSmsIn,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Text the view-and-pay link later (modules/phone_com/scheduled.py).
+    Refused now for anything /send-sms would refuse; every refusal is made
+    again when it sends, and the default wording — which quotes the amount
+    due — is rebuilt then."""
+    from gdx_dispatch.core import invoice_sms
+    from gdx_dispatch.modules.phone_com import scheduled
+
+    invoice = _get_invoice_or_404(invoice_id, db)
+    return scheduled.schedule_link(
+        db,
+        invoice,
+        kind=scheduled.KIND_INVOICE,
+        prepare=invoice_sms.prepare,
+        payload=payload,
+        audit_action=scheduled.ACTION_INVOICE,
+        tenant_id=invoice_sms.tenant_uuid(_, request),
+        user_id=_actor_id(_),
+        request=request,
+    )
 
 
 @router.post("/{invoice_id}/lines", response_model=None, status_code=201, dependencies=[Depends(require_permission("invoices.write"))])
@@ -3369,10 +3940,31 @@ def record_payment(
     # Sprint 1.0.6 — refresh the customer's rolling-volume cache so the
     # next estimate sees the new payment immediately. Best-effort: never
     # block payment recording on a downstream refresh failure.
+    # SAVEPOINT-wrapped (GDXA-160), and with `db.begin_nested()` rather than
+    # `contained_read` because this is a WRITE — `refresh_cached_volume`
+    # mutates the Customer row and flushes, so the ORM's unit of work has to
+    # participate in the savepoint to know what to un-stage (contained_read's
+    # rule 2). "Never block payment recording on a downstream refresh failure"
+    # was true on SQLite only: on Postgres the failed refresh aborted the
+    # transaction and `db.commit()` on the next line lost the payment, the GL
+    # posting `post_payment_received` had just made, and the audit row — money
+    # captured on a tech's phone, gone, reported as success. Measured on PG 15
+    # under audit: commit raised 25P02, zero rows persisted.
+    #
+    # One thing this does NOT contain, so do not read it as total: rule 3 —
+    # `begin_nested()` flushes at `_take_snapshot`, BEFORE the savepoint exists.
+    # With GL posting off, `post_payment_received` returns without flushing and
+    # `_recalculate_invoice` never does, so `invoice` is dirty here and that
+    # flush is the caller's own work going out uncontained. If IT fails, the
+    # handler below swallows it as `rolling_volume_refresh_failed_post_payment`
+    # and the commit reports `PendingRollbackError` — measured; not data loss,
+    # but a triage trail pointing at the cache refresh for someone else's
+    # defect. Flushing deliberately before this block is the fix if that bites.
     if invoice.customer_id:
         try:
             from gdx_dispatch.services.customer_rolling_volume import refresh_cached_volume
-            refresh_cached_volume(invoice.customer_id, db)
+            with db.begin_nested():
+                refresh_cached_volume(invoice.customer_id, db)
         except Exception:
             log.exception("rolling_volume_refresh_failed_post_payment")
 
@@ -4147,7 +4739,14 @@ def _plan_out(plan, installments, *, invoice=None, db: Session) -> dict[str, obj
         from gdx_dispatch.core.invoice_paid import paid_to_date
 
         try:
-            paid = float(paid_to_date(db, invoice.id))
+            # SAVEPOINT-wrapped (GDXA-160, child of GDXA-86). `paid_to_date`
+            # raises rather than swallowing, so `contained_read` is the right
+            # tool (rule 5). Without it a failed payments SUM left the
+            # transaction aborted and `shop_today_from_settings(db)` on the
+            # very next line — a settings read — died instead, naming a table
+            # that has nothing to do with the failure.
+            with contained_read(db):
+                paid = float(paid_to_date(db, invoice.id))
         except Exception:
             paid = 0.0
     # Shop day, the calendar the installment due dates are set in (#444).

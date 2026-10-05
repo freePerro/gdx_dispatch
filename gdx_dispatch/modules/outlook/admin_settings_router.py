@@ -114,6 +114,8 @@ class OutlookSettingsOut(BaseModel):
     # Senders whose PDF attachments are auto-filed as vendor bills/statements.
     # Empty = the whole vendor-bill intake feature is off.
     vendor_bill_sender_allowlist: list[str] = []
+    # Payment-portal confirmation senders read by Vendor Statements. Empty = off.
+    payment_confirmation_sender_allowlist: list[str] = []
 
 
 class OutlookSettingsPatchIn(BaseModel):
@@ -124,6 +126,7 @@ class OutlookSettingsPatchIn(BaseModel):
     ai_tag_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     visibility_rules: dict[str, Any] | None = None
     vendor_bill_sender_allowlist: list[str] | None = None
+    payment_confirmation_sender_allowlist: list[str] | None = None
 
 
 class OutlookCredentialsOut(BaseModel):
@@ -285,6 +288,9 @@ def get_settings(
         vendor_bill_sender_allowlist=normalize_allowlist(
             row.vendor_bill_sender_allowlist
         ),
+        payment_confirmation_sender_allowlist=normalize_allowlist(
+            row.payment_confirmation_sender_allowlist
+        ),
     )
 
 
@@ -304,6 +310,11 @@ def patch_settings(
     cleaned_allowlist = (
         _clean_allowlist(payload.vendor_bill_sender_allowlist)
         if payload.vendor_bill_sender_allowlist is not None
+        else None
+    )
+    cleaned_payment_senders = (
+        _clean_allowlist(payload.payment_confirmation_sender_allowlist)
+        if payload.payment_confirmation_sender_allowlist is not None
         else None
     )
 
@@ -344,6 +355,11 @@ def patch_settings(
         row.vendor_bill_sender_allowlist = cleaned_allowlist
         before_fields["vendor_bill_sender_allowlist"] = before
         after_fields["vendor_bill_sender_allowlist"] = cleaned_allowlist
+    if cleaned_payment_senders is not None:
+        before = normalize_allowlist(row.payment_confirmation_sender_allowlist)
+        row.payment_confirmation_sender_allowlist = cleaned_payment_senders
+        before_fields["payment_confirmation_sender_allowlist"] = before
+        after_fields["payment_confirmation_sender_allowlist"] = cleaned_payment_senders
 
     tenant_id = _coerce_tenant_uuid(user)
     # Staged BEFORE the commit so the settings change and its trail land

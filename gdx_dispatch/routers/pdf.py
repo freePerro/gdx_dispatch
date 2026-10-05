@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session, selectinload
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.job_photos import resolve_photo_file
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.core.pdf_generator import generate_estimate_pdf, generate_invoice_pdf
+from gdx_dispatch.core.pdf_generator import generate_estimate_pdf, generate_invoice_pdf, line_category_mode
 from gdx_dispatch.models.tenant_models import (
     AppSettings,
     Customer,
@@ -130,6 +130,14 @@ def _template_config(db: Session, template_type: str) -> dict[str, Any] | None:
         "footer_content": row.footer_content or "",
         "blocks": blocks,
     }
+
+
+def line_category_mode_for(db: Session, template_type: str = "estimate") -> str:
+    """'off' | 'column' | 'grouped' — how this tenant's saved PDF template
+    shows line categories, for the customer web pages that must match the
+    PDF. Best-effort like _template_config: no saved template, or one that
+    won't load, is the PDF's own default ('off')."""
+    return line_category_mode(_template_config(db, template_type), template_type)
 
 
 def _estimate_attachments_for_pdf(

@@ -80,12 +80,21 @@ class PhoneComClient:
         delay = min(0.5 * (2**attempt), 30.0) + random.uniform(-0.25, 0.25)  # noqa: S311 — retry jitter, not crypto
         return max(0.01, delay)
 
-    def _request_with_retry(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+    def _request_with_retry(
+        self, method: str, url: str, *, idempotent: bool = True, **kwargs: Any
+    ) -> httpx.Response:
+        """``idempotent=False`` is for a request whose repeat is a second
+        real-world action — a second text, a second ring. It is retried only
+        when Phone.com provably never received it (no connection, pool
+        timeout, 429). A read timeout or a 5xx means it may already have
+        acted, so the error goes to the caller instead of a re-POST: one
+        ReadTimeout used to become six identical texts to a customer."""
         for attempt in range(self.retry_max_attempts + 1):
             try:
                 resp = self._client.request(method, url, **kwargs)
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                if attempt >= self.retry_max_attempts:
+                never_sent = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+                if attempt >= self.retry_max_attempts or (not idempotent and not never_sent):
                     raise
                 log.warning(
                     "phone_com retry attempt=%d/%d %s %s err=%s",
@@ -94,7 +103,7 @@ class PhoneComClient:
                 time.sleep(self._backoff_seconds(attempt))
                 continue
 
-            retryable = resp.status_code == 429 or 500 <= resp.status_code < 600
+            retryable = resp.status_code == 429 or (idempotent and 500 <= resp.status_code < 600)
             if retryable and attempt < self.retry_max_attempts:
                 log.warning(
                     "phone_com retry attempt=%d/%d %s %s status=%d",
@@ -653,7 +662,7 @@ class PhoneComClient:
         payload: dict[str, Any] = {"from": from_number, "to": to_number, "text": body}
         if media_urls:
             payload["media_urls"] = media_urls
-        resp = self._request_with_retry("POST", path, json=payload)
+        resp = self._request_with_retry("POST", path, idempotent=False, json=payload)
         if not resp.is_success:
             raise PhoneComAPIError(
                 f"phone_com {path} {resp.status_code}",
@@ -680,7 +689,7 @@ class PhoneComClient:
         }
         if callee_caller_id:
             payload["callee_caller_id"] = callee_caller_id
-        resp = self._request_with_retry("POST", f"/accounts/{vid}/calls", json=payload)
+        resp = self._request_with_retry("POST", f"/accounts/{vid}/calls", idempotent=False, json=payload)
         if not resp.is_success:
             raise PhoneComAPIError(
                 f"phone_com originate_call {resp.status_code}",

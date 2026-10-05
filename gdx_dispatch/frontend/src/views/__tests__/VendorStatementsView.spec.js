@@ -15,6 +15,11 @@ import ToastService from 'primevue/toastservice';
 import Tooltip from 'primevue/tooltip';
 
 import VendorStatementsView from '../VendorStatementsView.vue';
+import { useAuthStore } from '../../stores/auth';
+
+function _signInAs(role) {
+  useAuthStore().accessToken = `x.${btoa(JSON.stringify({ role }))}.y`;
+}
 
 function mkResponse(body) {
   return {
@@ -77,7 +82,10 @@ const _statement = {
 const globalConfig = {
   plugins: [PrimeVue, ConfirmationService, ToastService],
   directives: { tooltip: Tooltip },
-  stubs: { AppLayout: { template: '<div><slot /></div>' } },
+  stubs: {
+    AppLayout: { template: '<div><slot /></div>' },
+    RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
+  },
 };
 
 function _onOrder(overrides = {}) {
@@ -110,13 +118,39 @@ function _onOrder(overrides = {}) {
   };
 }
 
+function _payments(overrides = {}) {
+  return {
+    vendor_name: 'Example Door Supply',
+    vendor_code: 'ACME01',
+    sent_total: '43000.00',
+    after_latest_total: '11000.00',
+    after_latest_count: 1,
+    senders_configured: true,
+    unreadable_count: 0,
+    unattributed_count: 0,
+    payments: [
+      { paid_on: '2026-06-19', amount: '32000.00', reference: 'TX-1',
+        paid_as: 'Sister Insulation, LLC', bank_posted_on: '2026-06-23' },
+      { paid_on: '2026-07-24', amount: '11000.00', reference: 'TX-2',
+        paid_as: 'Example Door Supply', bank_posted_on: null },
+    ],
+    statements: [
+      { statement_id: 'stmt-1', statement_date: '2026-07-19',
+        sent_total: '32000.00', sent_count: 1, applied_total: '32000.00' },
+    ],
+    ...overrides,
+  };
+}
+
 async function mountWith({
   accounts = [_account()], statements = [_statement], onOrder = [_onOrder()],
+  payments = [_payments()],
 } = {}) {
   const fetchMock = vi.fn()
     .mockResolvedValueOnce(mkResponse(statements))
     .mockResolvedValueOnce(mkResponse(accounts))
-    .mockResolvedValueOnce(mkResponse(onOrder));
+    .mockResolvedValueOnce(mkResponse(onOrder))
+    .mockResolvedValueOnce(mkResponse(payments));
   global.fetch = fetchMock;
   const w = mount(VendorStatementsView, { global: globalConfig });
   await flushPromises();
@@ -405,6 +439,96 @@ describe('VendorStatementsView — account position', () => {
     await flushPromises();
     expect(w.find('[data-testid="suggest-20635854"]').exists()).toBe(false);
     expect(w.text()).toContain('Filed to job');
+  });
+
+  // ── payments sent (from the portal's confirmation emails) ─────────
+  it('shows what was sent beside what the statement applied', async () => {
+    const { w } = await mountWith();
+    expect(w.find('[data-testid="sent-stmt-1"]').text()).toContain('32,000.00');
+    expect(w.find('[data-testid="mismatch-stmt-1"]').exists()).toBe(false);
+    const line = w.find('[data-testid="account-payments-sent"]').text();
+    expect(line).toContain('43,000.00');
+    expect(line).toContain('not on one yet');
+  });
+
+  it('flags a statement whose applied total does not match what was sent', async () => {
+    const p = _payments({ statements: [{ statement_id: 'stmt-1', statement_date: '2026-07-19',
+      sent_total: '0.00', sent_count: 0, applied_total: '19359.00' }] });
+    const { w } = await mountWith({ payments: [p] });
+    expect(w.find('[data-testid="mismatch-stmt-1"]').exists()).toBe(true);
+  });
+
+  it('flags money sent that the statement did not apply at all', async () => {
+    const p = _payments({ statements: [{ statement_id: 'stmt-1', statement_date: '2026-07-19',
+      sent_total: '11000.00', sent_count: 1, applied_total: '0.00' }] });
+    const { w } = await mountWith({ payments: [p] });
+    expect(w.find('[data-testid="mismatch-stmt-1"]').exists()).toBe(true);
+  });
+
+  it('shows no comparison when nothing was sent or applied', async () => {
+    const p = _payments({ statements: [{ statement_id: 'stmt-1', statement_date: '2026-07-19',
+      sent_total: '0.00', sent_count: 0, applied_total: '0.00' }] });
+    const { w } = await mountWith({ payments: [p] });
+    expect(w.find('[data-testid="mismatch-stmt-1"]').exists()).toBe(false);
+  });
+
+  it('says how many confirmations are on no card, unreadable or unmatched', async () => {
+    const { w } = await mountWith({ payments: [_payments({ unreadable_count: 2, unattributed_count: 1 })] });
+    expect(w.find('[data-testid="payments-unclaimed"]').text()).toContain('3 payment confirmation');
+  });
+
+  it('says nothing about unclaimed confirmations when there are none', async () => {
+    const { w } = await mountWith();
+    expect(w.find('[data-testid="payments-unclaimed"]').exists()).toBe(false);
+  });
+
+  it('lists each payment with its bank status and the name it was paid under', async () => {
+    const { w } = await mountWith();
+    expect(w.find('[data-testid="payments-sent-table"]').exists()).toBe(false);
+    await w.find('[data-testid="toggle-payments-Example Door Supply"]').trigger('click');
+    await flushPromises();
+    const text = w.find('[data-testid="payments-sent-table"]').text();
+    expect(text).toContain('Cleared');
+    expect(text).toContain('No bank match');
+    expect(text).toContain('(other name)');
+  });
+
+  it('points an admin to the settings page when no payment sender is configured', async () => {
+    _signInAs('admin');
+    const p = _payments({ senders_configured: false, payments: [], sent_total: '0.00',
+      after_latest_total: '0.00', after_latest_count: 0 });
+    const { w } = await mountWith({ payments: [p] });
+    const hint = w.find('[data-testid="payment-senders-unset"]');
+    expect(hint.exists()).toBe(true);
+    expect(hint.find('a').attributes('href')).toBe('/settings/integrations/outlook?tab=vendor_bills');
+    expect(w.find('[data-testid="account-payments-sent"]').exists()).toBe(false);
+  });
+
+  it('tells a non-admin to ask an admin instead of linking to a page they cannot open', async () => {
+    _signInAs('dispatcher');
+    const p = _payments({ senders_configured: false, payments: [] });
+    const { w } = await mountWith({ payments: [p] });
+    const hint = w.find('[data-testid="payment-senders-unset"]');
+    expect(hint.find('a').exists()).toBe(false);
+    expect(hint.text()).toContain('An admin can add');
+  });
+
+  it('does not show the settings hint once senders are configured', async () => {
+    const { w } = await mountWith();
+    expect(w.find('[data-testid="payment-senders-unset"]').exists()).toBe(false);
+  });
+
+  it('still renders the statements when the payments call fails', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mkResponse([_statement]))
+      .mockResolvedValueOnce(mkResponse([_account()]))
+      .mockResolvedValueOnce(mkResponse([]))
+      .mockRejectedValueOnce(new Error('boom'));
+    global.fetch = fetchMock;
+    const w = mount(VendorStatementsView, { global: globalConfig });
+    await flushPromises();
+    expect(w.find('[data-testid="vendor-accounts"]').exists()).toBe(true);
+    expect(w.find('[data-testid="account-payments-sent"]').exists()).toBe(false);
   });
 
   it('renders nothing account-shaped when there are no statements yet', async () => {

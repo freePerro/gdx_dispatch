@@ -65,6 +65,10 @@ BLOCKED_EMPTY = "no_hours"
 #: authenticates as a specific person, so an unattended send needs a
 #: configured sender or it cannot deliver at all — see below.
 BLOCKED_NO_SENDER = "no_sender"
+#: The period's hours (or their breaks) could not be read at all. Raised by
+#: the callers, not by `send_period_timesheet`: they never get a sheet to
+#: hand it. Without breaks the sheet is gross hours, so nothing is mailed.
+BLOCKED_UNREADABLE = "hours_unreadable"
 
 
 @dataclass
