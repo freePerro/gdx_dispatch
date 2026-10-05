@@ -89,6 +89,7 @@
     </tr>
     {% endfor %}
   </table>
+  {% if s.card_notice %}<p>{{ s.card_notice }}</p>{% endif %}
   {% else %}
   <div class="empty">Nothing is unpaid. Thank you.</div>
   {% endif %}
