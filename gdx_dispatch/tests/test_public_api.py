@@ -274,8 +274,14 @@ def client():
     import sys
 
     # Force fresh import of public_router so annotations are evaluated at current state
-    for mod_name in [m for m in sys.modules if m in ("gdx_dispatch.api.public_router", "gdx_dispatch.api")]:
-            del sys.modules[mod_name]
+    # ...and put the originals back on teardown. gdx_dispatch.app bound the
+    # ORIGINAL router at import; leaving the fresh module in sys.modules made
+    # test_router_registration_guard (which matches routes by id()) report
+    # api/public_router.py as unmounted whenever app was imported before this
+    # fixture and the guard ran after it in the same process (CI shard 6, #845).
+    _saved_modules = {m: sys.modules[m] for m in ("gdx_dispatch.api.public_router", "gdx_dispatch.api") if m in sys.modules}
+    for mod_name in _saved_modules:
+        del sys.modules[mod_name]
 
     from fastapi import FastAPI
 
@@ -316,6 +322,12 @@ def client():
         _ak_mod.SessionLocal = _orig_ak_csf  # type: ignore[assignment]
     _single_tenant_patcher.stop()
     _mock.patch.stopall()
+    for mod_name in ("gdx_dispatch.api.public_router", "gdx_dispatch.api"):
+        sys.modules.pop(mod_name, None)
+    sys.modules.update(_saved_modules)
+    if "gdx_dispatch.api" in _saved_modules:
+        import gdx_dispatch as _pkg
+        _pkg.api = _saved_modules["gdx_dispatch.api"]  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
