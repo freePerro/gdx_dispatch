@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import select
+
 from gdx_dispatch.core.mcp_registry import ToolDescriptor, register_tool
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import Invoice
 
 DESCRIPTOR = ToolDescriptor(
@@ -40,20 +42,22 @@ DESCRIPTOR = ToolDescriptor(
 async def handler(principal: Any, db: Any, **kwargs: Any) -> dict[str, Any]:
     """Aggregate unpaid invoices into aging buckets."""
 
-    # Query unpaid, non-deleted invoices
-    # Note: Using standard SQLAlchemy-style filtering as implied by the test mock
-    # The test mock uses result.scalars().all()
-    stmt = (
-        db.execute(
-            db.select(Invoice).where(
-                Invoice.status != "paid",
-                Invoice.deleted_at is None
-            )
-        )
+    # The receivable predicate of the collections aging report
+    # (routers/collections.py::aging_report): not deleted, not draft, not
+    # void, money still owed. The old form called `db.select`, which a
+    # Session does not have, and filtered `Invoice.deleted_at is None`, a
+    # Python False rather than SQL; it also read `amount_due`, which Invoice
+    # does not have (the remainder is `balance_due`). It only ever ran
+    # against the unit test's mock (GDXA-209).
+    stmt = select(Invoice).where(
+        Invoice.deleted_at.is_(None),
+        Invoice.status.notin_(("draft", "void")),
+        Invoice.balance_due > 0,
     )
-    rows = stmt.scalars().all()
+    rows = db.execute(stmt).scalars().all()
 
-    today = datetime.now(timezone.utc).date()
+    # Shop day, the calendar invoice due dates are written in (#444).
+    today = shop_today_from_settings(db)
 
     # Initialize buckets
     buckets = {
@@ -64,13 +68,9 @@ async def handler(principal: Any, db: Any, **kwargs: Any) -> dict[str, Any]:
     }
 
     for row in rows:
-        # row is an Invoice instance
-        due_date = row.due_date
-        # Ensure we are comparing date to date
-        if isinstance(due_date, datetime):
-            due_date = due_date.date()
-
-        days_past_due = (today - due_date).days
+        if not row.due_date:
+            continue
+        days_past_due = (today - row.due_date).days
 
         if days_past_due <= 30:
             b_key = "0-30"
@@ -82,7 +82,7 @@ async def handler(principal: Any, db: Any, **kwargs: Any) -> dict[str, Any]:
             b_key = "90+"
 
         buckets[b_key]["count"] += 1
-        buckets[b_key]["total_due"] += float(row.amount_due)
+        buckets[b_key]["total_due"] += float(row.balance_due)
 
     return {"summary": list(buckets.values())}
 
