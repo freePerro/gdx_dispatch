@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core import pricing_strategies
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.models.pricing_engine import PricingTierSet
@@ -131,16 +131,36 @@ def _virtual_catalog_payload(virtual_id: str, count: int) -> dict[str, object]:
 def _list_virtual_catalogs(db: Session) -> list[dict[str, object]]:
     """Return synthetic CHI catalog entries when the underlying tables exist
     and have rows. Uses raw SQL to avoid ORM-relationship requirements and
-    silently no-ops if the table isn't present in this tenant."""
+    silently no-ops if the table isn't present in this tenant.
+
+    GDXA-157: "silently no-ops if the table isn't present" is the whole point of
+    the guard, and it was only true on SQLite — on Postgres each miss aborted the
+    request's transaction, and the caller (``list_catalogs``) reads again right
+    after. SAVEPOINT per table so the second probe and the caller both survive
+    the first one failing.
+
+    Be honest about how often that fires, because the first version of this note
+    was wrong in the exact way ``contained_read``'s own docstring warns about. It
+    claimed these are raw plugin tables that no model declares, making a
+    plugin-less tenant the normal missing-table case. Not so:
+    ``models/tenant_models.py`` declares ``__tablename__ =
+    "chi_door_catalog"`` on ``TenantBase``, so ``alembic upgrade head`` creates
+    both — and the entrypoint runs that before serving. An empty table answers
+    ``0`` and takes the same branch as a missing one, which is what makes the
+    docstring above read as if absence were routine. So this is cheap insurance
+    on a real mechanism (the window during a migration, a future
+    ``statement_timeout``), not a fix for an observed outage.
+    """
     out: list[dict[str, object]] = []
     for virtual_id, table in (
         (VIRTUAL_CHI_DOORS_ID, "chi_door_catalog"),
         (VIRTUAL_CHI_PARTS_ID, "chi_parts_catalog"),
     ):
         try:
-            count = db.execute(
-                text(f"SELECT count(*) FROM {table} WHERE is_active = true")  # noqa: S608 — table from the hardcoded tuple above; no input
-            ).scalar() or 0
+            with contained_read(db):
+                count = db.execute(
+                    text(f"SELECT count(*) FROM {table} WHERE is_active = true")  # noqa: S608 — table from the hardcoded tuple above; no input
+                ).scalar() or 0
         except Exception:
             count = 0
         if count:
@@ -231,7 +251,15 @@ def _virtual_catalog_items(virtual_id: str, search: str | None,
             price_line,
         )
         try:
-            pricing_settings = hydrate_settings_from_db(db)
+            # GDXA-157: `hydrate_settings_from_db` is a pure read on this
+            # session and raises PricingConfigError only for an UNSEEDED
+            # install — a DB fault sails past that handler into the outer
+            # `except Exception`, which degrades to pricing_status="error" and
+            # then reads the catalog rows below on an aborted transaction.
+            # Inside the inner try so PricingConfigError still lands where it
+            # should (contained_read re-raises whatever it sees).
+            with contained_read(db):
+                pricing_settings = hydrate_settings_from_db(db)
             pricing_customer = CustomerView(pricing_class="retail", margin_override_pct=None)  # type: ignore[arg-type]
             # Sanity check: ensure the (category, retail) tier set exists for this catalog.
             # If admins haven't seeded tiers for "doors" or "parts" yet, the engine
@@ -460,11 +488,18 @@ def _engine_pricer(db, catalog=None, catalogs_by_id=None):
 
             if _D(str(cost)) <= 0:
                 return None
+            # GDXA-157: `_cached_settings`'s read is SAVEPOINT-contained inside
+            # `_cached_settings` itself, NOT here. This closure runs per ROW and a
+            # warm cache emits no SQL, so a savepoint at this line cost 2
+            # statements per row for nothing — measured at 260 statements and
+            # 107 ms on a 130-row page of an unpaginated endpoint. Contained at
+            # the read, it is one savepoint per session.
+            settings = _cached_settings(db)
             res = price_line(
                 cost=_D(str(cost)),
                 pricing_category=(pricing_category or "parts"),
                 customer=CustomerView(pricing_class="retail", margin_override_pct=None),
-                settings=_cached_settings(db),
+                settings=settings,
             )
             return round(float(res.sell), 2)
         except Exception:  # noqa: BLE001 — unconfigured tier is not a 500
@@ -658,10 +693,22 @@ def _retail_for(
                     pricing_category=pricing_category or "parts",
                 )
             except Exception:
-                # _engine_sell swallows PricingConfigError, but not a DB fault
-                # (a missing tier table leaves the session needing a rollback and
-                # the NEXT query fails with an unrelated error). A pricing lookup
-                # must never break a catalog write — unpriced is the safe answer.
+                # GDXA-157 corrected this comment, which had the call chain
+                # wrong in a way that mattered. It claimed `_engine_sell`
+                # swallows PricingConfigError "but not a DB fault"; it swallows
+                # both — its second handler is a bare `except Exception`. So a
+                # DB fault never reaches HERE, and the "NEXT query fails with an
+                # unrelated error" it worried about is real but belongs one frame
+                # down, where the read is: `core/part_pricing.py::_engine_sell`
+                # is SAVEPOINT-contained now.
+                #
+                # Deliberately NOT wrapped in `contained_read` — that would be
+                # rule 5's mistake. A callee that swallows its own failure exits
+                # the block CLEAN, so the RELEASE SAVEPOINT would land on an
+                # already-aborted transaction and raise 25P02 out of the `with`,
+                # somewhere this caller has no handler for. Kept as a belt for
+                # the non-DB failures that CAN arrive (a bad Decimal, an import
+                # error): unpriced is the safe answer for a catalog write.
                 log.warning("catalog: margin lookup failed; leaving item unpriced",
                             exc_info=True)
                 sell = None

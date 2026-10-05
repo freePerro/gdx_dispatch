@@ -38,6 +38,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.core.quantities import recorded_quantity
 
 log = logging.getLogger(__name__)
@@ -105,12 +106,23 @@ def _cached_settings(db: Session):
     set (production has 15). Calling it per part turned a 20-part closeout
     into hundreds of queries on a phone over LTE. The cache lives on
     ``Session.info`` so it dies with the request.
+
+    GDXA-157: the SAVEPOINT lives HERE, inside the cache miss, rather than at the
+    callers that swallow. That placement is the whole point and it was measured,
+    not guessed: this is called per ROW by ``routers/catalog.py``'s pricer, and a
+    ``contained_read`` at that call site cost 2 statements (SAVEPOINT + RELEASE)
+    on every row even though a warm cache emits no SQL at all — 260 extra
+    statements and 107 ms for a 130-row page, on the unpaginated endpoint this
+    cache exists to keep fast. Contained at the read, it happens once per session.
+    ``hydrate_settings_from_db`` re-raises (``PricingConfigError`` for an unseeded
+    install), so every caller keeps its own handler and its own default.
     """
     from gdx_dispatch.services.pricing_engine import hydrate_settings_from_db
 
     cached = db.info.get("_part_pricing_settings")
     if cached is None:
-        cached = hydrate_settings_from_db(db)
+        with contained_read(db):
+            cached = hydrate_settings_from_db(db)
         db.info["_part_pricing_settings"] = cached
     return cached
 
@@ -180,11 +192,30 @@ def _engine_sell(
     if category == "labor":
         return None
     try:
+        # GDXA-157: `_customer_view` READS this session (it resolves the customer,
+        # and their pricing class, from the job), so it is contained here. The
+        # `except Exception` below is what makes that load-bearing: it swallows a
+        # DB fault as well as a config one, so bare, a drifted `jobs` table
+        # returned "office prices it" and left the CLOSEOUT that called it unable
+        # to commit.
+        #
+        # `_cached_settings` is NOT wrapped here — its read carries the savepoint
+        # internally, on the cache miss only. This function is called per PART, so
+        # wrapping a memoized helper at the call site pays for a savepoint on every
+        # part after the first for no read at all. The same goes for
+        # `_customer_view` with neither id: it returns the retail default without
+        # a query, and the catalog import calls this per ROW that way.
+        if job_id is None and customer_id is None:
+            customer = _customer_view(db, job_id=None, customer_id=None)
+        else:
+            with contained_read(db):
+                customer = _customer_view(db, job_id=job_id, customer_id=customer_id)
+        settings = _cached_settings(db)
         result = price_line(
             cost=cost,
             pricing_category=category,
-            customer=_customer_view(db, job_id=job_id, customer_id=customer_id),
-            settings=_cached_settings(db),
+            customer=customer,
+            settings=settings,
         )
         return _money(result.sell)
     except PricingConfigError as exc:
@@ -450,9 +481,17 @@ def resolve_sell_price_with_source(
     the answer; callers that only need a number keep the simpler signature.
     """
     try:
-        return _resolve_sell_price(
-            db, job_id=job_id, sku=sku, part_id=part_id, customer_id=customer_id
-        )
+        # GDXA-157: `_resolve_sell_price` walks up to four lanes with a direct
+        # read each (job quote, inventory, catalog, CHI) and catches nothing of
+        # its own, so every one of those failures is swallowed HERE — on a
+        # session the capture path owns and is about to commit a priced
+        # `job_parts_needed` row on. Its own `_engine_sell` calls swallow, but
+        # they are contained one frame down now, so a clean exit from this block
+        # can only mean a healthy transaction (contained_read rule 5).
+        with contained_read(db):
+            return _resolve_sell_price(
+                db, job_id=job_id, sku=sku, part_id=part_id, customer_id=customer_id
+            )
     except Exception:
         log.exception(
             "part_pricing: resolve failed for sku=%r job=%r — office prices it",
