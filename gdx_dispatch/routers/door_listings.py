@@ -695,6 +695,27 @@ def _has_office(request: Request, db: Session, user: dict[str, Any]) -> bool:
     try:
         cached = getattr(request.state, "user_permissions", None)
         if cached is None:
+            # GDXA-157 looked at containing this and concluded it must NOT be —
+            # recording that, because the AST census flags it and the next person
+            # will reach for `contained_read` here too.
+            #
+            # `_load_user_permissions` (core/modules.py) catches `SQLAlchemyError`
+            # on its role lookup and calls **`db.rollback()`** on the session it
+            # was handed. Two consequences, and the second is the bigger defect:
+            #   1. It swallows its own DB failure, so a `contained_read` block
+            #      around it exits CLEAN and the RELEASE SAVEPOINT lands on an
+            #      aborted transaction — rule 5, strictly worse than not wrapping.
+            #   2. The bare `db.rollback()` discards the CALLER's pending work
+            #      outright, which no savepoint at this frame can undo. Measured
+            #      on PG 15 while writing GDXA-157's guards: `db.new` 1 → 0 and
+            #      the caller's row never committed, with
+            #      `contained_read_staged_a_write` logged.
+            # So the fix belongs in `core/modules.py` — a savepoint instead of a
+            # session-wide rollback, the same call `core/audit.py`'s
+            # `audit_best_effort` documents at its point (3). That file is
+            # platform-core's. Pinned as a known limit by
+            # `test_pg_permission_gate_still_loses_the_callers_row` so it is a
+            # recorded boundary rather than a gap.
             cached = _load_user_permissions(db, request, _resolve_request_user(request))
             request.state.user_permissions = cached
         perms = set(cached or [])

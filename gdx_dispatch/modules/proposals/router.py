@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core import customer_page_preview, estimate_sms
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor, utcnow
 from gdx_dispatch.core.customer_views import record_customer_view
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.office_notifications import notify_estimate_decision
 from gdx_dispatch.core.permissions import is_dispatch_manager
@@ -274,11 +274,29 @@ def _serialize_public_estimate(est: Estimate, db: Session, request: Request | No
     # auth-gated despite the module name, so the public payload carries the
     # two safe identity fields itself. Best-effort: a missing settings row
     # (fresh install, unit fixtures) degrades to a nameless header.
+    # GDXA-157: every swallowed read in this serializer is SAVEPOINT-contained.
+    #
+    # Be accurate about the exposure, because the first version of this note was
+    # wrong and an audit caught it. It claimed the accept tail's `db.refresh(est)`
+    # ran AFTER this returns and so ate the poison. It does not: every
+    # `db.refresh(est)` (two in `public_proposal_accept`, one in
+    # `public_proposal_decline`) precedes its serializer call, and all
+    # six call sites `return` immediately afterwards, with `get_db` closing the
+    # session in its `finally`. So there is NO reachable victim today — the poison
+    # dies with the request.
+    #
+    # Contained anyway, for the same reason as `routers/change_orders.py::_serialize`:
+    # this is the shared projection for a customer-facing surface, it takes a
+    # session it does not own, and the next caller to serialize BEFORE its own
+    # commit (an accept that wants totals in its response is the obvious one)
+    # would inherit the defect silently, surfacing as 25P02 on an unrelated line
+    # naming an unrelated table. Insurance, not a repair.
     company: dict[str, str] = {"name": "", "phone": ""}
     try:
         from gdx_dispatch.models.tenant_models import AppSettings
 
-        settings_obj = db.execute(select(AppSettings).limit(1)).scalar_one_or_none()
+        with contained_read(db):
+            settings_obj = db.execute(select(AppSettings).limit(1)).scalar_one_or_none()
         if settings_obj:
             company = {
                 "name": settings_obj.company_name or "",
@@ -365,7 +383,10 @@ def _serialize_public_estimate(est: Estimate, db: Session, request: Request | No
     # we send out does not show the pictures of the doors"). Best-effort like
     # the company block — a photo that won't read must never 500 the proposal.
     try:
-        body["photos"] = _estimate_public_photos(est, db, tenant_id)
+        # `_estimate_public_photos` reads Documents on this session and does not
+        # catch its own DB failure, so the swallow is here (GDXA-157).
+        with contained_read(db):
+            body["photos"] = _estimate_public_photos(est, db, tenant_id)
     except Exception:
         log.exception("public_proposal_photos_failed estimate=%s", est.id)
         body["photos"] = []
@@ -377,8 +398,23 @@ def _serialize_public_estimate(est: Estimate, db: Session, request: Request | No
     # can be the HIGHEST tier (mobile builder), and any one number would show
     # the best-tier price to a customer picking good.
     if not proposal_mode or est.accepted_tier_id is not None:
+        # GDXA-157, and this one needs its reasoning written down because
+        # `contained_read` rule 5 forbids wrapping a callee that swallows its own
+        # failure: the block would exit CLEAN and RELEASE SAVEPOINT on an
+        # already-aborted transaction, which raises 25P02 out of the `with`.
+        # Legal here, for a reason that is a real coupling and not an accident:
+        # every read `compute_estimate_totals` swallows internally is itself
+        # `contained_read`-wrapped now (modules/proposals/totals.py), so a
+        # swallowed inner read leaves the transaction HEALTHY and the RELEASE is
+        # fine. What this wrap is for is the reads in there that deliberately do
+        # NOT swallow — the accepted-tier subtotal, and the lazy `estimate.lines`
+        # load — which propagate to this `except` and would otherwise abort the
+        # transaction under it. Un-contain totals.py and this wrap turns a
+        # missing total into a 500; test_contained_read_estimates_pricing.py
+        # pins both halves.
         try:
-            t = compute_estimate_totals(est, db)
+            with contained_read(db):
+                t = compute_estimate_totals(est, db)
             body["totals"] = {
                 "subtotal": t["subtotal"],
                 "discount": t["discount"],
@@ -399,14 +435,40 @@ def _serialize_public_estimate(est: Estimate, db: Session, request: Request | No
     #   - otherwise the ASK — the amount we'd like, with NO invoice behind
     #     it until POST /proposals/{token}/deposit/pay mints one.
     if est.status == "accepted":
+        # GDXA-157, and the rule-5 argument here needed a correction an audit
+        # forced. `deposit_ask_for` carries its OWN bare
+        # `except Exception: return None` around `compute_estimate_totals`
+        # (`modules/deposits/service.py::deposit_ask_for`), so it is a swallowing frame between
+        # this savepoint and the read — precisely the shape rule 5 says makes
+        # wrapping worse than not wrapping, because the block then exits clean and
+        # `RELEASE SAVEPOINT` on an aborted transaction is itself an error
+        # (verified on PG 15.17: both SAVEPOINT and RELEASE return 25P02 there).
+        #
+        # Legal because the hole was closed rather than argued away: every
+        # STATEMENT `compute_estimate_totals` issues is contained, INCLUDING the
+        # two that deliberately do not swallow — the accepted-tier subtotal and the
+        # lazy `estimate.lines` load. That is a real cross-file coupling, so
+        # `test_pg_the_deposit_block_can_be_wrapped_because_totals_is_fully_contained`
+        # asserts it rather than trusting this comment.
+        #
+        # One honest limit, because the stronger claim ("every read") was wrong and
+        # an audit caught it: `SessionLocal` is `expire_on_commit=True`, so on an
+        # expired instance a plain `estimate.total` or `.tax_rate` is ALSO a SELECT,
+        # emitted by the ORM rather than written in that file, and those are not
+        # individually contained. A caller that commits and then hands an expired
+        # estimate through this path can still abort inside `deposit_ask_for`'s
+        # swallow. Containing attribute refreshes is not something a call site can
+        # do; the reachable instance of it on this page — the accept tail's
+        # post-commit `est.total` — is contained at its own site instead.
         try:
-            dep = find_deposit_invoice_for_estimate(db, est.id)
-            if dep is not None and float(dep.balance_due or 0) > 0:
-                body["deposit"] = deposit_summary(dep)
-            elif dep is None:
-                ask = deposit_ask_for(est, db, tenant_id)
-                if ask is not None:
-                    body["deposit_ask"] = {"amount": ask[0], "pct": ask[1]}
+            with contained_read(db):
+                dep = find_deposit_invoice_for_estimate(db, est.id)
+                if dep is not None and float(dep.balance_due or 0) > 0:
+                    body["deposit"] = deposit_summary(dep)
+                elif dep is None:
+                    ask = deposit_ask_for(est, db, tenant_id)
+                    if ask is not None:
+                        body["deposit_ask"] = {"amount": ask[0], "pct": ask[1]}
         except Exception:
             log.exception("public_proposal_deposit_lookup_failed estimate=%s", est.id)
 
@@ -563,12 +625,22 @@ def public_proposal_accept(
     # hears about it until someone happens to reopen the estimate. Rides the
     # existing bell badge; never blocks the accept. The idempotent re-click
     # path returned early above, so this rings exactly once.
+    # GDXA-157, and this one is the class hiding in an ATTRIBUTE rather than in a
+    # query — found by an audit, not by the census, because no `db.execute` is
+    # written here. `SessionLocal` is `expire_on_commit=True`, so after the
+    # `db.commit()` above every attribute on `est` is expired and `est.total`
+    # emits a fresh SELECT (measured). That read sits inside this bare swallow on
+    # the caller's session, and `notify_estimate_decision` below WRITES the office
+    # bell on that same session. Bare, a failed refresh here degraded to
+    # `amount = 0.0` and left the bell un-writable: the customer says yes and
+    # nobody in the shop ever hears about it, with no trace of why.
     try:
-        amount = (
-            float(est.total or 0)  # just set to the tier's contract subtotal
-            if tier is not None
-            else float(compute_estimate_totals(est, db)["total"] or 0)
-        )
+        with contained_read(db):
+            amount = (
+                float(est.total or 0)  # just set to the tier's contract subtotal
+                if tier is not None
+                else float(compute_estimate_totals(est, db)["total"] or 0)
+            )
     except Exception:
         amount = 0.0
     notify_estimate_decision(
