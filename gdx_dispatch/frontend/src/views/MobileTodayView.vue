@@ -153,7 +153,9 @@ async function load(silent = false) {
     fromCache.value = false
     writeRouteCache(key, data)
   } catch (err) {
-    const cached = readRouteCache(key)
+    // A refusal is an answer, not an outage: this morning's cached route
+    // would hide it (a deactivated tech, GDXA-208). Show the server's reason.
+    const cached = err?.status === 403 ? null : readRouteCache(key)
     if (cached) {
       // Show the route we last saw rather than an empty day. Labelled, because
       // a tech acting on a stale route must know it is stale.

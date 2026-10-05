@@ -83,7 +83,7 @@ def _money(v: Decimal | float | str) -> Decimal:
     return Decimal(str(v)).quantize(Decimal("0.01"))
 
 
-def _job_belongs_to_tech(db: Session, job_id: str, user_id: str, tenant_id: str) -> bool:
+def _job_belongs_to_tech(db: Session, job_id: str, user_id: str, tenant_id: str, actor: Any = None) -> bool:
     """True if this job is assigned to the calling user (or any of their tech rows).
 
     Mirrors the gate used in mobile.py — connection-isolated tenant DB,
@@ -92,6 +92,10 @@ def _job_belongs_to_tech(db: Session, job_id: str, user_id: str, tenant_id: str)
     """
     if not job_id or not user_id:
         return False
+    from gdx_dispatch.routers.mobile import _refuse_deactivated_technician
+
+    # Same refusal, same reason, as every other mobile gate (GDXA-208).
+    _refuse_deactivated_technician(db, user_id, actor)
     row = db.execute(
         _text(
             """
@@ -344,7 +348,7 @@ def build_quote(
     user = current_user or {}
     user_id = _user_id(user)
 
-    if not _job_belongs_to_tech(db, job_id, user_id, tenant_id):
+    if not _job_belongs_to_tech(db, job_id, user_id, tenant_id, user):
         return _jr({"detail": "job not found or not assigned to you"}, 404)
 
     # Resolve tiers — either from preset or custom payload.
@@ -546,7 +550,7 @@ def list_job_quotes(
     user = current_user or {}
     user_id = _user_id(user)
     tenant_id = _tenant_id(request)
-    if not _job_belongs_to_tech(db, job_id, user_id, tenant_id):
+    if not _job_belongs_to_tech(db, job_id, user_id, tenant_id, user):
         return _jr({"detail": "job not found or not assigned to you"}, 404)
     estimates = db.execute(
         select(Estimate)
@@ -576,7 +580,7 @@ def get_quote(
     user = current_user or {}
     user_id = _user_id(user)
     tenant_id = _tenant_id(request)
-    if estimate.job_id and not _job_belongs_to_tech(db, str(estimate.job_id), user_id, tenant_id):
+    if estimate.job_id and not _job_belongs_to_tech(db, str(estimate.job_id), user_id, tenant_id, user):
         return _jr({"detail": "quote not on a job assigned to you"}, 403)
     return _jr(_serialize_quote(estimate, db=db, include_lines=True))
 
@@ -607,7 +611,7 @@ def accept_quote(
     user = current_user or {}
     user_id = _user_id(user)
     tenant_id = _tenant_id(request)
-    if estimate.job_id and not _job_belongs_to_tech(db, str(estimate.job_id), user_id, tenant_id):
+    if estimate.job_id and not _job_belongs_to_tech(db, str(estimate.job_id), user_id, tenant_id, user):
         return _jr({"detail": "quote not on a job assigned to you"}, 403)
 
     # Validate chosen_tier_id belongs to this estimate.
@@ -765,7 +769,7 @@ def decline_quote(
     user = current_user or {}
     user_id = _user_id(user)
     tenant_id = _tenant_id(request)
-    if estimate.job_id and not _job_belongs_to_tech(db, str(estimate.job_id), user_id, tenant_id):
+    if estimate.job_id and not _job_belongs_to_tech(db, str(estimate.job_id), user_id, tenant_id, user):
         return _jr({"detail": "quote not on a job assigned to you"}, 403)
 
     # Validate reason against tenant taxonomy (informational — accept any
@@ -832,7 +836,9 @@ def _tech_textable_quote(db: Session, request: Request, estimate_id: str, user: 
     # _job_belongs_to_tech: jobs.assigned_to holds a technician id, which that
     # older check never matches (it survives on the job_assignments fallback).
     from gdx_dispatch.core.job_access import job_belongs_to_user
+    from gdx_dispatch.routers.mobile import _refuse_deactivated_technician
 
+    _refuse_deactivated_technician(db, _user_id(user), user)
     if not found.job_id or not job_belongs_to_user(db, _tenant_id(request), str(found.job_id), _user_id(user)):
         return _jr({"detail": "quote not on a job assigned to you"}, 403)
     return found
