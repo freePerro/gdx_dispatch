@@ -229,6 +229,24 @@ def _verify_portal_password(password: str, pw_hash: str | None) -> bool:
     return False
 
 
+def _portal_invoice_filter(customer_id: UUID) -> tuple[Any, ...]:
+    """Which invoices a portal customer sees: their own, issued, not deleted.
+
+    GDXA-251: the list and the dashboard count used to join through
+    ``Invoice.job_id == Job.id`` and match on ``Job.customer_id``. ``job_id`` is
+    nullable, so an invoice with no job never reached its customer, and with no
+    status filter a draft (still being written) or a void (cancelled) went out
+    with its total and balance. ``Invoice.customer_id`` is NOT NULL and is the
+    link the customer statement already bills from, so this matches on it and
+    drops draft and void the same way the statement does.
+    """
+    return (
+        Invoice.customer_id == customer_id,
+        Invoice.deleted_at.is_(None),
+        Invoice.status.notin_(("draft", "void")),
+    )
+
+
 def _payment_status(invoice: Invoice) -> str:
     if invoice.status == "paid":
         return "paid"
@@ -447,9 +465,7 @@ def portal_dashboard(
         select(func.count(Job.id)).where(Job.customer_id == principal.customer_id, Job.deleted_at.is_(None))
     ).scalar_one()
     invoice_count = db.execute(
-        select(func.count(Invoice.id))
-        .join(Job, Invoice.job_id == Job.id)
-        .where(Job.customer_id == principal.customer_id, Invoice.deleted_at.is_(None))
+        select(func.count(Invoice.id)).where(*_portal_invoice_filter(principal.customer_id))
     ).scalar_one()
     return {
         "customer_id": str(principal.customer_id),
@@ -613,8 +629,7 @@ def portal_invoices(
 ) -> list[dict[str, Any]]:
     rows = db.execute(
         select(Invoice)
-        .join(Job, Invoice.job_id == Job.id)
-        .where(Job.customer_id == principal.customer_id, Invoice.deleted_at.is_(None))
+        .where(*_portal_invoice_filter(principal.customer_id))
         .order_by(Invoice.created_at.desc())
     ).scalars()
     from gdx_dispatch.core.payments import public_pay_url
@@ -1392,10 +1407,11 @@ def portal_admin_list(
     payments_by_customer = {
         row[0]: int(row[1])
         for row in db.execute(
-            select(Job.customer_id, func.count(Invoice.id))
-            .join(Invoice, Invoice.job_id == Job.id)
-            .where(Invoice.status == "paid", Invoice.deleted_at.is_(None), Job.deleted_at.is_(None))
-            .group_by(Job.customer_id)
+            # GDXA-251: by the invoice's own customer, not its job's — a paid
+            # invoice with no job (or on a since-deleted job) is still a payment.
+            select(Invoice.customer_id, func.count(Invoice.id))
+            .where(Invoice.status == "paid", Invoice.deleted_at.is_(None))
+            .group_by(Invoice.customer_id)
         )
     }
 
