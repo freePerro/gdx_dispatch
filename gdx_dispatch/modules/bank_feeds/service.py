@@ -79,9 +79,19 @@ def tenant_zoneinfo(db: Session) -> ZoneInfo:
     audited plan explicitly rejects hardcoding a zone here)."""
     tz_name = "America/New_York"
     try:
+        from gdx_dispatch.core.database import contained_read  # noqa: PLC0415
         from gdx_dispatch.models.tenant_models import AppSettings  # noqa: PLC0415
 
-        row = db.execute(select(AppSettings.timezone)).first()
+        # SAVEPOINT-contained (GDXA-165): `db` is the caller's session, and the
+        # callers are the SimpleFIN ingest and the 5-minute beat tick — both
+        # mid-flight with pending transaction rows when they ask for the day
+        # boundary. On Postgres a failed read here aborts that whole
+        # transaction, so the fallback zone below was handed back on a session
+        # that could no longer commit the ingest it was holding: the wrong day
+        # boundary was the lesser half of the bug. Contained, the degraded
+        # answer is honest. Reads only — see core.database.contained_read.
+        with contained_read(db):
+            row = db.execute(select(AppSettings.timezone)).first()
         if row and row[0]:
             tz_name = str(row[0])
     except Exception:  # noqa: BLE001

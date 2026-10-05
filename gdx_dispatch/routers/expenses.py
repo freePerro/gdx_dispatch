@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.expense_categories import (
     EXPENSE_CATEGORIES,
     canonicalize_expense_category,
@@ -177,27 +177,38 @@ def _annotate_gl_accounts(db: Session, rows: list[Expense], payloads: list[dict]
         from gdx_dispatch.modules.ledger.models import ROLE_EXPENSE_FALLBACK, GlAccount
         from gdx_dispatch.modules.ledger.rules import _expense_account_id
 
-        company_id = rows[0].company_id
-        settings = ledger_service.get_gl_settings(db, company_id)
-        if settings is None:
-            return
-        fallback = db.execute(
-            select(GlAccount).where(
-                GlAccount.company_id == company_id,
-                GlAccount.role == ROLE_EXPENSE_FALLBACK,
-                GlAccount.active.is_(True),
-            )
-        ).scalar_one_or_none()
-        cache: dict = {}
-        for row, payload in zip(rows, payloads, strict=True):
-            key = row.category or ""
-            if key not in cache:
-                account_id = _expense_account_id(db, settings, company_id, row.category)
-                account = db.get(GlAccount, account_id) if account_id else fallback
-                cache[key] = account
-            account = cache[key]
-            if account is not None:
-                payload["gl_account"] = {"code": account.code, "name": account.name}
+        # SAVEPOINT-contained (GDXA-165). Pure reads throughout, so
+        # contained_read and not db.begin_nested() (rule 2) — and rule 5 is
+        # satisfied: neither callee swallows a DB failure of its own.
+        # `ledger_service.get_gl_settings` is a bare `session.scalars(...).first()`
+        # with no handler, and `rules._expense_account_id`'s only `except` is
+        # ValueError around UUID() — a parse guard, not a DB swallow. Both
+        # propagate, so the failure reaches this block's __exit__.
+        #
+        # rows[0].company_id is inside the savepoint on purpose: on an expired
+        # ORM instance that attribute read is itself a SELECT.
+        with contained_read(db):
+            company_id = rows[0].company_id
+            settings = ledger_service.get_gl_settings(db, company_id)
+            if settings is None:
+                return
+            fallback = db.execute(
+                select(GlAccount).where(
+                    GlAccount.company_id == company_id,
+                    GlAccount.role == ROLE_EXPENSE_FALLBACK,
+                    GlAccount.active.is_(True),
+                )
+            ).scalar_one_or_none()
+            cache: dict = {}
+            for row, payload in zip(rows, payloads, strict=True):
+                key = row.category or ""
+                if key not in cache:
+                    account_id = _expense_account_id(db, settings, company_id, row.category)
+                    account = db.get(GlAccount, account_id) if account_id else fallback
+                    cache[key] = account
+                account = cache[key]
+                if account is not None:
+                    payload["gl_account"] = {"code": account.code, "name": account.name}
     except Exception:
         log.exception("expense_gl_account_annotation_failed")
 

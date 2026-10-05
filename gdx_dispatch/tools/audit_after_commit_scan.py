@@ -135,6 +135,12 @@ ALLOWED: dict[tuple[str, str], str] = {
         "row. New to this scan because the hoist made the prime legible here, not "
         "because anything moved after a commit"
     ),
+    ("modules/quickbooks/sync.py", "_apply_qbo_deletes"): (
+        "helper: the 'commit' before its rows is ensure_audit_table, hoisted out of "
+        "the per-row savepoint so it cannot commit inside one (GDXA-165); each row's "
+        "delete and audit share that savepoint, and all three callers (the customer, "
+        "invoice and payment pulls) db.commit() on the next line, which lands both"
+    ),
     ("routers/commission.py", "set_rules"): "commission is leaving core for a plugin; not fixed in core (#700)",
     ("routers/commission.py", "update_rule"): "commission is leaving core for a plugin; not fixed in core (#700)",
     ("routers/commission.py", "calculate_commission"): (
