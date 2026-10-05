@@ -480,6 +480,7 @@ GET /api/pricing/seasonal
 GET /api/pricing/settings
 GET /api/pricing/vendor-lists
 GET /api/proposals/{token}
+GET /api/proposals/{token}/pdf
 GET /api/purchase-orders
 GET /api/purchase-orders/{po_id}
 GET /api/push/v2/fallback-mode
