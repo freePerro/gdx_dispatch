@@ -24,7 +24,7 @@ from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -218,7 +218,23 @@ def _fetch_active_rate(
         .order_by(TechCommissionRate.effective_from.desc())
     )
     try:
-        return db.execute(stmt).scalars().first()
+        # SAVEPOINT, but PRE-EMPTIVE — and say so, because the first draft of
+        # this comment claimed a live consequence ("$0.00 commission for the
+        # whole crew") that cannot happen. `_build_summary_rows` calls
+        # `_fetch_tech_revenue` BEFORE it reaches this loop, and that raises
+        # `RevenueBasisUnavailable` on every call: it queries
+        # `j.assigned_tech_id`, a column on no database (see the note at the top
+        # of `_fetch_tech_revenue`; prod-checked 2026-09-27, 0 in
+        # information_schema). So the payroll summary is a 503 today and this
+        # function does not execute in production at all.
+        #
+        # Kept rather than skipped: the shape is right, it costs one round trip,
+        # and the day M27's revenue basis is fixed this loop goes live with the
+        # containment already in place. What it WOULD protect: the loop reads
+        # per tech on one session, so an uncontained failure on the first tech
+        # would zero every later tech's rate. See core.database.contained_read.
+        with contained_read(db):
+            return db.execute(stmt).scalars().first()
     except SQLAlchemyError:
         log.exception("payroll_fetch_active_rate_failed tech_id=%s", tech_id)
         return None
@@ -265,7 +281,18 @@ def _fetch_tech_hours(
 
     result: dict[str, dict[date, float]] = {}
     try:
-        rows = db.execute(text(sql), params).all()
+        # SAVEPOINT: the "graceful degrade" this docstring promises is only true
+        # on SQLite. On Postgres a missing `time_entries` aborts the caller's
+        # transaction, so the empty dict would be followed by every later read
+        # in `_build_summary_rows` failing as well.
+        #
+        # This one DOES run — it is called before `_fetch_tech_revenue`'s
+        # unconditional `RevenueBasisUnavailable` — but be honest that the
+        # containment still changes no user-visible outcome today, because that
+        # 503 lands either way two calls later. Pre-emptive, like the other two
+        # in this file; see the note in `_fetch_active_rate`.
+        with contained_read(db):
+            rows = db.execute(text(sql), params).all()
     except OperationalError:
         log.exception("payroll_time_entries_missing")
         return result
@@ -405,19 +432,42 @@ def _fetch_tech_names(
         )
         # Fallback simple lookup per-id (IN-binding across dialects is tricky)
     except Exception:
+        # NOT a savepoint site, and deliberately left alone (GDXA-164). `:ids`
+        # above is never bound, so SQLAlchemy raises StatementError while
+        # processing parameters — client-side, before anything reaches the
+        # server. Measured on PG 16: the transaction is NOT aborted and the next
+        # statement on the same connection succeeds. So there is no transaction
+        # damage here to contain; `contained_read` would be pure noise.
+        # What IS wrong with this block is a different class: it cannot ever
+        # succeed, so it is dead code. It is dead twice over, in fact — the
+        # enclosing `_fetch_tech_names` is itself unreachable behind
+        # `_fetch_tech_revenue`'s unconditional `RevenueBasisUnavailable`, so
+        # this never logs at all. (An earlier draft said "logs an exception on
+        # every payroll summary"; that is wrong, and wrong in the direction
+        # that makes it sound urgent.) Out of scope for a containment sweep,
+        # and left for a ruling rather than deleted here.
         log.exception("_fetch_tech_names_failed extra_context=%s", "unknown")
         pass
 
     names: dict[str, str] = {}
     for tid in tech_ids:
         try:
-            row = db.execute(
-                text(
-                    "SELECT COALESCE(name, email, id) FROM users "
-                    "WHERE company_id = :tenant_id AND id = :tid LIMIT 1"
-                ),
-                {"tenant_id": tenant_id, "tid": tid},
-            ).first()
+            # SAVEPOINT: one lookup per id, and a name is cosmetic — but on
+            # Postgres the first failure would abort the transaction and every
+            # remaining id would come back unnamed, then `_build_summary_rows`
+            # would keep reading rates on a dead session. Pre-emptive like
+            # `_fetch_active_rate`'s: `_fetch_tech_revenue` raises before
+            # `_build_summary_rows` ever reaches this call, so it does not
+            # execute in production today. Read that note, not this one, for
+            # the reasoning.
+            with contained_read(db):
+                row = db.execute(
+                    text(
+                        "SELECT COALESCE(name, email, id) FROM users "
+                        "WHERE company_id = :tenant_id AND id = :tid LIMIT 1"
+                    ),
+                    {"tenant_id": tenant_id, "tid": tid},
+                ).first()
             if row and row[0]:
                 names[tid] = str(row[0])
         except OperationalError:
