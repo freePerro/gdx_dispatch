@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import log_audit_event_sync
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.link_sms import SendLinkSmsIn as MobileSendQuoteSmsIn  # one composer model for every SMS route
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.service_presets import (
@@ -425,14 +425,28 @@ def build_quote(
     try:
         from gdx_dispatch.core.job_site import resolve_job_site  # noqa: PLC0415
 
-        _jrow = db.execute(
-            _text("SELECT location_id, customer_id FROM jobs WHERE id = :jid"),
-            {"jid": job_id},
-        ).first()
-        if _jrow is not None and _jrow[0] is not None:
-            _site = resolve_job_site(db, job_id, _jrow[0], _jrow[1])
-            if _site.source == "location":
-                quote_jobsite = _site.address
+        # GDXA-156. `db` is the route's own session, so this is not the
+        # caller-owned shape the sweep was scoped to — but the savepoint is
+        # warranted anyway, and this is the strongest case in this router for
+        # it: everything below the swallow BUILDS AND COMMITS the tech's quote.
+        # On Postgres a failed seed read aborts that transaction, so the
+        # comment's promise that "a seed miss must not block quoting" is not
+        # true there — the whole Estimate would be lost at `db.commit()` and the
+        # tech would get a 500 naming `jobs`. Nobody has produced a production
+        # instance; the mechanism is real and the blast radius is the tech's
+        # work, which is why it is worth a savepoint. `resolve_job_site`
+        # re-raises (its own handlers
+        # are ValueError/AttributeError/TypeError only), so the failure does
+        # cross this block's __exit__ as contained_read rule 5 requires.
+        with contained_read(db):
+            _jrow = db.execute(
+                _text("SELECT location_id, customer_id FROM jobs WHERE id = :jid"),
+                {"jid": job_id},
+            ).first()
+            if _jrow is not None and _jrow[0] is not None:
+                _site = resolve_job_site(db, job_id, _jrow[0], _jrow[1])
+                if _site.source == "location":
+                    quote_jobsite = _site.address
     except Exception:  # noqa: BLE001 — a seed miss must not block quoting
         log.exception("mobile_quote_jobsite_seed_failed job=%s", job_id)
 

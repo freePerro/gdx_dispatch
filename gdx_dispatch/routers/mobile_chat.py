@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pii import decrypt_if_ciphertext
 from gdx_dispatch.core.user_display import resolve_author_name
@@ -319,27 +319,60 @@ def _push_other_party(db: Session, *, job_id: str, msg: JobChatMessage, user: di
     dispatcher_url = f"/mobile/dispatch?job={job_id}"
     if msg.sender_role in ("dispatcher", "admin", "owner"):
         # Push the assigned tech(s).
-        rows = db.execute(
-            _text(
-                """
-                SELECT DISTINCT user_id FROM (
-                  SELECT assigned_to AS user_id FROM jobs WHERE id = :jid AND assigned_to IS NOT NULL
-                  UNION
-                  SELECT t.user_id FROM job_assignments ja
-                  JOIN technicians t ON t.id = ja.tech_id
-                  -- A removed tech (soft-deleted assignment) is not notified:
-                  -- the job page refuses them, so the link would dead-end.
-                  WHERE ja.job_id = :jid AND ja.deleted_at IS NULL
-                    AND t.active IS NOT FALSE
-                ) s WHERE user_id IS NOT NULL
-                """
-            ),
-            {"jid": job_id},
-        ).all()
+        #
+        # GDXA-156. Contained even though this read has no `try` of its own:
+        # the frame that DOES catch it is what makes it the swallowed-read shape
+        # (`send_job_chat` wraps the call in `except Exception: log`), so an
+        # abort here would ride out of this function invisibly.
+        #
+        # Be exact about what that is worth, because the first draft of this
+        # comment was not. It claimed this read is what 500s an already-stored
+        # message. It is not, and the GDXA-156 audit measured why: the first
+        # statement `_push_other_party` emits is the refresh of `msg`, expired by
+        # `send_job_chat`'s own commit — BEFORE this savepoint. Once that
+        # succeeds `msg` is loaded and `_serialize_message` emits no SQL at all,
+        # so with the refresh working this block changes nothing observable, and
+        # with it failing this block is never reached. The 500-on-a-stored-message
+        # story belongs to that refresh, which a savepoint cannot fix (the
+        # serialize needs the row, contained or not) — see the close-out note.
+        # What this block buys is the ordinary thing: a failure here does not
+        # leave the session poisoned for whatever the caller does next.
+        with contained_read(db):
+            rows = db.execute(
+                _text(
+                    """
+                    SELECT DISTINCT user_id FROM (
+                      SELECT assigned_to AS user_id FROM jobs WHERE id = :jid AND assigned_to IS NOT NULL
+                      UNION
+                      SELECT t.user_id FROM job_assignments ja
+                      JOIN technicians t ON t.id = ja.tech_id
+                      -- A removed tech (soft-deleted assignment) is not notified:
+                      -- the job page refuses them, so the link would dead-end.
+                      WHERE ja.job_id = :jid AND ja.deleted_at IS NULL
+                        AND t.active IS NOT FALSE
+                    ) s WHERE user_id IS NOT NULL
+                    """
+                ),
+                {"jid": job_id},
+            ).all()
         for r in rows:
             try:
-                send_push(db, user_id=r[0], title=title, body=body, url=tech_url,
-                          data={"type": "chat_message", "job_id": job_id})
+                # GDXA-156 — one savepoint per recipient. `send_push` READS
+                # (list_subscriptions_for_user) and then WRITES (last_seen_at /
+                # revoked_at, then flush), so `db.begin_nested()` and not
+                # `contained_read`: the ORM must know what to un-stage
+                # (contained_read rule 2). It stops one recipient's failed
+                # subscription read from aborting the transaction the next
+                # recipient — and the caller — still need.
+                #
+                # Those writes are never committed on this path: `send_push`
+                # says "Caller commits" and `send_job_chat` has no commit after
+                # this call, so a pruned dead endpoint is discarded at
+                # `db.close()` either way (GDXA-156 audit). That is a real bug,
+                # and it is not this one — recorded, not fixed here.
+                with db.begin_nested():
+                    send_push(db, user_id=r[0], title=title, body=body, url=tech_url,
+                              data={"type": "chat_message", "job_id": job_id})
             except Exception:
                 log.exception("send_push failed user=%s", r[0])
     else:
@@ -350,19 +383,25 @@ def _push_other_party(db: Session, *, job_id: str, msg: JobChatMessage, user: di
         # same net the dispatcher→tech branch above has always used. Until
         # 2026-09-17 this was wrapped in ``except Exception: pass`` with a
         # stale "role tables not present in this tenant DB" comment.
-        rows = db.execute(
-            _text(
-                """
-                SELECT DISTINCT user_id FROM user_role_assignments ura
-                JOIN tenant_roles r ON r.id = ura.role_id
-                WHERE r.name IN ('dispatcher','admin','owner')
-                """
-            )
-        ).all()
+        #
+        # "Propagates to send_job_chat" is exactly why it is contained
+        # (GDXA-156): that frame swallows it, so an abort would ride out of here
+        # invisibly. See the branch above for what this does and does NOT buy.
+        with contained_read(db):
+            rows = db.execute(
+                _text(
+                    """
+                    SELECT DISTINCT user_id FROM user_role_assignments ura
+                    JOIN tenant_roles r ON r.id = ura.role_id
+                    WHERE r.name IN ('dispatcher','admin','owner')
+                    """
+                )
+            ).all()
         for r in rows:
             try:
-                send_push(db, user_id=r[0], title=title, body=body, url=dispatcher_url,
-                          data={"type": "chat_message", "job_id": job_id})
+                with db.begin_nested():  # GDXA-156 — see the tech branch above
+                    send_push(db, user_id=r[0], title=title, body=body, url=dispatcher_url,
+                              data={"type": "chat_message", "job_id": job_id})
             except Exception:
                 log.exception("send_push failed user=%s", r[0])
 
