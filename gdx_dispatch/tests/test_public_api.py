@@ -104,6 +104,26 @@ def _make_tenant_engine():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+    # The job PATCH reads the job and its visits through the ORM (multi-day
+    # jobs plan §5.2a), so the schema comes from the ORM; the hand-written
+    # DDL below is then a no-op for every table the ORM already declares.
+    #
+    # One deliberate divergence: prod's jobs.dispatch_status and
+    # jobs.company_id are NOT NULL with no default (read 2026-10-05), and the
+    # public create's raw INSERT names neither, so that create fails on prod.
+    # That is on the found-not-filed ledger, not fixed here; the two defaults
+    # below keep the create tests testing what they tested before.
+    from sqlalchemy import DefaultClause, MetaData  # noqa: PLC0415
+
+    import gdx_dispatch.models.tenant_models  # noqa: F401, PLC0415
+    from gdx_dispatch.core.audit import TenantBase  # noqa: PLC0415
+
+    schema = MetaData()
+    for table in TenantBase.metadata.sorted_tables:
+        table.to_metadata(schema)
+    schema.tables["jobs"].c.dispatch_status.server_default = DefaultClause(text("'unassigned'"))
+    schema.tables["jobs"].c.company_id.server_default = DefaultClause(text(f"'{TENANT_ID}'"))
+    schema.create_all(engine, checkfirst=True)
     with engine.begin() as conn:
         conn.execute(text(
             """
@@ -389,6 +409,33 @@ class TestPublicJobsAPI:
         assert "id" in body["data"]
         assert body["data"]["title"] == "Test Job from API"
 
+    @staticmethod
+    def _visit_count(client: TestClient, job_id: str) -> int:
+        with client._tenant_engine.connect() as conn:  # type: ignore[attr-defined]
+            return conn.execute(text(
+                "SELECT COUNT(*) FROM appointments WHERE job_id IN (:dashed, :hex) "
+                "AND deleted_at IS NULL"
+            ), {"dashed": job_id, "hex": uuid.UUID(job_id).hex}).scalar()
+
+    def test_a_dated_create_books_a_visit(self, client: TestClient):
+        """E4 (multi-day jobs plan §5.2a): a job created with a date is on the
+        board, the same as one created in the app (Doug ruled 2026-10-05)."""
+        when = "2026-11-03T15:00:00+00:00"
+        resp = client.post(
+            "/api/v1/jobs", headers=self._headers,
+            json={"title": "Dated API job", "scheduled_at": when},
+        )
+        assert resp.status_code == 201, resp.text[:500]
+        job_id = resp.json()["data"]["id"]
+        assert self._visit_count(client, job_id) == 1
+        added = _audit_rows(client, action="visit_added")
+        assert any(r["entity_id"] in (job_id, uuid.UUID(job_id).hex) for r in added)
+
+    def test_an_undated_create_books_nothing(self, client: TestClient):
+        resp = client.post("/api/v1/jobs", headers=self._headers, json={"title": "Undated API job"})
+        assert resp.status_code == 201, resp.text[:500]
+        assert self._visit_count(client, resp.json()["data"]["id"]) == 0
+
 
 class TestPublicCustomersAPI:
     _headers = {"X-API-Key": RAW_API_KEY, "x-tenant-id": TENANT_ID}
@@ -496,7 +543,10 @@ class TestDbErrorsLeaveATrace:
             ("text", "GET", "/api/v1/jobs", None, "list_jobs"),
             ("text", "GET", f"/api/v1/jobs/{_JOB_ID}", None, "get_job"),
             ("text", "POST", "/api/v1/jobs", {"title": "boom probe"}, "create_job"),
-            ("text", "PATCH", f"/api/v1/jobs/{_JOB_ID}", {"title": "boom probe"}, "update_job"),
+            # update_job reads and writes the job through the ORM (multi-day
+            # jobs plan §5.2a), so it takes the broken session like the
+            # customers pair below.
+            ("db", "PATCH", f"/api/v1/jobs/{_JOB_ID}", {"title": "boom probe"}, "update_job"),
             # the customers pair queries via the ORM with function-local
             # imports, out of reach of the module seams — hand them a session
             # whose every attribute access raises, via the get_db override.
@@ -746,8 +796,9 @@ class TestPublicApiMutationsAreAudited:
 def _stored_job(client: TestClient, job_id: str) -> dict:
     with client._tenant_engine.connect() as conn:  # type: ignore[attr-defined]
         return dict(conn.execute(
+            # The ORM schema stores a Uuid as 32 dashless hex on SQLite.
             text("SELECT lifecycle_stage, status, started_at, title FROM jobs WHERE id = :j"),
-            {"j": job_id},
+            {"j": uuid.UUID(job_id).hex},
         ).mappings().one())
 
 
@@ -755,7 +806,7 @@ def _force_stage(client: TestClient, job_id: str, stage: str) -> None:
     with client._tenant_engine.begin() as conn:  # type: ignore[attr-defined]
         conn.execute(
             text("UPDATE jobs SET lifecycle_stage = :s WHERE id = :j"),
-            {"s": stage, "j": job_id},
+            {"s": stage, "j": uuid.UUID(job_id).hex},
         )
 
 
@@ -853,7 +904,7 @@ class TestPublicApiAnswersToTheStageGuard:
             raw = client._tenant_engine.raw_connection()  # type: ignore[attr-defined]
             held.append(raw)
             raw.driver_connection.execute(
-                "UPDATE jobs SET lifecycle_stage = 'completed' WHERE id = ?", (job_id,)
+                "UPDATE jobs SET lifecycle_stage = 'completed' WHERE id = ?", (uuid.UUID(job_id).hex,)
             )
             return real(stored, requested)
 

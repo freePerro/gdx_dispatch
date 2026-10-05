@@ -233,6 +233,16 @@
                       :aria-label="`Make ${techLabel(a.tech_id)} the lead tech`"
                       :data-testid="`assignment-make-lead-${a.tech_id}`"
                       @click="setLead(a.tech_id)" />
+                    <!-- Undo arrival for taps no visit holds (multi-day jobs
+                         plan §5.2a). Shown once the tech has tapped in; the
+                         dialog lists the unmatched taps, or points at the
+                         Appointments page when every tap stamped a visit. -->
+                    <Button v-if="canUndoArrival && a.arrived_at"
+                      v-tooltip="`Undo ${techLabel(a.tech_id)}'s arrival`"
+                      icon="pi pi-undo" text size="small" severity="secondary"
+                      :aria-label="`Undo ${techLabel(a.tech_id)}'s arrival`"
+                      :data-testid="`assignment-undo-arrival-${a.tech_id}`"
+                      @click="openCrewUndo(a)" />
                     <Button v-if="patchable"
                       v-tooltip="`Remove ${techLabel(a.tech_id)}`"
                       icon="pi pi-times" text size="small" severity="danger"
@@ -1335,7 +1345,18 @@
     <JobStateOverrideDialog
       v-model="showStateOverride"
       :job="job"
+      :technicians="technicians"
       @applied="onStateOverrideApplied"
+    />
+
+    <UndoArrivalDialog
+      v-model="crewUndo.visible"
+      mode="job"
+      :job-id="String(job.id || route.params.id || '')"
+      :tech-id="crewUndo.techId"
+      :tech-name="crewUndo.techName"
+      @done="onCrewUndoDone"
+      @open-appointments="crewUndo.visible = false; openAppointmentsPage()"
     />
 
     <MobileJobCloseoutDialog
@@ -1417,6 +1438,8 @@
 import { ref, computed, onMounted, nextTick, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import JobStateOverrideDialog from "../components/JobStateOverrideDialog.vue";
+import UndoArrivalDialog from "../components/UndoArrivalDialog.vue";
+import { isDispatchManagerRole } from "../utils/visitRefusals";
 import MobileJobCloseoutDialog from "../components/MobileJobCloseoutDialog.vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
@@ -1735,6 +1758,8 @@ const isTechnician = computed(() => isTechRole(auth.user?.role));
 // Techs can't patch job fields (variant-aware: was `!== "tech"`, which missed
 // the long-form 'technician' spelling).
 const patchable = computed(() => !isTechnician.value);
+// Undo arrival is a dispatcher/admin/owner action (backend is_dispatch_manager).
+const canUndoArrival = computed(() => isDispatchManagerRole(auth.user?.role));
 
 function invoiceStatusSeverity(status) {
   const map = {
@@ -2410,6 +2435,19 @@ async function removeAssignment(assignmentId) {
     await fetchAssignments();
     await fetchJob();
   } catch { /* api toasts errors */ }
+}
+
+// Crew-row Undo arrival: a tech's taps on this job that no visit holds.
+const crewUndo = ref({ visible: false, techId: "", techName: "" });
+function openCrewUndo(assignment) {
+  crewUndo.value = {
+    visible: true,
+    techId: String(assignment?.tech_id || ""),
+    techName: techLabel(assignment?.tech_id),
+  };
+}
+async function onCrewUndoDone() {
+  await Promise.all([fetchJob(), fetchAssignments(), fetchAppointments()]);
 }
 
 async function setLead(techId) {
