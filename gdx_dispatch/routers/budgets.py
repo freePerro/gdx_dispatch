@@ -22,7 +22,7 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, resolve_audit_actor
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_permission
 from gdx_dispatch.models.tenant_models import AppSettings, MonthlyBudget
 from gdx_dispatch.modules.forecasting.service import revenue_projection
@@ -278,9 +278,27 @@ def _history_for_accounts(
 def _pnl_last_synced_at(db: Session) -> datetime | None:
     """MAX(synced_at) across qb_pnl_monthly — for the freshness indicator."""
     try:
-        row = db.execute(
-            text("SELECT MAX(synced_at) AS ts FROM qb_pnl_monthly")
-        ).one()
+        # SAVEPOINT-contained (GDXA-165). Be careful about WHY, because the
+        # first version of this comment got it wrong in exactly the way
+        # contained_read's own docstring retracts at length about
+        # tenant_settings: "qb_pnl_monthly does not exist until the first P&L
+        # pull" is false. It is an ORM model (models/tenant_models.py) that
+        # migration head creates, and prod has it populated (checked live
+        # 2026-09-27: 39 rows). It is absent only from the stale
+        # TenantBase-scoped tests/fixtures/structure.sql dump, which is a
+        # fixture artifact, not a tenant state.
+        #
+        # So this is cheap insurance on a real mechanism, not the repair of an
+        # observed loss: what is left after that correction is the window during
+        # a migration, a future statement_timeout, and connection loss (which a
+        # SAVEPOINT cannot contain anyway). Both callers are read-only GETs that
+        # call this last, so today the poisoning is absorbed by the session
+        # close at request end; the containment is what stops that from silently
+        # becoming data loss the first time a caller writes after it.
+        with contained_read(db):
+            row = db.execute(
+                text("SELECT MAX(synced_at) AS ts FROM qb_pnl_monthly")
+            ).one()
         return row.ts
     except Exception:  # noqa: BLE001
         log.exception("pnl_last_synced_at_failed")
@@ -993,13 +1011,20 @@ async def refresh_actuals(
 def _load_qb_accounts(db: Session) -> list[dict[str, Any]]:
     """Read the tenant's QB chart of accounts. Returns [] if not synced yet."""
     try:
-        rows = db.execute(
-            text(
-                "SELECT qb_account_id, name, account_type, account_sub_type, "
-                "current_balance, active "
-                "FROM qb_accounts ORDER BY account_type, name"
-            )
-        ).all()
+        # SAVEPOINT-contained (GDXA-165). Same shape as _pnl_last_synced_at, but
+        # this one has a caller that keeps working on the session afterwards:
+        # `list_anomalies` calls get_qb_client(tenant_id, db) two statements
+        # later, which reads the token store and can persist a refreshed OAuth
+        # token. Returning [] told the Fix-in-QuickBooks panel "no accounts" and
+        # handed that write a transaction that was already aborted.
+        with contained_read(db):
+            rows = db.execute(
+                text(
+                    "SELECT qb_account_id, name, account_type, account_sub_type, "
+                    "current_balance, active "
+                    "FROM qb_accounts ORDER BY account_type, name"
+                )
+            ).all()
     except Exception:  # noqa: BLE001
         log.exception("qb_accounts_load_failed")
         return []
