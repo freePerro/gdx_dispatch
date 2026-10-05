@@ -459,11 +459,11 @@ describe('ProposalPublicView', () => {
       expect(w.find('[data-testid="proposal-pdf-link"]').exists()).toBe(true);
     });
 
-    it('is not offered on a tiered estimate — the PDF has no tiers and would read $0.00', async () => {
+    it('is offered on a tiered estimate too — the PDF prints the options', async () => {
       mockFetch({ 'GET /api/proposals/tok-abc': TIER_PAYLOAD });
       const w = await mountPage();
       expect(w.find('[data-testid="tier-grid"]').exists()).toBe(true);
-      expect(w.find('[data-testid="proposal-pdf-link"]').exists()).toBe(false);
+      expect(w.find('[data-testid="proposal-pdf-link"]').attributes('href')).toBe('/api/proposals/tok-abc/pdf');
     });
 
     it('is not shown on the dead-end page for a bad token', async () => {

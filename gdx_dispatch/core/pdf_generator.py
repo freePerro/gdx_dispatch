@@ -214,6 +214,12 @@ def _render_template(
     data = dict(document_data or {})
     if tpl["line_items"]["show_category"] and tpl["line_items"]["category_display"] == "grouped":
         data["line_groups"] = _group_lines(data.get("lines"))
+        # Each Good/Better/Best option prints its own table through the same
+        # macro, so it needs its own groups.
+        data["tier_options"] = [
+            {**option, "line_groups": _group_lines(option.get("lines"))}
+            for option in data.get("tier_options") or []
+        ]
     template = _JINJA_ENV.get_template(template_name)
     return template.render(data=data, branding=_default_branding(tenant_branding), tpl=tpl)
 

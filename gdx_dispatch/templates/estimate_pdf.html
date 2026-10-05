@@ -31,6 +31,11 @@
     .totals td { border: none; padding: 4px 0; }
     .totals .label { color: #4b5563; }
     .totals .grand { border-top: 1px solid #d1d5db; font-weight: 700; color: {{ branding.secondary_color }}; }
+    .tier-option { page-break-inside: avoid; }
+    .tier-head { display: flex; justify-content: space-between; font-weight: 700; font-size: 14px; color: {{ accent }}; border-bottom: 1px solid #d1d5db; padding-bottom: 4px; }
+    .tier-desc { margin-top: 4px; white-space: pre-line; }
+    .tier-meta { margin-top: 2px; color: #4b5563; }
+    .tier-choose { color: #374151; font-weight: 600; }
     .signature { margin-top: 34px; border-top: 1px solid #9ca3af; padding-top: 6px; width: 280px; color: #4b5563; }
     .signature-block { margin-top: 24px; }
     .signature-img { max-height: 60px; max-width: 280px; display: block; }
@@ -91,9 +96,33 @@
   {% endif %}
 
     {% elif block.type == 'line_items' %}
+  {#- Good/Better/Best: an OPEN proposal prints every option with its own
+     price (no single total, as on the public page); an ACCEPTED one prints
+     the chosen tier's lines under a heading naming it. -#}
+  {% if data.tier_options %}
+  {% for option in data.tier_options %}
+  <div class="section tier-option"{% if block.style %} style="{{ block.style }}"{% endif %}>
+    <div class="tier-head"><span>Option {{ loop.index }}: {{ option.name }}</span><span>{{ option.price | money }}</span></div>
+    {% if option.description %}<div class="tier-desc">{{ option.description }}</div>{% endif %}
+    {% if option.warranty_months %}<div class="tier-meta">Warranty: {{ option.warranty_months }} months</div>{% endif %}
+    {{ li.line_items_table(option, tpl, '') }}
+  </div>
+  {% endfor %}
+  {% else %}
+  {% if data.accepted_tier %}
+  <div class="section tier-head accepted"><span>Accepted option: {{ data.accepted_tier.name }}</span></div>
+  {% if data.accepted_tier.description %}<div class="tier-desc">{{ data.accepted_tier.description }}</div>{% endif %}
+  {% endif %}
   {{ li.line_items_table(data, tpl, block.style) }}
+  {% endif %}
 
     {% elif block.type == 'totals' %}
+  {% if data.tier_options %}
+  <div class="section tier-choose"{% if block.style %} style="{{ block.style }}"{% endif %}>
+    Choose one option. Your total is the price of the option you accept{% if (data.tax_rate_pct or 0) > 0 %}, plus {{ '%g'|format(data.tax_rate_pct) }}% tax on taxable items{% endif %}.
+    {% if (data.deposit_pct or 0) > 0 %}A {{ data.deposit_pct }}% deposit is due on acceptance.{% endif %}
+  </div>
+  {% else %}
   <table class="totals"{% if block.style %} style="{{ block.style }}"{% endif %}>
     {# Subtotal / Discount / Tax stay visible even when per-line prices are
        hidden — the customer still sees the tax broken out (invoice compliance /
@@ -109,6 +138,7 @@
     <tr><td class="label">{{ data.deposit_pct }}% Down</td><td class="num">${{ '%.2f'|format(data.deposit_amount or 0) }}</td></tr>
     {% endif %}
   </table>
+  {% endif %}
 
     {% elif block.type == 'terms' %}
   {% if data.terms %}
