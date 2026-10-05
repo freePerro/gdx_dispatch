@@ -108,7 +108,7 @@ def _user_id(user: dict[str, Any]) -> str:
     return str(user.get("user_id") or user.get("sub") or "")
 
 
-def _job_belongs_to_tech(db: Session, request: Request, job_id: str, user_id: str) -> bool:
+def _job_belongs_to_tech(db: Session, request: Request, job_id: str, user_id: str, actor: Any = None) -> bool:
     """Delegates to core/job_access.job_belongs_to_user — ONE ownership gate.
 
     A1 (adversarial audit, 2026-07-29): this used to carry its own SQL, and
@@ -124,7 +124,13 @@ def _job_belongs_to_tech(db: Session, request: Request, job_id: str, user_id: st
     if not job_id or not user_id:
         return False
     from gdx_dispatch.core.job_access import job_belongs_to_user
+    from gdx_dispatch.routers.mobile import _refuse_deactivated_technician
 
+    # The shared gate matches a deactivated technician row too; the mobile
+    # routers refuse that tech, and billing is one of them (GDXA-208). Routes
+    # outside /api/mobile (e.g. /api/jobs/{id}/closeout) still go through
+    # core/job_access unchanged.
+    _refuse_deactivated_technician(db, user_id, actor)
     return job_belongs_to_user(db, _tenant_id(request), job_id, user_id)
 
 
@@ -280,7 +286,7 @@ def job_financial_summary(
     """
     user = current_user or {}
     user_id = _user_id(user)
-    if not _job_belongs_to_tech(db, request, job_id, user_id):
+    if not _job_belongs_to_tech(db, request, job_id, user_id, user):
         return _jr({"detail": "job not found or not assigned to you"}, 404)
 
     # The parts a tech recorded for this job. Three things were wrong here and
@@ -426,7 +432,7 @@ def mobile_create_invoice(
     # on an engine initializes the guard — committing (or rolling back)
     # whatever is pending. Same reason, same place, as the office create.
     ensure_audit_table(db)
-    if not _job_belongs_to_tech(db, request, job_id, user_id):
+    if not _job_belongs_to_tech(db, request, job_id, user_id, user):
         return _jr({"detail": "job not found or not assigned to you"}, 404)
 
     # Raw SQL — avoids SQLAlchemy Uuid type quirks across SQLite/PG when
@@ -1103,7 +1109,7 @@ _AWAITING_VERIFICATION = (
 )
 
 
-def _tech_owned_invoice(db: Session, request: Request, invoice_id: str, user_id: str):
+def _tech_owned_invoice(db: Session, request: Request, invoice_id: str, user_id: str, actor: Any = None):
     """The invoice, if it exists and is on the tech's own job; otherwise the
     JSONResponse refusal (404/403)."""
     invoice = db.execute(
@@ -1111,7 +1117,7 @@ def _tech_owned_invoice(db: Session, request: Request, invoice_id: str, user_id:
     ).scalar_one_or_none()
     if invoice is None:
         return _jr({"detail": "invoice not found"}, 404)
-    if not _job_belongs_to_tech(db, request, str(invoice.job_id), user_id):
+    if not _job_belongs_to_tech(db, request, str(invoice.job_id), user_id, actor):
         return _jr({"detail": "invoice not on a job assigned to you"}, 403)
     return invoice
 
@@ -1133,7 +1139,7 @@ def mobile_send_invoice(
     user = current_user or {}
     user_id = _user_id(user)
     tenant_id = _tenant_id(request)
-    invoice = _tech_owned_invoice(db, request, invoice_id, user_id)
+    invoice = _tech_owned_invoice(db, request, invoice_id, user_id, user)
     if isinstance(invoice, JSONResponse):
         return invoice
 
@@ -1178,7 +1184,7 @@ def mobile_send_invoice(
 
 
 
-def _mobile_sms_invoice(db: Session, request: Request, invoice_id: str, user_id: str):
+def _mobile_sms_invoice(db: Session, request: Request, invoice_id: str, user_id: str, actor: Any = None):
     """The tech-side gates shared by preview and send: the invoice exists, is
     on the tech's own job, and the phone_com module is on. Returns the invoice
     or a JSONResponse refusal."""
@@ -1186,14 +1192,14 @@ def _mobile_sms_invoice(db: Session, request: Request, invoice_id: str, user_id:
 
     if not is_module_enabled("phone_com", request, db):
         return _jr({"detail": "Texting is not enabled for this company."}, 403)
-    return _tech_owned_invoice(db, request, invoice_id, user_id)
+    return _tech_owned_invoice(db, request, invoice_id, user_id, actor)
 
 
-def _verified_sms_invoice(db: Session, request: Request, invoice_id: str, user_id: str):
+def _verified_sms_invoice(db: Session, request: Request, invoice_id: str, user_id: str, actor: Any = None):
     """The tech's own invoice, texting on, AND office-verified — the gate for
     sending a text now or scheduling one (the preview shows the verification
     refusal as ``blocked`` instead). Otherwise the JSONResponse refusal."""
-    got = _mobile_sms_invoice(db, request, invoice_id, user_id)
+    got = _mobile_sms_invoice(db, request, invoice_id, user_id, actor)
     if isinstance(got, JSONResponse):
         return got
     if got.verified_at is None:
@@ -1212,7 +1218,7 @@ def mobile_invoice_sms_preview(
     """What "Text invoice" would send from the truck, or why it can't."""
     from gdx_dispatch.core import invoice_sms
 
-    got = _mobile_sms_invoice(db, request, invoice_id, _user_id(current_user or {}))
+    got = _mobile_sms_invoice(db, request, invoice_id, _user_id(current_user or {}), current_user)
     if isinstance(got, JSONResponse):
         return got
     prep = invoice_sms.prepare(db, got, to_override=(payload.to if payload else None))
@@ -1235,7 +1241,7 @@ def mobile_send_invoice_sms(
     from gdx_dispatch.core import invoice_sms
 
     user_id = _user_id(current_user or {})
-    got = _verified_sms_invoice(db, request, invoice_id, user_id)
+    got = _verified_sms_invoice(db, request, invoice_id, user_id, current_user)
     if isinstance(got, JSONResponse):
         return got
     p = payload or MobileSendSmsIn()
@@ -1270,7 +1276,7 @@ def mobile_schedule_invoice_sms(
     from gdx_dispatch.modules.phone_com import scheduled
 
     user_id = _user_id(current_user or {})
-    got = _verified_sms_invoice(db, request, invoice_id, user_id)
+    got = _verified_sms_invoice(db, request, invoice_id, user_id, current_user)
     if isinstance(got, JSONResponse):
         return got
     return _jr(scheduled.schedule_link(
@@ -1425,7 +1431,7 @@ def mobile_send_receipt(
     user = current_user or {}
     user_id = _user_id(user)
     tenant_id = _tenant_id(request)
-    if not _job_belongs_to_tech(db, request, str(invoice.job_id), user_id):
+    if not _job_belongs_to_tech(db, request, str(invoice.job_id), user_id, user):
         return _jr({"detail": "invoice not on a job assigned to you"}, 403)
 
     # §11 (audit round 2): a receipt EMAILS the customer too — same rule as

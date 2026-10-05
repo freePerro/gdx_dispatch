@@ -227,6 +227,11 @@ def day_summary(
             LEFT JOIN customers c ON c.id = j.customer_id
             WHERE j.deleted_at IS NULL
               AND DATE(j.scheduled_at) = :tomorrow
+              -- Tomorrow's first stop is work to drive to: a cancelled (or
+              -- already completed) job is not one. Cancel moves
+              -- lifecycle_stage only and keeps scheduled_at (GDXA-208).
+              AND (j.lifecycle_stage IS NULL
+                   OR j.lifecycle_stage NOT IN ('cancelled', 'completed'))
               AND (
                 j.assigned_to = :uid
                 OR EXISTS (
