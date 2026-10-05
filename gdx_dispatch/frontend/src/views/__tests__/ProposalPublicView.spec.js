@@ -435,6 +435,43 @@ describe('ProposalPublicView', () => {
       expect(w.find('[data-testid="accept-btn"]').attributes('disabled')).toBeUndefined();
     });
 
+    it('the PDF link carries the preview signature, so staff can open a draft PDF', async () => {
+      mockRoute.query = { preview: 'sig.abc' };
+      mockFetch({ 'GET /api/proposals/tok-abc?preview=sig.abc': { ...LINE_PAYLOAD, preview: true } });
+      const w = await mountPage();
+      expect(w.find('[data-testid="proposal-pdf-link"]').attributes('href')).toBe('/api/proposals/tok-abc/pdf?preview=sig.abc');
+    });
+  });
+
+  describe('estimate PDF link', () => {
+    it('links the full estimate PDF for this token, opening in a new tab', async () => {
+      mockFetch({ 'GET /api/proposals/tok-abc': LINE_PAYLOAD });
+      const w = await mountPage();
+      const a = w.find('[data-testid="proposal-pdf-link"]');
+      expect(a.attributes('href')).toBe('/api/proposals/tok-abc/pdf');
+      expect(a.attributes('target')).toBe('_blank');
+      expect(a.text()).toContain('PDF');
+    });
+
+    it('is offered on accepted estimates too — the document is still theirs', async () => {
+      mockFetch({ 'GET /api/proposals/tok-abc': { ...LINE_PAYLOAD, estimate: { ...LINE_PAYLOAD.estimate, status: 'accepted' } } });
+      const w = await mountPage();
+      expect(w.find('[data-testid="proposal-pdf-link"]').exists()).toBe(true);
+    });
+
+    it('is not offered on a tiered estimate — the PDF has no tiers and would read $0.00', async () => {
+      mockFetch({ 'GET /api/proposals/tok-abc': TIER_PAYLOAD });
+      const w = await mountPage();
+      expect(w.find('[data-testid="tier-grid"]').exists()).toBe(true);
+      expect(w.find('[data-testid="proposal-pdf-link"]').exists()).toBe(false);
+    });
+
+    it('is not shown on the dead-end page for a bad token', async () => {
+      mockFetch({});
+      const w = await mountPage();
+      expect(w.find('[data-testid="proposal-pdf-link"]').exists()).toBe(false);
+    });
+
     it('an expired preview tells staff to reopen it, not to reply to an email', async () => {
       mockRoute.query = { preview: 'old.sig' };
       mockFetch({});

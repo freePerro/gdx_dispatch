@@ -1,24 +1,63 @@
-"""Performance — user performance stats aggregated from existing tables."""
+"""Performance — user performance stats aggregated from existing tables.
+
+A stat the server could not compute is ``None`` with a reason in the user's
+``unavailable`` map, never ``0``. A zero here is a count that ran; "we could not read it" and "there is no record of it" are said in
+words, because on this page a made-up nought reads as "this person did no
+work" (maintainer ruling on GDXA-174, 2026-10-04).
+
+Nothing here may feed pay or billing. Hours are clock-worked hours for a
+performance read-out; billed labour comes from attested hours only.
+"""
 from __future__ import annotations
 
+import calendar
 import logging
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import contained_read, get_db
-from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.modules import require_module, require_permission
+from gdx_dispatch.core.pay_periods import PayPeriod, resolve_zone, shop_tz_name_from_settings
+from gdx_dispatch.core.permissions import is_dispatch_manager
+from gdx_dispatch.core.timesheet_hours import build_timesheet
 from gdx_dispatch.models.tenant_models import User
 from gdx_dispatch.routers.auth import get_current_user
+from gdx_dispatch.routers.reports import _revenue_amount_sql, _revenue_where_sql
 
 log = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/api/performance",
     tags=["performance"],
-    dependencies=[Depends(require_module("jobs"))],
+    # `nav.office` is exactly who the sidebar shows this page to
+    # (constants/modules.js). Before GDXA-174 the router had no permission
+    # gate at all, which mattered little while every hours figure was a
+    # broken 0; now that they are real clock hours for the whole crew, a
+    # technician must not be able to read everyone else's. `nav.office` is
+    # still wider than the timesheet's audience (sales, accounting and viewer
+    # hold it), so the crew's hours are additionally withheld, by name, from
+    # anyone `is_dispatch_manager` refuses — see `_hours_by_tech`.
+    dependencies=[Depends(require_module("jobs")), Depends(require_permission("nav.office"))],
 )
+
+#: Why a stat is ``None``. The view turns each into a sentence.
+REASON_READ_FAILED = "read_failed"   # the source could not be read this time
+REASON_NO_DATA = "no_data"           # read fine; nothing recorded for this person
+REASON_PERIOD_REQUIRED = "period_required"  # hours are only computed for a month
+REASON_NOT_RECORDED = "not_recorded"  # this system does not record the fact at all
+REASON_SHIFT_FLAGGED = "shift_flagged"  # a shift the timesheet flags for a human look
+REASON_IN_PROGRESS = "in_progress"   # clocked in now; no shift finished yet this month
+REASON_RESTRICTED = "restricted"     # the caller may not read the crew's hours
+
+_PERIOD_PATTERN = r"^\d{4}-(0[1-9]|1[0-2])$"
+# Both endpoints take the same month; a malformed one is a 422, not a silent
+# whole-history read.
+_PERIOD_QUERY = Query(None, description="YYYY-MM format", pattern=_PERIOD_PATTERN)
 
 
 def _tid(request: Request) -> str:
@@ -45,8 +84,132 @@ def _safe_float(val: Any) -> float:
         return 0.0
 
 
-def _build_user_stats(db: Session, tid: str, user_id: str, period: str | None) -> dict[str, Any]:
-    """Aggregate stats for a single user from existing tables.
+def _id_key(value: Any) -> str:
+    """A user id as the timeclock stores it and as `User.id` renders it, made
+    comparable: `technician_id` is TEXT written from the token's `sub`, and
+    `User.id` is a Uuid that SQLite keeps as dashless hex."""
+    return str(value or "").replace("-", "").lower()
+
+
+def _month_period(period: str | None) -> PayPeriod | None:
+    """`YYYY-MM` as a closed range of shop-local days, or None."""
+    if not period:
+        return None
+    year, month = int(period[:4]), int(period[5:7])
+    return PayPeriod(date(year, month, 1), date(year, month, calendar.monthrange(year, month)[1]))
+
+
+def _month_bounds_utc(db: Session, period: str) -> tuple[str, str]:
+    """`YYYY-MM` as ``[start, end)`` UTC instants: the shop's local midnights.
+
+    The same month the hours authority buckets by (`build_timesheet`, shop
+    calendar day). Bare `'YYYY-MM-01'` strings made the other counts UTC
+    months, so a job finished at 8pm Central on the 31st landed in the next
+    month while that evening's shift stayed in this one.
+
+    Spelled ``YYYY-MM-DD HH:MM:SS+00:00``: Postgres reads the offset, and on
+    SQLite — which stores the ORM's timestamps as ``YYYY-MM-DD HH:MM:SS.ffffff``
+    text — the string compares in the right order, boundary second included.
+    """
+    month = _month_period(period)
+    if month is None:
+        raise ValueError("a month window needs a period")
+    zone = resolve_zone(shop_tz_name_from_settings(db))
+
+    def utc_midnight(day: date) -> str:
+        local = datetime.combine(day, time.min, tzinfo=zone)
+        return local.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S+00:00")
+
+    return utc_midnight(month.start), utc_midnight(month.end + timedelta(days=1))
+
+
+HoursByTech = dict[str, tuple[float | None, str | None]]
+
+
+def _card_hours(card: Any) -> tuple[float | None, str | None]:
+    """Finished-shift worked hours, or ``(None, reason)`` when 0.0 would lie.
+
+    `Shift.worked_minutes` counts a shift with no known length as 0. Payroll
+    can, because it shows the authority's flag beside it; this page has no
+    flag column, so it reads the same flag (`Shift.flag`, never its own test
+    of `minutes`) and says so instead:
+
+    - any shift the authority flags (`Timecard.flagged`: open past a possible
+      shift, no duration, or implausibly long — prod holds 72h..1584h rows):
+      the month's total is not known. The authority's own set, not a
+      hand-picked list, so a new flag cannot slip a lying total past here.
+    - open but unflagged is a shift in progress — normal on any workday.
+      Finished shifts still count; only a month with nothing finished yet
+      would otherwise read 0.0 for someone who is at work right now.
+    """
+    if card.flagged:
+        return None, REASON_SHIFT_FLAGGED
+    worked = [s for s in card.shifts if not s.is_time_off]
+    if worked and all(s.clock_out is None for s in worked):
+        return None, REASON_IN_PROGRESS
+    return card.worked_hours, None
+
+
+def _hours_by_tech(
+    db: Session, tid: str, period: str | None, user: dict[str, Any]
+) -> tuple[HoursByTech | None, str | None]:
+    """``({id_key: (hours, reason)}, None)``, or ``(None, reason)`` when unknown.
+
+    Read through `core/timesheet_hours.build_timesheet` — the one hours
+    authority — and NOT hand-summed here. It nets breaks off gross `minutes`
+    (totalling `minutes` pays out every lunch), excludes soft-deleted entries
+    and time off, and buckets each shift by the shop's calendar day. The raw
+    `text()` this replaces read `SUM(hours_worked) FROM timeclock_entries
+    WHERE company_id/user_id/clock_in`: a table and four columns that exist
+    nowhere, so it raised on every request and the page reported 0.0.
+
+    Clock-worked hours by decision, not by accident: whether this should be
+    attested hours (`job_closeouts.hours_worked`) instead is open with the
+    maintainer on GDXA-172, and swapping the source is a change to this one
+    function. Either way it is a performance read-out — never an input to pay
+    or billing.
+
+    Hours need a bounded window. With no month there is no defensible range
+    (`build_timesheet` caps its read, and a capped all-time sum would be a
+    silent undercount), so the answer is "unavailable", not a number.
+    """
+    # The same audience as the timesheet's crew reads (routers/timeclock.py).
+    if not is_dispatch_manager(user):
+        return None, REASON_RESTRICTED
+    pay_period = _month_period(period)
+    if pay_period is None:
+        return None, REASON_PERIOD_REQUIRED
+    try:
+        # SAVEPOINT: the stats reads after this share the session; a failed
+        # hours read must not abort the transaction under them.
+        with contained_read(db):
+            sheet = build_timesheet(
+                db,
+                tenant_id=tid,
+                period=pay_period,
+                tz_name=shop_tz_name_from_settings(db),
+            )
+    except SQLAlchemyError:
+        log.exception("performance_hours_read_failed", extra={"tenant_id": tid})
+        return None, REASON_READ_FAILED
+    return {_id_key(card.tech_id): _card_hours(card) for card in sheet.timecards}, None
+
+
+def _build_user_stats(
+    db: Session,
+    tid: str,
+    user_id: str,
+    period: str | None,
+    hours_by_tech: HoursByTech | None,
+    hours_reason: str | None = None,
+    pay_visible: bool = False,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """``(stats, unavailable)`` for a single user from existing tables.
+
+    Every stat starts as ``None`` and is set only by a read that succeeded; a
+    stat left ``None`` is named in ``unavailable`` with the reason. Before
+    GDXA-174 every stat started at ``0`` and a failed read left it there,
+    which is how a table that does not exist produced a plausible 0.0.
 
     Every read below is deliberately swallowed — a tenant that has never used
     the planner should not 500 the performance page over a missing
@@ -57,33 +220,19 @@ def _build_user_stats(db: Session, tid: str, user_id: str, period: str | None) -
     `all_users_performance` runs this once per user on one session, so the blast
     radius is the whole crew, not one row.
 
-    This is the one call site in the tree where that mechanism demonstrably
-    fires, every request, rather than being insurance — and be precise about how
-    far that goes, because three drafts of this note got it wrong in three
-    different ways. TWO of the seven reads below can never succeed, not one:
+    Two of the original seven reads could never succeed, and both are the same
+    defect — a raw `text()` whose identifiers were never checked against this
+    schema (GDXA-172):
 
-    - #3, estimates, filters on `estimates.created_by` — a column in no model,
-      no migration, no fixture, and 0 on prod. Raises `UndefinedColumn` (42703).
-    - #4, hours, selects `FROM timeclock_entries` — a table that exists nowhere
-      either. Raises `UndefinedTable` (42P01). See its own comment.
+    - estimates, filtering on `estimates.created_by` — a column in no model,
+      no migration, no fixture, and 0 on prod. No longer run; see its comment.
+    - hours, `FROM timeclock_entries` — a table that exists nowhere. Now read
+      through the hours authority; see `_hours_by_tech`.
 
-    So pre-GDXA-164 the first user lost reads #3..#7, and because
-    `all_users_performance` loops this function over ONE session, every user
-    after the first lost #1..#7 — `jobs_completed` and `revenue` included.
-    Measured on real PG, two seeded users, one job and one `done` task each:
-    pre-fix `{jobs:1, tasks:0}` then `{jobs:0, tasks:0}`; post-fix both
-    `{jobs:1, tasks:1}`. Containment fixes the collateral damage. It does NOT
-    fix #3 or #4, which stay 0 forever.
-
-    It is still NOT a user-visible repair, and do not sell it as one. No human
-    has ever read these numbers: `PerformanceView.vue` does
-    `Array.isArray(r) ? r : r?.items || []` against a `{"users": [...]}` payload,
-    so the table is unconditionally empty, and the columns it renders
-    (`efficiency_score`, `on_time_pct`, ...) are served by no endpoint in the
-    repo. The page is an orphan in both directions and it is the only caller.
-    So: this fix corrects an endpoint nothing currently displays. `hours_worked`
-    stays 0 regardless — a separate defect, named below. Both are raised on
-    GDXA-172 rather than fixed in a containment sweep.
+    Pre-GDXA-164 the first failure also zeroed every read after it, for every
+    user after the first, because `all_users_performance` loops this function
+    over ONE session. Containment fixed that collateral damage; it could not
+    fix the two reads themselves.
 
     On cost, because this change was briefly deferred over it and the deferral
     was wrong: the savepoint pair triples the statement count here (7 -> 21 per
@@ -97,141 +246,118 @@ def _build_user_stats(db: Session, tid: str, user_id: str, period: str | None) -
     only stops one unreadable table from silently zeroing the six that are fine.
     """
     stats: dict[str, Any] = {
-        "jobs_completed": 0,
-        "revenue": 0.0,
-        "avg_job_value": 0.0,
-        "estimates_created": 0,
-        "estimates_accepted": 0,
-        "hours_worked": 0.0,
-        "tasks_completed": 0,
-        "commission_earned": 0.0,
-        "safety_checklists": 0,
+        "jobs_completed": None,
+        "revenue": None,
+        "avg_job_value": None,
+        "estimates_created": None,
+        "estimates_accepted": None,
+        "hours_worked": None,
+        "tasks_completed": None,
+        "commission_earned": None,
+        "safety_checklists": None,
     }
+    unavailable: dict[str, str] = {}
 
     period_filter = ""
     params: dict[str, Any] = {"tid": tid, "user_id": user_id}
     if period:
         period_filter = " AND created_at >= :period_start AND created_at < :period_end"
-        params["period_start"] = f"{period}-01"
-        # Approximate end: add 32 days, truncate
-        try:
-            year, month = int(period[:4]), int(period[5:7])
-            end = f"{year + 1}-01-01" if month == 12 else f"{year}-{month + 1:02d}-01"
-            params["period_end"] = end
-        except (ValueError, IndexError):
-            logging.getLogger(__name__).exception("_build_user_stats caught exception")
-            period_filter = ""
+        params["period_start"], params["period_end"] = _month_bounds_utc(db, period)
 
-    # Jobs completed
+    # Each count lands in the month the thing happened, not the month its row
+    # was created: an installation booked on 25 Feb and finished and billed on
+    # 3 Mar is March's work. `created_at` is only the fallback for legacy rows
+    # that never stamped a completion. (`period_filter` is spelled on a bare
+    # `created_at`; each read swaps in its own column with a literal replace.)
+    job_done_at = "COALESCE(j.completed_at, j.created_at)"
+
+    # Jobs completed. `jobs.assigned_to` holds a *technician* id in the common
+    # case (core/job_access.py), a user id only on legacy rows — so match both,
+    # through `technicians.user_id`, exactly as `job_belongs_to_user` does.
+    # Matching the user id alone counted 0 for every normally assigned job.
+    # One spelling of "this person's completed jobs in the window", shared by
+    # the job count and the revenue read so Avg Job divides like by like.
+    completed_jobs = f"""
+        j.company_id = :tid AND j.deleted_at IS NULL
+          AND (j.assigned_to = :user_id OR t.user_id = :user_id)
+          AND j.status IN ('Complete', 'Completed', 'complete', 'completed')
+          {period_filter.replace('created_at', job_done_at)}
+    """
     try:
         with contained_read(db):
             row = db.execute(
                 text(f"""
-                    SELECT COUNT(*) AS cnt FROM jobs
-                    WHERE company_id = :tid AND assigned_to = :user_id
-                      AND status IN ('Complete', 'Completed', 'complete', 'completed')
-                      {period_filter}
-                """),  # noqa: S608 — period_filter is a literal clause; dates are bound
+                    SELECT COUNT(*) AS cnt FROM jobs j
+                    LEFT JOIN technicians t ON t.id = j.assigned_to
+                    WHERE {completed_jobs}
+                """),  # noqa: S608 — period_filter is a literal clause (column renamed by a literal replace); dates are bound
                 params,
             ).mappings().first()
         stats["jobs_completed"] = _safe_int(row["cnt"]) if row else 0
     except Exception:
         log.debug("jobs table query failed for user stats")
+        unavailable["jobs_completed"] = REASON_READ_FAILED
 
-    # Revenue from invoices
+    # Revenue from invoices — the shop's one revenue rule, imported from
+    # `routers/reports.py` rather than spelled a third time: live and billed
+    # (sent, paid, overdue), so a voided-and-reissued invoice does not count
+    # twice and a closeout autodraft is not money earned. Deposits COUNT: the
+    # final invoice already nets the deposit with a negative line, so dropping
+    # the deposit would subtract it twice (see the M8 note in reports.py).
+    #
+    # And only on the jobs `jobs_completed` counts — completed in the same
+    # window (`job_done_at`) — because `avg_job_value` divides one by the
+    # other: a $5000 progress invoice on an unfinished job made one $100 job
+    # average $5100. Invoiced, not necessarily paid.
     try:
         with contained_read(db):
             row = db.execute(
                 text(f"""
-                    SELECT COALESCE(SUM(i.total), 0) AS revenue
+                    SELECT COALESCE(SUM({_revenue_amount_sql("i")}), 0) AS revenue
                     FROM invoices i
                     JOIN jobs j ON i.job_id = j.id
-                    WHERE j.company_id = :tid AND j.assigned_to = :user_id
-                      {period_filter.replace('created_at', 'i.created_at')}
-                """),  # noqa: S608 — period_filter is a literal clause (column renamed by a literal replace); dates are bound
+                    LEFT JOIN technicians t ON t.id = j.assigned_to
+                    WHERE {completed_jobs}
+                      AND {_revenue_where_sql("i")}
+                """),  # noqa: S608 — period_filter is a literal clause (column renamed by a literal replace) and the revenue fragments are reports.py constants; dates are bound
                 params,
             ).mappings().first()
         revenue = _safe_float(row["revenue"]) if row else 0.0
         stats["revenue"] = revenue
-        if stats["jobs_completed"] > 0:
-            stats["avg_job_value"] = round(revenue / stats["jobs_completed"], 2)
     except Exception:
         log.debug("invoices table query failed for user stats")
+        unavailable["revenue"] = REASON_READ_FAILED
+    # An average over no jobs is not $0 — it does not exist.
+    if stats["jobs_completed"] and stats["revenue"] is not None:
+        stats["avg_job_value"] = round(stats["revenue"] / stats["jobs_completed"], 2)
+    elif "jobs_completed" in unavailable or "revenue" in unavailable:
+        unavailable["avg_job_value"] = REASON_READ_FAILED
+    else:
+        unavailable["avg_job_value"] = REASON_NO_DATA
 
-    # Estimates created / accepted
-    #
-    # BROKEN the same way the hours read below is, and found the same way — by an
-    # audit, after two earlier passes over this function missed it. `created_by`
-    # is not a column on `estimates`: not on the ORM model (30 columns, none of
-    # them this), not added by any migration, absent from
-    # `tests/fixtures/structure.sql`, and 0 on prod (checked live 2026-09-27,
-    # `information_schema.columns`). So this raises `UndefinedColumn` (42703) on
-    # every request and `estimates_created`/`estimates_accepted` have always been
-    # 0. Not repaired here, and a rename will not do it: `estimates` records no
-    # author at all. Its only two author-ish columns are `signed_by` (the
-    # CUSTOMER's signature, not staff) and `created_at` (a timestamp) — checked
-    # against the model, 30 columns. So "which user created this estimate" is
-    # not answerable from this table today, which makes it a product/schema
-    # question rather than a containment one. Contained so it stops zeroing the
-    # four reads that follow it. See GDXA-172.
-    try:
-        with contained_read(db):
-            row = db.execute(
-                text(f"""
-                    SELECT
-                        COUNT(*) AS total,
-                        SUM(CASE WHEN status IN ('accepted', 'approved') THEN 1 ELSE 0 END) AS accepted
-                    FROM estimates
-                    WHERE company_id = :tid AND created_by = :user_id
-                      {period_filter}
-                """),  # noqa: S608 — period_filter is a literal clause; dates are bound
-                params,
-            ).mappings().first()
-        if row:
-            stats["estimates_created"] = _safe_int(row["total"])
-            stats["estimates_accepted"] = _safe_int(row["accepted"])
-    except Exception:
-        log.debug("estimates table query failed for user stats")
+    # Estimates created / accepted — NOT READ, because the question cannot be
+    # asked of this schema. The query that used to sit here filtered on
+    # `estimates.created_by`, which is not a column: not on the ORM model, not
+    # added by any migration, absent from `tests/fixtures/structure.sql`, and 0
+    # on prod (checked live 2026-09-27, `information_schema.columns`). It raised
+    # `UndefinedColumn` on every request. A rename will not fix it: `estimates`
+    # records no staff author at all (`signed_by` is the CUSTOMER's signature).
+    # So the honest answer is "not recorded", said in words, until the schema
+    # records who wrote an estimate — a product call, raised on GDXA-172.
+    unavailable["estimates_created"] = REASON_NOT_RECORDED
+    unavailable["estimates_accepted"] = REASON_NOT_RECORDED
 
-    # Timeclock hours
-    #
-    # BROKEN, and containment does not fix it — flagged for a ruling, not
-    # repaired here (GDXA-164 is a containment sweep; this is a wrong-query
-    # defect and changing what the office's hours number MEANS is not a
-    # containment change). `timeclock_entries` exists nowhere: not in any
-    # migration, not in the ORM (`timeclock_entries_router`, `timeclock_breaks_
-    # router`, `timeclocks`), not in `tests/fixtures/structure.sql`, and not on
-    # prod — checked live 2026-09-27, PG 16.13, which has `time_entries`,
-    # `timeclock_entries_router`, `timeclock_breaks_router`, `timeclocks`.
-    # So this raises `UndefinedTable` on every request and `hours_worked` has
-    # always been 0.0 on this page, which reads as "this tech did no work"
-    # rather than "this number is broken". A rename is NOT the fix: no table
-    # has an `hours_worked` column either (`timeclock_entries_router` has
-    # `minutes`, `timeclocks` has `labor_minutes`, `time_entries` has
-    # `duration_minutes`, and `hours_worked` belongs to `JobCloseout`), and
-    # which of those is the office's intended "hours" is a product question.
-    # `tests/test_raw_sql_table_names.py` should have caught this and cannot.
-    # Its `_TEXT_RX` tries `"([^"]*)"` before the triple-quote branch, and that
-    # matches the EMPTY string at the start of any `\"\"\"` literal — so EVERY
-    # triple-double-quoted `text(...)` is invisible, not just the f-string form
-    # (the `f` is irrelevant; a first draft of this comment said otherwise).
-    # Measured: 72 empty captures across 23 files under `routers/` against 99
-    # real ones. Fixing only the f-string case would leave 58 SQL strings
-    # unscanned. See GDXA-172.
-    try:
-        with contained_read(db):
-            row = db.execute(
-                text(f"""
-                    SELECT COALESCE(SUM(hours_worked), 0) AS total_hours
-                    FROM timeclock_entries
-                    WHERE company_id = :tid AND user_id = :user_id
-                      {period_filter.replace('created_at', 'clock_in')}
-                """),  # noqa: S608 — period_filter is a literal clause (column renamed by a literal replace); dates are bound
-                params,
-            ).mappings().first()
-        stats["hours_worked"] = _safe_float(row["total_hours"]) if row else 0.0
-    except Exception:
-        log.debug("timeclock_entries table query failed for user stats")
+    # Clock hours — read through the hours authority, not here. See
+    # `_hours_by_tech`: the raw `text()` that used to sit here named a table,
+    # a column and two filters that exist nowhere (GDXA-172/GDXA-174).
+    if hours_by_tech is None:
+        unavailable["hours_worked"] = hours_reason or REASON_READ_FAILED
+    else:
+        hours, reason = hours_by_tech.get(_id_key(user_id), (None, REASON_NO_DATA))
+        if reason:
+            unavailable["hours_worked"] = reason
+        else:
+            stats["hours_worked"] = hours
 
     # Tasks completed
     try:
@@ -241,38 +367,36 @@ def _build_user_stats(db: Session, tid: str, user_id: str, period: str | None) -
                     SELECT COUNT(*) AS cnt FROM planner_tasks
                     WHERE company_id = :tid AND assigned_to = :user_id
                       AND status = 'done'
-                      {period_filter}
+                      {period_filter.replace('created_at', 'COALESCE(completed_at, created_at)')}
                 """),  # noqa: S608 — period_filter is a literal clause; dates are bound
                 params,
             ).mappings().first()
         stats["tasks_completed"] = _safe_int(row["cnt"]) if row else 0
     except Exception:
         log.debug("planner_tasks table query failed for user stats")
+        unavailable["tasks_completed"] = REASON_READ_FAILED
 
-    # Commission earned
-    try:
-        dict(params)
+    # Commission earned — pay-adjacent, so the same audience as the hours: a
+    # role that may not read the crew's hours does not get the crew's pay
+    # either. (The page does not render it; the JSON is what is being gated.)
+    if not pay_visible:
+        unavailable["commission_earned"] = REASON_RESTRICTED
+    else:
+        commission_sql = (
+            "SELECT COALESCE(SUM(total), 0) AS earned FROM commission_entries"
+            " WHERE company_id = :tid AND user_id = :user_id"
+        )
+        commission_params: dict[str, Any] = {"tid": tid, "user_id": user_id}
         if period:
+            commission_sql += " AND period = :period"
+            commission_params["period"] = period
+        try:
             with contained_read(db):
-                row = db.execute(
-                    text("""
-                        SELECT COALESCE(SUM(total), 0) AS earned FROM commission_entries
-                        WHERE company_id = :tid AND user_id = :user_id AND period = :period
-                    """),
-                    {"tid": tid, "user_id": user_id, "period": period},
-                ).mappings().first()
-        else:
-            with contained_read(db):
-                row = db.execute(
-                    text("""
-                        SELECT COALESCE(SUM(total), 0) AS earned FROM commission_entries
-                        WHERE company_id = :tid AND user_id = :user_id
-                    """),
-                    {"tid": tid, "user_id": user_id},
-                ).mappings().first()
-        stats["commission_earned"] = _safe_float(row["earned"]) if row else 0.0
-    except Exception:
-        log.debug("commission_entries table query failed for user stats")
+                row = db.execute(text(commission_sql), commission_params).mappings().first()
+            stats["commission_earned"] = _safe_float(row["earned"]) if row else 0.0
+        except Exception:
+            log.debug("commission_entries table query failed for user stats")
+            unavailable["commission_earned"] = REASON_READ_FAILED
 
     # Safety checklists completed
     try:
@@ -282,15 +406,28 @@ def _build_user_stats(db: Session, tid: str, user_id: str, period: str | None) -
                     SELECT COUNT(*) AS cnt FROM safety_checklists
                     WHERE company_id = :tid AND technician_id = :user_id
                       AND completed = true AND deleted_at IS NULL
-                      {period_filter}
+                      {period_filter.replace('created_at', 'COALESCE(signed_at, created_at)')}
                 """),  # noqa: S608 — period_filter is a literal clause; dates are bound
                 params,
             ).mappings().first()
         stats["safety_checklists"] = _safe_int(row["cnt"]) if row else 0
     except Exception:
         log.debug("safety_checklists table query failed for user stats")
+        unavailable["safety_checklists"] = REASON_READ_FAILED
 
-    return stats
+    return stats, unavailable
+
+
+def _user_payload(u: Any, stats: dict[str, Any], unavailable: dict[str, str]) -> dict[str, Any]:
+    """One person's row: identity, the stats, and why any stat is null."""
+    return {
+        "id": str(u["id"]),
+        "name": u.get("name") or u.get("full_name") or "",
+        "email": u.get("email") or "",
+        "role": u.get("role") or "",
+        "stats": stats,
+        "unavailable": unavailable,
+    }
 
 
 @router.get("/users")
@@ -298,7 +435,7 @@ def all_users_performance(
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
-    period: str | None = Query(None, description="YYYY-MM format"),
+    period: str | None = _PERIOD_QUERY,
 ) -> dict[str, Any]:
     """All users with stats for a period."""
     tid = _tid(request)
@@ -329,16 +466,17 @@ def all_users_performance(
         log.debug("users ORM query failed")
 
     result = []
+    pay_visible = is_dispatch_manager(user)
+    # One timesheet for the whole crew, not one per user. Only when there is
+    # someone to report on: a failed users read above leaves the session
+    # aborted, and the hours read would then fail for that reason instead.
+    hours_by_tech, hours_reason = _hours_by_tech(db, tid, period, user) if users else (None, None)
     for u in users:
         uid = str(u["id"])
-        stats = _build_user_stats(db, tid, uid, period)
-        result.append({
-            "id": uid,
-            "name": u.get("name") or u.get("full_name") or "",
-            "email": u.get("email") or "",
-            "role": u.get("role") or "",
-            "stats": stats,
-        })
+        stats, unavailable = _build_user_stats(
+            db, tid, uid, period, hours_by_tech, hours_reason, pay_visible
+        )
+        result.append(_user_payload(u, stats, unavailable))
 
     return {"users": result, "period": period}
 
@@ -349,17 +487,25 @@ def user_performance(
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
-    period: str | None = Query(None, description="YYYY-MM format"),
+    period: str | None = _PERIOD_QUERY,
 ) -> dict[str, Any]:
     """Single user detail with stats."""
     tid = _tid(request)
+
+    # `User.id` is a Uuid column: bound as a plain str it raises in the bind
+    # processor (measured on SQLite), the `except` below swallowed that, and
+    # every detail request answered "User not found" for a user who exists.
+    try:
+        user_key = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="User not found") from None
 
     # Verify user belongs to tenant — ORM
     u = None
     try:
         u = db.execute(
             select(User.id, User.name, User.full_name, User.email, User.role)
-            .where(User.id == user_id, User.company_id == tid)
+            .where(User.id == user_key, User.company_id == tid)
         ).mappings().first()
     except Exception:
         # Counted by the GDXA-164 sweep, deliberately NOT contained: on failure
@@ -372,12 +518,11 @@ def user_performance(
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
 
-    stats = _build_user_stats(db, tid, user_id, period)
-    return {
-        "id": str(u["id"]),
-        "name": u.get("name") or u.get("full_name") or "",
-        "email": u.get("email") or "",
-        "role": u.get("role") or "",
-        "stats": stats,
-        "period": period,
-    }
+    hours_by_tech, hours_reason = _hours_by_tech(db, tid, period, user)
+    pay_visible = is_dispatch_manager(user)
+    # The canonical spelling, not the path's: a dashless or upper-case id
+    # matched no `jobs.assigned_to` and answered a believable 0.
+    stats, unavailable = _build_user_stats(
+        db, tid, str(user_key), period, hours_by_tech, hours_reason, pay_visible
+    )
+    return {**_user_payload(u, stats, unavailable), "period": period}

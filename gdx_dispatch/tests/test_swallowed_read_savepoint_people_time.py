@@ -558,7 +558,7 @@ def test_pg_one_unreadable_table_does_not_zero_every_other_performance_stat(
     it is still counted after the ``jobs`` read failed — a number that an
     aborted Postgres transaction physically cannot produce.
     """
-    from gdx_dispatch.routers.performance import _build_user_stats
+    from gdx_dispatch.routers.performance import REASON_READ_FAILED, _build_user_stats
 
     who = str(uuid.uuid4())
     _seed_user(pg_test_engine, who, "busy-person")
@@ -572,13 +572,18 @@ def test_pg_one_unreadable_table_does_not_zero_every_other_performance_stat(
             {"id": str(uuid.uuid4()), "tid": TENANT, "who": who},
         )
 
-    stats = _caller_survives(
+    # No hours map: hours are not what this test is about (GDXA-174 reads them
+    # through the hours authority, outside this function's swallowed reads).
+    stats, unavailable = _caller_survives(
         pg_test_engine,
         ["jobs"],
-        lambda db: _build_user_stats(db, TENANT, who, None),
+        lambda db: _build_user_stats(db, TENANT, who, None, None),
     )
 
-    assert stats["jobs_completed"] == 0  # the read that really did fail
+    # The read that really did fail: since GDXA-174 a failed read leaves the
+    # stat None and names why, rather than reporting a plausible 0.
+    assert stats["jobs_completed"] is None
+    assert unavailable["jobs_completed"] == REASON_READ_FAILED
     assert stats["tasks_completed"] == 1, (
         "a later stat came back zero after the jobs read failed — one unreadable "
         "table silently zeroed the whole performance page"
