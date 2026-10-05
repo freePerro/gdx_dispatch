@@ -3780,15 +3780,29 @@ def get_job(job_id: str, request: Request, current_user: Any = Depends(get_curre
         # treatment downstream (warranty cost vs new revenue).
         d["is_callback"] = False
         d["callback_window_days"] = 90
+        # GDXA-227: a parent that is completed (lifecycle_stage, or a legacy
+        # status spelling — prod has NULL / 'Complete' / 'Completed') but no
+        # completed_at cannot be dated, so the 90-day test cannot run. Say so
+        # rather than reporting "not a callback"; never invent the date.
+        d["callback_undetermined"] = False
         if job.parent_job_id:
             try:
-                parent_completed = db.execute(
-                    _text(
-                        "SELECT completed_at FROM jobs "
-                        "WHERE id = :pid AND deleted_at IS NULL"
-                    ),
-                    {"pid": str(job.parent_job_id)},
-                ).scalar()
+                parent_row = db.execute(
+                    select(Job.completed_at, Job.lifecycle_stage, Job.status).where(
+                        Job.id == job.parent_job_id,
+                        Job.deleted_at.is_(None),
+                    )
+                ).first()
+                parent_completed = parent_row[0] if parent_row else None
+                if (
+                    parent_row is not None
+                    and parent_completed is None
+                    and (
+                        parent_row[1] == "completed"
+                        or parent_row[2] in ("Complete", "Completed", "completed")
+                    )
+                ):
+                    d["callback_undetermined"] = True
                 if parent_completed:
                     ref = job.scheduled_at or job.created_at or datetime.now(UTC)
                     if hasattr(parent_completed, "tzinfo") and parent_completed.tzinfo is None:
@@ -3845,7 +3859,9 @@ def get_job_duration(
         actual_hours = round(actual_min / 60, 2)
 
         # Get estimated hours from job_type average — involves cross-table
-        # aggregate with subquery; cleaner as raw SQL.
+        # aggregate with subquery; cleaner as raw SQL. "Completed" is
+        # lifecycle_stage or any legacy spelling: the status string is NULL or
+        # 'Complete' on most historical completed jobs (GDXA-227).
         avg = db.execute(
             _text(
                 """
@@ -3858,7 +3874,8 @@ def get_job_duration(
                     AND te.deleted_at IS NULL
                 WHERE j.job_type = (SELECT job_type FROM jobs WHERE id = :job_id LIMIT 1)
                   AND j.company_id = :tenant_id
-                  AND j.status IN ('Completed', 'completed')
+                  AND (j.lifecycle_stage = 'completed'
+                       OR j.status IN ('Complete', 'Completed', 'completed'))
                   AND j.deleted_at IS NULL
                 GROUP BY j.job_type
                 """
@@ -4192,14 +4209,18 @@ def can_start_job(
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
     try:
         # Raw SQL because JobDependency uses Text columns and needs CAST to uuid
-        # for the JOIN against jobs.id (UUID).
+        # for the JOIN against jobs.id (UUID). A dependency is done when its
+        # lifecycle_stage is completed or its status is a completed spelling;
+        # status alone is NULL on imported completed jobs, which would block
+        # forever (GDXA-227). A missing dependency row still blocks.
         row = db.execute(
             _text("""
                 SELECT COUNT(*) AS blocking
                 FROM job_dependencies d
                 LEFT JOIN jobs j ON j.id = CAST(d.depends_on_job_id AS uuid) AND j.company_id = :tid
                 WHERE d.tenant_id = :tid AND d.job_id = :jid
-                  AND (j.status IS NULL OR j.status NOT IN ('Completed','completed'))
+                  AND (j.id IS NULL OR NOT (j.lifecycle_stage = 'completed'
+                       OR COALESCE(j.status, '') IN ('Complete', 'Completed', 'completed')))
             """),
             {"tid": tenant_id, "jid": job_id},
         ).mappings().first()
