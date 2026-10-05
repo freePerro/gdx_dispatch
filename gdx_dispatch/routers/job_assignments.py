@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -29,8 +29,15 @@ from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.permissions import is_dispatch_manager
-from gdx_dispatch.models.tenant_models import JobAssignment, Technician
+from gdx_dispatch.models.tenant_models import Job, JobAssignment, Technician
 from gdx_dispatch.routers.auth import get_current_user
+from gdx_dispatch.services.visit_sync import (
+    apply_visit_plan,
+    job_crew,
+    job_visit_fields,
+    plan_for_job,
+    recompute_job_schedule,
+)
 
 log = logging.getLogger(__name__)
 router = APIRouter(
@@ -94,6 +101,34 @@ def _list_active(db: Session, job_id: str) -> list[JobAssignment]:
             .order_by(JobAssignment.assigned_at.asc())
         ).scalars().all()
     )
+
+
+def _load_job(db: Session, job_id: str) -> Job | None:
+    try:
+        return db.get(Job, UUID(str(job_id)))
+    except ValueError:
+        return None
+
+
+def _sync_crew_visits(db: Session, job_id: str, crew_before: list[str], uid: str) -> None:
+    """C1–C7 for a crew add or remove, then invariant I (multi-day jobs plan
+    §5.2a). ``crew_before`` is read before the write; the crew after is read
+    back, so a legacy ``assigned_to`` the write displaced counts as removed."""
+    job = _load_job(db, job_id)
+    if job is None or job.deleted_at is not None:
+        return
+    db.expire(job)
+    crew_after = job_crew(db, job)
+    plan = plan_for_job(
+        db, job, crew_before=crew_before, crew_after=tuple(crew_after),
+        fields=job_visit_fields(db, job),
+    )
+    # A crew change alone is never refused (C1–C7 have no refusal rows); if
+    # one ever is, fail the request rather than change the crew without its visits.
+    if plan.refusal is not None:
+        raise RuntimeError(f"crew change refused by the visit planner: {plan.refusal!r}")
+    apply_visit_plan(db, job, plan, uid)
+    recompute_job_schedule(db, job, uid, "crew_changed")
 
 
 def _recompute_primary(db: Session, job_id: str) -> str | None:
@@ -161,6 +196,9 @@ def add_assignment(
             detail=f"tech {payload.tech_id} is already assigned to job {job_id}",
         )
 
+    job = _load_job(db, job_id)
+    crew_before = job_crew(db, job) if job is not None else []
+
     # If this row claims lead, demote any sibling lead first (at most one
     # lead per job is the rule for D5).
     if payload.is_lead:
@@ -197,6 +235,7 @@ def add_assignment(
         },
         request=request,
     )
+    _sync_crew_visits(db, job_id, crew_before, uid)
     db.commit()
     return _serialize(row)
 
@@ -226,6 +265,8 @@ def remove_assignment(
     if row is None or row.deleted_at is not None:
         raise HTTPException(status_code=404, detail="assignment not found")
 
+    job = _load_job(db, job_id)
+    crew_before = job_crew(db, job) if job is not None else []
     row.deleted_at = datetime.now(timezone.utc)
     db.flush()
     primary = _recompute_primary(db, job_id)
@@ -235,6 +276,7 @@ def remove_assignment(
         details={"job_id": job_id, "tech_id": row.tech_id, "primary_after": primary},
         request=request,
     )
+    _sync_crew_visits(db, job_id, crew_before, uid)
     db.commit()
     return {"status": "removed", "primary_after": primary}
 
