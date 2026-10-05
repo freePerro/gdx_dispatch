@@ -1,0 +1,32 @@
+name: Auto-merge
+
+# Turns on GitHub auto-merge (squash) for every non-draft PR into main.
+# The actual gate is the "Branch Safety" ruleset: GitHub only performs the
+# merge once all required status checks are green and the branch is up to
+# date. Drafts (where paperclip agent PRs start) are skipped, so marking a
+# PR "ready for review" is the human approval step.
+#
+# Same-repo PRs only: this repo is public, and a fork PR that passes CI must
+# never land on main without a human.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, ready_for_review, synchronize]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable:
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge (squash)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
