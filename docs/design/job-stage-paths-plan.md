@@ -164,7 +164,7 @@ Kept for the record; not built.
 - No real cancel flow; cancelled jobs on the tech's Today list.
 - `status` spelled "Complete" by PATCH vs "Completed" by `/complete` and closeout; reports that count only one.
 - The public API's own stage writes (`api/public_router.py`) bypass `update_job` and this guard.
-  **Closed 2026-10-05** (`fix/job-stage-guard-gaps`): its PATCH shares `_stage_change_refusal`. Create is not covered: on Postgres its INSERT omits NOT NULL `dispatch_status`/`company_id` and cannot insert at all — a separate defect.
+  **Closed 2026-10-05** (`fix/job-stage-guard-gaps`): its PATCH shares `_stage_change_refusal`. Create is not covered: on Postgres its INSERT omits NOT NULL `dispatch_status`/`company_id` and cannot insert at all — a separate defect. PR 1b of the multi-day jobs plan (§5.2a, *Writers*) then moved that PATCH onto the visit planner, keeping this guard.
 - The 162 completed jobs with blank status and no `completed_at` (no audit trail to date them), and the 31 left blank by D2.
 - `/start` assigns the clicker and has no stage check (/audit finding 5).
 - The Dispatch board drawer offers Close out but not Close without work.

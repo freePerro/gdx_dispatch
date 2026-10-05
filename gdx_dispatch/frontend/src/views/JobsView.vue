@@ -467,7 +467,14 @@
             </small>
           </div>
 
-          <div v-if="formError" class="inline-error" data-testid="job-form-error">{{ formError }}</div>
+          <div v-if="formError" class="inline-error" data-testid="job-form-error">
+            {{ formError }}
+            <!-- A refused visit change (multi-day jobs plan §5.2a: R1–R4, or an
+                 old arrival with no time) names the Appointments page as the
+                 way out; make it one click. -->
+            <a v-if="formErrorToAppointments" href="/appointments" data-testid="job-form-error-appointments"
+               @click.prevent="openAppointmentsFromForm">Open the Appointments page</a>
+          </div>
 
           <div class="form-actions">
             <Button type="button" label="Cancel" text @click="showFormDialog = false" />
@@ -549,6 +556,7 @@ import { useTableExport } from "../composables/useTableExport";
 import { usePermission } from "../composables/usePermission";
 import { JOB_TYPE_OPTIONS, isServiceLane } from '../constants/jobTypes';
 import { formatDate, formatMoney } from "../composables/useFormatters";
+import { pointsAtAppointments, refusalOf } from "../utils/visitRefusals";
 import Button from "primevue/button";
 import DatePicker from "primevue/datepicker";
 import Column from "primevue/column";
@@ -634,6 +642,13 @@ const hasLoadedOnce = ref(false);
 const isSaving = ref(false);
 const isDeleting = ref(false);
 const formError = ref("");
+// Set with formError when the save was refused by a visit rule whose way out
+// is the Appointments page (crew_on_site, onto_booked_day, ...).
+const formErrorToAppointments = ref(false);
+function openAppointmentsFromForm() {
+  showFormDialog.value = false;
+  router.push("/appointments");
+}
 const showFormDialog = ref(false);
 const showDeleteDialog = ref(false);
 const formMode = ref("create");
@@ -947,6 +962,7 @@ function openCreateDialog() {
   _createdSiteMemo.value = null;
   catalogParts.value = [];
   formError.value = "";
+  formErrorToAppointments.value = false;
   showFormDialog.value = true;
 }
 
@@ -958,6 +974,7 @@ function openJobDetail(job) {
 async function openEditDialog(job) {
   formMode.value = "edit";
   formError.value = "";
+  formErrorToAppointments.value = false;
   editStartStatus.value = job.status || "";
   _seedingLocation.value = true;
   jobForm.value = {
@@ -1068,6 +1085,7 @@ function apptRequestNote(form) {
 
 async function submitForm() {
   formError.value = "";
+  formErrorToAppointments.value = false;
   // Each save re-evaluates the soft gate from scratch — acknowledging once
   // shouldn't grant a permanent pass for the rest of the dialog session.
   softGateAcknowledged.value = false;
@@ -1288,7 +1306,9 @@ async function submitForm() {
       });
     }
   } catch (error) {
-    const msg = error?.message || "Failed to save job.";
+    // A visit refusal's `detail` is written for the office; show it verbatim.
+    const refusal = refusalOf(error);
+    const msg = refusal?.detail || error?.message || "Failed to save job.";
     if (primaryWriteOk) {
       // The job is on disk. Report the follow-up failure, but never as a
       // failed save — the dialog still closes and the list still refreshes
@@ -1301,7 +1321,10 @@ async function submitForm() {
       });
     } else {
       formError.value = msg;
-      toast.add({ severity: "error", summary: "Error", detail: msg, life: 5000 });
+      formErrorToAppointments.value = pointsAtAppointments(refusal);
+      // A refusal is already on the form, beside its way out; a second toast
+      // repeating it is noise (useApi raises one of its own).
+      if (!refusal) toast.add({ severity: "error", summary: "Error", detail: msg, life: 5000 });
     }
   } finally {
     isSaving.value = false;
@@ -1686,7 +1709,7 @@ defineExpose({
 }
 
 .inline-error {
-  color: #b42318;
+  color: var(--color-danger-500);
   margin: 0.5rem 0;
   font-size: 0.9rem;
 }
