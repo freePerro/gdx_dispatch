@@ -492,8 +492,8 @@ def test_send_populates_valid_until_from_expiry_days(client: TestClient, monkeyp
 
 
 def _set_valid_until(client: TestClient, estimate_id: str, iso_dt: str) -> None:
-    """Set valid_until directly on the row — the API create/patch payloads don't
-    wire it (it's populated on send), so the tests reach into the test DB. Uses
+    """Set valid_until directly on the row — create drops the field and these
+    tests want arbitrary (even past) dates, so they reach into the test DB. Uses
     the ORM so the Uuid PK coerces correctly (it stores 32-hex on SQLite, dashed
     on PG — a raw string WHERE would miss)."""
     import uuid as _uuid
@@ -522,6 +522,43 @@ def test_send_does_not_overwrite_existing_valid_until(client: TestClient, monkey
 
     data = client.post(f"/api/estimates/{estimate['id']}/send").json()
     assert data["valid_until"].startswith("2099-12-31")
+
+
+def test_patch_null_valid_until_lets_send_apply_expiry_days(client: TestClient, monkeypatch):
+    """GDXA-232: the editor autosaves valid_until = null until the user picks a
+    date. A null PATCH must clear a stored (e.g. old seeded +30) date, so send
+    stamps sent_at + estimate_expiry_days instead of keeping the stale default;
+    a picked date sent through the same PATCH must survive send."""
+    _mock_email_success(monkeypatch)
+    from datetime import datetime
+
+    from gdx_dispatch.modules.estimates_features.service import EstimatesFeatures
+    monkeypatch.setattr(
+        "gdx_dispatch.routers.estimates.get_features",
+        lambda _tid: EstimatesFeatures(estimate_expiry_days=45),
+    )
+    blank = _create_estimate(client)
+    _set_valid_until(client, blank["id"], "2099-12-31T00:00:00+00:00")
+    r = client.patch(f"/api/estimates/{blank['id']}", json={"valid_until": None})
+    assert r.status_code == 200, r.text
+    assert r.json()["valid_until"] is None
+
+    data = client.post(f"/api/estimates/{blank['id']}/send").json()
+    sent = datetime.fromisoformat(data["sent_at"])
+    valid = datetime.fromisoformat(data["valid_until"])
+    assert (valid - sent).days == 45
+
+    # The editor's next autosave omits valid_until (unchanged by the user):
+    # the date send just stamped must survive it.
+    r = client.patch(f"/api/estimates/{blank['id']}", json={"notes": "post-send edit"})
+    assert r.status_code == 200, r.text
+    assert r.json()["valid_until"] == data["valid_until"]
+
+    picked = _create_estimate(client)
+    r = client.patch(f"/api/estimates/{picked['id']}", json={"valid_until": "2099-06-15"})
+    assert r.status_code == 200, r.text
+    data = client.post(f"/api/estimates/{picked['id']}/send").json()
+    assert data["valid_until"].startswith("2099-06-15")
 
 
 def test_resend_refreshes_a_past_valid_until(client: TestClient, monkeypatch):

@@ -49,7 +49,8 @@ describe('EstimateView — multi-provider estimate_source wiring', () => {
 
   it('parses valid_until/expires_at as date-only so UTC midnight does not display a day early', () => {
     expect(SRC).toMatch(/function _parseDateOnly\(v\)/);
-    expect(SRC).toMatch(/valid_until: _parseDateOnly\(data\.valid_until \|\| data\.expires_at\) \|\| defaultValidUntil\(\)/);
+    // No default fallback: a NULL valid_until stays blank (GDXA-232).
+    expect(SRC).toMatch(/valid_until: _parseDateOnly\(data\.valid_until \|\| data\.expires_at\),/);
     expect(SRC).toMatch(/expires_at: _parseDateOnly\(/);
   });
 
