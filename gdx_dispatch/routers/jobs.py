@@ -1201,6 +1201,29 @@ def _lifecycle_stage_for_write(status: str | None) -> str | None:
     return s if s in _VALID_LIFECYCLE_STAGES else None
 
 
+def _stage_change_refusal(stored_stage: str | None, requested_stage: str) -> dict | None:
+    """The 409 body for a stage change no generic PATCH may make, else None.
+
+    Shared by this router's PATCH and the public API's (api/public_router.py),
+    so no writer of lifecycle_stage can skip it. Callers drop a request that
+    only resends the stored stage before asking.
+    """
+    stored = (stored_stage or "").lower()
+    if stored in ("completed", "cancelled"):
+        return {
+            "detail": f"This job is {stored}. Use Re-open on the job "
+                      "page to change its stage, so the reason is recorded.",
+            "use": "reopen",
+        }
+    if requested_stage == "completed":
+        return {
+            "detail": "Finish a job with Close out (or Close without work "
+                      "when there is nothing to attest), not a status change.",
+            "use": "closeout",
+        }
+    return None
+
+
 def _job_patch_result(job: Job) -> dict:
     return {
         "id": job.id, "title": job.title, "status": job.status,
@@ -1320,10 +1343,17 @@ def update_job(
     # Status: write to both status (varchar) and lifecycle_stage (enum) in sync
     raw_status = data.get("status") or data.get("lifecycle_stage")
     if raw_status is not None:
-        updates["status"] = str(raw_status).strip().title() or None
         ls = _lifecycle_stage_for_write(raw_status)
-        if ls:
-            updates["lifecycle_stage"] = ls
+        if not ls:
+            # A label naming no stage used to be written to `status` alone,
+            # which skipped the stage guard below: "Scheduled Later" on a
+            # completed job answered 200 and rewrote its status. No UI sends
+            # one; the stage strip and the edit dialog only offer stages.
+            return jsonable_response(
+                {"detail": f"status {str(raw_status)!r} is not a job stage"}, 422,
+            )
+        updates["status"] = str(raw_status).strip().title() or None
+        updates["lifecycle_stage"] = ls
 
     if not updates:
         return jsonable_response({"detail": "no fields to update"}, 400)
@@ -1362,18 +1392,8 @@ def update_job(
             if requested_stage == stored_stage:
                 updates.pop("lifecycle_stage", None)
                 updates.pop("status", None)
-            elif stored_stage in ("completed", "cancelled"):
-                return jsonable_response({
-                    "detail": f"This job is {stored_stage}. Use Re-open on the job "
-                              "page to change its stage, so the reason is recorded.",
-                    "use": "reopen",
-                }, 409)
-            elif requested_stage == "completed":
-                return jsonable_response({
-                    "detail": "Finish a job with Close out (or Close without work "
-                              "when there is nothing to attest), not a status change.",
-                    "use": "closeout",
-                }, 409)
+            elif refusal := _stage_change_refusal(stored_stage, requested_stage):
+                return jsonable_response(refusal, 409)
             elif requested_stage == "in_progress" and not job.started_at:
                 updates["started_at"] = now
             if len(updates) == 1:  # only updated_at left — nothing to change

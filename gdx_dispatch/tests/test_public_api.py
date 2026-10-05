@@ -111,6 +111,10 @@ def _make_tenant_engine():
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 lifecycle_stage TEXT NOT NULL DEFAULT 'lead',
+                -- status / started_at: written by update_job's stage path
+                -- since the stage guard was shared with it (2026-10-05).
+                status TEXT,
+                started_at TEXT,
                 customer_id TEXT,
                 scheduled_at TEXT,
                 company_id TEXT,
@@ -647,10 +651,12 @@ class TestPublicApiMutationsAreAudited:
         rows = _audit_rows(client, action="job_updated", entity_id=job_id)
         assert len(rows) == 1, f"expected exactly one trail row, got {rows!r}"
         changed = rows[0]["details"]["changed"]
-        # The columns, not the request body: `status` lands in lifecycle_stage.
-        assert set(changed) == {"title", "lifecycle_stage", "scheduled_at"}, changed
+        # The columns, not the request body: `status` lands in lifecycle_stage,
+        # with the display twin `status` kept in sync as the desktop PATCH does.
+        assert set(changed) == {"title", "lifecycle_stage", "status", "scheduled_at"}, changed
         assert changed["title"] == "after"
         assert changed["lifecycle_stage"] == "scheduled"
+        assert changed["status"] == "Scheduled"
         assert changed["scheduled_at"].startswith("2026-10-01"), changed["scheduled_at"]
         assert rows[0]["user_id"] == "gdx_live_tes"
 
@@ -676,6 +682,7 @@ class TestPublicApiMutationsAreAudited:
         )
         assert resp.status_code == 404, resp.text[:300]
         assert _audit_rows(client, action="job_updated", entity_id=missing) == []
+
 
     def test_customer_create_is_audited_without_leaking_contact_details(
         self, client: TestClient
@@ -734,6 +741,127 @@ class TestPublicApiMutationsAreAudited:
         assert details["secret_set"] is True
         # The secret is a credential; `details` is readable in the audit viewer.
         assert "sup3r-secret-value" not in json.dumps(details)
+
+
+def _stored_job(client: TestClient, job_id: str) -> dict:
+    with client._tenant_engine.connect() as conn:  # type: ignore[attr-defined]
+        return dict(conn.execute(
+            text("SELECT lifecycle_stage, status, started_at, title FROM jobs WHERE id = :j"),
+            {"j": job_id},
+        ).mappings().one())
+
+
+def _force_stage(client: TestClient, job_id: str, stage: str) -> None:
+    with client._tenant_engine.begin() as conn:  # type: ignore[attr-defined]
+        conn.execute(
+            text("UPDATE jobs SET lifecycle_stage = :s WHERE id = :j"),
+            {"s": stage, "j": job_id},
+        )
+
+
+class TestPublicApiAnswersToTheStageGuard:
+    """The API-key PATCH wrote any string into lifecycle_stage: it completed
+    jobs with no closeout and moved finished ones with no reason recorded,
+    bypassing the guard #842 put on the desktop PATCH (found 2026-10-05).
+    It now shares that guard (routers/jobs.py `_stage_change_refusal`).
+
+    Create (`POST /api/v1/jobs`) is not covered: on Postgres its INSERT omits
+    the NOT NULL `dispatch_status` and `company_id`, so it cannot insert a job
+    at all, guarded or not. That is its own defect, left to its own fix."""
+
+    _headers = {"X-API-Key": RAW_API_KEY, "x-tenant-id": TENANT_ID}
+
+    def _job(self, client: TestClient, **body) -> str:
+        resp = client.post(
+            "/api/v1/jobs", headers=self._headers, json={"title": "stage probe", **body}
+        )
+        assert resp.status_code == 201, resp.text[:300]
+        return resp.json()["data"]["id"]
+
+    def _patch(self, client: TestClient, job_id: str, body: dict):
+        return client.patch(f"/api/v1/jobs/{job_id}", headers=self._headers, json=body)
+
+    def test_completing_a_job_is_refused(self, client: TestClient):
+        job_id = self._job(client)
+        for status in ("completed", "Complete"):
+            resp = self._patch(client, job_id, {"status": status, "title": "x"})
+            assert resp.status_code == 409, resp.text[:300]
+            assert resp.json()["detail"]["use"] == "closeout"
+        stored = _stored_job(client, job_id)
+        assert stored["lifecycle_stage"] == "lead" and stored["title"] == "stage probe"
+        assert _audit_rows(client, action="job_updated", entity_id=job_id) == []
+
+    @pytest.mark.parametrize("finished", ["completed", "cancelled"])
+    def test_a_finished_job_cannot_be_moved(self, client: TestClient, finished: str):
+        job_id = self._job(client)
+        _force_stage(client, job_id, finished)
+        resp = self._patch(client, job_id, {"status": "scheduled"})
+        assert resp.status_code == 409, resp.text[:300]
+        assert resp.json()["detail"]["use"] == "reopen"
+        assert _stored_job(client, job_id)["lifecycle_stage"] == finished
+        assert _audit_rows(client, action="job_updated", entity_id=job_id) == []
+
+    def test_a_status_that_names_no_stage_is_a_422_not_a_500(self, client: TestClient):
+        job_id = self._job(client)
+        resp = self._patch(client, job_id, {"status": "Scheduled Later"})
+        assert resp.status_code == 422, resp.text[:300]
+        assert _stored_job(client, job_id)["lifecycle_stage"] == "lead"
+
+    def test_resending_the_stored_stage_writes_nothing(self, client: TestClient):
+        job_id = self._job(client)
+        _force_stage(client, job_id, "completed")
+        resp = self._patch(client, job_id, {"status": "Complete"})
+        assert resp.status_code == 200, resp.text[:300]
+        assert resp.json()["data"]["status"] == "completed"
+        assert _audit_rows(client, action="job_updated", entity_id=job_id) == []
+
+    def test_an_open_move_writes_the_stage_its_twin_and_started_at(
+        self, client: TestClient
+    ):
+        job_id = self._job(client)
+        resp = self._patch(client, job_id, {"status": "In Progress"})
+        assert resp.status_code == 200, resp.text[:300]
+        stored = _stored_job(client, job_id)
+        assert stored["lifecycle_stage"] == "in_progress"
+        assert stored["status"] == "In Progress"
+        assert stored["started_at"] is not None
+        first_start = stored["started_at"]
+        # A second move into in_progress (via scheduled) keeps the first stamp.
+        assert self._patch(client, job_id, {"status": "scheduled"}).status_code == 200
+        assert self._patch(client, job_id, {"status": "in_progress"}).status_code == 200
+        assert _stored_job(client, job_id)["started_at"] == first_start
+
+    def test_a_stage_that_moves_mid_request_is_not_overwritten(
+        self, client: TestClient, monkeypatch
+    ):
+        """A closeout landing between the guard's read and the UPDATE.
+
+        The fixture engine is a StaticPool over one SQLite connection, so a
+        write through it here lands inside the request's own transaction —
+        exactly what the UPDATE would see had another session committed it.
+        """
+        import gdx_dispatch.routers.jobs as jobs_router
+
+        job_id = self._job(client)
+        real = jobs_router._stage_change_refusal
+        # Held until the request is done: a checked-out connection that is
+        # garbage-collected is reset by the pool, and that ROLLBACK would undo
+        # the injected write on the shared connection before the UPDATE runs.
+        held = []
+
+        def closeout_lands_meanwhile(stored, requested):
+            raw = client._tenant_engine.raw_connection()  # type: ignore[attr-defined]
+            held.append(raw)
+            raw.driver_connection.execute(
+                "UPDATE jobs SET lifecycle_stage = 'completed' WHERE id = ?", (job_id,)
+            )
+            return real(stored, requested)
+
+        monkeypatch.setattr(jobs_router, "_stage_change_refusal", closeout_lands_meanwhile)
+        resp = self._patch(client, job_id, {"status": "scheduled"})
+        assert resp.status_code == 409, resp.text[:300]
+        assert _stored_job(client, job_id)["lifecycle_stage"] == "completed"
+        assert _audit_rows(client, action="job_updated", entity_id=job_id) == []
 
 
 class TestAuditFailureSemantics:
