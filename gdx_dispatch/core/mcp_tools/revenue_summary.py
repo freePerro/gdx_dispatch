@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sqlalchemy import func, select
+
 from gdx_dispatch.core.mcp_registry import ToolDescriptor, register_tool
+from gdx_dispatch.models.tenant_models import Invoice
 
 DESCRIPTOR = ToolDescriptor(
     name="revenue.summary",
@@ -47,19 +50,16 @@ async def handler(
         since_dt = datetime.now(timezone.utc) - timedelta(days=30)
 
     # Sums `total`, NOT the dropped `total_amount` (migration 073): that column
-    # was NULL on every row, so this tool reported $0 revenue — the same M8 bug,
-    # in a raw-SQL string an attribute-level grep could not see.
-    # COALESCE keeps a no-rows result at 0 rather than None.
-    # We assume the existence of 'paid_at' and 'status' columns based on the spec.
-    query = """
-        SELECT COALESCE(SUM(total), 0), COUNT(*)
-        FROM invoices
-        WHERE status = 'paid'
-          AND paid_at >= :since
-          AND deleted_at IS NULL
-    """
-
-    result = db.execute(query, {"since": since_dt})
+    # was NULL on every row, so this tool reported $0 revenue.
+    # COALESCE keeps a no-rows result at 0 rather than None. An ORM select,
+    # not a SQL string: Session.execute refuses a bare string, so the string
+    # form only ever ran against the unit test's mock (GDXA-209).
+    stmt = select(func.coalesce(func.sum(Invoice.total), 0), func.count()).where(
+        Invoice.status == "paid",
+        Invoice.paid_at >= since_dt,
+        Invoice.deleted_at.is_(None),
+    )
+    result = db.execute(stmt)
     row = result.first()
 
     # row is expected to be (total, count)

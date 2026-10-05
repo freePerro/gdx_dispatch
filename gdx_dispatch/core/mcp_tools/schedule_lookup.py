@@ -3,11 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sqlalchemy import select
+
 from gdx_dispatch.core.mcp_registry import ToolDescriptor, register_tool
+from gdx_dispatch.models.tenant_models import Job
 
 DESCRIPTOR = ToolDescriptor(
     name="schedule.lookup",
-    description="List jobs scheduled in a date window, ordered by scheduled_at.",
+    description="List jobs scheduled in a date window, ordered by scheduled_at. Cancelled jobs are excluded.",
     blast_radius="green",
     sensitivity_class="internal",
     capabilities_required=[("read", "schedule"), ("read", "job")],
@@ -31,6 +34,7 @@ DESCRIPTOR = ToolDescriptor(
                         "scheduled_at": {"type": ["string", "null"]},
                         "customer_id": {"type": "string"},
                         "technician_id": {"type": "string"},
+                        "lifecycle_stage": {"type": "string"},
                     },
                 },
             },
@@ -47,8 +51,6 @@ async def handler(
     **_,
 ) -> dict[str, Any]:
     """List jobs scheduled in a date window."""
-
-
     now = datetime.now(timezone.utc)
 
     if start:
@@ -58,19 +60,22 @@ async def handler(
 
     end_dt = datetime.fromisoformat(end.replace("Z", "+00:00")) if end else start_dt + timedelta(days=7)
 
-    # The query pattern requested:
-    # SELECT * FROM jobs WHERE scheduled_at >= :start AND scheduled_at < :end AND deleted_at IS NULL ORDER BY scheduled_at
-    # Note: The test uses a mock DB that returns rows via result.scalars.all()
-
-    query = (
-        "SELECT * FROM jobs "
-        "WHERE scheduled_at >= :start AND scheduled_at < :end "
-        "AND deleted_at IS NULL "
-        "ORDER BY scheduled_at"
+    # A cancelled job keeps its scheduled_at (cancel sets lifecycle_stage
+    # only), so without this filter the assistant reported cancelled visits as
+    # booked work. Completed jobs stay: the window can lie in the past, and
+    # "what was on the schedule last Tuesday" includes the work that got done.
+    # lifecycle_stage is in the output so the caller can tell them apart.
+    stmt = (
+        select(Job)
+        .where(
+            Job.scheduled_at >= start_dt,
+            Job.scheduled_at < end_dt,
+            Job.deleted_at.is_(None),
+            Job.lifecycle_stage != "cancelled",
+        )
+        .order_by(Job.scheduled_at)
     )
-
-    result = db.execute(query, {"start": start_dt, "end": end_dt})
-    rows = result.scalars().all()
+    rows = db.execute(stmt).scalars().all()
 
     schedule = []
     for r in rows:
@@ -80,6 +85,7 @@ async def handler(
             "scheduled_at": r.scheduled_at.isoformat() if r.scheduled_at else None,
             "customer_id": str(r.customer_id),
             "technician_id": r.assigned_to,
+            "lifecycle_stage": r.lifecycle_stage,
         })
 
     return {"schedule": schedule}

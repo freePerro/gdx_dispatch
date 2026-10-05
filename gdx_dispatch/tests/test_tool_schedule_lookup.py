@@ -28,6 +28,7 @@ def _row(scheduled_at, title="Service", tech="t1") -> SimpleNamespace:
         scheduled_at=scheduled_at,
         customer_id=str(uuid4()),
         assigned_to=tech,
+        lifecycle_stage="scheduled",
         deleted_at=None,
     )
 

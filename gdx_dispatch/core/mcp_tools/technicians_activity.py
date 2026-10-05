@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sqlalchemy import func, select
+
 from gdx_dispatch.core.mcp_registry import ToolDescriptor, register_tool
+from gdx_dispatch.models.tenant_models import Job
 
 DESCRIPTOR = ToolDescriptor(
     name="technicians.activity",
@@ -46,27 +50,31 @@ async def handler(
     """
     Returns per-technician activity rollup.
     """
+    # Default window = last 30 days, as the descriptor promises. The old SQL
+    # string bound `since` as given, so an omitted `since` compared against
+    # NULL and matched nothing — and Session.execute refuses a bare string
+    # anyway, so the string form only ever ran against the unit test's mock
+    # (GDXA-209).
+    if since:
+        since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+    else:
+        since_dt = datetime.now(timezone.utc) - timedelta(days=30)
 
-    # Default window = last 30 days if since is not provided.
-    # Note: The caller/transport layer usually handles date parsing,
-    # but we ensure the query uses the parameter.
-
-    query = """
-        SELECT
-            assigned_to,
-            COUNT(*) FILTER (WHERE lifecycle_stage='completed'),
-            COUNT(*) FILTER (WHERE lifecycle_stage IN ('scheduled','in_progress')),
-            MAX(updated_at)
-        FROM jobs
-        WHERE updated_at >= :since
-          AND assigned_to IS NOT NULL
-          AND deleted_at IS NULL
-        GROUP BY assigned_to
-    """
-
-    # The test uses _mock_rows which returns rows as (tech_id, completed, in_progress, last_active)
-    # We assume the db object passed in has an .execute() method returning a result with .all()
-    result = db.execute(query, {"since": since})
+    stmt = (
+        select(
+            Job.assigned_to,
+            func.count().filter(Job.lifecycle_stage == "completed"),
+            func.count().filter(Job.lifecycle_stage.in_(("scheduled", "in_progress"))),
+            func.max(Job.updated_at),
+        )
+        .where(
+            Job.updated_at >= since_dt,
+            Job.assigned_to.is_not(None),
+            Job.deleted_at.is_(None),
+        )
+        .group_by(Job.assigned_to)
+    )
+    result = db.execute(stmt)
     rows = result.all()
 
     technicians = []

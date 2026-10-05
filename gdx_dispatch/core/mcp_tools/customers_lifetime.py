@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
+
+from sqlalchemy import func, select
 
 from gdx_dispatch.core.mcp_registry import ToolDescriptor, register_tool
+from gdx_dispatch.models.tenant_models import Invoice
 
 DESCRIPTOR = ToolDescriptor(
     name="customers.lifetime_analysis",
@@ -35,26 +39,41 @@ DESCRIPTOR = ToolDescriptor(
 )
 
 
+def _iso(value: Any) -> str | None:
+    if not value:
+        return None
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
 async def handler(principal: Any, db: Any, customer_id: str, **_) -> dict[str, Any]:
     """
     Calculates lifetime revenue rollup for a specific customer.
     """
     # Sums `total`, NOT the dropped `total_amount` (migration 073) — that column
     # was NULL on every row, so lifetime value reported $0 for every customer.
-    # Note: The requirement says 'status=paid' and 'deleted_at IS NULL'.
-    query = """
-        SELECT
-            COALESCE(SUM(total), 0),
-            COUNT(*),
-            MIN(issue_date),
-            MAX(issue_date)
-        FROM invoices
-        WHERE customer_id = :cid
-          AND status = 'paid'
-          AND deleted_at IS NULL
-    """
+    # An ORM select, not a SQL string: Session.execute refuses a bare string,
+    # and the string also named `issue_date`, which invoices does not have
+    # (the column is `invoice_date`), so it only ever ran against the unit
+    # test's mock (GDXA-209). Binding through the Uuid column also matches on
+    # SQLite, where a raw `customer_id = :cid` with a dashed id never does.
+    try:
+        cid = UUID(str(customer_id))
+    except ValueError as exc:
+        # Raised, not returned: invoke_tool maps a raise to execution_error,
+        # but reports a returned {"ok": False} dict as a successful result.
+        raise ValueError(f"customer_id is not a UUID: {customer_id!r}") from exc
+    stmt = select(
+        func.coalesce(func.sum(Invoice.total), 0),
+        func.count(),
+        func.min(Invoice.invoice_date),
+        func.max(Invoice.invoice_date),
+    ).where(
+        Invoice.customer_id == cid,
+        Invoice.status == "paid",
+        Invoice.deleted_at.is_(None),
+    )
 
-    result = db.execute(query, {"cid": customer_id})
+    result = db.execute(stmt)
     row = result.first()
 
     if not row:
@@ -68,8 +87,8 @@ async def handler(principal: Any, db: Any, customer_id: str, **_) -> dict[str, A
             "customer_id": str(customer_id),
             "total_paid": float(total_paid),
             "invoice_count": int(count),
-            "first_invoice_date": first if first else None,
-            "last_invoice_date": last if last else None,
+            "first_invoice_date": _iso(first),
+            "last_invoice_date": _iso(last),
         }
     }
 
