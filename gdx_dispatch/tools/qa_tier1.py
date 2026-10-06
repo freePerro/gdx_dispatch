@@ -30,7 +30,7 @@ ENDPOINTS = [
     "/api/inventory/parts",
     "/api/documents", "/api/tags", "/api/vendors", "/api/purchase-orders",
     "/api/reviews", "/api/photos/recent", "/api/commissions/summary",
-    "/api/payroll/pay-periods", "/api/settings/branding",
+    "/api/timeclock/pay-periods", "/api/settings/branding",
     "/api/maintenance/plans", "/api/service-agreements",
     "/api/change-orders", "/api/collections",
 ]
