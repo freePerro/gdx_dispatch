@@ -88,15 +88,6 @@
             @click="runOptimizer"
           />
           <Button
-            label="Route Order"
-            icon="pi pi-sort-alt"
-            severity="secondary"
-            size="small"
-            text
-            data-testid="dispatch-route-order-btn"
-            @click="requestRouteOrder"
-          />
-          <Button
             label="Geocode Missing"
             icon="pi pi-map-marker"
             severity="secondary"
@@ -148,9 +139,6 @@
           </div>
         </div>
       </div>
-      <p v-if="routeOrderSummary" class="route-order-summary" data-testid="dispatch-route-summary">
-        {{ routeOrderSummary }}
-      </p>
 
       <!-- Past their date, not closed out (2026-09-27). The board loads only
            undated jobs and the dates in view, so the day after a visit an
@@ -1182,7 +1170,6 @@ const drawerJob = ref(null);
 const showMap = ref(false);
 const mapLocations = ref([]);
 const mapLoading = ref(false);
-const routeOrderSummary = ref('');
 const optimizerLoading = ref(false);
 
 // Assignment dialog
@@ -1218,7 +1205,6 @@ const selectedDateStr = computed(() => toDateStr(selectedDate.value));
 watch(selectedDate, (val) => { if (!val) selectedDate.value = new Date(); });
 
 watch(selectedDateStr, () => {
-  routeOrderSummary.value = '';
   fetchJobs();
 });
 
@@ -1713,28 +1699,6 @@ async function refreshMap() {
     mapLocations.value = list;
   } finally {
     mapLoading.value = false;
-  }
-}
-
-async function requestRouteOrder() {
-  try {
-    const data = await api.get(`/api/dispatch/optimize-route?date=${selectedDateStr.value}`);
-    const stops =
-      Array.isArray(data?.sorted_stop_list)
-        ? data.sorted_stop_list
-        : Array.isArray(data?.stops)
-          ? data.stops
-          : Array.isArray(data?.optimized_job_ids)
-            ? data.optimized_job_ids
-            : [];
-    const count = stops.length;
-    const message = count
-      ? `Route order returned ${count} stop${count === 1 ? '' : 's'}.`
-      : 'Route order completed with no stops.';
-    routeOrderSummary.value = message;
-    toast.add({ severity: 'success', summary: 'Route order', detail: message, life: 4000 });
-  } catch (error) {
-    routeOrderSummary.value = '';
   }
 }
 
@@ -2702,12 +2666,6 @@ defineExpose({
 .map-coords,
 .map-timestamp {
   color: var(--p-text-muted-color);
-}
-
-.route-order-summary {
-  font-size: 0.85rem;
-  color: var(--p-text-muted-color);
-  padding: 0 0.25rem;
 }
 
 .job-detail-drawer :deep(.p-drawer-content) {

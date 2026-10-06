@@ -4,7 +4,7 @@ endpoints don't exist yet.
 
 The Wave C/D/E Vue views were built with Codex-guessed API paths that didn't
 match the real router prefixes (e.g. /api/admin-ops, /api/collections,
-/api/loyalty, /api/maps, /api/marketing, /api/uploads, /api/voice,
+/api/loyalty, /api/marketing, /api/uploads, /api/voice,
 /api/quickbooks, etc.).
 
 This router exposes thin GET/POST/PATCH handlers that:
@@ -213,14 +213,12 @@ class _GenericPayload(BaseModel):
 
 
 # ── Dispatch utilities (map, optimizer, geocoder) ─────────────────────────
-
-@router.get("/api/dispatch/optimize-route", response_model=None)
-def get_optimized_route(
-    date: str | None = Query(default=None),
-    _: dict = Depends(get_current_user),
-) -> dict:
-    return {"stops": [], "total_distance_km": 0, "total_duration_sec": 0}
-
+# GET /api/dispatch/optimize-route was removed 2026-10-06 (GDXA-317). It
+# returned a hardcoded {"stops": []} for every date, and the Dispatch board's
+# "Route Order" button read that as a finished run and toasted "Route order
+# completed with no stops" — a success for work never done. The button went
+# with it. No screen orders a route now: POST /api/maps/optimize-route is a
+# real Google call, but nothing in the frontend calls it.
 
 @router.post("/api/dispatch/optimize", response_model=None)
 def run_dispatch_optimizer(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
@@ -245,10 +243,12 @@ def loyalty_index(_: dict = Depends(get_current_user)) -> dict:
 
 
 # ── Maps (list index) ─────────────────────────────────────────────────────
-
-@router.get("/api/maps", response_model=None)
-def maps_index(_: dict = Depends(get_current_user)) -> dict:
-    return {"tech_locations": [], "route_optimizations": []}
+# GET /api/maps was removed 2026-10-06 (GDXA-317). It answered
+# {"tech_locations": [], "route_optimizations": []} unconditionally, so the
+# Maps page could never show a technician whatever the data. MapsView now
+# reads GET /api/dispatch/locations (the tech_locations table that
+# POST /api/mobile/location writes); nothing stores
+# route plans, so the "Route Optimizations" tab went rather than stay empty.
 
 
 # ── Payments (list + create + intent) ─────────────────────────────────────

@@ -237,7 +237,6 @@ GET /api/diagnosis/schemas
 GET /api/dispatch-settings
 GET /api/dispatch/late-open
 GET /api/dispatch/locations
-GET /api/dispatch/optimize-route
 GET /api/dispatch/partial-jobs
 GET /api/dispatch/schedule-with-traffic
 GET /api/dispatch/scheduled-unassigned
@@ -367,7 +366,6 @@ GET /api/loyalty/tiers/{tier_id}
 GET /api/maintenance/due-this-month
 GET /api/maintenance/enrollments
 GET /api/maintenance/plans
-GET /api/maps
 GET /api/maps/provider
 GET /api/me/tech-mobile-settings
 GET /api/me/timezone
