@@ -1163,6 +1163,12 @@ async def lifespan(app: FastAPI):
     from gdx_dispatch.core.internal_auth import log_identity
 
     log_identity(logging.getLogger("gdx_dispatch.app.startup_internal_auth"), "app")
+    # GDXA-271: marked alarm checks → error sink + hourly-deduped email.
+    # No-op unless OPS_ALERT_EMAIL is set; the celery side installs it in
+    # worker_process_init (core/celery_app.py).
+    from gdx_dispatch.modules.error_sink.ops_alert import install_ops_alert_handler
+
+    install_ops_alert_handler()
     # Sprint Outlook Integration: seed GDX outlook credentials from env
     # if the existing POWER_APPS_*/GDX_MICROSOFT_SECRET_KEY are set.
     # Idempotent + swallow-all-errors per bootstrap contract.

@@ -7,6 +7,10 @@ Not a today project. lets do d a self-hosted error sink."
 This module owns:
   - record_server_error()  — write path, called from the global
     FastAPI exception handler. Best-effort; never raises.
+  - ops_alert.py — the logging handler for alarm checks marked
+    ``extra={"ops_alert": True, "ops_fingerprint": ...}``: one row each
+    here, plus an hourly-deduped email to OPS_ALERT_EMAIL (GDXA-271).
+    Off unless that env var is set.
   - GET/PATCH /api/admin/errors  — admin read + resolve workflow.
   - server_errors table (in the Alembic baseline, migration 001).
 

@@ -48,6 +48,14 @@ SHARED_ENV = [
     # the internal gate closed while every GDX_INTERNAL_TOKEN assertion here
     # stayed green. Pinning only the token tested the variable nobody sets.
     ("SECRET_KEY", _PLUGIN_HOST_CALLERS),
+    # GDXA-271: the ops-alert handler installs in the API lifespan and in every
+    # celery worker child, and the alarm checks run on the workers. A recipient
+    # or password delivered to app alone leaves the channel silently off there.
+    ("OPS_ALERT_EMAIL", ["app", "celery-high", "celery-low"]),
+    ("PLATFORM_SMTP_PASS", ["app", "celery-high", "celery-low"]),
+    # The login user must be the operator's, not a literal: a password with a
+    # placeholder user fails every login while every guard above stays green.
+    ("PLATFORM_SMTP_USER", ["app", "celery-high", "celery-low"]),
 ]
 
 #: The host version that plugin discovery compares a plugin's `requires`
@@ -239,3 +247,13 @@ def test_the_browser_allowlist_default_survives_an_empty_env():
             os.environ.pop("PLUGIN_BROWSER_ALLOWED_HOSTS", None)
         else:
             os.environ["PLUGIN_BROWSER_ALLOWED_HOSTS"] = old
+
+
+def test_plugin_host_does_not_hold_the_platform_mailbox_password():
+    """GDXA-271 put the mailbox password on the celery workers (the ops alarms
+    run there) through its own anchor rather than *app-env, because plugin-host
+    merges *app-env and runs third-party code. Dev/self-host compose only:
+    docker-compose.customer.yml already shared it through its anchor before
+    this change."""
+    env = _service_environment("docker-compose.yml", "plugin-host")
+    assert "PLATFORM_SMTP_PASS" not in env

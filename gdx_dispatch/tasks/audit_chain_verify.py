@@ -21,9 +21,11 @@ log = logging.getLogger(__name__)
 
 @celery_app.task(name="audit.verify_chain_nightly", queue="priority:low")
 def verify_chain_nightly() -> dict:
-    """Verify the whole audit chain. Returns {ok, rows} and logs an ERROR when
-    the chain is broken so it surfaces in Sentry / the log triage, not just a
-    return value nobody reads."""
+    """Verify the whole audit chain. Returns {ok, rows} and, when the chain is
+    broken, logs an ERROR marked ``ops_alert`` (fingerprint
+    ``audit-chain-verify-nightly``, the beat entry's name) so the ops-alert
+    handler records it on Server Errors and emails OPS_ALERT_EMAIL — not just
+    a return value nobody reads."""
     try:
         with SessionLocal() as db:
             from sqlalchemy import func, select
@@ -62,6 +64,10 @@ def verify_chain_nightly() -> dict:
             "AUDIT_CHAIN_BROKEN — the hash chain failed with no unchained "
             "rows to explain it; a row was tampered, reordered, or deleted. "
             "Investigate immediately.",
-            extra={"rows_checked": rows},
+            extra={
+                "rows_checked": rows,
+                "ops_alert": True,
+                "ops_fingerprint": "audit-chain-verify-nightly",
+            },
         )
     return {"ok": bool(ok), "rows": rows, "unchained": unchained}

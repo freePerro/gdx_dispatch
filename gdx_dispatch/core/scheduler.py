@@ -99,7 +99,10 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             # folders (incl. Inbox) for FIVE DAYS while the fallback poller
             # kept reporting "healthy" — its check looks at webhook
             # subscription state only, never sync outcomes. This is the
-            # alarm: folder-lag/stall detection → Sentry ERROR + a
+            # alarm: folder-lag/stall detection → an ERROR marked ops_alert
+            # (fingerprint = this entry's name), which the ops-alert handler
+            # (modules/error_sink/ops_alert.py) records as a server_errors row
+            # and, when OPS_ALERT_EMAIL is set, emails at most hourly — plus a
             # self-clearing NextAction so a broken mailbox sync is seen the
             # same day, not when someone wonders why the inbox is quiet.
             "task": "outlook.sync_health_check",
@@ -151,8 +154,12 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
         },
         "audit-chain-verify-nightly": {
             # Plan §13: the audit hash-chain's tamper-evidence was never run
-            # outside tests. Nightly integrity check; logs an ERROR (→ Sentry)
-            # when the chain is broken. Cheap — a single sequential hash walk.
+            # outside tests. Nightly integrity check; when the chain is broken
+            # it logs an ERROR marked ops_alert (fingerprint = this entry's
+            # name), which the ops-alert handler (modules/error_sink/
+            # ops_alert.py) records as a server_errors row and, when
+            # OPS_ALERT_EMAIL is set, emails. Cheap — a single sequential
+            # hash walk.
             "task": "audit.verify_chain_nightly",
             "schedule": crontab(hour=4, minute=30),
             "options": {"queue": "priority:low"},
