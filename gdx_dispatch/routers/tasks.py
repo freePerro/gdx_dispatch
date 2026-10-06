@@ -6,7 +6,6 @@ reminders, admin tasks) tied to jobs/customers/users. CRUD + complete/reopen.
 """
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -16,12 +15,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
+from gdx_dispatch.core.audit import audit_best_effort, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.routers.auth import get_current_user
-
-log = logging.getLogger(__name__)
 
 router = APIRouter(
     tags=["tasks"],
@@ -111,20 +108,25 @@ def _audit(
     entity_id: str,
     details: dict[str, Any] | None = None,
 ) -> None:
-    try:
-        log_audit_event_sync(
-            db,
-            tenant_id=_tenant_id(request),
-            user_id=_user_id(user),
-            action=action,
-            entity_type="task",
-            entity_id=entity_id,
-            details=details or {},
-            request=request,
-        )
-        db.commit()
-    except Exception:
-        log.exception("task_audit_failed action=%s entity_id=%s", action, entity_id)
+    """Audit a task mutation the caller has already committed (GDXA-44).
+
+    All five task handlers commit first and then build their response from the
+    ORM row — four via ``_serialize(task)``, ``delete_task`` via ``str(task.id)``.
+    The old hand-rolled swallow left the session deactivated, so a refused audit
+    row 500ed a task that had in fact been saved, and the retry made a second
+    one. ``audit_best_effort`` contains the failure and un-poisons the session;
+    ``test_tasks.py::test_mutation_survives_a_refused_audit_write`` pins all five.
+    """
+    audit_best_effort(
+        db,
+        tenant_id=_tenant_id(request),
+        user_id=_user_id(user),
+        action=action,
+        entity_type="task",
+        entity_id=entity_id,
+        details=details or {},
+        request=request,
+    )
 
 
 @router.get("/api/tasks", response_model=None)
