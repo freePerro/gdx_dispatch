@@ -1,7 +1,7 @@
 # Multi-day jobs: one job, many visit days
 
 **Date:** 2026-10-03
-**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) MERGED #846, RELEASED v1.137.0, to §5.2's rules. §5.2a (revision 2, 2026-10-04) replaces those sync rules and adds `recompute_job_schedule`, as PR 1b against `main`: MERGED #868 (2026-10-05), not yet released, with one rule the build added (R2's second clause, below, accepted by Doug 2026-10-05); Doug ruled its open questions 2026-10-04 (a day closes only when someone closes it). Not built: PR 2 (office booking, the board, and the "Partial Jobs — Need to Schedule" section Doug ruled 2026-10-05, D10–D12) and PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, billing). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); §5.2a went through three plan audits, was rewritten to Doug's rulings after the third, then through sixteen more rounds (2026-10-04), the sixteenth finding no defect, then revised the same day to Doug's ruling that arrival times are always recorded and audited five more rounds (20–24), the last finding no defect; then revised 2026-10-05 to Doug's rulings that a re-open onto a closed day, a mis-tap, and an old arrival with no time are all settled by asking the office, and audited rounds 25–41 on the arrival-undo rules, round 41 finding no logic defect and two wording fixes, applied; §5.2a ships as PR 1b against `main` (see *Packaging*), since #846 merged before it was built.
+**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) MERGED #846, RELEASED v1.137.0, to §5.2's rules. §5.2a (revision 2, 2026-10-04) replaces those sync rules and adds `recompute_job_schedule`, as PR 1b against `main`: MERGED #868 (2026-10-05), RELEASED v1.138.0 (on prod and demo 2026-10-05; walked in a browser that night: the full write walk on the demo, a read-only look at prod), with one rule the build added (R2's second clause, below, accepted by Doug 2026-10-05); Doug ruled its open questions 2026-10-04 (a day closes only when someone closes it). Not built: PR 2 (office booking, the board, and the "Partial Jobs — Need to Schedule" section Doug ruled 2026-10-05, D10–D12) and PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, billing). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); §5.2a went through three plan audits, was rewritten to Doug's rulings after the third, then through sixteen more rounds (2026-10-04), the sixteenth finding no defect, then revised the same day to Doug's ruling that arrival times are always recorded and audited five more rounds (20–24), the last finding no defect; then revised 2026-10-05 to Doug's rulings that a re-open onto a closed day, a mis-tap, and an old arrival with no time are all settled by asking the office, and audited rounds 25–41 on the arrival-undo rules, round 41 finding no logic defect and two wording fixes, applied; §5.2a ships as PR 1b against `main` (see *Packaging*), since #846 merged before it was built.
 
 **Trigger:** Doug asked, "What happens if a job is not finished and turns into a
 multi-day job? Can a tech or anyone go back to it?" The answer, traced on
@@ -246,7 +246,7 @@ buy.
   - a collision merges;
   - clearing the date retires only open visits.
 
-### 5.2a Revision 2: the state table (2026-10-04 — replaces §5.2's sync rules; built in PR 1b, not merged)
+### 5.2a Revision 2: the state table (2026-10-04 — replaces §5.2's sync rules; built in PR 1b, MERGED #868, RELEASED v1.138.0)
 
 **Why a revision.** §5.2 as built in #846
 took 19 audit rounds, and nearly every code finding was the same kind of
@@ -1071,7 +1071,7 @@ appointment rows.
      `recompute_job_schedule`, wired into every writer in §5.2a's table with
      one test each, and the sync rebuilt to §5.2a's table with the
      whole-grid property test. (Written 2026-10-04 to ride in PR 1; #846
-     merged first.)
+     merged first.) MERGED #868, RELEASED v1.138.0.
 2. **The office books days (B5).** Covers §5.3: the visits API, the Visits
    card, the board showing each day, and the "Partial Jobs — Need to
    Schedule" section (D10–D12). (The
