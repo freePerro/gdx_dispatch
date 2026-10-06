@@ -150,7 +150,9 @@ def seed_defaults(
     )
     if existing > 0:
         return list_areas(request=request, user=user, db=db)
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
     now = datetime.now(timezone.utc)
+    seeded: list[HoldingArea] = []
     for i, area_def in enumerate(DEFAULT_AREAS):
         area = HoldingArea(
             id=str(uuid4()),
@@ -161,5 +163,11 @@ def seed_defaults(
             created_at=now,
         )
         db.add(area)
+        seeded.append(area)
+    log_audit_event_sync(db, tenant_id=tid, user_id=_uid(user), action="seed_defaults",
+                         entity_type="holding_area", entity_id=None,
+                         details={"count": len(seeded),
+                                  "areas": [{"id": a.id, "name": a.name} for a in seeded]},
+                         request=request)
     db.commit()
     return list_areas(request=request, user=user, db=db)
