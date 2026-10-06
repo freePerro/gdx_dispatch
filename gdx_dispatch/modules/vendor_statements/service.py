@@ -340,7 +340,8 @@ def _persist_parsed_statement(
         source=source,
         uploaded_by=uploaded_by,
         # On the ROW, not only in a log: a truncated value is a fact about the
-        # record, and prod has no log shipper (SENTRY_DSN is unset).
+        # record, prod has no log shipper, and the error sink records
+        # unhandled request exceptions, not log lines.
         notes=("truncated to fit: " + ", ".join(_stmt_cut)) if _stmt_cut else None,
     )
     db.add(statement)

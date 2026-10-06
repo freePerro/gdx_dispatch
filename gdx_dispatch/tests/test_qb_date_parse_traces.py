@@ -2,10 +2,11 @@
 
 A malformed QB ``TxnDate``/``DueDate`` used to be silently swallowed on the
 invoice money path — reproducing the documented pre-D99 outage shape (invoice
-invisible to every period-filtered metric) with zero log on a prod box that
-has no Sentry. ``_parse_qb_date`` is now the single seam: empty input stays a
-quiet None (routine); an UNPARSEABLE value logs a warning naming the field,
-qb_id and raw value, and returns None so update paths keep the stored date.
+invisible to every period-filtered metric) with zero log, and the error sink
+records unhandled request exceptions, not log lines. ``_parse_qb_date`` is the
+single seam: empty input stays a quiet None (routine); an UNPARSEABLE value
+logs a warning naming the field, qb_id and raw value, and returns None so
+update paths keep the stored date.
 """
 from __future__ import annotations
 
