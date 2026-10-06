@@ -72,7 +72,7 @@ def day_summary(
 
     # Jobs the user finished today (assigned_to OR job_assignment).
     jobs_done = db.execute(
-        _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
+        _text(  # noqa: RAWENC1  # c.address decrypted via decrypt_if_ciphertext below
             """
             SELECT j.id, j.title, j.completed_at,
                    c.name AS customer_name, c.address AS customer_address
@@ -218,7 +218,7 @@ def day_summary(
     # mobile /today fallback query. PG semantics unchanged (session TZ=UTC).
     tomorrow_date = (target + timedelta(days=1)).isoformat()
     next_first = db.execute(
-        _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
+        _text(  # noqa: RAWENC1  # c.address decrypted via decrypt_if_ciphertext below
             """
             SELECT j.id, j.title, j.scheduled_at,
                    c.name AS customer_name, c.address AS customer_address,

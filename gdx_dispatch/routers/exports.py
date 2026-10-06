@@ -219,7 +219,7 @@ def _fetch_customers(
     ]
     params: dict[str, Any] = {"tenant_id": tenant_id}
     if ids is None:
-        stmt = text(  # noqa: RAW_ENC — customers.address decrypted below
+        stmt = text(  # noqa: RAWENC1  # customers.address decrypted below
             """
             SELECT id, name, email, phone, address,
                    created_at, deleted_at
@@ -229,7 +229,7 @@ def _fetch_customers(
             """
         )
     else:
-        stmt = text(  # noqa: RAW_ENC — customers.address decrypted below
+        stmt = text(  # noqa: RAWENC1  # customers.address decrypted below
             """
             SELECT id, name, email, phone, address,
                    created_at, deleted_at

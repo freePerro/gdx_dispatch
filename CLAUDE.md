@@ -344,10 +344,14 @@ buttons wired to stubs. Before calling anything done:
   adding lines above a recorded finding shifts it and reddens the scan even
   when nothing changed. Re-freeze with
   `gdx_dispatch/tools/tenant_plane_redundant_filter_scan.py`.
-- **`# noqa:` is shared with the repo's own scanners.** Their codes
-  (`RAW_ENC`, `T6`, `X1`) are not ruff rules, so ruff prints
-  `Invalid # noqa directive` for each — and a scanner code placed *before* a
-  ruff code voids the ruff suppression.
+- **`# noqa:` is shared with the repo's own scanners** (`RAWENC1`, `T6`,
+  `X1`). ruff ignores a code it doesn't know, but it parses every `noqa`
+  comment and accepts only uppercase letters followed by digits. A code
+  outside that grammar gets `Invalid # noqa directive` and voids every ruff
+  code listed *after* it. So does `noqa:` prose in a plain comment, unless a
+  valid `noqa` comes before it on the line. The scanner code was `RAW_ENC`
+  until GDXA-302 (2026-10-06), and it warned on every site. Check with
+  `ruff check --no-cache`, because cached files re-emit no warnings.
 - CodeQL's `py/path-injection` recognizes only `realpath`/`normpath`/`abspath`
   followed by `startswith`. `Path.resolve().is_relative_to()` and
   `commonpath` are genuinely safe and still flagged.

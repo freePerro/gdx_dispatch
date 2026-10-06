@@ -191,7 +191,7 @@ def decrypt_if_ciphertext(value: str | None) -> str | None:
     Unlike ``process_result_value`` this does NOT warn on passthrough:
     during the plaintext→ciphertext transition, plaintext is the
     *expected majority* state for raw readers, not an anomaly. Every
-    call site must also carry ``# noqa: RAW_ENC`` on its ``text(`` line
+    call site must also carry ``# noqa: RAWENC1`` on its ``text(`` line
     so the raw-SQL scan records the bypass as acknowledged-and-handled.
     """
     if value is None or _FERNET is None:
