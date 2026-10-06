@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import Uuid, bindparam, select, text, update
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.api_keys import scope_required
@@ -350,7 +350,10 @@ class JobCreate(BaseModel):
     title: str
     customer_id: str | None = None
     scheduled_at: datetime | None = None
-    status: str = "lead"
+    # None derives the stage the desktop create does: "scheduled" with a date,
+    # "service_call" without. The old default was "lead", a stage jobs stopped
+    # carrying on 2026-05-13.
+    status: str | None = None
 
 
 class JobUpdate(BaseModel):
@@ -484,62 +487,127 @@ def create_job(
     _auth: Annotated[dict, Depends(_require_api_key)],
     db: Annotated[Session, Depends(get_db)],
 ) -> JSONResponse:
+    # Built through the Job model, not a raw INSERT: the INSERT this replaces
+    # named neither company_id nor dispatch_status, both NOT NULL with no
+    # server default on prod, so no job could be created here at all; and it
+    # wrote `status` into the stage enum unchecked, a 500 for any non-stage
+    # (GDXA-326). The stage rules are the desktop PATCH's, shared.
+    from gdx_dispatch.core.job_taxonomy import SERVICE_CALL  # noqa: PLC0415
+    from gdx_dispatch.models.tenant_models import Customer, Job  # noqa: PLC0415
+    from gdx_dispatch.modules.numbering import next_job_number  # noqa: PLC0415
+    from gdx_dispatch.routers.jobs import (  # noqa: PLC0415 — lazy: keeps the jobs router off this module's import path
+        _lifecycle_stage_for_write,
+        _stage_change_refusal,
+    )
+    from gdx_dispatch.services.visit_sync import book_new_job  # noqa: PLC0415
+
     title = (payload.title or "").strip()
     if not title:
         raise HTTPException(status_code=422, detail="title is required")
 
-    job_uuid = uuid.uuid4()
-    job_id = str(job_uuid)
+    if payload.status is None:
+        stage = "scheduled" if payload.scheduled_at else "service_call"
+    else:
+        stage = _lifecycle_stage_for_write(payload.status)
+        if not stage:
+            raise HTTPException(
+                status_code=422, detail=f"status {payload.status!r} is not a job stage"
+            )
+        # A job is born completed only by skipping its closeout.
+        refusal = _stage_change_refusal(None, stage)
+        if refusal:
+            raise HTTPException(status_code=409, detail=refusal)
+
+    customer_uuid = None
+    customer_name = None
+    if payload.customer_id:
+        try:
+            customer_uuid = uuid.UUID(str(payload.customer_id))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="customer_id is not a valid id") from None
+        # Checked here because Postgres enforces the FK at commit, as a 500.
+        try:
+            customer = db.execute(
+                select(Customer.id, Customer.name).where(
+                    Customer.id == customer_uuid, Customer.deleted_at.is_(None)
+                )
+            ).first()
+        except Exception:
+            logging.getLogger(__name__).exception("public api create_job failed")
+            raise HTTPException(status_code=500, detail="A database error occurred") from None
+        if customer is None:
+            raise HTTPException(status_code=422, detail="customer_id names no customer")
+        customer_name = customer.name
+
+    tenant = getattr(request.state, "tenant", None)
+    if not tenant or not tenant.get("id"):
+        raise HTTPException(status_code=500, detail="Tenant context missing")
+    tenant_id = str(tenant["id"])
+
+    # As the desktop create does: its own session, committed before the job,
+    # and a numbering failure leaves the job unnumbered rather than unmade.
+    job_number = None
+    try:
+        from gdx_dispatch.core.database import SessionLocal  # noqa: PLC0415
+
+        with SessionLocal() as cdb:
+            job_number = next_job_number(cdb, tenant_id, customer_name=customer_name)
+            cdb.commit()
+    except Exception:
+        logging.getLogger(__name__).exception("public api create_job: job number allocation failed")
+
     now = datetime.now(timezone.utc)
-
+    job = Job(
+        id=uuid.uuid4(),
+        title=title,
+        customer_id=customer_uuid,
+        scheduled_at=payload.scheduled_at,
+        lifecycle_stage=stage,
+        # `status` is the display twin the desktop keeps in sync.
+        status=stage.replace("_", " ").title(),
+        job_type=SERVICE_CALL,
+        company_id=tenant_id,
+        job_number=job_number,
+        dispatch_status="unassigned",
+        created_at=now,
+        updated_at=now,
+        started_at=now if stage == "in_progress" else None,
+    )
+    _tenant, actor, _prefix = _api_key_actor(request)
     with _write_errors_as_500(db, "create_job"):
-        # First, before the INSERT is staged: its first run on an engine commits.
+        # First, before anything is staged: its first run on an engine commits.
         ensure_audit_table(db)
-        row = db.execute(
-            text(
-                """
-                INSERT INTO jobs (id, title, lifecycle_stage, customer_id, scheduled_at, created_at, job_type)
-                VALUES (:id, :title, :status, :customer_id, :scheduled_at, :created_at, 'Service Call')
-                RETURNING id, title, lifecycle_stage AS status,
-                          customer_id, scheduled_at, created_at
-                """
-            # Bound as the column's type, so SQLite stores the 32-hex form
-            # the ORM reads back (the update below loads the job by UUID).
-            ).bindparams(bindparam("id", type_=Uuid(as_uuid=True))),
-            {
-                "id": job_uuid,
-                "title": title,
-                "status": payload.status or "lead",
-                "customer_id": payload.customer_id,
-                "scheduled_at": payload.scheduled_at,
-                "created_at": now,
-            },
-        ).mappings().first()
-        row = dict(row)
-        if payload.scheduled_at is not None:
-            # E4: a dated job is booked like one created in the app.
-            from gdx_dispatch.models.tenant_models import Job  # noqa: PLC0415
-            from gdx_dispatch.services.visit_sync import book_new_job  # noqa: PLC0415
-
-            job = db.get(Job, job_uuid)
-            _tenant, actor, _prefix = _api_key_actor(request)
+        db.add(job)
+        db.flush()
+        # E4: a dated job is booked like one created in the app.
+        if job.scheduled_at is not None:
             book_new_job(db, job, actor)
-            row["scheduled_at"] = job.scheduled_at
         _audit_public_write(
             db,
             request,
             action="job_created",
             entity_type="job",
-            entity_id=job_id,
+            entity_id=str(job.id),
             details={
                 "title": title,
-                "status": payload.status or "lead",
-                "customer_id": payload.customer_id,
+                "status": stage,
+                "customer_id": str(customer_uuid) if customer_uuid else None,
+                "job_number": job_number,
             },
         )
+        # Read before the commit, for the reason create_customer gives.
+        body = {
+            "id": str(job.id),
+            "title": job.title,
+            "status": job.lifecycle_stage,
+            "customer_id": str(customer_uuid) if customer_uuid else None,
+            "scheduled_at": job.scheduled_at,
+            "created_at": job.created_at,
+            "job_number": job.job_number,
+        }
         db.commit()
 
-    return _ok({**row, "id": job_id}, status_code=201)
+    return _ok(body, status_code=201)
 
 
 @router.patch("/jobs/{job_id}")
