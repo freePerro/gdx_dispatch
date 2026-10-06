@@ -155,6 +155,45 @@ def test_state_round_trip_and_nonce_single_use():
     assert oauth.consume_nonce(nonce) is False  # single use
 
 
+def _redis_down(monkeypatch):
+    import redis  # noqa: PLC0415
+
+    def _boom(*_a, **_k):
+        raise ConnectionError("redis unreachable")
+
+    monkeypatch.setattr(redis, "from_url", _boom)
+
+
+@pytest.mark.parametrize("env", ["production", "prod", "staging", None])
+def test_nonce_fails_closed_without_redis_outside_dev(monkeypatch, caplog, env):
+    """GDXA-304: the per-process fallback can't enforce single use across
+    uvicorn workers, so outside dev/test a Redis outage refuses the nonce
+    rather than silently degrading. Unset GDX_ENV is production."""
+    _redis_down(monkeypatch)
+    if env is None:
+        monkeypatch.delenv("GDX_ENV", raising=False)
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    else:
+        monkeypatch.setenv("GDX_ENV", env)
+    monkeypatch.setattr(oauth, "_local_nonces", {})
+    with caplog.at_level("ERROR", logger=oauth.log.name), pytest.raises(oauth.NonceStoreUnavailable):
+        oauth.consume_nonce("n-prod")
+    assert oauth._local_nonces == {}
+    assert "bank_feeds_nonce_redis_unavailable_refused" in caplog.text
+
+
+def test_nonce_dev_fallback_warns_once_and_stays_single_use(monkeypatch, caplog):
+    _redis_down(monkeypatch)
+    monkeypatch.setenv("GDX_ENV", "dev")
+    monkeypatch.setattr(oauth, "_local_nonces", {})
+    monkeypatch.setattr(oauth, "_fallback_warned", False)
+    with caplog.at_level("WARNING", logger=oauth.log.name):
+        assert oauth.consume_nonce("n-dev") is True
+        assert oauth.consume_nonce("n-dev") is False
+        assert oauth.consume_nonce("n-dev-2") is True
+    assert caplog.text.count("bank_feeds_nonce_redis_unavailable_fallback") == 1
+
+
 def test_state_tampered_rejected():
     state, _ = oauth.make_state(user_id="u1", tenant_id=TENANT_ID, institution_id="i1")
     with pytest.raises(oauth.BankFeedsAuthError):
@@ -299,6 +338,23 @@ def test_callback_state_replay_rejected(respx_mock, tenant_db, callback_app, tes
     assert replay.status_code == 400
     assert "already used" in replay.text
     assert token_route.call_count == 1  # no second exchange
+
+
+@respx.mock
+def test_callback_redis_down_in_production_fails_closed(
+    respx_mock, monkeypatch, tenant_db, callback_app, test_app_keypair,  # noqa: F811
+):
+    inst = _make_institution(tenant_db)
+    state, nonce = oauth.make_state(user_id="u1", tenant_id=TENANT_ID, institution_id=str(inst.id))
+    token_route = _mock_banno(respx_mock, test_app_keypair, nonce=nonce)
+    _redis_down(monkeypatch)
+    monkeypatch.setenv("GDX_ENV", "production")
+
+    resp = callback_app.get(f"/api/bank-feeds/oauth/callback?code=abc&state={state}")
+    assert resp.status_code == 503
+    assert "temporarily unavailable" in resp.text
+    assert token_route.call_count == 0
+    assert tenant_db.execute(select(BannoConnection)).first() is None
 
 
 @respx.mock

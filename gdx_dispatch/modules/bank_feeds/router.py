@@ -501,7 +501,17 @@ def oauth_callback(
         log.warning("bank_feeds_callback_bad_state", exc_info=True)
         return HTMLResponse(_callback_html("error", "Sign-in link expired — try again."), status_code=400)
 
-    if not oauth.consume_nonce(str(payload["nonce"])):
+    try:
+        fresh = oauth.consume_nonce(str(payload["nonce"]))
+    except oauth.NonceStoreUnavailable:
+        # Fail closed (GDXA-304): without the shared store single use can't
+        # be enforced across workers. The nonce was not consumed; the store's
+        # own error is logged by consume_nonce.
+        return HTMLResponse(
+            _callback_html("error", "Bank connection is temporarily unavailable — start the connection again in a few minutes."),
+            status_code=503,
+        )
+    if not fresh:
         log.warning("bank_feeds_callback_state_replayed")
         return HTMLResponse(_callback_html("error", "This sign-in link was already used."), status_code=400)
 
