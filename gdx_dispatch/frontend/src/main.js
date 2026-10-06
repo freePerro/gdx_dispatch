@@ -6,7 +6,6 @@ import ConfirmationService from 'primevue/confirmationservice';
 import Tooltip from 'primevue/tooltip';
 import Aura from '@primeuix/themes/aura';
 import 'primeicons/primeicons.css';
-import * as Sentry from '@sentry/vue';
 import App from './App.vue';
 import { createAppRouter } from './router';
 import { startKeyboardInsetTracking } from './lib/keyboardInset';
@@ -23,23 +22,6 @@ const app = createApp(App);
 installErrorCapture(app);
 const pinia = createPinia();
 const router = createAppRouter();
-
-// Sentry error tracking — only init in production or when DSN is provided
-const sentryDsn = import.meta.env.VITE_SENTRY_DSN || '';
-if (sentryDsn) {
-  Sentry.init({
-    app,
-    dsn: sentryDsn,
-    integrations: [
-      Sentry.browserTracingIntegration({ router }),
-      Sentry.replayIntegration(),
-    ],
-    tracesSampleRate: 0.1,  // 10% of transactions
-    replaysSessionSampleRate: 0.0,  // Don't record all sessions
-    replaysOnErrorSampleRate: 1.0,  // Record 100% of sessions with errors
-    environment: import.meta.env.MODE,
-  });
-}
 
 app.use(pinia);
 app.use(router);

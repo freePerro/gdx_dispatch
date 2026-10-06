@@ -2,8 +2,7 @@
 //
 // Listens for `gdx:analytics` CustomEvents emitted by the help store and
 // the tour engine. Each event is debounced + posted to the existing
-// audit endpoint (`/api/audit/ux-event`) if it exists, with a Sentry
-// breadcrumb fallback so we always have something in the logs.
+// audit endpoint (`/api/audit/ux-event`) if it exists.
 //
 // Why a separate file: keeps the tour and help store decoupled from
 // transport concerns. Replace the backend POST with whatever your
@@ -37,20 +36,6 @@ function _enqueue(event) {
   q.push({ ...event, ts: new Date().toISOString() });
   _writeQueue(q);
   _scheduleFlush();
-}
-
-function _breadcrumb(event) {
-  try {
-    const sentry = window?.Sentry || window?.sentry;
-    if (sentry?.addBreadcrumb) {
-      sentry.addBreadcrumb({
-        category: 'ux',
-        message: event.name,
-        level: 'info',
-        data: event.payload || {},
-      });
-    }
-  } catch { /* swallow */ }
 }
 
 function _authHeaders() {
@@ -115,7 +100,6 @@ function _scheduleFlush() {
 function _handleEvent(e) {
   const detail = e?.detail || {};
   if (!detail.name) return;
-  _breadcrumb(detail);
   _enqueue(detail);
 }
 
