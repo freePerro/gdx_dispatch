@@ -20,6 +20,13 @@ the payment ROWS from QB's own per-invoice allocation lines:
    (Σ unvoided payments). This tool now repairs payment ROWS only.
 4. ``--void-invoice NUMBER`` (repeatable, explicit) — void a test-junk
    invoice: status → void, its payments voided, its stale QB map deleted.
+5. ``over-summed`` — REPORT ONLY, never written: a QB payment whose live rows
+   (the ``pull_payments`` row tied by ``qb_entity_maps`` plus every
+   ``qb:<id>`` row) sum above what QB applied to invoices (Σ allocations,
+   which equals TotalAmt unless a credit memo is applied in the same
+   Payment). Step 1 only sees a row larger than
+   its own invoice, so a full-TotalAmt row on a big invoice plus backfilled
+   siblings double-counts unseen (GDXA-259).
 
 Deliberately NOT done here: no ``_recalculate_invoice`` (it rebuilds totals
 from local lines, and imported invoices dropped SubTotal/Discount/Shipping
@@ -92,10 +99,35 @@ class InsertAllocation:
 
 
 @dataclass
+class OverSummed:
+    """A QB payment whose live local rows add up to more than its TotalAmt.
+
+    REPORT ONLY — nothing in ``apply_plan`` writes these. The shape that
+    escapes ``fetch_over_allocated``: the original ``pull_payments`` row sits
+    at the full TotalAmt on an invoice whose total is at least that large (so
+    it is never "over-allocated"), and a backfill later wrote the payment's
+    other-invoice allocations as ``qb:<id>`` rows — the cash is counted twice.
+    """
+
+    qb_payment_id: str
+    qb_applied: Decimal  # Σ QB's invoice allocations — the ceiling
+    qb_total: Decimal  # TotalAmt, for context: net cash, less than applied
+                       # when the Payment also applies a credit memo
+    local_sum: Decimal
+    rows: list[dict]  # {payment_id, invoice_number, amount, linked_by}
+    after_plan: Decimal  # local_sum once this plan's resets/inserts land
+
+    @property
+    def excess(self) -> Decimal:
+        return self.local_sum - self.qb_applied
+
+
+@dataclass
 class SubstancePlan:
     resets: list[ResetAmount] = field(default_factory=list)
     inserts: list[InsertAllocation] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
+    over_summed: list[OverSummed] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +189,27 @@ def fetch_existing_allocation_refs(db) -> set[tuple[str, str]]:
     return {(r[0], r[1]) for r in rows}
 
 
+def fetch_qb_attributed_rows(db) -> list[dict]:
+    """Every live payment row tied to a QB payment, by EITHER link.
+
+    ``pull_payments`` writes the original row with no reference and ties it
+    to QB only through ``qb_entity_maps``; this tool's own rows carry
+    ``reference = 'qb:<id>'``. Grouping by reference alone misses the
+    original row, which is the one that double-counts.
+    """
+    rows = db.execute(text(
+        "SELECT p.id::text AS payment_id, i.invoice_number, p.amount, "
+        "       pm.qb_id AS map_qb_id, p.reference "
+        "FROM payments p "
+        "JOIN invoices i ON i.id = p.invoice_id "
+        "LEFT JOIN qb_entity_maps pm ON pm.entity_type = 'payment' "
+        "  AND pm.local_id = p.id::text "
+        "WHERE p.voided_at IS NULL "
+        "  AND (pm.qb_id IS NOT NULL OR p.reference LIKE 'qb:%')"
+    )).mappings().all()
+    return [dict(r) for r in rows]
+
+
 async def fetch_qb_payment_index(db) -> dict[str, dict]:
     """One read-only pull of every QB Payment → per-invoice allocations.
 
@@ -201,6 +254,7 @@ def build_substance_plan(
     qb_index: dict[str, dict],
     invoice_index: dict[str, dict],
     existing_refs: set[tuple[str, str]],
+    attributed_rows: list[dict] | None = None,
 ) -> SubstancePlan:
     plan = SubstancePlan()
     planned_refs: set[tuple[str, str]] = set()
@@ -285,7 +339,64 @@ def build_substance_plan(
             ))
             planned_refs.add((inv["invoice_id"], ref))
 
+    # -- 3. over-summed QB payments (report only) ---------------------------
+    if attributed_rows:
+        _detect_over_summed(plan, attributed_rows, qb_index)
+
     return plan
+
+
+def _detect_over_summed(plan: SubstancePlan, attributed_rows: list[dict],
+                        qb_index: dict[str, dict]) -> None:
+    """Group live rows by QB payment id — map link OR ``qb:<id>`` reference —
+    and report every group whose sum exceeds what QB applied to invoices.
+
+    The ceiling is Σ allocations, not TotalAmt: a Payment that also applies a
+    credit memo has TotalAmt = net cash only, and the rows steps 1–2 write
+    from its allocations would read as over-summed forever."""
+    groups: dict[str, list[dict]] = {}
+    for row in attributed_rows:
+        map_id = str(row.get("map_qb_id") or "")
+        ref = str(row.get("reference") or "")
+        ref_id = ref[3:] if ref.startswith("qb:") else ""
+        ids = {i for i in (map_id, ref_id) if i}
+        if len(ids) > 1:
+            plan.issues.append(
+                f"payment row {row['payment_id']} on {row['invoice_number']} is mapped "
+                f"to QB payment {map_id} but references qb:{ref_id} — counted in both")
+        for qb_pid in ids:
+            linked_by = " + ".join(
+                name for name, v in (("map", map_id), ("reference", ref_id)) if v == qb_pid)
+            groups.setdefault(qb_pid, []).append({
+                "payment_id": row["payment_id"],
+                "invoice_number": row["invoice_number"],
+                "amount": _money(row["amount"]),
+                "linked_by": linked_by,
+            })
+
+    for qb_pid in sorted(groups):
+        rows = groups[qb_pid]
+        local_sum = sum((r["amount"] for r in rows), Decimal("0"))
+        qb = qb_index.get(qb_pid)
+        if qb is None:
+            plan.issues.append(
+                f"{len(rows)} row(s) (${local_sum}) tied to QB payment {qb_pid}, "
+                "which QB did not return — cannot check against its allocations")
+            continue
+        applied = sum(qb["allocs"].values(), Decimal("0"))
+        if local_sum <= applied + CENT:
+            continue
+        after = (local_sum
+                 - sum((r.old_amount - r.new_amount for r in plan.resets
+                        if r.qb_payment_id == qb_pid), Decimal("0"))
+                 + sum((i.amount for i in plan.inserts
+                        if i.qb_payment_id == qb_pid), Decimal("0")))
+        plan.over_summed.append(OverSummed(
+            qb_payment_id=qb_pid, qb_applied=applied, qb_total=qb["total"],
+            local_sum=local_sum,
+            rows=sorted(rows, key=lambda r: (r["invoice_number"], r["payment_id"])),
+            after_plan=after,
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +493,16 @@ def _print_plan(db, plan: SubstancePlan) -> None:
     for i in plan.inserts:
         print(f"  {i.invoice_number:<16} +${i.amount}  {i.payment_date}  "
               f"[{i.origin}, QB payment {i.qb_payment_id}]")
+    total_excess = sum((o.excess for o in plan.over_summed), Decimal("0"))
+    print(f"\n== over-summed QB payments: {len(plan.over_summed)}, "
+          f"${total_excess} counted above what QB applied (REPORT ONLY — not repaired) ==")
+    for o in plan.over_summed:
+        print(f"  QB payment {o.qb_payment_id}: rows ${o.local_sum} vs applied "
+              f"${o.qb_applied} (+${o.excess}; TotalAmt ${o.qb_total}); "
+              f"after this plan ${o.after_plan}")
+        for r in o.rows:
+            print(f"    {r['invoice_number']:<16} ${r['amount']}  "
+                  f"[{r['linked_by']}, row {r['payment_id']}]")
     if plan.issues:
         print(f"\n  ⚠ {len(plan.issues)} item(s) not repairable from QB data:")
         for issue in plan.issues:
@@ -407,11 +528,14 @@ def main() -> int:
         missing = fetch_missing_payment_invoices(db)
         invoice_index = fetch_invoice_index(db)
         existing_refs = fetch_existing_allocation_refs(db)
+        attributed = fetch_qb_attributed_rows(db)
         qb_index = asyncio.run(fetch_qb_payment_index(db))
         print(f"QB payments pulled: {len(qb_index)}; over-allocated rows: {len(over)}; "
-              f"invoices missing payment rows: {len(missing)}")
+              f"invoices missing payment rows: {len(missing)}; "
+              f"QB-linked payment rows: {len(attributed)}")
 
-        plan = build_substance_plan(over, missing, qb_index, invoice_index, existing_refs)
+        plan = build_substance_plan(over, missing, qb_index, invoice_index, existing_refs,
+                                    attributed_rows=attributed)
         _print_plan(db, plan)
 
         if not args.apply:
