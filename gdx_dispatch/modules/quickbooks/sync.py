@@ -143,8 +143,8 @@ def _parse_qb_date(value: Any, *, field: str = "", qb_id: str = "") -> date | No
     An EMPTY value is a quiet None (routine). An UNPARSEABLE value is logged:
     a swallowed bad date on the invoice path is how invoices go invisible to
     every period-filtered money metric (the pre-D99 outage this file's own
-    comments record), and prod has no Sentry — an unlogged swallow is
-    invisible (#751 class).
+    comments record), and the error sink records unhandled request
+    exceptions, not log lines — an unlogged swallow is invisible (#751 class).
     """
     if not value:
         return None

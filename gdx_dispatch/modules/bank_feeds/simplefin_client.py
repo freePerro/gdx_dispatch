@@ -7,9 +7,9 @@ pagination (one response covers every account and its transactions).
 Credential discipline (the plan's non-negotiable): the Access URL embeds
 basic-auth userinfo. It is split ONCE at claim time — the stored/logged
 base URL never carries credentials, and every request passes auth via
-httpx's ``auth=`` parameter so no exception, log line, or Sentry event can
-ever contain ``user:pass``. ``SimpleFINClient`` has no attribute holding
-the joined URL.
+httpx's ``auth=`` parameter so no exception, log line, or error-sink
+traceback can ever contain ``user:pass``. ``SimpleFINClient`` has no
+attribute holding the joined URL.
 
 Quota discipline: the bridge expects ≤24 requests/day and disables tokens
 that persistently exceed it. The client only COUNTS its requests
