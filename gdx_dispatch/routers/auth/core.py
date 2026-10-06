@@ -1019,7 +1019,7 @@ async def get_current_user(
         # Expired tokens are a normal refresh cycle, not an error. The Vue
         # frontend catches the 401, hits /api/auth/refresh, and retries.
         # Logging as ERROR with a traceback every ~16 min was drowning real
-        # errors in log noise and spamming Sentry. TD-023.
+        # errors in log noise. TD-023.
         log.info("auth_access_token_expired")
         raise _unauth("Invalid or expired access token") from exc
     except (JWTError, KeyError, TypeError, ValueError, AttributeError) as exc:

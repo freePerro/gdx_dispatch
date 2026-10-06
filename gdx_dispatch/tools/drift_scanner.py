@@ -293,7 +293,7 @@ def check_env_template_drift() -> None:
                 pass
 
     # Ignore common/standard vars
-    ignore = {"PATH", "HOME", "USER", "PYTHONPATH", "GDX_ENV", "SENTRY_DSN", "REDIS_URL",
+    ignore = {"PATH", "HOME", "USER", "PYTHONPATH", "GDX_ENV", "REDIS_URL",
               "DATABASE_URL", "SECRET_KEY", "JWT_SECRET_KEY"}
 
     missing = used_vars - ignore
@@ -341,7 +341,6 @@ def check_container_dep_sync() -> None:
         "boto3": "boto3",
         "google": "google-api-python-client",
         "googlemaps": "googlemaps",
-        "sentry_sdk": "sentry-sdk",
         "pythonjsonlogger": "python-json-logger",
     }
 

@@ -951,10 +951,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         # CSP covers the legitimate third-party resources the app actually uses:
         # - CloudFlare Insights beacon auto-injected on HTML responses by CF
-        # - Sentry SDK loads a blob: Web Worker for Session Replay
-        # - Sentry telemetry goes to regional ingest endpoints (e.g. o<id>.ingest.us.sentry.io,
-        #   which is a subdomain of sentry.io, NOT of ingest.sentry.io — the old wildcard
-        #   pattern missed this because CSP host matching follows DNS suffix rules)
         # - The email composers render the outgoing PDF in a blob: iframe
         #   (ComposerPdfPreview.vue) — without frame-src, framing falls back to
         #   default-src and the preview would break the day this is enforced
@@ -963,9 +959,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "script-src 'self' https://static.cloudflareinsights.com; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob:; "
-            "worker-src 'self' blob:; "
+            "worker-src 'self'; "
             "frame-src 'self' blob:; "
-            "connect-src 'self' https://*.sentry.io https://static.cloudflareinsights.com https://cloudflareinsights.com"
+            "connect-src 'self' https://static.cloudflareinsights.com https://cloudflareinsights.com"
         )
         return response
 
@@ -1060,7 +1056,7 @@ def _check_customer_facing_config() -> None:
             log.error("STARTUP_CONFIG_MISSING var=%s impact=%s env=%s", name, why, env)
         # Don't refuse to start — admin/dashboard/MCP traffic still works
         # without these. But the error is now plainly visible in container
-        # logs and Sentry, instead of buried in a per-request warning that
+        # logs and the error sink, instead of buried in a per-request warning that
         # only fires when a real customer is trying to sign up.
 
 
@@ -1156,9 +1152,6 @@ def _check_encryption_at_rest() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    dsn = os.environ.get("SENTRY_DSN", "")
-    env = os.environ.get("GDX_ENV", "development")
-    observability.init_sentry(dsn=dsn, env=env)
     observability.init_otel(service_name="gdx-api", app=app)
     _check_encryption_at_rest()
     _check_customer_facing_config()

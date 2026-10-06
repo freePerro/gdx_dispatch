@@ -31,7 +31,7 @@ Access is **permission-driven** with role canonicalization — see
 - **Database** — PostgreSQL **16 or newer** (migration 029's `grant_helpers.py` uses `pg_input_is_valid`, which does not exist on 15 — a fresh install on 15 fails at that migration; every compose file pins `postgres:16-alpine`), schema managed by Alembic
 - **Cache / broker** — Redis 7
 - **Background jobs** — Celery (priority queues + beat scheduler)
-- **Telemetry** — Sentry + OpenTelemetry (optional)
+- **Telemetry** — in-app error sink (`modules/error_sink`) + OpenTelemetry (optional)
 
 ## Project structure
 
