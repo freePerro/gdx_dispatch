@@ -3284,6 +3284,8 @@ def update_mobile_job_site(
         # a correct geocode (post-code audit §1); a case/spacing-only fix
         # keeps the pin too (same place).
         really_moved = normalize_address(address) != normalize_address(loc.address)
+        # Stripped both sides: a stored "9 Dock St " re-sent untouched is no edit.
+        edited = ["address"] if address != (loc.address or "").strip() else []
         loc.address = address
         if really_moved:
             loc.lat = None
@@ -3291,12 +3293,26 @@ def update_mobile_job_site(
             loc.city = None
             loc.state = None
             loc.zip = None
+            edited += ["city", "state", "zip"]
+        if edited:
+            # The tech is a human editing this site: a QuickBooks pull may no
+            # longer write these fields (migration 105, sync's per-row guard).
+            # An unedited Save re-sends the prefilled text and claims nothing.
+            loc.local_edit_at = datetime.now(UTC)
+            loc.local_edit_fields = sorted(
+                set(loc.local_edit_fields or []) | set(edited)
+            )
         db.commit()
         _audit_mobile(
             db, request, current_user,
             action="mobile_job_site_updated",
             entity_id=str(job["id"]),
-            details={"target": site.source, "location_id": str(loc.id)},
+            details={
+                "target": site.source,
+                "location_id": str(loc.id),
+                # Field NAMES this save took ownership of, never the address.
+                "fields": edited,
+            },
         )
         target = site.source
     else:

@@ -484,6 +484,88 @@ class TestFixJobSite:
         assert row[0] == "9  dock st."   # text saved as typed
         assert row[1] is not None and row[2] is not None  # pin kept
 
+    def test_fixing_a_location_stamps_which_fields_a_human_now_owns(self, app_and_db):
+        """GDXA-243: the driveway fix is a human edit, recorded per field the
+        same way the customer-contact fix stamps customers (migration 105)."""
+        client, db = app_and_db
+        c = _seed(db)
+        loc = _location(db, c, address="9 Dock St")
+        j = _job(db, c.id, location_id=loc.id)
+        r = self._patch(client, j, {"address": "11 Dock St", "expected_address": "9 Dock St"})
+        assert r.status_code == 200, r.text
+        db.expire_all()
+        row = db.get(CustomerLocation, loc.id)
+        # address moved, and city/state/zip were nulled with it: all four are
+        # now GDX's, so QB cannot refill the old city under the new street.
+        assert row.local_edit_fields == ["address", "city", "state", "zip"]
+        assert row.local_edit_at is not None
+
+    def test_a_case_only_fix_records_only_the_field_it_changed(self, app_and_db):
+        """city/state/zip were not touched, so they are not stamped. The sync
+        still keeps all four parts once any one is owned (sync.py: the address
+        is one unit), so this records provenance; it does not leave the split
+        open to QuickBooks."""
+        client, db = app_and_db
+        c = _seed(db)
+        loc = _location(db, c, address="9 Dock St")
+        j = _job(db, c.id, location_id=loc.id)
+        r = self._patch(client, j, {"address": "9 DOCK ST", "expected_address": "9 Dock St"})
+        assert r.status_code == 200, r.text
+        db.expire_all()
+        assert db.get(CustomerLocation, loc.id).local_edit_fields == ["address"]
+
+    def test_an_unedited_save_claims_nothing(self, app_and_db):
+        """The sheet prefills the address; Save without typing is not an edit
+        and must not take a site away from QuickBooks."""
+        client, db = app_and_db
+        c = _seed(db)
+        loc = _location(db, c, address="9 Dock St")
+        j = _job(db, c.id, location_id=loc.id)
+        r = self._patch(client, j, {"address": "9 Dock St", "expected_address": "9 Dock St"})
+        assert r.status_code == 200, r.text
+        db.expire_all()
+        row = db.get(CustomerLocation, loc.id)
+        assert row.local_edit_fields is None
+        assert row.local_edit_at is None
+
+    def test_an_unedited_save_over_stray_whitespace_claims_nothing(self, app_and_db):
+        client, db = app_and_db
+        c = _seed(db)
+        loc = _location(db, c, address="9 Dock St ")
+        j = _job(db, c.id, location_id=loc.id)
+        r = self._patch(client, j, {"address": "9 Dock St", "expected_address": "9 Dock St "})
+        assert r.status_code == 200, r.text
+        db.expire_all()
+        assert db.get(CustomerLocation, loc.id).local_edit_fields is None
+
+    def test_a_tech_fixed_site_survives_a_quickbooks_re_pull(self, app_and_db):
+        """The falsifier, end to end: the tech fixes a QB-mapped site, then the
+        sub-customer pull runs with QB's old address. The tech's wins."""
+        from gdx_dispatch.modules.quickbooks.sync import (  # noqa: PLC0415
+            _upsert_map,
+            _upsert_subcustomer_location,
+        )
+
+        client, db = app_and_db
+        c = _seed(db)
+        loc = _location(db, c, address="9 Dock St")
+        _upsert_map(TENANT, "customer_location", loc.id, "qb-77", db)
+        db.commit()
+        j = _job(db, c.id, location_id=loc.id)
+        r = self._patch(client, j, {"address": "11 Dock St", "expected_address": "9 Dock St"})
+        assert r.status_code == 200, r.text
+
+        _upsert_subcustomer_location(
+            db, tenant_id=TENANT, parent_customer_id=c.id, qb_id="qb-77",
+            label="Warehouse 3",
+            parts={"address": "9 Dock St", "city": "Old Town", "state": "MN", "zip": "55000"},
+        )
+        db.commit()
+        db.expire_all()
+        row = db.get(CustomerLocation, loc.id)
+        assert row.address == "11 Dock St"
+        assert (row.city, row.state, row.zip) == (None, None, None)
+
     def test_source_shift_is_refused(self, app_and_db):
         """Equal text must not route the fix to a row the tech was never
         shown — the target is pinned too (audit §3 binding shift)."""
