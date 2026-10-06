@@ -145,9 +145,13 @@ jobs:
           # FAILS rather than skips (#440), but the 8 TEST_DATABASE_URL role
           # tests and the GDX_TEST_CONTROL_DB_URL tests still skip green here —
           # this is what names them. Report-only: it cannot change a verdict.
+          #
+          # No -q here: pytest.ini addopts already carries -q, and a second one
+          # makes it -qq, which drops the final "N passed, M skipped" counts line
+          # (GDXA-308). Guarded by gdx_dispatch/tests/test_ci_pytest_verbosity.py.
           set +e
           python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e \
-            --splits 7 --group ${{ matrix.group }} --tb=short -q -ra \
+            --splits 7 --group ${{ matrix.group }} --tb=short -ra \
             -p no:nose -p no:pastebin -p no:doctest --durations=15
           rc=$?
           set -e
@@ -155,7 +159,7 @@ jobs:
             134|135|139)
               echo "::warning::pytest died with exit ${rc} (native crash, #20 class). Retrying shard once."
               python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e \
-                --splits 7 --group ${{ matrix.group }} --tb=short -q -ra \
+                --splits 7 --group ${{ matrix.group }} --tb=short -ra \
                 -p no:nose -p no:pastebin -p no:doctest --durations=15
               ;;
             *)
