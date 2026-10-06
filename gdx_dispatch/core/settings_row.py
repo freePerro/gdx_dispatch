@@ -23,16 +23,24 @@ from migration 046, and the four invoice/receipt email templates from 086. A
 column list is what actually matches the table; reconciling the model is
 separate work.
 
-**Known sharp edge, carried over unchanged from the seven copies:** the tenant
-id is bound as `str(tenant_id)`, the dashed spelling, exactly as every copy and
-`core/settings_audit.py` bind it. Postgres (prod) accepts that against a
-`uuid` column. On an ORM-built SQLite schema `Uuid` is stored as 32 dashless
-hex, so the dashed bind matches nothing, the seed inserts a SECOND row, and the
-read returns defaults (CLAUDE.md, "SQLite stores a Uuid column as 32 dashless
-hex"). Fixing it means binding the same spelling on the read and the audited
-write together, plus the hand-built test tables that store the dashed form —
-not a change to smuggle into an extraction. `test_settings_row.py` pins the
-defect with a strict xfail so the fix cannot land without retiring the pin.
+**The tenant id is bound typed, one spelling for every dialect.**
+`tenant_settings.tenant_id` is `Uuid`: a native `uuid` on Postgres, 32
+dashless hex on an ORM-built SQLite schema (CLAUDE.md, "SQLite stores a Uuid
+column as 32 dashless hex"). The seven copies this replaced, and
+`core/settings_audit.py`, all bound `str(tenant_id)` — the dashed spelling —
+which Postgres casts and SQLite never matches, so on SQLite the read missed,
+the seed inserted a SECOND row and every settings page showed defaults
+(GDXA-292). `settings_sql()` attaches a `Uuid`-typed `:tid` and
+`tenant_id_value()` hands it a `UUID`, so SQLAlchemy renders the column's own
+spelling per dialect. The read, the seed and the audited write all go through
+them; a raw `str(tenant_id)` bind against this table is the defect, not a
+style choice. Not every site is converted yet: the maintainer ruled the fix
+narrow (two files), so raw dashed binds remain in `routers/session_policy.py`,
+`routers/jobs.py` (`_load_workflow_flags`), `core/settings_flags.py`,
+`modules/numbering/service.py`, `modules/payroll/router.py` and five domain
+modules — listed in GDXA-292. On SQLite those now address a different row
+than this helper; `test_settings_row.py` pins the session-policy write and
+the job workflow gates.
 """
 
 from __future__ import annotations
@@ -40,14 +48,32 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from typing import Any
+from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import Uuid, bindparam, text
 from sqlalchemy.engine import Row
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import TextClause
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
-_SEED = text(
+
+
+def settings_sql(sql: str) -> TextClause:
+    """`text(sql)` with `:tid` typed as the `Uuid` column it is compared to.
+    Pair it with `tenant_id_value()` — the type's bind processor wants a
+    `UUID`, not a string."""
+    return text(sql).bindparams(bindparam("tid", type_=Uuid(as_uuid=True)))
+
+
+def tenant_id_value(tenant_id: Any) -> UUID:
+    """The tenant id as a `UUID`, for a `settings_sql()` `:tid`. Raises
+    `ValueError` on a malformed id — the same input Postgres already refuses
+    at the cast, instead of a silent miss on SQLite."""
+    return tenant_id if isinstance(tenant_id, UUID) else UUID(str(tenant_id))
+
+
+_SEED = settings_sql(
     "INSERT INTO tenant_settings (tenant_id) VALUES (:tid) "
     "ON CONFLICT (tenant_id) DO NOTHING"
 )
@@ -73,8 +99,8 @@ def read_settings_row(db: Session, tenant_id: Any, columns: Sequence[str]) -> Ro
     Commits ONLY when it had to seed the row — see the module docstring.
     """
     cols = ", ".join(settings_column(c) for c in columns)
-    stmt = text(f"SELECT {cols} FROM tenant_settings WHERE tenant_id = :tid")  # noqa: S608 — every column name passed settings_column(); the tenant id is bound
-    params = {"tid": str(tenant_id)}
+    stmt = settings_sql(f"SELECT {cols} FROM tenant_settings WHERE tenant_id = :tid")  # noqa: S608 — every column name passed settings_column(); the tenant id is bound
+    params = {"tid": tenant_id_value(tenant_id)}
     row = db.execute(stmt, params).first()
     if row is None:
         # Create-on-read so every settings page shows a usable default the
