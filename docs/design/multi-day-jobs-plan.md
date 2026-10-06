@@ -1,7 +1,7 @@
 # Multi-day jobs: one job, many visit days
 
 **Date:** 2026-10-03
-**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) MERGED #846, RELEASED v1.137.0, to §5.2's rules. §5.2a (revision 2, 2026-10-04) replaces those sync rules and adds `recompute_job_schedule`, as PR 1b against `main`: built on branch `feat/multi-day-visits-1b` (draft PR #868, not merged; flips to MERGED on merge), with one rule the build added (R2's second clause, below, accepted by Doug 2026-10-05); Doug ruled its open questions 2026-10-04 (a day closes only when someone closes it). Not built: PR 2 (office booking, the board) and PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, billing). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); §5.2a went through three plan audits, was rewritten to Doug's rulings after the third, then through sixteen more rounds (2026-10-04), the sixteenth finding no defect, then revised the same day to Doug's ruling that arrival times are always recorded and audited five more rounds (20–24), the last finding no defect; then revised 2026-10-05 to Doug's rulings that a re-open onto a closed day, a mis-tap, and an old arrival with no time are all settled by asking the office, and audited rounds 25–41 on the arrival-undo rules, round 41 finding no logic defect and two wording fixes, applied; §5.2a ships as PR 1b against `main` (see *Packaging*), since #846 merged before it was built.
+**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) MERGED #846, RELEASED v1.137.0, to §5.2's rules. §5.2a (revision 2, 2026-10-04) replaces those sync rules and adds `recompute_job_schedule`, as PR 1b against `main`: MERGED #868 (2026-10-05), not yet released, with one rule the build added (R2's second clause, below, accepted by Doug 2026-10-05); Doug ruled its open questions 2026-10-04 (a day closes only when someone closes it). Not built: PR 2 (office booking, the board, and the "Partial Jobs — Need to Schedule" section Doug ruled 2026-10-05, D10–D12) and PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, billing). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); §5.2a went through three plan audits, was rewritten to Doug's rulings after the third, then through sixteen more rounds (2026-10-04), the sixteenth finding no defect, then revised the same day to Doug's ruling that arrival times are always recorded and audited five more rounds (20–24), the last finding no defect; then revised 2026-10-05 to Doug's rulings that a re-open onto a closed day, a mis-tap, and an old arrival with no time are all settled by asking the office, and audited rounds 25–41 on the arrival-undo rules, round 41 finding no logic defect and two wording fixes, applied; §5.2a ships as PR 1b against `main` (see *Packaging*), since #846 merged before it was built.
 
 **Trigger:** Doug asked, "What happens if a job is not finished and turns into a
 multi-day job? Can a tech or anyone go back to it?" The answer, traced on
@@ -275,12 +275,14 @@ the table below:**
 - **The job's date stays on the day the crew is working** until that day is
   closed. When a day closes unfinished and another day is already booked, the
   date moves to it; if none is booked, the job **goes back to the office** to
-  schedule. Nothing books a day automatically. The kick-back is PR 3's, and
-  PR 3 must give it a surface: the existing Dashboard queue
+  schedule. Nothing books a day automatically. The kick-back's surface is
+  the Dispatch board's **"Partial Jobs — Need to Schedule"** section (§5.3,
+  built in PR 2; Doug, 2026-10-05, D10). It replaces the earlier note that
+  PR 3 must find one: the existing Dashboard queue
   (`/api/jobs/return-visits-unscheduled`, `jobs.py:3523`) lists only
   return-visit child jobs with no date and no tech (`jobs.py:3557-3563`), so a
-  kicked-back multi-day job never appears there. Until PR 3, a day nobody
-  closes leaves the job showing late on the board, which is the cost Doug
+  kicked-back multi-day job never appears there. A day nobody closes still
+  leaves the job showing late on the board, which is the cost Doug
   accepted.
 - **Finishing the job retires its remaining booked days** automatically, and
   **cancelling it retires its open visits**. Both are audited. "Remaining"
@@ -910,9 +912,25 @@ each one against `main` before building.
   alongside jobs. A multi-day job shows on each visit day with a "Day 2 of 3"
   badge. Dragging a card moves **that visit only**. Single-visit jobs keep
   today's path (the job-level patch).
-- **Late-open card:** a job whose last visit was closed for the day and that
-  has no later visit gets a **"Continuing — book next day"** label. It keeps
-  the same card and doesn't start a new queue.
+- **"Partial Jobs — Need to Schedule" (Doug, 2026-10-05, D10–D12).** This
+  replaces the earlier "Continuing — book next day" label, which kept the
+  job on its old card and started no queue.
+  - **What lands there:** a job that is not finished (`lifecycle_stage` not
+    completed or cancelled), has at least one visit closed for the day, and
+    has no Current visit after it. Today the office closes a day with
+    Complete on the Appointments page (PR 1b); after PR 3 the closeout
+    sheet's "No" closes it too. A query over existing rows: no migration.
+  - **Where:** its own section on the Dispatch board's day view, **above
+    "New Jobs to Schedule"** (D11) — between the tech columns and that
+    queue, so both stay drag targets without scrolling (the ordering note at
+    `DispatchView.vue:257`).
+  - **What a drop does:** dropping a card on a tech books a new visit for
+    that tech on **the date the board is showing**. The office picks the
+    day; nothing assumes the next day, because the next day does not always
+    work for the tech (D12). The earlier days are untouched, and the card
+    leaves the section as soon as a later day is booked. The Visits card's
+    "Add day(s)" is the other way to book it, for any date.
+  - **Who:** the office, on desktop. Not on the tech's phone.
 
 ### 5.4 The closeout sheet asks "Is this job finished?" (fixes B2, B3, B4, B7)
 
@@ -1055,7 +1073,8 @@ appointment rows.
      whole-grid property test. (Written 2026-10-04 to ride in PR 1; #846
      merged first.)
 2. **The office books days (B5).** Covers §5.3: the visits API, the Visits
-   card, the board showing each day, and the continuing label. (The
+   card, the board showing each day, and the "Partial Jobs — Need to
+   Schedule" section (D10–D12). (The
    recompute and its writers moved to PR 1b on 2026-10-04, §5.2a; the new
    visits API is one more writer and gets its own test.)
 3. **"Is this job finished?" and summed billing (B3, B4, B6, B7).**
@@ -1096,6 +1115,9 @@ status line ships with the code").
 | D7 | What does a "No" day require? | **Hours.** Parts optional. |
 | D8 | What happens to the "needs a return visit" checkbox? | **Keep it, label it differently.** Shown on "Yes" only; wording in §5.4, confirmed 2026-10-04. |
 | D9 | Does the customer see anything on a "No" day? | **Nothing.** It is one job; the logs are for us. |
+| D10 | (2026-10-05) Where does a job go when a day closes unfinished and nothing is booked after it? | **Its own Dispatch section, "Partial Jobs — Need to Schedule".** Doug: "it needs to go into a spot in dispatch that says partial job need to schedule." Replaces the "Continuing" label and the Dashboard note. |
+| D11 | (2026-10-05) Where on the board? | **Above "New Jobs to Schedule."** |
+| D12 | (2026-10-05) Does a drop book the next day? | **No — the office picks the day.** Doug: "the next day does not always work for the tech." A drop books the date the board is showing. |
 
 ## 9. Out of scope (found, not filed)
 
