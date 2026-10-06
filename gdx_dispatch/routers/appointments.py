@@ -22,11 +22,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.modules import require_module, require_role
 from gdx_dispatch.core.quantities import recorded_quantity
+from gdx_dispatch.core.roles import DISPATCH_MANAGER_ROLES
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -184,10 +186,19 @@ class AppointmentPatch(BaseModel):
         default=None,
         pattern=r"^(scheduled|confirmed|en_route|arrived|completed|cancelled)$",
     )
+    # Arrival is always recorded (multi-day jobs plan §5.2a): a time can be
+    # entered or corrected here, never cleared (that is Undo arrival).
+    arrived_at: datetime | None = None
 
 
 class CancelIn(BaseModel):
     reason: str | None = Field(default=None, max_length=1000)
+
+
+class ArrivedIn(BaseModel):
+    """Office Arrived: when the crew got there; defaults to now."""
+
+    arrived_at: datetime | None = None
 
 
 def _tenant_id(request: Request) -> str:
@@ -252,33 +263,71 @@ def _get_scoped(db: Session, appt_id: UUID, tenant_id: str) -> Appointment:
     return row
 
 
-def _audit(
+def _record(
     db: Session,
+    a: Appointment,
     *,
     tenant_id: str,
     user: Any,
     action: str,
-    entity_id: str,
     details: dict[str, Any] | None = None,
     request: Request | None = None,
+    job_ids: tuple = (),
 ) -> None:
-    try:
-        log_audit_event_sync(
-            db,
-            tenant_id=tenant_id,
-            user_id=_user_id(user),
-            action=action,
-            entity_type="appointment",
-            entity_id=entity_id,
-            details=details or {},
-            request=request,
-        )
-        db.commit()
-    except Exception:
-        log.exception(
-            "appointment_audit_failed action=%s entity_id=%s", action, entity_id
-        )
-        db.rollback()
+    """Audit, keep each touched job's date on its earliest Current visit
+    (invariant I, multi-day jobs plan §5.2a), and commit once: the change,
+    its audit row and the recompute land together or not at all."""
+    from gdx_dispatch.models.tenant_models import Job  # noqa: PLC0415
+    from gdx_dispatch.services.visit_sync import recompute_job_schedule  # noqa: PLC0415
+
+    db.flush()
+    log_audit_event_sync(
+        db,
+        tenant_id=tenant_id,
+        user_id=_user_id(user),
+        action=action,
+        entity_type="appointment",
+        entity_id=str(a.id),
+        details=details or {},
+        request=request,
+    )
+    for job_id in dict.fromkeys(j for j in job_ids if j is not None):
+        job = db.get(Job, job_id)
+        if job is not None and job.deleted_at is None:
+            recompute_job_schedule(db, job, _user_id(user), action)
+    db.commit()
+    db.refresh(a)
+
+
+def _conflict(message: str, code: str, **detail: Any) -> JSONResponse:
+    return JSONResponse({"detail": message, "code": code, **detail}, status_code=409)
+
+
+def _status_only_arrival(a: Appointment) -> bool:
+    """An old visit marked "arrived" with no time (written before arrivals
+    were always recorded)."""
+    return a.job_id is not None and a.arrived_at is None and (a.status or "") == "arrived"
+
+
+def _ask_about_status_only(a: Appointment) -> JSONResponse:
+    return _conflict(
+        "This visit is marked arrived with no time recorded. Enter its arrival "
+        "time or undo the arrival first, so the record is not lost.",
+        "needs_answer",
+        question="status_only_arrival",
+        visit_ids=[str(a.id)],
+    )
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    """SQLite hands a timestamp back naive; it was stored as UTC."""
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
 
 
 def _parse_iso_date(raw: str, field: str) -> datetime:
@@ -454,16 +503,10 @@ def create_appointment(
         created_by=_user_id(user),
     )
     db.add(a)
-    db.commit()
-    db.refresh(a)
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="appointment_created",
-        entity_id=str(a.id),
+    _record(
+        db, a, tenant_id=tenant_id, user=user, action="appointment_created",
         details={"title": a.title, "tech_id": a.tech_id},
-        request=request,
+        request=request, job_ids=(a.job_id,),
     )
     return _serialize(a)
 
@@ -521,6 +564,58 @@ def update_appointment(
     if new_start and new_end and new_end <= new_start:
         raise HTTPException(status_code=422, detail="end_at must be after start_at")
 
+    # Arrival is always recorded (multi-day jobs plan §5.2a).
+    if "arrived_at" in data and data["arrived_at"] is None and (
+        a.arrived_at is not None or data.get("status") == "arrived"
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="An arrival time cannot be cleared here. Use Undo arrival.",
+        )
+    old_job_id = a.job_id
+    if "job_id" in data:
+        new_job_id = _parse_uuid(data["job_id"], "job_id")
+        if a.arrived_at is not None and old_job_id is not None and new_job_id != old_job_id:
+            return _conflict(
+                "This visit has an arrival recorded, so it cannot leave its job. "
+                "Use Undo arrival for a mis-tap, or Cancel for a duplicate the crew worked.",
+                "visit_arrived",
+                visit_id=str(a.id),
+            )
+    if (
+        data.get("status") == "cancelled"
+        and a.status != "cancelled"
+        and _status_only_arrival(a)
+    ):
+        return _ask_about_status_only(a)
+
+    arrival_change = None
+    if data.get("arrived_at") is not None:
+        if data["arrived_at"].tzinfo is None:
+            data["arrived_at"] = data["arrived_at"].replace(tzinfo=timezone.utc)
+        if data["arrived_at"] > utcnow() + timedelta(minutes=5):
+            raise HTTPException(status_code=422, detail="arrived_at is in the future")
+        if _aware(a.arrived_at) != data["arrived_at"]:
+            arrival_change = {
+                "old": _iso(a.arrived_at), "new": _iso(data["arrived_at"]), "source": "manual",
+            }
+            a.arrived_at = data["arrived_at"]
+    elif (
+        data.get("status") == "arrived"
+        and a.status != "arrived"
+        and a.arrived_at is None
+    ):
+        a.arrived_at = utcnow()
+        arrival_change = {"old": None, "new": _iso(a.arrived_at), "source": "manual"}
+
+    # The edit form resends start_at/end_at on every save, so "named in the
+    # request" is not "changed": Undo arrival's edited-since test reads this.
+    from gdx_dispatch.services.visit_sync import to_minute  # noqa: PLC0415
+
+    times_changed = [
+        f for f in ("start_at", "end_at")
+        if f in data and to_minute(_aware(data[f])) != to_minute(_aware(getattr(a, f)))
+    ]
     for field in (
         "tech_id",
         "title",
@@ -549,16 +644,12 @@ def update_appointment(
             val = data[field]
             setattr(a, field, Decimal(str(val)) if val is not None else None)
 
-    db.commit()
-    db.refresh(a)
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="appointment_updated",
-        entity_id=str(a.id),
-        details={"fields": list(data.keys())},
-        request=request,
+    details: dict[str, Any] = {"fields": list(data.keys()), "times_changed": times_changed}
+    if arrival_change is not None:
+        details["arrived_at"] = arrival_change
+    _record(
+        db, a, tenant_id=tenant_id, user=user, action="appointment_updated",
+        details=details, request=request, job_ids=(old_job_id, a.job_id),
     )
     return _serialize(a)
 
@@ -572,15 +663,17 @@ def delete_appointment(
 ):
     tenant_id = _tenant_id(request)
     a = _get_scoped(db, appt_id, tenant_id)
+    if a.job_id is not None and a.arrived_at is not None:
+        return _conflict(
+            "This visit has an arrival recorded, so deleting it would drop a worked "
+            "day. Use Undo arrival for a mis-tap, or Cancel for a duplicate the crew worked.",
+            "visit_arrived",
+            visit_id=str(a.id),
+        )
     a.deleted_at = utcnow()
-    db.commit()
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="appointment_deleted",
-        entity_id=str(appt_id),
-        request=request,
+    _record(
+        db, a, tenant_id=tenant_id, user=user, action="appointment_deleted",
+        request=request, job_ids=(a.job_id,),
     )
     return None
 
@@ -601,15 +694,9 @@ def confirm_appointment(
         )
     a.status = "confirmed"
     a.confirmed_at = utcnow()
-    db.commit()
-    db.refresh(a)
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="appointment_confirmed",
-        entity_id=str(a.id),
-        request=request,
+    _record(
+        db, a, tenant_id=tenant_id, user=user, action="appointment_confirmed",
+        request=request, job_ids=(a.job_id,),
     )
     return _serialize(a)
 
@@ -630,15 +717,9 @@ def on_my_way(
         )
     a.status = "en_route"
     a.en_route_at = utcnow()
-    db.commit()
-    db.refresh(a)
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="appointment_en_route",
-        entity_id=str(a.id),
-        request=request,
+    _record(
+        db, a, tenant_id=tenant_id, user=user, action="appointment_en_route",
+        request=request, job_ids=(a.job_id,),
     )
     return _serialize(a)
 
@@ -647,9 +728,13 @@ def on_my_way(
 def arrived(
     appt_id: UUID,
     request: Request,
+    payload: ArrivedIn | None = None,
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    """Office Arrived. Records a time (supplied, else now) and keeps one the
+    tech already stamped; a time for a visit that has one is a correction,
+    which goes through the PATCH (multi-day jobs plan §5.2a)."""
     tenant_id = _tenant_id(request)
     a = _get_scoped(db, appt_id, tenant_id)
     if a.status in ("completed", "cancelled"):
@@ -657,17 +742,29 @@ def arrived(
             status_code=400,
             detail=f"Cannot mark arrived in status '{a.status}'",
         )
+    supplied = payload.arrived_at if payload else None
+    if supplied is not None and supplied.tzinfo is None:
+        supplied = supplied.replace(tzinfo=timezone.utc)
+    if supplied is not None and supplied > utcnow() + timedelta(minutes=5):
+        raise HTTPException(status_code=422, detail="arrived_at is in the future")
+    if supplied is not None and a.arrived_at is not None:
+        return _conflict(
+            f"An arrival is already recorded at {a.arrived_at.isoformat()}. "
+            "Correct it by editing the visit.",
+            "arrival_recorded",
+            visit_id=str(a.id),
+            arrived_at=a.arrived_at.isoformat(),
+        )
+    details: dict[str, Any] = {"source": "manual"}
+    if a.arrived_at is None:
+        a.arrived_at = supplied or utcnow()
+        details["arrived_at"] = _iso(a.arrived_at)
+    else:
+        details["kept_arrived_at"] = _iso(a.arrived_at)
     a.status = "arrived"
-    a.arrived_at = utcnow()
-    db.commit()
-    db.refresh(a)
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="appointment_arrived",
-        entity_id=str(a.id),
-        request=request,
+    _record(
+        db, a, tenant_id=tenant_id, user=user, action="appointment_arrived",
+        details=details, request=request, job_ids=(a.job_id,),
     )
     return _serialize(a)
 
@@ -687,15 +784,9 @@ def complete_appointment(
         )
     a.status = "completed"
     a.completed_at = utcnow()
-    db.commit()
-    db.refresh(a)
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="appointment_completed",
-        entity_id=str(a.id),
-        request=request,
+    _record(
+        db, a, tenant_id=tenant_id, user=user, action="appointment_completed",
+        request=request, job_ids=(a.job_id,),
     )
     return _serialize(a)
 
@@ -714,21 +805,134 @@ def cancel_appointment(
         raise HTTPException(
             status_code=400, detail="Cannot cancel a completed appointment"
         )
+    if _status_only_arrival(a):
+        return _ask_about_status_only(a)
     reason = (payload.reason if payload else None) or None
     a.status = "cancelled"
     if reason:
         existing = (a.notes or "").strip()
         suffix = f"cancel reason: {reason}"
         a.notes = f"{existing}\n{suffix}".strip() if existing else suffix
-    db.commit()
-    db.refresh(a)
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="appointment_cancelled",
-        entity_id=str(a.id),
+    _record(
+        db, a, tenant_id=tenant_id, user=user, action="appointment_cancelled",
         details={"reason": reason} if reason else {},
-        request=request,
+        request=request, job_ids=(a.job_id,),
     )
     return _serialize(a)
+
+
+# ---------------------------------------------------------------- undo arrival
+# Multi-day jobs plan §5.2a, *Undo arrival*: asked first, reason required;
+# the logic lives in services/arrival_undo.py.
+
+
+class UndoArrivalIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+    tap_record_id: str | None = Field(default=None, max_length=64)
+    also_undo: list[str] = Field(default_factory=list, max_length=50)
+
+
+class UndoJobTapsIn(BaseModel):
+    tech_id: str = Field(min_length=1, max_length=64)
+    tap_record_ids: list[str] = Field(default_factory=list, max_length=50)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+# Undo arrival is a dispatch-manager action (owner, admin, dispatcher, manager).
+_office = require_role(*sorted(DISPATCH_MANAGER_ROLES))
+
+
+def _job_of(db: Session, job_id: Any) -> Any:
+    from gdx_dispatch.models.tenant_models import Job  # noqa: PLC0415
+
+    if job_id is None:
+        return None
+    job = db.get(Job, job_id)
+    return job if job is not None and job.deleted_at is None else None
+
+
+def _commit_or_refuse(db: Session, run: Any) -> Any:
+    """Run one undo; commit it, or roll it back and answer its refusal."""
+    from gdx_dispatch.services.arrival_undo import UndoRefused  # noqa: PLC0415
+
+    try:
+        result = run()
+    except UndoRefused as refused:
+        db.rollback()
+        return JSONResponse(refused.body(), status_code=refused.status)
+    db.commit()
+    return result
+
+
+@router.get("/api/appointments/{appt_id}/undo-arrival", response_model=None, dependencies=[Depends(_office)])
+def preview_undo_visit_arrival(
+    appt_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """What the Undo arrival dialog asks about for this visit."""
+    from gdx_dispatch.services.arrival_undo import preview_visit  # noqa: PLC0415
+
+    a = _get_scoped(db, appt_id, _tenant_id(request))
+    return preview_visit(db, _job_of(db, a.job_id), a)
+
+
+@router.post("/api/appointments/{appt_id}/undo-arrival", response_model=None, dependencies=[Depends(_office)])
+def undo_visit_arrival(
+    appt_id: UUID,
+    payload: UndoArrivalIn,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Any:
+    from gdx_dispatch.services.arrival_undo import undo_visit_arrival as _undo  # noqa: PLC0415
+
+    if not payload.reason.strip():
+        raise HTTPException(status_code=422, detail="A reason is required")
+    a = _get_scoped(db, appt_id, _tenant_id(request))
+    result = _commit_or_refuse(db, lambda: _undo(
+        db, _job_of(db, a.job_id), a, user_id=_user_id(user), reason=payload.reason.strip(),
+        tap_record_id=payload.tap_record_id, also_undo=payload.also_undo,
+    ))
+    if isinstance(result, JSONResponse):
+        return result
+    db.refresh(a)
+    return {"appointment": _serialize(a), **result}
+
+
+@router.get("/api/jobs/{job_id}/undo-arrival", response_model=None, dependencies=[Depends(_office)])
+def preview_undo_job_taps(
+    job_id: UUID,
+    tech_id: str,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """The crew-row dialog: this tech's taps on the job that no visit holds."""
+    from gdx_dispatch.services.arrival_undo import preview_job  # noqa: PLC0415
+
+    job = _job_of(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return preview_job(db, job, tech_id)
+
+
+@router.post("/api/jobs/{job_id}/undo-arrival", response_model=None, dependencies=[Depends(_office)])
+def undo_job_taps(
+    job_id: UUID,
+    payload: UndoJobTapsIn,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Any:
+    from gdx_dispatch.services.arrival_undo import undo_job_taps as _undo  # noqa: PLC0415
+
+    if not payload.reason.strip():
+        raise HTTPException(status_code=422, detail="A reason is required")
+    job = _job_of(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    result = _commit_or_refuse(db, lambda: _undo(
+        db, job, tech_id=payload.tech_id, tap_record_ids=payload.tap_record_ids,
+        user_id=_user_id(user), reason=payload.reason.strip(),
+    ))
+    if isinstance(result, JSONResponse):
+        return result
+    return {"job_id": str(job.id), **result}

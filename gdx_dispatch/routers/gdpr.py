@@ -23,14 +23,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import bindparam, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
-from gdx_dispatch.models.tenant_models import Customer, Invoice, Job, User
+from gdx_dispatch.models.tenant_models import Customer, Invoice, Job, LoyaltyPoints, User
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -246,9 +246,15 @@ def export_customer(
         log.exception("gdpr_export_customer_invoices_failed")
 
     def _safe_query(sql: str, params: dict, label: str) -> list[dict]:
-        """Fallback for tables without ORM models."""
+        """Fallback for tables without ORM models.
+
+        Each query runs in a SAVEPOINT: on Postgres a failed statement (a table
+        this database never had — prod has no ``communications``) otherwise
+        aborts the transaction and every later query in the export fails too.
+        """
         try:
-            rows = db.execute(text(sql), params).mappings().all()
+            with db.begin_nested():
+                rows = db.execute(text(sql), params).mappings().all()
             return [dict(r) for r in rows]
         except SQLAlchemyError:
             log.exception("gdpr_export_customer_%s_failed", label)
@@ -286,16 +292,58 @@ def export_customer(
         "communications",
     )
 
-    audit_events = _safe_query(
-        """
-        SELECT id, action, entity_type, entity_id, user_id, details, created_at
-        FROM audit_logs
-        WHERE tenant_id = :tenant_id AND entity_id = :cid
-        ORDER BY created_at ASC
-        """,
-        {"tenant_id": tenant_id, "cid": cid},
-        "audit_events",
-    )
+    # Rows owned by the customer whose audit trail is keyed on the row itself,
+    # not on the customer (GDXA-237): service locations (soft-deleted ones too)
+    # and loyalty points entries. Ids are gathered here and bound as strings —
+    # loyalty_points.id is a Uuid column, which a SQL subquery against the
+    # varchar entity_id never matches on SQLite and type-errors on Postgres.
+    child_ids = [
+        str(r["id"])
+        for r in _safe_query(
+            "SELECT id FROM customer_locations WHERE customer_id = :cid",
+            {"cid": cid},
+            "customer_location_ids",
+        )
+    ]
+    try:
+        with db.begin_nested():
+            child_ids += [
+                str(pid)
+                for pid in db.execute(
+                    select(LoyaltyPoints.id).where(LoyaltyPoints.customer_id == cid)
+                ).scalars()
+            ]
+    except SQLAlchemyError:
+        log.exception("gdpr_export_customer_loyalty_point_ids_failed")
+
+    try:
+        with db.begin_nested():
+            audit_events = [
+                dict(r)
+                for r in db.execute(
+                    text(
+                        """
+                        SELECT id, action, entity_type, entity_id, user_id, details, created_at
+                        FROM audit_logs
+                        -- NULL/'' tenant too: one tenant per database, and some
+                        -- writers store none (estimate-conversion jobsites; the
+                        -- location PATCH/DELETE rows before GDXA-237).
+                        WHERE (tenant_id = :tenant_id OR tenant_id IS NULL OR tenant_id = '')
+                          AND (entity_id = :cid
+                               OR (entity_type IN ('customer_location', 'award_point')
+                                   AND entity_id IN :child_ids))
+                        ORDER BY created_at ASC
+                        """
+                    ).bindparams(bindparam("child_ids", expanding=True)),
+                    # Never an empty list: SQLAlchemy renders it as an INTEGER
+                    # empty set, which Postgres refuses against varchar entity_id.
+                    # [cid] adds nothing the first branch doesn't already match.
+                    {"tenant_id": tenant_id, "cid": cid, "child_ids": child_ids or [cid]},
+                ).mappings().all()
+            ]
+    except SQLAlchemyError:
+        log.exception("gdpr_export_customer_audit_events_failed")
+        audit_events = []
 
     try:
         log_audit_event_sync(

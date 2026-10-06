@@ -5,6 +5,10 @@ appointments table so the Appointments page (and unconfirmed-arrivals
 list) sees it. Discovered 2026-05-06 — Doug created an "89 Lumber" job
 that surfaced in /jobs but never appeared on /appointments because
 nothing kept the two records in sync.
+
+Since the multi-day jobs plan §5.2a (PR 1b) the sync is a planner
+(``plan_for_job``) and an applier (``apply_visit_plan``), with
+``recompute_job_schedule`` last; these drive them the way the job routes do.
 """
 from __future__ import annotations
 
@@ -19,7 +23,14 @@ from sqlalchemy.pool import StaticPool
 import gdx_dispatch.models.tenant_models  # noqa: F401
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.models.tenant_models import Appointment, Job, JobAssignment
-from gdx_dispatch.routers.jobs import _set_job_assignments, _sync_job_appointment
+from gdx_dispatch.routers.jobs import _set_job_assignments
+from gdx_dispatch.services.visit_sync import (
+    UNSET,
+    apply_visit_plan,
+    job_visit_fields,
+    plan_for_job,
+    recompute_job_schedule,
+)
 
 
 @pytest.fixture()
@@ -57,14 +68,46 @@ def _make_job(scheduled_at: datetime | None, assigned_to: str | None = "tech-1")
     )
 
 
+def _sync(db, job, *, scheduled_at=UNSET, crew_before=None, crew_after=None, fields=None, **kw):
+    """Plan and apply one edit, as the job routes do, then recompute."""
+    plan = plan_for_job(
+        db, job, crew_before=crew_before, scheduled_at=scheduled_at,
+        crew_after=crew_after, fields=fields, **kw,
+    )
+    assert plan.refusal is None, plan.refusal
+    if plan.scheduled_at is not UNSET:
+        job.scheduled_at = plan.scheduled_at
+    apply_visit_plan(db, job, plan, "user-1")
+    recompute_job_schedule(db, job, "user-1", "test")
+    db.commit()
+
+
+def _create(db, job, start):
+    """create_job: a new job has no stored date, so its date is a date set (E4)."""
+    _sync(db, job, scheduled_at=start, stored_scheduled_at=None, fields=job_visit_fields(db, job))
+
+
+def _active(db, job):
+    return db.execute(
+        select(Appointment).where(
+            Appointment.job_id == job.id,
+            Appointment.deleted_at.is_(None),
+        ).order_by(Appointment.tech_id)
+    ).scalars().all()
+
+
+def _minute(dt: datetime) -> datetime:
+    return dt.replace(second=0, microsecond=0)
+
+
 def test_sync_creates_appointment_for_scheduled_job(db):
-    start = datetime.now(timezone.utc) + timedelta(hours=2)
+    start = _minute(datetime.now(timezone.utc) + timedelta(hours=2))
     job = _make_job(scheduled_at=start)
     db.add(job)
     db.flush()
 
-    _sync_job_appointment(db, job, "tenant-test", {"sub": "user-1"})
-    db.commit()
+    # create_job: E4 books the crew on the new date.
+    _create(db, job, start)
 
     appt = db.execute(select(Appointment).where(Appointment.job_id == job.id)).scalar_one()
     assert appt.title == "Install 10x8"
@@ -76,40 +119,29 @@ def test_sync_creates_appointment_for_scheduled_job(db):
     assert appt.company_id == "tenant-test"
 
 
-def test_sync_is_idempotent_and_updates_existing(db):
-    start = datetime.now(timezone.utc) + timedelta(hours=2)
+def test_a_resave_books_nothing_new_and_a_move_moves_the_visit(db):
+    start = _minute(datetime.now(timezone.utc) + timedelta(hours=2))
     job = _make_job(scheduled_at=start)
     db.add(job)
     db.flush()
+    _create(db, job, start)
 
-    _sync_job_appointment(db, job, "tenant-test", {"sub": "user-1"})
-    db.commit()
+    # E1: the same date and a new title copy the title, insert nothing.
+    job.title = "Install 10x8 — renamed"
+    _sync(db, job, scheduled_at=start, fields=job_visit_fields(db, job))
+    assert [a.title for a in _active(db, job)] == ["Install 10x8 — renamed"]
 
-    # Reschedule the job and re-sync — should update, not duplicate.
+    # E2: a time change moves the visit; no duplicate.
     new_start = start + timedelta(hours=3)
-    job.scheduled_at = new_start
-    job.assigned_to = "tech-2"
-    job.title = "Install 10x8 — rescheduled"
-    db.flush()
-
-    # update_job passes the pre-edit date: the sync moves that day's visit.
-    _sync_job_appointment(db, job, "tenant-test", {"sub": "user-1"}, previous_scheduled_at=start)
-    db.commit()
-
-    active = db.execute(
-        select(Appointment).where(
-            Appointment.job_id == job.id,
-            Appointment.deleted_at.is_(None),
-        )
-    ).scalars().all()
+    _sync(db, job, scheduled_at=new_start)
+    active = _active(db, job)
     assert len(active) == 1
     assert active[0].start_at.replace(tzinfo=timezone.utc) == new_start
-    assert active[0].tech_id == "tech-2"
-    assert active[0].title == "Install 10x8 — rescheduled"
+    assert job.scheduled_at.replace(tzinfo=timezone.utc) == new_start
 
 
 def test_sync_fans_out_one_appointment_per_assigned_tech(db):
-    start = datetime.now(timezone.utc) + timedelta(hours=4)
+    start = _minute(datetime.now(timezone.utc) + timedelta(hours=4))
     job = _make_job(scheduled_at=start, assigned_to="tech-1")
     db.add(job)
     db.flush()
@@ -118,32 +150,21 @@ def test_sync_fans_out_one_appointment_per_assigned_tech(db):
         db, job_id=str(job.id), tech_ids=["tech-1", "tech-2"],
         lead_tech_id="tech-1", user_id="user-1",
     )
-    _sync_job_appointment(db, job, "tenant-test", {"sub": "user-1"})
-    db.commit()
+    job = db.get(Job, job.id)
+    _create(db, job, start)
 
-    active = db.execute(
-        select(Appointment).where(
-            Appointment.job_id == job.id,
-            Appointment.deleted_at.is_(None),
-        ).order_by(Appointment.tech_id)
-    ).scalars().all()
+    active = _active(db, job)
     assert {a.tech_id for a in active} == {"tech-1", "tech-2"}
     assert all(a.start_at.replace(tzinfo=timezone.utc) == start for a in active)
 
-    # Drop tech-2 — their appointment should soft-delete; tech-1's stays.
+    # Drop tech-2 (C5): their open visit retires; tech-1's stays.
     _set_job_assignments(
         db, job_id=str(job.id), tech_ids=["tech-1"],
         lead_tech_id=None, user_id="user-1",
     )
-    _sync_job_appointment(db, job, "tenant-test", {"sub": "user-1"})
-    db.commit()
-    active = db.execute(
-        select(Appointment).where(
-            Appointment.job_id == job.id,
-            Appointment.deleted_at.is_(None),
-        )
-    ).scalars().all()
-    assert [a.tech_id for a in active] == ["tech-1"]
+    job = db.get(Job, job.id)
+    _sync(db, job, crew_before=["tech-1", "tech-2"], crew_after=("tech-1",))
+    assert [a.tech_id for a in _active(db, job)] == ["tech-1"]
 
 
 def test_set_job_assignments_lead_falls_back_to_first(db):
@@ -177,8 +198,7 @@ def test_sync_skips_unscheduled_jobs(db):
     db.add(job)
     db.flush()
 
-    _sync_job_appointment(db, job, "tenant-test", {"sub": "user-1"})
-    db.commit()
+    _sync(db, job, fields=job_visit_fields(db, job))
 
     appts = db.execute(select(Appointment).where(Appointment.job_id == job.id)).scalars().all()
     assert appts == []

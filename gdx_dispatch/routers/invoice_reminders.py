@@ -398,7 +398,7 @@ def _reminder_context(db: Session, invoice) -> dict[str, Any]:
     from datetime import UTC, datetime
 
     from gdx_dispatch.core.email_recipients import resolve_recipient
-    from gdx_dispatch.core.payments import public_pay_url
+    from gdx_dispatch.core.payments import card_surcharge_notice, public_pay_url
     from gdx_dispatch.models.tenant_models import Customer
 
     customer = None
@@ -418,12 +418,17 @@ def _reminder_context(db: Session, invoice) -> dict[str, Any]:
     pay_link = ""
     if float(invoice.balance_due or 0) > 0 and getattr(invoice, "public_token", None):
         pay_link = public_pay_url(invoice.public_token) or ""
+    # The invoice email's sentence about what a card costs (GDXA-252): the
+    # pay page carries the statutory notice, and the email says it too so
+    # nobody clicks through to a fee they were not told about.
+    card_notice = card_surcharge_notice(db, str(invoice.company_id or "")) if pay_link else ""
     greeting = (recipient.greeting_name if recipient and recipient.ok else None) or \
         ((customer.name if customer else None) or "Valued Customer")
     return {
         "customer": customer,
         "recipient": recipient,
         "pay_link": pay_link,
+        "card_notice": card_notice,
         "ctx": {
             "invoice_number": invoice.invoice_number or str(invoice.id)[:8],
             "customer_name": greeting,
@@ -452,6 +457,8 @@ def send_reminder_email_for_invoice(
     theater. No email config / no customer email = a VISIBLE skip_reason,
     never a silent log row.
     """
+    from html import escape
+
     from gdx_dispatch.core.email_layout import (
         cta_button,
         email_branding,
@@ -480,6 +487,9 @@ def send_reminder_email_for_invoice(
         + "</p>"
     )
     pay_link = bits["pay_link"]
+    notice = bits["card_notice"]
+    if notice and notice not in body:
+        body_html += f'<p style="margin:0 0 12px;">{escape(notice)}</p>'
     if pay_link and pay_link not in body:
         body_html += cta_button(pay_link, "Pay Invoice Online", accent)
     html = render_email(

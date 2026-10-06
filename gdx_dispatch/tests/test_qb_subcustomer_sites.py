@@ -236,6 +236,56 @@ def test_a_re_pull_never_blanks_a_known_address_with_an_empty_qb_row(db):
     assert _locations(db)[0].address == "12 Oak St"
 
 
+def test_a_re_pull_never_overwrites_an_address_a_human_edited(db):
+    """GDXA-244: an office correction to a mapped site survived exactly until
+    the next pull. Owning any address part keeps all four — a human's street
+    under QB's city is a place that may not exist."""
+    qb_addr = {"Line1": "12 Oak St", "City": "Alexandria",
+               "CountrySubDivisionCode": "MN", "PostalCode": "56308"}
+    _run(db, [_parent(), _child("140", "Site A", BillAddr=qb_addr)])
+    loc = _locations(db)[0]
+    loc.address = "14 Oak St"
+    loc.zip = None  # a human deleting a wrong zip still owns the field
+    loc.local_edit_fields = ["address", "zip"]
+    loc.local_edit_at = datetime.now(UTC)
+    db.commit()
+
+    moved = dict(qb_addr, City="Osakis")
+    result, _ = _run(db, [_parent(), _child("140", "Site A Renamed", BillAddr=moved)])
+    db.expire_all()
+    loc = _locations(db)[0]
+    assert loc.address == "14 Oak St", "QB overwrote a human-edited address"
+    assert loc.zip is None, "QB refilled a zip a human deliberately cleared"
+    assert loc.city == "Alexandria", "QB spliced its city under a human's street"
+    assert loc.label == "Site A Renamed", "an unowned field must still refresh"
+    assert result["sites_updated"] == 1
+
+    import json
+    details = db.execute(text(
+        "SELECT details FROM audit_logs WHERE action = 'qb_subcustomer_site_updated'"
+    )).scalars().all()
+    parsed = [d if isinstance(d, dict) else json.loads(d) for d in details]
+    assert any(d.get("kept_local_fields") == ["address", "city", "state", "zip"]
+               for d in parsed)
+
+
+def test_a_human_edited_label_survives_a_re_pull(db):
+    _run(db, [_parent(), _child("140", "Site A")])
+    loc = _locations(db)[0]
+    loc.label = "North Lot"
+    loc.local_edit_fields = ["label"]
+    db.commit()
+    _run(db, [_parent(), _child("140", "Site A Renamed")])
+    db.expire_all()
+    assert _locations(db)[0].label == "North Lot"
+    import json
+    details = db.execute(text(
+        "SELECT details FROM audit_logs WHERE action = 'qb_subcustomer_site_updated'"
+    )).scalars().all()
+    last = details[-1] if isinstance(details[-1], dict) else json.loads(details[-1])
+    assert last["label"] == "North Lot", "the audit row must log what was written"
+
+
 def _seed_legacy_flattened(db):
     """The pre-fix state: the sub-customer exists as its OWN top-level customer
     with an entity_type='customer' map, exactly as the old pull left it."""

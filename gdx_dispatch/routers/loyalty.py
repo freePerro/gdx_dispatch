@@ -238,6 +238,7 @@ def get_customer_points(
 def award_points(
     customer_id: str,
     payload: PointsAward,
+    request: Request = None,
     user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
@@ -267,8 +268,13 @@ def award_points(
                 user_id=_audit_user,
                 action="award_points",
                 entity_type="award_point",
-                entity_id=str(customer_id),
-                details={},
+                # The points entry, not the customer it belongs to.
+                entity_id=str(entry.id),
+                details={
+                    "customer_id": str(customer_id),
+                    "amount": entry.amount,
+                    "reason": entry.reason,
+                },
                 request=_audit_req,
             )
             _audit_db.commit()

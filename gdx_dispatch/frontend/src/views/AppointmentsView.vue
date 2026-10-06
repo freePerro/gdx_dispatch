@@ -90,21 +90,51 @@
         </Column>
         <Column field="status" header="Status">
           <template #body="{ data }">
-            <Badge :value="formatStatusLabel(data.status)" :severity="statusSeverity(data.status)" />
+            <div class="status-cell">
+              <Badge :value="formatStatusLabel(data.status)" :severity="statusSeverity(data.status)" />
+              <span v-if="isOnSite(data)" class="arrival-note" :data-testid="`on-site-${data.id}`">
+                On site since {{ formatClock(data.arrived_at) }}
+              </span>
+              <span v-else-if="isStatusOnlyArrival(data)" class="arrival-note warn" :data-testid="`no-time-${data.id}`">
+                Arrived — time not recorded
+              </span>
+            </div>
           </template>
         </Column>
         <Column field="address" header="Address" />
-        <Column header="Actions" style="width:220px">
+        <Column header="Actions" style="width:300px">
           <template #body="{ data }">
             <div class="row-actions">
               <Button
-                v-if="stateTransitions[data.status]"
-                :label="stateTransitions[data.status].label"
+                v-if="rowAction(data)"
+                :label="rowAction(data).label"
                 size="small"
                 :loading="actionLoadingId === data.id"
                 :disabled="actionLoadingId === data.id"
                 severity="success"
-                @click.stop="triggerTransition(data, stateTransitions[data.status])"
+                :data-testid="`row-action-${data.id}`"
+                @click.stop="runRowAction(data)"
+              />
+              <Button
+                v-if="isStatusOnlyArrival(data)"
+                label="Enter arrival time"
+                size="small"
+                severity="secondary"
+                :disabled="actionLoadingId === data.id"
+                :data-testid="`enter-time-${data.id}`"
+                @click.stop="openArrivalTime(data, 'enter')"
+              />
+              <Button
+                v-if="canUndoArrival && hasArrival(data)"
+                v-tooltip="'Undo arrival'"
+                aria-label="Undo arrival"
+                icon="pi pi-undo"
+                severity="secondary"
+                text
+                size="small"
+                :disabled="actionLoadingId === data.id"
+                :data-testid="`undo-arrival-${data.id}`"
+                @click.stop="openUndo(data)"
               />
               <Button
                 v-if="data.status !== 'completed' && data.status !== 'cancelled'"
@@ -212,6 +242,80 @@
           />
         </template>
       </Dialog>
+
+      <!-- Office Arrived / Enter arrival time: "Arrived" is a time, not just a
+           status (multi-day jobs plan §5.2a). Prefilled with now. -->
+      <Dialog
+        v-model:visible="arrivalDialog.visible"
+        :header="arrivalDialog.mode === 'enter' ? 'Enter arrival time' : 'Mark arrived'"
+        modal
+        :style="{ width: '420px' }"
+        :breakpoints="{ '768px': '95vw' }"
+      >
+        <div class="form-field">
+          <label for="arrival-time">When did the crew get there?</label>
+          <DatePicker
+            v-model="arrivalDialog.at"
+            input-id="arrival-time"
+            show-time
+            hour-format="12"
+            date-format="mm/dd/yy"
+            show-icon
+            :max-date="arrivalDialog.maxDate"
+            class="w-full"
+            data-testid="arrival-time"
+          />
+        </div>
+        <div v-if="arrivalDialog.error" class="inline-error" data-testid="arrival-error">{{ arrivalDialog.error }}</div>
+        <template #footer>
+          <Button label="Cancel" severity="secondary" @click="arrivalDialog.visible = false" />
+          <Button
+            :label="arrivalDialog.mode === 'enter' ? 'Save arrival time' : 'Mark arrived'"
+            icon="pi pi-check"
+            :loading="arrivalDialog.busy"
+            :disabled="!arrivalDialog.at"
+            data-testid="arrival-save"
+            @click="saveArrivalTime"
+          />
+        </template>
+      </Dialog>
+
+      <!-- A cancel that would lose an old arrival with no time asks first
+           (409 needs_answer, question status_only_arrival). -->
+      <Dialog
+        v-model:visible="question.visible"
+        header="This visit needs an answer first"
+        modal
+        :style="{ width: '460px' }"
+        :breakpoints="{ '768px': '95vw' }"
+      >
+        <p class="question-text" data-testid="needs-answer-text">{{ question.text }}</p>
+        <template #footer>
+          <Button label="Close" severity="secondary" @click="question.visible = false" />
+          <Button
+            v-if="canUndoArrival"
+            label="Undo arrival"
+            icon="pi pi-undo"
+            severity="secondary"
+            data-testid="needs-answer-undo"
+            @click="answerWith('undo')"
+          />
+          <Button
+            label="Enter arrival time"
+            icon="pi pi-clock"
+            data-testid="needs-answer-enter"
+            @click="answerWith('enter')"
+          />
+        </template>
+      </Dialog>
+
+      <UndoArrivalDialog
+        v-model="undoDialog.visible"
+        mode="visit"
+        :appointment="undoDialog.appointment"
+        :tech-name="undoDialog.techName"
+        @done="onUndoDone"
+      />
     </section>
 </template>
 
@@ -221,6 +325,10 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { formatDateTime as fmtDateTime } from '../composables/useFormatters';
+import { useAuthStore } from '../stores/auth';
+import { useToast } from 'primevue/usetoast';
+import { formatClock, isDispatchManagerRole, isNeedsAnswer, refusalOf } from '../utils/visitRefusals';
+import UndoArrivalDialog from '../components/UndoArrivalDialog.vue';
 import Badge from 'primevue/badge';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
@@ -239,6 +347,10 @@ import Toolbar from 'primevue/toolbar';
 const api = useApiWithToast();
 const route = useRoute();
 const router = useRouter();
+const auth = useAuthStore();
+const toast = useToast();
+// Undo arrival is a dispatcher/admin/owner action server-side (403 otherwise).
+const canUndoArrival = computed(() => isDispatchManagerRole(auth?.user?.role));
 
 const appointments = ref([]);
 const loading = ref(false);
@@ -537,15 +649,159 @@ async function triggerTransition(appointment, config) {
   }
 }
 
+// ── Arrivals (multi-day jobs plan §5.2a, *Appointments page* and *Arrival is
+// always recorded*). A tech's tap sets arrived_at and leaves the status
+// "scheduled", so the row reads the time, not the status alone.
+function isClosed(a) {
+  return a?.status === 'completed' || a?.status === 'cancelled';
+}
+
+/** ON SITE with a recorded time: "On site since h:mm", offers Complete. */
+function isOnSite(a) {
+  return !!a?.arrived_at && !isClosed(a);
+}
+
+/** An old row marked "arrived" with no time (written before PR 1b). */
+function isStatusOnlyArrival(a) {
+  return a?.status === 'arrived' && !a?.arrived_at;
+}
+
+/** Any arrival the office may undo: a time, or the old status-only mark. */
+function hasArrival(a) {
+  return !!a?.arrived_at || a?.status === 'arrived';
+}
+
+/** The row's one forward action. */
+function rowAction(a) {
+  if (!a || isClosed(a) || isStatusOnlyArrival(a)) return null;
+  if (a.arrived_at) return stateTransitions.arrived;
+  return stateTransitions[a.status] || null;
+}
+
+function runRowAction(a) {
+  const action = rowAction(a);
+  if (!action) return;
+  if (action.endpoint === 'arrived') {
+    openArrivalTime(a, 'arrived');
+    return;
+  }
+  triggerTransition(a, action);
+}
+
+const arrivalDialog = ref({
+  visible: false, mode: 'arrived', appointment: null, at: null, maxDate: null, busy: false, error: '',
+});
+
+function openArrivalTime(appointment, mode) {
+  const now = new Date();
+  arrivalDialog.value = {
+    visible: true, mode, appointment, at: now, maxDate: now, busy: false, error: '',
+  };
+}
+
+async function saveArrivalTime() {
+  const dlg = arrivalDialog.value;
+  const id = dlg.appointment?.id;
+  if (!id || !dlg.at) return;
+  const at = dlg.at instanceof Date ? dlg.at : new Date(dlg.at);
+  if (Number.isNaN(at.getTime())) {
+    dlg.error = "That time isn't valid.";
+    return;
+  }
+  if (at.getTime() > Date.now() + 60 * 1000) {
+    dlg.error = 'The arrival time cannot be in the future.';
+    return;
+  }
+  dlg.busy = true;
+  dlg.error = '';
+  try {
+    if (dlg.mode === 'enter') {
+      await api.patch(`/api/appointments/${id}`, { arrived_at: at.toISOString() }, {
+        successMessage: 'Arrival time recorded', suppressErrorToast: true,
+      });
+    } else {
+      await api.post(`/api/appointments/${id}/arrived`, { arrived_at: at.toISOString() }, {
+        successMessage: 'Technician arrived', suppressErrorToast: true,
+      });
+    }
+    dlg.visible = false;
+    await fetchAppointments();
+  } catch (error) {
+    // 409 arrival_recorded names the time already on the visit.
+    dlg.error = error?.message || 'Could not record the arrival.';
+  } finally {
+    dlg.busy = false;
+  }
+}
+
+const undoDialog = ref({ visible: false, appointment: null, techName: '' });
+
+function openUndo(appointment) {
+  const name = techLabel(appointment);
+  undoDialog.value = {
+    visible: true,
+    appointment,
+    techName: name && name !== 'Unassigned' ? name : '',
+  };
+}
+
+async function onUndoDone() {
+  await fetchAppointments();
+}
+
+const question = ref({ visible: false, text: '', appointment: null });
+
+function askStatusOnly(appointment, text) {
+  question.value = {
+    visible: true,
+    appointment,
+    text: text
+      || 'This visit is marked arrived with no time recorded. Enter its arrival time or undo the arrival first, so the record is not lost.',
+  };
+}
+
+function answerWith(choice) {
+  const appointment = question.value.appointment;
+  question.value.visible = false;
+  if (!appointment) return;
+  if (choice === 'undo') openUndo(appointment);
+  else openArrivalTime(appointment, 'enter');
+}
+
 async function cancelAppointment(appointment) {
   if (!appointment?.id) return;
+  // An old "arrived" row with no time would turn CANCELLED and lose the
+  // record: the server refuses it (409 needs_answer), so ask before the prompt.
+  if (isStatusOnlyArrival(appointment)) {
+    askStatusOnly(appointment);
+    return;
+  }
   const reason = window.prompt('Reason for cancellation', 'Customer request');
   if (!reason?.trim()) return;
-  await triggerTransition(appointment, {
-    endpoint: 'cancel',
-    message: 'Appointment cancelled',
-    payload: { reason: reason.trim() },
-  });
+  actionLoadingId.value = appointment.id;
+  try {
+    await api.post(`/api/appointments/${appointment.id}/cancel`, { reason: reason.trim() }, {
+      successMessage: 'Appointment cancelled',
+      suppressErrorToast: true,
+    });
+    await fetchAppointments();
+    await fetchUnconfirmed();
+  } catch (error) {
+    if (isNeedsAnswer(error, 'status_only_arrival')) {
+      askStatusOnly(appointment, refusalOf(error)?.detail);
+    } else {
+      // The api toast was suppressed so a needs_answer shows only as its
+      // question; every other refusal still surfaces its own message.
+      toast.add({
+        severity: 'error',
+        summary: 'Not cancelled',
+        detail: error?.message || 'Could not cancel the appointment.',
+        life: 5000,
+      });
+    }
+  } finally {
+    actionLoadingId.value = null;
+  }
 }
 
 watch([statusFilter, rangeKey], () => {
@@ -629,6 +885,33 @@ onMounted(() => {
 
 .appointments-table {
   cursor: pointer;
+}
+
+.status-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+}
+
+.arrival-note {
+  font-size: 0.8rem;
+  color: var(--p-text-muted-color);
+  white-space: nowrap;
+}
+
+.arrival-note.warn {
+  color: var(--color-warning-500);
+}
+
+.inline-error {
+  margin-top: 0.75rem;
+  color: var(--p-red-500);
+  font-size: 0.875rem;
+}
+
+.question-text {
+  margin: 0;
 }
 
 .row-actions {

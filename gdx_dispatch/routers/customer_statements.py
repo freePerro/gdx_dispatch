@@ -159,6 +159,8 @@ def _email_html(db: Session, statement: dict[str, Any], greeting: str) -> tuple[
                 label += f' — <a href="{esc(row["pay_url"])}">Pay online</a>'
             items.append(f'<li style="margin:0 0 6px;">{label}</li>')
         parts.append(f'<ul style="margin:0 0 12px;padding-left:18px;">{"".join(items)}</ul>')
+        if statement.get("card_notice"):
+            parts.append(f'<p style="margin:0 0 12px;">{esc(statement["card_notice"])}</p>')
     else:
         parts.append('<p style="margin:0 0 12px;">Nothing is unpaid. Thank you.</p>')
     body = render_email(

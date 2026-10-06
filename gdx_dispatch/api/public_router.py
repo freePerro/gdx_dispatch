@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import Uuid, bindparam, select, text, update
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.api_keys import scope_required
@@ -488,7 +488,8 @@ def create_job(
     if not title:
         raise HTTPException(status_code=422, detail="title is required")
 
-    job_id = str(uuid.uuid4())
+    job_uuid = uuid.uuid4()
+    job_id = str(job_uuid)
     now = datetime.now(timezone.utc)
 
     with _write_errors_as_500(db, "create_job"):
@@ -502,9 +503,11 @@ def create_job(
                 RETURNING id, title, lifecycle_stage AS status,
                           customer_id, scheduled_at, created_at
                 """
-            ),
+            # Bound as the column's type, so SQLite stores the 32-hex form
+            # the ORM reads back (the update below loads the job by UUID).
+            ).bindparams(bindparam("id", type_=Uuid(as_uuid=True))),
             {
-                "id": job_id,
+                "id": job_uuid,
                 "title": title,
                 "status": payload.status or "lead",
                 "customer_id": payload.customer_id,
@@ -512,6 +515,16 @@ def create_job(
                 "created_at": now,
             },
         ).mappings().first()
+        row = dict(row)
+        if payload.scheduled_at is not None:
+            # E4: a dated job is booked like one created in the app.
+            from gdx_dispatch.models.tenant_models import Job  # noqa: PLC0415
+            from gdx_dispatch.services.visit_sync import book_new_job  # noqa: PLC0415
+
+            job = db.get(Job, job_uuid)
+            _tenant, actor, _prefix = _api_key_actor(request)
+            book_new_job(db, job, actor)
+            row["scheduled_at"] = job.scheduled_at
         _audit_public_write(
             db,
             request,
@@ -526,7 +539,7 @@ def create_job(
         )
         db.commit()
 
-    return _ok(dict(row), status_code=201)
+    return _ok({**row, "id": job_id}, status_code=201)
 
 
 @router.patch("/jobs/{job_id}")
@@ -537,56 +550,136 @@ def update_job(
     _auth: Annotated[dict, Depends(_require_api_key)],
     db: Annotated[Session, Depends(get_db)],
 ) -> JSONResponse:
+    # The desktop PATCH's stage rules, shared so this key-authenticated writer
+    # cannot skip them: it used to write any string into lifecycle_stage (a
+    # 500 from the enum on Postgres) and could complete a job with no closeout
+    # or move a finished one with no reason recorded.
+    from gdx_dispatch.models.tenant_models import Job  # noqa: PLC0415
+    from gdx_dispatch.routers.jobs import (  # noqa: PLC0415 — lazy: keeps the jobs router off this module's import path
+        _lifecycle_stage_for_write,
+        _stage_change_refusal,
+    )
+    from gdx_dispatch.services.visit_sync import (  # noqa: PLC0415
+        UNSET,
+        apply_visit_plan,
+        plan_for_job,
+        recompute_job_schedule,
+        visit_fields,
+    )
+
     updates: dict[str, Any] = {}
     if payload.title is not None:
         updates["title"] = payload.title.strip()
+    requested_stage = None
     if payload.status is not None:
-        updates["lifecycle_stage"] = payload.status
+        requested_stage = _lifecycle_stage_for_write(payload.status)
+        if not requested_stage:
+            raise HTTPException(
+                status_code=422, detail=f"status {payload.status!r} is not a job stage"
+            )
     if payload.scheduled_at is not None:
         updates["scheduled_at"] = payload.scheduled_at
 
-    if not updates:
+    if not updates and requested_stage is None:
         raise HTTPException(status_code=422, detail="No fields to update")
 
-    set_clauses = ", ".join(f"{col} = :{col}" for col in updates)
-    params = {**updates, "job_id": job_id}
+    try:
+        job_uuid = uuid.UUID(str(job_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Job not found") from None
+    try:
+        job = db.execute(
+            select(Job).where(Job.id == job_uuid, Job.deleted_at.is_(None))
+        ).scalar_one_or_none()
+    except Exception:
+        logging.getLogger(__name__).exception("public api update_job failed")
+        raise HTTPException(status_code=500, detail="A database error occurred") from None
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
 
+    def _row() -> dict[str, Any]:
+        return {
+            "id": str(job.id), "title": job.title, "status": job.lifecycle_stage,
+            "customer_id": str(job.customer_id) if job.customer_id else None,
+            "scheduled_at": job.scheduled_at, "created_at": job.created_at,
+        }
+
+    stored_stage = job.lifecycle_stage
+    if requested_stage is not None and requested_stage != (stored_stage or "").lower():
+        refusal = _stage_change_refusal(stored_stage, requested_stage)
+        if refusal:
+            raise HTTPException(status_code=409, detail=refusal)
+        updates["lifecycle_stage"] = requested_stage
+        # `status` is the display twin the desktop keeps in sync.
+        updates["status"] = requested_stage.replace("_", " ").title()
+        if requested_stage == "in_progress" and not job.started_at:
+            updates["started_at"] = datetime.now(timezone.utc)
+    if not updates:
+        # Only the stored stage was resent: nothing to write or audit.
+        return _ok(_row())
+
+    # The job's visits, planned before anything is written: a refusal leaves
+    # the job, its visits and the audit log untouched.
+    plan = plan_for_job(
+        db, job,
+        scheduled_at=updates.get("scheduled_at", UNSET),
+        fields=visit_fields(db, updates["title"], job.customer_id) if "title" in updates else None,
+        cancel=updates.get("lifecycle_stage") == "cancelled",
+    )
+    if plan.refusal is not None:
+        return JSONResponse({
+            "detail": plan.refusal.message, "code": plan.refusal.code, **plan.refusal.detail,
+        }, status_code=409)
+    if "scheduled_at" in updates:
+        if plan.scheduled_at is UNSET:
+            updates.pop("scheduled_at")  # unchanged to the minute
+        else:
+            updates["scheduled_at"] = plan.scheduled_at
+
+    _tenant, actor, _prefix = _api_key_actor(request)
+    stage_moved = False
     with _write_errors_as_500(db, "update_job"):
-        # First, before the UPDATE is staged: its first run on an engine commits.
+        # First, before anything is staged: its first run on an engine commits.
         ensure_audit_table(db)
-        row = db.execute(
-            text(
-                f"""
-                UPDATE jobs
-                   SET {set_clauses}
-                 WHERE id = :job_id
-                   AND deleted_at IS NULL
-                RETURNING id, title, lifecycle_stage AS status,
-                          customer_id, scheduled_at, created_at
-                """  # noqa: S608 — SET keys are the hardcoded column names above; values are bound
-            ),
-            params,
-        ).mappings().first()
-        if row:
-            # Only when a row matched. An id that matched nothing (or a
-            # soft-deleted job) changed nothing, and a row recording an update
-            # that never happened is worse than no row — it is a false entry.
+        if "lifecycle_stage" in updates:
+            # The guard ran against the stage read above. A closeout landing
+            # between that read and this write must not be overwritten, so the
+            # stage is only written while it is still the one read.
+            claimed = db.execute(
+                update(Job)
+                .where(Job.id == job.id, Job.lifecycle_stage == stored_stage)
+                .values(lifecycle_stage=updates["lifecycle_stage"])
+                .execution_options(synchronize_session=False)
+            ).rowcount
+            stage_moved = claimed == 0
+        if not stage_moved:
+            for column, value in updates.items():
+                setattr(job, column, value)
+            job.updated_at = datetime.now(timezone.utc)
+            apply_visit_plan(db, job, plan, actor)
+            recompute_job_schedule(db, job, actor, "job_updated")
+            # The columns actually written, not the request body: `status` lands
+            # in `lifecycle_stage`, and the trail should say what changed.
             _audit_public_write(
                 db,
                 request,
                 action="job_updated",
                 entity_type="job",
-                entity_id=job_id,
-                # The columns actually written, not the request body: `status`
-                # lands in `lifecycle_stage`, and the trail should say what
-                # changed in the table.
+                entity_id=str(job.id),
                 details={"changed": dict(updates)},
             )
+            body = _row()
+        # When the stage moved, nothing of this request is staged; the commit
+        # only ends the transaction ensure_audit_table may have opened.
         db.commit()
 
-    if not row:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return _ok(dict(row))
+    if stage_moved:
+        raise HTTPException(
+            status_code=409,
+            detail="The job's stage changed while this update was in flight; "
+                   "read it again before retrying.",
+        )
+    return _ok(body)
 
 
 # ---------------------------------------------------------------------------

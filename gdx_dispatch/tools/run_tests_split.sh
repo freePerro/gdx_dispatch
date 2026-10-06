@@ -57,6 +57,21 @@ if [ -f "$REPO_ROOT/.git" ] && [[ "$PYTEST" == *"docker run"* ]]; then
     echo "linked worktree: mounted $GITDIR read-only so the tracked-set guards can read the index"
   fi
 fi
+# ── docker PYTEST: keep the container's /tmp in RAM ─────────────────────────
+# Tests build file-backed SQLite DBs under tmp_path (/tmp/pytest-of-appuser/…).
+# Without this, the container's /tmp is overlayfs on the host disk, and every
+# SQLite commit waits on an fsync — so a shard's speed depends on how fast the
+# host drive syncs, not on the tests. Measured 2026-10-05:
+#   test_mobile_job_clock.py (13 tests) .... 138 s on disk, 3.5 s on tmpfs
+#   shard 4 of 7 ............................ ~14 min on disk, ~1 min on tmpfs
+# CI is unaffected: it runs pytest directly, not this script or docker.
+# TMPFS_TMP=0 opts out.
+# size is a ceiling, not a reservation: pages are used only as files are
+# written. It must clear session_recorder's 20 GB free-space refusal, or 11
+# test_session_recorder.py tests degrade (4g did exactly that, 2026-10-05).
+if [ "${TMPFS_TMP:-1}" = "1" ] && [[ "$PYTEST" == *"docker run"* ]] && [[ "$PYTEST" != *"--tmpfs"* ]]; then
+  PYTEST="${PYTEST/docker run/docker run --tmpfs /tmp:rw,exec,size=32g}"
+fi
 
 # --version alone isn't enough — a host pytest without the app's deps fails
 # every shard with usage errors. Probe the actual imports the suite needs.
@@ -137,7 +152,33 @@ fi
 # network call at import time, and marker filtering happens after import.
 # FORKED=1 re-enables per-test subprocess isolation. Default matches ci.yml
 # (unforked since 2026-08-04, #20 re-test) — keep the two in lockstep.
-COMMON_OPTS=(--ignore=gdx_dispatch/tests/e2e --tb=short)
+#
+# `-ra` makes every shard NAME what it did not pass. Without it the matrix says
+# "102 skipped" and names not one of them, so a Postgres arm that never ran
+# looks exactly like a green one — the gap CLAUDE.md calls invisible. Measured
+# 2026-09-27 on test_pg_fixture_smoke.py + test_gdx_ai_readonly_role.py:
+# 9 skipped / 0 reason lines before, 9 skipped / 7 reason lines summing to 9
+# after, same runtime.
+#
+# `-ra` and NOT `-rs`. pytest's `-r` is a STORE option whose default is "fE"
+# (_pytest.terminal._REPORTCHARS_DEFAULT) and getreportopt() iterates only the
+# chars you pass, so a bare `-rs` REPLACES that default and deletes every
+# `FAILED <test>` and `ERROR <file>.py` short-summary line. The collection-error
+# report at the bottom of this script greps for exactly `^ERROR [^ ]+\.py`, so
+# `-rs` would silently switch off the #679 guard. Verified 2026-09-27 against a
+# planted unimportable module: `-rs` printed a bare "1 error in 0.34s" and no
+# COLLECTION ERRORS block at all.
+#
+# `a` is getreportopt()'s own alias for "sxXEf" — skipped, xfailed, XPASSed,
+# errored, failed — so it is a one-char superset of `-rs`/`-rfEs`, and the only
+# form that surfaces an XPASS. That last part earns its keep on the NON-strict
+# xfails: test_schema_fixture_drift.py:97 is `strict=False` and its reason says
+# to flip strict=True once SS-4d lands, so it starting to pass is exactly the
+# signal we want and is otherwise silent. (test_settings_row.py:179 is
+# `strict=True`, where an XPASS already fails the shard on its own — `X` is what
+# covers the ones that do not.) test_run_tests_split_report_opts.py pins the
+# behaviour rather than the letters, so a better flag stays allowed.
+COMMON_OPTS=(--ignore=gdx_dispatch/tests/e2e --tb=short -ra)
 if [ "${FORKED:-0}" = "1" ]; then
   COMMON_OPTS+=(--forked)
 fi
@@ -220,6 +261,26 @@ if [ -n "$collect_errors" ]; then
   echo "  ImportError for a package in requirements.txt, rebuild the image."
   fail=1
 fi
+
+# A caller's own report flag lands AFTER COMMON_OPTS on the shard command and
+# pytest keeps the last one, so `-rs`, `-vrs`, `-r=s` or `--report-chars=s`
+# passed to this script silently undo the `-ra` and drop pytest's "fE" — the
+# shard then says "3 failed" and names none of them, and the collection-error
+# report above finds nothing to grep. Rather than parse every spelling of the
+# flag, check the output: a shard whose tail reports failures or errors must
+# carry at least one FAILED/ERROR summary line. Anchored on the summary shape
+# (`FAILED <file>::`, `ERROR <file>.py`), because a failing test's captured log
+# prints `ERROR    logger:...` and its stdout can print anything. Report-only —
+# such a shard exited non-zero, so `fail` is already set.
+for g in $(seq 1 "$N"); do
+  log="$LOG_DIR/group_${g}.log"
+  if tail -1 "$log" | grep -qE "[0-9]+ (failed|errors?)\b" \
+     && ! grep -qE "^(FAILED [^ ]+::|ERROR [^ ]+\.py)" "$log"; then
+    echo
+    echo "✗ group $g reports failures but names none — a -r/--report-chars flag (or --no-summary)"
+    echo "  passed to this script replaced the runner's -ra and dropped 'f'/'E'. Re-run without it."
+  fi
+done
 
 if [ "$fail" -ne 0 ]; then
   echo

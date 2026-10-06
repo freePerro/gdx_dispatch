@@ -15,7 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.models.tenant_models import Job, Technician, TimeEntry
@@ -121,10 +121,34 @@ def _duration_minutes(clock_in: datetime | None, clock_out: datetime | None) -> 
 
 
 def _resolve_hourly_rate(db: Session, tech_id: str) -> float:
+    """The tech's stored rate, or DEFAULT_HOURLY_RATE when there is no row.
+
+    ``contained_read`` (GDXA-158). This decides the stored COST rate on a
+    ``TimeEntry`` from a swallowed read, and both write callers reach it with
+    work already pending: ``create_job_time_entry`` calls it inside the
+    ``TimeEntry(...)`` constructor, and ``update_time_entry`` calls it one line
+    after mutating ``row.tech_id``. On Postgres a bare swallow aborted the
+    transaction, so the caller's ``commit()`` died with 25P02 and the tech's
+    entry was not written. Containing it trades that loud, retryable 500 for a
+    committed row costed at DEFAULT_HOURLY_RATE ($50), which a stored rate then
+    keeps forever (``_labor_rate_for``) and which only the log line marks as
+    defaulted — chosen because losing the tech's hours is the worse half. Reads
+    only, so the savepoint sits on the Connection (core.database rules 2/3), and
+    it goes INSIDE the ``try`` so the degraded default still happens (rule 1).
+    Insurance on a real mechanism, not a fix for an observed outage — see
+    ``contained_read``'s docstring for how rarely prod, as configured, can
+    fail this read.
+
+    ``jobs.py::_labor_rate_for`` wraps THIS function and deliberately does not
+    add a savepoint of its own: rule 5 — a callee that swallows its own failure
+    exits the block clean, and the RELEASE SAVEPOINT would raise 25P02 out of
+    the ``with`` itself. Containing it here is what fixes that caller too.
+    """
     try:
-        tech = db.execute(
-            select(Technician).where(Technician.id == tech_id).limit(1)
-        ).scalar_one_or_none()
+        with contained_read(db):
+            tech = db.execute(
+                select(Technician).where(Technician.id == tech_id).limit(1)
+            ).scalar_one_or_none()
     except SQLAlchemyError:
         log.exception("resolve_hourly_rate_failed", extra={"tech_id": tech_id})
         tech = None

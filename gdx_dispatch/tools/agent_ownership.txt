@@ -320,11 +320,14 @@ gdx_dispatch/routers/scheduling.py                           jobs-dispatch
 gdx_dispatch/routers/appointments.py                         jobs-dispatch
 gdx_dispatch/routers/planner.py                              jobs-dispatch
 gdx_dispatch/services/planner_today.py                       jobs-dispatch
+gdx_dispatch/services/visit_sync.py                          jobs-dispatch
+gdx_dispatch/services/arrival_undo.py                        jobs-dispatch
 gdx_dispatch/routers/tasks.py                                jobs-dispatch
 gdx_dispatch/routers/service_calls.py                        jobs-dispatch
 gdx_dispatch/routers/service_triggers.py                     jobs-dispatch
 gdx_dispatch/routers/service_agreements.py                   jobs-dispatch
 gdx_dispatch/routers/holding_areas.py                        jobs-dispatch
+gdx_dispatch/core/holding_areas.py                           jobs-dispatch
 gdx_dispatch/routers/checklists.py                           jobs-dispatch
 gdx_dispatch/routers/safety_checklist.py                     jobs-dispatch
 gdx_dispatch/routers/install_sheet.py                        jobs-dispatch
@@ -371,6 +374,7 @@ gdx_dispatch/frontend/src/views/WarrantiesView.vue           jobs-dispatch
 gdx_dispatch/frontend/src/views/TasksView.vue                jobs-dispatch
 gdx_dispatch/frontend/src/components/JobStateChip.vue        jobs-dispatch
 gdx_dispatch/frontend/src/components/JobStateOverrideDialog.vue jobs-dispatch
+gdx_dispatch/frontend/src/components/UndoArrivalDialog.vue jobs-dispatch
 gdx_dispatch/frontend/src/components/TechTimelineColumn.vue  jobs-dispatch
 gdx_dispatch/frontend/src/components/GoogleMapsIntegrationCard.vue jobs-dispatch
 gdx_dispatch/frontend/src/constants/jobTypes.js              jobs-dispatch

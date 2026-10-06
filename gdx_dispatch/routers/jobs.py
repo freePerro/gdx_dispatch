@@ -17,7 +17,8 @@ from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
-from gdx_dispatch.core.database import SessionLocal, get_db
+from gdx_dispatch.core.database import SessionLocal, contained_read, get_db
+from gdx_dispatch.core.holding_areas import holding_area_id_by_name as _holding_area_id_by_name
 from gdx_dispatch.core.invoice_paid import paid_amount_sq, paid_to_date_bulk
 from gdx_dispatch.core.job_access import can_read_job, job_write_denial
 from gdx_dispatch.core.job_display_state import derive_job_display_state
@@ -30,7 +31,6 @@ from gdx_dispatch.core.part_pricing import (
 )
 from gdx_dispatch.core.roles import is_technician
 from gdx_dispatch.models.tenant_models import (
-    Appointment,
     Customer,
     Invoice,
     Job,
@@ -263,27 +263,6 @@ def _caller_technician_id(db: Session, user_id: str) -> str | None:
     return str(row[0]) if row else None
 
 
-def _holding_area_id_by_name(db: Any, name: str) -> str | None:
-    """Resolve a holding-area row by name. Returns id (str) or None if missing.
-
-    Used by create_job (auto-route service-call jobs into 'Ready to
-    Schedule') and the estimate accept path (auto-route accepted estimates
-    into 'Order Doors'). Per the 2026-05-13 directive these two routes are
-    automatic; if the area row is missing on this tenant (the migration
-    script is the source of truth) we return None and let the job be
-    created without a holding area rather than failing the request.
-    """
-    try:
-        row = db.execute(
-            _text("SELECT id FROM holding_areas WHERE name = :n LIMIT 1"),
-            {"n": name},
-        ).first()
-        return str(row[0]) if row else None
-    except Exception:
-        log.exception("holding_area_lookup_failed name=%s", name)
-        return None
-
-
 def _holding_area_exists(db: Any, holding_area_id: str) -> bool:
     """True iff a non-deleted holding area with this id exists on this
     tenant. The tenant-plane connection IS the isolation boundary — no
@@ -407,226 +386,20 @@ def _set_job_assignments(
     return resolved_lead
 
 
-# A visit whose day is over is history: the sync never moves or retires it.
-# "arrived" is settable through the Appointments-page PATCH without a time.
-_CLOSED_VISIT_STATUSES = ("arrived", "completed", "cancelled")
+def _visit_refused(refusal: Any) -> JSONResponse:
+    """A refused visit plan (multi-day jobs plan §5.2a): 409, nothing written."""
+    return jsonable_response(
+        {"detail": refusal.message, "code": refusal.code, **refusal.detail}, 409,
+    )
 
 
-def _visit_closed(appt: Appointment) -> bool:
-    # The tech's own flow never closes a visit: "I'm here" stamps arrived_at
-    # and leaves status "scheduled" (19 of 41 prod job visits on 2026-10-04).
-    # A visit the tech arrived at is a worked day, so it counts as closed.
-    return appt.status in _CLOSED_VISIT_STATUSES or appt.arrived_at is not None
+def _apply_visits(db: Session, job: Job, plan: Any, user: Any, reason: str) -> None:
+    """Write a visit plan, then keep invariant I (``recompute_job_schedule``)."""
+    from gdx_dispatch.services.visit_sync import apply_visit_plan, recompute_job_schedule
 
+    apply_visit_plan(db, job, plan, _user_id(user) or None)
+    recompute_job_schedule(db, job, _user_id(user) or None, reason)
 
-def _sync_job_appointment(
-    db: Session,
-    job: Job,
-    tenant_id: str,
-    user: Any,
-    customer_name: str | None = None,
-    previous_scheduled_at: datetime | None = None,
-) -> None:
-    # Mirror a scheduled job into the `appointments` table: one open visit
-    # per tech on the job's primary day. JobAssignment is the source of
-    # truth; a single-tech legacy row with only ``Job.assigned_to`` set
-    # falls back to one visit for that tech.
-    #
-    # A job can carry visits on other days (a multi-day job), so the sync
-    # touches only OPEN visits (see ``_visit_closed``) on the PRIMARY
-    # day — the shop day of ``previous_scheduled_at`` (the date before this
-    # edit), or of the current date on create. Open visits on other days and
-    # every closed visit are left alone. With no open visit on the primary
-    # day, new rows are inserted rather than a closed one being moved —
-    # except on a single-day job whose day drifted from ``scheduled_at`` (an
-    # Appointments-page edit, /uncomplete, /reactivate write one without the
-    # other). A job with no worked visit (closed, bar a cancellation nobody
-    # arrived at and not rebooked on another day) and every open visit on
-    # ONE shop day is a single-day job; the sync owns all its open visits,
-    # moving or retiring them as it always did instead of duplicating them.
-    # A multi-day job with a worked day never qualifies, so a helper's day-2
-    # visit is not dragged onto day 1 — but a day 1 that was only cancelled,
-    # by another tech, reads as drift (see ``worked_appts``). A visit is CLOSED when it is completed, cancelled
-    # or arrived, or the tech arrived at it (``_visit_closed``).
-    # A tech whose target day holds a closed visit gets no new one there,
-    # bar the two rebooks spelled out at ``closed_on_target``.
-    now = datetime.now(UTC)
-    if not job.scheduled_at:
-        # If a job lost its date, retire its open visits so the calendar
-        # doesn't keep showing a phantom slot. Closed visits stay. ORM, not
-        # raw SQL: a dashed-uuid ``job_id = :jid`` never matches on SQLite.
-        db.execute(
-            update(Appointment)
-            .where(
-                Appointment.job_id == job.id,
-                Appointment.deleted_at.is_(None),
-                Appointment.arrived_at.is_(None),
-                or_(
-                    Appointment.status.is_(None),
-                    Appointment.status.not_in(_CLOSED_VISIT_STATUSES),
-                ),
-            )
-            .values(deleted_at=now, updated_at=now)
-            .execution_options(synchronize_session=False)
-        )
-        return
-
-    assignments = db.execute(
-        select(JobAssignment).where(
-            JobAssignment.job_id == str(job.id),
-            JobAssignment.deleted_at.is_(None),
-        )
-    ).scalars().all()
-    desired_techs: list[str | None] = [a.tech_id for a in assignments]
-    if not desired_techs:
-        # Pre-multi-tech jobs only have Job.assigned_to set. Honor that so
-        # legacy data still gets one appointment row.
-        desired_techs = [str(job.assigned_to) if job.assigned_to else None]
-
-    from gdx_dispatch.core.pay_periods import shop_day_of, shop_tz_name_from_settings
-    from gdx_dispatch.routers.appointments import compute_man_hour_duration_minutes
-    duration = compute_man_hour_duration_minutes(db, job.id) or 60
-    start_at = job.scheduled_at
-    end_at = start_at + timedelta(minutes=duration)
-    title = (job.title or "Job")[:300]
-
-    if customer_name is None and job.customer_id:
-        cust_row = db.execute(
-            _text("SELECT name FROM customers WHERE id = :cid"),
-            {"cid": str(job.customer_id)},
-        ).first()
-        if cust_row:
-            customer_name = cust_row[0]
-
-    tz_name = shop_tz_name_from_settings(db)
-    primary_day = shop_day_of(previous_scheduled_at or start_at, tz_name)
-    target_day = shop_day_of(start_at, tz_name)
-    live_appts = db.execute(
-        select(Appointment).where(
-            Appointment.job_id == job.id,
-            Appointment.deleted_at.is_(None),
-        ).order_by(Appointment.created_at, Appointment.id)
-    ).scalars().all()
-    open_appts = [a for a in live_appts if not _visit_closed(a)]
-    # A visit cancelled before anyone arrived is no worked day, so a
-    # cancelled crew visit does not make the job multi-day and switch off
-    # the drift handling for the visit still booked — unless the same tech
-    # holds an open visit on another day: that is a cancel-and-rebook, and
-    # the rebooked day must not be dragged back onto the cancelled one.
-    def _rebooked(a: Appointment) -> bool:
-        day = shop_day_of(a.start_at, tz_name)
-        return any(
-            o.tech_id == a.tech_id and shop_day_of(o.start_at, tz_name) != day
-            for o in open_appts
-        )
-
-    worked_appts = [
-        a for a in live_appts
-        if _visit_closed(a)
-        and not (a.status == "cancelled" and a.arrived_at is None and not _rebooked(a))
-    ]
-    single_day_job = not worked_appts and len(
-        {shop_day_of(a.start_at, tz_name) for a in open_appts}
-    ) == 1
-    # A tech whose target day already holds a closed visit gets no new one
-    # there — a title fix must not turn a finished or cancelled day back
-    # into a "scheduled" one — with two rebooks as exceptions: setting the
-    # date again after clearing it books the day whatever it holds (a
-    # same-afternoon return), and moving the date onto a CANCELLED day books
-    # it. Moving the date onto a day the tech already worked books nothing:
-    # the moved visit is retired into the worked one, with a trail.
-    date_moved = target_day != primary_day
-    closed_on_target: dict[str | None, Appointment] = {}
-    if previous_scheduled_at is not None:
-        for a in live_appts:
-            if (
-                _visit_closed(a)
-                and shop_day_of(a.start_at, tz_name) == target_day
-                and not (date_moved and a.status == "cancelled" and a.arrived_at is None)
-            ):
-                closed_on_target.setdefault(a.tech_id, a)
-    # Visits this sync owns: open, on the primary day — or every open visit
-    # of a single-day job, whose day may have drifted from ``scheduled_at``.
-    # Ordered oldest first, so which duplicate survives is deterministic.
-    by_tech: dict[str | None, Appointment] = {}
-    for a in open_appts:
-        if not single_day_job and shop_day_of(a.start_at, tz_name) != primary_day:
-            continue
-        if a.tech_id in by_tech:
-            # Defensive: never two open visits for one tech on one day.
-            a.deleted_at = now
-            continue
-        by_tech[a.tech_id] = a
-
-    # Open visits already on the target day (another day of this job), by
-    # tech. Moving the primary day onto one of them merges into it.
-    on_target: dict[str | None, Appointment] = {}
-    if target_day != primary_day:
-        for a in open_appts:
-            if a.deleted_at is None and shop_day_of(a.start_at, tz_name) == target_day:
-                on_target.setdefault(a.tech_id, a)
-
-    desired_set = set(desired_techs)
-    for tech_id, appt in by_tech.items():
-        if tech_id not in desired_set:
-            appt.deleted_at = now
-
-    for tech_id in desired_techs:
-        appt = by_tech.get(tech_id)
-        existing = on_target.get(tech_id)
-        worked = closed_on_target.get(tech_id) if date_moved else None
-        if existing is None and appt is not None and worked is not None:
-            # The date moved onto a day this tech already worked: keep the
-            # worked visit as that day's only one; no new or moved visit.
-            existing = worked
-        if existing is not None and existing is not appt:
-            # Collision: this tech already has a visit on the new day.
-            # Keep that one and retire the moved one, with a trail.
-            if appt is not None:
-                appt.deleted_at = now
-                log_audit_event_sync(
-                    db=db,
-                    tenant_id=tenant_id,
-                    user_id=_user_id(user),
-                    action="visit_merged",
-                    entity_type="job",
-                    entity_id=str(job.id),
-                    details={
-                        "retired_visit_id": str(appt.id),
-                        "kept_visit_id": str(existing.id),
-                        "tech_id": tech_id,
-                        "day": target_day.isoformat() if target_day else None,
-                    },
-                )
-            if existing is worked:
-                continue
-            appt = existing
-        if appt is not None:
-            appt.title = title
-            appt.start_at = start_at
-            appt.end_at = end_at
-            appt.duration_minutes = duration
-            appt.customer_id = job.customer_id
-            appt.customer_name = customer_name
-            appt.updated_at = now
-            continue
-        if tech_id in closed_on_target:
-            continue
-        db.add(
-            Appointment(
-                company_id=tenant_id,
-                job_id=job.id,
-                customer_id=job.customer_id,
-                tech_id=tech_id,
-                title=title,
-                start_at=start_at,
-                end_at=end_at,
-                duration_minutes=duration,
-                status="scheduled",
-                customer_name=customer_name,
-                created_by=_user_id(user),
-            )
-        )
 
 
 def _job_to_dict(job: Job, customer: Customer | None = None) -> dict[str, Any]:
@@ -684,6 +457,17 @@ def _display_state_for_jobs(
     status). Strictly additive: any failure degrades to an empty map so
     the jobs list never breaks over a display field. Pass the RAW
     ``lifecycle_stage`` — never the ``_canon_status``-normalized form.
+
+    ``contained_read`` (GDXA-158) is what makes "never breaks" true on
+    Postgres. Every caller is a GET (``list_jobs``, ``get_job``, the customer
+    job list, the dispatch board, the leads list's job progress), so no caller
+    holds pending work to lose —
+    but they all keep querying after this returns: ``list_jobs`` calls
+    ``resolve_job_sites(db, …)`` on the very next statement. A bare swallow
+    aborted the transaction, so the degraded ``{}`` bought nothing and the
+    whole list 500'd on the following query. Pure reads throughout —
+    ``paid_to_date_bulk`` re-raises rather than swallowing, which is what
+    core.database rule 5's corollary requires of an intervening frame.
     """
     # job.id is a Uuid(as_uuid=True) column — its bind processor expects
     # UUID objects, so coerce (inputs may be str from the raw-SQL list
@@ -701,45 +485,46 @@ def _display_state_for_jobs(
     inv_by_job: dict[str, list[dict[str, Any]]] = {}
     est_by_job: dict[str, str] = {}
     try:
-        _inv_rows: list = []
-        # M35: `Invoice.amount_paid` is a cache nothing maintains, and
-        # job_display_state keys "Partially Paid" and the deposit_paid badge on
-        # it — so a partial payment recorded after 2026-07-31 read as $0 and the
-        # job showed "Invoiced". Derive paid-to-date from the payments table.
-        for row in db.execute(
-            select(
-                Invoice.id,
-                Invoice.job_id,
-                Invoice.status,
-                Invoice.balance_due,
-                Invoice.billing_type,
-            ).where(Invoice.job_id.in_(uuid_ids), Invoice.deleted_at.is_(None))
-        ).all():
-            if row.job_id is None:
-                continue
-            _inv_rows.append(row)
-        _paid_by_invoice = paid_to_date_bulk(db, [r.id for r in _inv_rows])
-        for row in _inv_rows:
-            inv_by_job.setdefault(str(row.job_id), []).append(
-                {
-                    "status": row.status,
-                    "balance_due": row.balance_due,
-                    "amount_paid": _paid_by_invoice.get(str(row.id), 0),
-                    "billing_type": row.billing_type,
-                }
-            )
-        if _HAS_ESTIMATE_ORM:
+        with contained_read(db):
+            _inv_rows: list = []
+            # M35: `Invoice.amount_paid` is a cache nothing maintains, and
+            # job_display_state keys "Partially Paid" and the deposit_paid badge
+            # on it — so a partial payment recorded after 2026-07-31 read as $0
+            # and the job showed "Invoiced". Derive paid-to-date from payments.
             for row in db.execute(
-                select(Estimate.job_id, Estimate.status).where(
-                    Estimate.job_id.in_(uuid_ids),
-                    Estimate.deleted_at.is_(None),
-                )
+                select(
+                    Invoice.id,
+                    Invoice.job_id,
+                    Invoice.status,
+                    Invoice.balance_due,
+                    Invoice.billing_type,
+                ).where(Invoice.job_id.in_(uuid_ids), Invoice.deleted_at.is_(None))
             ).all():
-                if row.job_id is not None:
-                    # Last-seen wins — a job's most-recent estimate status.
-                    # Multi-estimate jobs are a display nicety, not a
-                    # correctness boundary, in Wave 0a.
-                    est_by_job[str(row.job_id)] = row.status
+                if row.job_id is None:
+                    continue
+                _inv_rows.append(row)
+            _paid_by_invoice = paid_to_date_bulk(db, [r.id for r in _inv_rows])
+            for row in _inv_rows:
+                inv_by_job.setdefault(str(row.job_id), []).append(
+                    {
+                        "status": row.status,
+                        "balance_due": row.balance_due,
+                        "amount_paid": _paid_by_invoice.get(str(row.id), 0),
+                        "billing_type": row.billing_type,
+                    }
+                )
+            if _HAS_ESTIMATE_ORM:
+                for row in db.execute(
+                    select(Estimate.job_id, Estimate.status).where(
+                        Estimate.job_id.in_(uuid_ids),
+                        Estimate.deleted_at.is_(None),
+                    )
+                ).all():
+                    if row.job_id is not None:
+                        # Last-seen wins — a job's most-recent estimate status.
+                        # Multi-estimate jobs are a display nicety, not a
+                        # correctness boundary, in Wave 0a.
+                        est_by_job[str(row.job_id)] = row.status
     except SQLAlchemyError:
         log.exception("display_state_enrichment_failed")
         return {}
@@ -1141,7 +926,10 @@ def create_job(payload: JobCreate, request: Request, current_user: Any = Depends
                 lead_tech_id=payload.lead_tech_id,
                 user_id=_user_id(current_user),
             )
-        _sync_job_appointment(db, job, tenant_id, current_user, customer_name=customer_name)
+        # E4: a new job's crew is booked on its date (multi-day jobs plan §5.2a).
+        from gdx_dispatch.services.visit_sync import book_new_job
+
+        book_new_job(db, job, _user_id(current_user) or None)
         _emit_job_event(db, job, "job.created", tenant_id)
         db.commit()
         # assigned_to is in the response so the mobile dialog can tell whether
@@ -1199,6 +987,29 @@ def _lifecycle_stage_for_write(status: str | None) -> str | None:
     }
     s = mapping.get(s, s)
     return s if s in _VALID_LIFECYCLE_STAGES else None
+
+
+def _stage_change_refusal(stored_stage: str | None, requested_stage: str) -> dict | None:
+    """The 409 body for a stage change no generic PATCH may make, else None.
+
+    Shared by this router's PATCH and the public API's (api/public_router.py),
+    so no writer of lifecycle_stage can skip it. Callers drop a request that
+    only resends the stored stage before asking.
+    """
+    stored = (stored_stage or "").lower()
+    if stored in ("completed", "cancelled"):
+        return {
+            "detail": f"This job is {stored}. Use Re-open on the job "
+                      "page to change its stage, so the reason is recorded.",
+            "use": "reopen",
+        }
+    if requested_stage == "completed":
+        return {
+            "detail": "Finish a job with Close out (or Close without work "
+                      "when there is nothing to attest), not a status change.",
+            "use": "closeout",
+        }
+    return None
 
 
 def _job_patch_result(job: Job) -> dict:
@@ -1320,10 +1131,17 @@ def update_job(
     # Status: write to both status (varchar) and lifecycle_stage (enum) in sync
     raw_status = data.get("status") or data.get("lifecycle_stage")
     if raw_status is not None:
-        updates["status"] = str(raw_status).strip().title() or None
         ls = _lifecycle_stage_for_write(raw_status)
-        if ls:
-            updates["lifecycle_stage"] = ls
+        if not ls:
+            # A label naming no stage used to be written to `status` alone,
+            # which skipped the stage guard below: "Scheduled Later" on a
+            # completed job answered 200 and rewrote its status. No UI sends
+            # one; the stage strip and the edit dialog only offer stages.
+            return jsonable_response(
+                {"detail": f"status {str(raw_status)!r} is not a job stage"}, 422,
+            )
+        updates["status"] = str(raw_status).strip().title() or None
+        updates["lifecycle_stage"] = ls
 
     if not updates:
         return jsonable_response({"detail": "no fields to update"}, 400)
@@ -1341,9 +1159,6 @@ def update_job(
         ).scalar_one_or_none()
         if not job:
             return jsonable_response({"detail": "job not found"}, 404)
-        # The appointment sync moves the visits on the job's day BEFORE this
-        # edit, so a multi-day job's other days stay put.
-        previous_scheduled_at = job.scheduled_at
 
         # Stage guard (2026-10-04, job-stage-paths plan §4.1).
         # This PATCH used to write any stage it was handed: the desktop's
@@ -1362,18 +1177,8 @@ def update_job(
             if requested_stage == stored_stage:
                 updates.pop("lifecycle_stage", None)
                 updates.pop("status", None)
-            elif stored_stage in ("completed", "cancelled"):
-                return jsonable_response({
-                    "detail": f"This job is {stored_stage}. Use Re-open on the job "
-                              "page to change its stage, so the reason is recorded.",
-                    "use": "reopen",
-                }, 409)
-            elif requested_stage == "completed":
-                return jsonable_response({
-                    "detail": "Finish a job with Close out (or Close without work "
-                              "when there is nothing to attest), not a status change.",
-                    "use": "closeout",
-                }, 409)
+            elif refusal := _stage_change_refusal(stored_stage, requested_stage):
+                return jsonable_response(refusal, 409)
             elif requested_stage == "in_progress" and not job.started_at:
                 updates["started_at"] = now
             if len(updates) == 1:  # only updated_at left — nothing to change
@@ -1391,6 +1196,30 @@ def update_job(
             )
             if not ok:
                 return jsonable_response({"detail": detail}, 400)
+
+        # The job's visits (multi-day jobs plan §5.2a): planned before anything
+        # is written, so a refusal (R1–R4, or a cancel holding an old
+        # status-only arrival) leaves the job, its visits and the audit log
+        # untouched. A date equal to the stored one to the minute is no date
+        # edit (E1) and is not rewritten.
+        from gdx_dispatch.services.visit_sync import UNSET, plan_for_job, visit_fields
+
+        visit_plan = plan_for_job(
+            db, job,
+            scheduled_at=updates.get("scheduled_at", UNSET),
+            crew_after=tuple(desired_tech_ids) if apply_assignments else None,
+            fields=visit_fields(
+                db, updates.get("title", job.title), updates.get("customer_id", job.customer_id),
+            ) if ("title" in updates or "customer_id" in updates) else None,
+            cancel=updates.get("lifecycle_stage") == "cancelled",
+        )
+        if visit_plan.refusal is not None:
+            return _visit_refused(visit_plan.refusal)
+        if "scheduled_at" in updates:
+            if visit_plan.scheduled_at is UNSET:
+                updates.pop("scheduled_at")
+            else:
+                updates["scheduled_at"] = visit_plan.scheduled_at
 
         # Hard gate (2026-05-01): if the patch moves the job into a
         # "scheduled but no tech" state, refuse. Only trips when the patch
@@ -1454,19 +1283,14 @@ def update_job(
                 lead_tech_id=desired_lead,
                 user_id=_user_id(current_user),
             )
+            job = db.get(Job, job_uuid)
+        # One transaction: the job, its visits and their audit rows commit
+        # together.
+        _apply_visits(db, job, visit_plan, current_user, "job_updated")
         db.commit()
         # Re-read to get the final state including lifecycle_stage and the
         # primary recomputed by _set_job_assignments.
         db.refresh(job)
-        # Mirror any schedule/assignment/title change into the appointments
-        # table so the Appointments page and unconfirmed-arrivals list stay
-        # in sync with the canonical jobs row.
-        if apply_assignments or any(k in updates for k in ("scheduled_at", "title", "customer_id")):
-            _sync_job_appointment(
-                db, job, tenant_id, current_user,
-                previous_scheduled_at=previous_scheduled_at,
-            )
-            db.commit()
         result = _job_patch_result(job)
         log_audit_event_sync(
             db=db,
@@ -1641,14 +1465,37 @@ def start_job(
         # Idempotent — re-starting a started job is a no-op (don't restamp).
         if not job.started_at:
             job.started_at = now
-        if not job.assigned_to:
-            job.assigned_to = _user_id(current_user)
+        # Auto-assign the starter's TECHNICIAN id (it was the token's user id
+        # until 2026-10-05 — a users.id in a technicians.id column). With no
+        # technician row there is no crew change. C1 then hands the job's
+        # unassigned visit to them (multi-day jobs plan §5.2a).
+        start_plan = None
+        from gdx_dispatch.services.visit_sync import job_crew, plan_for_job
+
+        if not job.assigned_to and not job_crew(db, job):
+            starter = _caller_technician_id(db, _user_id(current_user))
+            if starter:
+
+                start_plan = plan_for_job(db, job, crew_after=(starter,))
+                if start_plan.refusal is not None:
+                    return _visit_refused(start_plan.refusal)
+                _set_job_assignments(
+                    db, job_id=str(job.id), tech_ids=[starter],
+                    lead_tech_id=starter, user_id=_user_id(current_user),
+                )
+                job = db.get(Job, job.id)
         job.lifecycle_stage = "in_progress"
         job.status = "In Progress"
-        if job.dispatch_status == "unassigned":
+        if job.dispatch_status == "unassigned" and job.assigned_to:
             job.dispatch_status = "assigned"
         job.updated_at = now
         db.flush()
+        if start_plan is not None:
+            _apply_visits(db, job, start_plan, current_user, "job_started")
+        else:
+            from gdx_dispatch.services.visit_sync import recompute_job_schedule
+
+            recompute_job_schedule(db, job, _user_id(current_user) or None, "job_started")
         db.commit()
 
         # Optional: post arrival event to customer timeline. Best-effort —
@@ -1709,10 +1556,22 @@ def _completed_result(job: Job) -> dict:
     }
 
 
-def _mark_job_completed(db: Session, job: Job, now: datetime, tenant_id: str) -> None:
+def _finish_visits(db: Session, job: Job, now: datetime, user: Any) -> None:
+    """F1 (multi-day jobs plan §5.2a): close every ON SITE visit and every OPEN
+    one on or before the finish day; retire the OPEN days after it. Shared by
+    /complete, /close-without-work and /closeout. F1 never refuses."""
+    from gdx_dispatch.services.visit_sync import plan_for_job, shop_day, shop_tz
+
+    plan = plan_for_job(db, job, finish_day=shop_day(now, shop_tz(db)))
+    _apply_visits(db, job, plan, user, "job_completed")
+
+
+def _mark_job_completed(db: Session, job: Job, now: datetime, tenant_id: str, user: Any) -> None:
     """The completion write shared by /complete and /close-without-work: the
-    stage, the "Completed" spelling, completed_at, dispatch done, and the
-    job.completed webhook staged before the caller's commit."""
+    stage, the "Completed" spelling, completed_at, dispatch done, the job's
+    visits (F1), and the job.completed webhook staged before the caller's
+    commit."""
+    _finish_visits(db, job, now, user)
     job.lifecycle_stage = "completed"
     job.status = "Completed"
     job.completed_at = now
@@ -1807,7 +1666,7 @@ def complete_job(
 
         if payload.notes:
             job.notes = (job.notes + "\n\n" if job.notes else "") + payload.notes.strip()
-        _mark_job_completed(db, job, now, tenant_id)
+        _mark_job_completed(db, job, now, tenant_id, current_user)
         db.commit()
 
         log_audit_event_sync(
@@ -1884,7 +1743,7 @@ def close_job_without_work(
         timers = _open_job_timers(db, job.id)
         for timer in timers:
             _close_labor_entry(timer, now, 0, None)
-        _mark_job_completed(db, job, now, tenant_id)
+        _mark_job_completed(db, job, now, tenant_id, current_user)
         db.commit()
 
         log_audit_event_sync(
@@ -1990,18 +1849,27 @@ def _resolve_technician_id(db: Session, user_id: str) -> str | None:
     `mobile._get_technician_id`, minus its unused tenant_id arg, plus the
     `deleted_at` filter it omits. `created_at` is nullable, so NULLs sort
     per-dialect — tie-break on id to keep SQLite and Postgres agreeing.
+
+    ``contained_read`` (GDXA-158): the sole caller is ``closeout_job``, which
+    reaches here mid-write with the closeout already staged. On Postgres a bare
+    swallow aborted that transaction, so ``return None`` (read downstream as
+    "this user is not a technician", costing the labor row its rate) was
+    followed by the tech's whole attested closeout failing to commit — the
+    degraded answer was never the real damage. Reads only (core.database
+    rule 2); inside the ``try`` so the ``except`` still runs (rule 1).
     """
     try:
-        row = (
-            db.query(Technician.id)
-            .filter(
-                Technician.user_id == user_id,
-                Technician.active.isnot(False),
-                Technician.deleted_at.is_(None),
+        with contained_read(db):
+            row = (
+                db.query(Technician.id)
+                .filter(
+                    Technician.user_id == user_id,
+                    Technician.active.isnot(False),
+                    Technician.deleted_at.is_(None),
+                )
+                .order_by(Technician.created_at.desc().nullslast(), Technician.id)
+                .first()
             )
-            .order_by(Technician.created_at.desc().nullslast(), Technician.id)
-            .first()
-        )
     except SQLAlchemyError:
         log.exception("closeout_resolve_technician_failed")
         return None
@@ -2771,6 +2639,8 @@ def closeout_job(
 
         # 4) Flip the job to completed. Stamp signature for back-compat
         #    with the Phase 1 /complete reader path that checks job.signature_data.
+        #    Its visits first (F1).
+        _finish_visits(db, job, now, current_user)
         job.lifecycle_stage = "completed"
         job.status = "Completed"
         job.completed_at = now
@@ -2875,15 +2745,26 @@ def closeout_job(
                 # keeps job_number NULL — this code has no fallback; the
                 # jobs list renders the UUID prefix for NULL numbers — and
                 # the closeout is never blocked on numbering.
+                #
+                # GDXA-158: that last promise was false on Postgres. The
+                # counter runs on its OWN session (``cdb``), but the customer
+                # name is read on the CALLER's (``db``) — so a failed read
+                # there aborted this request's transaction, and the
+                # ``db.add(child)``/``commit()`` below died with 25P02. The
+                # closeout WAS blocked on numbering, by the one read nobody
+                # counted as part of numbering. ``contained_read`` wraps only
+                # that read: pure, on ``db``, inside the existing ``try``
+                # (core.database rules 1/2).
                 assigned_number: str | None = None
                 try:
                     with SessionLocal() as cdb:
                         cust_name = None
                         if job.customer_id:
-                            cust = db.execute(
-                                _text("SELECT name FROM customers WHERE id = :cid"),
-                                {"cid": str(job.customer_id)},
-                            ).first()
+                            with contained_read(db):
+                                cust = db.execute(
+                                    _text("SELECT name FROM customers WHERE id = :cid"),
+                                    {"cid": str(job.customer_id)},
+                                ).first()
                             if cust:
                                 cust_name = cust[0]
                         assigned_number = next_job_number(cdb, tenant_id, customer_name=cust_name)
@@ -4362,15 +4243,21 @@ def spawn_return_visit(
         new_id = uuid.uuid4()
         title = (payload.title or f"Return visit: {original.title}")[:200]
         # Allocate a job_number for the child — same atomic counter as create_job.
+        # GDXA-158: ``contained_read`` on the customer-name read for the same
+        # reason as the closeout copy above — the counter is on ``cdb``, but this
+        # read is on the caller's ``db``, so its failure aborted the request's
+        # transaction and killed the ``db.add(child)`` that follows. Pure read,
+        # inside the existing ``try`` (core.database rules 1/2).
         assigned_number: str | None = None
         try:
             with SessionLocal() as cdb:
                 cust_name = None
                 if original.customer_id:
-                    cust = db.execute(
-                        _text("SELECT name FROM customers WHERE id = :cid"),
-                        {"cid": str(original.customer_id)},
-                    ).first()
+                    with contained_read(db):
+                        cust = db.execute(
+                            _text("SELECT name FROM customers WHERE id = :cid"),
+                            {"cid": str(original.customer_id)},
+                        ).first()
                     if cust:
                         cust_name = cust[0]
                 assigned_number = next_job_number(cdb, tenant_id, customer_name=cust_name)
@@ -4403,6 +4290,10 @@ def spawn_return_visit(
         )
         db.add(child)
         db.flush()
+        # E4: a dated callback is booked like any new job, so it is on the board.
+        from gdx_dispatch.services.visit_sync import book_new_job
+
+        book_new_job(db, child, _user_id(current_user) or None)
         db.commit()
         log_audit_event_sync(
             db=db, tenant_id=tenant_id, user_id=_user_id(current_user),
@@ -4435,6 +4326,44 @@ class StateOverridePayload(BaseModel):
     reason: str  # mandatory — Doug 2026-04-29
     scheduled_at: datetime | None = None  # optional new slot for un-complete + reactivate
     assigned_to: str | None = None
+    # The re-open's question (multi-day jobs plan §5.2a, R0): when a crew tech
+    # already has a closed visit on the new day, book them there again?
+    # Unanswered, such a re-open is 409 needs_answer.
+    rebook_closed_day: bool | None = None
+
+
+def _plan_reopen(db: Session, job: Job, payload: StateOverridePayload, now: datetime) -> Any:
+    """R0, then the crew and the date, planned before anything is written."""
+    from gdx_dispatch.services.visit_sync import UNSET, job_visit_fields, plan_for_job, shop_day, shop_tz
+
+    finished_at = job.completed_at or now
+    return plan_for_job(
+        db, job,
+        reopen=True,
+        reopen_day=shop_day(finished_at, shop_tz(db)),
+        scheduled_at=payload.scheduled_at if payload.scheduled_at else UNSET,
+        crew_after=(payload.assigned_to,) if payload.assigned_to else None,
+        rebook_closed_day=payload.rebook_closed_day,
+        fields=job_visit_fields(db, job),
+    )
+
+
+def _apply_reopen(db: Session, job: Job, plan: Any, payload: StateOverridePayload, user: Any) -> Job:
+    """The re-open's writes after its status flip: the job's date and crew,
+    its visits (R0 and E4), and recompute."""
+    from gdx_dispatch.services.visit_sync import UNSET
+
+    if plan.scheduled_at is not UNSET:
+        job.scheduled_at = plan.scheduled_at
+    db.flush()
+    if payload.assigned_to:
+        _set_job_assignments(
+            db, job_id=str(job.id), tech_ids=[payload.assigned_to],
+            lead_tech_id=payload.assigned_to, user_id=_user_id(user),
+        )
+        job = db.get(Job, job.id)
+    _apply_visits(db, job, plan, user, "job_reopened")
+    return job
 
 
 def _validate_reason(reason: str | None) -> str | None:
@@ -4482,17 +4411,15 @@ def uncomplete_job(
         if job.lifecycle_stage != "completed":
             return jsonable_response({"detail": "only completed jobs can be un-completed"}, 409)
 
+        plan = _plan_reopen(db, job, payload, now)
+        if plan.refusal is not None:
+            return _visit_refused(plan.refusal)
         prior_completed_at = job.completed_at
         job.lifecycle_stage = "in_progress"
         job.status = "In Progress"
         job.completed_at = None
-        if payload.scheduled_at:
-            job.scheduled_at = payload.scheduled_at
-        if payload.assigned_to:
-            job.assigned_to = payload.assigned_to
         job.updated_at = now
-        db.flush()
-        db.commit()
+        job = _apply_reopen(db, job, plan, payload, current_user)
         log_audit_event_sync(
             db=db, tenant_id=tenant_id, user_id=_user_id(current_user),
             action="job_uncompleted", entity_type="job", entity_id=str(job.id),
@@ -4547,29 +4474,41 @@ def reactivate_job(
         if job.lifecycle_stage != "cancelled":
             return jsonable_response({"detail": "only cancelled jobs can be reactivated"}, 409)
 
-        # Reactivate to "scheduled" only if the row actually has a date —
-        # otherwise drop back to lead so it shows up in "New Jobs to
-        # Schedule" instead of misleadingly appearing scheduled.
-        if payload.scheduled_at:
-            job.scheduled_at = payload.scheduled_at
+        plan = _plan_reopen(db, job, payload, now)
+        if plan.refusal is not None:
+            return _visit_refused(plan.refusal)
+        # Live first, so recompute sees a live job; the stage is picked below.
+        job.lifecycle_stage = "service_call"
         if payload.assigned_to:
-            job.assigned_to = payload.assigned_to
             job.dispatch_status = "assigned"
+        job.updated_at = now
+        prior_scheduled_at = job.scheduled_at
+        job = _apply_reopen(db, job, plan, payload, current_user)
+        # Reactivate to "scheduled" only if the job has a date — read AFTER
+        # recompute. Cancelling retired its visits, so a re-activate sent with
+        # no date and no Current visit left has only the stale date: clear it
+        # and drop back to a service call, so the job shows up in "New Jobs to
+        # Schedule" instead of appearing scheduled with nothing on the board.
+        # The old date stays in this call's audit row. A date the office typed
+        # is kept, even when the rebook question was answered No.
+        from gdx_dispatch.services.visit_sync import is_current, visit_rows
+
+        if payload.scheduled_at is None and not any(is_current(v) for v in visit_rows(db, job.id)):
+            job.scheduled_at = None
         if job.scheduled_at:
             job.lifecycle_stage = "scheduled"
             job.status = "Scheduled"
         else:
             job.lifecycle_stage = "service_call"
             job.status = "Service Call"
-        job.updated_at = now
         db.flush()
-        db.commit()
         log_audit_event_sync(
             db=db, tenant_id=tenant_id, user_id=_user_id(current_user),
             action="job_reactivated", entity_type="job", entity_id=str(job.id),
             details={
                 "reason": cleaned,
                 "new_scheduled_at": payload.scheduled_at.isoformat() if payload.scheduled_at else None,
+                "prior_scheduled_at": prior_scheduled_at.isoformat() if prior_scheduled_at else None,
             },
             request=request,
         )
