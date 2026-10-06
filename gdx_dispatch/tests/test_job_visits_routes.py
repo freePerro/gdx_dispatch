@@ -5,6 +5,7 @@ snapshot of every table they could touch."""
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 from sqlalchemy import select, text
@@ -289,6 +290,27 @@ def test_partial_row_names_the_last_day_and_who_worked_it(client):
     assert [w["tech_id"] for w in row["worked_by"]] == [T1]
     # Every closed (day, tech), which the board's E5 guard reads.
     assert row["closed_days"] == {_day(DAY1): [T2], _day(DAY2): [T1]}
+
+
+def test_board_queue_rows_carry_the_hours_the_board_sums(client):
+    """A queue row is a board card too: a parked partial job's lane total and
+    the Scheduled lane's duration prompt read these, as GET /api/jobs gives
+    them (the scheduler's own hours; none is None, not 0)."""
+    partial = _job(client, crew=(T1,), scheduled_duration_hours=3)
+    _visit(client, partial, DAY1, status="completed", tech=T1)
+    past = datetime.now(UTC).replace(hour=15, minute=0, second=0, microsecond=0) - timedelta(days=3)
+    late = _job(client, scheduled_at=past, assigned_to=None)  # no visit, no tech: late and in the Scheduled lane
+    no_tech = _job(client, scheduled_at=DAY3, assigned_to=None, scheduled_duration_hours=2.5)
+    [row] = client.client.get("/api/dispatch/partial-jobs").json()["items"]
+    assert (row["scheduled_duration_hours"], row["effective_duration_hours"]) == (3.0, 3.0)
+    late_rows = {i["id"]: i for i in client.client.get("/api/dispatch/late-open").json()["items"]}
+    assert (late_rows[str(late.id)]["scheduled_duration_hours"], late_rows[str(late.id)]["effective_duration_hours"]) == (None, None)
+    r = client.client.get("/api/dispatch/scheduled-unassigned")
+    assert r.status_code == 200, r.text
+    # Raw SQL: SQLite hands the id back as 32 hex, Postgres dashed.
+    lane = {UUID(i["id"]).hex: i for i in r.json()["items"]}
+    assert (lane[no_tech.id.hex]["scheduled_duration_hours"], lane[no_tech.id.hex]["effective_duration_hours"]) == (2.5, 2.5)
+    assert lane[late.id.hex]["effective_duration_hours"] is None
 
 
 def test_a_technician_cannot_read_the_partial_queue(client):
