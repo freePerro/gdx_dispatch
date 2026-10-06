@@ -19,13 +19,7 @@ from pathlib import Path
 from gdx_dispatch.routers import ui_compat
 
 # Each sibling of GDXA-314 deletes its own entries as it lands.
-KNOWN_EMPTY_STUBS = {
-    "/api/payroll/pay-periods",
-    "/api/payroll/pay-stubs",
-    "/api/quickbooks",
-    "/api/voice",
-    "/api/users/staff",
-}
+KNOWN_EMPTY_STUBS: set[str] = set()
 
 _EMPTY_HELPERS = {"_empty_list"}
 
@@ -137,3 +131,27 @@ def test_gdxa_317_routes_stay_gone():
     }
     assert "/api/dispatch/optimize-route" not in gets
     assert "/api/maps" not in gets
+
+
+GDXA_315_REMOVED = {
+    "/api/payroll/pay-periods",
+    "/api/payroll/pay-stubs",
+    "/api/quickbooks",
+    "/api/voice",
+    "/api/users/staff",
+}
+
+
+def test_gdxa_315_routes_stay_gone_from_the_app():
+    """The five uncalled stubs are deleted, not reworded — and no other router
+    picked the paths up. Checked against the whole app, so a stub re-added in
+    any router is caught, not only one re-added in ui_compat. The real
+    neighbours (/api/quickbooks/*, /api/timeclock/pay-periods, /api/users)
+    stay registered. Read from the published route table, the same one
+    openapi_routes.txt is gated against — `app.routes` at import time holds
+    only /docs, so a check over it would pass on anything."""
+    from gdx_dispatch.tools import openapi_snapshot as snap
+
+    gets = {p for m, p in snap.operations(snap.build_spec()) if m == "GET"}
+    assert not (GDXA_315_REMOVED & gets), sorted(GDXA_315_REMOVED & gets)
+    assert {"/api/timeclock/pay-periods", "/api/quickbooks/recurring-transactions"} <= gets

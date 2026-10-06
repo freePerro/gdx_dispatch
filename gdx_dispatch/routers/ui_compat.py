@@ -8,8 +8,9 @@ match the real router prefixes (e.g. /api/admin-ops, /api/collections,
 /api/quickbooks, etc.).
 
 This router exposes thin GET/POST/PATCH handlers that:
-  - Return `{"items": []}` for list endpoints (UI renders empty state)
-  - Return `{}` for index/config endpoints (UI renders defaults)
+  - Read real data, or do not exist: a GET that returns a hardcoded empty
+    payload renders "nothing here" forever and is gated by
+    tests/test_ui_compat_no_theater_reads.py (GDXA-314)
   - Raise 501 for write endpoints with no backing store (see below)
   - Are tenant-scoped via request.state.tenant
 
@@ -433,16 +434,10 @@ def create_payment_intent(payload: _GenericPayload, _: dict = Depends(get_curren
 
 
 # ── Payroll summary (pay periods + stubs) ─────────────────────────────────
-
-@router.get("/api/payroll/pay-periods", response_model=None)
-def list_pay_periods(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-@router.get("/api/payroll/pay-stubs", response_model=None)
-def list_pay_stubs(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
+# GET /api/payroll/pay-periods and GET /api/payroll/pay-stubs were removed
+# 2026-10-06 (GDXA-315). Each returned a hardcoded {"items": [], "total": 0}
+# and nothing called either. Pay periods are real at GET
+# /api/timeclock/pay-periods; nothing stores pay stubs.
 
 @router.post("/api/payroll/run-current-period", response_model=None)
 def run_payroll_current(
@@ -457,25 +452,11 @@ def run_payroll_current(
 # gdx_dispatch/routers/portal.py (staff_router).
 
 
-# ── Quickbooks integration status ─────────────────────────────────────────
-
-@router.get("/api/quickbooks", response_model=None)
-def quickbooks_status(_: dict = Depends(get_current_user)) -> dict:
-    return {"connected": False, "last_sync": None, "recent_events": []}
-
-
-# ── Voice (list) ──────────────────────────────────────────────────────────
-
-@router.get("/api/voice", response_model=None)
-def list_voice_calls(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-# ── Users / staff (for message recipient picker) ──────────────────────────
-
-@router.get("/api/users/staff", response_model=None)
-def list_staff_users(_: dict = Depends(get_current_user)) -> dict:
-    return {"users": []}
+# ── Quickbooks status, voice list, staff list ─────────────────────────────
+# Removed 2026-10-06 (GDXA-315), all three uncalled. GET /api/quickbooks
+# answered {"connected": false} whatever the connection state (the real status
+# is under modules/quickbooks); GET /api/voice listed no calls ever; GET
+# /api/users/staff listed no users ever (the users router lists them).
 
 
 # ── Customers bulk actions ────────────────────────────────────────────────

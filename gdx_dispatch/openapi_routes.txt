@@ -428,8 +428,6 @@ GET /api/payroll/commission-rates
 GET /api/payroll/config
 GET /api/payroll/entries
 GET /api/payroll/export
-GET /api/payroll/pay-periods
-GET /api/payroll/pay-stubs
 GET /api/payroll/summary
 GET /api/payroll/tech/{tech_id}
 GET /api/pdf-templates
@@ -501,7 +499,6 @@ GET /api/qb/events
 GET /api/qb/oauth/callback
 GET /api/qb/schedule
 GET /api/qb/status
-GET /api/quickbooks
 GET /api/quickbooks/recurring-transactions
 GET /api/referrals
 GET /api/referrals/stats
@@ -596,7 +593,6 @@ GET /api/timeclock/time-off/requests
 GET /api/users
 GET /api/users/me
 GET /api/users/me/permissions
-GET /api/users/staff
 GET /api/users/{user_id}
 GET /api/users/{user_id}/lockout-info
 GET /api/v1/customers
@@ -620,7 +616,6 @@ GET /api/vendor-statements/payments
 GET /api/vendor-statements/{statement_id}
 GET /api/vendors
 GET /api/vendors/{vendor_id}
-GET /api/voice
 GET /api/warranties
 GET /api/warranties/expiring
 GET /api/warranties/{warranty_id}
