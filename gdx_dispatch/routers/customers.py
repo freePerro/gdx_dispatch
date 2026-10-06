@@ -26,7 +26,7 @@ from gdx_dispatch.core.log_redact import redact_email
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.name_normalize import humanize_name
 from gdx_dispatch.core.tenant import company_id
-from gdx_dispatch.models.tenant_models import Customer, Job
+from gdx_dispatch.models.tenant_models import Customer, CustomerLocation, Job
 
 log = logging.getLogger(__name__)
 
@@ -188,6 +188,10 @@ class CustomerLocationPatchIn(BaseModel):
 # The dialog sends "" for a field left blank; store NULL, the column's
 # "not known" value (the QB import and the geocode reset both write NULL).
 _LOCATION_TEXT_FIELDS = ("city", "state", "zip", "access_notes")
+# The fields the QuickBooks sub-customer pull writes, so the ones a human edit
+# claims into local_edit_fields (modules/quickbooks/sync.py,
+# _upsert_subcustomer_location). access_notes is GDX-only and claims nothing.
+_LOCATION_QB_FIELDS = ("label", "address", "city", "state", "zip")
 
 
 def _blank_to_none(value: str | None) -> str | None:
@@ -988,11 +992,31 @@ async def update_customer_location(
             updates["is_primary"] = bool(data["is_primary"])
         if not updates:
             raise HTTPException(status_code=400, detail="no fields to update")
+        # Which QB-synced fields this edit actually CHANGES — compared by
+        # value, because the dialog resends every field on save and presence
+        # would claim the whole row on a notes edit. A city/state/zip cleared
+        # by the address rule above counts: the human moved the site.
+        claimed = [
+            col for col in _LOCATION_QB_FIELDS
+            if col in updates
+            and (existing[col] or "").strip() != (updates[col] or "").strip()
+        ]
         set_sql = ", ".join(f"{col} = :{col}" for col in updates)
         db.execute(
             text(f"UPDATE customer_locations SET {set_sql} WHERE id = :location_id"),  # noqa: S608 — SET keys are the hardcoded column names above; values are bound
             {"location_id": location_id, **updates},
         )
+        if claimed:
+            # A human now owns these fields: the QuickBooks sub-customer pull
+            # will not write them (migration 105, sync's per-row guard). Same
+            # rule as the customer PATCH above. Through the ORM so the JSON
+            # column serializes the same way on SQLite and Postgres.
+            loc = db.get(CustomerLocation, location_id, populate_existing=True)
+            if loc is not None:
+                loc.local_edit_at = datetime.now(timezone.utc)
+                loc.local_edit_fields = sorted(
+                    set(loc.local_edit_fields or []) | set(claimed)
+                )
         db.commit()
     except HTTPException:
         raise
@@ -1037,6 +1061,8 @@ async def update_customer_location(
             "access_notes_changed": before["access_notes"] != after["access_notes"],
             # The map pin was dropped because the address really changed.
             "coords_cleared": "lat" in updates,
+            # Fields this edit took from QuickBooks' control (migration 105).
+            "local_edit_fields_claimed": claimed,
             "demoted_primary_location_ids": demoted,
         },
     )
