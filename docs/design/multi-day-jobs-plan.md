@@ -1,7 +1,7 @@
 # Multi-day jobs: one job, many visit days
 
 **Date:** 2026-10-03
-**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) MERGED #846, RELEASED v1.137.0, to §5.2's rules. §5.2a (revision 2, 2026-10-04) replaces those sync rules and adds `recompute_job_schedule`, as PR 1b against `main`: MERGED #868 (2026-10-05), RELEASED v1.138.0 (on prod and demo 2026-10-05; walked in a browser that night: the full write walk on the demo, a read-only look at prod), with one rule the build added (R2's second clause, below, accepted by Doug 2026-10-05); Doug ruled its open questions 2026-10-04 (a day closes only when someone closes it). Not built: PR 2 (office booking, the board, and the "Partial Jobs — Need to Schedule" section Doug ruled 2026-10-05, D10–D12) and PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, billing). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); §5.2a went through three plan audits, was rewritten to Doug's rulings after the third, then through sixteen more rounds (2026-10-04), the sixteenth finding no defect, then revised the same day to Doug's ruling that arrival times are always recorded and audited five more rounds (20–24), the last finding no defect; then revised 2026-10-05 to Doug's rulings that a re-open onto a closed day, a mis-tap, and an old arrival with no time are all settled by asking the office, and audited rounds 25–41 on the arrival-undo rules, round 41 finding no logic defect and two wording fixes, applied; §5.2a ships as PR 1b against `main` (see *Packaging*), since #846 merged before it was built.
+**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) MERGED #846, RELEASED v1.137.0, to §5.2's rules. §5.2a (revision 2, 2026-10-04) replaces those sync rules and adds `recompute_job_schedule`, as PR 1b against `main`: MERGED #868 (2026-10-05), RELEASED v1.138.0 (on prod and demo 2026-10-05; walked in a browser that night: the full write walk on the demo, a read-only look at prod), with one rule the build added (R2's second clause, below, accepted by Doug 2026-10-05); Doug ruled its open questions 2026-10-04 (a day closes only when someone closes it). PR 2a (§5.3a: the visits API, the job page's Visits card, and the "Partial Jobs — Need to Schedule" section Doug ruled 2026-10-05, D10–D12) built on `feat/multi-day-pr2a-visits`, in review, not merged. Not built: PR 2b (the board drawing each visit day) and PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, billing). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); §5.2a went through three plan audits, was rewritten to Doug's rulings after the third, then through sixteen more rounds (2026-10-04), the sixteenth finding no defect, then revised the same day to Doug's ruling that arrival times are always recorded and audited five more rounds (20–24), the last finding no defect; then revised 2026-10-05 to Doug's rulings that a re-open onto a closed day, a mis-tap, and an old arrival with no time are all settled by asking the office, and audited rounds 25–41 on the arrival-undo rules, round 41 finding no logic defect and two wording fixes, applied; §5.2a ships as PR 1b against `main` (see *Packaging*), since #846 merged before it was built.
 
 **Trigger:** Doug asked, "What happens if a job is not finished and turns into a
 multi-day job? Can a tech or anyone go back to it?" The answer, traced on
@@ -932,6 +932,192 @@ each one against `main` before building.
     "Add day(s)" is the other way to book it, for any date.
   - **Who:** the office, on desktop. Not on the tech's phone.
 
+### 5.3a PR 2 build spec (2026-10-05; 2a built, in review)
+
+PR 2 ships as two PRs against `main`. **2a**: the visits API, the Visits
+card, and the Partial Jobs section. **2b**: the board shows a multi-day job
+on each visit day, with a "Day 2 of 3" badge, and dragging that card moves
+the visit. They are split because the board today is built only on
+`Job.scheduled_at` (`DispatchView.vue:1171`, `fetchJobs` :1807) and reads no
+appointment at all. Teaching it visits is the largest piece, and 2a stands
+on its own without it.
+
+**What already exists (re-traced on `main` @ 294ee9ce, do not rebuild):**
+
+| Need | Already there |
+|---|---|
+| A day-2 visit shows on the tech's phone | Today unions the tech's appointments for the local day (`mobile.py:1312-1332`) |
+| A day-2-only helper can open the job | `job_belongs_to_user` grants access through any live appointment (`core/job_access.py:120-130`) |
+| Move, remove, complete and undo one visit | `PATCH`/`DELETE /api/appointments/{id}`, `/complete`, the undo-arrival routes. Each runs `recompute_job_schedule` through `_record` (`appointments.py:266`) |
+| The phone's route reorder keeps I | `reorder_mobile_today` already recomputes (`mobile.py:1639`), so §5.2's "PR 2 must route it" is done |
+| A refusal shown as a message | `utils/visitRefusals.js` (`refusalOf`) |
+
+**Decisions in this spec.** None adds a migration, changes money math or
+changes anything a customer sees.
+
+- **Booking a day does not touch the crew.** A tech booked only on day 2
+  holds a visit and is not added to `JobAssignment`. D5 lets the crew differ
+  by day. Access and Today already follow the visit (table above). Adding
+  them to the crew would make the next crew-field edit plan C1–C7 against
+  them. This is §5.2's open "day-2-only helper" call.
+- **No day before shop today can be booked** (409 `past_day`). An OPEN visit
+  on a past day would become N, and the job would show late at once with no
+  one ever having been booked to do it.
+- **A tech who already holds a Live visit of this job on a requested day**
+  fails the whole request (409 `double_booked`, naming the tech and the day).
+  So does the same (tech, day) pair named twice in one request. Nothing is
+  written. Silently skipping would answer 200 for a day that was not booked.
+- **A finished job books nothing** (409 `job_finished`). Re-open it first.
+- **The refusal messages from 1b are unchanged.** They name the Appointments
+  page, which still works. The Visits card is a second way to do the same
+  thing, not a replacement.
+- **A Partial Jobs drop is an ordinary board drop.** It goes through the
+  board's existing path (`assignJob`, `DispatchView.vue:1606`): `PATCH
+  /api/jobs/{id}` with the tech as the crew and the board's date. The
+  timeline sends the slot's time; the tray sends midnight, date-only, as it
+  does for every job (`:1731-1736`). The job has no Current visit, so the
+  planner books it by E4 (§5.2a: "a return after every day closed"), and the
+  crew becomes [that tech]. That is what every board drop means, and it is
+  what puts the card in that tech's column. A board that places a job by crew
+  (`:1310-1313`) would show a booked visit for a tech outside the crew in the
+  wrong column (plan audit 2026-10-05, finding 1). One edge: when that tech
+  already holds a Live visit on that day, E5 books nothing, and the job
+  stays partial. The section re-reads after every drop, and a card that is
+  still there gets a warning toast naming the tech and the day, so the 200
+  never looks like a booking. The same is true of a drop at the very
+  minute the job already holds (the last worked day's start): no date
+  changed, so the planner reads it as E1 and books nothing, and the same
+  warning shows.
+- **The Visits card's Move and Remove get job-scoped routes.** They do not
+  reuse `PATCH`/`DELETE /api/appointments/{id}`. Those routes depend only on
+  `get_current_user` (`appointments.py:555`, `:661`) and check no day, tech
+  or stage. Moving an OPEN visit onto a day where the same tech already holds
+  one would create R3's `two_open_visits`, and from then on every job-form
+  date edit is refused (`visit_sync.py:340-350`). The new routes run the same
+  refusals as the POST. The old routes are left as they are: that gap
+  predates this plan and goes on the found-not-filed ledger.
+
+**API (2a).**
+
+- `GET /api/jobs/{id}/visits`, gated as `GET /api/jobs/{id}` is (any
+  signed-in user of the jobs module, `jobs.py:3601`; there is no
+  `jobs.read` permission). Returns every visit
+  (Terms) oldest first: id, tech id and name, start, end, status,
+  `arrived_at`, `completed_at`, its state (open / on_site / closed /
+  cancelled), its shop day, and `day_index` / `day_count`. The day count is
+  over the distinct shop days that hold a Live visit, so a CANCELLED visit
+  shows but is not a day of work.
+- `POST /api/jobs/{id}/visits`, gated by `jobs.write` and a dispatch role (as
+  `job_assignments.py:168-180`). Body: `days: [date]` (1–20, Jobber's cap,
+  §2), or `range: {from, to, skip_weekends}` expanding to at most 20;
+  `start_time` (`HH:MM`, shop time); `duration_minutes` (optional; default is
+  the job's `default_duration`); `tech_ids` (optional; default is the crew,
+  and with no crew one unassigned slot, as E4 books). It plans with a new
+  pure `plan_add_visits(visits, tz, today, requests)` beside the planner, so
+  the refusals above are tested without a database. It also refuses
+  `no_days` (an empty list) and `too_many_days` (over 20); a range over 20,
+  or reversed, and an unknown tech id are 422. Then it applies the plan
+  with `apply_visit_plan` (one `visit_added` audit row per visit, reason
+  `visits_booked`) and calls `recompute_job_schedule` last. One transaction:
+  a refusal writes nothing. Returns the visit list as GET does.
+- `GET /api/dispatch/partial-jobs`, gated by `jobs.read_all` as late-open is.
+  Membership: the job is not deleted, its stage is not completed or
+  cancelled, it holds at least one CLOSED visit, and it holds **no Current
+  visit**. A job with a Current visit is still booked: it has a date and is
+  on the board, late or not. Each row carries the job card fields late-open
+  carries, plus `holding_area_id`, `last_worked_day` (the shop day of its latest
+  CLOSED visit), `worked_by` (`[{tech_id, name}]`, the techs who worked
+  that day) and `closed_days` (`{day: [tech_id]}`, every day with a closed
+  visit and who closed it — a visit can close early on a later day). Prod, read-only, 2026-10-05: **0 jobs qualify**, so the section
+  starts empty and there is nothing to backfill.
+- `PATCH /api/jobs/{id}/visits/{visit_id}` and
+  `DELETE /api/jobs/{id}/visits/{visit_id}`, with the same gate as the POST.
+  The PATCH body is shop-local, as the POST's is: `day`, `start_time`,
+  `duration_minutes` (15–1440), and `tech_id` (absent keeps the tech, null
+  makes the visit an unassigned slot). The server converts to an instant in
+  the shop's zone, so the browser does no zone arithmetic on a write.
+  Both act on an OPEN visit only (409 `visit_not_open`); a visit not on this
+  job is 404 `visit_not_found`. An ON SITE or
+  closed day is changed through Complete or Undo arrival. The move refuses
+  `past_day` (a late visit may still change tech on its own day),
+  `double_booked` (the tech it lands on already holds another
+  Live visit of this job that day), `bad_length` and `job_finished`. The
+  remove is a Retire (`visit_retired`, reason `visit_removed`) and refuses
+  `last_open_visit`: removing the job's last booked day would leave it dated
+  on a day no one is coming, so the office moves it or clears the job's
+  date instead. Both are planned by pure functions beside
+  `plan_add_visits`, end with recompute, and answer 200 with the visit list.
+- **Late-open leaves partial jobs out.** Otherwise the same job would sit
+  in two queues. The same membership predicate is shared by both queries
+  (one helper), so the two cannot drift.
+
+**Dispatch board (2a).** A "Partial Jobs — Need to Schedule" section in the
+day view, ordered between the tech grid and "New Jobs to Schedule" (D11).
+The `order` values move as `DispatchView.vue:257-269` asks, with that note
+updated: Partial Jobs is 2, New Jobs 3, the holding areas 4. It is hidden when empty. A job parked in a holding area other than Ready to
+Schedule is left out, as "New Jobs" leaves it out (`:1250-1266`): a day-1
+job waiting on parts sits in its holding area, not in this queue. The
+holding area's lane draws it from the partial list, because the day's job
+list (`/api/jobs?date=`) never loads a job dated on the day it was last
+worked; parking and Release change only its holding area. (Audit,
+2026-10-05: without that, the server's late-open exclusion and this filter
+together left a parked partial job on no screen at all.) Each card shows the customer, the job,
+the last worked day and who worked it. It is draggable onto a tech's
+timeline or tray, and the drop is the board's own (Decisions, above). A
+drop on a day that has passed books nothing and says so, because a visit
+booked there would be late the moment it existed. A drop at the job's own
+stored instant (a tray drop on the day it was worked at midnight) is not
+sent either: the server reads an unchanged date as E1 and would swap the
+crew without booking a day (audit, 2026-10-05). Nor is a drop on a tech who
+closed a visit of the job that day (`closed_days`): that is E5, which books nothing but still
+writes the date and the crew, because a time fix on a closed day is allowed
+on purpose (`test_e5_a_time_fix_after_the_day_closed_books_no_second_visit`).
+A drop on "New Jobs to Schedule" only un-parks it. A
+refusal shows the server's message as a toast (`refusalOf`), and the card
+stays. The client-side
+"New Jobs" list leaves out partial job ids, so a partial job with no tech
+cannot show in both.
+
+**Job page (2a).** The Schedule tab's "Appointments" card (`JobDetailView.vue:479`) becomes the
+**Visits** card. It fetches `GET /api/jobs/{id}/visits` and drops the
+±15-day client-side filter (`:2058-2075`), which hid any visit outside the
+window. Each row shows "Day k of n", the date, the tech, the time and the
+state. Dispatch roles get these actions, each on an existing endpoint:
+- Move (OPEN): date, time, length and tech, through the new visit `PATCH`.
+- Remove (OPEN): through the new visit `DELETE` (a retire).
+- Complete (ON SITE): through `/complete`.
+- Undo arrival (ON SITE or CLOSED with an arrival): the existing dialog.
+
+"Add day(s)" opens a dialog with a multi-date picker or a range with "skip
+weekends", a start time, a length, and the techs, defaulting to the crew
+(or, on a job with no crew rows, its `assigned_to`, as the Schedule dialog
+does).
+It posts to the new route. Technicians see the list with no actions.
+
+**What 2a does not show.** A day booked with "Add day(s)" on a later date,
+or for a tech outside the crew, is on the Visits card and on that tech's
+phone, but the board still draws the job once, on `scheduled_at` and by
+crew, until 2b teaches it visits. 2a's walk checks the phone and the card
+for those days, not the board.
+
+**Tests (2a).**
+- The pure planners (add, move, remove): each refusal; crew default; unassigned slot;
+  range expansion with and without weekends; the 20 cap.
+- The route: one `visit_added` row per visit; a refusal writes nothing;
+  recompute moves `scheduled_at` when a day earlier than N is added; a
+  technician gets 403.
+- Partial jobs: membership (closed + no Current is in; closed + a Current
+  visit is out; finished is out; cancelled-only is out), and late-open
+  excludes exactly those jobs.
+- Vitest: the Visits card's actions per state and role; the Partial section
+  drop's payload and toast.
+- A browser walk on a throwaway container (§7): a day closed on the Visits
+  card lands the job in Partial Jobs; a drop onto a tech **outside the old
+  crew** books it, and the card shows in that tech's column; a drop onto
+  the tech who already closed that day warns and stays; "Add day(s)" books
+  days 2 and 3, and they show on the tech's Today for those dates. Light
+  and dark.
+
 ### 5.4 The closeout sheet asks "Is this job finished?" (fixes B2, B3, B4, B7)
 
 - **Arrival (B2):** finds the appointment by `job_id` + this tech + today's
@@ -1074,7 +1260,8 @@ appointment rows.
      merged first.) MERGED #868, RELEASED v1.138.0.
 2. **The office books days (B5).** Covers §5.3: the visits API, the Visits
    card, the board showing each day, and the "Partial Jobs — Need to
-   Schedule" section (D10–D12). (The
+   Schedule" section (D10–D12). Split as 2a and 2b (§5.3a); 2a built, in
+   review, not merged. (The
    recompute and its writers moved to PR 1b on 2026-10-04, §5.2a; the new
    visits API is one more writer and gets its own test.)
 3. **"Is this job finished?" and summed billing (B3, B4, B6, B7).**

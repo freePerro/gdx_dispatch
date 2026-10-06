@@ -877,6 +877,13 @@ except Exception:
     job_assignments_router = APIRouter(prefix="/api", tags=["job-assignments"])
 
 try:
+    from gdx_dispatch.routers import job_visits as job_visits_router
+except Exception:
+    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: job_visits_router")
+    from fastapi import APIRouter
+    job_visits_router = APIRouter(prefix="/api", tags=["job-visits"])
+
+try:
     from gdx_dispatch.routers import push as push_v2_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: push_v2_router")
@@ -1685,6 +1692,7 @@ def create_app() -> FastAPI:
     app.include_router(email_settings_router.router if hasattr(email_settings_router, "router") else email_settings_router)
     app.include_router(parts_needed_router.router if hasattr(parts_needed_router, "router") else parts_needed_router)
     app.include_router(job_assignments_router.router if hasattr(job_assignments_router, "router") else job_assignments_router)
+    app.include_router(job_visits_router.router if hasattr(job_visits_router, "router") else job_visits_router)
     app.include_router(push_v2_router.router if hasattr(push_v2_router, "router") else push_v2_router)
     app.include_router(holding_areas_router.router if hasattr(holding_areas_router, "router") else holding_areas_router)
     app.include_router(service_calls_router.router if hasattr(service_calls_router, "router") else service_calls_router)

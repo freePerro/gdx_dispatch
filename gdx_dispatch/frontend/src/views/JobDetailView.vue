@@ -476,32 +476,25 @@
       </div>
 
       <div v-else-if="activeTab === 'schedule'" class="tab-panel">
-        <div class="card">
-          <div class="card-header">
-            <h3>Appointments</h3>
-            <div style="display:flex; gap:0.5rem; align-items:center;">
-              <Button label="Open calendar" icon="pi pi-external-link" severity="secondary" outlined
-                @click="openAppointmentsPage" data-testid="job-detail-open-appointments" />
-              <Button :label="job.scheduled_at ? 'Reschedule' : 'Schedule'" icon="pi pi-calendar" severity="info"
-                @click="openSchedule()" data-testid="job-detail-schedule-tab" />
-            </div>
-          </div>
-          <div v-if="appointmentsLoading" class="spinner-wrap small"><ProgressSpinner /></div>
-          <DataTable v-else :value="appointments" striped-rows responsive-layout="scroll" emptyMessage="No appointments found">
-            <Column field="title" header="Title" />
-            <Column header="Tech">
-              <template #body="{ data }">{{ techLabel(data.tech_id) }}</template>
-            </Column>
-            <Column field="start_at" header="Start" :body="formatDateTime" />
-            <Column field="end_at" header="End" :body="formatDateTime" />
-            <Column field="status" header="Status">
-              <template #body="{ data }">
-                <Tag :value="formatAppointmentStatus(data.status)" :severity="appointmentSeverity(data.status)" />
-              </template>
-            </Column>
-            <Column field="address" header="Address" />
-          </DataTable>
-        </div>
+        <!-- Every visit of this job, Day k of n (multi-day jobs plan §5.3a).
+             Replaced a ±15-day window of /api/appointments, which hid a long
+             job's far days. -->
+        <JobVisitsCard
+          ref="visitsCard"
+          :job-id="String(job.id || route.params.id || '')"
+          :technicians="technicians"
+          :crew-tech-ids="crewTechIds"
+          :can-edit="canUndoArrival"
+          @changed="onVisitsChanged"
+          @open-appointments="openAppointmentsPage"
+        >
+          <template #actions>
+            <Button label="Open calendar" icon="pi pi-external-link" severity="secondary" outlined
+              @click="openAppointmentsPage" data-testid="job-detail-open-appointments" />
+            <Button :label="job.scheduled_at ? 'Reschedule' : 'Schedule'" icon="pi pi-calendar" severity="info"
+              @click="openSchedule()" data-testid="job-detail-schedule-tab" />
+          </template>
+        </JobVisitsCard>
       </div>
 
       <div v-else-if="activeTab === 'diagnosis'" class="tab-panel">
@@ -1439,6 +1432,7 @@ import { ref, computed, onMounted, nextTick, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import JobStateOverrideDialog from "../components/JobStateOverrideDialog.vue";
 import UndoArrivalDialog from "../components/UndoArrivalDialog.vue";
+import JobVisitsCard from "../components/JobVisitsCard.vue";
 import { isDispatchManagerRole } from "../utils/visitRefusals";
 import MobileJobCloseoutDialog from "../components/MobileJobCloseoutDialog.vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
@@ -1448,7 +1442,7 @@ import { useToast } from "primevue/usetoast";
 import { downloadAuthedFile, openAuthedFile } from "../composables/useAuthedFile";
 import { useAuthStore } from "../stores/auth";
 import { isTechnician as isTechRole } from "../constants/roles";
-import { appointmentStatusSeverity, estimateStatusLabel, estimateStatusSeverity } from "../utils/statusSeverity";
+import { estimateStatusLabel, estimateStatusSeverity } from "../utils/statusSeverity";
 import { isAwaitingSchedule } from "../utils/jobDisplayState";
 import Button from "primevue/button";
 import Tabs from "primevue/tabs";
@@ -1491,8 +1485,7 @@ const liveInvoices = computed(() =>
   (relatedInvoices.value || []).filter((i) => i.status !== "void")
 );
 const financials = ref(null);
-const appointments = ref([]);
-const appointmentsLoading = ref(false);
+const visitsCard = ref(null);
 const timeEntries = ref([]);
 // A closeout-written labor row closes at clock_in + attested_minutes, which
 // can land in the future; don't render that as a real clock-out time.
@@ -1606,6 +1599,11 @@ const selectedTech = ref(null);
 const selectedPriority = ref(null);
 // S97 slice 6 — multi-tech crew assignments (desktop).
 const assignments = ref([]);
+// The crew a new visit day defaults to: the assignment rows, or a legacy
+// job's lone assigned_to (the same fallback openSchedule uses).
+const crewTechIds = computed(() => (assignments.value.length
+  ? assignments.value.map((a) => a.tech_id).filter(Boolean)
+  : (job.value?.assigned_to ? [job.value.assigned_to] : [])));
 const assignmentsLoading = ref(false);
 const addAssignmentTechId = ref(null);
 const addingAssignment = ref(false);
@@ -1800,15 +1798,6 @@ function techLabel(id) {
   return tech.name || tech.display_name || tech.email || tech.user_id || `Tech ${String(id).slice(0, 8)}`;
 }
 
-function formatAppointmentStatus(status) {
-  if (!status) return "Scheduled";
-  return status.charAt(0).toUpperCase() + status.slice(1);
-}
-
-function appointmentSeverity(status) {
-  return appointmentStatusSeverity(status);
-}
-
 async function fetchJob() {
   loading.value = true;
   error.value = "";
@@ -1889,7 +1878,6 @@ async function refreshRelated() {
     fetchCloseout(),
     fetchTechnicians(),
     fetchAssignments(),
-    fetchAppointments(),
     fetchCustomerDetail(),
     fetchPastJobs(),
     fetchDiagnosisSchemas(),
@@ -2055,27 +2043,14 @@ async function fetchTechnicians() {
   }
 }
 
-async function fetchAppointments() {
-  if (!job.value?.id) return;
-  appointmentsLoading.value = true;
-  try {
-    const start = new Date();
-    start.setDate(start.getDate() - 15);
-    const end = new Date();
-    end.setDate(end.getDate() + 15);
-    const params = new URLSearchParams({
-      start: start.toISOString().split("T")[0],
-      end: end.toISOString().split("T")[0],
-      limit: "200",
-    });
-    const data = await api.get(`/api/appointments?${params.toString()}`);
-    const list = Array.isArray(data) ? data : data?.items || [];
-    appointments.value = list.filter((appt) => appt.job_id === route.params.id);
-  } catch {
-    appointments.value = [];
-  } finally {
-    appointmentsLoading.value = false;
-  }
+// The Visits card loads itself when the Schedule tab opens; this re-reads it
+// after a write elsewhere on the page moved a visit.
+function reloadVisits() {
+  return visitsCard.value?.reload?.();
+}
+
+async function onVisitsChanged() {
+  await Promise.all([fetchJob(), fetchAssignments()]);
 }
 
 async function fetchDiagnosisSchemas() {
@@ -2447,7 +2422,7 @@ function openCrewUndo(assignment) {
   };
 }
 async function onCrewUndoDone() {
-  await Promise.all([fetchJob(), fetchAssignments(), fetchAppointments()]);
+  await Promise.all([fetchJob(), fetchAssignments(), reloadVisits()]);
 }
 
 async function setLead(techId) {
@@ -2618,7 +2593,7 @@ async function saveSchedule() {
     scheduleDialog.value = false;
     // The job write mirrors into appointments server-side; re-read all three
     // so the header pill, the crew list and the Schedule tab agree.
-    await Promise.all([fetchJob(), fetchAssignments(), fetchAppointments()]);
+    await Promise.all([fetchJob(), fetchAssignments(), reloadVisits()]);
   } catch (e) {
     // The tenant hard gate ("A technician is required for scheduled jobs")
     // comes back as a 422 — surface it in the dialog instead of only as a

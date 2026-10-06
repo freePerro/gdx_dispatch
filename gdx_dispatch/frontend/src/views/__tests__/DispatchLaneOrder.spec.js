@@ -19,6 +19,11 @@
  * adjacency is the invariant; a bare `order:` number tells you nothing on its
  * own, so this asserts the relative sequence.
  *
+ * 2026-10-05 (multi-day jobs plan D11): Partial Jobs is the one section
+ * allowed between them. It is a drop SOURCE like the queue, it is hidden when
+ * empty, and its cards are as short — so the queue is still one short reach
+ * from the tech columns. Anything else wedged in there is the old regression.
+ *
  * Static-source guard rather than a mount: DispatchView is too heavy for unit
  * tests (same reasoning as the holding-area and labor-exception specs).
  */
@@ -60,10 +65,20 @@ describe("dispatch day-view lane order", () => {
     );
   });
 
-  it("leaves techs and the queue adjacent — nothing wedged between them", () => {
+  it("leaves only Partial Jobs between the techs and the queue", () => {
     const tech = orderOf('class="tech-columns-grid"');
+    const partial = orderOf('data-testid="partial-jobs"');
     const queue = orderOf('data-testid="unassigned-section"');
-    expect(queue - tech).toBe(1);
+    expect([partial - tech, queue - partial]).toEqual([1, 1]);
+    // Nothing else in the day view shares either slot.
+    const orders = [...SRC.matchAll(/style="order:\s*(\d+)/g)].map((m) => Number(m[1]));
+    expect(orders.filter((o) => o === partial)).toHaveLength(1);
+  });
+
+  it("hides Partial Jobs when it is empty, so the usual board is unchanged", () => {
+    const at = SRC.indexOf('data-testid="partial-jobs"');
+    const tagStart = SRC.lastIndexOf("<Card", at);
+    expect(SRC.slice(tagStart, at)).toMatch(/v-if="visiblePartialJobs\.length"/);
   });
 
   it("keeps the empty-state holding-areas button with its own section", () => {

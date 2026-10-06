@@ -311,6 +311,7 @@ gdx_dispatch/frontend/src/components/OutstandingAgingDialog.vue money-billing
 ## ---------------------------------------------------------------------------
 gdx_dispatch/routers/jobs.py                                 jobs-dispatch
 gdx_dispatch/routers/job_assignments.py                      jobs-dispatch
+gdx_dispatch/routers/job_visits.py                           jobs-dispatch
 gdx_dispatch/routers/job_costing.py                          jobs-dispatch
 gdx_dispatch/routers/job_diagnosis.py                        jobs-dispatch
 gdx_dispatch/routers/job_hazards_receipts.py                 jobs-dispatch
@@ -375,6 +376,7 @@ gdx_dispatch/frontend/src/views/TasksView.vue                jobs-dispatch
 gdx_dispatch/frontend/src/components/JobStateChip.vue        jobs-dispatch
 gdx_dispatch/frontend/src/components/JobStateOverrideDialog.vue jobs-dispatch
 gdx_dispatch/frontend/src/components/UndoArrivalDialog.vue jobs-dispatch
+gdx_dispatch/frontend/src/components/JobVisitsCard.vue     jobs-dispatch
 gdx_dispatch/frontend/src/components/TechTimelineColumn.vue  jobs-dispatch
 gdx_dispatch/frontend/src/components/GoogleMapsIntegrationCard.vue jobs-dispatch
 gdx_dispatch/frontend/src/constants/jobTypes.js              jobs-dispatch
