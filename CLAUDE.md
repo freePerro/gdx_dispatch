@@ -97,11 +97,13 @@ this — the budget governs sweeps, not repairs.
 - **`run_tests_split.sh` takes a host-wide lock** (`/tmp/gdx_matrix.lock`): a
   second matrix waits and says so, because two at once are slower than two in
   a row (2026-09-24: four at once put the 20-core box at load 28 with 1.8 GB
-  free). Shard 4 takes ~23 min even alone, so a full local matrix is ~25 min
-  whatever else is running. `MATRIX_LOCK=0`
-  bypasses it. In a linked worktree the script also mounts the gitdir into a
-  docker `PYTEST`, so the tracked-set guards pass there instead of failing 14
-  tests for want of the index.
+  free). `MATRIX_LOCK=0` bypasses it. A docker `PYTEST` gets
+  `--tmpfs /tmp` injected (`TMPFS_TMP=0` opts out): the tests' file-backed
+  SQLite fsyncs on every commit, and with `/tmp` on the host disk shard 4 took
+  ~14 min against ~1 min on tmpfs (2026-10-05); the full matrix is ~6 min.
+  In a linked worktree the script also mounts the gitdir into a docker
+  `PYTEST`, so the tracked-set guards pass there instead of failing 14 tests
+  for want of the index.
 - `pytest.ini` already carries `-q`; adding another makes output useless. To
   read a CI failure use the `jobs/<id>/logs` API, not `gh run view --log`.
 - **A foreground `sleep` is blocked and a background Bash dies at 600s.** Long
