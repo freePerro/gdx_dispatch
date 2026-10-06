@@ -120,6 +120,25 @@ def test_holding_area_update_of_a_missing_area_records_nothing(SessionLocal):
     assert _audit_rows(SessionLocal, entity_type="holding_area") == []
 
 
+def test_seeding_default_holding_areas_leaves_one_row_naming_each_area(SessionLocal):
+    """GDXA-332: seed-defaults committed three areas with no trail at all."""
+    client = _client(SessionLocal, holding_areas_mod.router, OFFICE)
+    seeded = client.post("/api/holding-areas/seed-defaults")
+    assert seeded.status_code == 200, seeded.text
+    area_ids = {a["id"] for a in seeded.json()}
+    assert len(area_ids) == len(holding_areas_mod.DEFAULT_AREAS)
+
+    rows = _audit_rows(SessionLocal, entity_type="holding_area")
+    assert [r.action for r in rows] == ["seed_defaults"]
+    assert rows[0].user_id == OFFICE["user_id"]
+    assert rows[0].details["count"] == len(area_ids)
+    assert {a["id"] for a in rows[0].details["areas"]} == area_ids
+
+    # A second call finds the areas and inserts nothing, so it records nothing.
+    assert client.post("/api/holding-areas/seed-defaults").status_code == 200
+    assert len(_audit_rows(SessionLocal, entity_type="holding_area")) == 1
+
+
 # ── job assignments: 49 on prod, no trail ─────────────────────────────────────
 
 
