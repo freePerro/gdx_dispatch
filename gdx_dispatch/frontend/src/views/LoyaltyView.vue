@@ -7,11 +7,11 @@
         <template #end>
           <div class="toolbar-actions">
             <label class="toggle-label">
-              <span class="toggle-copy">Elite tiers only</span>
+              <span class="toggle-copy">Above base tier only</span>
               <ToggleSwitch v-model="eliteOnly" data-testid="loyalty-toggle-elite" />
             </label>
             <Button
-              label="+ Adjust Points"
+              label="+ Award Points"
               icon="pi pi-star"
               class="primary-action"
               data-testid="loyalty-dialog-btn"
@@ -21,121 +21,97 @@
         </template>
       </Toolbar>
 
-      <div class="filter-tabs">
-        <Button
-          v-for="tab in tabs"
-          :key="tab"
-          :label="tabLabelWithCount(tab)"
-          :severity="activeTab === tab ? undefined : 'secondary'"
-          size="small"
-          :data-testid="`loyalty-tab-${tab}`"
-          @click="activeTab = tab"
-        />
-      </div>
-
       <div v-if="loading" class="spinner-wrap"><ProgressSpinner /></div>
 
-      <div v-else>
-        <DataTable
-      responsiveLayout="scroll"
-          v-if="activeTab === 'members'"
-          :value="filteredMembers"
-          striped-rows
-          :paginator="filteredMembers.length > 10"
-          :rows="15"
-          data-testid="loyalty-members-table"
-        >
-          <template #empty>
-            <div class="empty-state">
-              <h3>No loyalty members</h3>
-              <p>Members who qualify for rewards will appear here.</p>
-            </div>
-          </template>
-          <Column header="Customer">
-            <template #body="{ data }">{{ customerLabel(data) }}</template>
-          </Column>
-          <Column field="points" header="Points" />
-          <Column header="Tier">
-            <template #body="{ data }">
-              <Tag :value="tierLabel(data.tier)" :severity="tierSeverity(data.tier)" />
-            </template>
-          </Column>
-          <Column header="Joined" style="width:140px">
-            <template #body="{ data }">{{ formatDate(data.joined_at) }}</template>
-          </Column>
-        </DataTable>
-
-        <DataTable
-      responsiveLayout="scroll"
-          v-else
-          :value="redemptions"
-          striped-rows
-          :paginator="redemptions.length > 10"
-          :rows="15"
-          data-testid="loyalty-redemptions-table"
-        >
-          <template #empty>
-            <div class="empty-state">
-              <h3>No redemptions yet</h3>
-              <p>Reward redemption activity will show up once customers claim rewards.</p>
-            </div>
-          </template>
-          <Column header="Customer">
-            <template #body="{ data }">{{ data.customer || data.customer_name }}</template>
-          </Column>
-          <Column field="reward" header="Reward" />
-          <Column field="points" header="Points" />
-          <Column header="Redeemed" style="width:140px">
-            <template #body="{ data }">{{ formatDate(data.redeemed_at) }}</template>
-          </Column>
-        </DataTable>
+      <div v-else-if="loadError" class="empty-state" data-testid="loyalty-load-error">
+        <h3>Loyalty members could not be loaded</h3>
+        <p>{{ loadError }}</p>
+        <Button label="Retry" severity="secondary" size="small" @click="loadLoyalty" />
       </div>
 
-      <Dialog v-model:visible="showDialog" :header="dialogTitle" modal :style="{ width: '560px' }">
+      <DataTable
+        v-else
+        responsiveLayout="scroll"
+        :value="filteredMembers"
+        striped-rows
+        :paginator="filteredMembers.length > 15"
+        :rows="15"
+        data-testid="loyalty-members-table"
+      >
+        <template #empty>
+          <div class="empty-state">
+            <h3>No loyalty members</h3>
+            <p>Customers appear here once they have been awarded points.</p>
+          </div>
+        </template>
+        <Column header="Customer">
+          <template #body="{ data }">
+            <router-link
+              v-if="data.customer_name && !data.customer_deleted"
+              :to="`/customers/${data.customer_id}`"
+              data-testid="loyalty-member-link"
+            >{{ data.customer_name }}</router-link>
+            <span v-else-if="data.customer_name" class="muted">{{ data.customer_name }} (deleted)</span>
+            <span v-else class="muted">{{ data.customer_id }}</span>
+          </template>
+        </Column>
+        <Column field="points" header="Points" />
+        <Column header="Tier">
+          <template #body="{ data }">
+            <Tag :value="tierLabel(data.tier)" :severity="tierSeverity(data.tier)" />
+          </template>
+        </Column>
+        <Column header="First points" style="width:140px">
+          <template #body="{ data }">{{ formatDate(data.joined_at) }}</template>
+        </Column>
+      </DataTable>
+
+      <Dialog v-model:visible="showDialog" header="Award points" modal :style="{ width: '560px', maxWidth: '95vw' }">
         <div class="form-grid">
-          <div class="form-field">
-            <label>Customer</label>
-            <Select
-              v-model="form.customer_id"
-              :options="customerOptions"
-              optionLabel="label"
-              optionValue="value"
+          <div class="form-field full-width">
+            <label for="loyalty-customer">Customer</label>
+            <AutoComplete
+              id="loyalty-customer"
+              v-model="customerPick"
+              :suggestions="customerSuggestions"
+              option-label="label"
+              forceSelection
+              placeholder="Search name, email or phone…"
               class="w-full"
               data-testid="loyalty-customer"
+              @complete="onCustomerComplete"
             />
           </div>
           <div class="form-field">
-            <label>Action</label>
-            <Select
-              v-model="form.action"
-              :options="actionOptions"
-              optionLabel="label"
-              optionValue="value"
-              class="w-full"
-              data-testid="loyalty-action"
-            />
-          </div>
-          <div class="form-field">
-            <label>Points</label>
+            <label for="loyalty-points">Points</label>
             <InputNumber
-              v-model="form.points"
+              id="loyalty-points"
+              v-model="form.amount"
               mode="decimal"
-              min="0"
+              :min="1"
+              :max="10000000"
               class="w-full"
               data-testid="loyalty-points"
             />
           </div>
-          <div v-if="form.action === 'redeem'" class="form-field full-width">
-            <label>Reward</label>
-            <InputText v-model="form.reward" class="w-full" data-testid="loyalty-reward" />
+          <div class="form-field">
+            <label for="loyalty-reason">Reason</label>
+            <InputText
+              id="loyalty-reason"
+              v-model="form.reason"
+              maxlength="200"
+              class="w-full"
+              data-testid="loyalty-reason"
+            />
           </div>
         </div>
         <template #footer>
           <Button label="Cancel" severity="secondary" data-testid="loyalty-cancel-btn" @click="showDialog = false" />
           <Button
-            :label="form.action === 'redeem' ? 'Redeem reward' : 'Adjust points'"
+            label="Award points"
             icon="pi pi-check"
             :loading="saving"
+            :disabled="!canSave"
             data-testid="loyalty-save-btn"
             @click="saveEntry"
           />
@@ -148,6 +124,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { formatDate } from '../composables/useFormatters';
+import AutoComplete from 'primevue/autocomplete';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
@@ -155,73 +132,43 @@ import Dialog from 'primevue/dialog';
 import InputNumber from 'primevue/inputnumber';
 import InputText from 'primevue/inputtext';
 import ProgressSpinner from 'primevue/progressspinner';
-import Select from 'primevue/select';
 import Tag from 'primevue/tag';
 import Toolbar from 'primevue/toolbar';
 import ToggleSwitch from 'primevue/toggleswitch';
 
+// Reads the real points ledger (GET /api/loyalty/members) and awards through
+// POST /api/loyalty/customers/{id}/points. Until GDXA-316 this page read a
+// ui_compat stub that always answered an empty list, and posted to
+// /api/loyalty/adjust and /redeem, which never existed. There is no
+// redemption store, so the page no longer offers one.
 const api = useApiWithToast();
 const loading = ref(true);
+const loadError = ref('');
 const members = ref([]);
-const redemptions = ref([]);
 const showDialog = ref(false);
 const saving = ref(false);
-const activeTab = ref('members');
 const eliteOnly = ref(false);
-const tabs = ['members', 'redemptions'];
-
-const actionOptions = [
-  { label: 'Adjust points', value: 'adjust' },
-  { label: 'Redeem reward', value: 'redeem' },
-];
-
+const customerPick = ref(null);
+const customerSuggestions = ref([]);
 const form = ref(emptyForm());
 
 function emptyForm() {
-  return {
-    customer_id: null,
-    action: 'adjust',
-    points: null,
-    reward: '',
-  };
+  return { amount: null, reason: '' };
 }
 
-const dialogTitle = computed(() => (form.value.action === 'redeem' ? 'Redeem reward' : 'Adjust points'));
-
-const tabCounts = computed(() => ({
-  members: members.value.length,
-  redemptions: redemptions.value.length,
-}));
-
-const eliteTiers = new Set(['gold', 'platinum', 'diamond']);
-
+// A tier name is configurable, so "above base" is any tier with a discount_pct.
+// Nothing in pricing reads that percentage yet, so the label does not promise
+// a discount.
 const filteredMembers = computed(() => {
-  return members.value.filter((member) => {
-    if (!eliteOnly.value) return true;
-    const tier = (member.tier || '').toLowerCase();
-    return eliteTiers.has(tier);
-  });
+  if (!eliteOnly.value) return members.value;
+  return members.value.filter((member) => Number(member.tier_discount_pct) > 0);
 });
 
-const customerOptions = computed(() =>
-  members.value.map((member) => ({
-    label: member.customer || member.customer_name || `#${member.id ?? member.customer_id}`,
-    value: member.id ?? member.customer_id,
-  }))
+const canSave = computed(() =>
+  Boolean(customerPick.value?.value)
+  && Number(form.value.amount) > 0
+  && form.value.reason.trim().length > 0
 );
-
-function tabLabel(tab) {
-  return tab.charAt(0).toUpperCase() + tab.slice(1);
-}
-
-function tabLabelWithCount(tab) {
-  const count = tabCounts.value[tab] || 0;
-  return `${tabLabel(tab)}${count ? ` (${count})` : ''}`;
-}
-
-function customerLabel(member) {
-  return member.customer || member.customer_name || '—';
-}
 
 function tierLabel(value) {
   return value ? value.replace('_', ' ').toUpperCase() : 'Member';
@@ -236,43 +183,56 @@ function tierSeverity(value) {
 
 async function loadLoyalty() {
   loading.value = true;
+  loadError.value = '';
   try {
-    const data = await api.get('/api/loyalty');
-    const memberList = Array.isArray(data?.members)
-      ? data.members
-      : Array.isArray(data)
-        ? data
-        : Array.isArray(data?.items)
-          ? data.items
-          : [];
-    const redemptionList = Array.isArray(data?.redemptions) ? data.redemptions : [];
-    members.value = memberList;
-    redemptions.value = redemptionList;
+    const data = await api.get('/api/loyalty/members');
+    members.value = Array.isArray(data) ? data : [];
+  } catch (err) {
+    members.value = [];
+    loadError.value = err?.message || 'The server did not answer.';
   } finally {
     loading.value = false;
   }
 }
 
+async function onCustomerComplete(event) {
+  const q = (event?.query || '').trim();
+  if (!q) {
+    customerSuggestions.value = [];
+    return;
+  }
+  try {
+    const rows = await api.get(`/api/customers/search?q=${encodeURIComponent(q)}`);
+    customerSuggestions.value = (Array.isArray(rows) ? rows : []).map((c) => ({
+      label: c.name || c.email || c.phone || c.id,
+      value: c.id,
+    }));
+  } catch {
+    customerSuggestions.value = [];
+  }
+}
+
 function openDialog() {
   form.value = emptyForm();
+  customerPick.value = null;
+  customerSuggestions.value = [];
   showDialog.value = true;
 }
 
 async function saveEntry() {
-  if (!form.value.customer_id || form.value.points == null) return;
+  if (!canSave.value) return;
   saving.value = true;
-  const endpoint = form.value.action === 'redeem' ? '/api/loyalty/redeem' : '/api/loyalty/adjust';
-  const payload = {
-    customer_id: form.value.customer_id,
-    points: Number(form.value.points) || 0,
-    reward: form.value.action === 'redeem' ? form.value.reward : undefined,
-  };
+  const customerId = customerPick.value.value;
   try {
-    await api.post(endpoint, payload, {
-      successMessage: form.value.action === 'redeem' ? 'Reward redeemed' : 'Points updated',
-    });
+    await api.post(
+      `/api/loyalty/customers/${encodeURIComponent(customerId)}/points`,
+      { amount: Number(form.value.amount), reason: form.value.reason.trim() },
+      { successMessage: 'Points awarded' },
+    );
     showDialog.value = false;
     await loadLoyalty();
+  } catch {
+    // useApiWithToast has already shown the error; keep the dialog open.
   } finally {
     saving.value = false;
   }
@@ -287,16 +247,11 @@ onMounted(() => {
 .page-title {
   margin: 0;
 }
-.filter-tabs {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  margin: 1rem 0;
-}
 .toolbar-actions {
   display: flex;
   gap: 0.75rem;
   align-items: center;
+  flex-wrap: wrap;
 }
 .toggle-label {
   display: flex;
@@ -323,6 +278,9 @@ onMounted(() => {
   flex-direction: column;
   gap: 0.3rem;
 }
+.form-field.full-width {
+  grid-column: 1 / -1;
+}
 .form-field label {
   font-size: 0.82rem;
   font-weight: 600;
@@ -330,6 +288,9 @@ onMounted(() => {
 }
 .w-full {
   width: 100%;
+}
+.muted {
+  color: var(--p-text-muted-color);
 }
 .empty-state {
   text-align: center;

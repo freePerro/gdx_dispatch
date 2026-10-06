@@ -357,9 +357,9 @@ GET /api/leads/{lead_id}/custom-fields
 GET /api/leads/{lead_id}/estimates
 GET /api/locations/
 GET /api/locations/{location_id}/technicians
-GET /api/loyalty
 GET /api/loyalty/customers/{customer_id}/points
 GET /api/loyalty/customers/{customer_id}/tier
+GET /api/loyalty/members
 GET /api/loyalty/referrals
 GET /api/loyalty/tiers
 GET /api/loyalty/tiers/{tier_id}
