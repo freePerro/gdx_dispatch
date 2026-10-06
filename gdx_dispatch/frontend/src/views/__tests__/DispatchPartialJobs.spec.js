@@ -28,11 +28,14 @@
  * 12. A drop on a tech with a closed visit of the job that day (closed_days)
  *     sends nothing: E5 books nothing but would still write the date and crew.
  * 13. A failed re-read after a drop claims neither outcome.
+ * 14. A parked partial job counts its hours in the lane total and opens the
+ *     drawer with the same fields a day-list job has (tech, window).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import DispatchView from "../DispatchView.vue";
+import { formatDurationHours } from "../../utils/hours";
 
 const getMock = vi.fn();
 const patchMock = vi.fn();
@@ -163,6 +166,20 @@ describe("DispatchView — Partial Jobs", () => {
     expect(lane.exists()).toBe(true);
     expect(lane.text()).toContain("Dana Ruiz");
     expect(w.find('[data-testid="partial-job-job-rts"]').exists()).toBe(true);
+  });
+
+  it("a parked partial job counts its hours and opens a full drawer", async () => {
+    holdingAreas = [{ id: "ha-parts", name: "Needs Parts" }];
+    partialRows = [{ ...PARTIAL, holding_area_id: "ha-parts", scheduled_duration_hours: 3, effective_duration_hours: 3 }];
+    const w = await mountBoard();
+    const total = w.get('[data-testid="holding-area-total-ha-parts"]').text();
+    expect(total).toContain(`${formatDurationHours(3)} queued`);
+    expect(total).not.toContain("no-est");
+    await w.get('[data-testid="holding-job-ha-parts-job-7"]').trigger("click");
+    await flushAll();
+    const drawer = w.get(".job-drawer-content").text();
+    expect(drawer).toContain("Technician: Mike");
+    expect(drawer).toContain("Window: Anytime");
   });
 
   it("Release on a parked partial job clears only its holding area", async () => {

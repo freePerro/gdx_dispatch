@@ -101,6 +101,13 @@ def schedule_with_traffic(
         raise HTTPException(status_code=500, detail="Failed to get schedule") from None
 
 
+def _duration_fields(hours: Any) -> dict[str, float | None]:
+    """The board's hours, as GET /api/jobs gives them: the scheduler's own
+    number only (no estimate fallback on a list; routers/jobs.py)."""
+    value = float(hours) if hours is not None else None
+    return {"scheduled_duration_hours": value, "effective_duration_hours": value}
+
+
 # ---------------------------------------------------------------------------
 # Scheduled — Not Assigned lane (2026-05-01)
 # ---------------------------------------------------------------------------
@@ -124,13 +131,14 @@ def scheduled_unassigned(
             # without knowing the dispatcher's day; the lane is where
             # those land so they don't get missed.
             "SELECT j.id, j.job_number, j.title, j.scheduled_at, j.priority, "
-            "       j.customer_id, c.name AS customer_name, j.is_return_visit "
+            "       j.customer_id, c.name AS customer_name, j.is_return_visit, "
+            "       j.scheduled_duration_hours "
             "FROM jobs j "
             "LEFT JOIN customers c ON c.id = j.customer_id "
             "WHERE j.scheduled_at IS NOT NULL "
             "  AND j.assigned_to IS NULL "
             "  AND j.holding_area_id IS NULL "
-            "  AND COALESCE(j.lifecycle_stage::text, '') NOT IN ('cancelled', 'completed') "
+            "  AND COALESCE(CAST(j.lifecycle_stage AS text), '') NOT IN ('cancelled', 'completed') "
             "ORDER BY j.scheduled_at ASC "
             "LIMIT 500"
         )
@@ -141,11 +149,15 @@ def scheduled_unassigned(
                 "id": str(r[0]),
                 "job_number": r[1],
                 "title": r[2],
-                "scheduled_at": r[3].isoformat() if r[3] else None,
+                # Raw SQL on SQLite returns the datetime as text already.
+                "scheduled_at": (r[3] if isinstance(r[3], str) else r[3].isoformat()) if r[3] else None,
                 "priority": r[4],
                 "customer_id": str(r[5]) if r[5] else None,
                 "customer_name": r[6],
                 "is_return_visit": bool(r[7]),
+                # Assigning from this lane asks for hours only when none
+                # are set; without these it asked every time.
+                **_duration_fields(r[8]),
             }
             for r in rows
         ]
@@ -186,6 +198,7 @@ def _board_row(job: Any, customer_name: str | None, ds_map: dict[str, Any]) -> d
         "assigned_to": job.assigned_to,
         "is_return_visit": bool(job.is_return_visit),
         "display_state": ds_map.get(str(job.id)),
+        **_duration_fields(job.scheduled_duration_hours),
     }
 
 

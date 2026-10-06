@@ -2086,10 +2086,12 @@ function getHoldingAreaJobs(areaId) {
   const here = dayJobs.value.filter((j) => j.holding_area_id === areaId);
   // A parked partial job is dated the day it was last worked, so the day's
   // job list never loads it; without this it would be on no screen at all.
+  // Normalized like the day list, so the lane total and the drawer read
+  // the same fields.
   const seen = new Set(here.map((j) => String(j.id)));
   const parked = partialJobs.value.filter(
     (j) => j.holding_area_id && String(j.holding_area_id) === String(areaId) && !seen.has(String(j.id)),
-  );
+  ).map(normalizeJob);
   return [...here, ...parked];
 }
 
