@@ -1,7 +1,7 @@
 # Multi-day jobs: one job, many visit days
 
 **Date:** 2026-10-03
-**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) MERGED #846, RELEASED v1.137.0, to §5.2's rules. §5.2a (revision 2, 2026-10-04) replaces those sync rules and adds `recompute_job_schedule`, as PR 1b against `main`: MERGED #868 (2026-10-05), RELEASED v1.138.0 (on prod and demo 2026-10-05; walked in a browser that night: the full write walk on the demo, a read-only look at prod), with one rule the build added (R2's second clause, below, accepted by Doug 2026-10-05); Doug ruled its open questions 2026-10-04 (a day closes only when someone closes it). PR 2a (§5.3a: the visits API, the job page's Visits card, and the "Partial Jobs — Need to Schedule" section Doug ruled 2026-10-05, D10–D12) MERGED #882 (2026-10-06), with its parked-row follow-up (queue rows carry the board's hours) MERGED #886, both RELEASED v1.139.0 (on prod and demo 2026-10-06; a read-only browser look at prod). Doug ruled D13 (2026-10-06): a partial job's queued hours are the hours still left; built with PR 3, which records the attested day hours it subtracts. PR 2b (the board draws each visit day as its own card, "Day k of n", and a drag moves that visit only; `GET /api/dispatch/visits`) built 2026-10-06 to the 2b build spec in §5.3a, in review against `main`, not merged. Not built: PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, billing). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); §5.2a went through three plan audits, was rewritten to Doug's rulings after the third, then through sixteen more rounds (2026-10-04), the sixteenth finding no defect, then revised the same day to Doug's ruling that arrival times are always recorded and audited five more rounds (20–24), the last finding no defect; then revised 2026-10-05 to Doug's rulings that a re-open onto a closed day, a mis-tap, and an old arrival with no time are all settled by asking the office, and audited rounds 25–41 on the arrival-undo rules, round 41 finding no logic defect and two wording fixes, applied; §5.2a ships as PR 1b against `main` (see *Packaging*), since #846 merged before it was built.
+**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) MERGED #846, RELEASED v1.137.0, to §5.2's rules. §5.2a (revision 2, 2026-10-04) replaces those sync rules and adds `recompute_job_schedule`, as PR 1b against `main`: MERGED #868 (2026-10-05), RELEASED v1.138.0 (on prod and demo 2026-10-05; walked in a browser that night: the full write walk on the demo, a read-only look at prod), with one rule the build added (R2's second clause, below, accepted by Doug 2026-10-05); Doug ruled its open questions 2026-10-04 (a day closes only when someone closes it). PR 2a (§5.3a: the visits API, the job page's Visits card, and the "Partial Jobs — Need to Schedule" section Doug ruled 2026-10-05, D10–D12) MERGED #882 (2026-10-06), with its parked-row follow-up (queue rows carry the board's hours) MERGED #886, both RELEASED v1.139.0 (on prod and demo 2026-10-06; a read-only browser look at prod). Doug ruled D13 (2026-10-06): a partial job's queued hours are the hours still left; built with PR 3, which records the attested day hours it subtracts. PR 2b (the board draws each visit day as its own card, "Day k of n", and a drag moves that visit only; `GET /api/dispatch/visits`) built 2026-10-06 to the 2b build spec in §5.3a, MERGED #891, RELEASED v1.140.0 (on prod and demo 2026-10-06; a read-only browser look at both boards, where no multi-day job existed yet to badge). Not built: PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, billing). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); §5.2a went through three plan audits, was rewritten to Doug's rulings after the third, then through sixteen more rounds (2026-10-04), the sixteenth finding no defect, then revised the same day to Doug's ruling that arrival times are always recorded and audited five more rounds (20–24), the last finding no defect; then revised 2026-10-05 to Doug's rulings that a re-open onto a closed day, a mis-tap, and an old arrival with no time are all settled by asking the office, and audited rounds 25–41 on the arrival-undo rules, round 41 finding no logic defect and two wording fixes, applied; §5.2a ships as PR 1b against `main` (see *Packaging*), since #846 merged before it was built.
 
 **Trigger:** Doug asked, "What happens if a job is not finished and turns into a
 multi-day job? Can a tech or anyone go back to it?" The answer, traced on
@@ -932,7 +932,7 @@ each one against `main` before building.
     "Add day(s)" is the other way to book it, for any date.
   - **Who:** the office, on desktop. Not on the tech's phone.
 
-### 5.3a PR 2 build spec (2026-10-05; 2a MERGED #882, RELEASED v1.139.0; 2b built 2026-10-06, in review)
+### 5.3a PR 2 build spec (2026-10-05; 2a MERGED #882, RELEASED v1.139.0; 2b MERGED #891, RELEASED v1.140.0)
 
 PR 2 ships as two PRs against `main`. **2a**: the visits API, the Visits
 card, and the Partial Jobs section. **2b**: the board shows a multi-day job
@@ -1503,8 +1503,8 @@ appointment rows.
 2. **The office books days (B5).** Covers §5.3: the visits API, the Visits
    card, the board showing each day, and the "Partial Jobs — Need to
    Schedule" section (D10–D12). Split as 2a and 2b (§5.3a); 2a MERGED
-   #882 with its follow-up #886, RELEASED v1.139.0; 2b built 2026-10-06, in
-   review, not merged. (The
+   #882 with its follow-up #886, RELEASED v1.139.0; 2b MERGED #891, RELEASED
+   v1.140.0. (The
    recompute and its writers moved to PR 1b on 2026-10-04, §5.2a; the new
    visits API is one more writer and gets its own test.)
 3. **"Is this job finished?" and summed billing (B3, B4, B6, B7).**
@@ -1513,6 +1513,7 @@ appointment rows.
      (`time_entries.appointment_id`, nullable) that runs on SQLite and
      Postgres and has a downgrade. Existing rows stay NULL.
    - If #842 has not merged by then, the desktop surface waits for it.
+     (#842 MERGED 2026-10-04, so nothing waits.)
    - D13: a partial job's queued hours become the hours still left, the
      job's `scheduled_duration_hours` minus the attested day hours this PR
      records, floored at 0. They are never booked visit lengths or timer
