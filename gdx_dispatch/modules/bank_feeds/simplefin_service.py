@@ -315,16 +315,21 @@ def _upsert_sfin_transaction(
 # ── errlist handling ───────────────────────────────────────────────────
 
 
-def _classify_errlist(payload: dict) -> tuple[bool, set[str], list[str]]:
-    """(auth_broken, failed_account_ids, user_messages).
+def _classify_errlist(payload: dict) -> tuple[bool, set[str], list[str], list[dict]]:
+    """(auth_broken, failed_account_ids, user_messages, entries).
 
     Any ``gen.``/``con.`` non-auth error also poisons every watermark this
     run (we can't know which accounts the incomplete data belongs to), but
     received rows are still upserted — upserts are idempotent.
+
+    ``entries`` is every error as ``{code, msg, account_id, conn_id}`` so the
+    caller can log and persist the CODE, not just the message: a code nobody
+    recorded is how a stuck backfill stayed undiagnosable (GDXA-293).
     """
     auth_broken = False
     failed_accounts: set[str] = set()
     messages: list[str] = []
+    seen: list[dict] = []
     entries = payload.get("errlist")
     if not isinstance(entries, list):
         # Deprecated v1 shape: plain strings in "errors".
@@ -332,8 +337,13 @@ def _classify_errlist(payload: dict) -> tuple[bool, set[str], list[str]]:
     for err in entries:
         if not isinstance(err, dict):
             continue
-        code = str(err.get("code") or "gen.")
+        code = str(err.get("code") or "gen.")[:60]
         msg = str(err.get("msg") or "")[:300]
+        seen.append({
+            "code": code, "msg": msg,
+            "account_id": str(err.get("account_id") or ""),
+            "conn_id": str(err.get("conn_id") or ""),
+        })
         if msg:
             messages.append(msg)
         if code.startswith(("gen.auth", "con.auth")):
@@ -342,7 +352,7 @@ def _classify_errlist(payload: dict) -> tuple[bool, set[str], list[str]]:
             failed_accounts.add(str(err.get("account_id") or ""))
         elif code.startswith(("gen.", "con.")):
             failed_accounts.add("*")
-    return auth_broken, failed_accounts, messages
+    return auth_broken, failed_accounts, messages, seen
 
 
 # ── the sync ───────────────────────────────────────────────────────────
@@ -485,8 +495,16 @@ def sync_institution(db: Session, institution: BannoInstitution) -> dict:
     txn_cache: dict[str, dict[str, BankFeedTransaction]] = {}
     totals = {"accounts": 0, "upserted": 0, "dropped_pending": 0}
     auth_broken = False
+    # Accumulates across windows ON PURPOSE: the watermark is one horizon per
+    # account, so an act.* gap in window 1 means no later window may stamp
+    # that account past it — advancing would skip the gap's rows forever.
+    # The run-wide "*" poison (any non-auth gen./con. code) blocks EVERY
+    # account the same way. The cost: an error that recurs in every window
+    # re-walks the backfill every run and no watermark ever moves; the
+    # logged errlist code below is what tells you which code is doing it.
     failed_accounts: set[str] = set()
     messages: list[str] = []
+    errlist_codes: set[str] = set()
     fetches = 0
     # Holder so the except paths can read the TRUE request count — retries
     # inside a failed call are real requests against the bridge's quota;
@@ -509,7 +527,14 @@ def sync_institution(db: Session, institution: BannoInstitution) -> dict:
                     end_date=_epoch_of(window_end + timedelta(days=1)),
                 )
                 fetches = client.requests_made
-                broken, failed, msgs = _classify_errlist(payload)
+                broken, failed, msgs, errs = _classify_errlist(payload)
+                for err in errs:
+                    errlist_codes.add(err["code"])
+                    log.warning(
+                        "simplefin_errlist code=%s account=%s conn=%s window=%s..%s msg=%r",
+                        err["code"], err["account_id"] or "-", err["conn_id"] or "-",
+                        window_start.isoformat(), window_end.isoformat(), err["msg"],
+                    )
                 auth_broken = auth_broken or broken
                 failed_accounts |= failed
                 messages.extend(msgs)
@@ -551,7 +576,11 @@ def sync_institution(db: Session, institution: BannoInstitution) -> dict:
         if isinstance(getattr(exc, "status_code", None), int):
             result["status_code"] = exc.status_code
         fetches = client_ref[0].requests_made if client_ref else 0
+        log.warning("simplefin_sync_auth_failed connection=%s status=%s err=%s",
+                    connection.id, getattr(exc, "status_code", None), exc)
     except SimpleFINError as exc:
+        log.warning("simplefin_sync_failed connection=%s error_class=%s err=%s",
+                    connection.id, exc.__class__.__name__, exc)
         messages.append(str(exc))
         result["errors"].append({"connection": str(connection.id), "error_class": exc.__class__.__name__})
         fetches = client_ref[0].requests_made if client_ref else 0
@@ -571,7 +600,13 @@ def sync_institution(db: Session, institution: BannoInstitution) -> dict:
         # Spec: errlist messages must reach the user. They travel in this
         # result → record_scheduled_run → schedule.last_run_error, which
         # /simplefin/status returns and the Integrations card displays.
-        result["messages"] = messages[:5]
+        # Deduped: every backfill window repeats the same errlist entry, and
+        # five copies of one message crowd out the per-account errors.
+        result["messages"] = list(dict.fromkeys(messages))[:5]
+    if errlist_codes:
+        # Persisted through the same path; tasks._run_error_summary puts
+        # these first so the column cap never truncates them away.
+        result["errlist_codes"] = sorted(errlist_codes)
     result["stats"] = totals
     result["fetches"] = fetches
     return result
