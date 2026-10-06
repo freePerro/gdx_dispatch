@@ -16,9 +16,11 @@ from gdx_dispatch.tests.test_visit_writers import (
     DAY1,
     DAY2,
     DAY3,
+    DAY4,
     OFFICE_USER,
     T1,
     T2,
+    T3,
     TENANT,
     _actions,
     _assert_invariant_i,
@@ -362,3 +364,109 @@ def test_audit_rows_carry_the_office_user(client):
     client.client.post(f"/api/jobs/{job.id}/visits", json={"days": [_day(DAY2)], "start_time": "10:00"})
     rows = _new_audit(client.db, before, job.id)
     assert rows and {str(a.user_id) for a in rows} == {OFFICE_USER}
+
+
+# ── The board's visit cards (PR 2b) ──────────────────────────────────
+
+
+def _board(client, **params):
+    r = client.client.get("/api/dispatch/visits", params=params)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _week(client) -> dict:
+    return _board(client, date_from=_day(DAY1), date_to=_day(DAY4))
+
+
+def test_move_without_a_length_keeps_a_visit_over_a_day(client):
+    job = _job(client, crew=(T1,))
+    _visit(client, job, DAY1)
+    v2 = _visit(client, job, DAY2, hours=30)
+    r = client.client.patch(f"/api/jobs/{job.id}/visits/{v2.id}", json={"day": _day(DAY3), "start_time": "10:00"})
+    assert r.status_code == 200, r.text
+    moved = next(v for v in r.json()["items"] if v["id"] == str(v2.id))
+    assert (moved["start_at"], moved["end_at"]) == (DAY3.isoformat(), (DAY3 + timedelta(hours=30)).isoformat())
+    # A typed length is still bounded.
+    _refused(client, "PATCH", f"/api/jobs/{job.id}/visits/{v2.id}", _slot(DAY4, 30 * 60), 422)
+
+
+def test_a_multi_day_job_is_one_card_per_live_day(client):
+    job = _job(client, crew=(T1,))
+    _visit(client, job, DAY1, status="completed")
+    _visit(client, job, DAY2, status="cancelled")  # never arrived: not drawn, not counted
+    _visit(client, job, DAY3, tech=T2)
+    body = _week(client)
+    assert body["job_ids"] == [str(job.id)]
+    assert [(i["visit_day"], i["visit_tech_id"], i["visit_state"], i["day_index"], i["day_count"])
+            for i in body["items"]] == [
+        (_day(DAY1), T1, "closed", 1, 2),
+        (_day(DAY3), T2, "open", 2, 2),
+    ]
+    card = body["items"][1]
+    assert card["id"] == str(job.id) and card["job_has_crew"] is True
+    assert card["visit_start"] == DAY3.isoformat()
+    assert card["visit_end"] == (DAY3 + timedelta(hours=8)).isoformat()
+    # The window holds only what starts in it; day k of n still counts every day.
+    [only] = _board(client, date=_day(DAY3))["items"]
+    assert (only["day_index"], only["day_count"]) == (2, 2)
+
+
+def test_a_one_day_job_its_job_row_draws_is_left_out(client):
+    crewed = _job(client, assigned_to=T1, crew=(T1, T2))
+    _visit(client, crewed, DAY1, tech=T1)
+    _visit(client, crewed, DAY1, tech=T2, hours=4)  # length is not compared
+    crewless = _job(client, assigned_to=None)
+    _visit(client, crewless, DAY1, tech=None)
+    legacy = _job(client, assigned_to=T1)  # no JobAssignment: the crew is assigned_to
+    _visit(client, legacy, DAY1, tech=T1)
+    assert _week(client) == {"items": [], "job_ids": [], "timezone": _week(client)["timezone"]}
+
+
+def test_a_one_day_job_the_visits_card_changed_is_drawn_by_visit(client):
+    removed = _job(client, crew=(T1, T2))
+    _visit(client, removed, DAY1, tech=T1)  # T2's visit was removed
+    moved = _job(client, crew=(T1,))
+    _visit(client, moved, DAY1 + timedelta(hours=2), tech=T1)  # moved to noon
+    outsider = _job(client, crew=(T1,))
+    _visit(client, outsider, DAY1, tech=T3)
+    open_slot = _job(client, crew=(T1,))
+    _visit(client, open_slot, DAY1, tech=T1)
+    _visit(client, open_slot, DAY1, tech=None)  # a crewed job's day with no tech
+    body = _week(client)
+    assert sorted(body["job_ids"]) == sorted(str(j.id) for j in (removed, moved, outsider, open_slot))
+    slot = next(i for i in body["items"] if i["id"] == str(open_slot.id) and i["visit_tech_id"] is None)
+    assert slot["job_has_crew"] is True
+
+
+def test_a_deleted_job_is_out(client):
+    job = _job(client, crew=(T1,), deleted_at=DAY1 - timedelta(days=1))
+    _visit(client, job, DAY1)
+    _visit(client, job, DAY2)
+    assert _week(client)["items"] == []
+
+
+def test_the_window_is_cut_on_the_shop_day(client):
+    job = _job(client, crew=(T1,))
+    _visit(client, job, DAY1)
+    evening = DAY2 - timedelta(hours=13)  # 02:00 UTC on day 2 is 21:00 on day 1, shop time
+    _visit(client, job, evening, hours=1)
+    assert [i["visit_start"] for i in _board(client, date=_day(DAY1))["items"]] == [
+        DAY1.isoformat(), evening.isoformat(),
+    ]
+    assert _board(client, date=_day(DAY2))["items"] == []
+
+
+def test_board_visits_is_gated_and_bounded(client):
+    for params in (
+        {"date_from": _day(DAY2), "date_to": _day(DAY1)},
+        {"date_from": _day(DAY1), "date_to": _day(DAY1 + timedelta(days=366))},
+        {"date": "not-a-day"},
+        {},
+    ):
+        assert client.client.get("/api/dispatch/visits", params=params).status_code == 422, params
+    assert client.client.get(
+        "/api/dispatch/visits", params={"date_from": _day(DAY1), "date_to": _day(DAY1 + timedelta(days=365))},
+    ).status_code == 200
+    client.be_tech()
+    assert client.client.get("/api/dispatch/visits", params={"date": _day(DAY1)}).status_code == 403

@@ -5,6 +5,7 @@ Routes:
   GET  /api/dispatch/check-capacity — overbooking prevention
   GET  /api/dispatch/late-open — open jobs whose scheduled day has passed
   GET  /api/dispatch/partial-jobs — a day worked, no day booked
+  GET  /api/dispatch/visits — the visit cards of jobs not drawn by their job row
 """
 from __future__ import annotations
 
@@ -346,3 +347,169 @@ def partial_jobs(
             "closed_days": {d: sorted(t for t in techs if t) for d, techs in sorted(entry["closed"].items())},
         })
     return {"items": items, "timezone": tz_name}
+
+
+# ---------------------------------------------------------------------------
+# The board's visit cards (multi-day jobs plan §5.3, PR 2b)
+# ---------------------------------------------------------------------------
+# The board draws a job from its job row, on ``scheduled_at``, in its crew's
+# columns. A multi-day job, or one whose visits were moved or re-teched on
+# the Visits card, is not where that row says: each of its days is an
+# appointment with its own day, tech and time. This read returns those
+# visits as whole cards, and names the jobs it covers so the board hides
+# their job rows. A job the job row already draws exactly (every Live visit
+# on one shop day, at ``scheduled_at``, one per crew tech, or the single
+# unassigned slot a crew-less booking writes) is left to its job row, so a
+# one-day job keeps today's card, drag and duration prompt.
+
+_VISIT_WINDOW_MAX_DAYS = 366
+
+
+def _drawn_by_job_row(job: Any, live: list[Any], crew: list[str], tz_name: str) -> bool:
+    from gdx_dispatch.services import visit_sync as vs
+
+    if not live or job.scheduled_at is None:
+        return False
+    if len({vs.shop_day(v.start_at, tz_name) for v in live}) != 1:
+        return False
+    at = vs.to_minute(vs._as_utc(job.scheduled_at))
+    if any(vs.to_minute(vs._as_utc(v.start_at)) != at for v in live):
+        return False
+    techs = sorted(str(v.tech_id) if v.tech_id else "" for v in live)
+    # Booking writes ``crew or [None]``: one visit per crew tech, or one
+    # unassigned slot for a job with no crew.
+    return techs == (sorted(crew) if crew else [""])
+
+
+@router.get("/api/dispatch/visits", dependencies=[Depends(require_permission("jobs.read_all"))])
+def board_visits(
+    date: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    _ = user
+    from datetime import date as _date_type
+
+    from sqlalchemy import select as _select
+
+    from gdx_dispatch.core.job_site import resolve_job_sites
+    from gdx_dispatch.core.pay_periods import shop_tz_name_from_settings
+    from gdx_dispatch.models.tenant_models import Appointment, Customer, Job, JobAssignment, Technician
+    from gdx_dispatch.services import visit_sync as vs
+
+    try:
+        first = _date_type.fromisoformat(date_from or date or "")
+        last = _date_type.fromisoformat(date_to or date or "")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date, or date_from and date_to, as YYYY-MM-DD") from None
+    if last < first:
+        raise HTTPException(status_code=422, detail="date_to is before date_from")
+    if (last - first).days + 1 > _VISIT_WINDOW_MAX_DAYS:
+        raise HTTPException(status_code=422, detail=f"At most {_VISIT_WINDOW_MAX_DAYS} days")
+
+    tz_name = shop_tz_name_from_settings(db)
+    # Shop days, not UTC: an evening visit in Minnesota is tomorrow in UTC.
+    window_start = vs.shop_instant(first, datetime.min.time(), tz_name)
+    window_end = vs.shop_instant(last + timedelta(days=1), datetime.min.time(), tz_name)
+
+    in_window = db.execute(
+        _select(Appointment.job_id)
+        .join(Job, Job.id == Appointment.job_id)
+        .where(
+            Appointment.job_id.is_not(None),
+            Appointment.deleted_at.is_(None),
+            Appointment.start_at >= window_start,
+            Appointment.start_at < window_end,
+            Job.deleted_at.is_(None),
+        )
+        .distinct()
+    ).scalars().all()
+    empty = {"items": [], "job_ids": [], "timezone": tz_name}
+    if not in_window:
+        return empty
+
+    jobs = {
+        str(job.id): (job, customer_name)
+        for job, customer_name in db.execute(
+            _select(Job, Customer.name)
+            .outerjoin(Customer, Job.customer_id == Customer.id)
+            .where(Job.id.in_(list(in_window)))
+        ).all()
+    }
+    visits: dict[str, list[Any]] = {}
+    for v in db.execute(
+        _select(Appointment)
+        .where(Appointment.job_id.in_(list(in_window)), Appointment.deleted_at.is_(None))
+        .order_by(Appointment.start_at, Appointment.id)
+    ).scalars().all():
+        visits.setdefault(str(v.job_id), []).append(v)
+    # ``visit_sync.job_crew`` for every job in one read.
+    assigned: dict[str, list[str]] = {}
+    for a in db.execute(
+        _select(JobAssignment)
+        .where(JobAssignment.job_id.in_(list(jobs)), JobAssignment.deleted_at.is_(None))
+        .order_by(JobAssignment.assigned_at, JobAssignment.id)
+    ).scalars().all():
+        if a.tech_id:
+            assigned.setdefault(str(a.job_id), []).append(str(a.tech_id))
+
+    drawn: list[tuple[Any, str | None, list[Any], bool]] = []
+    for job_id, (job, customer_name) in jobs.items():
+        crew = list(dict.fromkeys(assigned.get(job_id, [])))
+        if not crew and job.assigned_to:
+            crew = [str(job.assigned_to)]
+        live = [v for v in visits.get(job_id, []) if vs.is_live(v)]
+        if not live or _drawn_by_job_row(job, live, crew, tz_name):
+            continue
+        drawn.append((job, customer_name, live, bool(crew)))
+    if not drawn:
+        return empty
+
+    tech_ids = {str(v.tech_id) for _j, _c, live, _h in drawn for v in live if v.tech_id}
+    names = {
+        str(t.id): t.name for t in db.execute(_select(Technician).where(Technician.id.in_(tech_ids))).scalars().all()
+    } if tech_ids else {}
+    sites = resolve_job_sites(db, [(job.id, job.location_id, job.customer_id) for job, _c, _l, _h in drawn])
+    try:
+        from gdx_dispatch.routers.jobs import _display_state_for_jobs
+
+        ds_map = _display_state_for_jobs(db, [(job.id, job.lifecycle_stage) for job, _c, _l, _h in drawn])
+    except Exception:
+        log.exception("board_visits_display_state_failed")
+        ds_map = {}
+
+    items = []
+    for job, customer_name, live, has_crew in drawn:
+        # Day k of n, as the Visits card counts them (``_visit_list``).
+        days = sorted({vs.shop_day(v.start_at, tz_name) for v in live})
+        index = {d: i + 1 for i, d in enumerate(days)}
+        site = sites.get(str(job.id))
+        row = {
+            **_board_row(job, customer_name, ds_map),
+            "holding_area_id": job.holding_area_id,
+            "job_has_crew": has_crew,
+            "address": site.address if site else None,
+            "site_address": site.address if site else None,
+            "site_label": site.label if site else None,
+            "day_count": len(days),
+        }
+        for v in live:
+            start = vs._as_utc(v.start_at)
+            if not window_start <= start < window_end:
+                continue
+            day = vs.shop_day(v.start_at, tz_name)
+            items.append({
+                **row,
+                "visit_id": str(v.id),
+                "visit_tech_id": str(v.tech_id) if v.tech_id else None,
+                "visit_tech_name": names.get(str(v.tech_id)) if v.tech_id else None,
+                "visit_start": start.isoformat(),
+                "visit_end": vs._as_utc(v.end_at).isoformat() if v.end_at is not None else None,
+                "visit_state": vs.visit_state(v),
+                "visit_day": day.isoformat() if day else None,
+                "day_index": index.get(day),
+            })
+    items.sort(key=lambda i: (i["visit_start"], i["id"], i["visit_id"]))
+    return {"items": items, "job_ids": [str(job.id) for job, _c, _l, _h in drawn], "timezone": tz_name}

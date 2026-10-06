@@ -117,7 +117,7 @@
           </div>
           <div class="form-field">
             <label for="visits-move-hours">Hours</label>
-            <InputNumber input-id="visits-move-hours" v-model="move.hours" :min="0.25" :max="24"
+            <InputNumber input-id="visits-move-hours" v-model="move.hours" :min="0.25" :max="moveMaxHours"
               :min-fraction-digits="0" :max-fraction-digits="2" data-testid="visits-move-hours" />
           </div>
         </div>
@@ -350,15 +350,31 @@ function openMove(v) {
 
 const moveReady = computed(() => !!(move.day && move.startTime && minutesOf(move.hours)));
 
+// A visit booked over 24 hours (man-hours over the crew are not capped)
+// keeps its length through a Move. InputNumber clamps to its max on blur,
+// so the max is never below the stored length.
+const moveMaxHours = computed(() => Math.max(24, (lengthMinutes(move.visit) || 0) / 60));
+
 async function submitMove() {
   if (!moveReady.value || !move.visit) return;
+  const body = { day: localDateString(move.day), start_time: move.startTime, tech_id: move.techId };
+  // The length goes only when someone changed it, compared in whole
+  // minutes: the input re-reads its two-decimal display on blur, so an
+  // hours comparison would call an untouched 2000-minute visit changed.
+  // Absent, the server keeps the visit's own length.
+  const typed = minutesOf(move.hours);
+  if (typed !== lengthMinutes(move.visit)) {
+    if (typed > 24 * 60) {
+      move.error = "A day is at most 24 hours. Book the rest as another day.";
+      return;
+    }
+    body.duration_minutes = typed;
+  }
   move.busy = true;
   move.error = "";
   try {
-    const res = await api.patch(`/api/jobs/${props.jobId}/visits/${move.visit.id}`, {
-      day: localDateString(move.day), start_time: move.startTime,
-      duration_minutes: minutesOf(move.hours), tech_id: move.techId,
-    }, { successMessage: "Visit moved", suppressErrorToast: true });
+    const res = await api.patch(`/api/jobs/${props.jobId}/visits/${move.visit.id}`, body,
+      { successMessage: "Visit moved", suppressErrorToast: true });
     move.visible = false;
     afterWrite(res);
   } catch (e) {

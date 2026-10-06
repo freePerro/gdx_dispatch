@@ -183,10 +183,52 @@ describe("JobVisitsCard", () => {
     await w.vm.$nextTick();
     await w.get('[data-testid="visits-move-submit"]').trigger("click");
     await flushPromises();
+    // The length was not touched, so it is not sent: the server keeps it.
     expect(patchMock).toHaveBeenCalledWith("/api/jobs/j1/visits/v3", {
-      day: "2026-11-09", start_time: "07:30", duration_minutes: 480, tech_id: "t2",
+      day: "2026-11-09", start_time: "07:30", tech_id: "t2",
     }, expect.objectContaining({ suppressErrorToast: true }));
     expect(w.emitted("changed")).toHaveLength(1);
+  });
+
+  it("sends a length only when it was changed", async () => {
+    const w = await mountCard();
+    await w.get('[data-testid="visit-move-v3"]').trigger("click");
+    const vm = w.vm.$.setupState;
+    vm.move.hours = 6;
+    patchMock.mockResolvedValue(LIST);
+    await w.vm.$nextTick();
+    await w.get('[data-testid="visits-move-submit"]').trigger("click");
+    await flushPromises();
+    expect(patchMock.mock.calls[0][1]).toMatchObject({ duration_minutes: 360 });
+  });
+
+  it("refuses a changed length over a day, and leaves a long visit's own length alone", async () => {
+    const long = {
+      ...LIST,
+      items: LIST.items.map((v) => (v.id === "v3"
+        ? { ...v, end_at: new Date(new Date(v.start_at).getTime() + 30 * 3600_000).toISOString() }
+        : v)),
+    };
+    getMock.mockResolvedValue(long);
+    const w = await mountCard();
+    await w.get('[data-testid="visit-move-v3"]').trigger("click");
+    const vm = w.vm.$.setupState;
+    expect(vm.move.hours).toBe(30);
+    expect(vm.moveMaxHours).toBe(30);
+    patchMock.mockResolvedValue(long);
+    vm.move.startTime = "07:00";
+    await w.vm.$nextTick();
+    await w.get('[data-testid="visits-move-submit"]').trigger("click");
+    await flushPromises();
+    expect(patchMock.mock.calls[0][1]).not.toHaveProperty("duration_minutes");
+    patchMock.mockClear();
+    await w.get('[data-testid="visit-move-v3"]').trigger("click");
+    vm.move.hours = 26;
+    await w.vm.$nextTick();
+    await w.get('[data-testid="visits-move-submit"]').trigger("click");
+    await flushPromises();
+    expect(patchMock).not.toHaveBeenCalled();
+    expect(vm.move.error).toContain("at most 24 hours");
   });
 
   it("removes a day only after asking", async () => {

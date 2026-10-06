@@ -208,7 +208,9 @@ class MoveVisitBody(BaseModel):
     # Shop-local, as Add day(s) takes them: the server owns the zone.
     day: date
     start_time: time
-    duration_minutes: int = Field(ge=15, le=24 * 60)
+    # Absent: the visit keeps its own length, which may be over 24 hours as
+    # booked; the bound is on a length someone types.
+    duration_minutes: int | None = Field(default=None, ge=15, le=24 * 60)
     # Absent: the tech stays. null: the visit becomes an unassigned slot.
     tech_id: str | None = Field(default=None, max_length=36)
 
@@ -230,10 +232,18 @@ def move_visit(
         _check_techs(db, [payload.tech_id])
     tz_name = vs.shop_tz(db)
     start_at = vs.shop_instant(payload.day, payload.start_time, tz_name)
+    rows = _values(db, job)
+    target = _parse_visit_id(visit_id)
+    if payload.duration_minutes is not None:
+        length = timedelta(minutes=payload.duration_minutes)
+    else:
+        # An unknown id is the planner's visit_not_found; any length will do.
+        stored = next((r for r in rows if r.id == target and r.end_at is not None), None)
+        length = stored.end_at - stored.start_at if stored is not None else timedelta(hours=1)
     plan = vs.plan_move_visit(
-        _values(db, job), tz_name=tz_name, today=shop_today(tz_name), job_state=vs._job_state(job),
-        visit_id=_parse_visit_id(visit_id), start_at=start_at,
-        end_at=start_at + timedelta(minutes=payload.duration_minutes),
+        rows, tz_name=tz_name, today=shop_today(tz_name), job_state=vs._job_state(job),
+        visit_id=target, start_at=start_at,
+        end_at=start_at + length,
         tech_id=payload.tech_id if "tech_id" in payload.model_fields_set else vs.UNSET,
     )
     if plan.refusal is not None:

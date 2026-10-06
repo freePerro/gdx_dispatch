@@ -241,6 +241,7 @@ GET /api/dispatch/optimize-route
 GET /api/dispatch/partial-jobs
 GET /api/dispatch/schedule-with-traffic
 GET /api/dispatch/scheduled-unassigned
+GET /api/dispatch/visits
 GET /api/distributor/analytics/orders
 GET /api/distributor/orders
 GET /api/distributor/orders/pending

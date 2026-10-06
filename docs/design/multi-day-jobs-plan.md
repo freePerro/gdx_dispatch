@@ -1,7 +1,7 @@
 # Multi-day jobs: one job, many visit days
 
 **Date:** 2026-10-03
-**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) MERGED #846, RELEASED v1.137.0, to §5.2's rules. §5.2a (revision 2, 2026-10-04) replaces those sync rules and adds `recompute_job_schedule`, as PR 1b against `main`: MERGED #868 (2026-10-05), RELEASED v1.138.0 (on prod and demo 2026-10-05; walked in a browser that night: the full write walk on the demo, a read-only look at prod), with one rule the build added (R2's second clause, below, accepted by Doug 2026-10-05); Doug ruled its open questions 2026-10-04 (a day closes only when someone closes it). PR 2a (§5.3a: the visits API, the job page's Visits card, and the "Partial Jobs — Need to Schedule" section Doug ruled 2026-10-05, D10–D12) MERGED #882 (2026-10-06), with its parked-row follow-up (queue rows carry the board's hours) MERGED #886, both RELEASED v1.139.0 (on prod and demo 2026-10-06; a read-only browser look at prod). Doug ruled D13 (2026-10-06): a partial job's queued hours are the hours still left; built with PR 3, which records the attested day hours it subtracts. Not built: PR 2b (the board drawing each visit day) and PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, billing). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); §5.2a went through three plan audits, was rewritten to Doug's rulings after the third, then through sixteen more rounds (2026-10-04), the sixteenth finding no defect, then revised the same day to Doug's ruling that arrival times are always recorded and audited five more rounds (20–24), the last finding no defect; then revised 2026-10-05 to Doug's rulings that a re-open onto a closed day, a mis-tap, and an old arrival with no time are all settled by asking the office, and audited rounds 25–41 on the arrival-undo rules, round 41 finding no logic defect and two wording fixes, applied; §5.2a ships as PR 1b against `main` (see *Packaging*), since #846 merged before it was built.
+**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) MERGED #846, RELEASED v1.137.0, to §5.2's rules. §5.2a (revision 2, 2026-10-04) replaces those sync rules and adds `recompute_job_schedule`, as PR 1b against `main`: MERGED #868 (2026-10-05), RELEASED v1.138.0 (on prod and demo 2026-10-05; walked in a browser that night: the full write walk on the demo, a read-only look at prod), with one rule the build added (R2's second clause, below, accepted by Doug 2026-10-05); Doug ruled its open questions 2026-10-04 (a day closes only when someone closes it). PR 2a (§5.3a: the visits API, the job page's Visits card, and the "Partial Jobs — Need to Schedule" section Doug ruled 2026-10-05, D10–D12) MERGED #882 (2026-10-06), with its parked-row follow-up (queue rows carry the board's hours) MERGED #886, both RELEASED v1.139.0 (on prod and demo 2026-10-06; a read-only browser look at prod). Doug ruled D13 (2026-10-06): a partial job's queued hours are the hours still left; built with PR 3, which records the attested day hours it subtracts. PR 2b (the board draws each visit day as its own card, "Day k of n", and a drag moves that visit only; `GET /api/dispatch/visits`) built 2026-10-06 to the 2b build spec in §5.3a, in review against `main`, not merged. Not built: PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, billing). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); §5.2a went through three plan audits, was rewritten to Doug's rulings after the third, then through sixteen more rounds (2026-10-04), the sixteenth finding no defect, then revised the same day to Doug's ruling that arrival times are always recorded and audited five more rounds (20–24), the last finding no defect; then revised 2026-10-05 to Doug's rulings that a re-open onto a closed day, a mis-tap, and an old arrival with no time are all settled by asking the office, and audited rounds 25–41 on the arrival-undo rules, round 41 finding no logic defect and two wording fixes, applied; §5.2a ships as PR 1b against `main` (see *Packaging*), since #846 merged before it was built.
 
 **Trigger:** Doug asked, "What happens if a job is not finished and turns into a
 multi-day job? Can a tech or anyone go back to it?" The answer, traced on
@@ -932,7 +932,7 @@ each one against `main` before building.
     "Add day(s)" is the other way to book it, for any date.
   - **Who:** the office, on desktop. Not on the tech's phone.
 
-### 5.3a PR 2 build spec (2026-10-05; 2a MERGED #882, RELEASED v1.139.0)
+### 5.3a PR 2 build spec (2026-10-05; 2a MERGED #882, RELEASED v1.139.0; 2b built 2026-10-06, in review)
 
 PR 2 ships as two PRs against `main`. **2a**: the visits API, the Visits
 card, and the Partial Jobs section. **2b**: the board shows a multi-day job
@@ -1124,6 +1124,242 @@ for those days, not the board.
   days 2 and 3, and they show on the tech's Today for those dates. Light
   and dark.
 
+**2b build spec (2026-10-06, traced on `main` @ 946022e7).**
+
+*What already exists (do not rebuild).*
+
+| Need | Already there |
+|---|---|
+| Move one visit: day, time, length, tech, with the refusals | `PATCH /api/jobs/{id}/visits/{visit_id}` (2a, `job_visits.py`), shop-local body, recompute last |
+| The day index and count of a visit | `_visit_list` (`job_visits.py:98`): days are the distinct shop days of Live visits |
+| The card fields a board queue row carries | `_board_row` (`dispatch_scheduling.py:183`), used by late-open and partial jobs |
+| The job's crew | `visit_sync.job_crew` |
+| A refusal shown as a message | `utils/visitRefusals.js` (`refusalOf`) |
+| Hours per tech column | `technicianColumns` and `sumDurationHours` (`DispatchView.vue:1325`, `:1488`) |
+
+*What is missing.* No endpoint returns a window's visits with card fields:
+`GET /api/jobs?date=` is a job list keyed on `scheduled_at`, and the visits
+GET is per job. The board reads no appointment at all.
+
+*Decisions.* None adds a migration, changes money math or changes anything a
+customer sees.
+
+- **Which jobs the board draws by visit.** Every job with a Live visit,
+  except one the job card already draws exactly: all its Live visits on one
+  shop day, every one starting at `scheduled_at`, and their techs exactly
+  the crew (`job_crew`, as a set), or, for a job with no crew, exactly one
+  unassigned slot, which is what booking a crew-less job writes (`_book`:
+  `crew or [None]`; plan audit round 2, finding 1). That
+  job keeps today's card, today's job-level drag and today's duration
+  prompt, so a one-day job, alone or with a crew, behaves as it does now.
+  Anything else is drawn by visit: two or more days; a crew tech whose
+  visit was removed, or a visit moved to another time, on the Visits card
+  (2a's Move and Remove change appointments only, never the crew); a tech
+  outside the crew; a crewed job's day with no tech. (Plan audit 2026-10-06, finding 1:
+  a rule of "two days or an outside tech" left the removed and moved cases
+  drawn at the wrong time and in a column with no visit.) A job with no
+  Live visit at all keeps its card. Visit length is not compared: a crew
+  job's visit length is not the job's estimate by design (man-hours).
+- **One card per Live visit**, on the visit's shop day, in the visit's
+  tech's column, at the visit's start, as tall as the visit. A CANCELLED
+  visit is not drawn. A CLOSED day of an open job is drawn, marked done for
+  the day, because a day's column shows the day's work, done or not
+  (`DispatchView.vue:1360`). Every card carries "Day k of n". A visit with
+  no tech on the board's day goes where a dated job with no tech goes: the
+  red "Scheduled — Not Assigned" lane when it is on, "New Jobs to Schedule"
+  when it is off. One exception: that lane reads job rows with no
+  `assigned_to` (`dispatch_scheduling.py:136`), so a crewed job's
+  unassigned day is not in it, and that card goes to New Jobs whatever the
+  setting says. Otherwise it would be on no screen (audit finding 3). A
+  crew-less job is in the lane as a job row (unless it sits in a holding
+  area: the lane also needs `holding_area_id IS NULL`, a gap that predates
+  2b and goes on the ledger), so its no-tech visit cards stay out of New
+  Jobs while the lane is on, as its job card does today.
+- **Week view** draws from the same merged list: one card per visit on its
+  day, naming its tech, with the badge, and no job copy. Week cards are not
+  draggable today and stay that way.
+- **The job-level copy is hidden** for a job the visits response names, so
+  the job is never drawn twice. A job the response does not name keeps its
+  card, so a gap in the visits read shows the old card instead of nothing.
+- **Hours.** A visit card's column hours are the visit's length, not the
+  job's estimate: a day counts what that day was booked for. (Booking a
+  dated job gives the first visit the estimate's man-hours over the crew,
+  with no cap, `appointments.py:145-148`, and "Add day(s)" defaults to the
+  last visit's length, so a long install shows long days until someone
+  books them shorter. That is the booking's truth, and the board shows it.) The
+  holding-area totals keep the job's hours and count the job once.
+- **Drag moves that visit only**, through the visit PATCH, for an OPEN
+  visit. A visit card keeps the job's `id` (the drawer, Open Job and the
+  closeout read it), so the drag cannot be told apart by the id it puts on
+  `dataTransfer`. The drag start records the dragged card itself, and every
+  drop handler (timeline, tray, holding area, New Jobs) checks it first; a
+  handler that does not move visits refuses a visit card rather than fall
+  through to `PATCH /api/jobs/{id}`, which acts on the job's day N, not the
+  dragged day: a date moves day N's open visits, a cleared tech empties the
+  crew and changes day N's visits (C5, C6), and a cleared date retires every
+  open day (audit finding 4; reason corrected in rounds 8–10).
+  An ON SITE or CLOSED card is not draggable: those change through Complete
+  and Undo arrival, as on the Visits card.
+  - New Jobs cards also carry controls that are not drops (round 8, finding
+    1). On a visit card, "Assign to tech..." sends the visit PATCH with that
+    tech and the visit's own day and time, and "Pick a date and time" (the
+    job's schedule dialog) is not shown: the day's Move is on the Visits
+    card, reached by Open Job.
+  - A holding lane's Release acts on the job, as parking does, so on a visit
+    card it is kept and sends `holding_area_id: null` by job id. Today it
+    returns silently when the job row is not loaded, which on a later day
+    it usually is not (round 9, finding 1). After it, the board re-reads
+    (`fetchJobs`, both lists), or the visit card would sit in the lane until
+    the next poll (round 10, finding 1). That holds on both branches of
+    `releaseFromHoldingArea`: a partial job goes through
+    `setPartialHoldingArea`, which today re-reads only the partial list, so
+    on a visit card it too ends with `fetchJobs` (round 11, finding 1).
+  - A parked job keeps its techs on later days (C5 and C6 clear day N
+    only), so such a day's card is drawn in its tech's column as well as
+    the job being listed in its holding lane. That is intended: the tech is
+    still booked that day (round 11, question).
+  - Timeline drop: the visit moves to that tech, that day and that time,
+    and keeps its length. The browser sends the shop day and `HH:MM` of the
+    slot's instant (the timeline computes it in the browser's zone, as it
+    does for every job drag) read in the shop zone, and no
+    `duration_minutes`; the server builds the instant. The PATCH's `duration_minutes` becomes optional: absent,
+    the visit keeps its own length. The 15–1440 bound applies only to a
+    length someone types, so a booked visit over 24 hours can still be
+    dragged (audit round 3, finding 1: with the length required, such a
+    drag was a 422 with no refusal code). The Visits card's Move sends the
+    length only when it was changed, compared in whole minutes
+    (`Math.round(hours * 60)` against the stored minutes; the input re-reads
+    its two-decimal display on blur, so an hours comparison calls 2000
+    minutes changed; round 6, finding 2), for the same reason (round 4,
+    finding 2): it prefills the visit's length and always sent it. Its
+    hours input's max becomes the larger of 24 and the stored length, since
+    PrimeVue's InputNumber clamps to the max on blur and would otherwise
+    turn a tabbed-through 30 into a sent 24 (round 5, finding 3); a changed
+    length over 24 is refused in the dialog before anything is sent.
+  - A visit over 24 hours is one appointment spanning more than one shop
+    day. The board draws it on its start day only, as it is stored. That
+    the booking writes such rows at all (uncapped man-hours over the crew,
+    and Add day(s) defaulting to the last length) predates 2b and goes on
+    the found-not-filed ledger.
+  - Tray drop: the visit moves to that tech and the board's day at midnight,
+    which is how the tray keeps any job "without a time" (`onTimelinePlaceTray`).
+  - A drop that changes nothing sends nothing.
+  - A drop on a holding area or on "New Jobs to Schedule" is refused with a
+    toast naming the Visits card. Parking or unassigning is a job-level act,
+    and from one day's card it would act on day N instead.
+  - No duration prompt: a visit has a length.
+  - A refusal (`past_day`, `double_booked`, `visit_not_open`, ...) is a toast
+    through `refusalOf`, and the board re-reads.
+  - A drop target added later must opt in: the refusal is the default, so a
+    handler that forgets visits refuses instead of moving every day.
+  - Assigning a tech to a visit does not touch the crew (2a's decision), so a
+    crew-less multi-day job whose days all get techs this way stays in the
+    red lane by its job row. The same is true of the Visits card's Move
+    since 2a; it is recorded, not fixed, here.
+- **The card is the visit.** The board builds a visit card from the item
+  once, in one place, by overwriting the job's fields every filter reads:
+  `scheduled_at` ← `visit_start`; `technician_id`, `assigned_tech_ids`,
+  `assigned_to` and `lead_tech_id` ← the visit's tech (none for an
+  unassigned day); `scheduled_duration_hours` and `effective_duration_hours`
+  ← the visit's length (the timeline sizes a card from the first, capacity
+  sums the second), with the job's own number kept as `job_duration_hours`. The overwrite runs
+  after `normalizeJob`, which falls back to `assigned_to` when the tech
+  fields are empty (`DispatchView.vue:1274`) and would otherwise put a
+  crewed job's unassigned day under its lead (audit round 4, finding 1). It keeps the job's `id`, title, customer and status, and
+  adds `visit_id`, `visit_state`, `day_index`, `day_count`, `job_has_crew`
+  (from the server: the overwrite erases `assigned_to`, the only field
+  that told a crewed job from a crew-less one) and `card_key` (job and
+  visit). `matchesDate`, the timeline and the columns then need no visit
+  branch. Three places do: New Jobs keeps a no-tech visit card of a crewed
+  job whatever the lane setting (its last line otherwise drops every dated
+  no-tech row when the lane is on; round 5, finding 1); every list keys on
+  `card_key || id` instead of `id` (the tech timeline's tray and blocks, New
+  Jobs, week view, the holding lanes), because a crew's two cards on one day
+  share the job id; and a holding lane lists a job once, totalled at
+  `job_duration_hours`.
+- **A Partial Jobs row stays.** A partial job with two or more closed days
+  is drawn by visit on those days, as closed, not-draggable cards, and its
+  queue row is unchanged. A cancelled job's arrived visits are closed days
+  and are drawn the same way; its job card is drawn today too.
+- **The drawer** shows "Day k of n" and the visit's state for a visit card,
+  and stays open across the poll while that visit is still drawn: it
+  re-points by `card_key`, then by job id, since a job's cards share the id
+  (round 6, finding 4).
+- **Who.** The visits read is gated `jobs.read_all`, as partial jobs and
+  late-open are. A user without it gets today's board. Prod's technician
+  role carries `jobs.read_all` (`core/job_access.py:256-266`), so the test's
+  403 covers the builtin role only; the read is read-only either way.
+
+*API.* `GET /api/dispatch/visits?date_from=&date_to=` (or `date=`), shop
+days inclusive, at most 366 days (422 otherwise, and for a reversed range;
+the board does not ask past that and keeps job cards, as it does for a user
+without the permission).
+It selects the Live visits starting in that window whose job is not deleted,
+then, over those jobs' full visit lists and crews, keeps the jobs the rule
+above draws by visit. Each item is `_board_row` plus `holding_area_id`,
+`job_has_crew`, `visit_id`, `visit_tech_id`, `visit_tech_name`,
+`visit_start`, `visit_end`, `visit_state`, `visit_day`, `day_index`,
+`day_count`, and the effective site (`address`, `site_label`, from
+`resolve_job_sites` in one batch, as `GET /api/jobs` does), which the drawer
+and the New Jobs card read. The item is the whole card: a later day's job row is usually
+not loaded at all, since the day list fetches on `scheduled_at` (round 6,
+finding 1). Also returned:
+`job_ids` (the jobs drawn by visit) and `timezone`. The board fetches it
+inside `fetchJobs`, both reads in parallel with the same date scope captured
+once, so each of its callers (the date and view watchers, the
+after-drop and after-closeout re-reads, the poll, Refresh) gets both and the
+two lists never describe different windows (round 7, finding 1). Both are
+stored together after `Promise.all`, and only by the latest call: a slower
+answer for the previous date is dropped (round 8; the job read alone had no
+such guard). The visits read fails on its own: a failed read is an empty
+visits list (or, on a poll, the last good one), so the job list still draws
+and every job shows its job card (round 9, finding 4). Like the partial and
+late-open reads, it is skipped without `jobs.read_all` and re-run when
+permissions load (a new `watch(permissionsLoaded)`, like the partial
+read's at `DispatchView.vue:962`, that calls `fetchJobs`, so the latest-call
+rule holds; round 11, finding 2); until
+then the board shows job cards, as it does for a user without the
+permission (round 9, finding 3). The drawer
+re-points after both land, against the drawn list (visit cards and the job
+rows left after the hide), by `card_key`, then by job id; today it searches
+the raw job rows, which have no visit cards (round 7, finding 2).
+
+*Not in 2b.* The phone's dispatch view (`MobileDispatch`) keeps its job
+list; the phone's Today already shows visits. The "Scheduled — Not
+Assigned" lane and late-open keep their job rows.
+
+*Tests (2b).*
+- Route: the visit PATCH with no `duration_minutes` keeps a 30-hour
+  visit's length; one item per Live visit in the window with its day index and
+  count; a one-day crew job whose visits match is left out, and so is a
+crew-less one-day job with its one unassigned slot; the same job
+  with one crew visit removed, or one moved to another time, is in; a tech
+  outside the crew, or a crewed job's day with no tech, is in; a cancelled visit is neither drawn nor counted; a
+  deleted job is out; the window is cut on the shop day, not UTC; a
+  technician gets 403; a range over 366 days or reversed is 422.
+- Vitest: a 3-day job draws one card per day in its tech's column with
+  "Day k of n" and hides the job copy; a timeline drop and a tray drop send
+  the visit PATCH with the shop day and time; a refusal toasts; a queue or
+  holding drop is refused with no request; a CLOSED card is not draggable;
+  a crewed job's unassigned visit shows in New Jobs with the red lane on,
+  and a crew-less job's does not; week view
+  draws each day; a matching one-day job still drops through
+  `PATCH /api/jobs/{id}`; a crew's two cards on one day render with
+  distinct keys; a parked multi-day job is in its holding lane once, at
+  `job_duration_hours`; Release on a parked partial job's visit card
+  re-reads the visits; capacity
+  counts the visit's hours; the drawer shows the same day's "Day k of n"
+  after a poll; changing the date fires both reads with the new date. The Visits card's Move leaves out `duration_minutes`
+  when the length is unchanged (a 2000-minute visit tabbed through), sends
+  it when changed, and refuses a changed length over 24 hours in the
+  dialog. A New Jobs visit card's tech dropdown sends the visit PATCH, and
+  the card shows no "Pick a date and time". Release on a visit card in a
+  holding lane sends the job PATCH and the card leaves the lane.
+- Browser walk on a throwaway container: book days 2 and 3 for different
+  techs, see each day on its column with its badge, drag day 2 to another
+  tech and time, check the Visits card agrees, try a past-day drop.
+  Desktop and phone width, light and dark.
+
 ### 5.4 The closeout sheet asks "Is this job finished?" (fixes B2, B3, B4, B7)
 
 - **Arrival (B2):** finds the appointment by `job_id` + this tech + today's
@@ -1267,7 +1503,8 @@ appointment rows.
 2. **The office books days (B5).** Covers §5.3: the visits API, the Visits
    card, the board showing each day, and the "Partial Jobs — Need to
    Schedule" section (D10–D12). Split as 2a and 2b (§5.3a); 2a MERGED
-   #882 with its follow-up #886, RELEASED v1.139.0; 2b not built. (The
+   #882 with its follow-up #886, RELEASED v1.139.0; 2b built 2026-10-06, in
+   review, not merged. (The
    recompute and its writers moved to PR 1b on 2026-10-04, §5.2a; the new
    visits API is one more writer and gets its own test.)
 3. **"Is this job finished?" and summed billing (B3, B4, B6, B7).**
