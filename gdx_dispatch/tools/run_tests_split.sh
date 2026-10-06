@@ -57,6 +57,21 @@ if [ -f "$REPO_ROOT/.git" ] && [[ "$PYTEST" == *"docker run"* ]]; then
     echo "linked worktree: mounted $GITDIR read-only so the tracked-set guards can read the index"
   fi
 fi
+# ── docker PYTEST: keep the container's /tmp in RAM ─────────────────────────
+# Tests build file-backed SQLite DBs under tmp_path (/tmp/pytest-of-appuser/…).
+# Without this, the container's /tmp is overlayfs on the host disk, and every
+# SQLite commit waits on an fsync — so a shard's speed depends on how fast the
+# host drive syncs, not on the tests. Measured 2026-10-05:
+#   test_mobile_job_clock.py (13 tests) .... 138 s on disk, 3.5 s on tmpfs
+#   shard 4 of 7 ............................ ~14 min on disk, ~1 min on tmpfs
+# CI is unaffected: it runs pytest directly, not this script or docker.
+# TMPFS_TMP=0 opts out.
+# size is a ceiling, not a reservation: pages are used only as files are
+# written. It must clear session_recorder's 20 GB free-space refusal, or 11
+# test_session_recorder.py tests degrade (4g did exactly that, 2026-10-05).
+if [ "${TMPFS_TMP:-1}" = "1" ] && [[ "$PYTEST" == *"docker run"* ]] && [[ "$PYTEST" != *"--tmpfs"* ]]; then
+  PYTEST="${PYTEST/docker run/docker run --tmpfs /tmp:rw,exec,size=32g}"
+fi
 
 # --version alone isn't enough — a host pytest without the app's deps fails
 # every shard with usage errors. Probe the actual imports the suite needs.
