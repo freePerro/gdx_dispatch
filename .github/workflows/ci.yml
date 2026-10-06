@@ -135,9 +135,19 @@ jobs:
           # Native-crash exit codes (128+signal): 134=SIGABRT, 135=SIGBUS,
           # 139=SIGSEGV — the #20 class can surface as any of them. Retry
           # once on those only; assertion failures (exit 1) fail fast.
+          #
+          # -ra (pytest's own alias for "sxXEf") NAMES every skip, xfail, XPASS,
+          # error and failure instead of printing a bare count. Kept in lockstep
+          # with COMMON_OPTS in gdx_dispatch/tools/run_tests_split.sh, same as
+          # --forked above. Never -rs: -r REPLACES pytest's "fE" default rather
+          # than adding to it, so -rs would delete the FAILED and ERROR summary
+          # lines (see that script's comment). Under CI an unreachable Postgres
+          # FAILS rather than skips (#440), but the 8 TEST_DATABASE_URL role
+          # tests and the GDX_TEST_CONTROL_DB_URL tests still skip green here —
+          # this is what names them. Report-only: it cannot change a verdict.
           set +e
           python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e \
-            --splits 7 --group ${{ matrix.group }} --tb=short -q \
+            --splits 7 --group ${{ matrix.group }} --tb=short -q -ra \
             -p no:nose -p no:pastebin -p no:doctest --durations=15
           rc=$?
           set -e
@@ -145,7 +155,7 @@ jobs:
             134|135|139)
               echo "::warning::pytest died with exit ${rc} (native crash, #20 class). Retrying shard once."
               python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e \
-                --splits 7 --group ${{ matrix.group }} --tb=short -q \
+                --splits 7 --group ${{ matrix.group }} --tb=short -q -ra \
                 -p no:nose -p no:pastebin -p no:doctest --durations=15
               ;;
             *)

@@ -86,7 +86,10 @@ this — the budget governs sweeps, not repairs.
   never with `--network host`** — the host network breaks ~15 tests. The cost
   of leaving it off is that the Postgres arm goes **silently SKIPped** (102
   tests, measured 2026-09-14): a green local run has not exercised PG.
-  Enumerate skips with `-rs` and read the categories, or the gap is invisible.
+  The runner and `ci.yml` both pass `-ra` (GDXA-128), so every shard names
+  its skips — read the categories, or the gap is invisible. On a bare `pytest`
+  use `-ra` too and never plain `-rs`: `-r` REPLACES pytest's `fE` default, so
+  `-rs` deletes the `FAILED`/`ERROR` summary lines.
   CI runs the `DATABASE_URL` and `GDX_TEST_PG_*` Postgres tests, and under `CI`
   an unreachable Postgres fails them rather than skipping (#440). It does
   **not** run the 8 `TEST_DATABASE_URL` role tests or the
