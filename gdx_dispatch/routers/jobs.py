@@ -759,7 +759,7 @@ def list_jobs(
     # the dispatch-board hot path). The raw SELECT's location_label/
     # location_address only cover the BOUND case; the helper adds the
     # primary-location and customer fallbacks, ORM-decrypted, so this
-    # endpoint never selects encrypted c.address raw (RAW_ENC gate).
+    # endpoint never selects encrypted c.address raw (RAWENC1 gate).
     _sites = resolve_job_sites(
         db, [(r.get("id"), r.get("location_id"), r.get("customer_id")) for r in rows]
     )

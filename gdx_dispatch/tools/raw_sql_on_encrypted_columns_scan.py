@@ -57,7 +57,7 @@ A scan finding here is a strong signal but not always a real bug:
 The scan **excludes** ``gdx_dispatch/tests/``, ``gdx_dispatch/migrations/``, and the
 encryption tools themselves by default. For any remaining false
 positive, baseline it via ``--baseline`` or annotate the line with
-``# noqa: RAW_ENC``.
+``# noqa: RAWENC1``.
 
 Usage
 -----
@@ -91,6 +91,11 @@ SKIP_FILE_NAMES = {
 }
 
 NOQA_RE = re.compile(r"#\s*noqa\b(?:\s*:\s*([\w,\s]+))?", re.IGNORECASE)
+# ruff parses the same suppression comment, and its codes must be uppercase
+# letters followed by digits. The old code RAW_ENC failed that parse: ruff
+# warned of an invalid directive on every annotated line and dropped any
+# ruff code listed after it on the same line (GDXA-302).
+NOQA_CODE = "RAWENC1"
 
 
 def is_suppressed(line: str) -> bool:
@@ -101,7 +106,7 @@ def is_suppressed(line: str) -> bool:
     if codes is None:
         return True
     listed = {c.strip().upper() for c in codes.split(",") if c.strip()}
-    return "RAW_ENC" in listed
+    return NOQA_CODE in listed
 
 
 def _load_encrypted_columns() -> list[tuple[str, str]]:
@@ -323,7 +328,7 @@ def main() -> int:
               "column violation(s).")
         print("   See sprint_encryption_rollout_proper.md Option C — every read")
         print("   AND every write against an EncryptedString column must go")
-        print("   through the ORM. Refactor or annotate `# noqa: RAW_ENC`.")
+        print("   through the ORM. Refactor or annotate `# noqa: RAWENC1`.")
         return 1
     return 0
 

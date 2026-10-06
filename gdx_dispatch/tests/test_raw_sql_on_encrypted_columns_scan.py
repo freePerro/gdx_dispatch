@@ -102,18 +102,37 @@ def test_no_match_when_only_table_named(tmp_path: Path):
 
 
 def test_noqa_suppresses(tmp_path: Path):
-    """An explicit ``# noqa: RAW_ENC`` annotation suppresses the finding.
+    """An explicit ``# noqa: RAWENC1`` annotation suppresses the finding.
     Use for legitimate raw-SQL touches (encryption tools, migrations
     already covered by SKIP_FILE_NAMES, etc.)."""
     src = textwrap.dedent("""
         from sqlalchemy import text
-        db.execute(text("SELECT name FROM customers"))  # noqa: RAW_ENC
+        db.execute(text("SELECT name FROM customers"))  # noqa: RAWENC1
     """)
     f = tmp_path / "suppressed.py"
     f.write_text(src)
     scan_mod.SCAN_ROOTS = [tmp_path]
     findings = scan_mod.scan(encrypted=[("customers", "name")])
     assert findings == []
+
+
+def test_noqa_code_is_one_ruff_can_parse():
+    """ruff reads the same ``# noqa:`` comment and accepts only uppercase
+    letters followed by digits. ``RAW_ENC`` failed that: ruff warned
+    "Invalid `# noqa` directive" on every annotated line and dropped any
+    ruff code listed after it (GDXA-302, ruff 0.15.18)."""
+    import re
+
+    assert re.fullmatch(r"[A-Z]+[0-9]+", scan_mod.NOQA_CODE)
+
+
+def test_noqa_suppresses_beside_prose_and_ruff_codes():
+    """The annotated call sites put the reason in a second comment and may
+    list ruff codes beside this one; both must still suppress."""
+    assert scan_mod.is_suppressed('text(  # noqa: RAWENC1  # c.address decrypted below')
+    assert scan_mod.is_suppressed('text(f"...")  # noqa: S608, RAWENC1')
+    assert not scan_mod.is_suppressed('text(  # noqa: RAW_ENC')
+    assert not scan_mod.is_suppressed('text(  # noqa: S608')
 
 
 def test_skips_known_tool_files(tmp_path: Path):
@@ -168,7 +187,7 @@ def test_repo_scan_is_clean(monkeypatch):
        here, not skip.
     2. Zero unsuppressed findings. A legitimate raw-SQL touch must
        decrypt via ``pii.decrypt_if_ciphertext`` and annotate the
-       ``text(`` line with ``# noqa: RAW_ENC``; everything else is a
+       ``text(`` line with ``# noqa: RAWENC1``; everything else is a
        regression of the S122-1b bypass class.
     """
     encrypted = scan_mod._load_encrypted_columns()
@@ -188,7 +207,7 @@ def test_repo_scan_is_clean(monkeypatch):
             for path, lineno, table, column, excerpt in findings
         )
         + "\nEvery read/write of an encrypted column must go through the ORM, "
-        "or decrypt via pii.decrypt_if_ciphertext with a `# noqa: RAW_ENC` "
+        "or decrypt via pii.decrypt_if_ciphertext with a `# noqa: RAWENC1` "
         "annotation on the text( line."
     )
 

@@ -517,7 +517,7 @@ def list_dispatch_threads(
     for r in rows:
         # Pull the job + customer details for context.
         jrow = db.execute(
-            _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
+            _text(  # noqa: RAWENC1  # c.address decrypted via decrypt_if_ciphertext below
                 """
                 SELECT j.title, c.name, c.address
                 FROM jobs j

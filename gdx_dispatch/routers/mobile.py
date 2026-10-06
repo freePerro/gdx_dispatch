@@ -1763,7 +1763,7 @@ def mobile_all_my_jobs(
         limit = 200
 
     rows = db.execute(
-        _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
+        _text(  # noqa: RAWENC1  # c.address decrypted via decrypt_if_ciphertext below
             f"""
             SELECT DISTINCT j.id, j.title, j.dispatch_status, j.scheduled_at,
                    j.priority, j.job_type, j.created_at, j.is_return_visit,
