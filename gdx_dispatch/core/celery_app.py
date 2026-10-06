@@ -147,3 +147,15 @@ def _check_celery_worker_encryption(**_: object) -> None:
             "Set the env var or override with GDX_ENV=dev."
         )
     log.warning("CELERY_WORKER_ENCRYPTION_DEV_MODE no MASTER_ENCRYPTION_KEY; plaintext fallback")
+
+
+@worker_process_init.connect
+def _install_ops_alert_handler(**_: object) -> None:
+    """GDXA-271: route the marked alarm checks (``extra={"ops_alert": True}``)
+    to the error sink and, once per fingerprint per hour, to OPS_ALERT_EMAIL.
+    The alarms fire in worker children, so the handler must be installed here,
+    per child — the lifespan install covers only the API process. No-op when
+    OPS_ALERT_EMAIL is unset."""
+    from gdx_dispatch.modules.error_sink.ops_alert import install_ops_alert_handler  # noqa: PLC0415
+
+    install_ops_alert_handler()

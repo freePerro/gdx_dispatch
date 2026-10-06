@@ -97,6 +97,9 @@ x-app-env: &app-env
   PLATFORM_SMTP_PORT: ${PLATFORM_SMTP_PORT:-465}
   PLATFORM_SMTP_USER: ${PLATFORM_SMTP_USER:-}
   PLATFORM_SMTP_PASS: ${PLATFORM_SMTP_PASS:-}
+  # Ops-alert recipient (GDXA-271): the marked alarm checks email it, at most
+  # hourly per check. Unset = the channel off.
+  OPS_ALERT_EMAIL: ${OPS_ALERT_EMAIL:-}
 
 services:
   # Mints + persists runtime secrets before anything else starts. Runs on

@@ -5,6 +5,22 @@
 # to app + all 3 celery services at once, so they can never drift apart.
 # Merge requires map syntax (KEY: value); the `- KEY=value` list form does NOT
 # merge. See https://docs.docker.com/reference/compose-file/fragments/
+# Platform mailbox + ops-alert recipient (GDXA-271). Its own anchor, merged
+# into app and the two celery workers only — NOT into *app-env, which
+# plugin-host also merges, and plugin-host runs third-party code that has no
+# business holding the mailbox password. The workers need it: the alarm checks
+# that email OPS_ALERT_EMAIL run there (modules/error_sink/ops_alert.py).
+# Unset OPS_ALERT_EMAIL = the channel off.
+x-platform-mail: &platform-mail
+  # Env-driven with the old literals as defaults: the user was a hardcoded
+  # placeholder that .env could not override, so the login could never match
+  # a real mailbox.
+  PLATFORM_SMTP_HOST: ${PLATFORM_SMTP_HOST:-smtp.titan.email}
+  PLATFORM_SMTP_PORT: ${PLATFORM_SMTP_PORT:-465}
+  PLATFORM_SMTP_USER: ${PLATFORM_SMTP_USER:-info@example.com}
+  PLATFORM_SMTP_PASS: ${PLATFORM_SMTP_PASS:-}
+  OPS_ALERT_EMAIL: ${OPS_ALERT_EMAIL:-}
+
 x-app-env: &app-env
   DATABASE_URL: postgresql://gdx:${DB_PASSWORD:-dev_password}@db:5432/gdx
   REDIS_URL: redis://redis:6379/0
@@ -115,7 +131,7 @@ services:
       args:
         GIT_SHA_SHORT: ${GIT_SHA_SHORT:-unknown}
     environment:
-      <<: *app-env
+      <<: [*app-env, *platform-mail]
       # ── app-only ──
       # Scrape secret for GET /metrics. app-only: the celery services do not
       # serve HTTP. This block is an ALLOWLIST and there is no env_file, so a
@@ -125,10 +141,6 @@ services:
       APP_VERSION: ${APP_VERSION:-dev}
       BUILD_TIME: ${BUILD_TIME:-unknown}
       ENVIRONMENT: ${ENVIRONMENT:-development}
-      PLATFORM_SMTP_HOST: smtp.titan.email
-      PLATFORM_SMTP_PORT: "465"
-      PLATFORM_SMTP_USER: info@example.com
-      PLATFORM_SMTP_PASS: ${PLATFORM_SMTP_PASS:-}
       GDX_E2E_BYPASS: ${GDX_E2E_BYPASS:-0}
       # Where the in-app plugin storefront reads its curated catalog. Empty
       # falls back to the built-in default, so an operator only sets this to
@@ -239,7 +251,7 @@ services:
       dockerfile: gdx_dispatch/docker/Dockerfile
     command: celery -A gdx_dispatch.core.celery_app worker -Q priority:high -c 4 --loglevel=info
     environment:
-      <<: *app-env
+      <<: [*app-env, *platform-mail]
       # Only the `app` service runs Alembic. Without this, all 4 containers race
       # `alembic upgrade head` on boot — which Alembic explicitly does not
       # support. Celery waits for app (healthy = migrations+bootstrap done).
@@ -260,7 +272,7 @@ services:
       dockerfile: gdx_dispatch/docker/Dockerfile
     command: celery -A gdx_dispatch.core.celery_app worker -Q priority:low -c 2 --loglevel=info
     environment:
-      <<: *app-env
+      <<: [*app-env, *platform-mail]
       GDX_SKIP_MIGRATIONS: "1"
     depends_on:
       db:
