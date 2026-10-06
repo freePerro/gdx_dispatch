@@ -65,7 +65,7 @@ _pricing_log = _pricing_log_module.getLogger(__name__)
 
 
 def _log_tenant_shared_write(slot: str, key: str = "", tenant_id: str = "") -> None:
-    """Log tenant-scoped writes for audit trail (Sentry + structured logs).
+    """Log tenant-scoped writes for audit trail (structured logs).
 
     Post-#32 this is observability, not a leak warning — every write
     now goes through a per-tenant slot.
