@@ -4,12 +4,13 @@ endpoints don't exist yet.
 
 The Wave C/D/E Vue views were built with Codex-guessed API paths that didn't
 match the real router prefixes (e.g. /api/admin-ops, /api/collections,
-/api/loyalty, /api/maps, /api/marketing, /api/uploads, /api/voice,
+/api/loyalty, /api/marketing, /api/uploads, /api/voice,
 /api/quickbooks, etc.).
 
 This router exposes thin GET/POST/PATCH handlers that:
-  - Return `{"items": []}` for list endpoints (UI renders empty state)
-  - Return `{}` for index/config endpoints (UI renders defaults)
+  - Read real data, or do not exist: a GET that returns a hardcoded empty
+    payload renders "nothing here" forever and is gated by
+    tests/test_ui_compat_no_theater_reads.py (GDXA-314)
   - Raise 501 for write endpoints with no backing store (see below)
   - Are tenant-scoped via request.state.tenant
 
@@ -213,14 +214,12 @@ class _GenericPayload(BaseModel):
 
 
 # ── Dispatch utilities (map, optimizer, geocoder) ─────────────────────────
-
-@router.get("/api/dispatch/optimize-route", response_model=None)
-def get_optimized_route(
-    date: str | None = Query(default=None),
-    _: dict = Depends(get_current_user),
-) -> dict:
-    return {"stops": [], "total_distance_km": 0, "total_duration_sec": 0}
-
+# GET /api/dispatch/optimize-route was removed 2026-10-06 (GDXA-317). It
+# returned a hardcoded {"stops": []} for every date, and the Dispatch board's
+# "Route Order" button read that as a finished run and toasted "Route order
+# completed with no stops" — a success for work never done. The button went
+# with it. No screen orders a route now: POST /api/maps/optimize-route is a
+# real Google call, but nothing in the frontend calls it.
 
 @router.post("/api/dispatch/optimize", response_model=None)
 def run_dispatch_optimizer(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
@@ -238,17 +237,20 @@ def geocode_missing_jobs(_: dict = Depends(get_current_user)) -> dict:
 
 
 # ── Loyalty (list index) ──────────────────────────────────────────────────
-
-@router.get("/api/loyalty", response_model=None)
-def loyalty_index(_: dict = Depends(get_current_user)) -> dict:
-    return {"members": [], "redemptions": [], "tiers": []}
+# Removed 2026-10-06 (GDXA-316). GET /api/loyalty returned a hardcoded
+# {"members": [], ...} whatever loyalty_points held, so the Loyalty page
+# could never list anyone (and its buttons posted to /api/loyalty/adjust and
+# /redeem, which never existed, so the ledger stayed empty). LoyaltyView now
+# reads GET /api/loyalty/members in routers/loyalty.py.
 
 
 # ── Maps (list index) ─────────────────────────────────────────────────────
-
-@router.get("/api/maps", response_model=None)
-def maps_index(_: dict = Depends(get_current_user)) -> dict:
-    return {"tech_locations": [], "route_optimizations": []}
+# GET /api/maps was removed 2026-10-06 (GDXA-317). It answered
+# {"tech_locations": [], "route_optimizations": []} unconditionally, so the
+# Maps page could never show a technician whatever the data. MapsView now
+# reads GET /api/dispatch/locations (the tech_locations table that
+# POST /api/mobile/location writes); nothing stores
+# route plans, so the "Route Optimizations" tab went rather than stay empty.
 
 
 # ── Payments (list + create + intent) ─────────────────────────────────────
@@ -432,16 +434,10 @@ def create_payment_intent(payload: _GenericPayload, _: dict = Depends(get_curren
 
 
 # ── Payroll summary (pay periods + stubs) ─────────────────────────────────
-
-@router.get("/api/payroll/pay-periods", response_model=None)
-def list_pay_periods(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-@router.get("/api/payroll/pay-stubs", response_model=None)
-def list_pay_stubs(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
+# GET /api/payroll/pay-periods and GET /api/payroll/pay-stubs were removed
+# 2026-10-06 (GDXA-315). Each returned a hardcoded {"items": [], "total": 0}
+# and nothing called either. Pay periods are real at GET
+# /api/timeclock/pay-periods; nothing stores pay stubs.
 
 @router.post("/api/payroll/run-current-period", response_model=None)
 def run_payroll_current(
@@ -456,25 +452,11 @@ def run_payroll_current(
 # gdx_dispatch/routers/portal.py (staff_router).
 
 
-# ── Quickbooks integration status ─────────────────────────────────────────
-
-@router.get("/api/quickbooks", response_model=None)
-def quickbooks_status(_: dict = Depends(get_current_user)) -> dict:
-    return {"connected": False, "last_sync": None, "recent_events": []}
-
-
-# ── Voice (list) ──────────────────────────────────────────────────────────
-
-@router.get("/api/voice", response_model=None)
-def list_voice_calls(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-# ── Users / staff (for message recipient picker) ──────────────────────────
-
-@router.get("/api/users/staff", response_model=None)
-def list_staff_users(_: dict = Depends(get_current_user)) -> dict:
-    return {"users": []}
+# ── Quickbooks status, voice list, staff list ─────────────────────────────
+# Removed 2026-10-06 (GDXA-315), all three uncalled. GET /api/quickbooks
+# answered {"connected": false} whatever the connection state (the real status
+# is under modules/quickbooks); GET /api/voice listed no calls ever; GET
+# /api/users/staff listed no users ever (the users router lists them).
 
 
 # ── Customers bulk actions ────────────────────────────────────────────────

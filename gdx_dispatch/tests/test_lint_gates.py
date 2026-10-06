@@ -20,7 +20,7 @@ from gdx_dispatch.tools import (
 )
 
 # ────────────────────────────────────────────────────────────────────────
-# is_suppressed (`# noqa: <CODE>`)
+# is_suppressed (a `noqa` comment naming one or more codes)
 # ────────────────────────────────────────────────────────────────────────
 
 

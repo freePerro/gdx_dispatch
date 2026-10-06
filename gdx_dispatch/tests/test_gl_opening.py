@@ -307,3 +307,35 @@ def test_opening_routes_are_mounted():
     client = TestClient(create_app())
     assert client.get("/api/accounting/opening/proposal").status_code != 404
     assert client.post("/api/accounting/opening/apply", json={}).status_code != 404
+
+
+def test_apply_under_existing_lock_keeps_the_global_audit_chain(world):
+    """GDXA-331: apply under an era lock that already exists reverses a live
+    pre-cutover entry INTO the locked period (override_lock, opening.py step
+    1), so the engine writes ``gl_posted_into_locked_period`` beside the
+    route's ``gl_opening_applied``. Both must extend the one global chain —
+    the engine row was hand-built with empty hashes and broke it."""
+    from gdx_dispatch.core.audit import AuditLog, audit_ready_db, verify_audit_chain
+    from gdx_dispatch.modules.ledger.engine import PostingEvent, PostingLine, post_for_event
+    from gdx_dispatch.modules.ledger.models import ROLE_AR, ROLE_SALES_FALLBACK
+    from gdx_dispatch.modules.ledger.router import OpeningApplyIn, opening_apply
+
+    db, _account = world
+    post_for_event(db, PostingEvent(
+        company_id=COMPANY, source_type="invoice", source_id="inv-era",
+        event="issued", effective_at=date(2026, 5, 12),
+        lines=(PostingLine(amount_cents=1000, role=ROLE_AR),
+               PostingLine(amount_cents=-1000, role=ROLE_SALES_FALLBACK)),
+    ))
+    db.add(GlPeriodLock(company_id=COMPANY, lock_date=date(2026, 6, 30)))
+    db.commit()
+
+    opening_apply(
+        OpeningApplyIn(expected_cutover=date(2026, 7, 1), expected_reversals=1),
+        user={"tenant_id": COMPANY, "sub": "doug"}, _perm=None, db=audit_ready_db(db),
+    )
+
+    rows = db.scalars(select(AuditLog)).all()
+    assert {r.action for r in rows} >= {"gl_posted_into_locked_period", "gl_opening_applied"}
+    assert all(len(r.row_hash or "") == 64 for r in rows)
+    assert verify_audit_chain(db) is True

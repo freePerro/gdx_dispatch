@@ -77,9 +77,10 @@
       "status": 200,
       "last_checked": "2026-04-08"
     },
-    "/api/payroll/pay-periods": {
-      "status": 200,
-      "last_checked": "2026-04-08"
+    "/api/timeclock/pay-periods": {
+      "status": null,
+      "last_checked": null,
+      "note": "replaced /api/payroll/pay-periods (an empty stub, removed GDXA-315); not yet swept"
     },
     "/api/settings/branding": {
       "status": 200,

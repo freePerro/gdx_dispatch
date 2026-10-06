@@ -470,7 +470,7 @@ def test_f811_gate_passes_when_clean_and_excludes_only_the_test_tree(tmp_path: P
     assert len(calls) == 2, f"expected the #475 gate and the duplicate-test gate: {calls}"
     dup_args = calls[1].split()
     assert "--extend-exclude" not in dup_args, f"the duplicate-test gate must see the test tree: {dup_args}"
-    # A copied test copies its `# noqa: F811` (43 test defs carry one), which
+    # A copied test copies its F811 suppression comment (43 test defs carry one), which
     # would hide the duplicate from ruff.
     assert "--ignore-noqa" in dup_args, f"the duplicate-test gate must not honour noqa: {dup_args}"
     args = calls[0].split()

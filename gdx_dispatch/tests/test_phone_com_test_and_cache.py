@@ -138,7 +138,7 @@ def test_does_not_overwrite_existing_voip_id(control_session, fernet_env, tenant
     set_token(sess, tid, "phc-good")
     sm = tenant_engine_factory
     s = sm()
-    s.add(AppSettings(phone_com_voip_id="999999"))  # pre-existing  # noqa: pre-existing voip
+    s.add(AppSettings(phone_com_voip_id="999999"))  # pre-existing voip
     s.commit()
     s.close()
 

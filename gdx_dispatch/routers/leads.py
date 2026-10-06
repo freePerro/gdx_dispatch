@@ -480,6 +480,7 @@ def update_landing_lead_status(
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
     r = _get_landing_scoped(db, ll_id, tenant_id)
+    old_status = r.status
     r.status = payload.status
     if payload.status == "contacted" and r.contacted_at is None:
         r.contacted_at = datetime.now(timezone.utc)
@@ -492,7 +493,7 @@ def update_landing_lead_status(
         action="landing_lead_status_updated",
         entity_type="landing_lead",
         entity_id=str(r.id),
-        details={"status": r.status},
+        details={"status": r.status, "from": old_status},
         request=request,
     )
     return _serialize_landing(r)

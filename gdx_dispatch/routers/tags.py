@@ -247,6 +247,7 @@ def update_tag(
     tag = _get_scoped_tag(db, tag_id, tenant_id)
 
     changed: dict[str, Any] = {}
+    before = {"name": tag.name, "color": tag.color, "description": tag.description}
     if payload.name is not None:
         new_name = payload.name.strip()
         if new_name and new_name != tag.name:
@@ -275,6 +276,11 @@ def update_tag(
         db.rollback()
         raise HTTPException(status_code=409, detail="Tag name already exists") from None
     db.refresh(tag)
+    # The before-image: a rename or recolour otherwise loses the old value.
+    # Flat `<field>_old` scalars, which the Activity list can print.
+    for f in ("name", "color", "description"):
+        if f in changed and before[f] != changed[f]:
+            changed[f"{f}_old"] = before[f]
     _audit(
         db,
         tenant_id=tenant_id,

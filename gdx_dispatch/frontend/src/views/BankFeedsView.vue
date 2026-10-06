@@ -759,7 +759,7 @@
                 <Tag
                   v-if="schedule.last_run_status"
                   :value="schedule.last_run_status"
-                  :severity="schedule.last_run_status === 'ok' ? 'success' : (schedule.last_run_status === 'partial' ? 'warn' : 'danger')"
+                  :severity="schedule.last_run_status === 'ok' ? 'success' : (schedule.last_run_status === 'partial' ? 'warn' : (schedule.last_run_status === 'skipped' ? 'secondary' : 'danger'))"
                 />
               </span>
             </div>

@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import AuditLog, utcnow
+from gdx_dispatch.core.audit import audit_ready_db, log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
 from gdx_dispatch.modules.ledger.coa import LedgerConfigError
@@ -83,14 +83,21 @@ def _locked_fields(db: Session, settings, company_id: str) -> dict[str, str]:
 
 
 def _audit(db: Session, company_id: str, actor: str, action: str, details: dict) -> None:
-    db.add(
-        AuditLog(
-            tenant_id=company_id,
-            user_id=actor,
-            action=action,
-            entity_type="gl_settings",
-            details=details,
-        )
+    """Stage a hash-chained ``gl_settings`` audit row in the caller's transaction.
+
+    Goes through ``log_audit_event_sync`` — a hand-built ``AuditLog`` carries an
+    empty row_hash/prev_hash and breaks ``verify_audit_chain`` (GDXA-331). The
+    writer flushes but never commits; its one-time table init does commit, so
+    every mutation route below takes ``audit_ready_db`` to run that init before
+    anything is staged.
+    """
+    log_audit_event_sync(
+        db,
+        tenant_id=company_id,
+        user_id=actor,
+        action=action,
+        entity_type="gl_settings",
+        details=details,
     )
 
 
@@ -215,7 +222,7 @@ def get_accounting_settings(
 
 @router.post("/settings/initialize")
 def initialize_accounting(
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
     user: dict = Depends(get_current_user),
     _perm: None = Depends(require_permission("accounting.write")),
 ) -> dict:
@@ -271,7 +278,7 @@ class SettingsPatchIn(BaseModel):
 @router.patch("/settings")
 def patch_accounting_settings(
     payload: SettingsPatchIn,
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
     user: dict = Depends(get_current_user),
     _perm: None = Depends(require_permission("accounting.write")),
 ) -> dict:
@@ -395,7 +402,7 @@ def opening_apply(
     payload: OpeningApplyIn,
     user: dict = Depends(get_current_user),
     _perm: None = Depends(require_permission("accounting.close")),
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
 ) -> dict:
     """The audited initialization: reverse era-contradicting entries, set
     cutover, map bank GL accounts, post opening entries (reversing stale
@@ -431,7 +438,7 @@ class CpaReviewIn(BaseModel):
 @router.post("/settings/cpa-review")
 def stamp_cpa_review(
     payload: CpaReviewIn,
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
     user: dict = Depends(get_current_user),
     _perm: None = Depends(require_permission("accounting.write")),
 ) -> dict:
@@ -455,7 +462,7 @@ class EnablePostingIn(BaseModel):
 @router.post("/settings/enable-posting")
 def enable_posting(
     payload: EnablePostingIn,
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
     user: dict = Depends(get_current_user),
     _perm: None = Depends(require_permission("accounting.write")),
 ) -> dict:
@@ -477,7 +484,7 @@ def enable_posting(
 
 @router.post("/settings/disable-posting")
 def disable_posting(
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
     user: dict = Depends(get_current_user),
     _perm: None = Depends(require_permission("accounting.write")),
 ) -> dict:
@@ -530,7 +537,7 @@ class AccountPatchIn(BaseModel):
 @router.post("/accounts", status_code=201)
 def create_account(
     payload: AccountCreateIn,
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
     user: dict = Depends(get_current_user),
     _perm: None = Depends(require_permission("accounting.write")),
 ) -> dict:
@@ -564,7 +571,7 @@ def create_account(
 def patch_account(
     account_id: UUID,
     payload: AccountPatchIn,
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
     user: dict = Depends(get_current_user),
     _perm: None = Depends(require_permission("accounting.write")),
 ) -> dict:

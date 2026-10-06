@@ -215,16 +215,40 @@ def pkce_challenge(verifier: str) -> str:
 
 
 # In-process fallback nonce store for dev/tests without Redis. Maps
-# nonce -> expiry monotonic time. Single-worker only — production uses Redis.
+# nonce -> expiry monotonic time. Single-worker only: the image runs
+# uvicorn --workers 2, so outside dev/test the fallback is REFUSED rather
+# than used (GDXA-304) — a nonce consumed on one worker would still be
+# fresh on the other.
 _local_nonces: dict[str, float] = {}
+_fallback_warned = False
+
+
+class NonceStoreUnavailable(BankFeedsAuthError):
+    """The shared nonce store (Redis) is unreachable and the per-process
+    fallback is not allowed in this environment."""
+
+
+def _local_nonce_fallback_allowed() -> bool:
+    """``modules/ledger/guard.py`` convention: an explicit GDX_ENV wins;
+    unset means production (app.py) unless pytest is running."""
+    env = os.getenv("GDX_ENV", "").strip().lower()
+    if env in ("dev", "development", "test", "testing", "local", "ci"):
+        return True
+    if env:
+        return False
+    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 
 def consume_nonce(nonce: str) -> bool:
     """True exactly once per nonce (single-use state enforcement).
 
-    Redis ``SET NX EX`` when available; in-process fallback otherwise
-    (tests / keyless dev — single process, so still correct there).
+    Redis ``SET NX EX`` when available. When Redis is missing or
+    unreachable: in dev/test, an in-process fallback (single process, so
+    still correct there); anywhere else, raise ``NonceStoreUnavailable`` —
+    failing closed, because a per-process store cannot enforce single use
+    across workers.
     """
+    global _fallback_warned
     key = f"bankfeeds:oauth:nonce:{nonce}"
     try:
         from redis import from_url as redis_from_url  # noqa: PLC0415
@@ -241,7 +265,21 @@ def consume_nonce(nonce: str) -> bool:
                 client.close()
             except Exception:  # noqa: BLE001
                 pass
-    except Exception:  # noqa: BLE001 — redis missing/unreachable
+    except Exception as exc:  # noqa: BLE001 — redis missing/unreachable
+        if not _local_nonce_fallback_allowed():
+            log.error(
+                "bank_feeds_nonce_redis_unavailable_refused err=%s",
+                type(exc).__name__,
+            )
+            raise NonceStoreUnavailable(
+                "Replay-protection store unavailable; refusing the callback."
+            ) from exc
+        if not _fallback_warned:
+            _fallback_warned = True
+            log.warning(
+                "bank_feeds_nonce_redis_unavailable_fallback err=%s",
+                type(exc).__name__,
+            )
         now = time.monotonic()
         for k, exp in list(_local_nonces.items()):
             if exp < now:

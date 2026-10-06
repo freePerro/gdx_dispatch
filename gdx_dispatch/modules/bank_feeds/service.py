@@ -636,11 +636,17 @@ def schedule_dict(s: BankFeedSyncSchedule) -> dict[str, Any]:
     }
 
 
+# Room for a few institutions' errlist codes and messages; was 500, which
+# cut the diagnosis itself and left a summary the next run cannot parse
+# back (GDXA-293). The column is Text.
+LAST_RUN_ERROR_MAX = 4000
+
+
 def record_scheduled_run(db: Session, status: str, error: str | None = None) -> None:
     s = get_or_create_schedule(db)
     now = _utcnow()
     s.last_run_at = now
     s.last_run_status = status
-    s.last_run_error = (error or "")[:500] if error else None
+    s.last_run_error = error[:LAST_RUN_ERROR_MAX] if error else None
     s.next_run_at = compute_next_run_at(s.frequency, base=now)
     db.commit()

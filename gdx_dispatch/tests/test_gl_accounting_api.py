@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from gdx_dispatch.core.audit import AuditLog
 from gdx_dispatch.modules.ledger.coa import DEFAULT_COA
@@ -425,3 +425,81 @@ def test_routes_are_mounted():
         "/api/accounting/accounts",
     ):
         assert path in schema["paths"], f"{path} not mounted"
+
+
+# ---------------------------------------------------------------------------
+# GDXA-331 — gl_settings audit rows are hash-chained, staged not committed
+# ---------------------------------------------------------------------------
+
+def test_ledger_audit_rows_are_hash_chained(tenant_db):
+    """Every ledger action's row carries a real hash and extends the ONE global
+    chain. Before the fix ``_audit`` built ``AuditLog`` by hand: row_hash and
+    prev_hash were empty and ``verify_audit_chain`` returned False. A foreign
+    row is interleaved on purpose — the chain is global (prev_hash is the
+    newest row of any type), so only the unfiltered verify proves linkage."""
+    from gdx_dispatch.core.audit import log_audit_event_sync, verify_audit_chain
+
+    _init(tenant_db)
+    log_audit_event_sync(
+        tenant_db, tenant_id=COMPANY, user_id="tester", action="invoice_viewed",
+        entity_type="invoice", details={},
+    )
+    _patch(tenant_db, tax_basis="accrual")
+    stamp_cpa_review(CpaReviewIn(keys=["inventory_treatment"]), db=tenant_db, user=USER, _perm=None)
+    created = create_account(
+        AccountCreateIn(code="6600", name="Shop Supplies", type="expense"),
+        db=tenant_db, user=USER, _perm=None,
+    )
+    patch_account(UUID(created["id"]), AccountPatchIn(name="Shop Supply"), db=tenant_db, user=USER, _perm=None)
+    _enable(tenant_db)
+    disable_posting(db=tenant_db, user=USER, _perm=None)
+
+    rows = tenant_db.scalars(
+        select(AuditLog).order_by(AuditLog.created_at.asc(), AuditLog.id.asc())
+    ).all()
+    assert [r.action for r in rows if r.entity_type == "gl_settings"] == [
+        "gl_settings_initialized",
+        "gl_settings_updated",
+        "gl_cpa_review_stamped",
+        "gl_account_created",
+        "gl_account_updated",
+        "gl_posting_enabled",
+        "gl_posting_disabled",
+    ]
+    assert all(len(r.row_hash or "") == 64 for r in rows)
+    assert all(r.user_id == "tester" and r.tenant_id == COMPANY for r in rows)
+    for prev, row in zip(rows, rows[1:], strict=False):
+        assert row.prev_hash == prev.row_hash
+    assert verify_audit_chain(tenant_db) is True
+
+
+def test_ledger_audit_does_not_commit_callers_staged_work(tenant_db):
+    """On an engine whose audit table was never initialized, the shared writer's
+    first-use bootstrap commits whatever is staged — which is why the mutation
+    routes take ``audit_ready_db``. With it run first, a rollback after
+    ``_audit`` takes both the mutation and its row down together."""
+    from gdx_dispatch.core.audit import _AUDIT_GUARD_INITIALIZED, audit_ready_db
+    from gdx_dispatch.modules.ledger.router import _audit
+
+    assert tenant_db.get_bind() not in _AUDIT_GUARD_INITIALIZED  # fresh engine
+    audit_ready_db(tenant_db)  # what every ledger mutation route depends on
+    tenant_db.add(GlAccount(company_id=COMPANY, code="6601", name="Staged", type="expense"))
+    _audit(tenant_db, COMPANY, "tester", "gl_account_created", {"code": "6601"})
+    tenant_db.rollback()
+    assert tenant_db.scalar(select(func.count()).select_from(AuditLog)) == 0
+    assert tenant_db.scalars(select(GlAccount).where(GlAccount.code == "6601")).first() is None
+
+
+def test_ledger_mutation_routes_depend_on_audit_ready_db():
+    """Pins the dependency: drop ``audit_ready_db`` from any POST/PATCH ledger
+    route and its first audit write commits the handler's half-staged change."""
+    import inspect
+
+    from gdx_dispatch.core.audit import audit_ready_db
+    from gdx_dispatch.modules.ledger.router import router
+
+    mutating = [r for r in router.routes if {"POST", "PATCH"} & set(r.methods)]
+    assert len(mutating) == 8
+    for route in mutating:
+        dep = inspect.signature(route.endpoint).parameters["db"].default.dependency
+        assert dep is audit_ready_db, route.path

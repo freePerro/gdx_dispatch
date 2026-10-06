@@ -172,6 +172,25 @@ def test_update_landing_lead_status_sets_contacted_at(client: TestClient):
     assert data["contacted_at"] is not None
 
 
+def test_update_landing_lead_status_audit_records_prior_status(client: TestClient):
+    """GDXA-333: the status change logged only the new status."""
+    import json
+
+    created = client.post(
+        "/api/landing-leads", json={"name": "Was New", "source": "website"}
+    ).json()
+    r = client.patch(
+        f"/api/landing-leads/{created['id']}/status", json={"status": "contacted"},
+    )
+    assert r.status_code == 200, r.text
+    with client._engine.connect() as conn:  # type: ignore[attr-defined]
+        (raw,) = conn.execute(
+            text("SELECT details FROM audit_logs WHERE action = 'landing_lead_status_updated'")
+        ).one()
+    details = raw if isinstance(raw, dict) else json.loads(raw)
+    assert details == {"status": "contacted", "from": created["status"]}
+
+
 def test_update_landing_lead_status_completed(client: TestClient):
     """'completed' = handled outside the pipeline. It must NOT stamp
     contacted_at (that's an outreach fact, not a done fact) and the row

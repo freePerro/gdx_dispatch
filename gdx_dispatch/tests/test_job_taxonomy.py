@@ -203,12 +203,13 @@ def test_model_default_and_omitting_writers() -> None:
         "sub_resources.py constructs a Job again — any new Job writer must set "
         "job_type explicitly or it mints the model default (Service Call)"
     )
-    for path in ("api/public_router.py",):
-        src = (REPO / path).read_text(encoding="utf-8")
-        assert "'Service Call'" in src and "job_type" in src, (
-            f"{path}'s raw lead INSERT no longer sets job_type — website-lead "
-            "jobs land as NULL → office lane, invisible to the service queue"
-        )
+    # The public API's create builds a Job (GDXA-326; it was a raw INSERT,
+    # which skips the model default, so this pinned the literal in its SQL).
+    src = (REPO / "api/public_router.py").read_text(encoding="utf-8")
+    assert "job_type=SERVICE_CALL" in src, (
+        "api/public_router.py's job create no longer sets job_type — API-created "
+        "jobs land outside the service queue"
+    )
 
     jobs = (REPO / "routers/jobs.py").read_text(encoding="utf-8")
     assert 'updates["job_type"] = canonical_job_type(data["job_type"])' in jobs, (

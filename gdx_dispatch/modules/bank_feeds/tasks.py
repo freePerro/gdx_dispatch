@@ -14,8 +14,10 @@ state is exposed through ``GET /api/bank-feeds/status`` instead.
 """
 from __future__ import annotations
 
+import ast
 import asyncio
 import logging
+from collections.abc import Iterable
 from datetime import datetime, timezone
 
 from sqlalchemy import inspect as sa_inspect
@@ -110,6 +112,82 @@ def _breaker_record(institution_id: str, *, success: bool) -> None:
             "bank_feeds_breaker_record_failed institution=%s success=%s: %s",
             institution_id, success, exc,
         )
+
+
+def _did_nothing(inst_result: dict) -> bool:
+    """True for a TRANSIENT skip (daily quota spent): the institution will
+    run again soon and its last real error still stands. Permanent skips
+    (no connection, all accounts disabled) stay "completed" on purpose —
+    treating them as "did nothing" would pin a recovered sibling's old
+    error to the card forever."""
+    return bool(inst_result.get("skipped_quota"))
+
+
+def _only_skipped_unhealthy(inst_result: dict) -> bool:
+    """True when every error is a connection skipped for needing reconnect:
+    nothing was fetched, so the run says nothing new about WHY it broke."""
+    errors = inst_result.get("errors") or []
+    return bool(errors) and not inst_result.get("errlist_codes") and all(
+        isinstance(e, dict) and e.get("skipped_unhealthy") for e in errors
+    )
+
+
+_DIAGNOSTIC_KEYS = ("errlist_codes", "messages", "errors", "error_class", "rate_limited")
+
+
+def _run_error_summary(
+    results: dict, prior: str | None = None, not_run: Iterable[str] = ()
+) -> str | None:
+    """The string ``schedule.last_run_error`` keeps for this run, or None.
+
+    Includes any institution that carried a diagnostic, even on an "ok" run:
+    the SimpleFIN spec has errlist messages reach the user, and a message on
+    a green run used to be dropped here. Errlist codes and messages lead each
+    entry so the column cap truncates stats, never the diagnosis (GDXA-293).
+
+    An institution in ``not_run`` fetched nothing this run (quota spent,
+    circuit open, or a filtered run that never reached it), so it has said
+    nothing about its last error: its entry is carried over from ``prior``,
+    which is this function's own ``str(dict)`` from an earlier run. A quota-
+    skipped run used to record None an hour after the failing run, erasing
+    the only copy of its errlist. A ``prior`` that no longer parses (cut by
+    the cap, or written before GDXA-293) is kept whole only when this run
+    has nothing new to say; the ``simplefin_errlist`` warning log is the
+    complete record either way.
+    """
+    diag = {k: {key: v[key] for key in _DIAGNOSTIC_KEYS if v.get(key)}
+            for k, v in results.items() if any(v.get(key) for key in _DIAGNOSTIC_KEYS)}
+    # Bounded per institution (~1.5 KB at most) so a few fit under the cap
+    # whole: a summary cut by the cap no longer parses back next run.
+    for entry in diag.values():
+        if isinstance(entry.get("errors"), list):
+            entry["errors"] = entry["errors"][:5]
+        if isinstance(entry.get("messages"), list):
+            entry["messages"] = [str(m)[:200] for m in entry["messages"][:5]]
+    not_run = set(not_run)
+    if prior and not_run:
+        try:
+            old = ast.literal_eval(prior)
+        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+            old = None
+        if isinstance(old, dict):
+            # Merged per key: an unhealthy skip's fresh ``errors`` replace the
+            # old ones while the old errlist codes and messages stand.
+            for k, v in old.items():
+                if k not in not_run:
+                    continue
+                new = diag.get(k)
+                if new is None:
+                    diag[k] = v
+                elif isinstance(v, dict):
+                    diag[k] = {**v, **new}
+        elif not diag and any(k in prior for k in not_run):
+            return prior
+    # Institutions with errlist codes first, so a wordy sibling can't push
+    # the codes past the cap either.
+    ordered = sorted(diag, key=lambda k: not (isinstance(diag[k], dict) and diag[k].get("errlist_codes")))
+    diag = {k: diag[k] for k in ordered}
+    return str(diag) if diag else None  # record_scheduled_run caps it
 
 
 def _sync_one_institution(
@@ -236,18 +314,41 @@ def bank_feeds_sync_task(
         completed = 0
         errored = 0
         rate_limited = 0
+        quota_skipped = 0
+        # Institutions that fetched nothing this run, so have said nothing
+        # about their last error. A filtered run (manual sync, connect
+        # callback) did not run the others at all.
+        ran = {str(i.id) for i in institutions}
+        not_run: list[str] = [
+            str(i) for i in db.execute(
+                select(BannoInstitution.id).where(BannoInstitution.enabled.is_(True))
+            ).scalars() if str(i) not in ran
+        ] if institution_id else []
 
         for institution in institutions:
             inst_key = str(institution.id)
             if _breaker_open(inst_key):
                 _task_log.info("bank_feeds_sync_skipped_circuit_open institution=%s", inst_key)
                 results[inst_key] = {"skipped_circuit_open": True}
+                not_run.append(inst_key)
                 continue
             try:
                 inst_result = _sync_one_institution(db, institution, force_fetch=force_fetch)
                 results[inst_key] = inst_result
+                if not inst_result.get("errors") and _did_nothing(inst_result):
+                    # Nothing was fetched: neither a success (an "ok" here
+                    # cleared the failing run's last_run_error within the
+                    # hour, GDXA-293) nor a breaker failure.
+                    not_run.append(inst_key)
+                    quota_skipped += 1
+                    continue
                 if inst_result.get("errors"):
                     errored += 1
+                    if _only_skipped_unhealthy(inst_result):
+                        # Still an error (the user must reconnect), but it
+                        # fetched nothing, so the run that broke the login
+                        # keeps its errlist code and message.
+                        not_run.append(inst_key)
                 else:
                     completed += 1
                 _breaker_record(inst_key, success=not inst_result.get("errors"))
@@ -269,9 +370,15 @@ def bank_feeds_sync_task(
         elif completed:
             status = "partial"
         elif not completed and not errored and not rate_limited:
-            # Every institution was skipped (circuit open / no connection) —
-            # nothing was attempted, so don't record a scary "error".
+            # Every institution was skipped (circuit open / quota spent) —
+            # nothing was attempted, so don't record a scary "error";
+            # _run_error_summary carries their last real errors over.
             status = "skipped"
+        elif rate_limited and quota_skipped and not completed and not errored:
+            # Rate-limited beside a quota-skipped institution: "partial", as
+            # it was when a quota skip counted as completed. Retrying cannot
+            # help the skipped one before its quota resets.
+            status = "partial"
         elif rate_limited and not completed and not errored:
             # Nothing at all completed because of rate limiting — retry the
             # whole task with backoff; leave the schedule untouched so
@@ -280,9 +387,9 @@ def bank_feeds_sync_task(
         else:
             status = "error"
         try:
+            prior = service.get_or_create_schedule(db).last_run_error
             service.record_scheduled_run(
-                db, status,
-                None if status == "ok" else str({k: v for k, v in results.items() if v.get("errors") or v.get("error_class") or v.get("rate_limited")})[:400],
+                db, status, _run_error_summary(results, prior, not_run)
             )
         except Exception:  # noqa: BLE001
             db.rollback()

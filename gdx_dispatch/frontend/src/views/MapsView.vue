@@ -2,99 +2,73 @@
     <section class="maps-view view-card" data-testid="maps-view">
       <Toolbar>
         <template #start>
-          <h2 class="page-title" data-testid="maps-title">Maps & Routing</h2>
+          <h2 class="page-title" data-testid="maps-title">Maps</h2>
         </template>
       </Toolbar>
 
-      <Tabs value="tech" class="maps-tabs" data-testid="maps-tabs">
-        <TabList>
-          <Tab value="tech" data-testid="maps-tab-tech">Tech Locations</Tab>
-          <Tab value="routes" data-testid="maps-tab-routes">Route Optimizations</Tab>
-        </TabList>
-        <TabPanels>
-        <TabPanel value="tech">
-          <!-- Google Map -->
-          <div ref="mapContainer" class="google-map-container" data-testid="google-map"
-            style="height: 400px; width: 100%; border-radius: 8px; margin-bottom: 1rem; background: var(--surface-ground);">
-            <div v-if="!mapReady" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--p-text-muted-color);text-align:center;padding:1rem">
-              <i class="pi pi-map" style="font-size:2rem;margin-bottom:0.5rem;opacity:0.4"></i>
-              <span v-if="!mapsKeyConfigured">Map view unavailable — Google Maps API key not configured. An admin can paste one in Settings → Integrations. Technician table below still works.</span>
-              <span v-else>Loading map...</span>
-            </div>
-          </div>
-          <div class="maps-filters" data-testid="maps-tech-filters">
-            <InputText
-              v-model="techFilter"
-              placeholder="Filter by tech or status"
-              class="w-full"
-              data-testid="maps-tech-filter"
-            />
-            <Select
-              v-model="statusFilter"
-              :options="statusFilterOptions"
-              optionLabel="label"
-              optionValue="value"
-              class="w-full"
-              data-testid="maps-status-filter"
-            />
-            <Button
-              label="Refresh"
-              icon="pi pi-refresh"
-              @click="loadMaps"
-              :loading="loading"
-              data-testid="maps-refresh"
-            />
-          </div>
-          <div class="last-refresh" data-testid="maps-last-refresh">
-            <span class="muted">Last refreshed:</span>
-            <strong>{{ lastRefreshLabel }}</strong>
-          </div>
-          <div v-if="loading" class="spinner-wrap" data-testid="maps-loading">
-            <ProgressSpinner />
-          </div>
-          <DataTable
-            v-else
-            :value="filteredTechLocations"
-            striped-rows
-            responsiveLayout="scroll"
-            emptyMessage="No technician locations"
-            data-testid="maps-tech-table"
-          >
-            <Column field="tech_name" header="Technician" />
-            <Column field="lat" header="Lat" :body="({ data }) => formatCoordinate(data.lat)" />
-            <Column field="lng" header="Lng" :body="({ data }) => formatCoordinate(data.lng)" />
-            <Column field="updated_at" header="Updated" :body="({ data }) => formatTimestamp(data.updated_at)" />
-            <Column field="status" header="Status" />
-          </DataTable>
-        </TabPanel>
-
-        <TabPanel value="routes">
-          <div v-if="loading" class="spinner-wrap" data-testid="maps-loading-routes">
-            <ProgressSpinner />
-          </div>
-          <DataTable
-            v-else
-            :value="routeOptimizations"
-            striped-rows
-            responsiveLayout="scroll"
-            emptyMessage="No route plans"
-            data-testid="maps-routes-table"
-          >
-            <Column field="date" header="Date" :body="({ data }) => formatDate(data.date)" />
-            <Column field="tech" header="Technician" />
-            <Column field="stops" header="Stops" />
-            <Column field="distance" header="Distance" :body="({ data }) => formatDistance(data.distance)" />
-            <Column field="duration" header="Duration" :body="({ data }) => formatDuration(data.duration)" />
-            <Column
-              field="saved_minutes"
-              header="Saved"
-              :body="({ data }) =>
-                (data.saved_minutes || data.saved_minutes === 0) ? `${data.saved_minutes} min` : '—'"
-            />
-          </DataTable>
-        </TabPanel>
-        </TabPanels>
-      </Tabs>
+      <!-- Google Map -->
+      <div ref="mapContainer" class="google-map-container" data-testid="google-map"
+        style="height: 400px; width: 100%; border-radius: 8px; margin-bottom: 1rem; background: var(--surface-ground);">
+        <div v-if="!mapReady" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--p-text-muted-color);text-align:center;padding:1rem">
+          <i class="pi pi-map" style="font-size:2rem;margin-bottom:0.5rem;opacity:0.4"></i>
+          <span v-if="!mapsKeyConfigured">Map view unavailable — Google Maps API key not configured. An admin can paste one in Settings → Integrations. Technician table below still works.</span>
+          <span v-else>Loading map...</span>
+        </div>
+      </div>
+      <div class="maps-filters" data-testid="maps-tech-filters">
+        <InputText
+          v-model="techFilter"
+          placeholder="Filter by technician"
+          class="w-full"
+          data-testid="maps-tech-filter"
+        />
+        <Button
+          label="Refresh"
+          icon="pi pi-refresh"
+          @click="loadMaps"
+          :loading="loading"
+          data-testid="maps-refresh"
+        />
+      </div>
+      <div class="last-refresh" data-testid="maps-last-refresh">
+        <span class="muted">Last refreshed:</span>
+        <strong>{{ lastRefreshLabel }}</strong>
+      </div>
+      <div v-if="loading" class="spinner-wrap" data-testid="maps-loading">
+        <ProgressSpinner />
+      </div>
+      <p v-else-if="loadError" class="maps-error" data-testid="maps-load-error">
+        Could not load technician locations. Try Refresh.
+      </p>
+      <DataTable
+        v-else
+        :value="filteredTechLocations"
+        striped-rows
+        responsiveLayout="scroll"
+        data-testid="maps-tech-table"
+      >
+        <template #empty>
+          <span v-if="techLocations.length" data-testid="maps-tech-no-match">
+            No technician matches "{{ techFilter }}".
+          </span>
+          <span v-else data-testid="maps-tech-empty">
+            No technician has reported a location in the last {{ WINDOW_MINUTES }} minutes.
+            A tech's phone sends its location only while they are clocked in, have the
+            mobile Today screen open, have allowed location access, and the tech mobile
+            setting "Background GPS breadcrumb" is on.
+          </span>
+        </template>
+        <Column field="tech_name" header="Technician" />
+        <Column header="Lat / Lng">
+          <template #body="{ data }">{{ formatCoordinate(data.lat) }}, {{ formatCoordinate(data.lng) }}</template>
+        </Column>
+        <Column header="Accuracy">
+          <template #body="{ data }">{{ data.accuracy_m != null ? `±${Math.round(data.accuracy_m)} m` : '—' }}</template>
+        </Column>
+        <Column header="Updated">
+          <template #body="{ data }">{{ formatTimestamp(data.recorded_at) }}</template>
+        </Column>
+      </DataTable>
     </section>
 </template>
 
@@ -105,21 +79,18 @@ import { formatDateTime as formatTimestamp } from "../composables/useFormatters"
 import Button from "primevue/button";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
-import Select from "primevue/select";
 import InputText from "primevue/inputtext";
 import ProgressSpinner from "primevue/progressspinner";
-import Tab from "primevue/tab";
-import TabList from "primevue/tablist";
-import TabPanel from "primevue/tabpanel";
-import TabPanels from "primevue/tabpanels";
-import Tabs from "primevue/tabs";
 import Toolbar from "primevue/toolbar";
+
+// Same window as the Dispatch board's Live Techs card.
+const WINDOW_MINUTES = 30;
 
 const api = useApiWithToast();
 
 const techLocations = ref([]);
-const routeOptimizations = ref([]);
 const loading = ref(true);
+const loadError = ref(false);
 const mapContainer = ref(null);
 const mapReady = ref(false);
 // Per-tenant Google Maps key, fetched from /api/settings/integrations/google-maps
@@ -131,23 +102,12 @@ let googleMap = null;
 let mapMarkers = [];
 let mapInfoWindow = null;
 const techFilter = ref("");
-const statusFilter = ref("all");
 const lastRefresh = ref(null);
 
-const statusFilterOptions = computed(() => {
-  const statuses = Array.from(new Set(techLocations.value.map((item) => item.status).filter(Boolean)));
-  const items = statuses.map((status) => ({ label: status, value: status }));
-  return [{ label: "All Statuses", value: "all" }, ...items];
-});
-
 const filteredTechLocations = computed(() => {
-  return techLocations.value.filter((item) => {
-    const matchesStatus = statusFilter.value === "all" || item.status === statusFilter.value;
-    const filterText = techFilter.value.toLowerCase().trim();
-    if (!filterText) return matchesStatus;
-    const haystack = `${item.tech_name ?? ""} ${item.status ?? ""}`.toLowerCase();
-    return matchesStatus && haystack.includes(filterText);
-  });
+  const filterText = techFilter.value.toLowerCase().trim();
+  if (!filterText) return techLocations.value;
+  return techLocations.value.filter((item) => (item.tech_name ?? "").toLowerCase().includes(filterText));
 });
 
 const lastRefreshLabel = computed(() => {
@@ -164,44 +124,48 @@ function formatCoordinate(value) {
   return Number(value).toFixed(5);
 }
 
-function formatDate(value) {
-  if (!value) return "—";
-  if (typeof value === "string" && value.includes("T")) {
-    return value.split("T")[0];
+// A breadcrumb carries technician_id (Technician.id) when the poster had an
+// active technician row, and always carries user_id. Resolve a name from
+// either; fall back to the raw id so a row is never anonymous.
+async function fetchTechnicianNames() {
+  try {
+    const data = await api.get("/api/technicians", { suppressErrorToast: true });
+    const rows = Array.isArray(data) ? data : data?.items || data?.data || [];
+    const byId = new Map();
+    for (const t of rows) {
+      const name = t.name || t.user_id || `Tech ${t.id}`;
+      if (t.id != null) byId.set(String(t.id), name);
+      if (t.user_id) byId.set(String(t.user_id), name);
+    }
+    return byId;
+  } catch (_err) {
+    return new Map();
   }
-  return value;
-}
-
-function formatDistance(value) {
-  if (value === null || value === undefined) return "—";
-  const parsed = Number(value);
-  if (Number.isNaN(parsed)) return "—";
-  return `${parsed.toFixed(1)} mi`;
-}
-
-function formatDuration(value) {
-  if (value === null || value === undefined) return "—";
-  const parsed = Number(value);
-  if (Number.isNaN(parsed)) return "—";
-  const minutes = Math.floor(parsed / 60);
-  const seconds = parsed % 60;
-  if (minutes) {
-    return `${minutes}m ${seconds}s`;
-  }
-  return `${seconds}s`;
 }
 
 async function loadMaps() {
   loading.value = true;
+  loadError.value = false;
   try {
-    const data = await api.get("/api/maps");
-    techLocations.value = Array.isArray(data?.tech_locations) ? data.tech_locations : [];
-    routeOptimizations.value = Array.isArray(data?.route_optimizations)
-      ? data.route_optimizations
-      : Array.isArray(data?.routes)
-        ? data.routes
-        : [];
+    const [data, names] = await Promise.all([
+      api.get(`/api/dispatch/locations?minutes=${WINDOW_MINUTES}`),
+      fetchTechnicianNames(),
+    ]);
+    const rows = Array.isArray(data) ? data : [];
+    techLocations.value = rows.map((r) => ({
+      ...r,
+      tech_name:
+        (r.technician_id && names.get(String(r.technician_id)))
+        || names.get(String(r.user_id))
+        || r.technician_id
+        || r.user_id,
+    }));
     lastRefresh.value = new Date();
+    updateMapMarkers();
+  } catch (_err) {
+    // The toast already said what failed; don't leave stale rows looking live.
+    techLocations.value = [];
+    loadError.value = true;
     updateMapMarkers();
   } finally {
     loading.value = false;
@@ -226,15 +190,23 @@ function updateMapMarkers() {
   mapMarkers.forEach(m => m.setMap(null));
   mapMarkers = [];
   for (const t of techLocations.value) {
-    if (!t.lat || !t.lng) continue;
+    if (t.lat == null || t.lng == null) continue;
     const marker = new window.google.maps.Marker({
-      position: { lat: parseFloat(t.lat), lng: parseFloat(t.lng) },
+      position: { lat: Number(t.lat), lng: Number(t.lng) },
       map: googleMap,
       title: t.tech_name || 'Technician',
       icon: { path: window.google.maps.SymbolPath.CIRCLE, scale: 10, fillColor: '#3b82f6', fillOpacity: 1, strokeColor: '#fff', strokeWeight: 2 },
     });
     marker.addListener('click', () => {
-      mapInfoWindow.setContent(`<div style="padding:4px"><strong>${t.tech_name}</strong><br>Status: ${t.status || 'active'}</div>`);
+      // Text nodes, not an HTML string: the name is user-entered data.
+      const box = document.createElement('div');
+      box.style.padding = '4px';
+      const name = document.createElement('strong');
+      name.textContent = t.tech_name || 'Technician';
+      box.appendChild(name);
+      box.appendChild(document.createElement('br'));
+      box.appendChild(document.createTextNode(`Updated: ${formatTimestamp(t.recorded_at)}`));
+      mapInfoWindow.setContent(box);
       mapInfoWindow.open(googleMap, marker);
     });
     mapMarkers.push(marker);
