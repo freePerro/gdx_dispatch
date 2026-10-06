@@ -104,49 +104,16 @@ def _make_tenant_engine():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    # The job PATCH reads the job and its visits through the ORM (multi-day
-    # jobs plan §5.2a), so the schema comes from the ORM; the hand-written
-    # DDL below is then a no-op for every table the ORM already declares.
-    #
-    # One deliberate divergence: prod's jobs.dispatch_status and
-    # jobs.company_id are NOT NULL with no default (read 2026-10-05), and the
-    # public create's raw INSERT names neither, so that create fails on prod.
-    # That is on the found-not-filed ledger, not fixed here; the two defaults
-    # below keep the create tests testing what they tested before.
-    from sqlalchemy import DefaultClause, MetaData  # noqa: PLC0415
-
+    # The schema comes from the ORM, as it is: no server default added, so
+    # jobs.dispatch_status and jobs.company_id are NOT NULL with nothing to
+    # fill them, as on prod (read 2026-10-05). Two defaults patched in here
+    # once hid that the public create could not insert a job (GDXA-326).
+    # The hand-written DDL below is a no-op for every table the ORM declares.
     import gdx_dispatch.models.tenant_models  # noqa: F401, PLC0415
     from gdx_dispatch.core.audit import TenantBase  # noqa: PLC0415
 
-    schema = MetaData()
-    for table in TenantBase.metadata.sorted_tables:
-        table.to_metadata(schema)
-    schema.tables["jobs"].c.dispatch_status.server_default = DefaultClause(text("'unassigned'"))
-    schema.tables["jobs"].c.company_id.server_default = DefaultClause(text(f"'{TENANT_ID}'"))
-    schema.create_all(engine, checkfirst=True)
+    TenantBase.metadata.create_all(engine, checkfirst=True)
     with engine.begin() as conn:
-        conn.execute(text(
-            """
-            CREATE TABLE IF NOT EXISTS jobs (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                lifecycle_stage TEXT NOT NULL DEFAULT 'lead',
-                -- status / started_at: written by update_job's stage path
-                -- since the stage guard was shared with it (2026-10-05).
-                status TEXT,
-                started_at TEXT,
-                customer_id TEXT,
-                scheduled_at TEXT,
-                company_id TEXT,
-                created_at TEXT,
-                deleted_at TEXT,
-                -- 2026-07-30: the real table has carried job_type since the
-                -- beginning; the taxonomy work's INSERT now names it, and a
-                -- fixture claiming to mirror the ORM must carry it too.
-                job_type TEXT
-            )
-            """
-        ))
         # S122-9 slice 3: aligned to Customer ORM model so the new
         # ORM-based list/create/get endpoints don't fail on missing
         # columns. All hash/opt-out/cached columns are nullable.
@@ -542,10 +509,10 @@ class TestDbErrorsLeaveATrace:
         [
             ("text", "GET", "/api/v1/jobs", None, "list_jobs"),
             ("text", "GET", f"/api/v1/jobs/{_JOB_ID}", None, "get_job"),
-            ("text", "POST", "/api/v1/jobs", {"title": "boom probe"}, "create_job"),
-            # update_job reads and writes the job through the ORM (multi-day
-            # jobs plan §5.2a), so it takes the broken session like the
-            # customers pair below.
+            # create_job (GDXA-326) and update_job (multi-day jobs plan §5.2a)
+            # write the job through the ORM, so they take the broken session
+            # like the customers pair below.
+            ("db", "POST", "/api/v1/jobs", {"title": "boom probe"}, "create_job"),
             ("db", "PATCH", f"/api/v1/jobs/{_JOB_ID}", {"title": "boom probe"}, "update_job"),
             # the customers pair queries via the ORM with function-local
             # imports, out of reach of the module seams — hand them a session
@@ -815,10 +782,7 @@ class TestPublicApiAnswersToTheStageGuard:
     jobs with no closeout and moved finished ones with no reason recorded,
     bypassing the guard #842 put on the desktop PATCH (found 2026-10-05).
     It now shares that guard (routers/jobs.py `_stage_change_refusal`).
-
-    Create (`POST /api/v1/jobs`) is not covered: on Postgres its INSERT omits
-    the NOT NULL `dispatch_status` and `company_id`, so it cannot insert a job
-    at all, guarded or not. That is its own defect, left to its own fix."""
+    Create answers to it too: see TestPublicJobCreateBuildsARealJob."""
 
     _headers = {"X-API-Key": RAW_API_KEY, "x-tenant-id": TENANT_ID}
 
@@ -839,7 +803,7 @@ class TestPublicApiAnswersToTheStageGuard:
             assert resp.status_code == 409, resp.text[:300]
             assert resp.json()["detail"]["use"] == "closeout"
         stored = _stored_job(client, job_id)
-        assert stored["lifecycle_stage"] == "lead" and stored["title"] == "stage probe"
+        assert stored["lifecycle_stage"] == "service_call" and stored["title"] == "stage probe"
         assert _audit_rows(client, action="job_updated", entity_id=job_id) == []
 
     @pytest.mark.parametrize("finished", ["completed", "cancelled"])
@@ -856,7 +820,7 @@ class TestPublicApiAnswersToTheStageGuard:
         job_id = self._job(client)
         resp = self._patch(client, job_id, {"status": "Scheduled Later"})
         assert resp.status_code == 422, resp.text[:300]
-        assert _stored_job(client, job_id)["lifecycle_stage"] == "lead"
+        assert _stored_job(client, job_id)["lifecycle_stage"] == "service_call"
 
     def test_resending_the_stored_stage_writes_nothing(self, client: TestClient):
         job_id = self._job(client)
@@ -913,6 +877,94 @@ class TestPublicApiAnswersToTheStageGuard:
         assert resp.status_code == 409, resp.text[:300]
         assert _stored_job(client, job_id)["lifecycle_stage"] == "completed"
         assert _audit_rows(client, action="job_updated", entity_id=job_id) == []
+
+
+def _job_count(client: TestClient) -> int:
+    with client._tenant_engine.connect() as conn:  # type: ignore[attr-defined]
+        return conn.execute(text("SELECT COUNT(*) FROM jobs")).scalar()
+
+
+class TestPublicJobCreateBuildsARealJob:
+    """`POST /api/v1/jobs` was a raw INSERT naming neither `company_id` nor
+    `dispatch_status`, NOT NULL with no server default on prod, so it could not
+    create a job; and it wrote `status` into the stage enum unchecked, defaulting
+    to the retired "lead" (GDXA-326). The fixture's schema is the ORM's, with no
+    default patched in, so every create below fails on the old INSERT."""
+
+    _headers = {"X-API-Key": RAW_API_KEY, "x-tenant-id": TENANT_ID}
+
+    def _post(self, client: TestClient, body: dict):
+        return client.post("/api/v1/jobs", headers=self._headers, json=body)
+
+    def test_an_undated_create_is_a_service_call_with_every_required_column(
+        self, client: TestClient
+    ):
+        resp = self._post(client, {"title": "required columns"})
+        assert resp.status_code == 201, resp.text[:300]
+        data = resp.json()["data"]
+        assert data["status"] == "service_call"
+        assert "job_number" in data
+        with client._tenant_engine.connect() as conn:  # type: ignore[attr-defined]
+            stored = conn.execute(text(
+                "SELECT lifecycle_stage, status, company_id, dispatch_status, job_type "
+                "FROM jobs WHERE id = :j"
+            ), {"j": uuid.UUID(data["id"]).hex}).mappings().one()
+        assert dict(stored) == {
+            "lifecycle_stage": "service_call", "status": "Service Call",
+            "company_id": TENANT_ID, "dispatch_status": "unassigned",
+            "job_type": "Service Call",
+        }
+
+    def test_a_dated_create_is_scheduled(self, client: TestClient):
+        resp = self._post(client, {"title": "dated", "scheduled_at": "2026-11-04T15:00:00+00:00"})
+        assert resp.status_code == 201, resp.text[:300]
+        assert _stored_job(client, resp.json()["data"]["id"])["lifecycle_stage"] == "scheduled"
+
+    def test_a_display_label_is_mapped_to_its_stage(self, client: TestClient):
+        resp = self._post(client, {"title": "labelled", "status": "In Progress"})
+        assert resp.status_code == 201, resp.text[:300]
+        stored = _stored_job(client, resp.json()["data"]["id"])
+        assert stored["lifecycle_stage"] == "in_progress"
+        assert stored["status"] == "In Progress"
+        assert stored["started_at"] is not None
+
+    @pytest.mark.parametrize("status", ["bogus", "Scheduled Later", ""])
+    def test_a_status_that_names_no_stage_is_a_422_and_writes_nothing(
+        self, client: TestClient, status: str
+    ):
+        before = _job_count(client)
+        resp = self._post(client, {"title": "bad stage", "status": status})
+        assert resp.status_code == 422, resp.text[:300]
+        assert _job_count(client) == before
+
+    def test_a_job_cannot_be_born_completed(self, client: TestClient):
+        before = _job_count(client)
+        resp = self._post(client, {"title": "born done", "status": "Complete"})
+        assert resp.status_code == 409, resp.text[:300]
+        assert resp.json()["detail"]["use"] == "closeout"
+        assert _job_count(client) == before
+
+    @pytest.mark.parametrize("customer_id", ["not-a-uuid", str(uuid.uuid4())])
+    def test_a_customer_id_that_names_no_customer_is_a_422(
+        self, client: TestClient, customer_id: str
+    ):
+        before = _job_count(client)
+        resp = self._post(client, {"title": "orphan", "customer_id": customer_id})
+        assert resp.status_code == 422, resp.text[:300]
+        assert _job_count(client) == before
+
+    def test_a_real_customer_is_linked(self, client: TestClient):
+        cust = client.post(
+            "/api/v1/customers", headers=self._headers, json={"name": "Linked Customer"}
+        )
+        assert cust.status_code == 201, cust.text[:300]
+        customer_id = cust.json()["data"]["id"]
+        resp = self._post(client, {"title": "linked", "customer_id": customer_id})
+        assert resp.status_code == 201, resp.text[:300]
+        assert resp.json()["data"]["customer_id"] == customer_id
+        job_id = resp.json()["data"]["id"]
+        rows = _audit_rows(client, action="job_created", entity_id=job_id)
+        assert len(rows) == 1 and rows[0]["details"]["customer_id"] == customer_id
 
 
 class TestAuditFailureSemantics:
