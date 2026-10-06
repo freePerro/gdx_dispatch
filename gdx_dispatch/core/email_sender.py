@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.core.email_layout import (
     DEFAULT_ACCENT,
     cta_button,
@@ -31,11 +32,20 @@ log = logging.getLogger(__name__)
 def get_email_config(db: Session, tenant_id: str) -> dict[str, Any] | None:
     """Get the tenant's email config. Returns None if not configured."""
     try:
-        row = db.execute(
-            text("SELECT provider, smtp_host, smtp_port, username, password_enc, from_email, from_name, reply_to_email "
-                 "FROM email_settings WHERE company_id = :tid"),
-            {"tid": tenant_id},
-        ).mappings().first()
+        # SAVEPOINT (GDXA-155): raw SQL against email_settings, on the caller's
+        # session, immediately before a send. `return None` reads as "SMTP is not
+        # configured" and send_email degrades to a warning — but on Postgres the
+        # failed SELECT has already aborted the caller's transaction, so the
+        # invoice/estimate status flip that was supposed to accompany that send
+        # dies at the caller's commit instead. (The outbound_emails row itself
+        # survives: `transactional_email._record_outbound` commits it on a
+        # separate Session. The business write is what is lost.)
+        with contained_read(db):
+            row = db.execute(
+                text("SELECT provider, smtp_host, smtp_port, username, password_enc, from_email, from_name, reply_to_email "
+                     "FROM email_settings WHERE company_id = :tid"),
+                {"tid": tenant_id},
+            ).mappings().first()
         if not row or row["provider"] == "disabled":
             return None
         return dict(row)

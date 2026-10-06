@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError
 from gdx_dispatch.modules.outlook.models import OutlookMessage
@@ -98,7 +98,13 @@ def _job_number(tenant_db: Session, job_id: UUID | None) -> str | None:
     try:
         from gdx_dispatch.models.tenant_models import Job  # noqa: PLC0415
 
-        row = tenant_db.query(Job.job_number).filter(Job.id == job_id).first()
+        # SAVEPOINT (GDXA-155): a send route calls this, then goes on to write
+        # the sent-message row and its audit on this same session. Uncontained on
+        # Postgres the marker degrades to the UUID form as documented AND that
+        # write is lost at the route's commit. (The outbound_emails row is not at
+        # risk here — transactional_email commits it on a separate Session.)
+        with contained_read(tenant_db):
+            row = tenant_db.query(Job.job_number).filter(Job.id == job_id).first()
         value = row[0] if row else None
         # isinstance-checked, not just truthy: a legacy job has job_number
         # NULL, and this value goes straight into a customer-facing subject.
@@ -120,11 +126,15 @@ def _tech_emails(tenant_db: Session) -> set[str]:
     try:
         from gdx_dispatch.models.tenant_models import User  # noqa: PLC0415
 
-        rows = (
-            tenant_db.query(User.email)
-            .filter(User.role.in_(["technician", "tech"]), User.deleted_at.is_(None))
-            .all()
-        )
+        # SAVEPOINT (GDXA-155): returning set() degrades the visibility rule,
+        # which is the documented trade — but the route's own writes follow on this
+        # same session, so uncontained it also costs them at commit.
+        with contained_read(tenant_db):
+            rows = (
+                tenant_db.query(User.email)
+                .filter(User.role.in_(["technician", "tech"]), User.deleted_at.is_(None))
+                .all()
+            )
         return {r[0].lower().strip() for r in rows if r and r[0]}
     except Exception:  # noqa: BLE001
         log.warning("send: tech-email preload failed — visibility rule degraded", exc_info=True)

@@ -67,6 +67,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import AuditLog, log_audit_event_sync
+from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.modules.outlook.bounce_detect import (
     _EST_SUBJECT_RE,
     NDR_SENDER_PREFIXES,
@@ -262,15 +263,34 @@ def process_resends(tdb: Session, account: OutlookAccount) -> dict[str, Any]:
     work: list[tuple[Any, str, datetime, str | None]] = []
     for est in rejected:
         try:
-            customer_email = None
-            if est.customer_id is not None:
-                customer_email = tdb.execute(
-                    select(Customer.email).where(Customer.id == est.customer_id)
-                ).scalar_one_or_none()
-            customer_email = (customer_email or "").strip().lower()
-            if not customer_email:
-                continue  # nothing to address-match against; never guess
-            anchor, conversation = _bounce_anchor(tdb, est)
+            # SAVEPOINT (GDXA-155): this handler `continue`s to the next estimate,
+            # which on Postgres is a lie — the aborted transaction makes every
+            # later statement in this batch fail, including the `est.status =
+            # "sent"` flips below and the final tdb.commit(). So one unresolvable
+            # estimate cost the whole run's detections.
+            #
+            # Be precise about how that surfaced, because an earlier draft said
+            # "silently" and could not defend it: with `work` non-empty the next
+            # statement is `_outbound_since`, which has no handler of its own, so
+            # 25P02 propagates loudly out of `process_resends` into the caller's
+            # `except Exception: tdb.rollback()`. Only the work-EMPTY path returned
+            # a normal-looking `{"resent_detected": 0}` on a dead transaction.
+            # Loud in the common case, quiet in one — either way the run is lost.
+            #
+            # _bounce_anchor is inside the block on purpose and it is safe to
+            # wrap: it does NOT catch its own failure (contained_read rule 5), so
+            # a read error there crosses this context manager's __exit__ and gets
+            # rolled back before the `except` below swallows it.
+            with contained_read(tdb):
+                customer_email = None
+                if est.customer_id is not None:
+                    customer_email = tdb.execute(
+                        select(Customer.email).where(Customer.id == est.customer_id)
+                    ).scalar_one_or_none()
+                customer_email = (customer_email or "").strip().lower()
+                if not customer_email:
+                    continue  # nothing to address-match against; never guess
+                anchor, conversation = _bounce_anchor(tdb, est)
             if anchor is None:
                 continue
             work.append((est, customer_email, anchor, conversation))

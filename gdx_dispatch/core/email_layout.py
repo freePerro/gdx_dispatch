@@ -30,6 +30,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.core.money_format import format_money
 
 # One default accent when the tenant hasn't set a primary color. Matches the
@@ -129,7 +130,17 @@ def email_branding(db: Session) -> dict[str, str]:
     try:
         from gdx_dispatch.models.tenant_models import AppSettings
 
-        settings = db.query(AppSettings).first()
+        # SAVEPOINT (GDXA-155): this is the FIRST db touch on most send paths —
+        # every outbound customer email renders through render_email, which needs
+        # this branding. Uncontained on Postgres, an AppSettings read failure
+        # poisons the caller's transaction before the send even starts, so the
+        # customer gets the unbranded email this handler promises AND the
+        # caller's status flip is lost at commit. The degradation below is the
+        # intended behaviour; the silent loss behind it was not. (The
+        # outbound_emails row is NOT the casualty — `_record_outbound` commits
+        # that on its own Session — so the cost is the business write.)
+        with contained_read(db):
+            settings = db.query(AppSettings).first()
         if settings:
             company_name = settings.company_name or ""
             logo = settings.logo or ""

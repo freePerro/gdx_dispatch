@@ -168,6 +168,20 @@ def contained_read(db: Session) -> Iterator[None]:
        brand-new module counted as zero until someone ran ``git add``. None of
        the three was ever evidence about a write, which is what rule 2 needs.
 
+       A site can match this class by shape and still not want containing
+       (GDXA-155): ``core/office_notifications.py``'s two notify helpers were
+       wrapped, and their handlers' ``db.rollback()`` deleted as the rule-4
+       mistake it looks like — then both were reverted. Every caller
+       ``commit()``s BEFORE calling them, so there is no caller-owned pending
+       work to protect; and that commit has EXPIRED the estimate/invoice, which
+       makes the handler's own ``getattr(…, "id")`` log line a lazy-refresh
+       SELECT that needs an un-poisoned transaction to run. So the rollback is
+       load-bearing. Measured A/B on PG 15.17: with it removed the handler
+       raised and the downstream job write was lost (0 rows); with it kept,
+       neither. ``core/payments.py`` had already written this down, in
+       ``_mark_invoice_paid`` just before its ``notify_payment_received``
+       call. Read the callers before trusting the shape.
+
        The static guard still has blind spots: a write performed by a function
        CALLED inside the block is invisible to it, and so is ``db.execute(stmt)``
        where ``stmt`` is a variable. Reviewing those is still a human's job,

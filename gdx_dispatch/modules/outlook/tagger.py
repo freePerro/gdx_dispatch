@@ -27,6 +27,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.core.pii import HashColumn
 from gdx_dispatch.models.tenant_models import Customer, Job
 from gdx_dispatch.modules.outlook.models import OutlookMessage, OutlookSettings
@@ -73,11 +74,25 @@ def auto_match_strategy(
     """Match any sender/recipient email to a Customer.email_hash. First hit wins."""
     for addr in _candidate_addresses(message):
         h = HashColumn.hash_for_search(addr.lower().strip())
-        customer = (
-            tenant_db.query(Customer)
-            .filter(Customer.email_hash == h, Customer.deleted_at.is_(None))
-            .first()
-        )
+        # SAVEPOINT (GDXA-155). No local `try` here on purpose — this function has
+        # none and is not gaining one. The swallow is one frame up at
+        # `tasks.py:294` ("auto-tag failed … (upsert kept)"), and the savepoint's
+        # only job is that the exception ROLLS BACK as it crosses this block's
+        # __exit__ on the way there; who catches it is irrelevant
+        # (contained_read rule 5's corollary — `modules/workflows/engine.py`'s
+        # `_resolve_rule_customer` is the same arrangement two frames up).
+        #
+        # This is the HOT read of the three in this file: once per candidate
+        # address per new message, against a hashed column. `tasks.py:294` has no
+        # rollback, so uncontained on Postgres one failure here poisons the
+        # transaction and the per-folder flush/commit then loses EVERY upsert on
+        # that page — the exact opposite of the "upsert kept" its handler claims.
+        with contained_read(tenant_db):
+            customer = (
+                tenant_db.query(Customer)
+                .filter(Customer.email_hash == h, Customer.deleted_at.is_(None))
+                .first()
+            )
         if customer is not None:
             return TagResult(
                 customer_id=customer.id,
@@ -137,7 +152,22 @@ def job_thread_strategy(
             log.debug("job_thread: subject pattern matched but token %r is not a UUID — skipping", captured)
             continue
         try:
-            job = tenant_db.query(Job).filter(Job.id == job_uuid).first()
+            # SAVEPOINT (GDXA-155): the tagger runs inside the sync's per-folder
+            # transaction, which is holding freshly-synced OutlookMessage rows.
+            # `job = None` degrades to "untagged", but on Postgres the aborted
+            # transaction also loses every message that page pulled from Graph,
+            # and `tasks.py:294`'s handler ("upsert kept") has no rollback, so the
+            # loss surfaces later at the per-folder commit.
+            #
+            # NOT permanent, and an earlier draft claimed it was ("Graph's delta
+            # token has already advanced, so those messages never come back").
+            # Wrong: `state.delta_token = delta_link` is set on this same `tdb`
+            # (tasks.py:475) and persisted by the same per-folder `tdb.commit()`,
+            # so whatever rolls the messages back un-advances the token too and
+            # the next sync re-fetches them. The cost is a wasted sync, not lost
+            # mail. Verify a consequence before writing it down.
+            with contained_read(tenant_db):
+                job = tenant_db.query(Job).filter(Job.id == job_uuid).first()
         except Exception:  # noqa: BLE001
             log.exception("job_thread: Job lookup failed for uuid=%s", job_uuid)
             job = None
@@ -160,12 +190,14 @@ def job_thread_strategy(
             # tenant-editable, so a bare .first() would bind the customer's
             # mail to whichever duplicate the planner happened to return.
             # Newest wins, deterministically.
-            job = (
-                tenant_db.query(Job)
-                .filter(Job.job_number == token, Job.deleted_at.is_(None))
-                .order_by(Job.created_at.desc())
-                .first()
-            )
+            # SAVEPOINT (GDXA-155) — same reasoning as the job-uuid lookup above.
+            with contained_read(tenant_db):
+                job = (
+                    tenant_db.query(Job)
+                    .filter(Job.job_number == token, Job.deleted_at.is_(None))
+                    .order_by(Job.created_at.desc())
+                    .first()
+                )
         except Exception:  # noqa: BLE001
             log.exception("job_thread: Job lookup failed for job_number=%r", token)
             job = None
@@ -225,7 +257,16 @@ def tag_message(
         return False  # already tagged
 
     if settings is None:
-        settings = tenant_db.query(OutlookSettings).filter(OutlookSettings.id == 1).first()
+        # SAVEPOINT (GDXA-155), no local `try` — same arrangement as
+        # auto_match_strategy above: the swallow is `tasks.py:294`, and all this
+        # block has to do is roll the savepoint back on the way out to it.
+        #
+        # Reached whenever the caller passes no prefetched settings, which the
+        # sync can do on both of its paths (`_persist_messages` and
+        # `_retag_untagged` in tasks.py each prefetch with a `.first()` that can
+        # answer None), so this is a per-message read, not a one-off.
+        with contained_read(tenant_db):
+            settings = tenant_db.query(OutlookSettings).filter(OutlookSettings.id == 1).first()
     if settings is None:
         order = ["auto_match", "job_thread", "ai"]
         enabled = {"auto_match": True, "job_thread": True, "ai": True}
