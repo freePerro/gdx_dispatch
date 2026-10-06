@@ -52,7 +52,7 @@
         <Column field="source" header="Source" />
         <Column header="">
           <template #body="{ data }">
-            <Button v-tooltip="'Delete'" aria-label="Delete" icon="pi pi-trash" severity="danger" text @click="del(data.id)" />
+            <Button v-tooltip="'Delete'" aria-label="Delete" icon="pi pi-trash" severity="danger" text @click="confirmDelete(data)" />
           </template>
         </Column>
       </DataTable>
@@ -89,6 +89,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from "vue";
 import { useApiWithToast as useApi } from "../../composables/useApiWithToast";
+import { useDestructiveConfirm } from "../../composables/useDestructiveConfirm";
 import { formatDate as fmtDate, formatMoney } from "../../composables/useFormatters";
 import Button from "primevue/button";
 import Calendar from "primevue/calendar";
@@ -103,6 +104,7 @@ import Textarea from "primevue/textarea";
 import Toolbar from "primevue/toolbar";
 
 const api = useApi();
+const { confirmDestructive } = useDestructiveConfirm();
 const items = ref([]);
 const config = reactive({ payroll_source: "manual", candidates: ["manual"] });
 const error = ref("");
@@ -148,6 +150,21 @@ async function save() {
     await fetchEntries();
   } catch (e) { error.value = e?.message || "Save failed"; }
   finally { saving.value = false; }
+}
+
+// The row trash button lands here, never on del() directly: a mis-click must
+// not remove an entry job costing reads (GDXA-312).
+function confirmDelete(entry) {
+  confirmDestructive({
+    header: "Delete payroll entry?",
+    message:
+      `The entry for tech ${entry.tech_user_id}, ` +
+      `${formatDate(entry.period_start)} → ${formatDate(entry.period_end)} ` +
+      `(${entry.hours_paid} h, ${formatMoney(Number(entry.gross_pay) || 0)}), ` +
+      "will be deleted and job costing will stop using it. This page has no undo.",
+    acceptLabel: "Delete",
+    accept: () => del(entry.id),
+  });
 }
 
 async function del(id) {
