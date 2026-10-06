@@ -44,9 +44,16 @@ def _signal_consent_drift(db, drifted: list[str], event_name: str) -> None:
     events changed since consent. THROTTLED: only signals when no drift record
     is already pending, so a high-volume event stream can't flood the log/table.
 
-    Honest scope: v1 surfaces this as an ERROR log (container log only; the
-    error sink records unhandled request exceptions, not log lines) +
-    a pending `plugin_consent_drift` AIAction row. An owner-facing banner/bell
+    Honest scope: v1 surfaces this two ways. The ops alarm is a log.error
+    marked ``ops_alert`` with fingerprint ``plugin-events``. Once the GDXA-269
+    ops-alert handler is installed, the error sink records each marked record
+    as a ``server_errors`` row and, when ``OPS_ALERT_EMAIL`` is set, emails
+    the maintainer (at most once per fingerprint per hour, daily-capped);
+    until then it is a container-log line only. The other is a pending
+    `plugin_consent_drift` AIAction row. The throttle makes the alarm fire
+    once per pending row, and no code moves that row out of `pending` (not
+    even re-consent), so after the first drift later ones, from any plugin,
+    raise no alarm until someone clears it. An owner-facing banner/bell
     that reads that row is Sprint-2b work (frontend); this is NOT yet a UI
     signal, so do not claim it is."""
     from gdx_dispatch.core.webhooks.models import AIAction
@@ -65,6 +72,7 @@ def _signal_consent_drift(db, drifted: list[str], event_name: str) -> None:
             "event=%s) — plugin changed its declared events since consent; owner "
             "must re-consent",
             drifted, event_name,
+            extra={"ops_alert": True, "ops_fingerprint": "plugin-events"},
         )
         db.add(
             AIAction(

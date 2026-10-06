@@ -374,3 +374,25 @@ def test_any_event_consent_missing_table_does_not_poison_postgres_txn(pg_test_se
     # ...and the business transaction is still alive — the write commits.
     db.commit()
     assert db.execute(text("SELECT count(*) FROM _biz")).scalar() == 1
+
+
+def test_consent_drift_alarm_carries_ops_alert_marker(caplog):
+    """GDXA-269 contract: the ops-alert handler routes only records marked
+    ops_alert, grouped by a stable fingerprint, so an unmarked ERROR would
+    reach no one (Sentry was retired 2026-04-29). The throttle still holds:
+    a second drifted event while the first flag is pending raises no alarm."""
+    from gdx_dispatch.core.plugin_events import _signal_consent_drift
+    from gdx_dispatch.core.webhooks.models import AIAction
+
+    db = _consent_session()
+    AIAction.__table__.create(bind=db.get_bind())
+    with caplog.at_level("ERROR", logger="gdx_dispatch.core.plugin_events"):
+        _signal_consent_drift(db, ["n8n"], "invoice.paid")
+        _signal_consent_drift(db, ["n8n"], "invoice.paid")
+    alarms = [
+        r for r in caplog.records
+        if r.levelname == "ERROR" and "plugin_consent_drift" in r.getMessage()
+    ]
+    assert len(alarms) == 1
+    assert getattr(alarms[0], "ops_alert", None) is True
+    assert getattr(alarms[0], "ops_fingerprint", None) == "plugin-events"
