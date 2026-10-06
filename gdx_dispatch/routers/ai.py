@@ -1,31 +1,29 @@
 import json
 import logging
+import os
 import time
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from typing import Any
-
-try:
-    from zoneinfo import ZoneInfo
-    _ET = ZoneInfo("America/New_York")
-except Exception:
-    _ET = timezone.utc
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 # Side-effect import: registers all built-in MCP tools so list_tools_for_principal
 # sees a populated registry. Without this the AI loop has nothing to call.
 import gdx_dispatch.core.mcp_tools  # noqa: F401
 from gdx_dispatch.core.auth_capabilities import caps_for_role, derive_ai_worker_caps
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.llm.anthropic_client import get_client
 from gdx_dispatch.core.llm.key_storage import get_key
 from gdx_dispatch.core.mcp_invoke import invoke_tool
 from gdx_dispatch.core.mcp_registry import list_tools_for_principal
 from gdx_dispatch.core.unified_principal import Principal, principal_tenant_uuid
+from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
@@ -99,6 +97,38 @@ def get_current_principal_for_ai(
         auth_kind="session",
         actor_type="human",
     )
+
+
+def _business_tz(db: Session) -> tzinfo:
+    """The shop's zone for the assistant's "today".
+
+    ``AppSettings.timezone`` first (the tenant's own setting); otherwise the
+    same business-zone default ``services/planner_today.py`` uses
+    (``GDX_BUSINESS_TZ``, default America/Chicago); UTC only if tzdata is
+    missing. A wrong zone here is a wrong date in every answer, so neither
+    fallback is silent.
+    """
+    tz_name: str | None = None
+    try:
+        # SAVEPOINT-contained: the same session carries the tool calls and
+        # the audit writes that follow; a failed read must not poison it.
+        with contained_read(db):
+            row = db.execute(select(AppSettings.timezone)).first()
+        if row and isinstance(row[0], str) and row[0].strip():
+            tz_name = row[0].strip()
+    except Exception:  # noqa: BLE001
+        log.exception("ai_tenant_timezone_read_failed — falling back to GDX_BUSINESS_TZ")
+    if tz_name:
+        try:
+            return ZoneInfo(tz_name)
+        except Exception:  # noqa: BLE001
+            log.warning("ai_tenant_timezone_invalid tz=%r — falling back to GDX_BUSINESS_TZ", tz_name)
+    fallback = os.getenv("GDX_BUSINESS_TZ", "America/Chicago")
+    try:
+        return ZoneInfo(fallback)
+    except Exception:  # noqa: BLE001
+        log.warning("ai_business_timezone_invalid tz=%r — falling back to UTC", fallback)
+        return timezone.utc
 
 
 def get_db_for_ai(db: Session = Depends(get_db)) -> Session:
@@ -253,14 +283,16 @@ async def ask(
 
     # Compose a date-aware system prompt. Without this the model would
     # (and did) ask the user for today's date before calling tools
-    # that take date filters. Use America/New_York since GDX (and most
-    # current tenants) operate on Eastern Time — UTC dates flip a day
-    # earlier from a local-time perspective.
-    today_local = datetime.now(_ET)
+    # that take date filters. "Today" is the shop's local day, in the
+    # tenant's configured zone — not UTC, and not a hardcoded Eastern
+    # zone, which told a Central shop "tomorrow" for the last hour of
+    # its day until GDXA-296.
+    business_tz = _business_tz(db)
+    today_local = datetime.now(business_tz)
     today_iso = today_local.date().isoformat()
     today_human = today_local.strftime("%A, %B %-d, %Y")
     iso_week = today_local.isocalendar()
-    tz_label = "Eastern Time (America/New_York)" if _ET is not timezone.utc else "UTC"
+    tz_label = str(business_tz)
 
     # User identity. We don't have name/email on Principal (only role +
     # identity_id) so we surface what we have.
