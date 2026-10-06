@@ -165,6 +165,7 @@ def patch_referral(
             raise HTTPException(status_code=409, detail="Status cannot move backwards")
 
         now = datetime.now(UTC).isoformat()
+        old_status = ref.status
         ref.status = new_status
         ref.updated_at = now
         if new_status in {"converted", "rewarded"} and not ref.converted_at:
@@ -181,7 +182,7 @@ def patch_referral(
             action="referral_updated",
             entity_type="referral",
             entity_id=referral_id,
-            details={"status": new_status},
+            details={"status": new_status, "from": old_status},
             request=request,
         ))
         db.commit()

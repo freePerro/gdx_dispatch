@@ -240,6 +240,36 @@ async def test_update_customer_success_partial(tenant_db_session):
     assert out.customer_type == "Commercial"
 
 
+async def test_update_customer_audit_records_before_image(tenant_db_session):
+    """GDXA-333: the customer_updated row carried only the new values, so an
+    overwritten phone or margin was gone from the trail. `<field>_old` holds
+    the prior value of each field that really changed; a resent unchanged
+    field gets none, and the top-level payload keys stay for existing readers."""
+    from sqlalchemy import select
+
+    from gdx_dispatch.core.audit import AuditLog
+
+    customer_id = _seed_customer(tenant_db_session, name="Carl", phone="555-0101")
+
+    await update_customer(
+        customer_id=customer_id,
+        payload=CustomerUpdateIn(
+            name="Carl", phone="555-0202", margin_override_pct=0.25, referral_source="Angi",
+        ),
+        _={},
+        db=tenant_db_session,
+    )
+
+    (row,) = tenant_db_session.execute(
+        select(AuditLog).where(AuditLog.action == "customer_updated")
+    ).scalars().all()
+    assert row.details["phone"] == "555-0202"
+    olds = {k: v for k, v in row.details.items() if k.endswith("_old")}
+    assert olds == {"phone_old": "555-0101", "margin_override_pct_old": None, "referral_source_old": None}
+    # Flat scalars only: the Activity list prints `key: value`.
+    assert not any(isinstance(v, dict) for v in row.details.values())
+
+
 def test_referral_source_rejects_oversize_value():
     """Customer.source is String(50). Pydantic must reject before the row
     ever reaches Postgres — sqlite would accept it silently, masking the

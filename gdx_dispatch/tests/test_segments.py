@@ -440,12 +440,16 @@ async def test_update_segment_writes_an_audit_row(tenant_db_session):
         db=db,
     )
     rows = db.execute(
-        text("SELECT user_id, entity_id FROM audit_logs WHERE action = 'segment_updated'")
+        text("SELECT user_id, entity_id, details FROM audit_logs WHERE action = 'segment_updated'")
     ).mappings().all()
     db.close()
     assert len(rows) == 1
     assert rows[0]["entity_id"] == created.id
     assert rows[0]["user_id"] == "user-42"
+    # GDXA-333: the name it had before the edit survives in the trail.
+    details = rows[0]["details"]
+    details = details if isinstance(details, dict) else json.loads(details)
+    assert details["before"] == {"name": "Dormant 90d"}
 
 
 # ── rules validation on write ────────────────────────────────────────────
