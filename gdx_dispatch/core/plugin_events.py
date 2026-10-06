@@ -44,7 +44,8 @@ def _signal_consent_drift(db, drifted: list[str], event_name: str) -> None:
     events changed since consent. THROTTLED: only signals when no drift record
     is already pending, so a high-volume event stream can't flood the log/table.
 
-    Honest scope: v1 surfaces this as an ERROR log (→ Sentry when configured) +
+    Honest scope: v1 surfaces this as an ERROR log (container log only; the
+    error sink records unhandled request exceptions, not log lines) +
     a pending `plugin_consent_drift` AIAction row. An owner-facing banner/bell
     that reads that row is Sprint-2b work (frontend); this is NOT yet a UI
     signal, so do not claim it is."""
