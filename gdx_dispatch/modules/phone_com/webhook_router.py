@@ -134,18 +134,6 @@ def _audit(
         log.exception("phone_com_webhook audit failed")
 
 
-def _set_sentry_tag(voip_id: int | None) -> None:
-    if voip_id is None:
-        return
-    try:
-        import sentry_sdk
-        sentry_sdk.set_tag("phone_com_voip_id", str(voip_id))
-    except ImportError:
-        pass
-    except Exception:  # noqa: BLE001
-        log.debug("sentry tag set failed", exc_info=True)
-
-
 @router.post("/{tenant_slug}/{secret}", status_code=status.HTTP_204_NO_CONTENT)
 async def receive_webhook(
     tenant_slug: str,
@@ -177,7 +165,6 @@ async def receive_webhook(
     tenant_db = _open_tenant_session()
     try:
         voip_id = _resolve_voip_id(tenant_db)
-        _set_sentry_tag(voip_id)
 
         # Step 3: webhook_signing.decide — path secret + voip_id check.
         decision = webhook_signing.decide(
