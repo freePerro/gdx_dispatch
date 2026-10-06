@@ -223,6 +223,23 @@ def test_patch_updates_tag(client: TestClient):
     assert data["description"] == "Updated"
 
 
+def test_patch_audit_records_before_image(client: TestClient):
+    """GDXA-333: a rename logged only the new name; the old one was lost."""
+    import json
+
+    tag = client.post("/api/tags", json={"name": "Initial", "color": "#111111"}).json()
+    client.patch(f"/api/tags/{tag['id']}", json={"name": "Renamed", "color": "#111111"})
+    with client._engine.connect() as conn:  # type: ignore[attr-defined]
+        (raw,) = conn.execute(
+            text("SELECT details FROM audit_logs WHERE action = 'tag_updated'")
+        ).one()
+    details = raw if isinstance(raw, dict) else json.loads(raw)
+    # The unchanged colour is resent by the dialog and is not a change.
+    assert details["name"] == "Renamed"
+    assert details["name_old"] == "Initial"
+    assert "color_old" not in details
+
+
 def test_patch_rejects_bad_color(client: TestClient):
     tag = client.post("/api/tags", json={"name": "Colorful"}).json()
     r = client.patch(f"/api/tags/{tag['id']}", json={"color": "notahex"})

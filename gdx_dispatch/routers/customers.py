@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timezone
+from decimal import Decimal as _D
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -511,7 +512,6 @@ async def create_customer(
     db: Session = Depends(get_db),
 ) -> CustomerOut:
     now = datetime.now(timezone.utc)
-    from decimal import Decimal as _D
 
     customer = Customer(
         # humanize_name fixes the "mike wendt" → "Mike Wendt" data hygiene
@@ -708,7 +708,6 @@ async def update_customer(
     # margin_override_pct value (NULL semantics PATCH otherwise can't express).
     clear_override = updates.pop("clear_margin_override", False)
     if "margin_override_pct" in updates and updates["margin_override_pct"] is not None:
-        from decimal import Decimal as _D
         updates["margin_override_pct"] = _D(str(updates["margin_override_pct"]))
     if clear_override:
         updates["margin_override_pct"] = None
@@ -738,6 +737,16 @@ async def update_customer(
                 k for k in ("name", "email", "phone")
                 if k in updates and (getattr(customer, k, None) or "") != (updates[k] or "")
             ]
+            # The before-image, taken before setattr overwrites it: for each
+            # field this edit really changes, `<field>_old` beside the new
+            # value already at `<field>` (operator-facing names). Flat
+            # scalars, because the Activity list prints `key: value` and a
+            # nested object would read "[object Object]".
+            for key, value in updates.items():
+                old = getattr(customer, key, None)
+                if (old if old is not None else "") != (value if value is not None else ""):
+                    name = "referral_source" if key == "source" else key
+                    audit_details[f"{name}_old"] = str(old) if isinstance(old, _D) else old
             for key, value in updates.items():
                 setattr(customer, key, value)
             if identity_changed:

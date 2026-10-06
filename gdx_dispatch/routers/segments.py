@@ -590,6 +590,8 @@ async def update_segment(
 
     data = payload.model_dump(exclude_unset=True)
     changed: list[str] = []
+    # Raw, not coerced: a corrupt stored rule set is the one most worth keeping.
+    before = {"name": row.name, "rules": row.rules}
 
     if data.get("name") is not None:
         row.name = str(data["name"])
@@ -615,7 +617,11 @@ async def update_segment(
         action="segment_updated",
         entity_type="segment",
         entity_id=segment_id,
-        details={"fields": sorted(changed), "name": row.name, "rules": _coerce_rules(row.rules)},
+        details={
+            "fields": sorted(changed), "name": row.name, "rules": _coerce_rules(row.rules),
+            # The before-image: an edited rule set is otherwise unrecoverable.
+            "before": {f: before[f] for f in changed},
+        },
     )
     db.commit()
 
