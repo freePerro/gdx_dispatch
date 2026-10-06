@@ -266,10 +266,8 @@ def test_celery_app_importable():
 
 
 def test_observability_importable():
-    """Observability module can be imported and init_sentry no-ops with empty DSN."""
-    from gdx_dispatch.core.observability import init_otel, init_sentry
-    # Should not raise with empty DSN
-    init_sentry("", "test")
+    """Observability module can be imported and init_otel no-ops when disabled."""
+    from gdx_dispatch.core.observability import init_otel
     init_otel("gdx-test")
 
 

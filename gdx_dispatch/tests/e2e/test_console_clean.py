@@ -150,7 +150,7 @@ def _capture(path: str) -> PageCapture:
                 cap.http_status = response.status if response else None
                 cap.final_url = page.url
                 cap.title = page.title()
-                # Let any late async work settle (service worker lifecycle, Sentry init, etc.)
+                # Let any late async work settle (service worker lifecycle, etc.)
                 page.wait_for_timeout(2000)
             except Exception as e:
                 cap.page_errors.append(f"navigation exception: {e}")

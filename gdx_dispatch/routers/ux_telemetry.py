@@ -13,8 +13,8 @@ here. Events look like:
 
 We intentionally do NOT persist to the hash-chained `audit_log` table
 (overkill for high-frequency clicks). Instead we structured-log to the
-standard Python logger — that flows into container logs which Sentry +
-log search both index. Doug can grep `ux_telemetry tour_completed`
+standard Python logger — that flows into container logs, which log search
+indexes. Doug can grep `ux_telemetry tour_completed`
 in prod logs to answer "which articles got viewed."
 
 Rate-limited at the route level (max 50 events per request) so a

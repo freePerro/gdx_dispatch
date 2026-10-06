@@ -17,7 +17,6 @@ All secrets must be rotated on a regular schedule or immediately after suspected
 | JWT signing key | JWT_SECRET_KEY in .env | 90 days | All user sessions invalidated |
 | Stripe API keys | STRIPE_SECRET_KEY in .env | On compromise only | Billing disrupted |
 | Stripe webhook secret | STRIPE_WEBHOOK_SECRET | On key rotation | Webhook verification fails |
-| Sentry DSN | SENTRY_DSN in .env | On compromise only | Error reporting |
 | Google Maps API key | GOOGLE_MAPS_API_KEY | On compromise only | Maps/routing |
 | AWS credentials | AWS_ACCESS_KEY_ID/SECRET | 90 days | Backups, SES, S3 |
 | Redis password | REDIS_URL in .env | 90 days | Cache, Celery |
@@ -96,7 +95,7 @@ curl -sk -X POST https://gdx.example.com/api/auth/login \
 1. **Immediately** rotate ALL secrets listed above
 2. Invalidate all active sessions (rotate JWT key)
 3. Check audit logs for unauthorized access: `docker exec gdx-app python -c "from gdx_dispatch.core.audit import ...; ..."`
-4. Review Sentry for unusual errors
+4. Review Server Logs (`/server-errors`, the in-app error sink) for unusual errors
 5. Check Stripe Dashboard for unauthorized charges
 6. Notify affected tenants if data exposure suspected
 

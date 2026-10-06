@@ -17,7 +17,6 @@ import { loadRoutes } from './_routes.js';
 
 const REPORT = [];
 const CONSOLE_ALLOWLIST = [
-  /Sentry/i,
   /DevTools/i,
   /favicon\.ico/i,
   /\[Vue Router warn\]/i, // navigated programmatically, vue-router complains harmlessly
@@ -133,7 +132,7 @@ test.describe('route coverage', () => {
       };
       // Fail criterion: page must mount (non-empty #app) AND no uncaught JS
       // exceptions (pageerror). Console errors (401/404/429 on background
-      // API calls, Sentry noise, etc.) are recorded for diagnostics but
+      // API calls, etc.) are recorded for diagnostics but
       // don't fail the test — they don't break rendering.
       if (isEmpty) {
         result.status = 'fail';

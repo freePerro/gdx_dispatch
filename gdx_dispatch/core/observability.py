@@ -4,10 +4,6 @@ import logging
 import os
 from typing import Any
 
-import sentry_sdk
-from sentry_sdk.integrations.fastapi import FastApiIntegration
-from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
-
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -70,26 +66,6 @@ try:
 except ImportError:
     logging.getLogger(__name__).exception("<module> caught exception")
     pass
-
-
-def _before_send(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any]:
-    user = event.get("user")
-    if isinstance(user, dict):
-        user.pop("email", None)
-        user.pop("phone", None)
-    return event
-
-
-def init_sentry(dsn: str, env: str) -> None:
-    if not dsn:
-        return
-    sentry_sdk.init(
-        dsn=dsn,
-        environment=env,
-        integrations=[FastApiIntegration(), SqlalchemyIntegration()],
-        traces_sample_rate=0.05,
-        before_send=_before_send,
-    )
 
 
 # ---------------------------------------------------------------------------

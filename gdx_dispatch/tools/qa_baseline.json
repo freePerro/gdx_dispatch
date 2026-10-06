@@ -333,13 +333,6 @@
       "status": "valid",
       "last_checked": "2026-04-08"
     },
-    "sentry": {
-      "check": "grep SENTRY_DSN gdx/.env",
-      "expect": "DSN set",
-      "status": "configured",
-      "last_checked": "2026-04-01",
-      "note": "TODO: validate events are flowing, not just key exists"
-    },
     "google_maps": {
       "check": "grep GOOGLE_MAPS_API_KEY gdx/.env",
       "expect": "key set",

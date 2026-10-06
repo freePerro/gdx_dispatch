@@ -26,7 +26,6 @@ python-multipart>=0.0.22
 # email-validator is a runtime requirement of pydantic EmailStr (modules/outlook/send_router.py).
 email-validator>=2.0.0
 redis>=7.4.0
-sentry-sdk[fastapi]>=2.57.0,<3.0
 httpx>=0.28.1
 pydantic>=2.12.0,<3.0
 pydantic-settings>=2.13.0

@@ -97,7 +97,6 @@ x-app-env: &app-env
   PLATFORM_SMTP_PORT: ${PLATFORM_SMTP_PORT:-465}
   PLATFORM_SMTP_USER: ${PLATFORM_SMTP_USER:-}
   PLATFORM_SMTP_PASS: ${PLATFORM_SMTP_PASS:-}
-  SENTRY_DSN: ${SENTRY_DSN:-}
 
 services:
   # Mints + persists runtime secrets before anything else starts. Runs on
