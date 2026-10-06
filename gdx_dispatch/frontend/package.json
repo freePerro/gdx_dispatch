@@ -21,7 +21,6 @@
   },
   "dependencies": {
     "@primeuix/themes": "^2.0.3",
-    "@sentry/vue": "^10.47.0",
     "chart.js": "^4.5.1",
     "dexie": "^4.4.2",
     "dompurify": "^3.4.12",
