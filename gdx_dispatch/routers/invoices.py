@@ -599,6 +599,14 @@ def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
     balance_due = _money(
         max(_to_float(total_amount) - _to_float(paid_amount) - _to_float(credited), 0)
     )
+    # GDXA-267: a void is terminal (#422), and a void owes nothing.
+    # `void_invoice` zeroes the balance once, but every later recalc (a late
+    # PaymentIntent, a payment voided off it, a line edit) re-derived it from
+    # total - paid and re-armed a balance on a dead invoice, while the status
+    # transition below was refused and the invoice stayed void.
+    is_void = invoice.status == "void"
+    if is_void:
+        balance_due = _money(0)
 
     invoice.subtotal = subtotal_amount
     invoice.total = total_amount
@@ -616,7 +624,7 @@ def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
         ) from exc
     except IssuanceCompositionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if _to_float(balance_due) <= 0 and _to_float(total_amount) > 0:
+    if not is_void and _to_float(balance_due) <= 0 and _to_float(total_amount) > 0:
         # GL S5: the auto-flip routes through the chokepoint; a draft paid in
         # full posts P1 on this transition (before P3, which lands in S6).
         transition_invoice_status(db, invoice, "paid")

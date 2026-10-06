@@ -1419,6 +1419,82 @@ def test_an_operator_visible_audit_row_is_written(db_session):
 
 
 # ---------------------------------------------------------------------------
+# GDXA-267 — a recalc on a void must not re-arm its balance
+#
+# void_invoice zeroes balance_due once. Every later _recalculate_invoice
+# re-derived it as total - paid, and the refused void -> paid flip left the
+# status alone, so the dead invoice carried a live-looking balance. Lined
+# invoices on purpose: a line-less fixture is rewritten to its $12 tax and
+# would hide the defect (see _lined_invoice).
+# ---------------------------------------------------------------------------
+
+
+def _lined_void(db, number):
+    inv = _lined_invoice(db, number=number, unit_price=500.00)
+    inv.status = "void"
+    inv.balance_due = 0
+    db.commit()
+    db.refresh(inv)
+    return inv
+
+
+def _succeed(db, invoice, reference, cents):
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    handle_payment_webhook(
+        {
+            "type": "payment_intent.succeeded",
+            "data": {"object": {
+                "id": reference,
+                "metadata": {"invoice_id": str(invoice.id)},
+                "amount_received": cents,
+            }},
+        },
+        db,
+    )
+    db.refresh(invoice)
+
+
+def test_a_partial_late_payment_leaves_a_void_owing_nothing(db_session):
+    """$200 landing on a voided $500 invoice used to write balance $300."""
+    inv = _lined_void(db_session, "INV-267-PARTIAL")
+    _succeed(db_session, inv, "pi_267_partial", 20000)
+    assert inv.status == "void"
+    assert float(inv.balance_due) == 0.0
+    assert not inv.paid_at
+
+
+def test_refunding_a_late_payment_does_not_re_arm_the_void(db_session):
+    """The likely prod path: money lands on the void, is refunded, and the
+    payment void's recalc restored the full $500 as owing."""
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    inv = _lined_void(db_session, "INV-267-REFUND")
+    _succeed(db_session, inv, "pi_267_refund", 50000)
+    out = handle_payment_webhook(_refund_event("pi_267_refund", 50000, 50000), db_session)
+    assert out["status"] == "reversed"
+    db_session.refresh(inv)
+    pay = db_session.query(Payment).filter(Payment.reference == "pi_267_refund").one()
+    assert pay.voided_at is not None, "the refund itself must still land"
+    assert inv.status == "void"
+    assert float(inv.balance_due) == 0.0
+
+
+def test_recalc_on_a_void_pins_the_balance_and_keeps_the_totals(db_session):
+    from gdx_dispatch.routers.invoices import _recalculate_invoice
+
+    inv = _lined_void(db_session, "INV-267-RECALC")
+    inv.balance_due = 100
+    db_session.commit()
+    _recalculate_invoice(inv, db_session)
+    db_session.commit()
+    db_session.refresh(inv)
+    assert float(inv.balance_due) == 0.0
+    assert float(inv.total) == 500.0, "the void keeps its face value for the record"
+    assert inv.status == "void"
+
+
+# ---------------------------------------------------------------------------
 # #661 — the overcharge audit row had never once been written
 #
 # _audit_overcharge wrapped log_audit_event_sync in db.begin_nested(). But

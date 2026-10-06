@@ -452,7 +452,10 @@ def apply_plan(db, plan: SubstancePlan, operator: str, void_numbers: list[str]) 
             "WHERE invoice_id = CAST(:iid AS uuid) AND voided_at IS NULL"
         ), {"iid": inv_id})
         db.execute(text(
-            "UPDATE invoices SET status = 'void' WHERE id = CAST(:iid AS uuid)"
+            # A void owes nothing; leaving balance_due alone here is how
+            # INV-2026-0001 kept $100.00 on prod (GDXA-267).
+            "UPDATE invoices SET status = 'void', balance_due = 0 "
+            "WHERE id = CAST(:iid AS uuid)"
         ), {"iid": inv_id})
         db.execute(text(
             "DELETE FROM qb_entity_maps WHERE entity_type = 'invoice' AND local_id = :iid"
