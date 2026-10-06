@@ -54,6 +54,7 @@ DELETE /api/jobs/{job_id}/not-billable
 DELETE /api/jobs/{job_id}/notes/{note_id}
 DELETE /api/jobs/{job_id}/photos/{photo_id}
 DELETE /api/jobs/{job_id}/tags/{tag_id}
+DELETE /api/jobs/{job_id}/visits/{visit_id}
 DELETE /api/labor-pricing/items/{item_id}
 DELETE /api/landing-leads/{ll_id}
 DELETE /api/leads/{lead_id}
@@ -237,6 +238,7 @@ GET /api/dispatch-settings
 GET /api/dispatch/late-open
 GET /api/dispatch/locations
 GET /api/dispatch/optimize-route
+GET /api/dispatch/partial-jobs
 GET /api/dispatch/schedule-with-traffic
 GET /api/dispatch/scheduled-unassigned
 GET /api/distributor/analytics/orders
@@ -340,6 +342,7 @@ GET /api/jobs/{job_id}/suggested-duration
 GET /api/jobs/{job_id}/tags
 GET /api/jobs/{job_id}/time-entries
 GET /api/jobs/{job_id}/undo-arrival
+GET /api/jobs/{job_id}/visits
 GET /api/labor-pricing/items
 GET /api/labor-pricing/items/{item_id}
 GET /api/labor/jobs/{job_id}/time-entries
@@ -709,6 +712,7 @@ PATCH /api/invoices/{invoice_id}/lines/{line_id}
 PATCH /api/jobs/{job_id}
 PATCH /api/jobs/{job_id}/notes/{note_id}
 PATCH /api/jobs/{job_id}/photos/{photo_id}
+PATCH /api/jobs/{job_id}/visits/{visit_id}
 PATCH /api/landing-leads/{ll_id}/status
 PATCH /api/leads/{lead_id}
 PATCH /api/loyalty/tiers/{tier_id}
@@ -985,6 +989,7 @@ POST /api/jobs/{job_id}/tags
 POST /api/jobs/{job_id}/time-entries
 POST /api/jobs/{job_id}/uncomplete
 POST /api/jobs/{job_id}/undo-arrival
+POST /api/jobs/{job_id}/visits
 POST /api/labor-pricing/items
 POST /api/landing-leads
 POST /api/landing-leads/{ll_id}/convert-to-lead

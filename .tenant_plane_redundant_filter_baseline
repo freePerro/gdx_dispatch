@@ -130,7 +130,7 @@
   "gdx_dispatch/routers/custom_fields.py:T6:CustomFieldDefinition.company_id:507",
   "gdx_dispatch/routers/custom_fields.py:T6:CustomFieldValue.company_id:476",
   "gdx_dispatch/routers/custom_fields.py:T6:CustomFieldValue.company_id:527",
-  "gdx_dispatch/routers/dispatch_scheduling.py:T6:Job.company_id:58",
+  "gdx_dispatch/routers/dispatch_scheduling.py:T6:Job.company_id:59",
   "gdx_dispatch/routers/expenses.py:T6:GlAccount.company_id:196",
   "gdx_dispatch/routers/gdpr.py:T6:Customer.company_id:83",
   "gdx_dispatch/routers/gps.py:T6:TechnicianLocation.company_id:181",

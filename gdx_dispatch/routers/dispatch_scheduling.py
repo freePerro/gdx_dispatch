@@ -4,6 +4,7 @@ Routes:
   GET  /api/dispatch/schedule-with-traffic — optimized schedule with drive times
   GET  /api/dispatch/check-capacity — overbooking prevention
   GET  /api/dispatch/late-open — open jobs whose scheduled day has passed
+  GET  /api/dispatch/partial-jobs — a day worked, no day booked
 """
 from __future__ import annotations
 
@@ -167,6 +168,27 @@ def scheduled_unassigned(
 # Holding area, tech and job type are deliberately NOT filters — a stale
 # Ready-to-Schedule stamp is how several of these hid in the first place.
 
+def _board_row(job: Any, customer_name: str | None, ds_map: dict[str, Any]) -> dict[str, Any]:
+    """The fields a board card reads, shared by the late-open and partial queues."""
+    at = job.scheduled_at
+    return {
+        "id": str(job.id),
+        "job_number": job.job_number,
+        "title": job.title,
+        "job_type": job.job_type,
+        "status": job.status,
+        "lifecycle_stage": job.lifecycle_stage,
+        # SQLite hands back a naive (UTC) value; say so, or the browser
+        # reads it as local time.
+        "scheduled_at": (at if at.tzinfo else at.replace(tzinfo=timezone.utc)).isoformat() if at else None,
+        "customer_id": str(job.customer_id) if job.customer_id else None,
+        "customer_name": customer_name,
+        "assigned_to": job.assigned_to,
+        "is_return_visit": bool(job.is_return_visit),
+        "display_state": ds_map.get(str(job.id)),
+    }
+
+
 @router.get("/api/dispatch/late-open", dependencies=[Depends(require_permission("jobs.read_all"))])
 def late_open_jobs(
     db: Session = Depends(get_db),
@@ -179,6 +201,7 @@ def late_open_jobs(
 
     from gdx_dispatch.core.pay_periods import resolve_zone, shop_day_of, shop_today, shop_tz_name_from_settings
     from gdx_dispatch.models.tenant_models import Customer, Job, Technician
+    from gdx_dispatch.services.visit_sync import partial_clause
 
     tz_name = shop_tz_name_from_settings(db)
     zone: ZoneInfo = resolve_zone(tz_name)
@@ -194,6 +217,9 @@ def late_open_jobs(
             Job.scheduled_at.is_not(None),
             Job.scheduled_at < start_of_today,
             Job.lifecycle_stage.notin_(["completed", "cancelled"]),
+            # A day of it was worked and nothing is booked: that job is in
+            # Partial Jobs (below), and one job sits in one queue.
+            ~partial_clause(Job.id),
         )
         # Oldest first — the customer who has waited longest.
         .order_by(Job.scheduled_at.asc())
@@ -215,23 +241,95 @@ def late_open_jobs(
     for job, customer_name, tech_name in rows:
         day = shop_day_of(job.scheduled_at, tz_name)
         items.append({
-            "id": str(job.id),
-            "job_number": job.job_number,
-            "title": job.title,
-            "job_type": job.job_type,
-            "status": job.status,
-            "lifecycle_stage": job.lifecycle_stage,
-            # SQLite hands back a naive (UTC) value; say so, or the browser
-            # reads it as local time.
-            "scheduled_at": (
-                job.scheduled_at if job.scheduled_at.tzinfo else job.scheduled_at.replace(tzinfo=timezone.utc)
-            ).isoformat(),
+            **_board_row(job, customer_name, ds_map),
             "days_late": (today - day).days if day else None,
-            "customer_id": str(job.customer_id) if job.customer_id else None,
-            "customer_name": customer_name,
-            "assigned_to": job.assigned_to,
             "tech_name": tech_name,
-            "is_return_visit": bool(job.is_return_visit),
-            "display_state": ds_map.get(str(job.id)),
         })
     return {"items": items, "today": today.isoformat(), "timezone": tz_name}
+
+
+# ---------------------------------------------------------------------------
+# Partial Jobs — Need to Schedule (multi-day jobs plan §5.3a, D10–D12)
+# ---------------------------------------------------------------------------
+# A job a tech worked one day of, and stopped, with no next day booked. It
+# has a date (the day it was worked), so it is in neither "New Jobs" (no
+# date, or no tech) nor on any day ahead; and it is not late, because no one
+# was booked to come back. The board shows it here until a drop books the
+# next day. Membership is ``partial_clause``, the predicate late-open leaves
+# out, so the two queues cannot both hold a job.
+
+@router.get("/api/dispatch/partial-jobs", dependencies=[Depends(require_permission("jobs.read_all"))])
+def partial_jobs(
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    _ = user
+    from sqlalchemy import select as _select
+
+    from gdx_dispatch.core.pay_periods import shop_day_of, shop_tz_name_from_settings
+    from gdx_dispatch.models.tenant_models import Appointment, Customer, Job, Technician
+    from gdx_dispatch.services.visit_sync import partial_clause, visit_state
+
+    tz_name = shop_tz_name_from_settings(db)
+    rows = db.execute(
+        _select(Job, Customer.name)
+        .outerjoin(Customer, Job.customer_id == Customer.id)
+        .where(
+            Job.deleted_at.is_(None),
+            Job.lifecycle_stage.notin_(["completed", "cancelled"]),
+            partial_clause(Job.id),
+        )
+        .order_by(Job.scheduled_at.asc().nulls_last())
+        .limit(200)
+    ).all()
+    job_ids = [job.id for job, _c in rows]
+
+    # The days worked and who worked them, from the closed visits.
+    worked: dict[str, dict[str, Any]] = {}
+    if job_ids:
+        visits = db.execute(
+            _select(Appointment).where(Appointment.job_id.in_(job_ids), Appointment.deleted_at.is_(None))
+        ).scalars().all()
+        tech_ids = {v.tech_id for v in visits if v.tech_id}
+        names = {
+            str(t.id): t.name for t in db.execute(_select(Technician).where(Technician.id.in_(tech_ids))).scalars().all()
+        } if tech_ids else {}
+        for v in visits:
+            if visit_state(v) != "closed":
+                continue
+            entry = worked.setdefault(str(v.job_id), {"last": None, "techs": {}, "closed": {}})
+            day = shop_day_of(v.start_at, tz_name)
+            if day is None:
+                continue
+            # Every (day, tech) with a closed visit: E5 books nothing for a
+            # drop on one, so the board refuses it. A visit can close early
+            # on a later day than today, so the last day alone is not enough.
+            entry["closed"].setdefault(day.isoformat(), set()).add(str(v.tech_id) if v.tech_id else None)
+            if entry["last"] is not None and day < entry["last"]:
+                continue
+            if entry["last"] is None or day > entry["last"]:
+                entry["last"], entry["techs"] = day, {}  # worked_by: that day's techs
+            if v.tech_id:
+                entry["techs"][str(v.tech_id)] = names.get(str(v.tech_id))
+
+    try:
+        from gdx_dispatch.routers.jobs import _display_state_for_jobs
+
+        ds_map = _display_state_for_jobs(db, [(job.id, job.lifecycle_stage) for job, _c in rows])
+    except Exception:
+        log.exception("partial_jobs_display_state_failed")
+        ds_map = {}
+
+    items = []
+    for job, customer_name in rows:
+        entry = worked.get(str(job.id), {"last": None, "techs": {}, "closed": {}})
+        items.append({
+            **_board_row(job, customer_name, ds_map),
+            "holding_area_id": job.holding_area_id,
+            "last_worked_day": entry["last"].isoformat() if entry["last"] else None,
+            "worked_by": [
+                {"tech_id": tid, "name": name} for tid, name in entry["techs"].items()
+            ],
+            "closed_days": {d: sorted(t for t in techs if t) for d, techs in sorted(entry["closed"].items())},
+        })
+    return {"items": items, "timezone": tz_name}

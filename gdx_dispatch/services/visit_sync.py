@@ -15,7 +15,7 @@ Every writer of a job's visits or date runs it last.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from functools import lru_cache
 from typing import Any
 from uuid import UUID
@@ -522,6 +522,180 @@ def _book(work: _Work, crew: list, target: datetime, fields: dict, edit: VisitEd
         work.insert(tech, target, target + timedelta(minutes=edit.duration_minutes), fields, "date_set")
 
 
+# ------------------------------------------------- the office's own visits
+#
+# Multi-day jobs plan §5.3a: "Add day(s)", and Move and Remove on the job
+# page's Visits card. Pure like the planner above; the route applies the plan
+# with ``apply_visit_plan`` and runs ``recompute_job_schedule`` last.
+
+MAX_DAYS = 20  # Jobber's cap on one booking (plan §2)
+
+
+def expand_range(start: date, end: date, *, skip_weekends: bool) -> list[date]:
+    """Every day from ``start`` to ``end`` inclusive; Saturday and Sunday left
+    out when asked. Raises ValueError past ``MAX_DAYS`` or for a reversed range."""
+    if end < start:
+        raise ValueError("The range ends before it starts.")
+    days: list[date] = []
+    day = start
+    while day <= end:
+        if not (skip_weekends and day.weekday() >= 5):
+            days.append(day)
+            if len(days) > MAX_DAYS:
+                raise ValueError(f"A booking holds at most {MAX_DAYS} days.")
+        day += timedelta(days=1)
+    return days
+
+
+def shop_instant(day: date, at: time, tz_name: str) -> datetime:
+    from gdx_dispatch.core.pay_periods import resolve_zone  # noqa: PLC0415
+
+    return datetime.combine(day, at, tzinfo=resolve_zone(tz_name)).astimezone(UTC)
+
+
+def _check_open_job(job_state: str) -> None:
+    if job_state in FINISHED_STAGES:
+        _refuse("job_finished", f"The job is {job_state}. Re-open it before booking or changing a day.")
+
+
+def _techs_holding(work: _Work, day: date, techs: list, *, skip: Any = None) -> list:
+    return [
+        t for t in techs
+        if any(is_live(v) and v.id != skip for v in work.on(day, tech=t))
+    ]
+
+
+def _run_plan(visits: list[VisitRow], fn: Any) -> VisitPlan:
+    try:
+        work = fn()
+    except _Refused as refused:
+        return VisitPlan(refusal=refused.refusal, visits=list(visits))
+    return VisitPlan(actions=work.actions, visits=work.live_rows())
+
+
+def plan_add_visits(
+    visits: list[VisitRow], *, tz_name: str, today: date, job_state: str,
+    days: list[date], start_time: time, duration_minutes: int,
+    tech_ids: list, fields: dict | None = None,
+) -> VisitPlan:
+    """Book each tech on each day. ``tech_ids`` empty books one unassigned
+    slot, as E4 does for a job with no crew. Refuses the whole request, so a
+    200 always means every day asked for was booked."""
+
+    def run() -> _Work:
+        work = _Work(list(visits), tz_name)
+        _check_open_job(job_state)
+        if not days:
+            _refuse("no_days", "Pick at least one day.")
+        if len(days) > MAX_DAYS:
+            _refuse("too_many_days", f"A booking holds at most {MAX_DAYS} days.")
+        past = sorted(d for d in days if d < today)
+        if past:
+            _refuse(
+                "past_day",
+                f"{past[0].isoformat()} has already passed. Book today or a later day.",
+                day=past[0].isoformat(),
+            )
+        slots = list(dict.fromkeys(tech_ids)) or [None]
+        seen: set = set()
+        for day in sorted(days):
+            if day in seen:
+                _refuse(
+                    "double_booked", f"{day.isoformat()} is in the request twice.",
+                    tech_ids=[t for t in slots if t is not None], day=day.isoformat(),
+                )
+            seen.add(day)
+            holding = _techs_holding(work, day, slots)
+            if holding:
+                who = "A technician already has" if holding != [None] else "The job already has an unassigned"
+                _refuse(
+                    "double_booked",
+                    f"{who} a visit of this job on {day.isoformat()}.",
+                    tech_ids=[t for t in holding if t is not None], day=day.isoformat(),
+                )
+            start = shop_instant(day, start_time, tz_name)
+            for tech in slots:
+                work.insert(tech, start, start + timedelta(minutes=duration_minutes), fields or {}, "visits_booked")
+        return work
+
+    return _run_plan(visits, run)
+
+
+def _find_open(work: _Work, visit_id: Any) -> VisitRow:
+    v = work.rows.get(visit_id)
+    if v is None:
+        _refuse("visit_not_found", "That visit is not on this job.")
+    if visit_state(v) != OPEN:
+        _refuse(
+            "visit_not_open",
+            "Someone has arrived for this visit, or it is closed. Complete it or undo "
+            "the arrival instead.",
+            visit_id=str(visit_id),
+        )
+    return v
+
+
+def plan_move_visit(
+    visits: list[VisitRow], *, tz_name: str, today: date, job_state: str,
+    visit_id: Any, start_at: datetime, end_at: datetime, tech_id: Any = UNSET,
+) -> VisitPlan:
+    """Move one OPEN visit to another time or day, and/or another tech."""
+
+    def run() -> _Work:
+        work = _Work(list(visits), tz_name)
+        _check_open_job(job_state)
+        v = _find_open(work, visit_id)
+        start, end = to_minute(_as_utc(start_at)), to_minute(_as_utc(end_at))
+        if end <= start:
+            _refuse("bad_length", "The visit has to end after it starts.")
+        tech = v.tech_id if tech_id is UNSET else tech_id
+        day = shop_day(start, tz_name)
+        if day < today and day != work.day(v):
+            _refuse(
+                "past_day",
+                f"{day.isoformat()} has already passed. Move the visit to today or a later day.",
+                day=day.isoformat(),
+            )
+        if _techs_holding(work, day, [tech], skip=v.id):
+            _refuse(
+                "double_booked",
+                f"That technician already has a visit of this job on {day.isoformat()}.",
+                tech_ids=[tech] if tech is not None else [], day=day.isoformat(),
+            )
+        if tech != v.tech_id:
+            work.reassign(v, tech, "visit_edited")
+            v = work.rows[v.id]
+        old_end = to_minute(_as_utc(v.end_at)) if v.end_at is not None else None
+        if (start, end) != (to_minute(_as_utc(v.start_at)), old_end):
+            work.move(v, start, end, "visit_edited")
+        return work
+
+    return _run_plan(visits, run)
+
+
+def plan_remove_visit(
+    visits: list[VisitRow], *, tz_name: str, job_state: str, visit_id: Any,
+) -> VisitPlan:
+    """Retire one OPEN visit. Not the job's last booked one: a job left with a
+    date and no visit would sit on the board on a day no one is coming."""
+
+    def run() -> _Work:
+        work = _Work(list(visits), tz_name)
+        _check_open_job(job_state)
+        v = _find_open(work, visit_id)
+        work.retire(v, "visit_removed")
+        if not any(is_current(r) for r in work.live_rows()):
+            _refuse(
+                "last_open_visit",
+                "This is the job's last booked day. Move it instead, or clear the "
+                "job's date to take it off the schedule.",
+                visit_id=str(visit_id),
+            )
+        return work
+
+    return _run_plan(visits, run)
+
+
 # ---------------------------------------------------------------- database
 
 
@@ -536,6 +710,25 @@ def visit_rows(db: Any, job_id: Any) -> list[Any]:
             Appointment.deleted_at.is_(None),
         ).order_by(Appointment.start_at, Appointment.id)
     ).scalars().all())
+
+
+def partial_clause(job_id_column: Any) -> Any:
+    """SQL for "a day of it was worked and no day is booked" (plan §5.3a):
+    the job holds a CLOSED visit and no Current one, in ``visit_state``'s
+    terms. The Partial Jobs queue selects it and late-open leaves it out, so
+    the two read one predicate and a job is never in both."""
+    from sqlalchemy import and_, exists, func, not_, or_, select  # noqa: PLC0415
+
+    from gdx_dispatch.models.tenant_models import Appointment  # noqa: PLC0415
+
+    status = func.lower(func.coalesce(Appointment.status, ""))
+    mine = and_(Appointment.job_id == job_id_column, Appointment.deleted_at.is_(None))
+    closed = exists(select(Appointment.id).where(
+        mine,
+        or_(status == "completed", and_(status == "cancelled", Appointment.arrived_at.is_not(None))),
+    ))
+    current = exists(select(Appointment.id).where(mine, status.notin_(["completed", "cancelled"])))
+    return and_(closed, not_(current))
 
 
 def as_value(appt: Any) -> VisitRow:

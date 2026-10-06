@@ -266,8 +266,58 @@
              the two the dispatcher actually works between are adjacent: techs
              first (they are the point of the board), this queue immediately
              under it, and the genuine parking lots last. Don't reorder these
-             without dragging a job from this queue onto a tech first. -->
-        <Card class="board-section unassigned-section-card" data-testid="unassigned-section" style="order: 2;"
+             without dragging a job from this queue onto a tech first.
+             2026-10-05 (multi-day jobs D11): Partial Jobs sits between the
+             techs and this queue, at order:2, so both drop sources stay one
+             short reach from the tech columns; this queue is order:3 and the
+             parking lots order:4. Hidden when empty, so on most days the
+             layout is the one described above. -->
+        <!-- Partial Jobs — a day of the job was worked and no further day is
+             booked (GET /api/dispatch/partial-jobs). Without this the job
+             drops off the board the day after it was worked: it has a past
+             date, a tech, and no visit coming. Dragging a card onto a tech is
+             the board's ordinary drop — PATCH /api/jobs with that tech and
+             the day — which books the next visit. -->
+        <Card v-if="visiblePartialJobs.length" class="board-section" data-testid="partial-jobs" style="order: 2;">
+          <template #title>
+            <div class="section-header">
+              <span class="section-icon pi pi-step-forward" style="color: var(--p-amber-500)"></span>
+              Partial Jobs — Need to Schedule
+              <Badge :value="visiblePartialJobs.length" severity="warn" />
+            </div>
+          </template>
+          <template #content>
+            <div class="unassigned-grid">
+              <div
+                v-for="job in visiblePartialJobs"
+                :key="job.id"
+                class="job-card unassigned-card"
+                :data-testid="`partial-job-${job.id}`"
+                draggable="true"
+                style="cursor:pointer"
+                @dragstart="onDragStart(job, $event)"
+                @dragend="draggingJobId = null"
+                @click="goToJob(job)"
+              >
+                <div class="job-card-header">
+                  <span class="job-customer">
+                    <i v-if="job.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" />
+                    {{ job.customer_name || 'No customer' }}
+                  </span>
+                  <JobStateChip :job="job" />
+                </div>
+                <div class="job-card-body">
+                  <p class="job-line job-title-line">{{ job.title || job.job_number || 'Job' }}</p>
+                  <p class="job-line job-line-dated" :data-testid="`partial-job-worked-${job.id}`">
+                    <i class="pi pi-calendar"></i> {{ partialWorkedLabel(job) }}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </template>
+        </Card>
+
+        <Card class="board-section unassigned-section-card" data-testid="unassigned-section" style="order: 3;"
           :class="{ 'drag-over': dragOverTechId === 'unassigned-queue' }"
           @dragover.prevent="onDragOver('unassigned-queue')"
           @dragleave="dragOverTechId = null"
@@ -448,7 +498,7 @@
              on doors); the dispatcher visits them occasionally, unlike the tech
              grid and the scheduling queue above, which they work between all
              day. Keeping them here is what makes those two adjacent. -->
-        <div v-if="parkingHoldingAreas.length || dispatchSettings.dispatch_show_unassigned_lane" class="holding-areas-section" style="order: 3;">
+        <div v-if="parkingHoldingAreas.length || dispatchSettings.dispatch_show_unassigned_lane" class="holding-areas-section" style="order: 4;">
           <div class="holding-areas-header">
             <h3>Holding Areas</h3>
             <Button icon="pi pi-plus" label="Add Area" size="small" severity="secondary"
@@ -541,7 +591,7 @@
              at order:1 when that section moved, which put a "Set Up Holding
              Areas" button up next to the tech grid on any board with no
              holding areas configured. -->
-        <div v-else style="order: 3;">
+        <div v-else style="order: 4;">
           <Button label="Set Up Holding Areas" icon="pi pi-plus" severity="secondary" size="small"
             @click="seedHoldingAreas" data-testid="seed-holding-areas" class="mb-3" />
         </div>
@@ -832,6 +882,7 @@ import TechEfficiencyPanel from '../components/TechEfficiencyPanel.vue';
 import { usePermission } from '../composables/usePermission';
 import TechTimelineColumn from '../components/TechTimelineColumn.vue';
 import { formatDurationHours } from '../utils/hours';
+import { formatShopDay } from '../utils/visitRefusals';
 
 const api = useApiWithToast();
 const toast = useToast();
@@ -884,6 +935,122 @@ async function loadLateOpen({ keepOnError = false } = {}) {
 // Permissions resolve asynchronously; the first board load can run before
 // they arrive and would skip this card until the next 45 s poll.
 watch(permissionsLoaded, (loaded) => { if (loaded) loadLateOpen({ keepOnError: true }); });
+
+// Partial Jobs (multi-day jobs plan §5.3a, D10-D12): a day was worked and
+// nothing further is booked. Same gate and same poll as late-open — the
+// server keeps the two lists disjoint (one predicate, partial_clause).
+const partialJobs = ref([]);
+const partialJobIds = computed(() => new Set(partialJobs.value.map((j) => String(j.id))));
+
+// Returns whether the list was read: a kept list is not evidence of anything.
+async function loadPartialJobs({ keepOnError = false } = {}) {
+  if (!hasPermission('jobs.read_all')) {
+    partialJobs.value = [];
+    return false;
+  }
+  try {
+    const res = await api.get('/api/dispatch/partial-jobs');
+    partialJobs.value = Array.isArray(res?.items) ? res.items : [];
+    return true;
+  } catch (e) {
+    console.warn('partial_jobs_failed', e);
+    if (!keepOnError) partialJobs.value = [];
+    return false;
+  }
+}
+
+watch(permissionsLoaded, (loaded) => { if (loaded) loadPartialJobs({ keepOnError: true }); });
+
+function partialWorkedLabel(job) {
+  const who = (job.worked_by || []).map((w) => w.name).filter(Boolean).join(', ');
+  const day = job.last_worked_day ? formatShopDay(job.last_worked_day) : 'an earlier day';
+  return who ? `Last worked ${day} by ${who}` : `Last worked ${day}`;
+}
+
+// Drop of a partial card onto a tech: the board's ordinary assignment, with
+// the date always sent. _doAssignJobInner sends none when the job already
+// has a date (a reassignment must not move time) — but a partial job's date
+// is the day it was worked, so without one nothing would be booked. With no
+// Current visit the server books this tech on this day (E4) and the crew
+// becomes [this tech]. If that tech already holds a visit of the job that
+// day, the server books nothing (E5) and answers 200 — so the list is
+// re-read and a card still there is said out loud, never shown as booked.
+async function placePartialJob(jobId, techId, scheduledAt, dayKey = zonedDateKey(scheduledAt)) {
+  const job = partialJobs.value.find((j) => String(j.id) === String(jobId));
+  const techLabel = (technicians.value.find((t) => String(t.id) === String(techId)) || {}).name || 'that tech';
+  const label = job?.customer_name || job?.title || 'Job';
+  // The next day of work is today or later: a drop on a past day's board
+  // would book a visit that is late the moment it exists.
+  if (dayKey && dayKey < zonedDateKey(new Date())) {
+    toast.add({
+      severity: 'warn',
+      summary: 'Nothing was booked',
+      detail: `${formatBoardDay(scheduledAt)} has passed. Pick today or a later day.`,
+      life: 6000,
+    });
+    return;
+  }
+  // E5: this tech closed a visit of the job that day, so the server would
+  // book nothing — yet still write the date and the crew (a time fix on a
+  // closed day is allowed on purpose). Say so instead of sending it.
+  if (dayKey && (job?.closed_days?.[dayKey] || []).some((t) => String(t) === String(techId))) {
+    toast.add({
+      severity: 'warn',
+      summary: 'Nothing was booked',
+      detail: `${techLabel} already worked ${label} on ${formatBoardDay(scheduledAt)}. Pick another day or tech.`,
+      life: 6000,
+    });
+    return;
+  }
+  // The server reads a date equal to the stored one (to the minute) as no
+  // date change: it would book nothing yet still swap the crew. A partial
+  // job's date is its last visit, so this is a tray drop on the day it was
+  // worked — ask for a time instead of sending it.
+  const minute = (v) => Math.floor(new Date(v).getTime() / 60000);
+  if (job?.scheduled_at && minute(job.scheduled_at) === minute(scheduledAt)) {
+    toast.add({
+      severity: 'warn',
+      summary: 'Nothing was booked',
+      detail: `${label} was already worked at that time on ${formatBoardDay(scheduledAt)}. Drop it on a time in ${techLabel}'s timeline.`,
+      life: 6000,
+    });
+    return;
+  }
+  await withBoardWrite(async () => {
+    try {
+      await api.patch(`/api/jobs/${jobId}`, {
+        assigned_tech_id: techId, assigned_to: techId, scheduled_at: scheduledAt,
+      });
+    } catch {
+      // useApi has already shown the server's refusal; the card stays.
+      await loadPartialJobs({ keepOnError: true });
+      return;
+    }
+    const [, , reread] = await Promise.all([fetchJobs(), fetchScheduledUnassigned(), loadPartialJobs({ keepOnError: true })]);
+    if (!reread) {
+      toast.add({
+        severity: 'info',
+        summary: 'Drop sent',
+        detail: `Partial Jobs could not be re-read, so whether ${label} was booked for ${techLabel} is not known yet. Check the job's Visits.`,
+        life: 6000,
+      });
+    } else if (partialJobIds.value.has(String(jobId))) {
+      toast.add({
+        severity: 'warn',
+        summary: 'Nothing was booked',
+        detail: `No visit of ${label} was booked for ${techLabel}, but the job's date now reads ${formatBoardDay(scheduledAt)}. Pick another day or tech.`,
+        life: 6000,
+      });
+    } else {
+      toast.add({
+        severity: 'success',
+        summary: 'Next day booked',
+        detail: `${label} → ${techLabel} on ${formatBoardDay(scheduledAt)}.`,
+        life: 4000,
+      });
+    }
+  });
+}
 
 function lateLabel(days) {
   if (days == null) return 'date passed';
@@ -948,7 +1115,7 @@ function onCloseoutDone() {
 watch(closeoutOpen, async (v) => {
   if (!v) {
     closeoutJob.value = null;
-    await Promise.all([fetchJobs(), loadLateOpen({ keepOnError: true })]);
+    await Promise.all([fetchJobs(), loadLateOpen({ keepOnError: true }), loadPartialJobs({ keepOnError: true })]);
   }
 });
 
@@ -1247,9 +1414,21 @@ const knownHoldingAreaIds = computed(
   () => new Set((holdingAreas.value || []).map((a) => String(a.id))),
 );
 
+// A partial job parked in a holding area (Needs Parts, …) waits there, not
+// in this queue — the same rule "New Jobs" applies below.
+const visiblePartialJobs = computed(() =>
+  partialJobs.value.filter((j) => {
+    if (!j.holding_area_id) return true;
+    const areaId = String(j.holding_area_id);
+    return areaId === readyToScheduleAreaId.value || !knownHoldingAreaIds.value.has(areaId);
+  }),
+);
+
 const unassignedJobs = computed(() =>
   jobs.value.filter((j) => {
     if (isCompletedStatus(j.status)) return false;
+    // One job, one queue: a partial job is in Partial Jobs above.
+    if (partialJobIds.value.has(String(j.id))) return false;
     // 2026-08-17 ("Assign to me"): techs can self-assign at create, so a
     // tech on the job no longer implies dispatch is done with it. A job
     // with a tech but NO date still needs scheduling and stays in this
@@ -1704,6 +1883,10 @@ async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
 // scheduled_duration_hours regardless of which target they land on.
 async function onTimelinePlace({ jobId, techId, startISO }) {
   if (!jobId || !techId || !startISO) return;
+  if (partialJobIds.value.has(String(jobId))) {
+    await placePartialJob(jobId, techId, startISO);
+    return;
+  }
   // Same-tech reschedule with existing duration → patch scheduled_at
   // only, no duration prompt (we know the height already, and the block
   // is just moving on the same tech's timeline).
@@ -1732,6 +1915,12 @@ async function onTimelinePlaceTray({ jobId, techId }) {
   if (!jobId || !techId) return;
   const d = new Date(selectedDate.value || new Date());
   d.setHours(0, 0, 0, 0);
+  if (partialJobIds.value.has(String(jobId))) {
+    const pad = (n) => String(n).padStart(2, '0');
+    const boardDay = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    await placePartialJob(jobId, techId, d.toISOString(), boardDay);
+    return;
+  }
   await assignJob(jobId, techId, d.toISOString());
 }
 
@@ -1884,8 +2073,40 @@ function formatScheduled(iso) {
   return formatDateTime(iso, { options });
 }
 
+// The day alone: a tray drop is midnight, and "12:00 AM" is not a time
+// anyone booked.
+function formatBoardDay(iso) {
+  if (!iso) return '';
+  const options = { weekday: 'short', month: 'short', day: 'numeric' };
+  if (tenantTimezone.value) options.timeZone = tenantTimezone.value;
+  return formatDateTime(iso, { options });
+}
+
 function getHoldingAreaJobs(areaId) {
-  return dayJobs.value.filter((j) => j.holding_area_id === areaId);
+  const here = dayJobs.value.filter((j) => j.holding_area_id === areaId);
+  // A parked partial job is dated the day it was last worked, so the day's
+  // job list never loads it; without this it would be on no screen at all.
+  const seen = new Set(here.map((j) => String(j.id)));
+  const parked = partialJobs.value.filter(
+    (j) => j.holding_area_id && String(j.holding_area_id) === String(areaId) && !seen.has(String(j.id)),
+  );
+  return [...here, ...parked];
+}
+
+// Park or release a partial job: only the holding area changes (no crew or
+// date edit) and the partial list is re-read. A partial job last worked on
+// the board day is in `jobs` too, so that copy follows the server.
+async function setPartialHoldingArea(jobId, areaId) {
+  await withBoardWrite(async () => {
+    try {
+      await api.patch(`/api/jobs/${jobId}`, { holding_area_id: areaId });
+      const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
+      if (idx !== -1) jobs.value[idx] = { ...jobs.value[idx], holding_area_id: areaId };
+    } catch {
+      // useApi has already shown the server's refusal.
+    }
+    await loadPartialJobs({ keepOnError: true });
+  });
 }
 
 async function moveToHoldingArea(event, areaId) {
@@ -1893,6 +2114,11 @@ async function moveToHoldingArea(event, areaId) {
   const transferId = event?.dataTransfer?.getData("text/plain");
   const jobId = transferId || draggingJobId.value;
   if (!jobId) return;
+  if (partialJobIds.value.has(String(jobId))) {
+    draggingJobId.value = null;
+    await setPartialHoldingArea(jobId, areaId);
+    return;
+  }
   const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
   if (idx === -1) return;
   draggingJobId.value = null;
@@ -1914,10 +2140,17 @@ async function moveToScheduleQueue(event) {
   const transferId = event?.dataTransfer?.getData("text/plain");
   const jobId = transferId || draggingJobId.value;
   if (!jobId) return;
+  const areaId = readyToScheduleAreaId.value || null;
+  // A partial job waits in Partial Jobs, not here: the drop only un-parks
+  // it, keeping its crew for the next day.
+  if (partialJobIds.value.has(String(jobId))) {
+    draggingJobId.value = null;
+    await setPartialHoldingArea(jobId, areaId);
+    return;
+  }
   const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
   if (idx === -1) return;
   draggingJobId.value = null;
-  const areaId = readyToScheduleAreaId.value || null;
   await withBoardWrite(async () => {
     jobs.value[idx] = { ...jobs.value[idx], holding_area_id: areaId, technician_id: null, assigned_tech_ids: [] };
     try {
@@ -1927,6 +2160,10 @@ async function moveToScheduleQueue(event) {
 }
 
 async function releaseFromHoldingArea(jobId) {
+  if (partialJobIds.value.has(String(jobId))) {
+    await setPartialHoldingArea(jobId, null);
+    return;
+  }
   const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
   if (idx === -1) return;
   await withBoardWrite(async () => {
@@ -2008,7 +2245,7 @@ async function seedHoldingAreas() {
 async function refreshBoard() {
   refreshing.value = true;
   try {
-    await Promise.all([fetchTechnicians(), fetchJobs(), fetchHoldingAreas(), fetchScheduledUnassigned(), loadLateOpen()]);
+    await Promise.all([fetchTechnicians(), fetchJobs(), fetchHoldingAreas(), fetchScheduledUnassigned(), loadLateOpen(), loadPartialJobs()]);
     await loadSkillOptions();
   } finally {
     refreshing.value = false;
@@ -2032,6 +2269,7 @@ async function pollBoard() {
       fetchHoldingAreas({ keepOnError: true }),
       fetchScheduledUnassigned({ keepOnError: true }),
       loadLateOpen({ keepOnError: true }),
+      loadPartialJobs({ keepOnError: true }),
     ]);
   } finally {
     autoPolling = false;
