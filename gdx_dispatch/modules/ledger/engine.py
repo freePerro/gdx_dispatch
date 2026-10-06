@@ -32,7 +32,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import AuditLog
+from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.modules.ledger.coa import LedgerConfigError, resolve_role_account
 from gdx_dispatch.modules.ledger.keys import (
     compute_seq,
@@ -163,14 +163,19 @@ def _check_period_lock(
             "(post to the first open day with a memo naming the true date, or "
             "override with accounting.close)"
         )
-    session.add(
-        AuditLog(
-            tenant_id=company_id,
-            user_id=created_by,
-            action="gl_posted_into_locked_period",
-            entity_type="gl_journal_entry",
-            details={"effective_at": str(effective_at), "lock_date": str(lock_date), "context": context},
-        )
+    # Hash-chained through the shared writer, not a hand-built AuditLog
+    # (GDXA-331). It flushes, never commits — but its first use per engine
+    # bootstraps the audit table with a commit, which here would land a
+    # half-posted journal. The only override caller (opening apply) runs on an
+    # ``audit_ready_db`` session, where that bootstrap already happened; a new
+    # override_lock=True caller must arrive the same way.
+    log_audit_event_sync(
+        session,
+        tenant_id=company_id,
+        user_id=created_by,
+        action="gl_posted_into_locked_period",
+        entity_type="gl_journal_entry",
+        details={"effective_at": str(effective_at), "lock_date": str(lock_date), "context": context},
     )
 
 
