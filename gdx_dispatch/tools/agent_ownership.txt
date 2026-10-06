@@ -51,6 +51,7 @@ conftest.py                                                  platform-core
 pytest.ini                                                   platform-core
 ruff.toml                                                    platform-core
 pyproject.toml                                               platform-core
+sgconfig.yml                                                 platform-core
 
 # Ratchet baselines and scanner/harness state at the repo root. Gated, via
 # COVERED_ROOT_GLOBS — `.tenant_plane_redundant_filter_baseline` is line-keyed,

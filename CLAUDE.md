@@ -136,6 +136,19 @@ this — the budget governs sweeps, not repairs.
   parallel session can move it under you.
 - `ssh gdx-vps` reaches production over Tailscale. Real mobile verification
   runs on the local Pixel 8 AVD, where `10.0.2.2` is the host.
+- **ast-grep is `~/.local/bin/ast-grep`** (pip `ast-grep-cli` 0.45.3, user <!-- user-site binary, outside this repo; link-ok -->
+  site). Invoke it as `ast-grep`, never `sg`: `/usr/bin/sg` is the Linux
+  group-switch command (a symlink to `newgrp`). The pip `sg` launcher was
+  deleted on purpose and a pip upgrade recreates it — delete it again if it
+  reappears; nothing checks for it. ast-grep has no `vue` language: `.vue`
+  files are reached only through the root `sgconfig.yml` mapping them to
+  `html`, after which `-l js` patterns match inside `<script>` blocks. Without
+  that file every `.vue` file is skipped silently (`--inspect summary` should
+  say `isProject=true`). The same file makes the repo an ast-grep project
+  with no rule directories, so a bare `ast-grep scan` at the root exits 0
+  having checked nothing — pass rules explicitly. A `severity: info` rule prints as `note[…]`, not
+  `info[…]`, so grepping for `info[` finds nothing — count findings with
+  `--json`.
 
 ## Build pipeline (every non-trivial change)
 

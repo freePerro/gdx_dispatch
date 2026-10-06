@@ -114,6 +114,7 @@ DOCUMENTED_ONLY_ROOT_RULES = frozenset(
         "conftest.py",
         "pytest.ini",
         "ruff.toml",
+        "sgconfig.yml",  # ast-grep's project config (vue -> html mapping)
         "pyproject.toml",
         # plugins-host's, and a doc rather than scanner state — gating a root
         # doc is a separate decision and not platform-core's to make. Found by
