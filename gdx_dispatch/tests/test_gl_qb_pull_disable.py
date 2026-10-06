@@ -370,3 +370,49 @@ def test_legacy_core_quickbooks_pulls_are_gone():
     assert not hasattr(legacy, "pull_invoices")
     assert not hasattr(legacy, "pull_payments")
     assert not hasattr(legacy, "_find_or_create_import_job")
+
+
+# GDXA-260 deleted the rest of the python-quickbooks SDK layer: the SDK is not
+# in requirements.txt, so every one of these raised ModuleNotFoundError the
+# moment it was called, and only monkeypatched tests kept them looking alive.
+_DELETED_LEGACY_SDK_LAYER = (
+    "_run_audit", "_touch_sync_success", "_touch_sync_error", "_extract_qb_id",
+    "_query_qb_entities", "_qb_create", "store_oauth_tokens", "get_qb_client",
+    "_upsert_map", "pull_customers", "_get_or_create_qb_catalog", "pull_items",
+    "pull_vendors", "push_customer", "push_invoice", "pull_accounts", "push_expense",
+)
+
+
+@pytest.mark.parametrize("name", _DELETED_LEGACY_SDK_LAYER)
+def test_legacy_core_quickbooks_sdk_layer_is_gone(name):
+    from gdx_dispatch.core import quickbooks as legacy
+
+    assert not hasattr(legacy, name), f"core.quickbooks.{name} came back"
+
+
+def test_nothing_imports_the_uninstalled_python_quickbooks_sdk():
+    """`quickbooks` (python-quickbooks) and `intuitlib` (intuit-oauth) are not
+    dependencies; an import of either is code that cannot run in the image.
+    The live client is modules/quickbooks/client.py over plain HTTP."""
+    import ast
+    import pathlib
+
+    pkg = pathlib.Path(__file__).resolve().parents[1]
+    offenders = []
+    for path in pkg.rglob("*.py"):
+        if "node_modules" in path.parts:
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                roots = [a.name.split(".")[0] for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                roots = [node.module.split(".")[0]]
+            else:
+                continue
+            if {"quickbooks", "intuitlib"} & set(roots):
+                offenders.append(f"{path.relative_to(pkg)}:{node.lineno}")
+    assert not offenders, offenders

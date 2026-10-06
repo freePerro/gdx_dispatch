@@ -119,7 +119,7 @@ _KNOWN_EXTERNAL: set[str] = {
     # Added 2026-09-27 (GDXA-173) when the scan widened past routers/ and the
     # blank-literal bug was fixed. All three are created by raw DDL, so they
     # exist in every database but will never appear in TenantBase.metadata.
-    "qb_accounts",      # core/quickbooks.py:652, modules/quickbooks/sync.py
+    "qb_accounts",      # modules/quickbooks/sync.py
     "server_errors",    # migrations/versions/001_squashed_baseline.py
     "plugin_consent",   # core/plugin_consent.py:151
 }
