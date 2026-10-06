@@ -48,13 +48,14 @@
                placement has no keyboard path yet — known limitation. -->
           <div
             v-for="job in trayJobs"
-            :key="job.id"
+            :key="job.card_key || job.id"
             class="tray-chip"
+            :class="{ 'tray-chip--fixed': !canDrag(job) }"
             role="button"
             tabindex="0"
             :aria-label="trayAriaLabel(job)"
-            draggable="true"
-            :data-testid="`tray-job-${job.id}`"
+            :draggable="canDrag(job) ? 'true' : 'false'"
+            :data-testid="`tray-job-${job.card_key || job.id}`"
             @dragstart="onJobDragStart(job, $event)"
             @dragend="emit('job-drag-end')"
             @click="$emit('open-drawer', job)"
@@ -66,6 +67,7 @@
               {{ displayCustomer(job) }}
             </span>
             <span v-if="displayTitle(job)" class="tray-title">{{ displayTitle(job) }}</span>
+            <span v-if="dayBadge(job)" class="day-badge" :data-testid="`day-badge-${job.card_key}`">{{ dayBadge(job) }}</span>
             <span class="tray-dur">{{ formatDuration(job.effective_duration_hours) }}</span>
           </div>
         </div>
@@ -117,6 +119,7 @@
             :class="{
               'job-block--overflow': block.overflowPx > 0,
               'job-block--overlap': block.overlapCount > 1,
+              'job-block--fixed': !canDrag(block.job),
             }"
             :style="{
               top: block.topPx + 'px',
@@ -129,7 +132,7 @@
             tabindex="0"
             :aria-label="blockAriaLabel(block)"
             :title="blockHoverTitle(block)"
-            draggable="true"
+            :draggable="canDrag(block.job) ? 'true' : 'false'"
             @dragstart="onJobDragStart(block.job, $event)"
             @dragend="emit('job-drag-end')"
             @click="$emit('open-drawer', block.job)"
@@ -145,8 +148,11 @@
                  load-bearing datum on a timeline. The hover title + aria
                  label still carry the job title there. -->
             <div v-if="displayTitle(block.job) && block.heightPx >= 56" class="block-title">{{ displayTitle(block.job) }}</div>
+            <!-- A visit's day badge rides the meta line, after the time: a
+                 line of its own would clip the start time on a short block. -->
             <div class="block-meta">
               {{ formatTime(block.startDate) }} · {{ formatDuration(block.durationHours) }}
+              <span v-if="dayBadge(block.job)" class="day-badge" :data-testid="`day-badge-${block.id}`">{{ dayBadge(block.job) }}</span>
             </div>
             <div v-if="block.overflowPx > 0" class="block-overflow">
               +{{ formatDuration(block.overflowHours) }} over
@@ -250,7 +256,8 @@ const jobBlocks = computed(() => {
     const heightPx = Math.max(20, Math.min(wantedHeightPx, Math.max(20, maxHeightPx)));
     const overflowHours = Math.max(0, endFloat - shiftEndHours.value);
     return {
-      id: job.id,
+      // A crew's cards for one day share the job id.
+      id: job.card_key || job.id,
       job,
       startDate: start,
       startFloat,
@@ -340,7 +347,8 @@ function displayTitle(job) {
 // covers open-drawer only; drag placement stays mouse-only (known limitation).
 function blockAriaLabel(block) {
   const title = displayTitle(block.job);
-  return `Open job: ${displayCustomer(block.job)}${title ? `, ${title}` : ''}, ${formatTime(block.startDate)}, ${formatDuration(block.durationHours)}`;
+  const day = dayBadge(block.job);
+  return `Open job: ${displayCustomer(block.job)}${title ? `, ${title}` : ''}, ${formatTime(block.startDate)}, ${formatDuration(block.durationHours)}${day ? `, ${day}` : ''}`;
 }
 function trayAriaLabel(job) {
   const title = displayTitle(job);
@@ -350,7 +358,8 @@ function trayAriaLabel(job) {
 // title line, so hovering must reveal the full identity.
 function blockHoverTitle(block) {
   const title = displayTitle(block.job);
-  return `${displayCustomer(block.job)}${title ? ` — ${title}` : ''} (${formatTime(block.startDate)} · ${formatDuration(block.durationHours)})`;
+  const day = dayBadge(block.job);
+  return `${displayCustomer(block.job)}${title ? ` — ${title}` : ''} (${formatTime(block.startDate)} · ${formatDuration(block.durationHours)}${day ? ` · ${day}` : ''})`;
 }
 
 // Drop coordinate → snapped ISO timestamp on selectedDate.
@@ -368,7 +377,27 @@ function dropYToISO(clientY, bodyEl) {
   return d.toISOString();
 }
 
+// A visit card is one day of a multi-day job (multi-day jobs plan §5.3).
+// Only an OPEN day of a live job moves by drag (visit_movable, set by the
+// board): an on-site or finished day changes through Complete and Undo
+// arrival on the job's Visits card, and a finished job's days stay put.
+function canDrag(job) {
+  return !job.visit_id || job.visit_movable === true;
+}
+
+const VISIT_STATE_NOTE = { on_site: 'on site', closed: 'done for the day' };
+
+function dayBadge(job) {
+  if (!job.visit_id || !(job.day_index && job.day_count >= 2)) return '';
+  const note = VISIT_STATE_NOTE[job.visit_state];
+  return `Day ${job.day_index} of ${job.day_count}${note ? ` · ${note}` : ''}`;
+}
+
 function onJobDragStart(job, event) {
+  if (!canDrag(job)) {
+    event?.preventDefault?.();
+    return;
+  }
   if (event?.dataTransfer) {
     event.dataTransfer.setData('text/plain', String(job.id));
     event.dataTransfer.effectAllowed = 'move';
@@ -468,6 +497,7 @@ defineExpose({ dropYToISO });
   max-width: 100%;
 }
 .tray-chip:active { cursor: grabbing; }
+.tray-chip--fixed, .tray-chip--fixed:active { cursor: pointer; }
 .tray-chip:focus-visible {
   outline: 2px solid var(--interactive-primary);
   outline-offset: 2px;
@@ -562,6 +592,17 @@ defineExpose({ dropYToISO });
   box-sizing: border-box;
 }
 .job-block:active { cursor: grabbing; }
+.job-block--fixed, .job-block--fixed:active { cursor: pointer; opacity: 0.75; }
+.day-badge {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 0 0.3rem;
+  border-radius: 4px;
+  background: var(--p-content-hover-background, rgba(0, 0, 0, 0.06));
+  color: var(--p-text-color);
+}
 .job-block:focus-visible {
   outline: 2px solid var(--interactive-primary);
   outline-offset: 2px;
@@ -576,7 +617,7 @@ defineExpose({ dropYToISO });
 }
 .block-customer { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .block-title { font-size: 0.65rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.block-meta { font-size: 0.65rem; color: var(--p-text-muted-color, #6b7280); }
+.block-meta { font-size: 0.65rem; color: var(--p-text-muted-color, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .block-overflow {
   position: absolute;
   bottom: 2px;

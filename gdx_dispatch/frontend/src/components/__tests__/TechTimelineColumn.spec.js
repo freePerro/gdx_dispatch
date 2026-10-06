@@ -270,4 +270,34 @@ describe('TechTimelineColumn', () => {
     expect(block.classes()).toContain('job-block--overflow');
     expect(block.find('.block-overflow').text()).toMatch(/over/);
   });
+
+  // Multi-day jobs plan §5.3 (PR 2b): two days of one job in one column are
+  // two cards, keyed by visit, each with its day; a started or closed day
+  // cannot be dragged.
+  it('draws one card per visit with a day badge, and only an open one drags', async () => {
+    const sel = new Date(2026, 4, 21);
+    const day = (visit, state, h) => ({
+      id: 'j9', customer_name: 'Dana', visit_id: visit, card_key: `j9:${visit}`,
+      visit_state: state, visit_movable: state === 'open', day_index: visit === 'v1' ? 1 : 2, day_count: 3,
+      scheduled_at: new Date(2026, 4, 21, h, 0).toISOString(), scheduled_duration_hours: 2,
+    });
+    const w = mountColumn({ jobs: [day('v1', 'closed', 8), day('v2', 'open', 13)], selectedDate: sel });
+    const closed = w.find('[data-testid="timeline-job-j9:v1"]');
+    const open = w.find('[data-testid="timeline-job-j9:v2"]');
+    expect(w.find('[data-testid="day-badge-j9:v1"]').text()).toBe('Day 1 of 3 · done for the day');
+    expect(w.find('[data-testid="day-badge-j9:v2"]').text()).toBe('Day 2 of 3');
+    // The badge rides the time line, after the time, so a short card keeps
+    // its start time; an ellipsized badge is still in the hover title.
+    expect(open.find('.block-meta [data-testid="day-badge-j9:v2"]').exists()).toBe(true);
+    expect(open.find('.block-meta').text()).toMatch(/^\d{1,2}:00 PM · 2h\s+Day 2 of 3$/);
+    expect(open.attributes('title')).toContain('Day 2 of 3');
+    expect(open.attributes('aria-label')).toContain('Day 2 of 3');
+    expect(closed.attributes('draggable')).toBe('false');
+    expect(closed.classes()).toContain('job-block--fixed');
+    expect(open.attributes('draggable')).toBe('true');
+    await closed.trigger('dragstart', { dataTransfer: { setData: () => {} } });
+    expect(w.emitted('job-drag-start')).toBeUndefined();
+    await open.trigger('dragstart', { dataTransfer: { setData: () => {}, effectAllowed: '' } });
+    expect(w.emitted('job-drag-start')).toHaveLength(1);
+  });
 });

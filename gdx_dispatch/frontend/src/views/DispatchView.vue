@@ -337,9 +337,9 @@
             <div class="unassigned-grid">
               <div
                 v-for="job in unassignedJobs"
-                :key="job.id"
+                :key="job.card_key || job.id"
                 class="job-card unassigned-card"
-                :data-testid="`unassigned-job-${job.id}`"
+                :data-testid="`unassigned-job-${job.card_key || job.id}`"
                 draggable="true"
                 style="cursor:pointer"
                 @dragstart="onDragStart(job, $event)"
@@ -355,6 +355,7 @@
                 </div>
                 <div class="job-card-body">
                   <p v-if="displayTitle(job)" class="job-line job-title-line" :data-testid="`unassigned-title-${job.id}`">{{ displayTitle(job) }}</p>
+                  <p v-if="visitDayLabel(job)" class="job-line" :data-testid="`day-badge-${job.card_key}`"><i class="pi pi-calendar-clock"></i> {{ visitDayLabel(job) }}</p>
                   <p class="job-line"><i class="pi pi-briefcase"></i> {{ job.job_type || 'Service' }}</p>
                   <!-- This section now also carries dated-but-untechhed jobs
                        (see unassignedJobs), so the card has to say which it
@@ -379,15 +380,19 @@
                     optionValue="id"
                     placeholder="Assign to tech..."
                     class="assign-dropdown"
-                    :data-testid="`assign-dropdown-${job.id}`"
-                    @change="assignJob(job.id, $event.value)"
+                    :data-testid="`assign-dropdown-${job.card_key || job.id}`"
+                    @change="job.visit_id ? assignVisitTech(job, $event.value) : assignJob(job.id, $event.value)"
                   />
                   <!-- Assigning a tech dates the job to the selected day
                        (_doAssignJobInner case c). When the dispatcher needs a
                        specific date/time instead, send them to the job's
                        schedule dialog — the one place that writes
                        Job.scheduled_at properly. -->
+                  <!-- Not on one day of a multi-day job: the job's schedule
+                       dialog acts on its first open day. That day's Move is
+                       on the job's Visits card. -->
                   <Button
+                    v-if="!job.visit_id"
                     icon="pi pi-calendar-plus"
                     severity="secondary"
                     outlined
@@ -564,8 +569,8 @@
                 </div>
               </template>
               <template #content>
-                <div v-for="job in getHoldingAreaJobs(area.id)" :key="job.id"
-                  class="job-card holding-job-card" draggable="true"
+                <div v-for="job in getHoldingAreaJobs(area.id)" :key="job.card_key || job.id"
+                  class="job-card holding-job-card" :draggable="job.visit_id && !job.visit_movable ? 'false' : 'true'"
                   :style="{ borderLeft: '3px solid ' + area.color, cursor: 'pointer' }"
                   :data-testid="`holding-job-${area.id}-${job.id}`"
                   @dragstart="onDragStart(job, $event)"
@@ -577,7 +582,7 @@
                     :style="{ backgroundColor: area.color, color: readableText(area.color), borderColor: area.color }" />
                   <JobStateChip v-if="job.display_state || job.status" :job="job" :show-icon="false" />
                   <Button label="Release" icon="pi pi-arrow-right" size="small" text
-                    @click.stop="releaseFromHoldingArea(job.id)" />
+                    @click.stop="releaseFromHoldingArea(job.id, job)" />
                 </div>
                 <p v-if="!getHoldingAreaJobs(area.id).length" class="empty-message drop-hint">
                   <i class="pi pi-inbox"></i> Drop jobs here
@@ -625,8 +630,9 @@
             <template #content>
               <div
                 v-for="job in day.jobs"
-                :key="job.id"
+                :key="job.card_key || job.id"
                 class="job-card week-job-card"
+                :data-testid="`week-job-${day.date}-${job.card_key || job.id}`"
               >
                 <div class="job-card-header">
                   <span class="job-customer">
@@ -637,6 +643,7 @@
                 </div>
                 <p v-if="displayTitle(job)" class="job-line job-title-line">{{ displayTitle(job) }}</p>
                 <p class="job-line"><i class="pi pi-user"></i> {{ techName(job.technician_id) }}</p>
+                <p v-if="visitDayLabel(job)" class="job-line" :data-testid="`week-day-badge-${job.card_key}`"><i class="pi pi-calendar-clock"></i> {{ visitDayLabel(job) }}</p>
                 <p class="job-line"><i class="pi pi-clock"></i> {{ job.time_window || 'Anytime' }} · <span class="job-duration">{{ formatDurationHours(job.effective_duration_hours) }}</span></p>
               </div>
               <p v-if="!day.jobs.length" class="empty-message">No jobs</p>
@@ -803,6 +810,9 @@
             <strong>Technician:</strong> {{ techName(drawerJob.technician_id) }}
           </p>
           <p class="job-drawer-line"><strong>Scheduled:</strong> {{ drawerJob.scheduled_at || 'Not scheduled' }}</p>
+          <p v-if="visitDayLabel(drawerJob)" class="job-drawer-line" data-testid="dispatch-job-drawer-day">
+            <strong>Visit:</strong> {{ visitDayLabel(drawerJob) }}
+          </p>
           <!-- The board's ONE way to complete a job (2026-08-28, #526). Prod:
                the owner submitted 8 of the last 19 closeouts — the office
                DOES close jobs out, and the backend already handles a non-tech
@@ -860,7 +870,7 @@ import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import { usePollingRefresh } from '../composables/usePollingRefresh';
 import { useRouter } from 'vue-router';
 import { useApiWithToast } from '../composables/useApiWithToast';
-import { useTenantTimezone } from '../composables/useTenantTimezone';
+import { toShopWallClock, useTenantTimezone } from '../composables/useTenantTimezone';
 import { formatTime, formatDateTime } from '../composables/useFormatters';
 import { useToast } from 'primevue/usetoast';
 import Avatar from 'primevue/avatar';
@@ -882,7 +892,7 @@ import TechEfficiencyPanel from '../components/TechEfficiencyPanel.vue';
 import { usePermission } from '../composables/usePermission';
 import TechTimelineColumn from '../components/TechTimelineColumn.vue';
 import { formatDurationHours } from '../utils/hours';
-import { formatShopDay } from '../utils/visitRefusals';
+import { formatShopDay, refusalOf } from '../utils/visitRefusals';
 
 const api = useApiWithToast();
 const toast = useToast();
@@ -1299,6 +1309,62 @@ function normalizeJob(rawJob) {
   };
 }
 
+// Visit cards (multi-day jobs plan §5.3, PR 2b). A job its job row cannot
+// draw — more than one day, or a day whose visit was moved off the row's
+// time or tech — comes from GET /api/dispatch/visits as one item per visit
+// in the window, and is drawn from those instead of its job row. Each card
+// is the job with the visit's tech, start and length laid over it, so the
+// columns, tray, capacity totals and drawer read it like any other card.
+const boardVisits = ref([]);
+const visitJobIds = computed(() => new Set(boardVisits.value.map((v) => String(v.id))));
+
+function hoursBetween(startIso, endIso) {
+  const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
+  return Number.isFinite(ms) && ms > 0 ? Math.round((ms / 3_600_000) * 100) / 100 : null;
+}
+
+function toVisitCard(item) {
+  const job = normalizeJob(item);
+  const tech = item.visit_tech_id ? String(item.visit_tech_id) : null;
+  const hours = item.visit_end ? hoursBetween(item.visit_start, item.visit_end) : null;
+  return {
+    ...job,
+    scheduled_at: item.visit_start,
+    technician_id: tech,
+    assigned_to: tech,
+    lead_tech_id: tech,
+    assigned_tech_ids: tech ? [tech] : [],
+    scheduled_duration_hours: hours,
+    effective_duration_hours: hours,
+    // The whole job's hours, for a lane that lists the job once.
+    job_duration_hours: job.effective_duration_hours,
+    visit_id: String(item.visit_id),
+    visit_state: item.visit_state,
+    // Only an open visit of a live job moves; the server refuses the rest.
+    visit_movable: item.visit_state === 'open' && !isTerminalJob(item),
+    visit_day: item.visit_day,
+    day_index: item.day_index,
+    day_count: item.day_count,
+    job_has_crew: Boolean(item.job_has_crew),
+    card_key: `${job.id}:${item.visit_id}`,
+  };
+}
+
+// The board's cards: job rows for jobs their row draws, visit cards for the rest.
+const boardJobs = computed(() => [
+  ...jobs.value.filter((j) => !visitJobIds.value.has(String(j.id))),
+  ...boardVisits.value.map(toVisitCard),
+]);
+
+const VISIT_STATE_LABEL = { on_site: 'on site', closed: 'done for the day' };
+// A job of one day gets no day label: "Day 1 of 1" says nothing.
+function visitDayLabel(job) {
+  if (!job?.visit_id || !(job.day_index && job.day_count >= 2)) return '';
+  const day = `Day ${job.day_index} of ${job.day_count}`;
+  const note = VISIT_STATE_LABEL[job.visit_state];
+  return note ? `${day} · ${note}` : day;
+}
+
 // Sprint dispatch-capacity (2026-05-20) — duration + capacity helpers.
 // JS day-of-week (0 = Sun) ↔ workday bitmask (Mon=1..Sun=64).
 function workdayBitForDate(date) {
@@ -1364,7 +1430,7 @@ const rangeFilteredJobs = computed(() => {
   // date, and matchesDate() treats an undated job as matching WHATEVER day is
   // selected, so unfiltering there would redraw all of them above the tech
   // columns on every date. The Jobs page's "Completed" tab is that history.
-  return jobs.value.filter((job) => {
+  return boardJobs.value.filter((job) => {
     if (!startStamp && !endStamp) return true;
     const timestamp = job.scheduled_at ? new Date(job.scheduled_at).getTime() : null;
     if (!timestamp) return true;
@@ -1425,7 +1491,7 @@ const visiblePartialJobs = computed(() =>
 );
 
 const unassignedJobs = computed(() =>
-  jobs.value.filter((j) => {
+  boardJobs.value.filter((j) => {
     if (isCompletedStatus(j.status)) return false;
     // One job, one queue: a partial job is in Partial Jobs above.
     if (partialJobIds.value.has(String(j.id))) return false;
@@ -1449,6 +1515,9 @@ const unassignedJobs = computed(() =>
     // fetched range (±1 day, or the week/custom range) and would otherwise
     // pile next month's work into today's column.
     if (!matchesDate(j, selectedDateStr.value)) return false;
+    // An unassigned day of a job that has a crew is in no red-lane row (that
+    // lane lists jobs with no crew at all), so it waits here either way.
+    if (j.visit_id && j.job_has_crew) return true;
     return !dispatchSettings.value.dispatch_show_unassigned_lane;
   })
 );
@@ -1711,7 +1780,16 @@ async function geocodeMissing() {
 
 // --- Drag & Drop ---
 
+// The visit card being dragged: a drop moves that visit, never its job row.
+const draggingCard = ref(null);
+
 function onDragStart(job, event) {
+  // A day that has started or closed stays where it was worked.
+  if (job?.visit_id && !job.visit_movable) {
+    event?.preventDefault?.();
+    return;
+  }
+  draggingCard.value = job?.visit_id ? job : null;
   draggingJobId.value = job.id;
   if (event?.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move';
@@ -1723,6 +1801,72 @@ function onDragOver(techId) {
   dragOverTechId.value = techId;
 }
 
+// The dragged visit card, if this drop carries one (the drop names the job;
+// the card is remembered from the drag start). Cleared once read.
+function takeDraggedVisit(jobId) {
+  const card = draggingCard.value;
+  draggingCard.value = null;
+  return card && String(card.id) === String(jobId) ? card : null;
+}
+
+// A day of a multi-day job is moved on the board or on the job's Visits
+// card; parking and un-scheduling act on the whole job, so they are not a
+// drop of one day.
+function refuseWholeJobDrop(card, where) {
+  toast.add({
+    severity: 'warn',
+    summary: 'Nothing was moved',
+    detail: `That card is one day of ${card.customer_name || card.title || 'a job'}. ${where} acts on the whole job: use the Visits card on the job page.`,
+    life: 6000,
+  });
+}
+
+// Move one visit (PATCH /api/jobs/{id}/visits/{visit_id}). The drop instant
+// is turned into the shop day and wall-clock time the route takes; the
+// visit keeps its length. A refusal is the server's own sentence, and the
+// board is re-read either way so the card sits where the server put it.
+function shopDayAndTime(iso) {
+  const wall = toShopWallClock(iso, tenantTimezone.value);
+  if (!wall) return null;
+  const pad = (n) => String(n).padStart(2, '0');
+  return {
+    day: `${wall.getFullYear()}-${pad(wall.getMonth() + 1)}-${pad(wall.getDate())}`,
+    time: `${pad(wall.getHours())}:${pad(wall.getMinutes())}`,
+  };
+}
+
+async function moveVisitCard(card, techId, startISO) {
+  const at = shopDayAndTime(startISO);
+  if (at) await sendVisitMove(card, techId, at.day, at.time);
+}
+
+async function sendVisitMove(card, techId, day, time) {
+  const body = { day, start_time: time };
+  const sameTech = String(techId ?? '') === String(card.technician_id ?? '');
+  if (!sameTech) body.tech_id = techId;
+  const now = shopDayAndTime(card.scheduled_at);
+  if (sameTech && now && now.day === day && now.time === time) return;
+  await withBoardWrite(async () => {
+    try {
+      await api.patch(`/api/jobs/${card.id}/visits/${card.visit_id}`, body, { suppressErrorToast: true });
+    } catch (e) {
+      toast.add({
+        severity: 'warn',
+        summary: 'Visit not moved',
+        detail: refusalOf(e)?.detail || e?.message || 'The visit could not be moved.',
+        life: 7000,
+      });
+    }
+    await fetchJobs();
+  });
+}
+
+// The New Jobs dropdown on an unassigned day: that day gets the tech, at its time.
+async function assignVisitTech(card, techId) {
+  if (!techId) return;
+  await moveVisitCard(card, techId, card.scheduled_at);
+}
+
 async function handleDrop(techId, event) {
   event?.preventDefault?.();
   dragOverTechId.value = null;
@@ -1730,6 +1874,11 @@ async function handleDrop(techId, event) {
   const dropJobId = transferId || draggingJobId.value;
   if (!dropJobId) return;
   draggingJobId.value = null;
+  const card = takeDraggedVisit(dropJobId);
+  if (card) {
+    await moveVisitCard(card, techId, card.scheduled_at);
+    return;
+  }
   await assignJob(dropJobId, techId);
 }
 
@@ -1883,6 +2032,11 @@ async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
 // scheduled_duration_hours regardless of which target they land on.
 async function onTimelinePlace({ jobId, techId, startISO }) {
   if (!jobId || !techId || !startISO) return;
+  const card = takeDraggedVisit(jobId);
+  if (card) {
+    await moveVisitCard(card, techId, startISO);
+    return;
+  }
   if (partialJobIds.value.has(String(jobId))) {
     await placePartialJob(jobId, techId, startISO);
     return;
@@ -1913,6 +2067,12 @@ async function onTimelinePlace({ jobId, techId, startISO }) {
 
 async function onTimelinePlaceTray({ jobId, techId }) {
   if (!jobId || !techId) return;
+  const card = takeDraggedVisit(jobId);
+  if (card) {
+    // The tray is the day with no time: shop midnight of the board day.
+    await sendVisitMove(card, techId, selectedDateStr.value, '00:00');
+    return;
+  }
   const d = new Date(selectedDate.value || new Date());
   d.setHours(0, 0, 0, 0);
   if (partialJobIds.value.has(String(jobId))) {
@@ -1993,9 +2153,44 @@ function jobsDateQuery() {
   return `date=${selectedDateStr.value}`;
 }
 
+// Only the latest call may write: a date change, a poll and a post-write
+// re-read can overlap, and an older answer landing last would redraw the
+// wrong day.
+let fetchSeq = 0;
+const VISIT_WINDOW_MAX_DAYS = 366;
+
+function visitsReadable(query) {
+  if (!hasPermission('jobs.read_all')) return false;
+  const from = /date_from=([\d-]+)/.exec(query);
+  const to = /date_to=([\d-]+)/.exec(query);
+  if (!from || !to) return true;
+  const span = (new Date(to[1]) - new Date(from[1])) / 86_400_000;
+  return span >= 0 && span < VISIT_WINDOW_MAX_DAYS;
+}
+
 async function fetchJobs({ keepOnError = false } = {}) {
-  try {
-    const data = await api.get(`/api/jobs?${jobsDateQuery()}`);
+  const seq = ++fetchSeq;
+  const query = jobsDateQuery();
+  const settle = (p) => p.then((d) => ({ ok: true, d }), (e) => ({ ok: false, e }));
+  const [jobsRes, visitsRes] = await Promise.all([
+    settle(api.get(`/api/jobs?${query}`)),
+    visitsReadable(query) ? settle(api.get(`/api/dispatch/visits?${query}`)) : Promise.resolve(null),
+  ]);
+  if (seq !== fetchSeq) return;
+  if (visitsRes === null) {
+    boardVisits.value = [];
+  } else if (visitsRes.ok) {
+    boardVisits.value = Array.isArray(visitsRes.d?.items) ? visitsRes.d.items : [];
+  } else {
+    console.warn('board_visits_failed', visitsRes.e);
+    if (!keepOnError) boardVisits.value = [];
+  }
+  if (!jobsRes.ok) {
+    if (!keepOnError) jobs.value = [];
+    return;
+  }
+  {
+    const data = jobsRes.d;
     const rows = Array.isArray(data) ? data : data?.items || data?.data || [];
     jobs.value = rows.map(normalizeJob);
     // The drawer must describe the job as it IS, not as it was when opened.
@@ -2005,15 +2200,22 @@ async function fetchJobs({ keepOnError = false } = {}) {
     // out, and a second closeout would supersede the tech's attestation
     // (audit 2026-08-28, #526). Re-point it; if the job left the board,
     // close the drawer rather than keep describing a ghost.
+    // A visit card is found by its card key first, so the drawer keeps
+    // describing the same day.
     if (drawerJob.value) {
-      const fresh = jobs.value.find((j) => String(j.id) === String(drawerJob.value.id));
+      const cards = boardJobs.value;
+      const key = drawerJob.value.card_key;
+      const fresh = (key && cards.find((j) => j.card_key === key))
+        || cards.find((j) => String(j.id) === String(drawerJob.value.id));
       if (fresh) drawerJob.value = fresh;
       else closeJobDrawer();
     }
-  } catch {
-    if (!keepOnError) jobs.value = [];
   }
 }
+
+// The visits read is gated on jobs.read_all, which may resolve after the
+// first board load; read again once it has.
+watch(permissionsLoaded, (loaded) => { if (loaded) fetchJobs({ keepOnError: true }); });
 
 async function fetchHoldingAreas({ keepOnError = false } = {}) {
   try {
@@ -2083,7 +2285,14 @@ function formatBoardDay(iso) {
 }
 
 function getHoldingAreaJobs(areaId) {
-  const here = dayJobs.value.filter((j) => j.holding_area_id === areaId);
+  // A lane lists a job once: a multi-day job parked here has a card per day
+  // on the board, and the lane total is the job's hours, not one day's.
+  const seenJobs = new Set();
+  const here = dayJobs.value.filter((j) => {
+    if (j.holding_area_id !== areaId || seenJobs.has(String(j.id))) return false;
+    seenJobs.add(String(j.id));
+    return true;
+  }).map((j) => (j.visit_id ? { ...j, effective_duration_hours: j.job_duration_hours } : j));
   // A parked partial job is dated the day it was last worked, so the day's
   // job list never loads it; without this it would be on no screen at all.
   // Normalized like the day list, so the lane total and the drawer read
@@ -2116,6 +2325,12 @@ async function moveToHoldingArea(event, areaId) {
   const transferId = event?.dataTransfer?.getData("text/plain");
   const jobId = transferId || draggingJobId.value;
   if (!jobId) return;
+  const card = takeDraggedVisit(jobId);
+  if (card) {
+    draggingJobId.value = null;
+    refuseWholeJobDrop(card, 'A holding area');
+    return;
+  }
   if (partialJobIds.value.has(String(jobId))) {
     draggingJobId.value = null;
     await setPartialHoldingArea(jobId, areaId);
@@ -2143,6 +2358,12 @@ async function moveToScheduleQueue(event) {
   const jobId = transferId || draggingJobId.value;
   if (!jobId) return;
   const areaId = readyToScheduleAreaId.value || null;
+  const card = takeDraggedVisit(jobId);
+  if (card) {
+    draggingJobId.value = null;
+    refuseWholeJobDrop(card, 'The New Jobs queue');
+    return;
+  }
   // A partial job waits in Partial Jobs, not here: the drop only un-parks
   // it, keeping its crew for the next day.
   if (partialJobIds.value.has(String(jobId))) {
@@ -2161,9 +2382,24 @@ async function moveToScheduleQueue(event) {
   });
 }
 
-async function releaseFromHoldingArea(jobId) {
+async function releaseFromHoldingArea(jobId, card = null) {
   if (partialJobIds.value.has(String(jobId))) {
     await setPartialHoldingArea(jobId, null);
+    // The lane's card may be a visit card, which only the visits read redraws.
+    if (card?.visit_id) await fetchJobs();
+    return;
+  }
+  // A multi-day job is drawn from its visits, so it has no job row to edit
+  // in place: write the area and re-read.
+  if (card?.visit_id) {
+    await withBoardWrite(async () => {
+      try {
+        await api.patch(`/api/jobs/${jobId}`, { holding_area_id: null });
+      } catch {
+        // useApi has already shown the server's refusal.
+      }
+      await fetchJobs();
+    });
     return;
   }
   const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
@@ -2331,6 +2567,11 @@ defineExpose({
   onDragStart,
   handleDrop,
   draggingJobId,
+  boardJobs,
+  moveToHoldingArea,
+  moveToScheduleQueue,
+  releaseFromHoldingArea,
+  getHoldingAreaJobs,
   // Sprint dispatch-capacity / dispatch-timeline surface
   assignJob,
   onTimelinePlace,
