@@ -26,7 +26,7 @@ from gdx_dispatch.core.log_redact import redact_email
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.name_normalize import humanize_name
 from gdx_dispatch.core.tenant import company_id
-from gdx_dispatch.models.tenant_models import Customer, Job
+from gdx_dispatch.models.tenant_models import Customer, CustomerLocation, Job
 
 log = logging.getLogger(__name__)
 
@@ -188,6 +188,10 @@ class CustomerLocationPatchIn(BaseModel):
 # The dialog sends "" for a field left blank; store NULL, the column's
 # "not known" value (the QB import and the geocode reset both write NULL).
 _LOCATION_TEXT_FIELDS = ("city", "state", "zip", "access_notes")
+# The fields the QuickBooks sub-customer pull writes, so the ones a human edit
+# claims into local_edit_fields (modules/quickbooks/sync.py,
+# _upsert_subcustomer_location). access_notes is GDX-only and claims nothing.
+_LOCATION_QB_FIELDS = ("label", "address", "city", "state", "zip")
 
 
 def _blank_to_none(value: str | None) -> str | None:
@@ -266,6 +270,70 @@ def _location_dict(row: Any) -> dict[str, Any]:
         "is_primary": bool(row.get("is_primary", False)),
         "created_at": _normalize_datetime(row.get("created_at")),
     }
+
+
+# Location columns whose before/after values go into the audit row. Absent:
+# access_notes holds gate and lock-box codes, and audit_logs is append-only —
+# its row says THAT the notes changed, never what they said (the contact audit
+# makes the same call: "WHICH fields, never the values").
+_LOCATION_AUDIT_VALUE_FIELDS = ("label", "address", "city", "state", "zip", "is_primary")
+
+
+def _audit_location(
+    db: Session,
+    request: Request | None,
+    current_user: dict[str, Any],
+    *,
+    action: str,
+    location_id: str,
+    details: dict[str, Any],
+) -> None:
+    """Audit row for a location mutation, keyed on the LOCATION, not its customer.
+
+    Written after the mutation commits, so a failure here is logged, not raised.
+    """
+    try:
+        log_audit_event_sync(
+            db,
+            tenant_id=_tenant_id(request),
+            user_id=resolve_audit_actor(current_user, request),
+            action=action,
+            entity_type="customer_location",
+            entity_id=location_id,
+            details=details,
+            request=request,
+        )
+        db.commit()
+    except Exception:
+        log.exception("%s_audit_failed", action)
+
+
+def _demote_other_primaries(db: Session, customer_id: str, location_id: str) -> list[str]:
+    """Unset is_primary on the customer's other live locations; return their ids.
+
+    The ids go into the audit row of the location that took primary — the
+    demoted sites are changed by this request too, and get no row of their own.
+    """
+    params = {"customer_id": customer_id, "location_id": location_id}
+    demoted = [
+        str(r[0])
+        for r in db.execute(
+            text(
+                "SELECT id FROM customer_locations "
+                "WHERE customer_id = :customer_id AND deleted_at IS NULL AND id != :location_id "
+                "AND is_primary = :on"
+            ),
+            {**params, "on": True},
+        ).all()
+    ]
+    db.execute(
+        text(
+            "UPDATE customer_locations SET is_primary = :off "
+            "WHERE customer_id = :customer_id AND deleted_at IS NULL AND id != :location_id"
+        ),
+        {**params, "off": False},
+    )
+    return demoted
 
 
 def _user_id(user: dict[str, Any]) -> str:
@@ -783,19 +851,11 @@ async def create_customer_location(
 
     location_id = str(uuid4())
     now = datetime.now(timezone.utc).isoformat()
+    demoted: list[str] = []
 
     try:
         if payload.is_primary:
-            db.execute(
-                text(
-                    """
-                    UPDATE customer_locations
-                    SET is_primary = :off
-                    WHERE customer_id = :customer_id AND deleted_at IS NULL
-                    """
-                ),
-                {"customer_id": customer_id, "off": False},
-            )
+            demoted = _demote_other_primaries(db, customer_id, location_id)
 
         db.execute(
             text(
@@ -845,29 +905,19 @@ async def create_customer_location(
     if not row:
         raise HTTPException(status_code=500, detail="Failed to create location")
     log.info("customer_location_created", extra={"customer_id": customer_id, "location_id": location_id})
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="create_customer_location",
-                entity_type="customer_location",
-                entity_id=str(customer_id),
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('create_customer_location_audit_failed')
-    return CustomerLocationOut(**_location_dict(row))
+    created = _location_dict(row)
+    _audit_location(
+        db, request, current_user,
+        action="create_customer_location",
+        location_id=location_id,
+        details={
+            "customer_id": str(customer_id),
+            **{f: created[f] for f in _LOCATION_AUDIT_VALUE_FIELDS},
+            "has_access_notes": bool(created["access_notes"]),
+            "demoted_primary_location_ids": demoted,
+        },
+    )
+    return CustomerLocationOut(**created)
 
 
 @router.patch("/{customer_id}/locations/{location_id}", response_model=CustomerLocationOut)
@@ -875,6 +925,7 @@ async def update_customer_location(
     customer_id: str,
     location_id: str,
     payload: CustomerLocationPatchIn,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> CustomerLocationOut:
@@ -883,15 +934,18 @@ async def update_customer_location(
     Closes CustomerDetailView.vue → PATCH /api/customers/{id}/locations/{id}.
     """
     _ensure_customer_exists(db, customer_id)
+    # The pre-update row: the audit's "before" side and the address the
+    # pin-clearing rule below compares against.
     existing = db.execute(
         text(
             """
-            SELECT id FROM customer_locations
+            SELECT id, customer_id, label, address, city, state, zip, access_notes, is_primary, created_at
+            FROM customer_locations
             WHERE id = :location_id AND customer_id = :customer_id AND deleted_at IS NULL
             """
         ),
         {"location_id": location_id, "customer_id": customer_id},
-    ).first()
+    ).mappings().first()
     if not existing:
         raise HTTPException(status_code=404, detail="location not found")
 
@@ -901,16 +955,11 @@ async def update_customer_location(
     if "address" in data and not (data["address"] or "").strip():
         raise HTTPException(status_code=422, detail="address cannot be empty")
 
+    demoted: list[str] = []
     try:
         # If this location becomes the new primary, unset other primaries
         if data.get("is_primary") is True:
-            db.execute(
-                text(
-                    "UPDATE customer_locations SET is_primary = :off "
-                    "WHERE customer_id = :customer_id AND deleted_at IS NULL AND id != :location_id"
-                ),
-                {"customer_id": customer_id, "location_id": location_id, "off": False},
-            )
+            demoted = _demote_other_primaries(db, customer_id, location_id)
 
         # Column -> new value. A dict, so no column can be assigned twice in
         # the UPDATE (Postgres rejects `SET city = …, city = …`; SQLite does
@@ -929,11 +978,7 @@ async def update_customer_location(
         if "address" in data:
             from gdx_dispatch.core.job_site import normalize_address  # noqa: PLC0415
 
-            current = db.execute(
-                text("SELECT address FROM customer_locations WHERE id = :location_id"),
-                {"location_id": location_id},
-            ).scalar()
-            if normalize_address(data["address"]) != normalize_address(current):
+            if normalize_address(data["address"]) != normalize_address(existing["address"]):
                 updates["lat"] = None
                 updates["lng"] = None
                 # A city/state/zip the request did not send still names the
@@ -947,11 +992,31 @@ async def update_customer_location(
             updates["is_primary"] = bool(data["is_primary"])
         if not updates:
             raise HTTPException(status_code=400, detail="no fields to update")
+        # Which QB-synced fields this edit actually CHANGES — compared by
+        # value, because the dialog resends every field on save and presence
+        # would claim the whole row on a notes edit. A city/state/zip cleared
+        # by the address rule above counts: the human moved the site.
+        claimed = [
+            col for col in _LOCATION_QB_FIELDS
+            if col in updates
+            and (existing[col] or "").strip() != (updates[col] or "").strip()
+        ]
         set_sql = ", ".join(f"{col} = :{col}" for col in updates)
         db.execute(
             text(f"UPDATE customer_locations SET {set_sql} WHERE id = :location_id"),  # noqa: S608 — SET keys are the hardcoded column names above; values are bound
             {"location_id": location_id, **updates},
         )
+        if claimed:
+            # A human now owns these fields: the QuickBooks sub-customer pull
+            # will not write them (migration 105, sync's per-row guard). Same
+            # rule as the customer PATCH above. Through the ORM so the JSON
+            # column serializes the same way on SQLite and Postgres.
+            loc = db.get(CustomerLocation, location_id, populate_existing=True)
+            if loc is not None:
+                loc.local_edit_at = datetime.now(timezone.utc)
+                loc.local_edit_fields = sorted(
+                    set(loc.local_edit_fields or []) | set(claimed)
+                )
         db.commit()
     except HTTPException:
         raise
@@ -980,35 +1045,35 @@ async def update_customer_location(
         "customer_location_updated",
         extra={"customer_id": customer_id, "location_id": location_id, "fields": list(data.keys())},
     )
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="update_customer_location",
-                entity_type="customer_location",
-                entity_id=str(customer_id),
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('update_customer_location_audit_failed')
-    return CustomerLocationOut(**_location_dict(row))
+    before, after = _location_dict(existing), _location_dict(row)
+    _audit_location(
+        db, request, current_user,
+        action="update_customer_location",
+        location_id=location_id,
+        details={
+            "customer_id": str(customer_id),
+            # Only what really changed — the dialog resends every field on save.
+            "changes": {
+                f: {"old": before[f], "new": after[f]}
+                for f in _LOCATION_AUDIT_VALUE_FIELDS
+                if before[f] != after[f]
+            },
+            "access_notes_changed": before["access_notes"] != after["access_notes"],
+            # The map pin was dropped because the address really changed.
+            "coords_cleared": "lat" in updates,
+            # Fields this edit took from QuickBooks' control (migration 105).
+            "local_edit_fields_claimed": claimed,
+            "demoted_primary_location_ids": demoted,
+        },
+    )
+    return CustomerLocationOut(**after)
 
 
 @router.delete("/{customer_id}/locations/{location_id}")
 async def delete_customer_location(
     customer_id: str,
     location_id: str,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
@@ -1033,28 +1098,12 @@ async def delete_customer_location(
         log.exception("delete_customer_location_failed", extra={"customer_id": customer_id, "location_id": location_id})
         raise HTTPException(status_code=500, detail="A database error occurred") from None
     log.info("customer_location_deleted", extra={"customer_id": customer_id, "location_id": location_id})
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="delete_customer_location",
-                entity_type="customer_location",
-                entity_id=str(customer_id),
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('delete_customer_location_audit_failed')
+    _audit_location(
+        db, request, current_user,
+        action="delete_customer_location",
+        location_id=location_id,
+        details={"customer_id": str(customer_id), "soft_delete": True, "deleted_at": now},
+    )
     return {"ok": True, "id": location_id}
 
 
@@ -1928,11 +1977,6 @@ async def make_contact_primary(
     # handler's staged row before the audit row is written, and
     # audit_or_rollback would have nothing left to roll back. Run it here, where
     # committing has nothing to disturb; every later call is a no-op.
-    #
-    # NOT `Depends(audit_ready_db)`: that dependency resolves its own session
-    # and would bypass every existing get_db override in the test suite —
-    # two tests in test_outbound_email_log.py went 404 that way, querying a
-    # different database than the one the test had seeded.
     ensure_audit_table(db)
     _assert_customer_exists(db, customer_id)
     target = db.execute(
@@ -2087,11 +2131,6 @@ async def create_customer_contact(
     # handler's staged row before the audit row is written, and
     # audit_or_rollback would have nothing left to roll back. Run it here, where
     # committing has nothing to disturb; every later call is a no-op.
-    #
-    # NOT `Depends(audit_ready_db)`: that dependency resolves its own session
-    # and would bypass every existing get_db override in the test suite —
-    # two tests in test_outbound_email_log.py went 404 that way, querying a
-    # different database than the one the test had seeded.
     ensure_audit_table(db)
     _assert_customer_exists(db, customer_id)
 
@@ -2166,11 +2205,6 @@ async def update_customer_contact(
     # handler's staged row before the audit row is written, and
     # audit_or_rollback would have nothing left to roll back. Run it here, where
     # committing has nothing to disturb; every later call is a no-op.
-    #
-    # NOT `Depends(audit_ready_db)`: that dependency resolves its own session
-    # and would bypass every existing get_db override in the test suite —
-    # two tests in test_outbound_email_log.py went 404 that way, querying a
-    # different database than the one the test had seeded.
     ensure_audit_table(db)
     _assert_customer_exists(db, customer_id)
     contact = _load_contact(db, customer_id, contact_id)
@@ -2257,11 +2291,6 @@ async def delete_customer_contact(
     # handler's staged row before the audit row is written, and
     # audit_or_rollback would have nothing left to roll back. Run it here, where
     # committing has nothing to disturb; every later call is a no-op.
-    #
-    # NOT `Depends(audit_ready_db)`: that dependency resolves its own session
-    # and would bypass every existing get_db override in the test suite —
-    # two tests in test_outbound_email_log.py went 404 that way, querying a
-    # different database than the one the test had seeded.
     ensure_audit_table(db)
     _assert_customer_exists(db, customer_id)
     contact = _load_contact(db, customer_id, contact_id)

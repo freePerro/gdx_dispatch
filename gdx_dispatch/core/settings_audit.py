@@ -38,15 +38,6 @@ COMMITS the first time it runs for an engine; left to fire lazily from inside
 `log_audit_event_sync` it would harden the staged upsert before the audit row
 exists, undoing the guarantee above. Running it at the top costs nothing —
 every later call for that engine is a no-op.
-
-Deliberately NOT `Depends(audit_ready_db)`, which is the obvious-looking
-alternative and is a trap: that dependency resolves its own session through
-`_get_db_dep`, which *calls* `get_db()` imperatively rather than declaring
-`Depends(get_db)`, so it bypasses every `app.dependency_overrides[get_db]` in
-the test suite. `routers/customers.py` records two tests that went 404 that
-way, and switching three routers to it during #558 silently pointed two more
-at the real database while they still passed. In-handler `ensure_audit_table`
-is the repo's majority pattern for exactly this reason.
 """
 
 from __future__ import annotations

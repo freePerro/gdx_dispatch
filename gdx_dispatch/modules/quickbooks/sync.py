@@ -679,12 +679,27 @@ def _upsert_subcustomer_location(
         )
         db.add(location)
 
-    location.label = label
-    # Never blank a known address with a QB row that simply has none.
-    for field in ("address", "city", "state", "zip"):
-        value = parts.get(field)
-        if value:
-            setattr(location, field, value)
+    # A field a human edited belongs to GDX (migration 105), the same per-field
+    # rule _apply_qb_identity applies to customers: QB may not write it at all,
+    # empty or not. A new row has no owner yet, so everything is QB's.
+    # Unlike name/email/phone, the four address parts are ONE unit: a human's
+    # street under QB's city is a place that may not exist, and a tech gets
+    # sent there. Owning any part keeps all four.
+    address_fields = ("address", "city", "state", "zip")
+    owned = {str(f) for f in (location.local_edit_fields or [])}
+    kept: list[str] = []
+    if "label" in owned:
+        kept.append("label")
+    else:
+        location.label = label
+    if owned & set(address_fields):
+        kept.extend(address_fields)
+    else:
+        for field in address_fields:
+            value = parts.get(field)
+            # Never blank a known address with a QB row that simply has none.
+            if value:
+                setattr(location, field, value)
     db.flush()
     _upsert_map(tenant_id, "customer_location", str(location.id), qb_id, db)
     # Invariant #1: this creates or mutates a customer-owned row, so it leaves
@@ -703,8 +718,11 @@ def _upsert_subcustomer_location(
         details={
             "qb_id": qb_id,
             "customer_id": str(parent_customer_id),
-            "label": label,
+            # What the row now carries, not QB's value: a kept label differs.
+            "label": location.label,
             "has_address": bool(parts.get("address")),
+            # Field NAMES only: which human edits this pull left standing.
+            "kept_local_fields": kept,
         },
     )
     return "created" if created else "updated"

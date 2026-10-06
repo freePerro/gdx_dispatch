@@ -408,7 +408,7 @@ def _run_with_f811(
         'for a in "$@"; do\n'
         '  if [ "$prev" = "--select" ]; then\n'
         '    case "$a" in\n'
-        f"      F811) printf '%s\\n' \"$*\" > '{args_log}'; cat <<'OUT'\n{f811_stdout}\nOUT\n"
+        f"      F811) printf '%s\\n' \"$*\" >> '{args_log}'; cat <<'OUT'\n{f811_stdout}\nOUT\n"
         f"        exit {f811_rc} ;;\n"
         "      *) exit 0 ;;\n"
         "    esac\n"
@@ -464,7 +464,16 @@ def test_f811_gate_passes_when_clean_and_excludes_only_the_test_tree(tmp_path: P
     result, args_log = _run_with_f811(tmp_path, f811_stdout="", f811_rc=0, target="gdx_dispatch/tools/")
     assert result.returncode == 0, result.stdout
     assert args_log.is_file(), "the F811 gate never ran"
-    args = args_log.read_text(encoding="utf-8").split()
+    # Two F811 calls now: this gate first, then the duplicate-test gate
+    # (GDXA-248) over the whole target. The exclude belongs to the first.
+    calls = args_log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 2, f"expected the #475 gate and the duplicate-test gate: {calls}"
+    dup_args = calls[1].split()
+    assert "--extend-exclude" not in dup_args, f"the duplicate-test gate must see the test tree: {dup_args}"
+    # A copied test copies its `# noqa: F811` (43 test defs carry one), which
+    # would hide the duplicate from ruff.
+    assert "--ignore-noqa" in dup_args, f"the duplicate-test gate must not honour noqa: {dup_args}"
+    args = calls[0].split()
     assert "gdx_dispatch/tools/" in args, f"F811 must check the ratchet's own target: {args}"
     assert "gdx_dispatch/" not in args, f"F811 checked a hardcoded path, not RUFF_TARGET: {args}"
     # --extend-exclude, never --exclude: --exclude REPLACES ruff's default
@@ -477,3 +486,202 @@ def test_f811_gate_passes_when_clean_and_excludes_only_the_test_tree(tmp_path: P
     assert "--force-exclude" in args, (
         "without --force-exclude a RUFF_TARGET inside gdx_dispatch/tests is checked anyway"
     )
+
+
+# ── duplicate dict keys: zero-gated (GDXA-214) ───────────────────────────
+#
+# core/feature_defaults.py defined tech_mobile.gps_retention_days twice; the
+# later entry silently won, so the earlier label/help were dead and any edit
+# to them did nothing. F601 was already selected, but the blended count hid
+# the one instance under baseline. The ratchet now zero-gates F601/F602. The
+# stub below fails only when its --select names the rule under test, so
+# dropping that code from ZEROED_FAMILIES turns this red. That a REAL ruff
+# 0.15.18 reports F601 for a repeated literal key was proven by planting one
+# under gdx_dispatch/ and running this script; see GDXA-214's report.
+
+
+def _run_with_dup_key(tmp_path: Path, rule: str) -> subprocess.CompletedProcess[str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _stub_git(bin_dir, dirty=False)
+    stub = bin_dir / "ruff"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$1" = "--version" ]; then echo "ruff {_CI_PIN}"; exit 0; fi\n'
+        'prev=""\n'
+        'for a in "$@"; do\n'
+        '  if [ "$prev" = "--select" ]; then\n'
+        '    case ",$a," in\n'
+        f"      *,{rule},*) echo 'gdx_dispatch/core/example.py:9:5: {rule} Dictionary key repeated'; exit 1 ;;\n"
+        "      *) exit 0 ;;\n"
+        "    esac\n"
+        "  fi\n"
+        '  case "$a" in --statistics) exit 0 ;; esac\n'
+        '  prev="$a"\n'
+        "done\n"
+        "echo 'Found 1 error.'\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    baseline_file = tmp_path / "baseline"
+    baseline_file.write_text("3", encoding="utf-8")
+    return subprocess.run(
+        ["bash", str(RATCHET)],
+        capture_output=True, text=True, timeout=60, cwd=str(REPO_ROOT),
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "RUFF_BASELINE_FILE": str(baseline_file),
+            "RUFF_TARGET": "gdx_dispatch/",
+            "HOME": str(tmp_path),
+        },
+    )
+
+
+@pytest.mark.parametrize("rule", ["F601", "F602"])
+def test_a_repeated_dict_key_fails_the_gate_under_baseline(tmp_path: Path, rule: str) -> None:
+    result = _run_with_dup_key(tmp_path, rule)
+    assert result.returncode != 0, (
+        f"a {rule} duplicate dict key passed because the count was under baseline — stdout={result.stdout!r}"
+    )
+    assert "core/example.py" in result.stdout, "the offending line must be shown"
+
+
+# ── a test defined twice: zero-gated inside the test tree (GDXA-248) ─────
+#
+# The #475 gate excludes gdx_dispatch/tests, so two `def test_x` in one scope
+# passed every gate and pytest silently ran only the second. The new gate reads
+# the line ruff names as the FIRST binding and fails when it is a `def test...`
+# or `class Test...`. These drive it with a ruff stub whose F811 diagnostic
+# points at a real file in tmp_path, so the script's own line reading runs. The
+# diagnostic text is ruff 0.15.18's concise shape; that a real ruff emits it
+# for a planted duplicate (module level, decorated, async, Test* method, Test*
+# class) was proven on planted files under gdx_dispatch/tests; see GDXA-248's
+# report.
+
+
+def _run_with_dup_test(
+    tmp_path: Path, *, source: str, diag: str | None = None, f811_rc: int = 1
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Run the ratchet with `source` planted at tmp_path/test_planted.py. The
+    #475 F811 call (the one carrying --extend-exclude) is clean; the
+    duplicate-test call prints `diag` (``{path}`` filled in) with `f811_rc`."""
+    planted = tmp_path / "test_planted.py"
+    planted.write_text(source, encoding="utf-8")
+    text = (diag or "").replace("{path}", str(planted))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _stub_git(bin_dir, dirty=False)
+    stub = bin_dir / "ruff"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$1" = "--version" ]; then echo "ruff {_CI_PIN}"; exit 0; fi\n'
+        'case " $* " in *" --extend-exclude "*) exit 0 ;; esac\n'
+        'prev=""\n'
+        'for a in "$@"; do\n'
+        '  if [ "$prev" = "--select" ]; then\n'
+        '    case "$a" in\n'
+        f"      F811) cat <<'OUT'\n{text}\nOUT\n"
+        f"        exit {f811_rc} ;;\n"
+        "      *) exit 0 ;;\n"
+        "    esac\n"
+        "  fi\n"
+        '  case "$a" in --statistics) exit 0 ;; esac\n'
+        '  prev="$a"\n'
+        "done\n"
+        "echo 'Found 1 error.'\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    baseline_file = tmp_path / "baseline"
+    baseline_file.write_text("3", encoding="utf-8")
+    result = subprocess.run(
+        ["bash", str(RATCHET)],
+        capture_output=True, text=True, timeout=60, cwd=str(REPO_ROOT),
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "RUFF_BASELINE_FILE": str(baseline_file),
+            "RUFF_TARGET": "gdx_dispatch/",
+            "HOME": str(tmp_path),
+        },
+    )
+    return result, baseline_file
+
+
+_DUP_TEST_SRC = (
+    "def test_money_guard():\n"
+    "    assert 1 + 1 == 3\n"
+    "\n"
+    "\n"
+    "def test_money_guard():\n"
+    "    assert True\n"
+)
+
+
+def _f811(row: int, col: int, name: str, first: int) -> str:
+    return (
+        f"{{path}}:{row}:{col}: F811 Redefinition of unused `{name}` from line {first}: "
+        f"`{name}` redefined here"
+    )
+
+
+def test_a_test_defined_twice_fails_the_gate_under_baseline(tmp_path: Path) -> None:
+    result, baseline = _run_with_dup_test(
+        tmp_path, source=_DUP_TEST_SRC, diag=_f811(5, 5, "test_money_guard", 1)
+    )
+    assert result.returncode != 0, (
+        f"a duplicate test def passed; pytest would run only the second — stdout={result.stdout!r}"
+    )
+    assert "test_money_guard" in result.stdout, "the offending line must be shown"
+    assert baseline.read_text(encoding="utf-8").strip() == "3", "a failed run must not lower the bar"
+
+
+def test_a_test_method_defined_twice_in_a_test_class_fails_the_gate(tmp_path: Path) -> None:
+    src = (
+        "class TestThing:\n"
+        "    @staticmethod\n"
+        "    async def test_method():\n"
+        "        assert False\n"
+        "\n"
+        "    async def test_method(self):\n"
+        "        pass\n"
+    )
+    result, _ = _run_with_dup_test(tmp_path, source=src, diag=_f811(6, 15, "test_method", 3))
+    assert result.returncode != 0, result.stdout
+
+
+def test_a_fixture_shadowing_parameter_named_test_passes(tmp_path: Path) -> None:
+    """The case a name filter gets wrong: `test_app_keypair` is a fixture,
+    imported and then shadowed by a parameter, 8 times on main 66f236fc. Its
+    first binding is the import, so it is not a lost test."""
+    src = (
+        "from gdx_dispatch.tests.fixtures.keypairs import test_app_keypair  # noqa: F401\n"
+        "\n"
+        "\n"
+        "def test_uses_it(test_app_keypair):\n"
+        "    assert test_app_keypair\n"
+    )
+    result, _ = _run_with_dup_test(tmp_path, source=src, diag=_f811(4, 18, "test_app_keypair", 1))
+    assert result.returncode == 0, result.stdout
+
+
+def test_the_duplicate_test_gate_fails_closed_when_ruff_fails(tmp_path: Path) -> None:
+    result, _ = _run_with_dup_test(tmp_path, source=_DUP_TEST_SRC, diag="ruff failed", f811_rc=2)
+    assert result.returncode != 0, result.stdout
+
+
+def test_the_duplicate_test_gate_fails_closed_on_output_it_cannot_parse(tmp_path: Path) -> None:
+    """Exit 1 with no F811 line in the shape it reads is an unmeasured run, not
+    a clean one: a ruff message-format change must red the gate, not empty it."""
+    result, _ = _run_with_dup_test(
+        tmp_path, source=_DUP_TEST_SRC, diag="{path}:5:5: F811 Name `test_money_guard` shadows line 1"
+    )
+    assert result.returncode != 0, result.stdout
+
+
+def test_the_duplicate_test_gate_fails_closed_on_a_file_it_cannot_read(tmp_path: Path) -> None:
+    result, _ = _run_with_dup_test(
+        tmp_path, source=_DUP_TEST_SRC, diag=_f811(5, 5, "test_money_guard", 1).replace("{path}", "{path}.gone")
+    )
+    assert result.returncode != 0, result.stdout

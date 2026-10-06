@@ -24,7 +24,24 @@
     :breakpoints="{ '768px': '95vw' }"
     :header="`'${jobTitle || 'Job'}' is ${stateLabel} — what should we do?`"
   >
-    <div v-if="error" class="error-banner">{{ error }}</div>
+    <div v-if="error" class="error-banner" data-testid="state-override-error">
+      {{ error }}
+      <RouterLink v-if="errorToAppointments" to="/appointments" data-testid="state-override-appointments">
+        Open the Appointments page
+      </RouterLink>
+    </div>
+    <!-- The re-open's question (multi-day jobs plan §5.2a, R0): a crew tech
+         already holds a closed visit on the new day. Asked, never guessed. -->
+    <div v-if="rebook" class="question-banner" data-testid="rebook-question">
+      <p>{{ rebook.text }}</p>
+      <p class="muted">No leaves them unbooked on that day: their tap will find no visit.</p>
+      <div class="question-actions">
+        <Button label="No" severity="secondary" :loading="busy" data-testid="rebook-no"
+                @click="answerRebook(false)" />
+        <Button label="Yes, book them again" :loading="busy" data-testid="rebook-yes"
+                @click="answerRebook(true)" />
+      </div>
+    </div>
     <div class="path-grid">
       <button class="path-card" :class="{ active: path === 'warranty' }"
               @click="path = 'warranty'" data-testid="path-warranty">
@@ -42,7 +59,7 @@
               @click="path = 'reactivate'" data-testid="path-reactivate">
         <i class="pi pi-refresh" />
         <strong>Reactivate (was cancelled in error)</strong>
-        <span>Bring this job back to scheduled.</span>
+        <span>Bring this job back. With a date it is scheduled; without one it goes back to New Jobs to Schedule.</span>
       </button>
       <button class="path-card" :class="{ active: path === 'other' }"
               @click="path = 'other'" data-testid="path-other">
@@ -76,7 +93,7 @@
 
     <template #footer>
       <Button label="Cancel" severity="secondary" @click="cancel" data-testid="state-override-cancel" />
-      <Button :label="applyLabel" icon="pi pi-check" :disabled="!canSubmit" :loading="busy"
+      <Button :label="applyLabel" icon="pi pi-check" :disabled="!canSubmit || !!rebook" :loading="busy"
               @click="apply" data-testid="state-override-apply" />
     </template>
   </Dialog>
@@ -85,6 +102,7 @@
 <script setup>
 import { computed, ref, watch } from "vue";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
+import { isNeedsAnswer, pointsAtAppointments, rebookQuestion, refusalOf } from "../utils/visitRefusals";
 import Button from "primevue/button";
 import Calendar from "primevue/calendar";
 import Dialog from "primevue/dialog";
@@ -94,6 +112,8 @@ import Textarea from "primevue/textarea";
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
   job: { type: Object, default: null },
+  // For naming techs in the re-open question; falls back to GET /api/technicians.
+  technicians: { type: Array, default: () => [] },
 });
 const emit = defineEmits(["update:modelValue", "applied", "cancel"]);
 
@@ -104,6 +124,8 @@ const scheduledAt = ref(null);
 const overrideTitle = ref("");
 const busy = ref(false);
 const error = ref("");
+const errorToAppointments = ref(false);
+const rebook = ref(null); // { text, tech_ids, day } while the question is open
 
 const jobTitle = computed(() => props.job?.title || "");
 // /api/jobs/{id} overwrites `lifecycle_stage` with the display label
@@ -146,8 +168,27 @@ watch(() => props.modelValue, (v) => {
     scheduledAt.value = null;
     overrideTitle.value = "";
     error.value = "";
+    errorToAppointments.value = false;
+    rebook.value = null;
   }
 });
+// A changed path or date is a different request: its answer is not this one.
+watch([path, scheduledAt], () => { rebook.value = null; });
+
+async function techNames(ids) {
+  let list = props.technicians || [];
+  const missing = (ids || []).some((id) => !list.find((t) => String(t.id) === String(id)));
+  if (missing) {
+    try {
+      const data = await api.get("/api/technicians", { suppressErrorToast: true });
+      list = Array.isArray(data) ? data : (data?.items || data?.data || []);
+    } catch { /* fall back to a generic name */ }
+  }
+  return (ids || []).map((id) => {
+    const t = list.find((x) => String(x.id) === String(id));
+    return t ? (t.name || t.display_name || t.email || "A crew tech") : "A crew tech";
+  });
+}
 
 function cancel() {
   emit("cancel");
@@ -155,9 +196,18 @@ function cancel() {
 }
 
 async function apply() {
+  await send(undefined);
+}
+
+async function answerRebook(answer) {
+  await send(answer);
+}
+
+async function send(rebookAnswer) {
   if (!props.job?.id) return;
   busy.value = true;
   error.value = "";
+  errorToAppointments.value = false;
   try {
     let result = null;
     const id = props.job.id;
@@ -167,29 +217,38 @@ async function apply() {
         scheduled_at: scheduledAt.value || null,
         title: overrideTitle.value || null,
       }, { successMessage: "Return visit created" });
-    } else if (path.value === "uncomplete") {
-      result = await api.post(`/api/jobs/${id}/uncomplete`, {
-        reason: reason.value,
-        scheduled_at: scheduledAt.value || null,
-      }, { successMessage: "Job re-opened" });
-    } else if (path.value === "reactivate") {
-      result = await api.post(`/api/jobs/${id}/reactivate`, {
-        reason: reason.value,
-        scheduled_at: scheduledAt.value || null,
-      }, { successMessage: "Job reactivated" });
-    } else if (path.value === "other") {
-      // "Other" defaults to un-complete-style override on a completed job,
-      // reactivate-style on a cancelled one — the audit row carries the reason.
-      const target = storedStage.value === "cancelled" ? "reactivate" : "uncomplete";
-      result = await api.post(`/api/jobs/${id}/${target}`, {
-        reason: `[other] ${reason.value}`,
-        scheduled_at: scheduledAt.value || null,
-      }, { successMessage: "Override applied" });
+    } else {
+      // Un-complete / Reactivate, and "Other" — which defaults to the
+      // un-complete-style override on a completed job, reactivate-style on a
+      // cancelled one; the audit row carries the reason.
+      let target = path.value;
+      let note = reason.value;
+      let message = path.value === "uncomplete" ? "Job re-opened" : "Job reactivated";
+      if (path.value === "other") {
+        target = storedStage.value === "cancelled" ? "reactivate" : "uncomplete";
+        note = `[other] ${reason.value}`;
+        message = "Override applied";
+      }
+      const body = { reason: note, scheduled_at: scheduledAt.value || null };
+      if (rebookAnswer !== undefined) body.rebook_closed_day = rebookAnswer;
+      // The api toast is suppressed: a needs_answer is a question, not an
+      // error, and every other failure shows in this dialog's banner.
+      result = await api.post(`/api/jobs/${id}/${target}`, body,
+        { successMessage: message, suppressErrorToast: true });
     }
+    rebook.value = null;
     emit("applied", { result, path: path.value });
     emit("update:modelValue", false);
   } catch (e) {
-    error.value = e?.response?.data?.detail || e?.message || "Action failed";
+    const refusal = refusalOf(e);
+    if (isNeedsAnswer(e, "rebook_closed_day")) {
+      const names = await techNames(refusal.tech_ids || []);
+      rebook.value = { text: rebookQuestion(names, refusal.day), tech_ids: refusal.tech_ids, day: refusal.day };
+    } else {
+      rebook.value = null;
+      error.value = refusal?.detail || e?.response?.data?.detail || e?.message || "Action failed";
+      errorToAppointments.value = pointsAtAppointments(refusal);
+    }
   } finally {
     busy.value = false;
   }
@@ -279,10 +338,21 @@ async function apply() {
 .form-field { display: grid; gap: 0.25rem; }
 .form-field label { color: var(--p-text-color); font-size: 0.9rem; font-weight: 500; }
 .required { color: var(--p-red-500); }
+.question-banner {
+  border: 1px solid var(--p-content-border-color);
+  background: var(--p-content-background);
+  color: var(--p-text-color);
+  padding: 0.6rem 0.75rem;
+  border-radius: 6px;
+  margin-bottom: 0.5rem;
+}
+.question-banner p { margin: 0 0 0.4rem 0; }
+.question-banner .muted { color: var(--p-text-muted-color); font-size: 0.85rem; }
+.question-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
 .error-banner {
-  background: var(--p-red-50);
-  color: var(--p-red-700);
-  border: 1px solid var(--p-red-200);
+  background: var(--color-danger-bg);
+  color: var(--color-danger-500);
+  border: 1px solid var(--color-danger-border);
   padding: 0.5rem 0.75rem;
   border-radius: 6px;
   margin-bottom: 0.5rem;

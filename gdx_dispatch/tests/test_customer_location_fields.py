@@ -256,3 +256,147 @@ def test_address_only_change_still_clears_the_stale_split(client_and_db):
     assert r.status_code == 200, r.text
     row = _row(db, loc.id)
     assert (row["city"], row["state"], row["zip"], row["lat"]) == (None, None, None, None)
+
+
+# ── Edit provenance (GDXA-242): an office edit claims the fields it changed ──
+# The QuickBooks sub-customer pull leaves a field alone once it is in
+# customer_locations.local_edit_fields (migration 105). Before GDXA-242 the
+# office PATCH never wrote it, so a re-pull put QB's old address back.
+
+
+def _provenance(db, location_id: str) -> tuple:
+    db.expire_all()
+    loc = db.get(CustomerLocation, location_id)
+    return loc.local_edit_at, sorted(loc.local_edit_fields or [])
+
+
+def _seed_location(client, db, **overrides) -> tuple[Customer, str]:
+    c = _customer(db)
+    loc_id = client.post(
+        f"/api/customers/{c.id}/locations", json=_dialog_payload(**overrides),
+    ).json()["id"]
+    return c, loc_id
+
+
+def test_a_new_location_claims_nothing(client_and_db):
+    client, db = client_and_db
+    _, loc_id = _seed_location(client, db)
+    assert _provenance(db, loc_id) == (None, [])
+
+
+def test_an_unchanged_resave_claims_nothing(client_and_db):
+    """The dialog resends every field; an untouched Save is not an edit."""
+    client, db = client_and_db
+    c, loc_id = _seed_location(client, db)
+
+    r = client.patch(f"/api/customers/{c.id}/locations/{loc_id}", json=_dialog_payload())
+
+    assert r.status_code == 200, r.text
+    assert _provenance(db, loc_id) == (None, [])
+
+
+def test_a_notes_only_edit_claims_nothing(client_and_db):
+    """access_notes is GDX-only — QB never writes it, so there is nothing to claim."""
+    client, db = client_and_db
+    c, loc_id = _seed_location(client, db)
+
+    r = client.patch(
+        f"/api/customers/{c.id}/locations/{loc_id}",
+        json=_dialog_payload(access_notes="New gate code 9911"),
+    )
+
+    assert r.status_code == 200, r.text
+    assert _provenance(db, loc_id) == (None, [])
+
+
+def test_a_zip_fix_claims_only_the_zip(client_and_db):
+    client, db = client_and_db
+    c, loc_id = _seed_location(client, db)
+
+    r = client.patch(
+        f"/api/customers/{c.id}/locations/{loc_id}", json=_dialog_payload(zip="56468"),
+    )
+
+    assert r.status_code == 200, r.text
+    edited_at, fields = _provenance(db, loc_id)
+    assert edited_at is not None
+    assert fields == ["zip"]
+
+
+def test_an_address_move_claims_the_parts_it_cleared(client_and_db):
+    """A PATCH sending only the street clears city/state/zip (they named the
+    old place); the human changed all four."""
+    client, db = client_and_db
+    c, loc_id = _seed_location(client, db)
+
+    r = client.patch(
+        f"/api/customers/{c.id}/locations/{loc_id}", json={"address": "40 Pine Rd"},
+    )
+
+    assert r.status_code == 200, r.text
+    assert _provenance(db, loc_id)[1] == ["address", "city", "state", "zip"]
+
+
+def test_claims_accumulate_across_edits(client_and_db):
+    client, db = client_and_db
+    c, loc_id = _seed_location(client, db)
+
+    client.patch(f"/api/customers/{c.id}/locations/{loc_id}", json=_dialog_payload(zip="56468"))
+    client.patch(
+        f"/api/customers/{c.id}/locations/{loc_id}",
+        json=_dialog_payload(zip="56468", label="Cabin"),
+    )
+
+    assert _provenance(db, loc_id)[1] == ["label", "zip"]
+
+
+def test_the_audit_row_names_the_claimed_fields(client_and_db):
+    client, db = client_and_db
+    c, loc_id = _seed_location(client, db)
+
+    client.patch(f"/api/customers/{c.id}/locations/{loc_id}", json=_dialog_payload(zip="56468"))
+
+    db.expire_all()
+    details = db.execute(
+        text(
+            "SELECT details FROM audit_logs WHERE action = 'update_customer_location' "
+            "AND entity_id = :i"
+        ),
+        {"i": loc_id},
+    ).scalar_one()
+    if isinstance(details, str):
+        import json  # noqa: PLC0415
+
+        details = json.loads(details)
+    assert details["local_edit_fields_claimed"] == ["zip"]
+
+
+def test_an_office_edited_site_survives_a_quickbooks_re_pull(client_and_db):
+    """The falsifier, end to end: the office fixes a QB-mapped site's address,
+    then the sub-customer pull runs with QB's old one. The office's wins."""
+    from gdx_dispatch.modules.quickbooks.sync import (  # noqa: PLC0415
+        _upsert_map,
+        _upsert_subcustomer_location,
+    )
+
+    client, db = client_and_db
+    c, loc_id = _seed_location(client, db)
+    _upsert_map(TENANT, "customer_location", loc_id, "qb-88", db)
+    db.commit()
+
+    r = client.patch(
+        f"/api/customers/{c.id}/locations/{loc_id}",
+        json=_dialog_payload(address="40 Pine Rd", city="Nisswa", zip="56468", label="Cabin"),
+    )
+    assert r.status_code == 200, r.text
+
+    _upsert_subcustomer_location(
+        db, tenant_id=TENANT, parent_customer_id=c.id, qb_id="qb-88",
+        label="Lake house (QB)",
+        parts={"address": "12 Shore Ln", "city": "Brainerd", "state": "MN", "zip": "56401"},
+    )
+    db.commit()
+    db.expire_all()
+    row = db.get(CustomerLocation, loc_id)
+    assert (row.address, row.city, row.state, row.zip) == ("40 Pine Rd", "Nisswa", "MN", "56468")
+    assert row.label == "Cabin"

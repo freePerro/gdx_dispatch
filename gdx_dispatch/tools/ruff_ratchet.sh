@@ -173,6 +173,64 @@ if [ "$F811_RC" -ne 0 ]; then
     _fail "F811 outside gdx_dispatch/tests: a name is bound twice in one scope (#475). Rename or remove it; if a decorator registered the first one (a route, a task), it still runs, so rename:"
 fi
 
+# Hard-fail on F811 INSIDE the test tree when the shadowed binding is a test
+# (GDXA-248). Two `def test_x` in one module or one Test* class: pytest
+# collects only the second, so the first stops running and nothing says so. A
+# test written to guard money or data then guards nothing while the suite stays
+# green.
+#
+# The test tree's other F811s stay allowed (25 on main 66f236fc: a pytest
+# fixture imported at module level and then shadowed by a test's parameter of
+# the same name). A NAME filter cannot separate the two: 8 of those 25 are the
+# fixture `test_app_keypair`, which starts with `test` like any test does. What
+# separates them is the FIRST binding, the line ruff names in "from line N".
+# For a duplicate test it is the `def test...` / `class Test...` line (ruff
+# 0.15.18 points it at the def even under decorators, verified on a planted
+# file); for a fixture parameter it is the import. So the gate reads that line
+# and fails when it is a def or class pytest would collect (python_functions
+# `test`, python_classes `Test` — this repo's pytest.ini does not change them).
+#
+# --ignore-noqa because 43 test defs on main carry `# noqa: F811` to quiet
+# that same fixture shadowing, and copying a test copies its noqa: without it
+# the likeliest way to make a duplicate is the one ruff never reports. The
+# noqa'd fixture shadows it surfaces are dropped by the first-binding check.
+# One shape stays out of reach: a first def REFERENCED before it is redefined
+# (`_keep = test_x`) is not "unused", so ruff reports no F811 at all.
+#
+# It runs over "$TARGET" with no exclude, so a duplicate test outside the tree
+# is caught here as well as by the gate above. Fail closed: ruff exit >= 2, an
+# exit 1 with no F811 line this can parse, or a named file it cannot read.
+DT_RC=0
+DT_OUT=$(ruff check "$TARGET" --select F811 --ignore-noqa --output-format concise --quiet 2>&1) || DT_RC=$?
+if [ "$DT_RC" -ge 2 ]; then
+    OUT="$DT_OUT"
+    _fail "ruff itself failed (exit $DT_RC) on the duplicate-test check — it measured nothing:"
+fi
+DT_HITS=""
+DT_PARSED=0
+while IFS= read -r DT_LINE; do
+    # path:row:col: F811 Redefinition of unused `name` from line N: ...
+    DT_FIRST=$(printf '%s\n' "$DT_LINE" | sed -n 's/^\(.*\):[0-9][0-9]*:[0-9][0-9]*: F811 Redefinition of unused `[^`]*` from line \([0-9][0-9]*\):.*/\2/p')
+    [ -n "$DT_FIRST" ] || continue
+    DT_PARSED=$((DT_PARSED + 1))
+    DT_FILE=$(printf '%s\n' "$DT_LINE" | sed -n 's/^\(.*\):[0-9][0-9]*:[0-9][0-9]*: F811 .*/\1/p')
+    if [ ! -r "$DT_FILE" ]; then
+        OUT="$DT_LINE"
+        _fail "the duplicate-test check cannot read '$DT_FILE', which ruff reported — refusing to pass:"
+    fi
+    if sed -n "${DT_FIRST}p" "$DT_FILE" | grep -qE '^[[:space:]]*((async[[:space:]]+)?def[[:space:]]+test|class[[:space:]]+Test)'; then
+        DT_HITS="${DT_HITS}${DT_LINE}"$'\n'
+    fi
+done <<< "$DT_OUT"
+if [ "$DT_RC" -eq 1 ] && [ "$DT_PARSED" -eq 0 ]; then
+    OUT="$DT_OUT"
+    _fail "ruff exited 1 on the duplicate-test check but printed no F811 line this can read — refusing to pass:"
+fi
+if [ -n "$DT_HITS" ]; then
+    OUT="$DT_HITS"
+    _fail "a test is defined twice in one scope (GDXA-248): pytest collects only the later one, so the earlier test never runs. Rename one, or delete the one you meant to replace:"
+fi
+
 # ── the ratchet half (Doug, 2026-09-12) ───────────────────────────────────
 #
 # Until now this was a one-way CEILING: it failed on an increase and did
@@ -248,10 +306,14 @@ fi
 #   I001 — import-block sorting, zeroed by #748
 #   F401 — unused imports, zeroed by #755 (full read: zero re-exports, zero
 #          load-bearing side-effect imports; deletions are always safe to ask)
+#   F601/F602 — a dict literal repeating a key (literal / variable). The
+#          later value silently wins, so an edit to the earlier entry does
+#          nothing. Zeroed by GDXA-214: core/feature_defaults.py defined
+#          tech_mobile.gps_retention_days twice and the blended count hid it.
 #
 # Add a family here the day its sweep lands at zero; remove one only with a
 # ruling. Output captured so a ruff failure (exit >= 2) fails closed.
-ZEROED_FAMILIES="I001,F401"
+ZEROED_FAMILIES="I001,F401,F601,F602"
 ZF_RC=0
 ZF_OUT=$(ruff check "$TARGET" --select "$ZEROED_FAMILIES" --quiet 2>&1) || ZF_RC=$?
 if [ "$ZF_RC" -ne 0 ]; then

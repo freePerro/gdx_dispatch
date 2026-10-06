@@ -12,7 +12,6 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
-from sqlalchemy import text as _text
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import (
@@ -22,7 +21,8 @@ from gdx_dispatch.core.audit import (
     resolve_audit_actor,
     utcnow,
 )
-from gdx_dispatch.core.database import contained_read, get_db
+from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.holding_areas import holding_area_id_by_name as _holding_area_id_by_name
 from gdx_dispatch.core.lead_estimates import lead_for_estimate, mark_lead_won_for_estimate, resolve_lead_link
 from gdx_dispatch.core.link_sms import SendLinkSmsIn as SendEstimateSmsIn  # one composer model for every SMS route
 from gdx_dispatch.core.modules import has_permission, require_module, require_permission, require_role
@@ -1731,12 +1731,17 @@ def _apply_send_expiry(estimate: Estimate) -> None:
     just re-expire the next night. A still-future valid_until (a deliberately
     hand-picked date) is respected and left alone.
 
-    Note: this relies on create NOT persisting a valid_until — the /estimates
-    create handler drops the field, so a fresh estimate reaches send with
-    valid_until = NULL. If create is ever changed to honor payload.valid_until,
-    a create-time default would look like a hand-picked future date here and
-    silently defeat the tenant setting. Keep create dropping it, or teach this
-    helper to distinguish a default from an override.
+    Note: a stored future date is indistinguishable from a hand-picked one,
+    so this setting applies only where no default was stored. The /estimates
+    create handler drops the field, and the editor (EstimateView.vue) keeps
+    it null until the user picks a date, so its autosave PATCH sends null
+    rather than a seeded "today + 30" (GDXA-232: that seed defeated the
+    tenant setting for every estimate opened in the editor). The exception
+    today is mobile quoting (routers/mobile_quoting.py), which stores
+    now + tech_mobile.estimate_validity_days at create, so that setting, not
+    this one, governs a phone-built quote. Any new path that writes
+    valid_until must store only a user's choice, or teach this helper to
+    distinguish a default from an override.
 
     Best-effort: a features read failure must not block the send."""
     if not estimate.sent_at:
@@ -2422,40 +2427,6 @@ def send_estimate(
     return out
 
 
-def _holding_area_id_by_name(db: Session, name: str) -> str | None:
-    """Resolve a tenant holding-area row by name. Returns None if missing.
-
-    Used by the accept/convert flow to land an accepted estimate's new Job
-    in the "Order Doors" lane automatically (2026-05-13 directive). Missing
-    area is logged and the job is created without holding_area_id rather
-    than failing the customer-facing accept — the dispatcher can re-route.
-
-    GDXA-157: that promise was false on Postgres, and this is the site where it
-    cost the most. This runs as an ARGUMENT to the ``Job(...)`` constructor in
-    ``_create_job_from_estimate``, so a bare swallow aborted the transaction and
-    then the ``db.add(new_job); db.flush()`` two lines later died with 25P02.
-    Following it out: ``public_proposal_accept`` catches that, and the
-    ``log_audit_event_sync`` + ``commit`` it uses to RECORD the failure runs on
-    the same dead session and is swallowed too — so the only trace was destroyed
-    by the handler writing it. Its ``db.refresh(est)`` then raised
-    PendingRollbackError out of the route. Net effect of a missing
-    ``holding_areas`` row: the customer's accept commits, the customer gets a
-    500, no job reaches the dispatch board, nothing says why — and the re-click
-    path returns early on ``status == "accepted"``, so the job is never created
-    at all. The SAVEPOINT keeps the read's failure the read's.
-    """
-    try:
-        with contained_read(db):
-            row = db.execute(
-                _text("SELECT id FROM holding_areas WHERE name = :n LIMIT 1"),
-                {"n": name},
-            ).first()
-        return str(row[0]) if row else None
-    except Exception:
-        logging.getLogger(__name__).exception("holding_area_lookup_failed name=%s", name)
-        return None
-
-
 def _copy_tier_package_to_job(estimate, new_job, db: Session) -> int | None:
     """When a TIER was accepted, the job carries the accepted package — its
     tier lines when it is line-built, else one row named for the tier.
@@ -3104,8 +3075,8 @@ def reassign_estimate_customer(
     # customer_id write and the rotated token BEFORE the audit row exists —
     # and audit_or_rollback would have nothing left to roll back, which is the
     # entire promise this endpoint makes. Run it here, where committing has
-    # nothing to disturb. Same reasoning, and the same NOT-Depends(audit_ready_db)
-    # caveat, as routers/customers.py's create_customer_contact.
+    # nothing to disturb. Same reasoning as routers/customers.py's
+    # create_customer_contact.
     ensure_audit_table(db)
     estimate = _get_estimate_or_404(estimate_id, db)
 

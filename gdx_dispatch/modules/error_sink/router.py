@@ -263,11 +263,7 @@ def resolve_error(
     # `ensure_audit_table` here, before anything is staged: its first call for
     # an engine COMMITS the guard DDL, and fired lazily from inside the audit
     # write below it would harden the staged UPDATE before its audit row
-    # exists. NOT `Depends(audit_ready_db)` — that resolves its own session via
-    # `_get_db_dep`, which calls `get_db()` imperatively instead of declaring
-    # `Depends(get_db)`, so it bypasses every `dependency_overrides[get_db]` in
-    # the suite (routers/customers.py records two tests that went 404 that way;
-    # during #558 it silently pointed two more at the real database).
+    # exists.
     ensure_audit_table(db)
     now = datetime.now(timezone.utc)
     # Who resolved it (#701): the id, which is unique and fits the column's 64

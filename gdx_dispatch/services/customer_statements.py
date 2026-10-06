@@ -266,7 +266,7 @@ def build_statement(
     today: date | None = None,
 ) -> dict[str, Any]:
     """Compute the statement. Reads only; never writes."""
-    from gdx_dispatch.core.payments import public_pay_url
+    from gdx_dispatch.core.payments import card_surcharge_notice, public_pay_url
 
     today = today or shop_today_from_settings(db)
     tz_name = _shop_tz(db)
@@ -396,6 +396,10 @@ def build_statement(
             "pay_url": public_pay_url(inv.public_token),
         })
 
+    # The invoice email's sentence about what a card costs (GDXA-252), shown
+    # beside the pay links; empty when no row carries one.
+    card_notice = card_surcharge_notice(db, company_id) if any(r["pay_url"] for r in open_rows) else ""
+
     previous = Decimal("0.00")
     invoiced = Decimal("0.00")
     in_period = Decimal("0.00")
@@ -496,6 +500,7 @@ def build_statement(
         "aging": aging,
         "credit_on_account": _credit_on_account(db, company_id, customer.id),
         "open_invoices": open_rows,
+        "card_notice": card_notice,
         "previous_balance": previous,
         "invoices": period_rows,
         "invoiced": invoiced,

@@ -144,6 +144,22 @@ describe("the route survives losing signal", () => {
     expect(w.text()).toContain("Failed to fetch");
   });
 
+  it("a refusal is shown, not hidden behind this morning's route", async () => {
+    // A tech deactivated mid-day gets a 403 with the reason (GDXA-208); the
+    // cache is for losing signal, not for being told no.
+    getMock.mockResolvedValue(route());
+    await mountView();
+    const refused = Object.assign(
+      new Error("Your technician profile is deactivated. Ask the office to reactivate it."),
+      { status: 403 },
+    );
+    getMock.mockRejectedValue(refused);
+    const w = await mountView();
+    expect(w.find('[data-testid="mt-cached-route"]').exists()).toBe(false);
+    expect(w.text()).not.toContain("Anderson Residence");
+    expect(w.text()).toContain("deactivated");
+  });
+
   it("expires rather than resurfacing days later as if current", async () => {
     // A cached route stands in for signal, not for an archive. Dispatch has had
     // a working day to move things; showing a two-day-old route as though it

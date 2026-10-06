@@ -76,7 +76,7 @@ def _seed_customer_data(db):
     db.refresh(job_b)
 
     inv_a = Invoice(
-        customer_id=uuid4(),
+        customer_id=customer_a.id,
         job_id=job_a.id,
         invoice_number="INV-A",
         subtotal=100,
@@ -88,7 +88,7 @@ def _seed_customer_data(db):
         company_id="tenant-test",
     )
     inv_b = Invoice(
-        customer_id=uuid4(),
+        customer_id=customer_b.id,
         job_id=job_b.id,
         invoice_number="INV-B",
         subtotal=200,
@@ -245,6 +245,66 @@ def test_invoices_endpoint_includes_payment_status(tenant_db_session):
     row = portal_router.portal_invoices(principal=principal, db=tenant_db_session)[0]
     assert row["status"] == "sent"
     assert row["payment_status"] == "unpaid"
+
+
+def _add_invoice(db, customer_id, number, *, status="sent", job_id=None, deleted=False):
+    inv = Invoice(
+        customer_id=customer_id,
+        job_id=job_id,
+        invoice_number=number,
+        subtotal=50,
+        tax_amount=0,
+        total=50,
+        balance_due=0 if status == "paid" else 50,
+        status=status,
+        public_token=f"pub-{number}",
+        company_id="tenant-test",
+        deleted_at=datetime.now(UTC) if deleted else None,
+    )
+    db.add(inv)
+    db.commit()
+    return inv.id
+
+
+def test_portal_invoices_hide_draft_and_void_and_show_job_less(tenant_db_session):
+    """GDXA-251: the list and the dashboard count matched through the job, so a
+    job-less invoice never reached its customer, and had no status filter, so a
+    draft or a void went out with its total and balance."""
+    seeded = _seed_customer_data(tenant_db_session)
+    db = tenant_db_session
+    a = seeded["customer_a_id"]
+    draft = _add_invoice(db, a, "INV-DRAFT", status="draft", job_id=seeded["job_a_id"])
+    void = _add_invoice(db, a, "INV-VOID", status="void", job_id=seeded["job_a_id"])
+    jobless = _add_invoice(db, a, "INV-NOJOB", status="sent")
+    jobless_paid = _add_invoice(db, a, "INV-NOJOB-PAID", status="paid")
+    deleted = _add_invoice(db, a, "INV-DELETED", status="sent", deleted=True)
+    # Another customer's invoice hung on customer A's job: the invoice's own
+    # customer decides, not the job's.
+    foreign_on_a_job = _add_invoice(db, seeded["customer_b_id"], "INV-FOREIGN", job_id=seeded["job_a_id"])
+
+    principal = _principal(seeded["user_a_id"], a)
+    ids = {row["id"] for row in portal_router.portal_invoices(principal=principal, db=db)}
+
+    assert ids == {str(seeded["inv_a_id"]), str(jobless), str(jobless_paid)}
+    for hidden in (draft, void, deleted, foreign_on_a_job, seeded["inv_b_id"]):
+        assert str(hidden) not in ids
+
+    body = portal_router.portal_dashboard(principal=principal, db=db)
+    assert body["counts"]["invoices"] == 3
+
+
+def test_admin_list_counts_paid_invoices_without_a_job(tenant_db_session):
+    """GDXA-251 sweep: `payments_made` grouped by the job's customer, so a paid
+    invoice with no job counted for nobody."""
+    seeded = _seed_customer_data(tenant_db_session)
+    db = tenant_db_session
+    _add_invoice(db, seeded["customer_a_id"], "INV-PAID-JOB", status="paid", job_id=seeded["job_a_id"])
+    _add_invoice(db, seeded["customer_a_id"], "INV-PAID-NOJOB", status="paid")
+    _add_invoice(db, seeded["customer_a_id"], "INV-PAID-DEL", status="paid", deleted=True)
+
+    by_id = {e["id"]: e for e in portal_router.portal_admin_list(_=_STAFF, db=db)}
+    assert by_id[str(seeded["customer_a_id"])]["payments_made"] == 2
+    assert by_id[str(seeded["customer_b_id"])]["payments_made"] == 0
 
 
 def test_the_portal_has_no_card_mint_of_its_own():

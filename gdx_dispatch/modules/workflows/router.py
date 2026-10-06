@@ -109,11 +109,7 @@ def create_workflow(payload: WorkflowRuleIn, request: Request, db: Session = Dep
     # `ensure_audit_table` runs here, before anything is staged: its first call
     # for an engine COMMITS the guard DDL, and fired lazily from inside the
     # audit write it would harden the staged mutation before its audit row
-    # exists. NOT `Depends(audit_ready_db)` — that resolves its own session via
-    # `_get_db_dep`, which calls `get_db()` imperatively instead of declaring
-    # `Depends(get_db)`, so it bypasses every `dependency_overrides[get_db]` in
-    # the suite (routers/customers.py records two tests that went 404 that way;
-    # during #558 it silently pointed two more at the real database).
+    # exists.
     ensure_audit_table(db)
     _validate_rule_shape(payload.trigger_event, payload.actions)
     row = WorkflowRule(**payload.model_dump())
@@ -129,11 +125,7 @@ def update_workflow(rule_id: UUID, payload: WorkflowRulePatch, request: Request,
     # `ensure_audit_table` runs here, before anything is staged: its first call
     # for an engine COMMITS the guard DDL, and fired lazily from inside the
     # audit write it would harden the staged mutation before its audit row
-    # exists. NOT `Depends(audit_ready_db)` — that resolves its own session via
-    # `_get_db_dep`, which calls `get_db()` imperatively instead of declaring
-    # `Depends(get_db)`, so it bypasses every `dependency_overrides[get_db]` in
-    # the suite (routers/customers.py records two tests that went 404 that way;
-    # during #558 it silently pointed two more at the real database).
+    # exists.
     ensure_audit_table(db)
     row = db.execute(select(WorkflowRule).where(WorkflowRule.id == rule_id)).scalar_one_or_none()
     if not row: raise HTTPException(status_code=404, detail="Workflow rule not found")  # noqa: E701,E702
@@ -157,11 +149,7 @@ def delete_workflow(rule_id: UUID, request: Request, db: Session = Depends(get_d
     # `ensure_audit_table` runs here, before anything is staged: its first call
     # for an engine COMMITS the guard DDL, and fired lazily from inside the
     # audit write it would harden the staged mutation before its audit row
-    # exists. NOT `Depends(audit_ready_db)` — that resolves its own session via
-    # `_get_db_dep`, which calls `get_db()` imperatively instead of declaring
-    # `Depends(get_db)`, so it bypasses every `dependency_overrides[get_db]` in
-    # the suite (routers/customers.py records two tests that went 404 that way;
-    # during #558 it silently pointed two more at the real database).
+    # exists.
     ensure_audit_table(db)
     row = db.execute(select(WorkflowRule).where(WorkflowRule.id == rule_id)).scalar_one_or_none()
     if not row: raise HTTPException(status_code=404, detail="Workflow rule not found")  # noqa: E701,E702

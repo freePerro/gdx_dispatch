@@ -11,7 +11,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import (
     Message,
@@ -339,6 +339,19 @@ def _resolve_capture_customer(
     wins (its customer_id was resolved at ingest); otherwise the typed number is
     matched via the phone_com resolver. Never raises — capture must not break if
     the phone_com module/tables are unavailable.
+
+    ``contained_read`` (GDXA-158) is what makes "must not break" true on
+    Postgres. ``create_task`` calls this BEFORE it stages the ``PlannerTask``,
+    so nothing pending is at risk at the moment of the read — but a failed
+    statement aborts the whole transaction, and the request goes on to
+    ``ensure_audit_table(db)`` and ``db.commit()``, which die with 25P02. A
+    failed read here therefore lost the note it was supposed to protect.
+    Reads only (core.database rule 2); ``match_phone_to_customer`` re-raises rather than swallowing, which is what
+    rule 5's corollary needs of an inner frame.
+
+    NOT triggered by "the phone_com module is off": that table is created
+    unconditionally at boot and prod is actively using it. See the trigger note
+    in ``link_customer`` for what is actually left.
     """
     resolved_id: str | None = None
     norm_phone: str | None = None
@@ -351,21 +364,22 @@ def _resolve_capture_customer(
         if phone:
             norm_phone = normalize_e164(phone) or phone
 
-        if call_id:
-            from gdx_dispatch.modules.phone_com.models import PhoneComCall
+        with contained_read(db):
+            if call_id:
+                from gdx_dispatch.modules.phone_com.models import PhoneComCall
 
-            call = db.query(PhoneComCall).filter(
-                PhoneComCall.phone_com_call_id == call_id
-            ).first()
-            if call is not None and call.customer_id:
-                resolved_id = str(call.customer_id)
-            if call is not None and not norm_phone and call.from_number:
-                norm_phone = normalize_e164(call.from_number) or call.from_number
+                call = db.query(PhoneComCall).filter(
+                    PhoneComCall.phone_com_call_id == call_id
+                ).first()
+                if call is not None and call.customer_id:
+                    resolved_id = str(call.customer_id)
+                if call is not None and not norm_phone and call.from_number:
+                    norm_phone = normalize_e164(call.from_number) or call.from_number
 
-        if not resolved_id and (norm_phone or phone):
-            match = match_phone_to_customer(db, norm_phone or phone)
-            if match is not None:
-                resolved_id = str(match.id)
+            if not resolved_id and (norm_phone or phone):
+                match = match_phone_to_customer(db, norm_phone or phone)
+                if match is not None:
+                    resolved_id = str(match.id)
     except Exception:
         log.exception("capture_customer_resolve_failed call_id=%s", call_id)
     return resolved_id, norm_phone
@@ -482,38 +496,86 @@ def link_customer(
         # bind processor doesn't choke. A non-UUID id just skips call backfill.
         call_customer_id = UUID(str(body.customer_id))
 
-        if task.phone_com_call_id:
-            call = db.query(PhoneComCall).filter(
-                PhoneComCall.phone_com_call_id == task.phone_com_call_id
-            ).first()
-            if call is not None and not call.customer_id:
-                call.customer_id = call_customer_id
-                backfilled += 1
-                backfilled_calls.append(str(call.id))
-        if task.contact_phone:
-            norm = normalize_e164(task.contact_phone) or task.contact_phone
-            # phone_com_calls.from_number is stored RAW (Phone.com sends it
-            # unnormalized — see modules/phone_com/upserts.py), so a SQL equality
-            # against an E.164 string would silently match nothing. Pull the
-            # unmatched inbound calls (bounded — this is the cold-lead set) and
-            # compare normalized forms in Python.
-            unmatched = db.query(PhoneComCall).filter(
-                PhoneComCall.direction == "in",
-                PhoneComCall.customer_id.is_(None),
-                PhoneComCall.from_number.isnot(None),
-            ).all()
-            for call in unmatched:
-                # Skip a call already linked in-memory by the phone_com_call_id
-                # path above — with autoflush off, the SQL filter still saw it as
-                # NULL and re-returned it, which would double-count backfilled.
-                if call.customer_id is not None:
-                    continue
-                if (normalize_e164(call.from_number) or call.from_number) == norm:
+        # GDXA-158: ``db.begin_nested()``, NOT ``contained_read`` — this block
+        # WRITES (it mutates ``call.customer_id`` on loaded rows), and
+        # core.database rule 2 is explicit that a write needs the ORM's unit of
+        # work inside the savepoint so it knows what to un-stage. A
+        # connection-level savepoint would let those mutations survive the
+        # rollback and land at the commit below: contained in appearance only.
+        #
+        # What this fixes: when the backfill read fails, the transaction aborts,
+        # the ``except`` logs and falls through, and ``db.commit()`` on the next
+        # line raises 25P02 — the customer link the user asked for is LOST and
+        # the request 500s, while the handler exists precisely to make the
+        # backfill best-effort. Measured on PG 16.15 (GDXA-158 audit).
+        #
+        # Be honest about the trigger, because the first version of this comment
+        # was not: it claimed a missing ``phone_com_calls`` table is "the normal
+        # state on a tenant without the phone_com module". That is FALSE.
+        # ``modules/phone_com/models.py`` is on ``TenantBase``, no migration
+        # creates the table, and ``bootstrap_app.create_orm_tables()`` runs
+        # ``create_all(checkfirst=True)`` on EVERY boot regardless of module
+        # state — and this app is single-tenant forever, so there is no other
+        # tenant to be missing it. Checked live 2026-09-27: prod holds 878
+        # ``phone_com_calls`` rows, i.e. the module is in active use. A missing
+        # table here is a FIXTURE artifact, which is the same correction
+        # ``contained_read``'s own docstring already makes about
+        # ``tenant_settings``. What is left as a real trigger: the window during
+        # a migration, a future ``statement_timeout``, and connection loss (not
+        # contained). Cheap insurance on a real mechanism — not a fix for an
+        # observed outage, and no production instance has been produced.
+        #
+        # Rule 3's early flush is harmless here and in fact wanted:
+        # ``task.customer_id`` is assigned ABOVE this try, so ``_take_snapshot``
+        # writes it out BEFORE the savepoint opens — which is exactly why the
+        # link survives a backfill failure instead of rolling back with it.
+        with db.begin_nested():
+            if task.phone_com_call_id:
+                call = db.query(PhoneComCall).filter(
+                    PhoneComCall.phone_com_call_id == task.phone_com_call_id
+                ).first()
+                if call is not None and not call.customer_id:
                     call.customer_id = call_customer_id
                     backfilled += 1
                     backfilled_calls.append(str(call.id))
+            if task.contact_phone:
+                norm = normalize_e164(task.contact_phone) or task.contact_phone
+                # phone_com_calls.from_number is stored RAW (Phone.com sends it
+                # unnormalized — see modules/phone_com/upserts.py), so a SQL
+                # equality against an E.164 string would silently match nothing.
+                # Pull the unmatched inbound calls (bounded — this is the
+                # cold-lead set) and compare normalized forms in Python.
+                unmatched = db.query(PhoneComCall).filter(
+                    PhoneComCall.direction == "in",
+                    PhoneComCall.customer_id.is_(None),
+                    PhoneComCall.from_number.isnot(None),
+                ).all()
+                for call in unmatched:
+                    # Skip a call already linked in-memory by the
+                    # phone_com_call_id path above — with autoflush off, the SQL
+                    # filter still saw it as NULL and re-returned it, which would
+                    # double-count backfilled.
+                    if call.customer_id is not None:
+                        continue
+                    if (normalize_e164(call.from_number) or call.from_number) == norm:
+                        call.customer_id = call_customer_id
+                        backfilled += 1
+                        backfilled_calls.append(str(call.id))
     except Exception:
         log.exception("link_customer_call_backfill_failed task=%s", task_id)
+        # The savepoint rolled the mutations away, so anything counted inside it
+        # did NOT happen. `backfilled` is a plain int and survives the rollback,
+        # so without this reset the 200 reports `calls_backfilled: 1` with zero
+        # rows written — a lying success, and a REGRESSION the savepoint
+        # introduced: pre-fix PG 500'd (no false 200) and pre-fix SQLite actually
+        # persisted the partial write (count honest). Containment has to un-count
+        # what it un-does. Caught by the GDXA-158 audit, measured on PG 16.15 and
+        # SQLite: "API would report calls_backfilled = 1 / probe_call.customer_id
+        # = None".
+        backfilled = 0
+        # Same for the audit row's call list: naming a call the savepoint
+        # un-linked would record a link that never happened.
+        backfilled_calls = []
 
     # The calls it stamped are named, so a wrong link can be walked back.
     _audit(db, request, user, action="link_customer", entity_type="planner_task",

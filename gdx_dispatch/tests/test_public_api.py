@@ -104,6 +104,26 @@ def _make_tenant_engine():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+    # The job PATCH reads the job and its visits through the ORM (multi-day
+    # jobs plan §5.2a), so the schema comes from the ORM; the hand-written
+    # DDL below is then a no-op for every table the ORM already declares.
+    #
+    # One deliberate divergence: prod's jobs.dispatch_status and
+    # jobs.company_id are NOT NULL with no default (read 2026-10-05), and the
+    # public create's raw INSERT names neither, so that create fails on prod.
+    # That is on the found-not-filed ledger, not fixed here; the two defaults
+    # below keep the create tests testing what they tested before.
+    from sqlalchemy import DefaultClause, MetaData  # noqa: PLC0415
+
+    import gdx_dispatch.models.tenant_models  # noqa: F401, PLC0415
+    from gdx_dispatch.core.audit import TenantBase  # noqa: PLC0415
+
+    schema = MetaData()
+    for table in TenantBase.metadata.sorted_tables:
+        table.to_metadata(schema)
+    schema.tables["jobs"].c.dispatch_status.server_default = DefaultClause(text("'unassigned'"))
+    schema.tables["jobs"].c.company_id.server_default = DefaultClause(text(f"'{TENANT_ID}'"))
+    schema.create_all(engine, checkfirst=True)
     with engine.begin() as conn:
         conn.execute(text(
             """
@@ -111,6 +131,10 @@ def _make_tenant_engine():
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 lifecycle_stage TEXT NOT NULL DEFAULT 'lead',
+                -- status / started_at: written by update_job's stage path
+                -- since the stage guard was shared with it (2026-10-05).
+                status TEXT,
+                started_at TEXT,
                 customer_id TEXT,
                 scheduled_at TEXT,
                 company_id TEXT,
@@ -385,6 +409,33 @@ class TestPublicJobsAPI:
         assert "id" in body["data"]
         assert body["data"]["title"] == "Test Job from API"
 
+    @staticmethod
+    def _visit_count(client: TestClient, job_id: str) -> int:
+        with client._tenant_engine.connect() as conn:  # type: ignore[attr-defined]
+            return conn.execute(text(
+                "SELECT COUNT(*) FROM appointments WHERE job_id IN (:dashed, :hex) "
+                "AND deleted_at IS NULL"
+            ), {"dashed": job_id, "hex": uuid.UUID(job_id).hex}).scalar()
+
+    def test_a_dated_create_books_a_visit(self, client: TestClient):
+        """E4 (multi-day jobs plan §5.2a): a job created with a date is on the
+        board, the same as one created in the app (Doug ruled 2026-10-05)."""
+        when = "2026-11-03T15:00:00+00:00"
+        resp = client.post(
+            "/api/v1/jobs", headers=self._headers,
+            json={"title": "Dated API job", "scheduled_at": when},
+        )
+        assert resp.status_code == 201, resp.text[:500]
+        job_id = resp.json()["data"]["id"]
+        assert self._visit_count(client, job_id) == 1
+        added = _audit_rows(client, action="visit_added")
+        assert any(r["entity_id"] in (job_id, uuid.UUID(job_id).hex) for r in added)
+
+    def test_an_undated_create_books_nothing(self, client: TestClient):
+        resp = client.post("/api/v1/jobs", headers=self._headers, json={"title": "Undated API job"})
+        assert resp.status_code == 201, resp.text[:500]
+        assert self._visit_count(client, resp.json()["data"]["id"]) == 0
+
 
 class TestPublicCustomersAPI:
     _headers = {"X-API-Key": RAW_API_KEY, "x-tenant-id": TENANT_ID}
@@ -492,7 +543,10 @@ class TestDbErrorsLeaveATrace:
             ("text", "GET", "/api/v1/jobs", None, "list_jobs"),
             ("text", "GET", f"/api/v1/jobs/{_JOB_ID}", None, "get_job"),
             ("text", "POST", "/api/v1/jobs", {"title": "boom probe"}, "create_job"),
-            ("text", "PATCH", f"/api/v1/jobs/{_JOB_ID}", {"title": "boom probe"}, "update_job"),
+            # update_job reads and writes the job through the ORM (multi-day
+            # jobs plan §5.2a), so it takes the broken session like the
+            # customers pair below.
+            ("db", "PATCH", f"/api/v1/jobs/{_JOB_ID}", {"title": "boom probe"}, "update_job"),
             # the customers pair queries via the ORM with function-local
             # imports, out of reach of the module seams — hand them a session
             # whose every attribute access raises, via the get_db override.
@@ -647,10 +701,12 @@ class TestPublicApiMutationsAreAudited:
         rows = _audit_rows(client, action="job_updated", entity_id=job_id)
         assert len(rows) == 1, f"expected exactly one trail row, got {rows!r}"
         changed = rows[0]["details"]["changed"]
-        # The columns, not the request body: `status` lands in lifecycle_stage.
-        assert set(changed) == {"title", "lifecycle_stage", "scheduled_at"}, changed
+        # The columns, not the request body: `status` lands in lifecycle_stage,
+        # with the display twin `status` kept in sync as the desktop PATCH does.
+        assert set(changed) == {"title", "lifecycle_stage", "status", "scheduled_at"}, changed
         assert changed["title"] == "after"
         assert changed["lifecycle_stage"] == "scheduled"
+        assert changed["status"] == "Scheduled"
         assert changed["scheduled_at"].startswith("2026-10-01"), changed["scheduled_at"]
         assert rows[0]["user_id"] == "gdx_live_tes"
 
@@ -676,6 +732,7 @@ class TestPublicApiMutationsAreAudited:
         )
         assert resp.status_code == 404, resp.text[:300]
         assert _audit_rows(client, action="job_updated", entity_id=missing) == []
+
 
     def test_customer_create_is_audited_without_leaking_contact_details(
         self, client: TestClient
@@ -734,6 +791,128 @@ class TestPublicApiMutationsAreAudited:
         assert details["secret_set"] is True
         # The secret is a credential; `details` is readable in the audit viewer.
         assert "sup3r-secret-value" not in json.dumps(details)
+
+
+def _stored_job(client: TestClient, job_id: str) -> dict:
+    with client._tenant_engine.connect() as conn:  # type: ignore[attr-defined]
+        return dict(conn.execute(
+            # The ORM schema stores a Uuid as 32 dashless hex on SQLite.
+            text("SELECT lifecycle_stage, status, started_at, title FROM jobs WHERE id = :j"),
+            {"j": uuid.UUID(job_id).hex},
+        ).mappings().one())
+
+
+def _force_stage(client: TestClient, job_id: str, stage: str) -> None:
+    with client._tenant_engine.begin() as conn:  # type: ignore[attr-defined]
+        conn.execute(
+            text("UPDATE jobs SET lifecycle_stage = :s WHERE id = :j"),
+            {"s": stage, "j": uuid.UUID(job_id).hex},
+        )
+
+
+class TestPublicApiAnswersToTheStageGuard:
+    """The API-key PATCH wrote any string into lifecycle_stage: it completed
+    jobs with no closeout and moved finished ones with no reason recorded,
+    bypassing the guard #842 put on the desktop PATCH (found 2026-10-05).
+    It now shares that guard (routers/jobs.py `_stage_change_refusal`).
+
+    Create (`POST /api/v1/jobs`) is not covered: on Postgres its INSERT omits
+    the NOT NULL `dispatch_status` and `company_id`, so it cannot insert a job
+    at all, guarded or not. That is its own defect, left to its own fix."""
+
+    _headers = {"X-API-Key": RAW_API_KEY, "x-tenant-id": TENANT_ID}
+
+    def _job(self, client: TestClient, **body) -> str:
+        resp = client.post(
+            "/api/v1/jobs", headers=self._headers, json={"title": "stage probe", **body}
+        )
+        assert resp.status_code == 201, resp.text[:300]
+        return resp.json()["data"]["id"]
+
+    def _patch(self, client: TestClient, job_id: str, body: dict):
+        return client.patch(f"/api/v1/jobs/{job_id}", headers=self._headers, json=body)
+
+    def test_completing_a_job_is_refused(self, client: TestClient):
+        job_id = self._job(client)
+        for status in ("completed", "Complete"):
+            resp = self._patch(client, job_id, {"status": status, "title": "x"})
+            assert resp.status_code == 409, resp.text[:300]
+            assert resp.json()["detail"]["use"] == "closeout"
+        stored = _stored_job(client, job_id)
+        assert stored["lifecycle_stage"] == "lead" and stored["title"] == "stage probe"
+        assert _audit_rows(client, action="job_updated", entity_id=job_id) == []
+
+    @pytest.mark.parametrize("finished", ["completed", "cancelled"])
+    def test_a_finished_job_cannot_be_moved(self, client: TestClient, finished: str):
+        job_id = self._job(client)
+        _force_stage(client, job_id, finished)
+        resp = self._patch(client, job_id, {"status": "scheduled"})
+        assert resp.status_code == 409, resp.text[:300]
+        assert resp.json()["detail"]["use"] == "reopen"
+        assert _stored_job(client, job_id)["lifecycle_stage"] == finished
+        assert _audit_rows(client, action="job_updated", entity_id=job_id) == []
+
+    def test_a_status_that_names_no_stage_is_a_422_not_a_500(self, client: TestClient):
+        job_id = self._job(client)
+        resp = self._patch(client, job_id, {"status": "Scheduled Later"})
+        assert resp.status_code == 422, resp.text[:300]
+        assert _stored_job(client, job_id)["lifecycle_stage"] == "lead"
+
+    def test_resending_the_stored_stage_writes_nothing(self, client: TestClient):
+        job_id = self._job(client)
+        _force_stage(client, job_id, "completed")
+        resp = self._patch(client, job_id, {"status": "Complete"})
+        assert resp.status_code == 200, resp.text[:300]
+        assert resp.json()["data"]["status"] == "completed"
+        assert _audit_rows(client, action="job_updated", entity_id=job_id) == []
+
+    def test_an_open_move_writes_the_stage_its_twin_and_started_at(
+        self, client: TestClient
+    ):
+        job_id = self._job(client)
+        resp = self._patch(client, job_id, {"status": "In Progress"})
+        assert resp.status_code == 200, resp.text[:300]
+        stored = _stored_job(client, job_id)
+        assert stored["lifecycle_stage"] == "in_progress"
+        assert stored["status"] == "In Progress"
+        assert stored["started_at"] is not None
+        first_start = stored["started_at"]
+        # A second move into in_progress (via scheduled) keeps the first stamp.
+        assert self._patch(client, job_id, {"status": "scheduled"}).status_code == 200
+        assert self._patch(client, job_id, {"status": "in_progress"}).status_code == 200
+        assert _stored_job(client, job_id)["started_at"] == first_start
+
+    def test_a_stage_that_moves_mid_request_is_not_overwritten(
+        self, client: TestClient, monkeypatch
+    ):
+        """A closeout landing between the guard's read and the UPDATE.
+
+        The fixture engine is a StaticPool over one SQLite connection, so a
+        write through it here lands inside the request's own transaction —
+        exactly what the UPDATE would see had another session committed it.
+        """
+        import gdx_dispatch.routers.jobs as jobs_router
+
+        job_id = self._job(client)
+        real = jobs_router._stage_change_refusal
+        # Held until the request is done: a checked-out connection that is
+        # garbage-collected is reset by the pool, and that ROLLBACK would undo
+        # the injected write on the shared connection before the UPDATE runs.
+        held = []
+
+        def closeout_lands_meanwhile(stored, requested):
+            raw = client._tenant_engine.raw_connection()  # type: ignore[attr-defined]
+            held.append(raw)
+            raw.driver_connection.execute(
+                "UPDATE jobs SET lifecycle_stage = 'completed' WHERE id = ?", (uuid.UUID(job_id).hex,)
+            )
+            return real(stored, requested)
+
+        monkeypatch.setattr(jobs_router, "_stage_change_refusal", closeout_lands_meanwhile)
+        resp = self._patch(client, job_id, {"status": "scheduled"})
+        assert resp.status_code == 409, resp.text[:300]
+        assert _stored_job(client, job_id)["lifecycle_stage"] == "completed"
+        assert _audit_rows(client, action="job_updated", entity_id=job_id) == []
 
 
 class TestAuditFailureSemantics:
