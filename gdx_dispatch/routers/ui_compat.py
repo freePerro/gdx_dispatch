@@ -236,10 +236,11 @@ def geocode_missing_jobs(_: dict = Depends(get_current_user)) -> dict:
 
 
 # ── Loyalty (list index) ──────────────────────────────────────────────────
-
-@router.get("/api/loyalty", response_model=None)
-def loyalty_index(_: dict = Depends(get_current_user)) -> dict:
-    return {"members": [], "redemptions": [], "tiers": []}
+# Removed 2026-10-06 (GDXA-316). GET /api/loyalty returned a hardcoded
+# {"members": [], ...} whatever loyalty_points held, so the Loyalty page
+# could never list anyone (and its buttons posted to /api/loyalty/adjust and
+# /redeem, which never existed, so the ledger stayed empty). LoyaltyView now
+# reads GET /api/loyalty/members in routers/loyalty.py.
 
 
 # ── Maps (list index) ─────────────────────────────────────────────────────

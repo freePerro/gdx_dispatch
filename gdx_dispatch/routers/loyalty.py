@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.models.tenant_models import LoyaltyPoints, LoyaltyReferral, LoyaltyTier
+from gdx_dispatch.models.tenant_models import Customer, LoyaltyPoints, LoyaltyReferral, LoyaltyTier
 from gdx_dispatch.routers.auth import get_current_user
 
 try:
@@ -63,9 +63,9 @@ def _serialize_referral(ref: LoyaltyReferral) -> dict[str, Any]:
     }
 
 
-def _resolve_tier(points: int, db: Session) -> dict[str, Any] | None:
+def _tier_list(db: Session) -> list[dict[str, Any]]:
     tiers = db.query(LoyaltyTier).order_by(LoyaltyTier.min_spend.asc()).all()
-    tier_list = [
+    return [
         {
             "name": row.name,
             "min_spend": float(row.min_spend),
@@ -74,8 +74,14 @@ def _resolve_tier(points: int, db: Session) -> dict[str, Any] | None:
         for row in tiers
     ] or DEFAULT_TIERS
 
+
+def _match_tier(points: int, tier_list: list[dict[str, Any]]) -> dict[str, Any] | None:
     matches = [tier for tier in tier_list if points >= int(tier["min_spend"])]
     return matches[-1] if matches else None
+
+
+def _resolve_tier(points: int, db: Session) -> dict[str, Any] | None:
+    return _match_tier(points, _tier_list(db))
 
 
 class TierCreate(BaseModel):
@@ -220,6 +226,67 @@ def update_tier(
         except Exception:
             log.exception('update_tier_audit_failed')
     return _serialize_tier(row)
+
+
+@router.get("/members")
+def list_members(
+    _: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """Every customer with a points ledger, with balance and current tier.
+
+    Replaces the ui_compat `GET /api/loyalty` stub, which returned a hardcoded
+    empty list whatever this ledger held, while the page's write buttons
+    posted to routes that never existed, so nothing could fill it (GDXA-316).
+    """
+    rows = (
+        db.query(
+            LoyaltyPoints.customer_id,
+            func.sum(LoyaltyPoints.amount),
+            func.min(LoyaltyPoints.created_at),
+        )
+        .group_by(LoyaltyPoints.customer_id)
+        .all()
+    )
+    # loyalty_points.customer_id is a free string (marketing.py writes referral
+    # points under a free-text id), so one customer can sit under several
+    # spellings of the same UUID. Merge by the parsed UUID, then resolve names
+    # through the ORM so SQLite's dashless storage still matches.
+    merged: dict[str, dict[str, Any]] = {}
+    for customer_id, total, first in rows:
+        try:
+            uid: UUID | None = UUID(str(customer_id))
+            key = str(uid)
+        except ValueError:
+            uid, key = None, customer_id
+        acc = merged.setdefault(key, {"uid": uid, "points": 0, "first": None})
+        acc["points"] += int(total or 0)
+        if first is not None and (acc["first"] is None or first < acc["first"]):
+            acc["first"] = first
+    uuids = {acc["uid"] for acc in merged.values() if acc["uid"] is not None}
+    customers: dict[UUID, Customer] = {}
+    if uuids:
+        for cust in db.query(Customer).filter(Customer.id.in_(uuids)).all():
+            customers[cust.id] = cust
+    tier_list = _tier_list(db)
+    members = []
+    for customer_id, acc in merged.items():
+        points = acc["points"]
+        first = acc["first"]
+        tier = _match_tier(points, tier_list)
+        uid = acc["uid"]
+        cust = customers.get(uid) if uid is not None else None
+        members.append({
+            "customer_id": customer_id,
+            "customer_name": cust.name if cust is not None else None,
+            "customer_deleted": bool(cust is not None and cust.deleted_at is not None),
+            "points": points,
+            "tier": tier["name"] if tier else None,
+            "tier_discount_pct": float(tier["discount_pct"]) if tier else 0.0,
+            "joined_at": first.isoformat() if first else None,
+        })
+    members.sort(key=lambda m: m["points"], reverse=True)
+    return members
 
 
 @router.get("/customers/{customer_id}/points")

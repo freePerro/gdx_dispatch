@@ -184,7 +184,7 @@ Highest-impact:
 | Endpoint | Effect |
 |---|---|
 | ~~`GET /api/dispatch/optimize-route`~~ | **REMOVED 2026-10-06** (GDXA-317) — it fed a success toast for a route never computed; the Dispatch "Route Order" button went with it. No screen orders a route now (`POST /api/maps/optimize-route` exists but has no UI caller) |
-| `GET /api/loyalty` | Loyalty page always empty |
+| ~~`GET /api/loyalty`~~ | **RESOLVED 2026-10-06** (GDXA-316) — stub removed; LoyaltyView reads the real points ledger through `GET /api/loyalty/members` and awards through `POST /api/loyalty/customers/{id}/points`. Nothing in pricing reads a points tier yet |
 | ~~`GET /api/maps`~~ | **REMOVED 2026-10-06** (GDXA-317) — MapsView now reads the breadcrumb table via `GET /api/dispatch/locations`; the never-populated "Route Optimizations" tab was dropped |
 | `GET /api/sso` | SSO config page always empty |
 | `GET /api/technicians/skills` | skills always empty |

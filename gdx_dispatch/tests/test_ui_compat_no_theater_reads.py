@@ -20,7 +20,6 @@ from gdx_dispatch.routers import ui_compat
 
 # Each sibling of GDXA-314 deletes its own entries as it lands.
 KNOWN_EMPTY_STUBS = {
-    "/api/loyalty",
     "/api/payroll/pay-periods",
     "/api/payroll/pay-stubs",
     "/api/quickbooks",
