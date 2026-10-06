@@ -1465,9 +1465,14 @@ def _upsert_sync_health_action(tdb: Session, tenant_id: str, problems: list[str]
 def sync_health_check(self) -> dict:
     """Beat task (hourly): alarm when mail sync is broken.
 
-    Two channels, both self-clearing: log.error → Sentry for the ops loop,
-    and a persistent NextAction so the office sees it in the app without
-    reading logs.
+    Two channels. The ops alarm is a log.error marked ``ops_alert`` with
+    fingerprint ``outlook-sync-health-check-hourly`` (the beat entry's name).
+    Once the GDXA-269 ops-alert handler is installed, the error sink records
+    each marked record as a ``server_errors`` row and, when
+    ``OPS_ALERT_EMAIL`` is set, emails the maintainer (at most once per
+    fingerprint per hour, daily-capped); until then it is a container-log
+    line only. The other channel is a self-clearing NextAction, so the
+    office sees it in the app without reading logs.
     """
     tenant_id = os.getenv("GDX_TENANT_ID") or os.getenv("GDX_DEFAULT_TENANT_ID") or "gdx"
     tdb = SessionLocal()
@@ -1477,7 +1482,13 @@ def sync_health_check(self) -> dict:
         if health["status"] == "no_accounts":
             return {**health, "action": "skipped"}
         if health["problems"]:
-            log.error("outlook_sync_unhealthy: %s", "; ".join(health["problems"]))
+            log.error(
+                "outlook_sync_unhealthy: %s", "; ".join(health["problems"]),
+                extra={
+                    "ops_alert": True,
+                    "ops_fingerprint": "outlook-sync-health-check-hourly",
+                },
+            )
         action = _upsert_sync_health_action(tdb, tenant_id, health["problems"])
         result = {**health, "action": action}
         log.info("outlook_sync_health_check %s", result)

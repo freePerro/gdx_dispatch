@@ -226,6 +226,26 @@ def test_task_alarms_on_partial_freeze(tdb, caplog):
     )
 
 
+def test_task_alarm_carries_ops_alert_marker(tdb, caplog):
+    """GDXA-269 contract: the ops-alert handler routes only records marked
+    ops_alert, grouped by a stable fingerprint, so an unmarked ERROR would
+    reach no one (Sentry was retired 2026-04-29)."""
+    a = _mk_account(tdb)
+    _mk_folder(tdb, a, "Sent Items", synced_ago_hours=0.5)
+    _mk_folder(tdb, a, "Inbox", synced_ago_hours=5 * 24)
+    with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", return_value=tdb), \
+         patch("gdx_dispatch.modules.outlook.tasks.datetime") as dt:
+        dt.now.return_value = NOW
+        sync_health_check.run()
+    alarms = [
+        r for r in caplog.records
+        if r.levelname == "ERROR" and "outlook_sync_unhealthy" in r.getMessage()
+    ]
+    assert len(alarms) == 1
+    assert getattr(alarms[0], "ops_alert", None) is True
+    assert getattr(alarms[0], "ops_fingerprint", None) == "outlook-sync-health-check-hourly"
+
+
 def test_task_is_quiet_when_healthy(tdb, caplog):
     a = _mk_account(tdb)
     _mk_folder(tdb, a, "Inbox", synced_ago_hours=0.5)
