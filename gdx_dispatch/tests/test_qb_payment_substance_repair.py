@@ -141,3 +141,88 @@ def test_multiple_lines_to_same_invoice_accumulate_in_index_shape():
                                 INVOICE_INDEX, set())
     assert plan.resets[0].new_amount == Decimal("200.00")
     assert len([i for i in plan.inserts if i.invoice_id == "inv-2"]) == 1
+
+
+def _attributed(payment_id, number, amount, map_qb_id=None, reference=None):
+    return {"payment_id": payment_id, "invoice_number": number,
+            "amount": Decimal(amount), "map_qb_id": map_qb_id, "reference": reference}
+
+
+def test_full_total_row_plus_backfilled_siblings_is_reported_over_summed():
+    # GDXA-259 shape: pull_payments left the full $1000 TotalAmt on inv-1
+    # (whose total is >= 1000, so never "over-allocated"), and a backfill wrote
+    # the $800 of other-invoice allocations as qb: rows. The original row has
+    # NO reference — only the map ties it to QB — and the qb: rows alone sum
+    # under TotalAmt, so grouping by reference alone cannot see it.
+    qb_index = {"qb-pay-9": _qb_payment(total="1000.00", allocs={
+        "qb-inv-1": "200.00", "qb-inv-2": "300.00", "qb-inv-3": "500.00"})}
+    rows = [
+        _attributed("pay-1", "N-0001", "1000.00", map_qb_id="qb-pay-9"),
+        _attributed("pay-2", "N-0002", "300.00", reference="qb:qb-pay-9"),
+        _attributed("pay-3", "N-0003", "500.00", reference="qb:qb-pay-9"),
+    ]
+    plan = build_substance_plan([], [], qb_index, INVOICE_INDEX, set(),
+                                attributed_rows=rows)
+
+    assert not plan.resets and not plan.inserts  # detection only, nothing planned
+    assert len(plan.over_summed) == 1
+    found = plan.over_summed[0]
+    assert found.qb_payment_id == "qb-pay-9"
+    assert found.local_sum == Decimal("1800.00")
+    assert found.excess == Decimal("800.00")
+    assert found.after_plan == Decimal("1800.00")
+    assert {(r["payment_id"], r["linked_by"]) for r in found.rows} == {
+        ("pay-1", "map"), ("pay-2", "reference"), ("pay-3", "reference")}
+
+
+def test_rows_summing_to_total_are_not_reported():
+    qb_index = {"qb-pay-9": _qb_payment(total="1000.00", allocs={
+        "qb-inv-1": "200.00", "qb-inv-2": "800.00"})}
+    rows = [  # a repaired split: own row reset and re-referenced, sibling inserted
+        _attributed("pay-1", "N-0001", "200.00", map_qb_id="qb-pay-9",
+                    reference="qb:qb-pay-9"),
+        _attributed("pay-2", "N-0002", "800.00", reference="qb:qb-pay-9"),
+        _attributed("pay-4", "N-0002", "1000.01", map_qb_id="qb-pay-8"),  # 1 cent: tolerance
+    ]
+    qb_index["qb-pay-8"] = _qb_payment(total="1000.00", allocs={"qb-inv-2": "1000.00"})
+    plan = build_substance_plan([], [], qb_index, INVOICE_INDEX, set(),
+                                attributed_rows=rows)
+    assert not plan.over_summed
+    assert not plan.issues
+
+
+def test_credit_memo_payment_is_measured_against_allocations_not_net_cash():
+    # A QB Payment applying a $200 credit memo: TotalAmt is the $800 of cash,
+    # but $1000 lands on the invoice. The tool's own backfill writes $1000;
+    # that row is correct and must not read as over-summed.
+    qb_index = {"qb-pay-5": _qb_payment(total="800.00", allocs={"qb-inv-1": "1000.00"})}
+    ok = build_substance_plan([], [], qb_index, INVOICE_INDEX, set(), attributed_rows=[
+        _attributed("pay-1", "N-0001", "1000.00", reference="qb:qb-pay-5")])
+    assert not ok.over_summed
+
+    dup = build_substance_plan([], [], qb_index, INVOICE_INDEX, set(), attributed_rows=[
+        _attributed("pay-1", "N-0001", "1000.00", reference="qb:qb-pay-5"),
+        _attributed("pay-2", "N-0001", "800.00", map_qb_id="qb-pay-5")])
+    assert dup.over_summed[0].qb_applied == Decimal("1000.00")
+    assert dup.over_summed[0].excess == Decimal("800.00")
+
+
+def test_over_summed_projects_the_split_that_will_resolve_it():
+    # The own row is over its invoice AND a sibling already exists: the split
+    # resets it, so the after-plan sum lands back on TotalAmt.
+    qb_index = {"qb-pay-9": _qb_payment(total="1000.00", allocs={
+        "qb-inv-1": "200.00", "qb-inv-2": "800.00"})}
+    rows = [_attributed("pay-1", "N-0001", "1000.00", map_qb_id="qb-pay-9"),
+            _attributed("pay-2", "N-0002", "800.00", reference="qb:qb-pay-9")]
+    plan = build_substance_plan([_over()], [], qb_index, INVOICE_INDEX,
+                                existing_refs={("inv-2", "qb:qb-pay-9")},
+                                attributed_rows=rows)
+    assert plan.over_summed[0].excess == Decimal("800.00")
+    assert plan.over_summed[0].after_plan == Decimal("1000.00")
+
+
+def test_rows_for_a_qb_payment_qb_did_not_return_are_reported_unchecked():
+    rows = [_attributed("pay-1", "N-0001", "50.00", reference="qb:qb-gone")]
+    plan = build_substance_plan([], [], {}, INVOICE_INDEX, set(), attributed_rows=rows)
+    assert not plan.over_summed
+    assert "qb-gone" in plan.issues[0] and "cannot check" in plan.issues[0]
