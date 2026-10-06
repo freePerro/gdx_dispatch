@@ -113,10 +113,6 @@ ALLOWED: dict[tuple[str, str], str] = {
         "helper: both callers stage it inside _mark_invoice_paid, whose single "
         "db.commit() lands the alert with the payment (#661)"
     ),
-    ("core/quickbooks.py", "pull_accounts"): (
-        "no caller: the live pull is modules/quickbooks/sync.pull_accounts; "
-        "this legacy SDK copy is dead code (#700 close-out)"
-    ),
     ("routers/timeclock.py", "_auto_close_stale_shift"): (
         "helper: its one caller, post_clock_in, commits the close and this row "
         "together on the next line — the atomicity is the point (GDXA-97). New "

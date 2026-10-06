@@ -297,15 +297,16 @@ def test_push_invoice_creates_in_qb(db_session: Session, qb_connection, mock_qb)
     assert call_args[0][1]["Line"][0]["Description"] == "Labor"
 
 
-def test_legacy_push_invoice_counter_sale_uses_invoice_customer(
-    db_session: Session, qb_connection, monkeypatch
+def test_push_invoice_counter_sale_uses_invoice_customer(
+    db_session: Session, qb_connection, mock_qb
 ):
-    """2026-05-14 — counter-sale invoices have job_id=None. The legacy
-    `gdx_dispatch.core.quickbooks.push_invoice` path previously did `db.get(Job, None)`,
-    skipped customer_ref entirely, and POSTed to QBO with no CustomerRef.
-    Regression: it must now resolve customer from `invoice.customer_id`.
+    """2026-05-14 — counter-sale invoices have job_id=None. A push path once
+    did `db.get(Job, None)`, skipped customer_ref entirely, and POSTed to QBO
+    with no CustomerRef. It must resolve the customer from
+    `invoice.customer_id`. (Was pinned against the legacy core/quickbooks.py
+    copy, deleted in GDXA-260; this pins the live sync path instead.)
     """
-    from gdx_dispatch.core import quickbooks as legacy_qb
+    from gdx_dispatch.modules.quickbooks import sync
 
     customer = _seed_customer(db_session, "CounterCust")
     inv = Invoice(
@@ -328,17 +329,14 @@ def test_legacy_push_invoice_counter_sale_uses_invoice_customer(
     ))
     db_session.commit()
 
-    captured: dict = {}
-    def _fake_create(_client, *, entity_name, payload, idempotency_key):
-        captured["entity_name"] = entity_name
-        captured["payload"] = payload
-        return {"Invoice": {"Id": "QB-I-CSALE"}}
-    monkeypatch.setattr(legacy_qb, "_qb_create", _fake_create)
-    monkeypatch.setattr(legacy_qb, "get_qb_client", lambda _t, _d: object())
+    mock_qb.create = AsyncMock(return_value={"Id": "QB-I-CSALE"})
 
-    legacy_qb.push_invoice("tenant-1", str(inv.id), db_session)
+    asyncio.run(sync.push_invoice("tenant-1", str(inv.id), db_session, mock_qb))
 
-    assert captured["payload"].get("CustomerRef") == {"value": "QB-CUST-CSALE"}, \
+    mock_qb.create.assert_called_once()
+    assert mock_qb.create.call_args[0][0] == "Invoice"
+    payload = mock_qb.create.call_args[0][1]
+    assert payload.get("CustomerRef") == {"value": "QB-CUST-CSALE"}, \
         "counter-sale invoice pushed to QBO without CustomerRef"
 
 

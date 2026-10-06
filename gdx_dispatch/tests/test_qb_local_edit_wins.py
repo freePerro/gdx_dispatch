@@ -274,13 +274,6 @@ def test_the_csv_import_claims_ownership_too(db):
     assert "existing.local_edit_fields = sorted(claimed)" in src
 
 
-def test_the_legacy_duplicate_pull_is_guarded_too(db):
-    """core/quickbooks.py holds an older copy of pull_customers with the same
-    unconditional assignment. An unguarded copy of a fixed bug is the bug."""
-    src = __import__("pathlib").Path("gdx_dispatch/core/quickbooks.py").read_text()
-    assert "if not value or field in owned:" in src
-
-
 def test_the_migration_is_additive_and_runs_on_both_dialects():
     src = __import__("pathlib").Path(
         "gdx_dispatch/migrations/versions/070_customer_local_edit_at.py").read_text()
