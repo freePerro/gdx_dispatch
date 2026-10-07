@@ -4,7 +4,7 @@ Each test file gets isolated SQLite in-memory databases — no shared state.
 """
 import os
 import sqlite3
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from functools import reduce
 from operator import or_
 
@@ -294,6 +294,44 @@ def _isolated_redis(monkeypatch):
     # it hands the limiter a fresh, correctly loop-bound client.
     monkeypatch.setattr(cache, "get_redis_client", lambda: client)
     yield
+
+
+# ---------------------------------------------------------------------------
+# Shop-midday clock: for tests whose fixtures are built from `now` while the
+# code under test compares SHOP days (GDXA-361)
+# ---------------------------------------------------------------------------
+# The phone's job timer only counts if its clock_in is on now's shop day
+# (`_todays_open_job_timer`, plan §5.4a B8), and with no AppSettings row the
+# shop day is America/New_York's. A test that clocks in at `now - 187 min` was
+# therefore on YESTERDAY's shop day for the first hours after New York
+# midnight, 04:00-08:00 UTC in summer and 05:00-09:00 in winter, and Stop
+# answered 404. The day-close harness's `at(0)` (00:05 shop time) is in the
+# future for the first five minutes of the shop day. Every PR's CI went red in
+# those windows (GDXA-359). Same class as #677, which pinned UTC midday for a
+# UTC-midnight clamp; this pins SHOP midday for a shop-day rule.
+#
+# 13:00 New York leaves room on both sides: an offset under 13 hours stays
+# today, one over 13 hours lands on yesterday (the labor-trail file's 20 h and
+# 30 h stale timers). Each opting-in file asserts
+# its own widest offsets against this instant.
+#
+# `tick=True` so the clock still moves: rows written one after another keep
+# distinct, ordered clock_ins, which `ORDER BY clock_in DESC` readers rely on.
+SHOP_MIDDAY_UTC = datetime(2026, 1, 15, 18, 0, 0, tzinfo=UTC)  # 13:00 EST
+SHOP_MIDDAY_TZ = "America/New_York"  # shop_tz's fallback with no AppSettings row
+
+
+@pytest.fixture
+def shop_midday_clock():
+    """Pin `now` to SHOP_MIDDAY_UTC (ticking). Opt in per module with
+    ``pytestmark = pytest.mark.usefixtures("shop_midday_clock")``."""
+    import freezegun
+
+    # As in test_timeclock_status_breaks: keep pytest's own timers real, or
+    # --durations reports a frozen test as ~56 years. Global and idempotent.
+    freezegun.configure(extend_ignore_list=["_pytest"])
+    with freezegun.freeze_time(SHOP_MIDDAY_UTC, tick=True):
+        yield
 
 
 # ---------------------------------------------------------------------------

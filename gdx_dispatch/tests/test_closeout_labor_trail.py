@@ -64,6 +64,7 @@ from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
 from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core.pay_periods import shop_day_of
 from gdx_dispatch.models.tenant_models import (
     Customer,
     Invoice,
@@ -81,10 +82,29 @@ from gdx_dispatch.routers.jobs import (
     CloseoutPayload,
     closeout_job,
 )
+from gdx_dispatch.tests.conftest import SHOP_MIDDAY_TZ, SHOP_MIDDAY_UTC
 
 TENANT = "tenant-1"
 USER = "user-michael"
 RATE = 42.5
+
+# GDXA-361: closeout and the manual Stop find the open timer only on now's shop
+# day, and these timers start at `now - N hours`. Unpinned, the manual-stop
+# tests failed for the first five hours after New York midnight. See conftest's
+# shop_midday_clock.
+pytestmark = pytest.mark.usefixtures("shop_midday_clock")
+_WIDEST_SAME_DAY_OFFSET_H = 5  # test_manual_stop_then_closeout_pays_only_attested_hours
+_NARROWEST_EARLIER_DAY_OFFSET_H = 20  # test_colleague_timer_closes_unpaid_not_guessed
+
+
+def test_the_pinned_clock_leaves_room_on_both_sides():
+    """Same-day timers must stay today and the stale ones must stay on an
+    earlier day, or the tests stop testing what their names say."""
+    now = datetime.now(UTC)
+    assert SHOP_MIDDAY_UTC <= now < SHOP_MIDDAY_UTC + timedelta(minutes=5), now
+    today = shop_day_of(now, SHOP_MIDDAY_TZ)
+    assert shop_day_of(now - timedelta(hours=_WIDEST_SAME_DAY_OFFSET_H), SHOP_MIDDAY_TZ) == today
+    assert shop_day_of(now - timedelta(hours=_NARROWEST_EARLIER_DAY_OFFSET_H), SHOP_MIDDAY_TZ) < today
 
 
 @pytest.fixture

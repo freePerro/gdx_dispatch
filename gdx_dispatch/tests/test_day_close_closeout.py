@@ -10,7 +10,7 @@ today (see that module's docstring).
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -29,7 +29,9 @@ from gdx_dispatch.routers.jobs import (
     complete_job,
 )
 from gdx_dispatch.services import day_close as dc
+from gdx_dispatch.services.visit_sync import shop_day
 from gdx_dispatch.tests import test_day_close_route as _harness
+from gdx_dispatch.tests.conftest import SHOP_MIDDAY_TZ, SHOP_MIDDAY_UTC
 from gdx_dispatch.tests.test_day_close_route import (
     HELPER,
     LEAD,
@@ -55,6 +57,22 @@ from gdx_dispatch.tests.test_day_close_route import (
 # The shared fixtures, bound by name so pytest collects them here.
 db = _harness.db
 _flags = _harness._flags
+
+# GDXA-361: the harness puts today's timers at `at(0)`, 00:05 shop time, and a
+# close-without-work stamps `now`. In the first five minutes after New York
+# midnight the timer was later than the close and stayed a candidate. See
+# conftest's shop_midday_clock.
+pytestmark = pytest.mark.usefixtures("shop_midday_clock")
+
+
+def test_the_pinned_clock_puts_today_s_fixtures_in_the_past():
+    """The pin has to be in effect, and the latest same-day fixture instant this
+    file writes (a stopped timer's clock_out, `at(0) + 1h`) has to be behind it."""
+    now = datetime.now(UTC)
+    assert SHOP_MIDDAY_UTC <= now < SHOP_MIDDAY_UTC + timedelta(minutes=5), now
+    assert TZ == SHOP_MIDDAY_TZ
+    assert at(0) + timedelta(hours=1) < now
+    assert shop_day(now, TZ) == today()
 
 
 def closeout(db, job, hours, *, user=None, tapped_at=None):

@@ -28,16 +28,33 @@ from sqlalchemy.orm import Session, sessionmaker
 from starlette.requests import Request
 
 from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core.pay_periods import shop_day_of
 from gdx_dispatch.models import tenant_models  # noqa: F401  (register models)
 from gdx_dispatch.routers import gps as _gps  # noqa: F401  (registers TechnicianLocation)
 from gdx_dispatch.routers import mobile as mobile_router
 from gdx_dispatch.routers import payroll as payroll_router
 from gdx_dispatch.routers import timeclock as timeclock_router
+from gdx_dispatch.tests.conftest import SHOP_MIDDAY_TZ, SHOP_MIDDAY_UTC
 
 _TEST_USER = {"user_id": "user-1", "role": "technician", "tenant_id": "tenant-a"}
 
 _JOB_ID = uuid4().hex
 _CUST_ID = uuid4().hex
+
+# GDXA-361: the job timer only counts on now's shop day, and these tests clock
+# in at `now - N min`. Unpinned, Stop 404'd for the first four hours after New
+# York midnight. See conftest's shop_midday_clock.
+pytestmark = pytest.mark.usefixtures("shop_midday_clock")
+_WIDEST_SAME_DAY_JOB_TIMER_MIN = 240  # test_stopped_timer_adds_no_payroll_hours
+
+
+def test_the_pinned_clock_keeps_every_backdated_timer_on_today():
+    """The pin has to be in effect and leave room for the widest backdate, or
+    the same-shop-day rule turns these tests back into a nightly coin flip."""
+    now = datetime.now(UTC)
+    assert SHOP_MIDDAY_UTC <= now < SHOP_MIDDAY_UTC + timedelta(minutes=5), now
+    earliest = now - timedelta(minutes=_WIDEST_SAME_DAY_JOB_TIMER_MIN)
+    assert shop_day_of(earliest, SHOP_MIDDAY_TZ) == shop_day_of(now, SHOP_MIDDAY_TZ)
 
 
 def _as_json(response) -> dict:
