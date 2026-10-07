@@ -35,8 +35,19 @@ def test_auth_paths_keyed_per_ip_with_strict_limit() -> None:
     mw = _mw()
     for path in ("/auth/login", "/auth/login?ref=x", "/portal/login"):
         key, limit = mw._key_and_limit(_req(path))
-        assert key == "ip:1.2.3.4", path
+        assert key == "auth-ip:1.2.3.4", path
         assert limit == DEFAULT_LIMITS["auth"], path  # stricter than general
+
+
+def test_auth_bucket_is_not_the_anonymous_bucket() -> None:
+    """The strict login limit must count login attempts only. Sharing the
+    anonymous per-IP key meant the SPA's own asset loads filled it, so a
+    customer's first sign-in after a page load or two came back 429
+    (found 2026-10-06 walking /customer-portal)."""
+    mw = _mw()
+    auth_key, _ = mw._key_and_limit(_req("/portal/login"))
+    anon_key, _ = mw._key_and_limit(_req("/assets/index.js"))
+    assert auth_key != anon_key
 
 
 def test_retired_signup_path_is_not_an_auth_surface() -> None:
@@ -85,3 +96,54 @@ def test_raw_secret_never_appears_in_key() -> None:
     secret = "tgd_live_supersecretvalue"
     key, _ = mw._key_and_limit(_req("/api/x", {"x-api-key": secret}))
     assert secret not in key  # hashed, not embedded
+
+
+class _CountingLimiter:
+    """In-memory stand-in for the Redis limiter with the same contract: every
+    ``check`` records the request, and allows it while the bucket is within
+    ``limit``. One window; the test never crosses a minute boundary."""
+
+    def __init__(self) -> None:
+        self.counts: dict[tuple[str, str], int] = {}
+
+    async def check(self, key: str, operation: str, limit: int, window_seconds: int = 60) -> bool:
+        self.counts[(key, operation)] = self.counts.get((key, operation), 0) + 1
+        return self.counts[(key, operation)] <= limit
+
+    async def get_remaining(self, key: str, operation: str, limit: int, window_seconds: int = 60) -> int:
+        return max(0, limit - self.counts.get((key, operation), 0))
+
+
+def _client_through_middleware():
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    async def ok(_request):
+        return PlainTextResponse("ok")
+
+    app = Starlette(routes=[
+        Route("/assets/{name}", ok),
+        Route("/portal/login", ok, methods=["POST"]),
+    ])
+    app.add_middleware(TenantRateLimitMiddleware, limiter=_CountingLimiter())
+    return TestClient(app)
+
+
+def test_page_traffic_does_not_spend_the_login_allowance(monkeypatch) -> None:
+    monkeypatch.delenv("GDX_E2E_BYPASS", raising=False)
+    client = _client_through_middleware()
+    # Several page loads' worth of anonymous asset requests from one IP —
+    # more than the whole auth allowance.
+    for i in range(DEFAULT_LIMITS["auth"] + 10):
+        assert client.get(f"/assets/chunk{i}.js").status_code == 200
+    assert client.post("/portal/login").status_code == 200
+
+
+def test_login_attempts_are_still_limited(monkeypatch) -> None:
+    monkeypatch.delenv("GDX_E2E_BYPASS", raising=False)
+    client = _client_through_middleware()
+    codes = [client.post("/portal/login").status_code for _ in range(DEFAULT_LIMITS["auth"] + 1)]
+    assert codes[:-1] == [200] * DEFAULT_LIMITS["auth"]
+    assert codes[-1] == 429

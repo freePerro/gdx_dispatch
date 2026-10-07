@@ -385,6 +385,11 @@ const newPassword = ref("");
 const settingPw = ref(false);
 const showSetPwPrompt = ref(false);
 
+// The sign-in endpoints share a strict per-IP limit. A 429 is not a wrong
+// password and not a sent link, so it gets its own words — telling a
+// customer with the right password that it is wrong is what this replaced.
+const TOO_MANY_ATTEMPTS = "Too many sign-in attempts. Wait a minute, then try again.";
+
 function currency(v) { return formatMoney(Number(v) || 0); }
 function statusSeverity(s) {
   const map = { sent: "info", accepted: "success", paid: "success", declined: "danger", unpaid: "warn", overdue: "danger", expired: "secondary", scheduled: "info", in_progress: "info", completed: "success" };
@@ -463,11 +468,17 @@ async function init() {
         const body = await res.json();
         storeJwt(body.access_token || "", false); // magic-link → per-session, not "remember"
         showSetPwPrompt.value = true; // nudge them to set a password for next time
-      } else {
+      } else if (res.status === 401) {
         error.value = "This sign-in link is invalid or has expired.";
+      } else if (res.status === 429) {
+        // The link was not consumed; it still works once the minute passes.
+        error.value = "Too many sign-in attempts. Wait a minute, then open your link again.";
+      } else {
+        error.value = "Could not sign you in. Please open your link again.";
       }
     } catch {
-      error.value = "This sign-in link is invalid or has expired.";
+      // Network failure: the link was never checked, so it is not "invalid".
+      error.value = "Could not sign you in. Please open your link again.";
     }
     router.replace({ query: {} });
   }
@@ -492,12 +503,16 @@ async function requestNewLink() {
   const em = email.value.trim();
   if (!em) { loginError.value = "Enter your email first."; return; }
   requestSending.value = true;
+  requestSent.value = false;
+  loginError.value = "";
   try {
-    await fetch("/portal/login", {
+    const res = await fetch("/portal/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: em }),
     });
+    if (res.status === 429) { loginError.value = TOO_MANY_ATTEMPTS; return; }
+    if (!res.ok) { loginError.value = "Could not send a sign-in link. Please try again."; return; }
     requestSent.value = true;
   } catch {
     toast.add({ severity: "error", summary: "Error", detail: "Could not send link. Try again.", life: 4000 });
@@ -517,7 +532,9 @@ async function passwordLogin() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: em, password: password.value, remember: remember.value }),
     });
-    if (!res.ok) { loginError.value = "Invalid email or password."; return; }
+    if (res.status === 429) { loginError.value = TOO_MANY_ATTEMPTS; return; }
+    if (res.status === 401) { loginError.value = "Invalid email or password."; return; }
+    if (!res.ok) { loginError.value = "Could not sign in. Please try again."; return; }
     const body = await res.json();
     storeJwt(body.access_token || "", remember.value);
     password.value = "";
