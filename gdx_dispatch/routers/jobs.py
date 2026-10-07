@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Body, Depends, Request
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, update
@@ -1433,6 +1433,19 @@ def _load_workflow_flags(tenant_id: str) -> dict[str, bool]:
     return defaults
 
 
+def _mark_job_started(job: Job, now: datetime) -> None:
+    """The one stage write for "this job has started": ``started_at`` if it is
+    still null (a re-start never restamps), ``lifecycle_stage='in_progress'``,
+    ``status='In Progress'``. ``start_job`` and the phone's en route and
+    arrival (multi-day jobs plan §5.4a, B7) all go through it. The caller
+    audits and commits.
+    """
+    if not job.started_at:
+        job.started_at = now
+    job.lifecycle_stage = "in_progress"
+    job.status = "In Progress"
+
+
 @router.post("/{job_id}/start", response_model=None)
 def start_job(
     job_id: str,
@@ -1462,9 +1475,6 @@ def start_job(
         if not job:
             return jsonable_response({"detail": "job not found"}, 404)
 
-        # Idempotent — re-starting a started job is a no-op (don't restamp).
-        if not job.started_at:
-            job.started_at = now
         # Auto-assign the starter's TECHNICIAN id (it was the token's user id
         # until 2026-10-05 — a users.id in a technicians.id column). With no
         # technician row there is no crew change. C1 then hands the job's
@@ -1484,8 +1494,8 @@ def start_job(
                     lead_tech_id=starter, user_id=_user_id(current_user),
                 )
                 job = db.get(Job, job.id)
-        job.lifecycle_stage = "in_progress"
-        job.status = "In Progress"
+        # Idempotent — re-starting a started job never restamps started_at.
+        _mark_job_started(job, now)
         if job.dispatch_status == "unassigned" and job.assigned_to:
             job.dispatch_status = "assigned"
         job.updated_at = now
@@ -1566,6 +1576,58 @@ def _finish_visits(db: Session, job: Job, now: datetime, user: Any) -> None:
     _apply_visits(db, job, plan, user, "job_completed")
 
 
+def _day_label(day: Any) -> str:
+    """"Monday, November 2": the sheet's own wording for a shop day."""
+    return f"{day:%A}, {day:%B} {day.day}"
+
+
+def _locked_job(db: Session, job_id: Any) -> Job | None:
+    """The live job row, locked ``FOR UPDATE`` (a no-op on SQLite). Every door
+    that finishes or closes a day of a job takes this one lock first, so a
+    racing day-close, closeout, /complete or close-without-work commits wholly
+    before or after the other (multi-day jobs plan §5.4a)."""
+    jid = job_id if isinstance(job_id, uuid.UUID) else uuid.UUID(str(job_id))
+    return db.execute(
+        select(Job).where(Job.id == jid, Job.deleted_at.is_(None)).with_for_update()
+    ).scalar_one_or_none()
+
+
+def _tap_shop_day(tapped_at: datetime | None, now: datetime, tz: str) -> Any:
+    """The closeout tap's shop day: ``tapped_at`` clamped to no later than
+    server ``now``, and ``now`` when absent (multi-day jobs plan §5.4a)."""
+    from gdx_dispatch.services.visit_sync import shop_day
+
+    tap = tapped_at
+    if tap is not None and tap.tzinfo is None:
+        tap = tap.replace(tzinfo=UTC)
+    if tap is None or tap > now:
+        tap = now
+    return shop_day(tap, tz)
+
+
+def _earlier_day_open_refusal(
+    db: Session, job: Job, today: Any, tz: str | None, *, now: datetime | None = None,
+) -> JSONResponse | None:
+    """409 ``earlier_day_open`` when a worked past day of this job is still
+    open and is not its final day (plan §5.4a, "The sheet"), else None. The
+    one predicate the sheet, the closeout, /complete and /close-without-work
+    share. ``today`` is the tap's shop day; None means server ``now``'s."""
+    from gdx_dispatch.services import day_close
+    from gdx_dispatch.services.visit_sync import shop_day
+
+    tz = tz or day_close.shop_tz(db)
+    if today is None:
+        today = shop_day(now or datetime.now(UTC), tz)
+    day = day_close.earlier_day_open(db, job, today, tz)
+    if day is None:
+        return None
+    return jsonable_response({
+        "detail": f"Close {_day_label(day)} first: answer No for that day",
+        "code": "earlier_day_open",
+        "date": day.isoformat(),
+    }, 409)
+
+
 def _mark_job_completed(db: Session, job: Job, now: datetime, tenant_id: str, user: Any) -> None:
     """The completion write shared by /complete and /close-without-work: the
     stage, the "Completed" spelling, completed_at, dispatch done, the job's
@@ -1616,12 +1678,16 @@ def complete_job(
         return jsonable_response({"detail": denial[1]}, denial[0])
     now = datetime.now(UTC)
     flags = _load_workflow_flags(tenant_id)
+    # Before anything is staged: its first run per engine may commit.
+    ensure_audit_table(db)
     try:
-        job = db.execute(
-            select(Job).where(Job.id == uuid.UUID(job_id), Job.deleted_at.is_(None))
-        ).scalar_one_or_none()
+        # Locked like closeout and day-close (multi-day jobs plan §5.4a).
+        job = _locked_job(db, job_id)
         if not job:
             return jsonable_response({"detail": "job not found"}, 404)
+        refusal = _earlier_day_open_refusal(db, job, None, None, now=now)
+        if refusal is not None:
+            return refusal
 
         missing: list[str] = []
         if flags["require_parts_on_complete"]:
@@ -1667,17 +1733,20 @@ def complete_job(
         if payload.notes:
             job.notes = (job.notes + "\n\n" if job.notes else "") + payload.notes.strip()
         _mark_job_completed(db, job, now, tenant_id, current_user)
-        db.commit()
+        # Audited BEFORE the commit (plan §5.4a): this row bounds the
+        # candidate timers after a re-open, so the completion and its trail
+        # commit together or not at all.
+        from gdx_dispatch.core.audit import audit_or_rollback
 
-        log_audit_event_sync(
-            db=db, tenant_id=tenant_id, user_id=_user_id(current_user),
+        audit_or_rollback(
+            db, tenant_id=tenant_id, actor={"user_id": _user_id(current_user)},
             action="job_completed", entity_type="job", entity_id=str(job.id),
             details={
                 "hours": payload.hours,
                 "flags_evaluated": flags,
                 "no_parts_used": bool(payload.no_parts_used),
             },
-            ip_address=request.client.host if request.client else None, request=request,
+            request=request,
         )
         db.commit()
         return jsonable_response(_completed_result(job))
@@ -1724,16 +1793,24 @@ def close_job_without_work(
         return jsonable_response({"detail": denial[1]}, denial[0])
     now = datetime.now(UTC)
     flags = _load_workflow_flags(tenant_id)
+    # Before anything is staged: its first run per engine may commit.
+    ensure_audit_table(db)
     try:
-        job = db.execute(
-            select(Job).where(Job.id == job_uuid, Job.deleted_at.is_(None))
-        ).scalar_one_or_none()
+        # Locked before the timer read (plan §5.4a, round 36): a "No"
+        # committing between the read and the write below would have its new
+        # day row overwritten with 0.
+        job = _locked_job(db, job_uuid)
         if not job:
             return jsonable_response({"detail": "job not found"}, 404)
         if job.lifecycle_stage in ("completed", "cancelled"):
             return jsonable_response(
                 {"detail": f"This job is already {job.lifecycle_stage}."}, 409,
             )
+        # A forgotten worked day's timer would be 0-closed below and its
+        # hours lost by this door (plan §5.4a, round 35).
+        refusal = _earlier_day_open_refusal(db, job, None, None, now=now)
+        if refusal is not None:
+            return refusal
 
         prior_stage = job.lifecycle_stage
         # A no-show after the tech tapped "I'm here" leaves an arrival timer
@@ -1744,10 +1821,12 @@ def close_job_without_work(
         for timer in timers:
             _close_labor_entry(timer, now, 0, None)
         _mark_job_completed(db, job, now, tenant_id, current_user)
-        db.commit()
+        # Audited BEFORE the commit (plan §5.4a): this row bounds the
+        # candidate timers after a re-open.
+        from gdx_dispatch.core.audit import audit_or_rollback
 
-        log_audit_event_sync(
-            db=db, tenant_id=tenant_id, user_id=_user_id(current_user),
+        audit_or_rollback(
+            db, tenant_id=tenant_id, actor={"user_id": _user_id(current_user)},
             action="job_closed_without_work", entity_type="job", entity_id=str(job.id),
             details={
                 "reason": cleaned,
@@ -1833,6 +1912,12 @@ class CloseoutPayload(BaseModel):
     needs_return_visit: bool = False
     return_visit_reason: str | None = Field(default=None, max_length=1000)
     parts_to_order: list[CloseoutPartToOrder] = Field(default_factory=list, max_length=50)
+    # Multi-day jobs plan §5.4a: the sheet's tap time. "Today" for the
+    # earlier/later-day refusals and the 0 h rule is the TAP's shop day, so an
+    # early finish queued offline and replayed next morning is not refused.
+    # Clamped to no later than server now. Nothing else reads it: every stamp
+    # the closeout writes still uses server now.
+    tapped_at: datetime | None = None
 
 
 # The labor row a closeout owns, so a re-closeout updates it instead of
@@ -1931,6 +2016,9 @@ def _owned_closeout_labor_entry(db: Session, job_uuid: uuid.UUID) -> TimeEntry |
             TimeEntry.job_id == job_uuid,
             TimeEntry.notes == CLOSEOUT_LABOR_NOTE,
             TimeEntry.deleted_at.is_(None),
+            # A day row or a timer a day-close consumed is never restated
+            # (multi-day jobs plan §5.4a, the labor picker).
+            TimeEntry.day_closed_at.is_(None),
         )
         .order_by(TimeEntry.clock_in.desc())
         .limit(1)
@@ -2003,6 +2091,9 @@ def _stopped_job_timer_for(db: Session, job_uuid: uuid.UUID, user_id: str) -> Ti
             # already attested it and it is not ours to restate.
             or_(TimeEntry.duration_minutes.is_(None), TimeEntry.duration_minutes == 0),
             TimeEntry.deleted_at.is_(None),
+            # A Stop-marked timer a day-close consumed at 0 carries the marker
+            # and is that day's, never this closeout's (plan §5.4a).
+            TimeEntry.day_closed_at.is_(None),
         )
         .order_by(TimeEntry.clock_in.desc())
         .limit(1)
@@ -2232,12 +2323,30 @@ def closeout_job(
     user_id = _user_id(current_user)
 
     # Pull job (PR4: bind a UUID object — the Uuid column rejects a raw str
-    # on the SQLite test path; the id was already validated above).
-    job = db.execute(
-        select(Job).where(Job.id == uuid.UUID(job_id), Job.deleted_at.is_(None))
-    ).scalar_one_or_none()
+    # on the SQLite test path; the id was already validated above). Locked
+    # FIRST, before the timer step (multi-day jobs plan §5.4a): the same lock
+    # day-close takes, so a racing "No" commits wholly before this closeout
+    # reads timers or after it commits — never between the read and the
+    # write, where the timer step would overwrite its day row.
+    job = _locked_job(db, job_id)
     if not job:
         return jsonable_response({"detail": "job not found"}, 404)
+
+    # The tap's shop day feeds only the two day refusals and the 0 h rule.
+    from gdx_dispatch.services import day_close as _day_close
+
+    _tz = _day_close.shop_tz(db)
+    _tap_day = _tap_shop_day(payload.tapped_at, now, _tz)
+    _earlier = _earlier_day_open_refusal(db, job, _tap_day, _tz)
+    if _earlier is not None:
+        return _earlier
+    _later = _day_close.later_day_started(db, job, _tap_day, _tz)
+    if _later is not None:
+        return jsonable_response({
+            "detail": f"Day not recorded: the crew has already started {_later.isoformat()}; tell the office.",
+            "code": "later_day_started",
+            "date": _later.isoformat(),
+        }, 409)
 
     # Same gate vocabulary as /complete so frontend toasts are uniform.
     # PR5 audit catch: attesting "no parts used" while SUBMITTING parts is a
@@ -2279,7 +2388,14 @@ def closeout_job(
         ).scalar() or 0
         if not _live_used:
             missing.append("parts")
-    if flags["require_hours_on_complete"] and (payload.hours or 0) <= 0:
+    if (
+        flags["require_hours_on_complete"]
+        and (payload.hours or 0) <= 0
+        # The 0 h "Yes" (Doug, 2026-10-06): today was already closed with
+        # "No" and nobody still has a timer running on it today. Otherwise
+        # the flag refuses 0 exactly as before.
+        and not _day_close.today_closed_by_no(db, job, _tap_day, _tz)
+    ):
         missing.append("hours")
     if flags["require_signature_on_complete"]:
         sig = (payload.signature_data or "").strip() or (job.signature_data or "").strip()
@@ -3100,6 +3216,17 @@ def closeout_billing_suggestion(
         ).limit(1)
     ).first() is not None
 
+    # The day rows' line (multi-day jobs plan §5.4a Billing), computed BEFORE
+    # the no-closeout return: a job finished by Close-without-work or
+    # /complete has no closeout, and its earlier days would otherwise reach
+    # no invoice (round 35). Offered only on a completed job, so a hand-made
+    # mid-job invoice is never offered the same days again at the end.
+    earlier_visits: dict[str, Any] | None = None
+    if (job.lifecycle_stage or "").lower() == "completed":
+        from gdx_dispatch.core.closeout_billing import earlier_visits_line
+
+        earlier_visits = earlier_visits_line(db, job)
+
     closeout = get_current_closeout(db, jid)
     if closeout is None:
         return jsonable_response({
@@ -3107,6 +3234,7 @@ def closeout_billing_suggestion(
             "estimate_exists": estimate_exists,
             "closeout": None,
             "labor_line": None,
+            "earlier_visits_line": earlier_visits,
             # Mobile and van captures happen on jobs that never get a
             # closeout, and van rows are exactly what started billing in
             # v1.69. Omitting the key here made the warning unreachable for
@@ -3195,12 +3323,514 @@ def closeout_billing_suggestion(
         },
         "job_notes": job_notes,
         "labor_line": labor,
+        "earlier_visits_line": earlier_visits,
         # Parts this job captured more than once and that are still unbilled
         # (2026-08-19). Capture rows are never machine-merged — AUDIT-R1 ruled
         # any automatic dedup either undercounts or double-counts — so the
         # office is told instead, before it verifies a draft. Empty list is the
         # normal case.
         "duplicate_part_warnings": duplicate_capture_groups(db, str(jid)),
+    })
+
+
+# --- Day close ("No" on the closeout sheet) — multi-day jobs plan §5.4a ---
+#
+# "Is this job finished?" -> No closes one shop day of a job: the visits the
+# closer ticks, and each tapped-in person's attested hours for that day. The
+# sheet's rows come from GET /day-log; the reads live in services/day_close.py
+# so this route, the closeout, /complete and /close-without-work ask one
+# predicate.
+
+DAY_CLOSE_MAX_ADDED = 10
+DAY_CLOSE_NOTE_MAX = 2000
+
+
+def _day_close_hours(raw: Any, where: str) -> tuple[int | None, str | None]:
+    """Attested hours → whole minutes, or a 422 message. 0 < hours ≤ 24."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None, f"{where}: hours must be a number"
+    hours = float(raw)
+    if not (0 < hours <= 24):
+        return None, f"{where}: hours must be more than 0 and at most 24"
+    minutes = int(round(hours * 60))
+    if minutes <= 0:
+        return None, f"{where}: hours must be at least one minute"
+    return minutes, None
+
+
+def _parse_day_close_body(body: Any) -> tuple[dict | None, str | None]:
+    """The shape 422s. They read the body only — never server time or stored
+    state — so a lost-response replay passes them exactly when the original
+    did (round 27)."""
+    from datetime import date as _date
+
+    if not isinstance(body, dict):
+        return None, "body must be a JSON object"
+    raw_day = body.get("day")
+    try:
+        if not isinstance(raw_day, str) or len(raw_day) != 10:
+            raise ValueError
+        day = _date.fromisoformat(raw_day)
+    except ValueError:
+        return None, "day is required as an ISO date (YYYY-MM-DD)"
+    raw_closed = body.get("closed_at")
+    try:
+        if not isinstance(raw_closed, str):
+            raise ValueError
+        closed_at = datetime.fromisoformat(raw_closed)
+    except ValueError:
+        return None, "closed_at is required as an ISO timestamp with a zone"
+    if closed_at.tzinfo is None or closed_at.utcoffset() is None:
+        return None, "closed_at is required as an ISO timestamp with a zone"
+
+    visits_raw = body.get("visits") or []
+    if not isinstance(visits_raw, list):
+        return None, "visits must be a list of visit ids"
+    visits: list[uuid.UUID] = []
+    for v in visits_raw:
+        try:
+            vid = uuid.UUID(str(v)) if isinstance(v, str) else None
+        except ValueError:
+            vid = None
+        if vid is None:
+            return None, "visits must be a list of visit ids"
+        if vid in visits:
+            return None, "a visit is listed more than once"
+        visits.append(vid)
+
+    people_raw = body.get("people") or []
+    if not isinstance(people_raw, list):
+        return None, "people must be a list of {user_id, hours}"
+    people: list[tuple[str, int]] = []
+    for p in people_raw:
+        if not isinstance(p, dict) or not isinstance(p.get("user_id"), str) or not p["user_id"].strip():
+            return None, "people must be a list of {user_id, hours}"
+        uid = p["user_id"].strip()
+        if any(uid == seen for seen, _m in people):
+            return None, "a person is listed more than once"
+        minutes, err = _day_close_hours(p.get("hours"), "people")
+        if err:
+            return None, err
+        people.append((uid, minutes))
+
+    added_raw = body.get("added") or []
+    if not isinstance(added_raw, list):
+        return None, "added must be a list of {hours}"
+    if len(added_raw) > DAY_CLOSE_MAX_ADDED:
+        return None, f"added holds at most {DAY_CLOSE_MAX_ADDED} helpers"
+    added: list[int] = []
+    for a in added_raw:
+        if not isinstance(a, dict):
+            return None, "added must be a list of {hours}"
+        minutes, err = _day_close_hours(a.get("hours"), "added")
+        if err:
+            return None, err
+        added.append(minutes)
+
+    if not (visits or people or added):
+        return None, "nothing to close: list a visit, a person or an added helper"
+    note = body.get("note")
+    if note is not None and not isinstance(note, str):
+        return None, "note must be text"
+    if note is not None and len(note) > DAY_CLOSE_NOTE_MAX:
+        return None, f"note is at most {DAY_CLOSE_NOTE_MAX} characters"
+    note = (note or "").strip() or None
+    return {
+        "day": day,
+        # The submission's key, stored as UTC: a zone is only a spelling of
+        # the instant, and SQLite would otherwise store the wall clock.
+        "closed_at": closed_at.astimezone(UTC),
+        "visits": visits,
+        "people": people,
+        "added": added,
+        "note": note,
+    }, None
+
+
+def _day_close_conflict(code: str, detail: str, **extra: Any) -> JSONResponse:
+    return jsonable_response({"detail": detail, "code": code, **extra}, 409)
+
+
+def _already_closed(db: Session, job: Job, day: Any, tz: str) -> dict:
+    """D's day rows, each with its person, hours and closer — what the sheet
+    shows as "Already closed by <name> with N h"."""
+    from gdx_dispatch.services import day_close
+
+    key = day.isoformat()
+    return {"rows": [
+        {"person_name": r["person_name"], "hours": r["hours"], "closed_by": r["closed_by"]}
+        for r in day_close.day_log(db, job, tz) if r["date"] == key
+    ]}
+
+
+def _next_visit(db: Session, job: Job) -> dict | None:
+    from gdx_dispatch.services import day_close
+
+    current = day_close.current_visits(db, job)
+    if not current:
+        return None
+    nxt = min(current, key=lambda v: (day_close.aware(v.start_at), str(v.id)))
+    return {"id": str(nxt.id), "start_at": day_close.aware(nxt.start_at).isoformat()}
+
+
+def _day_close_landed(db: Session, job: Job, closed_at: datetime) -> list[TimeEntry] | None:
+    """The replay key: a time row or a visit on this job carrying
+    ``day_closed_at == closed_at``. Returns that submission's rows (possibly
+    none, for a visits-only one), or None when it never landed. Compared in
+    Python on aware UTC values, so SQLite's naive storage still matches."""
+    from gdx_dispatch.models.tenant_models import Appointment
+    from gdx_dispatch.services.day_close import aware
+
+    rows = [
+        t for t in db.execute(
+            select(TimeEntry).where(TimeEntry.job_id == job.id, TimeEntry.day_closed_at.is_not(None))
+        ).scalars().all()
+        if aware(t.day_closed_at) == closed_at
+    ]
+    if rows:
+        return rows
+    for a in db.execute(
+        select(Appointment).where(Appointment.job_id == job.id, Appointment.day_closed_at.is_not(None))
+    ).scalars().all():
+        if aware(a.day_closed_at) == closed_at:
+            return []
+    return None
+
+
+def _day_row_out(rows: list[TimeEntry], names: dict[str, str | None]) -> list[dict]:
+    return [
+        {
+            "id": str(r.id),
+            "person_name": names.get(str(r.id)),
+            "hours": round((r.duration_minutes or 0) / 60, 2),
+        }
+        for r in rows if (r.duration_minutes or 0) > 0
+    ]
+
+
+@router.post("/{job_id}/day-close", response_model=None)
+def day_close_job(
+    job_id: str,
+    request: Request,
+    body: Any = Body(default=None),
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """"No" on "Is this job finished?": close one shop day of the job.
+
+    One transaction, one commit: the listed visits close (``visit_closed``),
+    each listed person's day-D timers become one day row of their attested
+    hours, each added helper gets a row, the job's dispatch status and
+    schedule follow its remaining visits, and ``job_day_closed`` records the
+    whole submission. Never touches the closeout, the invoice or the job's
+    lifecycle stage. See plan §5.4a for the check order and the replay key.
+    """
+    from gdx_dispatch.core.audit import audit_or_rollback
+    from gdx_dispatch.models.tenant_models import Appointment
+    from gdx_dispatch.routers.appointments import close_visit
+    from gdx_dispatch.services import day_close
+    from gdx_dispatch.services.visit_sync import (
+        ON_SITE,
+        _audit,
+        is_current,
+        recompute_job_schedule,
+        shop_day,
+        shop_instant,
+        visit_state,
+    )
+
+    try:
+        job_uuid = uuid.UUID(job_id)
+    except (ValueError, AttributeError):
+        return jsonable_response({"detail": "job not found"}, 404)
+    tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    # The same permission as closeout.
+    denial = job_write_denial(db, tenant_id, request, current_user, job_id)
+    if denial:
+        return jsonable_response({"detail": denial[1]}, denial[0])
+
+    # 1. Shape.
+    parsed, error = _parse_day_close_body(body)
+    if error:
+        return jsonable_response({"detail": error}, 422)
+    day = parsed["day"]
+    closed_at: datetime = parsed["closed_at"]
+    note = parsed["note"]
+    actor = _user_id(current_user)
+    now = datetime.now(UTC)
+    # Before anything is staged: its first run per engine may commit.
+    ensure_audit_table(db)
+
+    try:
+        # 2. The job-row lock, then the replay check, before any check that
+        #    reads stored state (round 23).
+        job = _locked_job(db, job_uuid)
+        if not job:
+            return jsonable_response({"detail": "job not found"}, 404)
+        tz = day_close.shop_tz(db)
+
+        landed = _day_close_landed(db, job, closed_at)
+        if landed is not None:
+            owners = day_close.row_owners(db, job)
+            names = day_close.user_names(db, {
+                p for p, _c in owners.values() if p and p != "added"
+            })
+            row_names = {
+                rid: ("Added helper" if p == "added" else names.get(p or ""))
+                for rid, (p, _c) in owners.items()
+            }
+            return jsonable_response({
+                "ok": True, "replay": True,
+                "day_rows": _day_row_out(landed, row_names),
+                "next_visit": _next_visit(db, job),
+            })
+
+        # 3. job_finished.
+        if (job.lifecycle_stage or "").lower() in ("completed", "cancelled"):
+            return _day_close_conflict(
+                "job_finished", "Day not recorded: the job was already finished.",
+            )
+
+        # 4. visit_not_open, then day_moved, then person_not_open.
+        visits: list[Appointment] = []
+        for vid in parsed["visits"]:
+            v = db.get(Appointment, vid)
+            if v is None or v.job_id != job.id or v.deleted_at is not None or not is_current(v):
+                extra: dict[str, Any] = {"visit_id": str(vid)}
+                if v is not None and v.job_id == job.id and v.day_closed_at is not None:
+                    extra["already_closed"] = _already_closed(db, job, shop_day(day_close.aware(v.start_at), tz), tz)
+                return _day_close_conflict("visit_not_open", "That visit is no longer open.", **extra)
+            visits.append(v)
+        for v in visits:
+            if shop_day(day_close.aware(v.start_at), tz) != day:
+                return _day_close_conflict(
+                    "day_moved", "The visit moved; reopen the sheet.", visit_id=str(v.id),
+                )
+        candidates = day_close.candidate_timers(db, job, day, tz)
+        by_person: dict[str, list[TimeEntry]] = {}
+        for t in candidates:
+            if t.user_id:
+                by_person.setdefault(str(t.user_id), []).append(t)
+        for uid, _minutes in parsed["people"]:
+            if uid in by_person:
+                continue
+            extra = {"user_id": uid}
+            consumed = [
+                t for t in db.execute(
+                    select(TimeEntry).where(
+                        TimeEntry.job_id == job.id,
+                        TimeEntry.user_id == uid,
+                        TimeEntry.entry_type == "job",
+                        TimeEntry.deleted_at.is_(None),
+                        TimeEntry.day_closed_at.is_not(None),
+                    )
+                ).scalars().all()
+                if shop_day(day_close.aware(t.clock_in), tz) == day
+            ]
+            if consumed:
+                extra["already_closed"] = _already_closed(db, job, day, tz)
+            return _day_close_conflict(
+                "person_not_open", "That person has no open time on this day.", **extra,
+            )
+
+        # --- the write: one transaction, no _record ---
+        day_iso = day.isoformat()
+        completed_at = min(closed_at, now)
+
+        # Step 1: visits.
+        for v in visits:
+            close_visit(v, completed_at, closed_at)
+            _audit(db, job, actor, "visit_closed", {
+                "visit_id": str(v.id), "reason": "job_day_closed", "day": day_iso,
+                "completed_at": completed_at.isoformat(),
+            })
+
+        # Step 2: people.
+        written: list[TimeEntry] = []
+        row_names: dict[str, str | None] = {}
+        people_detail: list[dict] = []
+        zeroed: list[str] = []
+        names = day_close.user_names(db, {uid for uid, _m in parsed["people"]})
+        for uid, minutes in parsed["people"]:
+            timers = by_person[uid]  # oldest clock_in first
+            rate = _labor_rate_for(db, _resolve_technician_id(db, uid))
+            if uid == actor:
+                open_ones = [t for t in timers if t.clock_out is None]
+                row = (open_ones or timers)[-1]
+                _close_labor_entry(row, now, minutes, rate)
+                row.notes = note
+                row.day_closed_at = closed_at
+                for t in timers:
+                    if t is row:
+                        continue
+                    if t.clock_out is None:
+                        _close_labor_entry(t, now, 0, None)
+                        zeroed.append(str(t.id))
+                    t.day_closed_at = closed_at
+            else:
+                for t in timers:
+                    if t.clock_out is None:
+                        _close_labor_entry(t, now, 0, None)
+                        zeroed.append(str(t.id))
+                        log.warning(
+                            "day_close_unattested_timer_closed",
+                            extra={
+                                "job_id": str(job.id), "entry_id": str(t.id),
+                                "timer_user_id": t.user_id, "closed_by": actor,
+                            },
+                        )
+                    t.day_closed_at = closed_at
+                first = timers[0]
+                row = TimeEntry(
+                    id=uuid.uuid4(),
+                    company_id=tenant_id,
+                    job_id=job.id,
+                    tech_id=first.tech_id,
+                    user_id=None,
+                    clock_in=day_close.aware(first.clock_in),
+                    entry_type="work",
+                    created_at=now,
+                )
+                db.add(row)
+                _close_labor_entry(row, now, minutes, rate)
+                row.notes = note
+                row.day_closed_at = closed_at
+                db.flush()
+                _audit(db, job, actor, "day_row_created", {
+                    "day_row_id": str(row.id), "user_id": uid,
+                    "hours": round(minutes / 60, 2), "day": day_iso,
+                })
+            written.append(row)
+            row_names[str(row.id)] = names.get(uid)
+            people_detail.append({
+                "user_id": uid, "hours": round(minutes / 60, 2), "day_row_id": str(row.id),
+            })
+
+        # Step 3: added helpers.
+        if visits:
+            anchor = min(day_close.aware(v.start_at) for v in visits)
+        elif candidates:
+            anchor = day_close.aware(candidates[0].clock_in)
+        else:
+            from datetime import time as _time
+
+            anchor = shop_instant(day, _time(12, 0), tz)
+        added_detail: list[dict] = []
+        for minutes in parsed["added"]:
+            row = TimeEntry(
+                id=uuid.uuid4(),
+                company_id=tenant_id,
+                job_id=job.id,
+                tech_id=actor,
+                user_id=None,
+                clock_in=anchor,
+                entry_type="work",
+                created_at=now,
+            )
+            db.add(row)
+            _close_labor_entry(row, now, minutes, _labor_rate_for(db, _resolve_technician_id(db, actor)))
+            row.notes = day_close.ADDED_HELPER_NOTE
+            row.day_closed_at = closed_at
+            db.flush()
+            _audit(db, job, actor, "day_row_created", {
+                "day_row_id": str(row.id), "user_id": None, "added": True,
+                "hours": round(minutes / 60, 2), "day": day_iso,
+            })
+            written.append(row)
+            row_names[str(row.id)] = "Added helper"
+            added_detail.append({"hours": round(minutes / 60, 2), "day_row_id": str(row.id)})
+
+        # Step 5: dispatch status, rolled up from the remaining Current
+        # visits on that day.
+        db.flush()
+        remaining = [
+            v for v in day_close.current_visits(db, job)
+            if shop_day(day_close.aware(v.start_at), tz) == day
+        ]
+        if any(visit_state(v) == ON_SITE for v in remaining):
+            rolled = "on_site"
+        elif any(v.en_route_at is not None for v in remaining):
+            rolled = "en_route"
+        else:
+            rolled = "assigned"
+        prior_dispatch = job.dispatch_status
+        job.dispatch_status = rolled
+        job.updated_at = now
+
+        # Step 6: the schedule follows the next Current visit.
+        recompute_job_schedule(db, job, actor, "job_day_closed")
+
+        # Step 7: the submission's own record, in the same transaction.
+        next_visit = _next_visit(db, job)
+        audit_or_rollback(
+            db, tenant_id=tenant_id, actor={"user_id": actor},
+            action=day_close.DAY_CLOSED_ACTION, entity_type="job", entity_id=str(job.id),
+            details={
+                "day": day_iso,
+                "closed_at": closed_at.isoformat(),
+                "visits": [str(v.id) for v in visits],
+                "people": people_detail,
+                "added": added_detail,
+                "timers_closed_at_zero": zeroed,
+                "actor": actor,
+                "note": note,
+                "next_visit": next_visit,
+                "dispatch_status": {"from": prior_dispatch, "to": rolled},
+            },
+            request=request,
+        )
+        db.commit()
+        return jsonable_response({
+            "ok": True, "replay": False,
+            "day_rows": _day_row_out(written, row_names),
+            "next_visit": next_visit,
+        })
+    except SQLAlchemyError:
+        db.rollback()
+        log.exception("day_close_failed", extra={"tenant_id": tenant_id, "job_id": job_id})
+        return jsonable_response({"detail": "A database error occurred"}, 500)
+
+
+@router.get("/{job_id}/day-log", response_model=None)
+def get_job_day_log(
+    job_id: str,
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """The job's daily log and the "No" sheet's rows (plan §5.4a).
+
+    ``rows`` are the day rows, newest first. ``open_day`` is what the sheet
+    shows: the oldest past worked day, else today, with its Current visits
+    and the people who have a candidate timer on it. ``earlier_day_open`` is
+    the date that blocks "Yes", or null. Read permission is the job's own:
+    an outsider gets the same 404 as a missing job.
+    """
+    from gdx_dispatch.services import day_close
+    from gdx_dispatch.services.visit_sync import shop_day
+
+    try:
+        jid = uuid.UUID(job_id)
+    except (ValueError, AttributeError):
+        return jsonable_response({"detail": "job not found"}, 404)
+    tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    if not can_read_job(db, tenant_id, request, current_user, job_id):
+        return jsonable_response({"detail": "job not found"}, 404)
+    job = db.execute(
+        select(Job).where(Job.id == jid, Job.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    if not job:
+        return jsonable_response({"detail": "job not found"}, 404)
+    tz = day_close.shop_tz(db)
+    today = shop_day(datetime.now(UTC), tz)
+    rows = day_close.day_log(db, job, tz)
+    earlier = day_close.earlier_day_open(db, job, today, tz)
+    return jsonable_response({
+        "rows": rows,
+        "logged_hours_total": round(sum(r["hours"] for r in rows), 2),
+        "today_has_day_row": any(r["date"] == today.isoformat() for r in rows),
+        "earlier_day_open": earlier.isoformat() if earlier else None,
+        "open_day": day_close.open_day(db, job, _user_id(current_user), today, tz),
     })
 
 

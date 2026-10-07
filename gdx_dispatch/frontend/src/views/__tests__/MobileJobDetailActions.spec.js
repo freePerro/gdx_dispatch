@@ -163,6 +163,91 @@ describe("status actions", () => {
   });
 });
 
+// Multi-day jobs PR 3, plan §5.4a "The phone on day 2": on day 2 the job's
+// dispatch_status still says where day 1 ended (on_site), so the buttons
+// read today's visit when the server sends one.
+describe("status actions read today_visit (day 2)", () => {
+  const visit = (over = {}) => ({ id: "v2", state: "open", en_route_at: null, arrived_at: null, ...over });
+
+  it("offers On my way for an open visit not yet en route, even though the job says on_site", async () => {
+    const w = await mountWith({ dispatch_status: "on_site", today_visit: visit() });
+    expect(w.find('[data-testid="mjd-en-route"]').exists()).toBe(true);
+    expect(w.find('[data-testid="mjd-arrived"]').exists()).toBe(false);
+    expect(w.find('[data-testid="mjd-complete"]').exists()).toBe(false);
+  });
+
+  it("offers I'm here once today's visit is en route", async () => {
+    const w = await mountWith({ dispatch_status: "on_site", today_visit: visit({ en_route_at: "2026-10-06T13:00:00Z" }) });
+    expect(w.find('[data-testid="mjd-arrived"]').exists()).toBe(true);
+    expect(w.find('[data-testid="mjd-en-route"]').exists()).toBe(false);
+    expect(w.find('[data-testid="mjd-complete"]').exists()).toBe(false);
+  });
+
+  it("offers Complete once today's visit is on site", async () => {
+    const w = await mountWith({ dispatch_status: "en_route", today_visit: visit({ state: "on_site", en_route_at: "x", arrived_at: "y" }) });
+    expect(w.find('[data-testid="mjd-complete"]').exists()).toBe(true);
+    expect(w.find('[data-testid="mjd-arrived"]').exists()).toBe(false);
+  });
+
+  it("offers none of the three once today's visit is closed", async () => {
+    const w = await mountWith({ dispatch_status: "on_site", today_visit: visit({ state: "closed" }) });
+    for (const id of ["mjd-en-route", "mjd-arrived", "mjd-complete"]) {
+      expect(w.find(`[data-testid="${id}"]`).exists()).toBe(false);
+    }
+  });
+
+  it("a queued On my way moves today's visit on, so I'm here shows offline", async () => {
+    const { default: View } = await import("../MobileJobDetailView.vue");
+    let first = true;
+    getMock.mockImplementation(async () => {
+      if (first) { first = false; return jobPayload({ dispatch_status: "on_site", today_visit: visit() }); }
+      throw new Error("offline");
+    });
+    postQueuedMock.mockResolvedValue({ queued: true });
+    const w = mount(View, { global: { stubs } });
+    await flushPromises();
+    await w.find('[data-testid="mjd-en-route"]').trigger("click");
+    await flushPromises();
+    expect(w.find('[data-testid="mjd-arrived"]').exists()).toBe(true);
+    expect(w.find('[data-testid="mjd-en-route"]').exists()).toBe(false);
+  });
+
+  it("with no today_visit, the buttons read dispatch_status as before", async () => {
+    const w = await mountWith({ dispatch_status: "on_site", today_visit: null });
+    expect(w.find('[data-testid="mjd-complete"]').exists()).toBe(true);
+  });
+});
+
+describe("daily log (R-P3)", () => {
+  it("shows the job's day rows and hides when there are none", async () => {
+    const { default: View } = await import("../MobileJobDetailView.vue");
+    getMock.mockImplementation(async (url) => (String(url).endsWith("/day-log")
+      ? { rows: [{ id: "r1", date: "2026-10-05", person_name: "Ann", hours: 8, note: "Rails up", closed_by: "Ann" }], logged_hours_total: 8 }
+      : jobPayload({ dispatch_status: "on_site" })));
+    const w = mount(View, { global: { stubs } });
+    await flushPromises();
+    expect(getMock).toHaveBeenCalledWith("/api/jobs/job-123/day-log", { suppressErrorToast: true });
+    const log = w.get('[data-testid="job-daily-log"]');
+    expect(log.text()).toContain("Ann");
+    expect(log.text()).toContain("Rails up");
+  });
+
+  it("is absent on a job with no day rows", async () => {
+    const w = await mountWith({ dispatch_status: "on_site" });
+    expect(w.find('[data-testid="job-daily-log"]').exists()).toBe(false);
+  });
+
+  it("a day closed from the sheet re-reads the job and the log", async () => {
+    const w = await mountWith({ dispatch_status: "on_site" });
+    const before = getMock.mock.calls.length;
+    w.findComponent(stubs.MobileJobCloseoutDialog).vm.$emit("day-closed", { ok: true });
+    await flushPromises();
+    const urls = getMock.mock.calls.slice(before).map(([u]) => u);
+    expect(urls).toContain("/api/mobile/job/job-123");
+    expect(urls).toContain("/api/jobs/job-123/day-log");
+  });
+});
+
 describe("billing guard — this screen opens ANY job, not just today's", () => {
   it("offers Bill / collect on a finished job that was never invoiced", async () => {
     const w = await mountWith({ dispatch_status: "done", billed: false });

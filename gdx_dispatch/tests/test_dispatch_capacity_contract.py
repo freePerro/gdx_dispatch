@@ -200,9 +200,13 @@ def test_tech_efficiency_filters_null_scheduled_duration():
 
 def test_tech_efficiency_filters_zero_actual_hours():
     src = _read("gdx_dispatch/routers/tech_efficiency.py")
-    # Zero actual_hours would cause division-by-zero in the ratio AND
-    # signals a closeout that wasn't fully filled — filter it out.
-    assert "jc.hours_worked > 0" in src
+    # Multi-day jobs plan §5.4a: the zero filter moved off the closeout's own
+    # hours (a final day can attest 0 h after billed earlier days) onto the
+    # whole denominator, in Python. The behavior — zero time on site drops
+    # out, a 0 h final day after a 6 h day stays in — is asserted by
+    # tests/test_day_close_tech_efficiency.py; here only that the old SQL
+    # filter is gone, so that job is not silently dropped again.
+    assert "jc.hours_worked > 0" not in src
 
 
 def test_tech_efficiency_credits_lead_tech_first():

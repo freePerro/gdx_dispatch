@@ -844,6 +844,15 @@
            narrow budget and status actions own it. Quote / change order / chat
            are deliberate, not thumb-urgent, so they sit in the page flow, which
            is also exactly where Today's card puts them. -->
+      <!-- Multi-day jobs PR 3 (plan §5.4a "Daily log", R-P3): the days this
+           job's crew closed with "No, not finished". Hidden while empty. -->
+      <JobDailyLogCard
+        class="detail-card"
+        compact
+        :job-id="String(job.id)"
+        :refresh-key="dailyLogKey"
+      />
+
       <div
         v-if="!readOnly"
         class="detail-card secondary-actions"
@@ -907,7 +916,7 @@
           @click="onMyWay"
         />
         <Button
-          v-if="job.dispatch_status === 'en_route'"
+          v-if="canArrive"
           label="I'm here"
           icon="pi pi-map-marker"
           :loading="advancing"
@@ -915,7 +924,7 @@
           @click="imHere"
         />
         <Button
-          v-if="job.dispatch_status === 'on_site'"
+          v-if="canComplete"
           label="Complete"
           icon="pi pi-check"
           severity="success"
@@ -962,6 +971,7 @@
         :job-type="job.job_type || ''"
         :customer-name="customer?.name || ''"
         @closed-out="onCloseoutDone"
+        @day-closed="onDayClosed"
         @photo-added="refresh"
       />
       <MobileInvoiceDialog
@@ -1015,6 +1025,7 @@ import { usePhotoQueue } from '../composables/usePhotoQueue'
 import AuthedImage from '../components/AuthedImage.vue'
 import DoorSpecList from '../components/DoorSpecList.vue'
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue'
+import JobDailyLogCard from '../components/JobDailyLogCard.vue'
 import PhotoQueueFailedStrip from '../components/PhotoQueueFailedStrip.vue'
 import QueuedActionFailedStrip from '../components/QueuedActionFailedStrip.vue'
 import MobileInvoiceDialog from '../components/MobileInvoiceDialog.vue'
@@ -1423,9 +1434,26 @@ const customerAddressDiffers = computed(() => {
   return site !== cust
 })
 
+// Multi-day jobs PR 3 (plan §5.4a "The phone on day 2"): on day 2 the job's
+// dispatch_status still says where day 1 ended, so the buttons read the
+// tech's visit for today when the server sends one, and the job's status only
+// when it does not.
+const todayVisit = computed(() => job.value?.today_visit || null)
 const canGoEnRoute = computed(() => {
+  const v = todayVisit.value
+  if (v) return v.state === 'open' && !v.en_route_at
   const s = job.value?.dispatch_status
   return !s || s === 'assigned' || s === 'unassigned'
+})
+const canArrive = computed(() => {
+  const v = todayVisit.value
+  if (v) return v.state === 'open' && !!v.en_route_at
+  return job.value?.dispatch_status === 'en_route'
+})
+const canComplete = computed(() => {
+  const v = todayVisit.value
+  if (v) return v.state === 'on_site'
+  return job.value?.dispatch_status === 'on_site'
 })
 
 // Today's guards are dispatch_status-only, which is safe there because Today is
@@ -1547,6 +1575,18 @@ async function advance(path, body, actionType, okMsg, nextStatus) {
       actionType, resourceId: String(job.value.id),
     })
     if (job.value && nextStatus) job.value.dispatch_status = nextStatus
+    // Today's visit moves with the tap too, or a queued tap leaves the button
+    // that was just pressed on screen (the buttons read it first).
+    const v = job.value?.today_visit
+    if (v) {
+      const now = new Date().toISOString()
+      if (nextStatus === 'en_route' && !v.en_route_at) v.en_route_at = now
+      if (nextStatus === 'on_site') {
+        v.state = 'on_site'
+        if (!v.en_route_at) v.en_route_at = now
+        if (!v.arrived_at) v.arrived_at = now
+      }
+    }
     if (r?.queued) {
       toast.add({ severity: 'warn', summary: 'Saved offline', detail: 'Sends when you have signal', life: 3000 })
     } else {
@@ -1672,8 +1712,17 @@ async function stopJobClock() {
   }
 }
 
+const dailyLogKey = ref(0)
 function onCloseoutDone() {
   closeoutOpen.value = false
+  dailyLogKey.value += 1
+  refresh()
+}
+// "No, not finished": the job stays open; the day's visit is closed, so the
+// re-read drops the Complete button and the daily log gains the day.
+function onDayClosed() {
+  closeoutOpen.value = false
+  dailyLogKey.value += 1
   refresh()
 }
 

@@ -56,17 +56,27 @@
 
     <!-- Lane 2 first: when a tech has attested hours on THIS job, that is the
          evidence, and it should not be below the fold. -->
-    <section v-if="attested" class="labor-lane" data-testid="labor-lane-attested">
+    <section v-if="attested || earlierInAttestedLane" class="labor-lane" data-testid="labor-lane-attested">
       <h4 class="labor-lane-head">From the tech's attested hours</h4>
-      <p class="labor-lane-sub">
+      <p v-if="attested" class="labor-lane-sub">
         {{ attested.hours }} h × {{ attested.techs }} tech{{ attested.techs === 1 ? '' : 's' }}
         <template v-if="attested.closedAt"> · closed {{ attested.closedAt }}</template>
       </p>
-      <div class="labor-attested-row">
+      <div v-if="attested" class="labor-attested-row">
         <span class="labor-attested-desc">{{ attested.description }}</span>
         <span class="labor-attested-price" data-testid="labor-attested-price">
           {{ currency(attested.unitPrice * attested.quantity) }}
         </span>
+      </div>
+      <!-- Multi-day jobs PR 3: the days closed with "No, not finished". A
+           second line, never folded into the final day's. -->
+      <div v-if="earlierInAttestedLane" class="labor-attested-row" data-testid="labor-earlier-visits">
+        <span class="labor-attested-desc">{{ earlierVisits.description }}</span>
+        <span class="labor-attested-price" data-testid="labor-earlier-visits-price">
+          {{ currency(earlierVisits.unitPrice * earlierVisits.quantity) }}
+        </span>
+      </div>
+      <div class="labor-attested-row labor-lane-action">
         <Button
           label="Bill these hours"
           icon="pi pi-check"
@@ -96,6 +106,15 @@
         <span class="labor-attested-price">
           {{ currency(suggestedMatrixLine.unitPrice * suggestedMatrixLine.quantity) }}
         </span>
+      </div>
+      <!-- The earlier days' attested hours ride along as their own line. -->
+      <div v-if="earlierVisits" class="labor-attested-row" data-testid="labor-earlier-visits">
+        <span class="labor-attested-desc">{{ earlierVisits.description }}</span>
+        <span class="labor-attested-price" data-testid="labor-earlier-visits-price">
+          {{ currency(earlierVisits.unitPrice * earlierVisits.quantity) }}
+        </span>
+      </div>
+      <div class="labor-attested-row labor-lane-action">
         <Button
           label="Bill this price"
           icon="pi pi-check"
@@ -320,6 +339,52 @@ const suggestedMatrixLine = computed(() => {
   };
 });
 
+// Multi-day jobs PR 3 (plan §5.4a, Billing, round 36): "Labor — earlier
+// visits", the days closed with "No". Read WITHOUT the has_closeout guard: a
+// job finished by Close-without-work has no closeout and this is the only
+// line that bills its earlier days. Non-null only on a completed job (the
+// server decides), so a mid-job invoice is never offered those days.
+const earlierVisits = computed(() => {
+  const l = props.closeout?.earlier_visits_line;
+  if (!l) return null;
+  return {
+    description: l.description,
+    quantity: recordedQuantity(l.quantity),
+    unitPrice: Number(l.unit_price || 0),
+    source: l.source,
+    hours: l.man_hours,
+    laborPriceItemId: l.labor_price_item_id || null,
+  };
+});
+// Shown in exactly one lane, so one click cannot add it twice: beside the
+// install's quoted price when there is one, else in the attested lane.
+const earlierInAttestedLane = computed(() => !!earlierVisits.value && !suggestedMatrixLine.value);
+
+function _earlierLine() {
+  const e = earlierVisits.value;
+  if (!e) return [];
+  const provenance = e.source === 'matrix' && e.laborPriceItemId
+    ? { labor_source: 'matrix', labor_price_item_id: e.laborPriceItemId, _provenancePrice: e.unitPrice }
+    : e.source === 'attested'
+      ? {
+          labor_source: 'attested',
+          estimated_man_hours: Number(e.hours) || null,
+          _provenancePrice: e.unitPrice,
+        }
+      : { labor_source: 'manual' };
+  return [{
+    description: e.description,
+    quantity: e.quantity,
+    unit_price: e.unitPrice,
+    category: 'Labor',
+    cost: null,
+    // Follows the tenant's "Tax labor lines" setting — see addMatrix.
+    taxable: taxLabor.value,
+    _priceOverridden: true,
+    ...provenance,
+  }];
+}
+
 // Only meaningful once the operator has picked a matrix row to compare against.
 const hoursDisagreement = computed(() => {
   if (!attested.value || selected.value.length !== 1) return null;
@@ -372,7 +437,13 @@ function addMatrix() {
 
 function addAttested() {
   const a = attested.value;
-  if (!a) return;
+  if (!a) {
+    // Earlier visits only (e.g. a Close-without-work job): just that line.
+    const only = _earlierLine();
+    if (only.length) emit('add', only);
+    emit('update:visible', false);
+    return;
+  }
   emit('add', [{
     description: a.description,
     quantity: a.quantity,
@@ -387,7 +458,7 @@ function addAttested() {
     // Baseline for the downgrade: repricing attested hours means an office
     // number, not tech-signed evidence.
     _provenancePrice: a.unitPrice,
-  }]);
+  }, ..._earlierLine()]);
   emit('update:visible', false);
 }
 
@@ -411,7 +482,7 @@ function addSuggestedMatrix() {
           _provenancePrice: m.unitPrice,
         }
       : { labor_source: 'manual' }),
-  }]);
+  }, ..._earlierLine()]);
   emit('update:visible', false);
 }
 </script>
@@ -430,6 +501,7 @@ function addSuggestedMatrix() {
   background: var(--p-content-hover-background);
 }
 .labor-attested-desc { flex: 1 1 auto; min-width: 0; }
+.labor-lane-action { justify-content: flex-end; }
 .labor-attested-price { font-weight: 600; }
 /* Theme variables only — must stay readable in dark mode. */
 .labor-disagree {

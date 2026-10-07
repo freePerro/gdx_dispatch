@@ -33,6 +33,12 @@
 //
 // Caller wires v-model:visible + @closed-out to a parent (MobileTodayView
 // job cards or DispatchView Status="Complete" handler).
+//
+// Multi-day jobs, PR 3 (plan §5.4a "The sheet"): the sheet now opens on "Is
+// this job finished?". Yes is the form above, unchanged except for the hours
+// label on a job with day rows, the relabelled return-visit box and
+// `tapped_at`. No closes the crew's day (MobileDayCloseSection) and emits
+// `day-closed`, never `closed-out`: the job is not finished.
 
 import { ref, reactive, computed, watch, nextTick } from 'vue'
 import { recordedQuantity } from '../utils/quantity'
@@ -47,6 +53,10 @@ import { isInstallLane as _isInstallLane } from '../constants/jobTypes'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
 import { usePhotoQueue } from '../composables/usePhotoQueue'
+import { useAuthStore } from '../stores/auth'
+import { isTechnician } from '../constants/roles'
+import MobileDayCloseSection from './MobileDayCloseSection.vue'
+import { formatHours, earlierDayOpenText, refusalOf, formatDayLong } from '../utils/dayClose'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -59,10 +69,67 @@ const props = defineProps({
 // photo strip (the 201 carries no url to render). Photos are already on the
 // server — or in the phone's offline queue — by then, whatever happens to
 // the closeout itself.
-const emit = defineEmits(['update:visible', 'closed-out', 'photo-added'])
+const emit = defineEmits(['update:visible', 'closed-out', 'photo-added', 'day-closed'])
 
 const api = useApi()
 const toast = useToast()
+// Outside a Pinia app (some unit mounts) there is no store; the sheet then
+// treats the caller as a desk user, which only drops one warning line.
+let auth = null
+try { auth = useAuthStore() } catch { auth = null }
+const callerIsTech = computed(() => isTechnician(auth?.user?.role))
+
+// ─── "Is this job finished?" (PR 3) ──────────────────────────────────
+// null until answered: no other section shows before the question.
+const finished = ref(null)
+const dayLog = ref(null)
+const dayCloseRef = ref(null)
+// The last good day-log read per job, so a phone with no signal still gets the
+// rows it read before (plan §5.4a: "Offline on the phone, the rows come from
+// the last cached read").
+const DAY_LOG_CACHE = 'gdx_day_log_cache_v1'
+function _cacheDayLog(jobId, data) {
+  try {
+    const all = JSON.parse(localStorage.getItem(DAY_LOG_CACHE) || '{}')
+    all[jobId] = data
+    const keys = Object.keys(all)
+    // Bounded: a tech opens a few dozen jobs a week, not thousands.
+    while (keys.length > 30) delete all[keys.shift()]
+    localStorage.setItem(DAY_LOG_CACHE, JSON.stringify(all))
+  } catch { /* storage full or blocked: the live read still worked */ }
+}
+function _cachedDayLog(jobId) {
+  try { return JSON.parse(localStorage.getItem(DAY_LOG_CACHE) || '{}')[jobId] || null } catch { return null }
+}
+async function _loadDayLog() {
+  const jobId = props.jobId
+  if (!jobId) return
+  try {
+    const d = await api.get(`/api/jobs/${jobId}/day-log`, { suppressErrorToast: true })
+    if (jobId !== props.jobId) return
+    dayLog.value = d && typeof d === 'object' && !Array.isArray(d) ? d : null
+    if (dayLog.value) _cacheDayLog(jobId, dayLog.value)
+  } catch {
+    if (jobId !== props.jobId) return
+    dayLog.value = _cachedDayLog(jobId)
+  }
+}
+const loggedTotal = computed(() => Number(dayLog.value?.logged_hours_total) || 0)
+const hasDayRows = computed(() => loggedTotal.value > 0 || (dayLog.value?.rows || []).length > 0)
+const todayHasDayRow = computed(() => !!dayLog.value?.today_has_day_row)
+const earlierDayOpen = computed(() => dayLog.value?.earlier_day_open || null)
+// An earlier worked day is still open: Yes would 0-close its timers. The
+// server refuses it too (409 earlier_day_open); this just says so first.
+const yesBlocked = computed(() => !!earlierDayOpen.value)
+function answer(v) {
+  if (v === 'yes' && yesBlocked.value) return
+  finished.value = v
+}
+function onDayClosed(r) {
+  emit('day-closed', r)
+  _resetForm()
+  open.value = false
+}
 const { pendingPhotos, capturePhoto, describePhotoRefusal } = usePhotoQueue()
 
 const open = computed({
@@ -387,6 +454,8 @@ const canSubmit = computed(() => {
   // local validation. Any non-empty intent submits; backend 422s with
   // `missing[]` if the tenant requires parts/hours/signature.
   if (!props.jobId) return false
+  // The Yes form only; the No branch has its own rules (MobileDayCloseSection).
+  if (finished.value !== 'yes' || yesBlocked.value) return false
   // Photos still saving: submitting now would let the parent re-point or
   // null the job under the upload loop (see onPhotoPicked). Wait.
   if (photoBusy.value) return false
@@ -412,6 +481,18 @@ const canSubmit = computed(() => {
   if (returnVisitNeeded.value && !returnVisitReason.value.trim()) return false
   return true
 })
+
+const canSubmitCurrent = computed(() => (finished.value === 'no'
+  ? !!dayCloseRef.value?.canSubmit
+  : canSubmit.value))
+
+async function submitCurrent() {
+  if (finished.value === 'no') {
+    await dayCloseRef.value?.submit()
+    return
+  }
+  await submit()
+}
 
 async function submit() {
   if (!canSubmit.value || saving.value) return
@@ -452,6 +533,9 @@ async function submit() {
     signature_data,
     signed_by: signedBy.value.trim() || null,
     notes: notes.value.trim() || null,
+    // The tap's moment, not the server's: it decides which shop day is
+    // "today" for the earlier-day refusal on a closeout replayed tomorrow.
+    tapped_at: new Date().toISOString(),
     needs_return_visit: returnVisitNeeded.value,
     return_visit_reason: returnVisitNeeded.value ? returnVisitReason.value.trim() : null,
     parts_to_order: orderParts.value.map((p) => ({
@@ -516,7 +600,24 @@ async function submit() {
     open.value = false
   } catch (err) {
     const missing = err?.body?.missing || []
-    if (missing.length) {
+    const refused = refusalOf(err)
+    if (err?.status === 409 && refused.code === 'earlier_day_open') {
+      // Another device closed or opened a day since this sheet read the log.
+      toast.add({
+        severity: 'warn',
+        summary: 'Cannot finish yet',
+        detail: earlierDayOpenText(refused.date || earlierDayOpen.value),
+        life: 7000,
+      })
+      await _loadDayLog()
+    } else if (err?.status === 409 && refused.code === 'later_day_started') {
+      toast.add({
+        severity: 'warn',
+        summary: 'Not recorded',
+        detail: refused.detail || `Day not recorded: the crew has already started ${formatDayLong(refused.date)}; tell the office.`,
+        life: 8000,
+      })
+    } else if (missing.length) {
       const labels = {
         parts: 'parts logged',
         hours: 'labor hours',
@@ -546,6 +647,7 @@ async function submit() {
 // drawn signature, notes), tapping the header X or Escape used to discard
 // everything silently. Dirty → the X and Escape are disabled; Cancel asks.
 const isDirty = computed(() =>
+  !!dayCloseRef.value?.isDirty ||
   parts.value.length > 0 ||
   Number(hours.value) > 0 ||
   notes.value.trim() !== '' ||
@@ -563,6 +665,7 @@ function requestCancel() {
 }
 
 function _resetForm() {
+  finished.value = null
   parts.value = []
   hours.value = 0
   techsOnSite.value = 1
@@ -591,11 +694,19 @@ watch(open, async (v) => {
     partsState.value = 'idle'
     photos.value = []
     photosState.value = 'idle'
+    dayLog.value = null
+    _loadDayLog()
     _loadExistingRequests()
     _loadPhotos()
     await nextTick()
     clearCanvas()
   }
+})
+// The canvas only exists once Yes is answered; paint its white paper then.
+watch(finished, async (v) => {
+  if (v !== 'yes') return
+  await nextTick()
+  clearCanvas()
 })
 </script>
 
@@ -612,7 +723,44 @@ watch(open, async (v) => {
   >
     <p v-if="customerName" class="muted hint">{{ customerName }}</p>
 
-    <form class="form-stack" @submit.prevent="submit">
+    <form class="form-stack" @submit.prevent="submitCurrent">
+      <!-- PR 3: the question comes before any other section. -->
+      <section class="section" data-testid="mjco-finished-question">
+        <header class="section-head"><h3>Is this job finished?</h3></header>
+        <div class="answer-row" role="group" aria-label="Is this job finished?">
+          <button
+            type="button"
+            class="answer-btn"
+            :class="{ active: finished === 'yes' }"
+            :aria-pressed="finished === 'yes'"
+            :disabled="yesBlocked"
+            data-testid="mjco-finished-yes"
+            @click="answer('yes')"
+          >Yes</button>
+          <button
+            type="button"
+            class="answer-btn"
+            :class="{ active: finished === 'no' }"
+            :aria-pressed="finished === 'no'"
+            data-testid="mjco-finished-no"
+            @click="answer('no')"
+          >No</button>
+        </div>
+        <p v-if="yesBlocked" class="muted hint" data-testid="mjco-yes-blocked">
+          {{ earlierDayOpenText(earlierDayOpen) }}
+        </p>
+      </section>
+
+      <MobileDayCloseSection
+        v-if="finished === 'no'"
+        ref="dayCloseRef"
+        :job-id="jobId"
+        :day-log="dayLog"
+        :caller-is-tech="callerIsTech"
+        @day-closed="onDayClosed"
+      />
+
+      <template v-if="finished === 'yes'">
       <!-- Photos — saved on pick, independent of the closeout submit. -->
       <section class="section" data-testid="mjco-photos">
         <header class="section-head">
@@ -855,8 +1003,9 @@ watch(open, async (v) => {
         <header class="section-head"><h3>Return visit</h3></header>
         <label class="no-parts-attest" data-testid="mjco-return-visit">
           <input type="checkbox" v-model="returnVisitNeeded" />
-          <span>This job needs a return visit</span>
+          <span>Needs a follow-up job (new work)</span>
         </label>
+        <small class="muted" data-testid="mjco-return-visit-hint">Not finished? Answer No above instead.</small>
         <div v-if="returnVisitNeeded" class="form-field">
           <label for="mjco-return-reason">Why? <span class="muted">(required)</span></label>
           <Textarea
@@ -891,8 +1040,11 @@ watch(open, async (v) => {
           />
           <small class="muted">Installs bill this flat price; hours below are for records only.</small>
         </div>
+        <p v-if="hasDayRows" class="muted hint" data-testid="mjco-already-logged">
+          Already logged: {{ formatHours(loggedTotal) }} h (billed separately)
+        </p>
         <div class="form-field">
-          <label for="mjco-hours">Hours worked</label>
+          <label for="mjco-hours" data-testid="mjco-hours-label">{{ hasDayRows ? 'Hours worked today' : 'Hours worked' }}</label>
           <input
             id="mjco-hours"
             v-model.number="hours"
@@ -918,7 +1070,8 @@ watch(open, async (v) => {
             data-testid="mjco-techs-on-site"
             inputmode="numeric"
           />
-          <small class="muted">Counts toward the bill, not anyone's paycheck.</small>
+          <small v-if="todayHasDayRow" class="muted" data-testid="mjco-techs-hint-logged">Don't count techs whose day is already logged</small>
+          <small v-else class="muted">Counts toward the bill, not anyone's paycheck.</small>
         </div>
         <!-- §11 review strip — rendered IN the dialog so it cannot silently
              fail open the way an overlay confirm can (issue #215's lesson). -->
@@ -977,11 +1130,22 @@ watch(open, async (v) => {
           data-testid="mjco-notes"
         />
       </section>
+      </template>
     </form>
 
     <template #footer>
       <Button label="Cancel" text severity="secondary" data-testid="mjco-cancel" @click="requestCancel" />
       <Button
+        v-if="finished === 'no'"
+        label="Close the day"
+        icon="pi pi-check"
+        :disabled="!canSubmitCurrent"
+        :loading="!!dayCloseRef?.saving"
+        data-testid="mjco-day-submit"
+        @click="submitCurrent"
+      />
+      <Button
+        v-else
         label="Close out"
         icon="pi pi-check"
         :disabled="!canSubmit"
@@ -1176,4 +1340,23 @@ watch(open, async (v) => {
   margin-top: 0.5rem;
 }
 .confirm-strip p { margin: 0 0 0.25rem; }
+
+/* "Is this job finished?" — two big thumb targets, theme tokens only. */
+.answer-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+.answer-btn {
+  min-height: 48px;
+  border-radius: 0.5rem;
+  border: 1px solid var(--p-content-border-color);
+  background: var(--p-content-background);
+  color: var(--p-text-color);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.answer-btn.active {
+  border-color: var(--p-primary-color);
+  background: var(--p-highlight-background);
+  color: var(--p-highlight-color);
+}
+.answer-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

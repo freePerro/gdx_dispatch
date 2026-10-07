@@ -87,10 +87,22 @@ const stubs = {
 };
 
 function mountDialog(props = {}) {
-  return mount(MobileJobCloseoutDialog, {
+  const wrapper = mount(MobileJobCloseoutDialog, {
     props: { visible: true, jobId: 'job-test-1', jobTitle: 'Broken spring', ...props },
     global: { stubs },
   });
+  // PR 3: the sheet opens on "Is this job finished?". These pins are about the
+  // Yes form, so answer it; the click is synchronous, the render lands on the
+  // caller's next flush.
+  if (props.visible !== false) wrapper.find('[data-testid="mjco-finished-yes"]').trigger('click');
+  return wrapper;
+}
+
+// Opening resets the answer, so a sheet opened by flipping `visible` is
+// answered again.
+async function answerYes(wrapper) {
+  await wrapper.find('[data-testid="mjco-finished-yes"]').trigger('click');
+  await flushPromises();
 }
 
 async function setInput(wrapper, testid, value) {
@@ -314,6 +326,7 @@ describe('MobileJobCloseoutDialog', () => {
     const wrapper = mountDialog({ visible: false });
     await wrapper.setProps({ visible: true });
     await flushPromises();
+    await answerYes(wrapper);
 
     const already = wrapper.find('[data-testid="mjco-already-used"]');
     expect(already.exists()).toBe(true);
@@ -337,6 +350,7 @@ describe('MobileJobCloseoutDialog', () => {
     const wrapper = mountDialog({ visible: false });
     await wrapper.setProps({ visible: true });
     await flushPromises();
+    await answerYes(wrapper);
 
     // Attesting "no parts" while billable parts sit on the job is a lie the
     // form should not be able to tell.
@@ -460,6 +474,7 @@ describe('MobileJobCloseoutDialog', () => {
       const wrapper = mountDialog({ visible: false });
       await wrapper.setProps({ visible: true });
       await flushPromises();
+      await answerYes(wrapper);
       expect(apiGet).toHaveBeenCalledWith('/api/jobs/job-test-1/photos', { suppressErrorToast: true });
       expect(wrapper.findAll('[data-testid="mjco-photo-strip"] [data-testid="authed-img"]')).toHaveLength(1);
       expect(wrapper.find('[data-testid="mjco-no-photos"]').exists()).toBe(false);
@@ -472,6 +487,7 @@ describe('MobileJobCloseoutDialog', () => {
       expect(wrapper.find('[data-testid="mjco-no-photos"]').exists()).toBe(false);
       await wrapper.setProps({ visible: true });
       await flushPromises();
+      await answerYes(wrapper);
       expect(wrapper.find('[data-testid="mjco-no-photos"]').exists()).toBe(true);
       expect(wrapper.find('[data-testid="mjco-photos-unavailable"]').exists()).toBe(false);
     });
@@ -598,6 +614,7 @@ describe('MobileJobCloseoutDialog', () => {
       const wrapper = mountDialog({ visible: false });
       await wrapper.setProps({ visible: true });
       await flushPromises();
+      await answerYes(wrapper);
       expect(wrapper.find('[data-testid="mjco-no-photos"]').exists()).toBe(false);
       expect(wrapper.find('[data-testid="mjco-photos-unavailable"]').exists()).toBe(true);
       // The camera control is still there — listing is not a precondition.
@@ -617,6 +634,7 @@ describe('MobileJobCloseoutDialog', () => {
       await wrapper.setProps({ jobId: 'job-B' });
       await wrapper.setProps({ visible: true });
       await flushPromises();
+      await answerYes(wrapper);
       releaseA();
       await flushPromises();
       expect(wrapper.findAll('[data-testid="authed-img"]')).toHaveLength(0);
@@ -642,6 +660,7 @@ describe('#530 parts read failure is reported, not read as "no parts"', () => {
     const wrapper = mountDialog({ visible: false });
     await wrapper.setProps({ visible: true });
     await flushPromises();
+    await answerYes(wrapper);
     expect(wrapper.find('[data-testid="mjco-parts-unavailable"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mjco-parts-unavailable"]').text()).toMatch(/Couldn't load the parts/);
     // The tech can still attest — the server gate is the authority — but
@@ -654,6 +673,7 @@ describe('#530 parts read failure is reported, not read as "no parts"', () => {
     const wrapper = mountDialog({ visible: false });
     await wrapper.setProps({ visible: true });
     await flushPromises();
+    await answerYes(wrapper);
     expect(wrapper.find('[data-testid="mjco-parts-unavailable"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="mjco-no-parts-used"]').exists()).toBe(true);
   });

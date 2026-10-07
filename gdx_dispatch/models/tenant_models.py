@@ -455,6 +455,11 @@ class TimeEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now_utc, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc, server_default=func.now())
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Multi-day jobs (migration 106): set by day-close ("No" on the closeout
+    # sheet) on every timer it consumes and every hours row it writes, to the
+    # submission's raw `closed_at` — the replay key. A row with this set and
+    # minutes > 0 is a day row; one with 0 minutes is a consumed timer.
+    day_closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     # -- columns from production schema not yet in ORM --
     company_id: Mapped[str] = mapped_column(String(36), nullable=False)
     entry_type_old: Mapped[str] = mapped_column(String(50), nullable=True)
@@ -1624,6 +1629,10 @@ class Appointment(Base):
     en_route_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     arrived_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Multi-day jobs (migration 106): the raw `closed_at` of the day-close that
+    # closed this visit. Nothing else writes it; a visit the office Completed
+    # by hand has none.
+    day_closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     notes: Mapped[str] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

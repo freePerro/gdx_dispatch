@@ -59,6 +59,12 @@
 # active user, and an office invoice/estimate text still needs invoices.send /
 # estimates.send (modules/phone_com/scheduled.py). Plan:
 # docs/design/scheduled-sms-plan.md.
+#
+# 380 → 381 (2026-10-06, multi-day jobs PR 3): POST /api/jobs/{job_id}/day-close —
+# ADDED, the same handler gate as its sibling POST /api/jobs/{job_id}/closeout
+# below: core/job_access.job_write_denial (the jobs write key AND a claim on the
+# job — assignment, visit or crew row — or office tier). The sweep cannot see a
+# gate reached through that helper. Plan: multi-day jobs plan §5.4a.
 
 # ── customer portal ───────────────────────────────────────────────────────
 # These authenticate a CUSTOMER, not a tenant user, so no role or permission
@@ -285,6 +291,7 @@ POST /api/jobs
 POST /api/jobs/{job_id}/checklist
 POST /api/jobs/{job_id}/closeout
 POST /api/jobs/{job_id}/complete
+POST /api/jobs/{job_id}/day-close
 POST /api/jobs/{job_id}/dependencies
 POST /api/jobs/{job_id}/diagnosis
 POST /api/jobs/{job_id}/follow-up

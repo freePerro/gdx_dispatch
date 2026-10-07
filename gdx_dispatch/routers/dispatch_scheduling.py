@@ -102,11 +102,35 @@ def schedule_with_traffic(
         raise HTTPException(status_code=500, detail="Failed to get schedule") from None
 
 
-def _duration_fields(hours: Any) -> dict[str, float | None]:
+def _duration_fields(hours: Any, worked: float = 0.0) -> dict[str, float | None]:
     """The board's hours, as GET /api/jobs gives them: the scheduler's own
-    number only (no estimate fallback on a list; routers/jobs.py)."""
+    number only (no estimate fallback on a list; routers/jobs.py).
+
+    D13 (multi-day jobs plan §5.4a): ``effective_duration_hours`` is what is
+    still queued, ``max(0, scheduled − worked)``, where ``worked`` is the
+    job's day-row time — per shop day, the LONGEST day row (wall-clock: two
+    techs with 8 h each on one day used 8 h of the job, not 16). From
+    ``core.closeout_billing.worked_wall_clock_hours``. A job with no day rows
+    passes 0 and reads exactly as before; ``scheduled_duration_hours`` is
+    never changed, and a job with no estimate stays no-est (None)."""
     value = float(hours) if hours is not None else None
-    return {"scheduled_duration_hours": value, "effective_duration_hours": value}
+    effective = max(0.0, value - float(worked or 0)) if value is not None else None
+    return {"scheduled_duration_hours": value, "effective_duration_hours": effective}
+
+
+def _worked_hours(db: Session, job_ids: list[Any]) -> dict[str, float]:
+    """D13's ``worked`` per job, ``{str(UUID): hours}``; a miss reads as 0.
+    Not wrapped in a swallow-all: on Postgres a failed read aborts the
+    transaction, and an empty dict would silently show full queued hours."""
+    from gdx_dispatch.core.closeout_billing import worked_wall_clock_hours  # noqa: PLC0415
+
+    return worked_wall_clock_hours(db, job_ids)
+
+
+def _job_key(job_id: Any) -> str:
+    from gdx_dispatch.core.closeout_billing import _job_uuid  # noqa: PLC0415
+
+    return str(_job_uuid(job_id))
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +168,7 @@ def scheduled_unassigned(
             "LIMIT 500"
         )
     ).all()
+    worked = _worked_hours(db, [r[0] for r in rows])
     return {
         "items": [
             {
@@ -158,7 +183,7 @@ def scheduled_unassigned(
                 "is_return_visit": bool(r[7]),
                 # Assigning from this lane asks for hours only when none
                 # are set; without these it asked every time.
-                **_duration_fields(r[8]),
+                **_duration_fields(r[8], worked.get(_job_key(r[0]), 0.0)),
             }
             for r in rows
         ]
@@ -181,7 +206,9 @@ def scheduled_unassigned(
 # Holding area, tech and job type are deliberately NOT filters — a stale
 # Ready-to-Schedule stamp is how several of these hid in the first place.
 
-def _board_row(job: Any, customer_name: str | None, ds_map: dict[str, Any]) -> dict[str, Any]:
+def _board_row(
+    job: Any, customer_name: str | None, ds_map: dict[str, Any], worked: float = 0.0,
+) -> dict[str, Any]:
     """The fields a board card reads, shared by the late-open and partial queues."""
     at = job.scheduled_at
     return {
@@ -199,7 +226,7 @@ def _board_row(job: Any, customer_name: str | None, ds_map: dict[str, Any]) -> d
         "assigned_to": job.assigned_to,
         "is_return_visit": bool(job.is_return_visit),
         "display_state": ds_map.get(str(job.id)),
-        **_duration_fields(job.scheduled_duration_hours),
+        **_duration_fields(job.scheduled_duration_hours, worked),
     }
 
 
@@ -251,11 +278,12 @@ def late_open_jobs(
         log.exception("late_open_display_state_failed")
         ds_map = {}
 
+    worked = _worked_hours(db, [job.id for job, _c, _t in rows])
     items = []
     for job, customer_name, tech_name in rows:
         day = shop_day_of(job.scheduled_at, tz_name)
         items.append({
-            **_board_row(job, customer_name, ds_map),
+            **_board_row(job, customer_name, ds_map, worked.get(_job_key(job.id), 0.0)),
             "days_late": (today - day).days if day else None,
             "tech_name": tech_name,
         })
@@ -334,11 +362,12 @@ def partial_jobs(
         log.exception("partial_jobs_display_state_failed")
         ds_map = {}
 
+    worked_hours = _worked_hours(db, job_ids)
     items = []
     for job, customer_name in rows:
         entry = worked.get(str(job.id), {"last": None, "techs": {}, "closed": {}})
         items.append({
-            **_board_row(job, customer_name, ds_map),
+            **_board_row(job, customer_name, ds_map, worked_hours.get(_job_key(job.id), 0.0)),
             "holding_area_id": job.holding_area_id,
             "last_worked_day": entry["last"].isoformat() if entry["last"] else None,
             "worked_by": [

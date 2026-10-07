@@ -31,19 +31,27 @@ describe('InvoiceCreateView — closeout prefill', () => {
     const span = nextFn === -1 ? rest : rest.slice(0, nextFn + 1);
     expect(span).toMatch(/closeout-billing-suggestion/);
     expect(span).toMatch(/starterOnly/);
+    // Multi-day PR 3: both suggestion lines (labor_line, earlier_visits_line)
+    // go through one builder, so the line shape is pinned there.
+    expect(span).toMatch(/_prefillLaborLine\(s\.labor_line\)/);
+    const hStart = SRC.indexOf('function _prefillLaborLine(line)');
+    expect(hStart).toBeGreaterThan(-1);
+    const hRest = SRC.slice(hStart);
+    const hEnd = hRest.slice(1).search(/\n(async )?function \w+\(/);
+    const helper = hEnd === -1 ? hRest : hRest.slice(0, hEnd + 1);
     // M21/M34: labor taxability mirrors the tenant flag now — and the ref
     // must actually EXIST (audit round 2 caught an undefined reference the
     // prefill's catch swallowed, killing the whole labor prefill).
-    expect(span).toMatch(/taxable:\s*!!tenantTaxLabor\.value/);
+    expect(helper).toMatch(/taxable:\s*!!tenantTaxLabor\.value/);
     expect(SRC).toMatch(/const tenantTaxLabor = ref\(false\)/);
     // Provenance on the DOMINANT labor path: most invoices get their labor
     // line here, not from the picker. NULL here would mean the column answers
     // "how was this priced?" only for hand-added lines.
-    expect(span).toMatch(/labor_source/);
+    expect(helper).toMatch(/labor_source/);
     // Never claim 'matrix' without the row id — the API rejects that shape
     // because it is an unverifiable claim.
-    expect(span).toMatch(/labor_line\.labor_price_item_id/);
-    expect(span).toMatch(/category:\s*'Labor'/);
+    expect(helper).toMatch(/src === 'matrix' && line\.labor_price_item_id/);
+    expect(helper).toMatch(/category:\s*'Labor'/);
   });
 
   it('runs after the estimate prefill on both entry paths', () => {
@@ -128,13 +136,21 @@ describe('InvoiceCreateView — closeout prefill', () => {
     expect(block).toMatch(/closeoutSuggestion\?\.duplicate_part_warnings/);
   });
 
-  it('the suggestion payload is stored before the has_closeout early return', () => {
+  // Multi-day PR 3 (round 36) removed the early return: the earlier-visits
+  // line comes on the has_closeout:false path, so nothing may return on
+  // has_closeout before it is read. Behaviour is pinned in
+  // InvoiceCreateView.spec.js ("earlier visits"); this pins the order.
+  it('the suggestion payload is stored, and earlier_visits_line read, before any has_closeout gate', () => {
     const start = SRC.indexOf('async function prefillFromJobCloseout');
-    const span = SRC.slice(start, start + 1400);
+    const rest = SRC.slice(start);
+    const nextFn = rest.slice(1).search(/\n(async )?function \w+\(/);
+    const span = nextFn === -1 ? rest : rest.slice(0, nextFn + 1);
     const assign = span.indexOf('closeoutSuggestion.value = s;');
-    const early = span.indexOf('if (!s?.has_closeout) return;');
+    const earlier = span.indexOf('s?.earlier_visits_line');
+    const gate = span.indexOf('has_closeout;');
     expect(assign).toBeGreaterThan(-1);
-    expect(early).toBeGreaterThan(-1);
-    expect(assign).toBeLessThan(early);
+    expect(earlier).toBeGreaterThan(assign);
+    expect(gate).toBeGreaterThan(earlier);
+    expect(span).not.toMatch(/if \(!s\?\.has_closeout\) return;/);
   });
 });

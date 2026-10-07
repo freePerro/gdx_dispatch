@@ -846,9 +846,9 @@ def _clock_states(
             when = when.replace(tzinfo=UTC)
         return int(max((now - when).total_seconds(), 0) // 60)
 
-    job_row = _find_open_time_entry(
-        db, tenant_id, user_id, job_id=job_id, entry_type="job"
-    )
+    # Today's timer only (plan §5.4a, B8): an older open one belongs to a
+    # forgotten day and waits for that day's "No", not for this Stop button.
+    job_row = _todays_open_job_timer(db, tenant_id, user_id, job_id, now)
     job_state: dict[str, Any] = {
         "running": bool(job_row),
         "entry_id": str(job_row["id"]) if job_row else None,
@@ -998,8 +998,13 @@ def _close_open_time_entry(
     who enter attested hours through the closeout or labor.py. Recording it
     where a human reads it and refusing to bank it is the whole point.
     """
-    row = _find_open_time_entry(db, tenant_id, user_id, job_id=job_id, entry_type=entry_type)
     now = datetime.now(UTC)
+    if entry_type == "job" and job_id is not None:
+        # The same timer the toggle shows (plan §5.4a, B8): a forgotten
+        # day's open timer is left for that day's "No".
+        row = _todays_open_job_timer(db, tenant_id, user_id, job_id, now)
+    else:
+        row = _find_open_time_entry(db, tenant_id, user_id, job_id=job_id, entry_type=entry_type)
     if not row:
         return None, now, 0
 
@@ -2124,6 +2129,18 @@ def get_mobile_job_detail(
     # they're not installing blind — see gdx_dispatch/core/door_specs.py.
     door_specs = door_specs_for_job(db, job_id)
 
+    # Plan §5.4a ("The phone on day 2"): the caller's visit for today by row
+    # A1, so the action buttons follow today's visit, not the status an
+    # earlier day left on the job.
+    try:
+        job["today_visit"] = _today_visit_payload(_today_visit(
+            db, _UUID(job_id),
+            _get_technician_id(db, tenant_id, _user_id(current_user or {})),
+            datetime.now(UTC),
+        ))
+    except (ValueError, AttributeError):
+        job["today_visit"] = None
+
     return jsonable_response(
         {
             "job": job,
@@ -2259,6 +2276,10 @@ def mobile_job_en_route(
     if not job:
         return jsonable_response({"detail": "job not found"}, 404)
 
+    now = datetime.now(UTC)
+    dispatch_status = "en_route"
+    today_visit_id = None
+    job_started = False
     try:
         _jid = _UUID(job_id)
     except (ValueError, AttributeError):
@@ -2273,9 +2294,28 @@ def mobile_job_en_route(
             )
         ).scalar_one_or_none()
         if _job_obj is not None:
-            # S1-B2 — forward-only validation; idempotent re-tap allowed.
-            _validate_forward_transition(_job_obj.dispatch_status, "en_route")
-            _job_obj.dispatch_status = "en_route"
+            today_visit = _today_visit(
+                db, _jid, _get_technician_id(db, tenant_id, user_id), now,
+            )
+            if today_visit is not None:
+                # B3 (plan §5.4a): day 2 is gated by today's visit, not by
+                # the job's status that day 1 left at on_site. Within the
+                # visit it is still forward-only.
+                _validate_forward_transition(
+                    _transition_gate(_job_obj, today_visit), "en_route",
+                )
+                # B4: today's visit records when this tech set off.
+                if today_visit.en_route_at is None:
+                    today_visit.en_route_at = now
+                    today_visit.updated_at = now
+                today_visit_id = str(today_visit.id)
+                dispatch_status = _rolled_up_dispatch_status(db, _jid, now)
+            else:
+                # S1-B2 — forward-only validation; idempotent re-tap allowed.
+                _validate_forward_transition(_job_obj.dispatch_status, "en_route")
+            _job_obj.dispatch_status = dispatch_status
+            # B7: setting off to a job starts it, through start_job's writer.
+            job_started = _start_if_not_started(_job_obj, now)
     # Phase 1.4 D2 — stamp per-tech en_route_at on JobAssignment so multi-
     # tech jobs preserve who hit "On my way" and when. Lazy back-fill an
     # assignment row if a single-tech-era job has none yet.
@@ -2295,7 +2335,7 @@ def mobile_job_en_route(
         )
         stamp_tech_state(
             db, job_id=job_id, tech_id=_technician_id,
-            state="en_route", when=datetime.now(UTC),
+            state="en_route", when=now,
         )
     _audit_state_change(
         db,
@@ -2303,7 +2343,12 @@ def mobile_job_en_route(
         actor_id=user_id,
         entity_type="job",
         entity_id=job_id,
-        payload={"eta_minutes": payload.eta_minutes},
+        payload={
+            "eta_minutes": payload.eta_minutes,
+            "visit_id": today_visit_id,
+            "dispatch_status": dispatch_status,
+            "job_started": job_started,
+        },
         request=request,
         actor_role=user.get("role"),
     )
@@ -2335,7 +2380,7 @@ def mobile_job_en_route(
         {
             "ok": True,
             "job_id": job_id,
-            "dispatch_status": "en_route",
+            "dispatch_status": dispatch_status,
             "eta_minutes": payload.eta_minutes,
             # Honest: this handler sends the customer nothing (no mail, SMS
             # or task call anywhere in it). It said True for its whole life;
@@ -2343,6 +2388,145 @@ def mobile_job_en_route(
             "customer_notified": False,
         }
     )
+
+
+def _a1_visit(
+    visits: list[Appointment], tech: str | None, today: date_type, tz_name: str,
+) -> Appointment | None:
+    """Row A1 of the multi-day jobs plan §5.2a: a Current visit on ``today``'s
+    shop day held by this tech or by nobody — the tech's own over an
+    unassigned one, one not yet arrived at first."""
+    from gdx_dispatch.services.visit_sync import is_current, shop_day  # noqa: PLC0415
+
+    todays = [
+        v for v in visits
+        if is_current(v)
+        and (v.tech_id is None or (tech is not None and v.tech_id == tech))
+        and shop_day(v.start_at, tz_name) == today
+    ]
+    if not todays:
+        return None
+    pick = [v for v in todays if tech and v.tech_id == tech] or todays
+    return ([v for v in pick if v.arrived_at is None] or pick)[0]
+
+
+def _today_visit(
+    db: Session, job_id: Any, technician_id: str | None, when: datetime,
+) -> Appointment | None:
+    """The tech's visit for today (plan §5.4a, "The phone on day 2"): row A1
+    only. A2's visit sits on another day, so it is not today's — the phone
+    falls back to ``job.dispatch_status`` for it, as before."""
+    from gdx_dispatch.services.visit_sync import shop_day, shop_tz, visit_rows  # noqa: PLC0415
+
+    tz_name = shop_tz(db)
+    return _a1_visit(
+        visit_rows(db, job_id),
+        str(technician_id) if technician_id else None,
+        shop_day(when, tz_name),
+        tz_name,
+    )
+
+
+def _visit_progress(v: Appointment) -> str:
+    """A visit's place on the dispatch ladder, for B3's forward-only check:
+    on_site once arrived, en_route once en route, else assigned."""
+    from gdx_dispatch.services.visit_sync import ON_SITE, visit_state  # noqa: PLC0415
+
+    if visit_state(v) == ON_SITE:
+        return "on_site"
+    if v.en_route_at is not None:
+        return "en_route"
+    return "assigned"
+
+
+def _transition_gate(job: Job, today_visit: Appointment | None) -> str | None:
+    """What a mobile state tap is validated against (B3, plan §5.4a):
+    today's visit when there is one, else the job's status as before. A job
+    already ``done`` stays terminal whatever its visits say — done is set only
+    at closeout (§5.1), and no visit reopens it from the phone."""
+    if today_visit is None or job.dispatch_status == "done":
+        return job.dispatch_status
+    return _visit_progress(today_visit)
+
+
+def _today_visit_payload(v: Appointment | None) -> dict[str, Any] | None:
+    if v is None:
+        return None
+    from gdx_dispatch.services.visit_sync import visit_state  # noqa: PLC0415
+
+    return {
+        "id": str(v.id),
+        "state": visit_state(v),
+        "en_route_at": v.en_route_at.isoformat() if v.en_route_at else None,
+        "arrived_at": v.arrived_at.isoformat() if v.arrived_at else None,
+    }
+
+
+def _rolled_up_dispatch_status(db: Session, job_id: Any, when: datetime) -> str:
+    """``Job.dispatch_status`` rolled up from the job's Current visits on
+    ``when``'s shop day (plan §5.1; day-close step 5): on_site if any is
+    arrived, else en_route if any is en route, else assigned."""
+    from gdx_dispatch.services.visit_sync import (  # noqa: PLC0415
+        ON_SITE,
+        is_current,
+        shop_day,
+        shop_tz,
+        visit_rows,
+        visit_state,
+    )
+
+    db.flush()
+    tz_name = shop_tz(db)
+    today = shop_day(when, tz_name)
+    todays = [
+        v for v in visit_rows(db, job_id)
+        if is_current(v) and shop_day(v.start_at, tz_name) == today
+    ]
+    if any(visit_state(v) == ON_SITE for v in todays):
+        return "on_site"
+    if any(v.en_route_at is not None for v in todays):
+        return "en_route"
+    return "assigned"
+
+
+# Work stages before in_progress (tenant_models Job.lifecycle_stage). En route
+# and arrival start a job still in one of these (plan §5.4a, B7). "lead" and
+# "estimate" are left out on purpose: driving to quote a job is not starting
+# the work, so an estimate visit must not move the job to In Progress.
+_PRE_START_STAGES = (None, "", "service_call", "scheduled")
+
+
+def _start_if_not_started(job: Job, now: datetime) -> bool:
+    """B7: move a not-yet-started job to in_progress through the one stage
+    writer ``_mark_job_started``. Returns whether it moved, for the audit."""
+    if job.lifecycle_stage not in _PRE_START_STAGES:
+        return False
+    from gdx_dispatch.routers.jobs import _mark_job_started  # noqa: PLC0415
+
+    _mark_job_started(job, now)
+    job.updated_at = now
+    return True
+
+
+def _todays_open_job_timer(
+    db: Session, tenant_id: str, user_id: str, job_id: str, now: datetime,
+) -> dict[str, Any] | None:
+    """The caller's open job timer on this job, but only if its ``clock_in``
+    is on ``now``'s shop day (plan §5.4a, B8). An older open timer belongs to
+    a forgotten day, waits for that day's "No", and must not swallow today.
+    ``_find_open_time_entry`` returns the newest, so if it is not today's,
+    none is. Every reader of the job timer on the phone goes through here:
+    arrival, clock-in, the toggle (``_clock_states``) and Stop."""
+    from gdx_dispatch.core.pay_periods import shop_day_of  # noqa: PLC0415
+    from gdx_dispatch.services.visit_sync import shop_tz  # noqa: PLC0415
+
+    row = _find_open_time_entry(db, tenant_id, user_id, job_id=job_id, entry_type="job")
+    if row is None:
+        return None
+    tz_name = shop_tz(db)
+    if shop_day_of(row["clock_in"], tz_name) != shop_day_of(now, tz_name):
+        return None
+    return row
 
 
 def _arrival_visit(
@@ -2381,13 +2565,9 @@ def _arrival_visit(
     def mine_or_nobody(v: Appointment) -> bool:
         return v.tech_id is None or (tech is not None and v.tech_id == tech)
 
-    todays = [
-        v for v in visits
-        if is_current(v) and mine_or_nobody(v) and shop_day(v.start_at, tz_name) == today
-    ]
-    if todays:  # A1
-        pick = [v for v in todays if tech and v.tech_id == tech] or todays
-        return ([v for v in pick if v.arrived_at is None] or pick)[0]
+    a1 = _a1_visit(visits, tech, today, tz_name)
+    if a1 is not None:  # A1
+        return a1
     current = [v for v in visits if is_current(v)]
     holds_today = tech is not None and any(
         is_live(v) and v.tech_id == tech and shop_day(v.start_at, tz_name) == today
@@ -2458,6 +2638,8 @@ def mobile_job_arrived(
     arrival_time = datetime.now(UTC)
     visit_moved = None
     stamped_visit_id = None
+    dispatch_status = "on_site"
+    job_started = False
 
     try:
         _jid = _UUID(job_id)
@@ -2472,10 +2654,19 @@ def mobile_job_arrived(
                 Job.deleted_at.is_(None),
             )
         ).scalar_one_or_none()
+        today_visit = None
         if _job_obj is not None:
+            today_visit = _today_visit(
+                db, _jid, _get_technician_id(db, tenant_id, user_id), arrival_time,
+            )
             # S1-B2 — forward-only validation; idempotent re-tap allowed.
-            _validate_forward_transition(_job_obj.dispatch_status, "on_site")
-            _job_obj.dispatch_status = "on_site"
+            # B3 (plan §5.4a): against today's visit when there is one, so
+            # day 2 is not judged by the status day 1 left behind.
+            _validate_forward_transition(
+                _transition_gate(_job_obj, today_visit), "on_site",
+            )
+            # B7: arriving at a job starts it, through start_job's writer.
+            job_started = _start_if_not_started(_job_obj, arrival_time)
             # S1-B1 — stamp Job.arrived_at the first time we hear "I'm here"
             # so audit + payroll have a single source of truth, and skip
             # subsequent re-taps so the original arrival timestamp wins.
@@ -2492,6 +2683,10 @@ def mobile_job_arrived(
             visit_moved = _stamp_arrival(db, appt, arrival_time)
             stamped_visit_id = str(appt.id)
         if _job_obj is not None:
+            if today_visit is not None or stamped_visit_id is not None:
+                # B3: the job's status is the roll-up of today's visits.
+                dispatch_status = _rolled_up_dispatch_status(db, _jid, arrival_time)
+            _job_obj.dispatch_status = dispatch_status
             from gdx_dispatch.services.visit_sync import recompute_job_schedule  # noqa: PLC0415
 
             recompute_job_schedule(db, _job_obj, user_id, "arrival")
@@ -2514,7 +2709,9 @@ def mobile_job_arrived(
         )
 
     technician_id = _get_technician_id(db, tenant_id, user_id)
-    open_entry = _find_open_time_entry(db, tenant_id, user_id, job_id=job_id, entry_type="job")
+    # B8 (plan §5.4a): only a timer started today is reused. A forgotten
+    # day's timer stays open for that day's "No"; today gets its own.
+    open_entry = _todays_open_job_timer(db, tenant_id, user_id, job_id, arrival_time)
     auto_clock_in = False
     entry_id = None
     if not open_entry:
@@ -2554,6 +2751,8 @@ def mobile_job_arrived(
             "tech_id": technician_id,
             "visit_id": stamped_visit_id,
             "visit_moved": visit_moved,
+            "dispatch_status": dispatch_status,
+            "job_started": job_started,
         },
         request=request,
         actor_role=user.get("role"),
@@ -2586,7 +2785,7 @@ def mobile_job_arrived(
         {
             "ok": True,
             "job_id": job_id,
-            "dispatch_status": "on_site",
+            "dispatch_status": dispatch_status,
             "auto_clock_in": auto_clock_in,
             "entry_id": entry_id,
         }
@@ -2818,7 +3017,9 @@ def mobile_clock_in(
     if not _get_job(db, tenant_id, job_id):
         return jsonable_response({"detail": "job not found"}, 404)
 
-    existing = _find_open_time_entry(db, tenant_id, user_id, job_id=job_id, entry_type="job")
+    # B8 (plan §5.4a): only a timer open on today's shop day blocks. A
+    # forgotten day's timer waits for that day's "No".
+    existing = _todays_open_job_timer(db, tenant_id, user_id, job_id, datetime.now(UTC))
     if existing:
         return jsonable_response(
             {

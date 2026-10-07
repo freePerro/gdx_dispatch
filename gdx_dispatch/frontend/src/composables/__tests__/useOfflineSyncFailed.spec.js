@@ -124,6 +124,67 @@ describe('failedActions — what the tech is shown', () => {
   })
 })
 
+describe('a refused day-close ("No, not finished") — multi-day PR 3', () => {
+  const DAY = '2026-10-05'
+  const body = {
+    day: DAY, note: 'springs ordered',
+    people: [{ user_id: 'u-1', hours: 3.5 }, { user_id: 'u-2', hours: 2 }],
+    added: [{ user_id: 'u-3', hours: 1 }], visit_ids: ['v-1'],
+  }
+  async function queueDayClose() {
+    await queueOffline('/api/jobs/job-9/day-close', body, {
+      actionType: 'job.day_close', resourceId: 'job-9', conflictIsError: true,
+    })
+  }
+
+  it('a 409 on replay lands in the failed list with the day and the hours, not "synced"', async () => {
+    await queueDayClose()
+    route('POST', '/api/jobs/job-9/day-close', jsonResponse(409, { detail: 'Conflict' }))
+    await syncNow()
+    expect((await db.sync_queue.toArray())[0].status).toBe(QUEUE_STATUS.FAILED)
+    const rows = failed()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ action_type: 'job.day_close', day_close: { day: DAY, hours: 6.5 } })
+    const text = describeQueuedRefusal(rows[0])
+    expect(text).toContain('6.5 h')
+    expect(text).toMatch(/Oct/)
+    expect(describeQueuedAction(rows[0].action_type)).toBe("Day's hours")
+  })
+
+  it('job_finished (code at the top level) says the day was not recorded', async () => {
+    await queueDayClose()
+    route('POST', '/api/jobs/job-9/day-close',
+      jsonResponse(409, { detail: 'The job is already finished.', code: 'job_finished', date: DAY }))
+    await syncNow()
+    const [row] = failed()
+    expect(row.reason).toBe('job_finished')
+    expect(describeQueuedRefusal(row)).toMatch(/^Day not recorded: the job was already finished\. Tell the office: 6\.5 h on /)
+  })
+
+  it('already_closed (nested under detail) names who closed it and with how many hours', async () => {
+    await queueDayClose()
+    route('POST', '/api/jobs/job-9/day-close', jsonResponse(409, { detail: {
+      code: 'already_closed', message: 'Already closed.',
+      already_closed: { rows: [{ person_name: 'Sam', hours: 4, closed_by: 'Sam' }] },
+    } }))
+    await syncNow()
+    const [row] = failed()
+    expect(row.already_closed).toEqual({ rows: [{ person_name: 'Sam', hours: 4, closed_by: 'Sam' }] })
+    expect(describeQueuedRefusal(row)).toMatch(/^Already closed by Sam with 4 h\. Tell the office if your 6\.5 h on .+ differ\.$/)
+  })
+
+  it('a day-close is never retired by a later one: no supersede group', async () => {
+    await queueDayClose()
+    route('POST', '/api/jobs/job-9/day-close', jsonResponse(409, { detail: 'Conflict' }), jsonResponse(201, { ok: true }))
+    await syncNow()
+    await queueOffline('/api/jobs/job-9/day-close', { ...body, day: '2026-10-06' }, {
+      actionType: 'job.day_close', resourceId: 'job-9', conflictIsError: true,
+    })
+    await syncNow()
+    expect(failed().map((r) => r.day_close.day)).toEqual([DAY])
+  })
+})
+
 describe('a newer write of the same kind retires the older refusal', () => {
   it('closing the job out again retires the refused closeout — Retry can never resend it', async () => {
     await queueOffline('/api/jobs/job-1/closeout', { hours: 2, signature_data: null }, { actionType: 'job.closeout', resourceId: 'job-1' })

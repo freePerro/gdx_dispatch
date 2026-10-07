@@ -56,6 +56,146 @@ def _money(v: Decimal | float | str) -> Decimal:
     return Decimal(str(v)).quantize(Decimal("0.01"))
 
 
+# ---------------------------------------------------------------------------
+# Multi-day jobs: the day rows (plan §5.4a, migration 106)
+# ---------------------------------------------------------------------------
+# A day row is one person's attested hours for one shop day, written by
+# day-close ("No" on the closeout sheet): `day_closed_at` set, minutes > 0,
+# not deleted, closed. A timer day-close consumed at 0 minutes carries the
+# marker but is not a day row, and adds nothing anywhere below.
+#
+# Two different sums are read from them, and they must not be confused:
+#   * MAN-hours (billing): every row, every person, every day. A crew of two
+#     working 8 h each is 16 man-hours of labor the customer pays for.
+#   * WALL-CLOCK hours (D13 queued hours, tech efficiency): per shop day, the
+#     LONGEST row. The same crew used 8 h of the job's schedule, not 16.
+
+EARLIER_VISITS_DESCRIPTION = "Labor — earlier visits"
+
+
+def _job_uuid(value) -> _uuid.UUID | None:
+    if isinstance(value, _uuid.UUID):
+        return value
+    try:
+        return _uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def day_row_entries(db: Session, job_ids) -> dict[str, list[tuple[datetime, int]]]:
+    """``{str(job_id): [(clock_in, duration_minutes), ...]}`` for the jobs'
+    day rows. Jobs with none are absent. One query for any number of jobs."""
+    from gdx_dispatch.models.tenant_models import TimeEntry  # noqa: PLC0415
+
+    ids = [u for u in (_job_uuid(j) for j in job_ids) if u is not None]
+    if not ids:
+        return {}
+    rows = db.execute(
+        select(TimeEntry.job_id, TimeEntry.clock_in, TimeEntry.duration_minutes).where(
+            TimeEntry.job_id.in_(ids),
+            TimeEntry.day_closed_at.is_not(None),
+            TimeEntry.duration_minutes > 0,
+            TimeEntry.deleted_at.is_(None),
+            TimeEntry.clock_out.is_not(None),
+        )
+    ).all()
+    out: dict[str, list[tuple[datetime, int]]] = {}
+    for job_id, clock_in, minutes in rows:
+        out.setdefault(str(_job_uuid(job_id)), []).append((clock_in, int(minutes)))
+    return out
+
+
+def longest_day_row_minutes(entries, tz_name: str) -> dict:
+    """``{shop-local date: longest row's minutes}``: one job's wall-clock
+    time per shop day. A row's day is its ``clock_in``'s shop-local day."""
+    from gdx_dispatch.core.pay_periods import shop_day_of  # noqa: PLC0415
+
+    per_day: dict = {}
+    for clock_in, minutes in entries:
+        day = shop_day_of(clock_in, tz_name)
+        if day is None:
+            continue
+        per_day[day] = max(per_day.get(day, 0), int(minutes))
+    return per_day
+
+
+def worked_wall_clock_hours(db: Session, job_ids) -> dict[str, float]:
+    """``{str(job_id): Σ per shop day of the longest day row, in hours}``
+    (D13). Jobs with no day rows are absent; read a miss as 0."""
+    from gdx_dispatch.core.pay_periods import shop_tz_name_from_settings  # noqa: PLC0415
+
+    entries = day_row_entries(db, job_ids)
+    if not entries:
+        return {}
+    tz_name = shop_tz_name_from_settings(db)
+    return {
+        jid: sum(longest_day_row_minutes(rows, tz_name).values()) / 60
+        for jid, rows in entries.items()
+    }
+
+
+def earlier_visits_line(db: Session, job, *, job_type: str | None = None) -> dict | None:
+    """The "Labor — earlier visits" line (plan §5.4a Billing, Doug's R-P1),
+    or None when the job has no day-row hours or is not a service-lane job.
+
+    ``job`` is a ``Job`` or a job id; with an id, pass ``job_type``.
+
+    R-P1, money: the day rows' MAN-hours are summed across days and people,
+    rounded UP to the half hour ONCE, and billed at the plain hourly rate.
+    No first-hour price and no 1-hour floor: the first-hour price is charged
+    once, on the final day's line. That is why this does not reuse
+    ``service_labor_line`` / ``billed_man_hours`` — reusing them would charge
+    a three-day repair the first-hour price twice.
+
+    The returned dict has the shape of the closeout-billing-suggestion's
+    ``labor_line``. ``source`` there is LABOR provenance, and this is
+    ``"attested"``: day rows are hours a person typed at day-close, the same
+    evidence class as ``closeout.hours_worked``. ``build_closeout_lines``
+    stamps the INVOICE line's ``source`` column ``AUTODRAFT_LINE_SOURCE``.
+
+    ``quantity`` is 1 and ``unit_price`` == ``line_total``, with the math in
+    the description, exactly like the service-lane labor line:
+    ``invoice_lines.quantity`` is an INTEGER column, and a 7.5 written there
+    rounds to 8 on Postgres while ``line_total`` still says 7.5 h — a
+    recalculation from quantity × price would then over-bill.
+
+    The caller owns WHEN it applies (the suggestion endpoint offers it only on
+    a completed job). Accepted-estimate jobs never reach the autodraft.
+    """
+    from gdx_dispatch.core.billing_lanes import lane_for_job, service_rates  # noqa: PLC0415
+
+    job_id = getattr(job, "id", job)
+    if job_type is None:
+        job_type = getattr(job, "job_type", None)
+    if lane_for_job(job_type) != "service":
+        return None
+    jid = _job_uuid(job_id)
+    if jid is None:
+        return None
+    total_minutes = sum(m for _c, m in day_row_entries(db, [jid]).get(str(jid), []))
+    if total_minutes <= 0:
+        return None
+    # Rounded up to the half hour once, in exact integer arithmetic: a float
+    # 7.2 * 2 is not guaranteed to ceil to 15.
+    billed_half_hours = -(-total_minutes // 30)
+    billed_hours = Decimal(billed_half_hours) / 2
+    _first, hourly = service_rates(db)
+    amount = _money(hourly * billed_hours)
+    description = (
+        f"{EARLIER_VISITS_DESCRIPTION} — {billed_hours:.2f} man-hours"
+        f" at ${hourly}/hr"
+    )
+    return {
+        "description": description[:500],
+        "quantity": 1,
+        "unit_price": float(amount),
+        "line_total": float(amount),
+        "source": "attested",
+        "labor_price_item_id": None,
+        "man_hours": round(total_minutes / 60, 2),
+    }
+
+
 def next_invoice_number(db: Session) -> str:
     """The ONE invoice-number generator (2026-08-08 audit: there were FOUR —
     this max-based one, a count-based one in routers/invoices that re-issued
@@ -291,6 +431,44 @@ def build_closeout_lines(
         lines_total += labor.line_total
         if labor_taxable:
             taxable_total += labor.line_total
+        lines_added += 1
+        sort += 1
+    # Multi-day jobs (plan §5.4a, R-P1): the days closed by "No" before this
+    # closeout. Built OUTSIDE the final-day line's `hours_worked > 0` check on
+    # purpose — a job whose final day attests 0 h still bills its earlier
+    # days. A job with no day rows gets None here and is unchanged.
+    earlier = earlier_visits_line(db, job_id, job_type=job_type) if lane == "service" else None
+    if earlier is not None:
+        amount = _money(earlier["line_total"])
+        from gdx_dispatch.core.pricing_provenance import build_invoice_line  # noqa: PLC0415
+
+        # A new write path, so it records its lane (the line-provenance guard
+        # pins the older bare InvoiceLine() constructions in this file).
+        db.add(build_invoice_line(
+            pricing_source="labor_attested",
+            id=_uuid.uuid4(),
+            invoice_id=invoice.id,
+            description=earlier["description"],
+            # Always 1: the math lives in the description (the column is an
+            # INTEGER; see earlier_visits_line).
+            quantity=1,
+            unit_price=amount,
+            line_total=amount,
+            taxable=labor_taxable,
+            category="Labor",
+            # The day rows' raw attested man-hours, as the final-day line
+            # records its attested hours (not the rounded billed figure).
+            estimated_man_hours=Decimal(str(earlier["man_hours"])),
+            labor_source="attested",
+            # Machine-authored, so a re-closeout's release_untouched_autodraft
+            # owns and rebuilds it. The fourth line kind; stamped.
+            source=AUTODRAFT_LINE_SOURCE,
+            sort_order=sort,
+            company_id=str(tenant_id),
+        ))
+        lines_total += amount
+        if labor_taxable:
+            taxable_total += amount
         lines_added += 1
         sort += 1
 
