@@ -1,7 +1,7 @@
 # Multi-day jobs: one job, many visit days
 
 **Date:** 2026-10-03
-**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) MERGED #846, RELEASED v1.137.0, to §5.2's rules. §5.2a (revision 2, 2026-10-04) replaces those sync rules and adds `recompute_job_schedule`, as PR 1b against `main`: MERGED #868 (2026-10-05), RELEASED v1.138.0 (on prod and demo 2026-10-05; walked in a browser that night: the full write walk on the demo, a read-only look at prod), with one rule the build added (R2's second clause, below, accepted by Doug 2026-10-05); Doug ruled its open questions 2026-10-04 (a day closes only when someone closes it). PR 2a (§5.3a: the visits API, the job page's Visits card, and the "Partial Jobs — Need to Schedule" section Doug ruled 2026-10-05, D10–D12) MERGED #882 (2026-10-06), with its parked-row follow-up (queue rows carry the board's hours) MERGED #886, both RELEASED v1.139.0 (on prod and demo 2026-10-06; a read-only browser look at prod). Doug ruled D13 (2026-10-06): a partial job's queued hours are the hours still left; built with PR 3, which records the attested day hours it subtracts. PR 2b (the board draws each visit day as its own card, "Day k of n", and a drag moves that visit only; `GET /api/dispatch/visits`) built 2026-10-06 to the 2b build spec in §5.3a, MERGED #891, RELEASED v1.140.0 (on prod and demo 2026-10-06; a read-only browser look at both boards, where no multi-day job existed yet to badge). PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, B8, billing, D13) built 2026-10-06 to §5.4a, open as #916 against `main`, not merged; B7 was narrowed in the build so "On my way" to an estimate or lead job does not start it, and B8 was widened to the phone's Stop and toggle (see B8). Its build spec is §5.4a (2026-10-06, audited 36 rounds, reshaped after round 32 to hours per person; the 0 h "Yes" rule simplified by Doug after round 36 and the spec frozen for the build). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); §5.2a went through three plan audits, was rewritten to Doug's rulings after the third, then through sixteen more rounds (2026-10-04), the sixteenth finding no defect, then revised the same day to Doug's ruling that arrival times are always recorded and audited five more rounds (20–24), the last finding no defect; then revised 2026-10-05 to Doug's rulings that a re-open onto a closed day, a mis-tap, and an old arrival with no time are all settled by asking the office, and audited rounds 25–41 on the arrival-undo rules, round 41 finding no logic defect and two wording fixes, applied; §5.2a ships as PR 1b against `main` (see *Packaging*), since #846 merged before it was built.
+**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) MERGED #846, RELEASED v1.137.0, to §5.2's rules. §5.2a (revision 2, 2026-10-04) replaces those sync rules and adds `recompute_job_schedule`, as PR 1b against `main`: MERGED #868 (2026-10-05), RELEASED v1.138.0 (on prod and demo 2026-10-05; walked in a browser that night: the full write walk on the demo, a read-only look at prod), with one rule the build added (R2's second clause, below, accepted by Doug 2026-10-05); Doug ruled its open questions 2026-10-04 (a day closes only when someone closes it). PR 2a (§5.3a: the visits API, the job page's Visits card, and the "Partial Jobs — Need to Schedule" section Doug ruled 2026-10-05, D10–D12) MERGED #882 (2026-10-06), with its parked-row follow-up (queue rows carry the board's hours) MERGED #886, both RELEASED v1.139.0 (on prod and demo 2026-10-06; a read-only browser look at prod). Doug ruled D13 (2026-10-06): a partial job's queued hours are the hours still left; built with PR 3, which records the attested day hours it subtracts. PR 2b (the board draws each visit day as its own card, "Day k of n", and a drag moves that visit only; `GET /api/dispatch/visits`) built 2026-10-06 to the 2b build spec in §5.3a, MERGED #891, RELEASED v1.140.0 (on prod and demo 2026-10-06; a read-only browser look at both boards, where no multi-day job existed yet to badge). PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, B8, billing, D13) built 2026-10-06 to §5.4a, MERGED #916 (2026-10-07 UTC), not yet released; B7 was narrowed in the build so "On my way" to an estimate or lead job does not start it, and B8 was widened to the phone's Stop and toggle (see B8). Doug ruled D14–D18 on #916 the same day (§8); their build spec is §5.4b (PLAN, not built): PR A (decimal invoice-line quantity), PR B (one labor line, labor billed through a point), PR C (shift-end auto-stop), PR D (travel). Its build spec is §5.4a (2026-10-06, audited 36 rounds, reshaped after round 32 to hours per person; the 0 h "Yes" rule simplified by Doug after round 36 and the spec frozen for the build). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); §5.2a went through three plan audits, was rewritten to Doug's rulings after the third, then through sixteen more rounds (2026-10-04), the sixteenth finding no defect, then revised the same day to Doug's ruling that arrival times are always recorded and audited five more rounds (20–24), the last finding no defect; then revised 2026-10-05 to Doug's rulings that a re-open onto a closed day, a mis-tap, and an old arrival with no time are all settled by asking the office, and audited rounds 25–41 on the arrival-undo rules, round 41 finding no logic defect and two wording fixes, applied; §5.2a ships as PR 1b against `main` (see *Packaging*), since #846 merged before it was built.
 
 **Trigger:** Doug asked, "What happens if a job is not finished and turns into a
 multi-day job? Can a tech or anyone go back to it?" The answer, traced on
@@ -2626,6 +2626,550 @@ folded in above:
 5. Close-without-work's 409 had no message or way out → an inline message
    and a button to the sheet.
 
+### 5.4b After PR 3: Doug's rulings D14–D18 (2026-10-06; PLAN, not built)
+
+Doug read #916 and ruled five things (§8, D14–D18). They split into four PRs,
+merged bottom-up. #916 merged before these rulings could ride in it, so the
+billing half becomes its own PR (B), stacked on the quantity PR (A):
+
+| PR | Rulings | Base | Migration |
+|---|---|---|---|
+| A | D16's half: `invoice_lines.quantity` holds hours | `main` | 107 |
+| B | D15, D16, D18: one labor line, quantity = hours, labor billed through a point | A | 108 |
+| C | D14: shift-end warning and auto-stop | `main` | none |
+| D | D17: "On my way" logs travel, confirmed by the tech | B | 109 (only if the build needs it) |
+
+Each PR gets its own build, full matrix, browser walk and final audit, and
+updates this doc's status line in the same commit.
+
+Some of §5.4a's billing text is superseded once B merges:
+- R-P1's separate "Labor — earlier visits" line, and its "no first-hour price,
+  no floor";
+- the "quantity is always 1" comments in `core/closeout_billing.py` and
+  `core/billing_lanes.py`.
+
+§5.4a stays as the record of what #916 built.
+
+#### What already exists (do not rebuild)
+
+Verified against `main` @ `ae22453a`, 2026-10-06.
+
+| Need | Already there |
+|---|---|
+| Service rates | `core/billing_lanes.py` `service_rates(db)` returns `(first_hour_price, hourly)` from `pricing_settings`. Prod reads $100 / $100 (read-only, 2026-10-06), so prod always gets the one-line form below. |
+| Rounding and the floor | `roundup_to_half`, then `billed_man_hours`: round each figure to the half hour, multiply by the crew, then apply the 1 h minimum. The order is a decided rule (module docstring). |
+| Day-row hours | `day_row_entries(db, [job_id])` in `core/closeout_billing.py`, as used by `earlier_visits_line`. |
+| Stamp-first claim | `JobPartNeeded.billed_invoice_id` and `ChangeOrder.billed_invoice_id` use `UPDATE … WHERE billed_invoice_id IS NULL` plus a rowcount check (`routers/invoices.py` ~1826, ~1973). |
+| Where claims are released | `void_invoice` (`invoices.py` ~4105), `delete_invoice` (~2619), and `release_untouched_autodraft` / `void_untouched_autodraft` (`closeout_billing.py` ~612, ~645). |
+| One autodraft per job | `autodraft_invoice_for_closeout` skips when any live non-void invoice exists, so a re-invoice after reopen is always hand-built from the billing suggestion (`routers/jobs.py` ~3200–3330). |
+| Hand-built labor provenance | `InvoiceLineCreateIn.labor_source` accepts `"attested"` (`invoices.py` ~670). |
+| Shift end | `users.shift_end` or `AppSettings.default_shift_end`, plus the workdays bitmask (`routers/technicians.py` ~151). The shop time zone comes from `core/pay_periods.py` `shop_tz_name_from_settings`. |
+| A periodic sweep to copy | `timeclock-sweep-stuck-shifts-every-30m` in `core/scheduler.py`, which runs `tasks/timeclock_sweep.py::sweep_stuck_shifts_for_all_tenants` (with an audit row). |
+| A warning to copy | The day clock's stale note in `MobileJobDetailView.vue` (~712–717). |
+| The "On my way" and arrival stamps | `today_visit.en_route_at` (`mobile.py` ~2308) and `_stamp_arrival` (~2586). Neither writes a time entry. |
+| What payroll pays | `routers/payroll.py` ~248 sums `duration_minutes` with no `entry_type` filter, so any row written is paid. |
+| A portable column-type change | `093_segments_deleted_at_nullable.py` (`batch_alter_table`). A guarded refusal before a lossy step, as 088/091/092 do. |
+
+#### PR A: `invoice_lines.quantity` becomes a 2-decimal number
+
+**Migration `107_invoice_line_quantity_decimal`** (down_revision `106_day_close_markers`):
+- **Upgrade:** `batch_alter_table("invoice_lines")` alters `quantity` from
+  `Integer` to `Numeric(10, 2)`, keeping `NOT NULL`.
+  - There is no server default today, only the model's Python-side
+    `default=1`, and that stays.
+  - **Guarded like 093:** it is a no-op when the table is missing or the
+    column is already `Numeric`. `create_all` runs before alembic
+    (`bootstrap_app.py` ~94–105), so a fresh database already has the new
+    type.
+  - **Existing rows:** every value stays the same number (3 becomes 3.00).
+    No total, tax or balance changes, because those are stored columns and
+    nothing is recomputed.
+- **Downgrade:**
+  - First, count rows where `quantity <> round(quantity)`. If any exist,
+    raise and change nothing; the message names the count and the way out
+    (pin the previous `APP_VERSION`).
+  - Otherwise alter back to `Integer`.
+  - This is the one lossy direction, so it refuses rather than truncates.
+- It must run on SQLite and Postgres. The model is
+  `InvoiceLine.quantity = Column(Numeric(10, 2))`.
+
+**Code: every place that assumes a whole number.** The class is *code that
+treats an invoice-line quantity as an `int`*:
+- coerces it to an integer;
+- rejects a fraction;
+- or does arithmetic that breaks once it is a `Decimal`.
+
+The last is the dangerous one (plan audit, 2026-10-06): `Decimal × float`
+raises `TypeError`. `add_invoice_line` computes
+`payload.quantity * payload.unit_price` with a float `unit_price`
+(`invoices.py` ~3400), so with only the schema changed, every line add would
+answer 500.
+- **Search surface:**
+  - `gdx_dispatch/routers/**`, `core/**`, `modules/**`, `services/**`;
+  - `templates/**` and `core/email_layout.py`;
+  - `frontend/src/**`.
+- **Grep terms:**
+  - `quantity` together with `int(`, `: int`, `Integer` or `% 1`;
+  - `quantity *` and `* …quantity` (every product involving a quantity);
+  - `Math.floor`, `Math.round`, `:min="1"`, `:maxFractionDigits`;
+  - `useGrouping` near quantity.
+
+Known instances:
+- **Pydantic:**
+  - `InvoiceLineCreateIn.quantity: int` (~642) and `InvoiceLinePatchIn` (~726)
+    become `Decimal` with `gt=0, le=9999`, `max_digits=6, decimal_places=2`.
+  - A third decimal place is a 422, not a silent round.
+- **Arithmetic:**
+  - `add_invoice_line` (~3400), the line PATCH (~3524–3600), and every other
+    product the grep finds compute in `Decimal`, as
+    `Decimal(str(quantity)) * Decimal(str(unit_price))`.
+  - The result is quantized to cents with `ROUND_HALF_UP`, the rounding
+    `_money` already uses.
+  - One test per site multiplies 2.5 × $33.33 through the real endpoint.
+  - The request schema rejects a third decimal place, so a float-noise
+    quantity (`0.30000000000000004`) would 422. No browser code may compute
+    a quantity by arithmetic. A vitest pins that the invoice views send the
+    typed value as it is, and the server sends half-hour multiples, which
+    are exact.
+- **`int()` on an invoice-line quantity:** the build re-reads each site found
+  by the agent.
+  - Sites that copy a whole-number source stay as they are; writing an int
+    into a `Numeric` column is a widening, not a loss:
+    - estimate, change-order and proposal-tier lines;
+    - `invoices.py` ~1644 and ~1896;
+    - `mobile_invoicing.py` ~677 and ~803.
+  - Sites that read an *invoice line's own* quantity become
+    `Decimal(str(v))`. Candidates, each confirmed or struck in the build:
+    - `invoices.py` ~1364, ~1717, ~1770;
+    - `mobile_invoicing.py` ~221.
+  - `routers/sub_resources.py` ~253–268: its whole-number 422 becomes a
+    2-decimal 422 if it guards an invoice line, and is left alone if not.
+- **JSON:** quantity is emitted as a JSON number (`float(Decimal)`), as
+  `unit_price` is. That covers ~207 and ~2871, which echo the Decimal today.
+- **Frontend:**
+  - `LineItemEditor.vue` is shared with `ChangeOrdersView` (~73), whose
+    `ChangeOrderLine.quantity: int` would 422 on 2.5. So the editor gains a
+    `fractionalQuantity` prop, default `false`.
+    - With it set, the quantity InputNumber (~218–222) takes `:min="0.01"`,
+      `:maxFractionDigits="2"`.
+    - Only the invoice views pass it.
+  - `InvoiceDetailView.vue` ~2283/2299/2356 drops `Math.floor` and keeps
+    `MAX_QTY`.
+  - `InvoiceCreateView.vue`'s quantity handling (~531/537/963) gets whatever
+    the build finds there; it has no `Math.floor`.
+- **Rendering:**
+  - The PDF (`templates/_pdf_line_items.html` ~19) and the email
+    (`core/email_layout.py` ~221) show a whole number without decimals (`3`)
+    and a fraction without trailing zeros (`2.5`).
+  - One helper does this, `format_quantity`, with one test.
+- **QuickBooks** sends `float(quantity)` already. Nothing changes; QB is
+  being phased out and no new sync is added.
+- **Tests that pin int:**
+  - `test_zero_quantity_560.py` ~284–328 keeps rejecting 0 and gains 2.5
+    accepted and 2.555 rejected.
+  - The other int pins are re-read, and each is either kept as an int case
+    or widened.
+
+**Scope:** estimate lines, change orders, proposals, parts and vendor lines are
+**not** changed. Their quantities are counts of things. Only the invoice line
+gains fractions, because only it carries hours.
+
+**Who sees what:**
+- Office staff can type 2.5 into a quantity on desktop and the phone.
+- A customer sees "2.5" on the PDF and in the email.
+- Nothing else changes until PR B writes fractional quantities.
+
+#### PR B: one labor line, quantity = hours, billed through a point
+
+**The labor line (D15, D16).** It replaces both the final-day labor line and
+"Labor — earlier visits". It is built by one function,
+`job_labor_lines(db, job, closeout, *, invoice_id=None) -> list[dict]`, in
+`core/billing_lanes.py`.
+
+**`invoice_id` is the invoice asking.** Its own claimed day rows count as
+unbilled *for it*, and it is excluded from rule 3's "other invoice" test.
+- The autodraft passes its own id.
+- The billing suggestion takes an optional `?invoice_id=`.
+- `InvoiceDetailView` passes it when edit mode fetches the suggestion
+  (~1272).
+- Without it, an office user replacing a draft's labor line would be offered
+  only the closeout hours. The first hour would also drop, because of the
+  draft's own line.
+- **The edit save deletes before it inserts.** `InvoiceDetailView`'s save
+  runs updates and inserts first (~2343) and deletes removed lines last
+  (~2490). PR B moves the delete loop first.
+  - `keptIds` is then built **before** the deletes, by today's rule: the
+    deposit-netting lines plus saved lines whose description is non-empty.
+  - A saved line with its description cleared is still deleted, as the
+    `billable` pre-pass (~2247–2253) intends today.
+  - `editLines.filter(l => l.id)` would be wrong. It would keep that line
+    without ever PATCHing it.
+  - Removing the old labor line then releases its rows (the last attested
+    line), and the new line claims them as free rows.
+  - The claim stays strict (`billed_invoice_id IS NULL`, below), so keeping
+    the old line *and* adding the suggestion's line is a 409, not a double
+    bill.
+  - If the save fails after a delete, the invoice is left without that line.
+    It is a draft, and the server recalculates on every write (comment
+    ~2335). The view refetches and shows the error, and the office adds the
+    line again.
+
+1. **Man-hours:**
+   - The final day is `roundup_to_half(closeout.hours_worked) × techs_on_site`,
+     or 0 with no closeout or 0 h.
+   - Add the job's *unbilled* day rows: their summed minutes, rounded up to
+     the half hour once (as §5.4a).
+   - The sum is the man-hours.
+2. **If the man-hours are 0:** no labor line. This is unchanged: a job with no
+   attested hours bills no labor, and nothing invents hours.
+3. **First hour, once per job.** The first-hour price and the 1 h floor apply
+   **only if no other live non-void invoice on the job carries a labor line
+   that came from attested hours**. If one does, every hour bills at the
+   hourly rate with no floor. This is what "once per job" means across a
+   reopen.
+   - **"Came from attested hours"** is `pricing_source='labor_attested'`, and
+     nothing else, on a **live** line (`deleted_at IS NULL`). Line deletes are
+     soft (~3680). The release test below reads the same live lines.
+     - The line PATCH relabels only a NULL or `manual` `pricing_source`
+       (`invoices.py` ~3591), so `labor_attested` survives every edit.
+       `labor_source` does not, because rule 6 downgrades it.
+   - **The older final-day lines** were built with a bare `InvoiceLine()` and
+     have a NULL `pricing_source` (the column has no default,
+     `tenant_models.py` ~685).
+     - Migration 108 backfills `pricing_source='labor_attested'` where
+       `labor_source='attested' AND (pricing_source IS NULL OR
+       pricing_source = 'manual')`.
+     - Prod's 10 attested lines (read-only, audit round 3) break down as:
+       - 7 autodraft lines with NULL;
+       - 1 hand-built line with NULL;
+       - 2 hand-built lines with `manual`.
+
+       All 10 match. `manual` is what the create path stamped on a picker
+       line before this PR.
+     - This changes a provenance label only. No amount, quantity or status
+       moves.
+     - Prod has 10 `labor_source='attested'` lines (read-only, 2026-10-06), so
+       at most 10 rows change.
+     - After the backfill they count as "first hour charged", which is the
+       truth.
+   - The same test decides the release in *Released* below.
+4. **The lines:**
+   - **The first-hour price equals the hourly rate,** or the first hour is
+     already charged: one line, "Service labor".
+     - `quantity` = man-hours after the floor.
+     - `unit_price` = the hourly rate.
+     - `line_total` = quantity × rate.
+   - **They differ:** "Service labor — first hour", quantity 1 at the
+     first-hour price. Then "Service labor", quantity = man-hours − 1 at the
+     hourly rate, omitted when that is 0.
+   - Either way, quantity × unit price = line total on every line, and the
+     total equals today's formula (`first + hourly × (man − 1)`). Only the
+     shape on the invoice changes.
+5. **The description** keeps the tenant template
+   (`service_labor_description_template`) on the hourly line. It gains a
+   `{days}` placeholder, an integer: the days billed.
+   - The default template does not use it.
+   - When `days > 1`, the code appends " over {days} days" after the template
+     renders.
+   - A `str.format` template cannot be conditional, so this lives in the
+     code.
+6. **Provenance:**
+   - Every labor line is `labor_source='attested'`,
+     `pricing_source='labor_attested'`, `category='Labor'`.
+   - A hand-built line gets `pricing_source='labor_attested'` when its
+     `time_entry_ids` is **non-null**, an empty list included, or when
+     `labor_source='attested'`. A `null` is the same as absent.
+     - The key is the durable signal. `LineItemEditor` downgrades
+       `labor_source` in the browser before the first save (~811–815), so an
+       hours edit on the create page posts `manual`.
+     - `labor_attested` outranks `line_override`/`client_cost` here, since it
+       names the origin. The cost and margin fields are still stored.
+     - This applies on **both** create paths:
+     - `create_invoice`, `POST /api/invoices` with `line_items` (~1728). This
+       is the path `InvoiceCreateView` uses (~1028/1052), so it is the one a
+       reopen re-invoice takes.
+     - `add_invoice_line`, `POST /api/invoices/{id}/lines` (~3413).
+
+     Both hard-code `manual`/`client_cost`/`line_override` today.
+   - An edit that changes an attested line's quantity or unit price sets
+     `labor_source='manual'`: the hours are no longer the tech's.
+     - This applies to the PATCH (~3524) and the editor; the editor today
+       downgrades on a price change only (~810–815).
+     - "Changes" compares values: the new quantity or price against the
+       stored one. It does not check which fields were sent, because
+       `InvoiceDetailView` sends both on every PATCH (~2420–2425), including
+       a description edit.
+     - If the same PATCH also sends `labor_source='attested'`, the downgrade
+       wins. `'attested'` is accepted only on a PATCH that leaves quantity
+       and price unchanged.
+     - `pricing_source` stays `labor_attested`, as the record of where the
+       line started.
+   - `estimated_man_hours` = the raw attested man-hours (not the rounded
+     figure).
+   - `source=AUTODRAFT_LINE_SOURCE` on the autodraft.
+
+This applies to **every service-lane invoice**, single-day jobs included. A
+2.5 man-hour repair at $100/$100 reads `2.5 × $100 = $250` where today it
+reads `1 × $250`.
+
+**Totals:**
+- **Single-day jobs:** the same total as today.
+- **Multi-day jobs:** different from #916, by D15's design. #916 floors the
+  final day alone and bills the earlier days on top. This floors the sum
+  once.
+  - Example: a 0.5 h final day plus 2 h of day rows at $100/$100. #916 bills
+    $100 + $200 = $300; this bills 2.5 h = $250.
+  - #916 is unreleased, so no customer has ever been billed the #916 figure.
+- **Existing invoices** are not touched.
+
+**Ratchet:** converting the final-day line's bare `InvoiceLine()` to
+`build_invoice_line` drops `closeout_billing.py`'s pending count. So
+`_PENDING_CONVERSION` shrinks in the same PR, or
+`test_the_pending_ratchet_only_shrinks` goes red.
+
+**Callers that switch to `job_labor_lines`** (the sweep surface is every
+caller of `service_labor_line`, `earlier_visits_line` and `billed_man_hours`,
+plus every reader of the `labor_line` and `earlier_visits_line` payload keys):
+- `build_closeout_lines`, which serves the autodraft and the mobile truck
+  path (`mobile_invoicing.py` ~861).
+- The billing suggestion (`routers/jobs.py` ~3200–3330):
+  - its `labor_line` and `earlier_visits_line` keys are replaced by
+    `labor_lines: [...]`, which carries **whichever lane's lines apply**;
+  - the install lane's single matrix line (~3260–3272) travels there
+    unchanged, `source: 'matrix'`, with its `labor_price_item_id`;
+  - the "completed job only" gate on the day-row hours stays.
+- `LaborPickerDialog.vue` reads `labor_lines`. That includes
+  `suggestedMatrixLine` (~330), which reads `labor_line` with
+  `source === 'matrix'` today and must keep offering install labor.
+- `InvoiceCreateView.vue` also reads `labor_lines`.
+- Their specs are updated.
+
+`service_labor_line` and `earlier_visits_line` are deleted once no caller is
+left (CLAUDE.md: when something is to be deleted, delete it).
+
+**Billed through a point (D18).**
+
+*Migration `108_time_entry_billed_invoice`* (down_revision 107):
+- Adds nullable `time_entries.billed_invoice_id` (`Uuid`, FK `invoices.id`,
+  indexed).
+- Backfills `invoice_lines.pricing_source` on the older attested labor lines
+  (rule 3).
+- **Existing rows:** NULL everywhere. Day rows only exist from #916, which is
+  unreleased; prod has no `day_closed_at` column yet (prod at revision 105,
+  2026-10-06), so no billed day row is left unstamped.
+- **Downgrade:** drop the column. The provenance backfill is left in place: it
+  is a true label, and the old code ignores it.
+
+*Claim.* An invoice that bills the labor claims the job's unbilled day rows
+with
+`UPDATE time_entries SET billed_invoice_id = :inv WHERE id IN (:rows) AND billed_invoice_id IS NULL`.
+It then prices from the rows actually stamped with `:inv`. A row another
+invoice claimed first is not billed twice: it is simply absent from this one.
+- **The autodraft** (`build_closeout_lines`) claims inside the closeout's
+  transaction.
+- **A hand-built invoice: the suggestion names the rows it priced.**
+  - **The suggestion:** exactly one line of a service `labor_lines` set
+    carries `time_entry_ids: [...]`, the unbilled day rows it priced. It is
+    the hourly line, or the first-hour line when there is no hourly line. The
+    list may be empty, as on a single-day job.
+  - **The request:** `InvoiceLineCreateIn` gains optional
+    `time_entry_ids: list[UUID] | None`. `None` (absent) and `[]` are
+    different: `[]` still marks a suggestion line.
+  - **The browser forwards it.** Every place that builds or copies a labor
+    line in the browser:
+    - **`InvoiceCreateView._prefillLaborLine` (~778–817)**, the dominant path
+      ("most invoices get their labor line here"). It copies the ids from the
+      suggestion line.
+    - `LaborPickerDialog` puts it on the line it emits.
+    - The two request builders copy it, since each builds from a fixed field
+      list today: `InvoiceCreateView.vue` ~960–1010 and
+      `InvoiceDetailView.vue` ~2446–2467.
+    - **Duplicating a line drops the ids:** `LineItemEditor.duplicateLineAt`
+      (~525) strips `time_entry_ids` as it strips `part_id`, and the copy is
+      a hand-typed line. Otherwise the duplicate's claim would 409 the whole
+      save.
+    - **The vitests run the whole path, not each builder alone:**
+      - prefill (or picker) → save → the POST body carries the ids;
+      - a duplicate's body carries none.
+    - Without this, every server test is green while the browser never
+      claims. That one schema serves both create paths,
+    `create_invoice` and `add_invoice_line`, and the claim runs in whichever
+    one saves the line.
+  - **The claim:** on a create with a non-empty list, the server claims
+    exactly those rows in the same transaction, as
+    `… WHERE id IN (:ids) AND billed_invoice_id IS NULL`.
+    - **Free rows only, even against the same invoice.** A row this invoice
+      already holds is not claimable again, so a second labor line for the
+      same days is always refused:
+      - on a new invoice, prefill + picker in one POST, where lines are
+        claimed in order and the second gets 0;
+      - on an edited invoice, the old line kept beside the suggestion's line.
+    - Replacing a line works through the edit save's delete-first order
+      (above).
+    - (Plan audit round 5 ran the looser `OR billed_invoice_id = :inv` form
+      on SQLite and Postgres. Both let a second identical claim through.)
+  - **Which rows are claimable:** each row must match the **same predicate
+    `day_row_entries` uses**, factored into one function both call:
+    - on the invoice's `job_id`;
+    - `day_closed_at` not null;
+    - clocked out;
+    - `duration_minutes > 0`;
+    - not deleted.
+
+    Any id failing that is a 422. Day-close stamps zeroed, consumed timers
+    with `day_closed_at` at 0 minutes (`jobs.py` ~3669), and they are not
+    claimable.
+  - **409 `labor_already_billed`** when the claimed count is less than the
+    list's length. Some of those rows were billed since the suggestion was
+    read: picker + prefill twice, or a stale page after another invoice. The
+    office reloads the suggestion, which then offers only what is left.
+    - **Two 409s, by who holds the rows.** The server reads the
+      `billed_invoice_id` of the rows it could not claim. The 409's own
+      message is the user's text, and each carries a `code`.
+      - **Another invoice holds them:** `labor_already_billed`, "These days'
+        labor is already billed on invoice N — reload the labor
+        suggestion." Reloading offers only what is left.
+      - **This invoice holds them,** including the one being created:
+        `labor_already_on_invoice`, "This invoice already has these days'
+        labor — remove one of the labor lines." Reloading would offer the
+        same rows again, and an invoice being created has no number to name.
+      - **Mixed holders:** when the unclaimed rows are held by both, the
+        other invoice wins (`labor_already_billed`). Reloading clears that
+        part first.
+      - On a reopen, `create_invoice`'s job-level "already billed" guard
+        (~1227) fires first.
+      - The labor 409 then comes back from the forced retry (~1063), whose
+        catch toasts the server message (~1100).
+      - `InvoiceCreateView` tests both codes **before** its
+        `/already billed/i` "Create another invoice anyway?" prompt, so a
+        labor 409 never offers a retry that would only 409 again.
+      - Tests cover each code and its message:
+        - another invoice holds the rows;
+        - prefill + picker in one POST;
+        - an edited invoice keeping its old line beside the new one.
+  - **Never refused:**
+    - the second line of a split pair, which carries no ids;
+    - a reopen's new closeout hours, whose suggestion lists only the new,
+      unbilled day rows;
+    - a line with no ids.
+- **Released** (`SET billed_invoice_id = NULL WHERE billed_invoice_id = :inv`)
+  everywhere part claims are released today:
+  - `void_invoice`, `delete_invoice`, `release_untouched_autodraft`,
+    `void_untouched_autodraft`;
+  - also `delete_invoice_line` (~3639), when the deleted line was the
+    invoice's **last** line from attested hours (the test in rule 3).
+    - With a split pair, deleting one line keeps the claim.
+      - Deleting the first-hour line: the hourly line still bills the rows,
+        so releasing them would bill them twice.
+      - Deleting the hourly line: the rows stay claimed but unbilled until the
+        other line goes too.
+    - That trade is deliberate. A row can be under-billed after an office
+      delete, but never billed twice.
+    - Split pairs occur only when the two rates differ (not on prod).
+  - Each release writes one audit row with the count released.
+
+**What this does not track:** the closeout's own hours. A reopen ends in a new
+closeout, and the suggestion reads only the current one, so the old final
+day's hours are not re-offered. The old closeout is not stamped. Re-opening
+the billing suggestion on a job whose invoice is already sent offers the same
+closeout hours again; that is today's single-day behavior, unchanged here, and
+goes on the found-not-filed list.
+
+**Who sees what:**
+- **The office:** a reopened job's second invoice offers only the days not
+  yet billed, with no second first hour. Adding the labor twice is refused
+  with a plain message.
+- **The customer:** hours as the quantity.
+
+**Tests:**
+- every row of the rules above, at both equal and different rates;
+- the 0 h final day with day rows;
+- close-without-work with day rows;
+- reopen, then re-invoice;
+- void, then re-invoice;
+- picker + prefill twice;
+- a hand-built split pair;
+- an install-lane suggestion still reaching the picker;
+- an attested line edited to `manual`;
+- a 2.5 × $33.33 line added through the API;
+- a race of two claims (SQLite plus the Postgres arm);
+- the delete-last-line release.
+
+**Money statement:**
+- Existing invoices: unchanged.
+- New single-day service invoices: same totals, new shape.
+- New multi-day invoices: the floor and first hour apply once, to the sum
+  (above).
+- The only new money behavior is that a second invoice on a job no longer
+  re-bills days already billed, and no longer charges a second first hour.
+- Rollback: downgrade 108, then 107 (107 refuses once fractional quantities
+  exist), or pin the previous `APP_VERSION`.
+
+#### PR C: shift end warns, then stops the job timer (D14)
+
+- **Warning.** On the phone's job clock, while a job timer runs and the
+  tech's shift end is within 30 minutes (shop time zone), a note sits beside
+  it: "Your shift ends at 4:30 PM — this timer stops then. Close the day with
+  'Is this job finished?'". It is modelled on the day clock's stale note.
+- **Auto-stop.** A beat task every 15 minutes,
+  `sweep_job_timers_past_shift_end`, modelled on the stuck-shift sweep:
+  - **Which timers:** open `entry_type='job'` timers whose user's effective
+    shift end for that shop day has passed. That is `users.shift_end`, else
+    `AppSettings.default_shift_end`, which is `NOT NULL` with a default of
+    17:00, so it always exists.
+  - **Every day, not just workdays.** On a non-workday the timer is stopped
+    at the same shift-end time. The workdays bitmask (default Mon–Fri) only
+    decides whether the warning shows.
+  - **A timer started after that day's shift end** (late work) is left alone
+    until shop midnight, then stopped. That closes the midnight-crossing
+    timer left open by #916, and the sweep never fights a tech who restarted
+    a timer.
+  - **What it writes:** it stops each as the phone's Stop does, at 0 h.
+  - **The note keeps Stop's prefix:**
+    `"<MOBILE_STOP_LABOR_NOTE> — auto-stopped at shift end"`.
+    - Every reader of a stopped timer tests that prefix:
+      - `services/day_close.py` ~118 `is_candidate`;
+      - `routers/jobs.py` ~2089 (`LIKE`);
+      - `day_close_job`'s list of people (~3609).
+    - A different note would make the auto-stopped tech's "No" a 409
+      `person_not_open`, drop the day from `earlier_day_open`, and send the
+      closeout's restate to its synthetic row.
+  - **Audit:** one row per timer, `job_timer_auto_stop`, actor `system`.
+  - **Hours:** the day's hours still come from the "No" (or the closeout).
+    Auto-stop never invents hours.
+- **No migration.**
+- **Tests:**
+  - the window edges;
+  - a Saturday timer;
+  - auto-stop, then that tech's "No", which answers 200 and closes the day;
+  - auto-stop, then "Yes" on a later day, which is refused with
+    `earlier_day_open` until that "No";
+  - a timer started after shift end, which is stopped at midnight;
+  - an already-stopped timer, which the sweep leaves alone;
+  - the audit row.
+- **Walk:** the phone at shift end − 20 minutes shows the note; after the
+  sweep the timer reads stopped.
+
+#### PR D: "On my way" logs travel (D17), outline
+
+This is an outline. It gets its own build spec, audited, before the build.
+
+- **Nothing is written at "On my way".** At arrival the server knows each
+  tech's span (`en_route_at` → arrival). Because payroll pays every row, an
+  unconfirmed travel row would be paid, so nothing is written before the tech
+  confirms.
+- **The sheet** (the day-close "No" and the closeout "Yes") shows "Travel" per
+  person, prefilled with the span rounded to the quarter hour. The tech
+  confirms or edits it.
+- **What is written:** a confirmed figure becomes one
+  `entry_type='travel'` time entry. It is stamped like a day row
+  (`day_closed_at`), so it is paid, and its man-hours fold into PR B's labor
+  line (Doug: "folded into labor").
+- **Open, for the build spec:**
+  - travel on an estimate or lead job, which B7's narrowing does not start;
+  - a span longer than a shift;
+  - a tech who taps "On my way" and never arrives.
+
 ## 6. PRs (stacked, merged bottom-up)
 
 1. **Visits survive and arrival is safe (B1, B2).** Covers §5.2 and the
@@ -2664,6 +3208,12 @@ folded in above:
      clock time, which are not evidence of hours worked. A job with no
      estimate stays no-est.
 
+4. **After PR 3: Doug's rulings D14–D18** (§5.4b). PR A, decimal
+   invoice-line quantity (migration 107), base `main`; PR B, one labor line
+   and labor billed through a point (migration 108), stacked on A; PR C,
+   shift-end warning and auto-stop, base `main`; PR D, travel time, stacked
+   on B. PLAN, not built.
+
 Each PR updates this doc's status line in the same commit (CLAUDE.md, "The
 status line ships with the code").
 
@@ -2699,6 +3249,11 @@ status line ships with the code").
 | D11 | (2026-10-05) Where on the board? | **Above "New Jobs to Schedule."** |
 | D12 | (2026-10-05) Does a drop book the next day? | **No — the office picks the day.** Doug: "the next day does not always work for the tech." A drop books the date the board is showing. |
 | D13 | (2026-10-06) What does a partial job's "queued" total in its holding lane mean? | **The hours still left.** Doug: "queued hour means the hours still left." Until then it is the whole job's estimate (#886). It is built with PR 3, because the attested day hours it subtracts are first recorded there. |
+| D14 | (2026-10-06, after #916) A job timer still running at the end of the working day, including one crossing shop midnight? | **Warn, then auto-stop.** Doug: "needs to be stopped during normal working hours with a warning by it." A warning sits beside the running timer near the tech's shift end; at shift end the server stops it at 0 h, like Stop, and the day's hours still come from its "No". |
+| D15 | (2026-10-06) The first-hour price on a multi-day job? | **Once per job, 1 h minimum, on one labor line.** Doug: "there is always a 1hr minimum." All the job's attested man-hours (the earlier days' rows and the final day) go on one labor line. Replaces R-P1's separate earlier-visits line and its "no first-hour price, no floor". |
+| D16 | (2026-10-06) Hours on the labor line? | **The quantity is the hours.** Doug: "hours should match the quantity." `invoice_lines.quantity` becomes a 2-decimal number (its own PR, below #916). When the first-hour price equals the hourly rate it is one line, qty = man-hours; when they differ it splits into "First hour" qty 1 plus the remaining hours at the hourly rate, so qty × price always equals the total. |
+| D17 | (2026-10-06) "On my way" on a job? | **It logs travel time, paid and billed, once the tech confirms it.** Doug: "on my way should log as travel time." The On my way → I'm here span prefills a travel figure the tech confirms on the sheet; only the confirmed figure is paid and billed (the attested-hours rule holds). Billed travel is folded into the labor man-hours. Its own PR. Supersedes B7's narrowing in #916 only if Doug says so; B7 stays as built until then. |
+| D18 | (2026-10-06) Reopen then re-invoice? | **Track labor as billed through a point.** Doug: "this should be tracked as billed to x point." Each attested day row records the invoice that billed it; a later invoice bills only rows not yet billed; voiding that invoice releases them. |
 
 ## 9. Out of scope (found, not filed)
 
