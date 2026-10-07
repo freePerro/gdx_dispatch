@@ -4,6 +4,7 @@ import hashlib
 import inspect
 import json
 import logging
+import time
 import weakref
 from datetime import UTC, datetime
 from typing import Any
@@ -225,7 +226,178 @@ def _extract_request_actor(request: Any) -> str | None:
     return _actor_id_of(_request_user_dict(request))
 
 
+#: Engines whose guard has been OBSERVED installed (or installed by us and
+#: committed). Only a success lands here — a failed install used to be added as
+#: well, which made one refused DDL at boot permanent for the life of the
+#: process (GDXA-352).
 _AUDIT_GUARD_INITIALIZED: weakref.WeakSet[Any] = weakref.WeakSet()
+
+#: engine -> ``time.monotonic()`` before which a FAILED install is not retried.
+#: Without it, a runtime role that cannot issue the DDL would re-run it, and
+#: re-log it, on every single audit write.
+_AUDIT_GUARD_RETRY_AT: weakref.WeakKeyDictionary[Any, float] = weakref.WeakKeyDictionary()
+_AUDIT_GUARD_RETRY_SECONDS = 300.0
+
+_AUDIT_GUARD_TRIGGERS = ("audit_logs_no_update", "audit_logs_no_delete")
+
+_SQLITE_AUDIT_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS audit_logs (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT,
+        user_id TEXT,
+        action TEXT NOT NULL,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT,
+        details JSON,
+        ip_address TEXT,
+        request_id TEXT,
+        row_hash TEXT NOT NULL,
+        prev_hash TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        event_type TEXT,
+        actor_id TEXT,
+        actor_role TEXT,
+        payload JSON,
+        hash TEXT
+    )
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS audit_logs_no_delete
+    BEFORE DELETE ON audit_logs
+    BEGIN
+        SELECT RAISE(ABORT, 'audit_logs is immutable');
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS audit_logs_no_update
+    BEFORE UPDATE ON audit_logs
+    BEGIN
+        SELECT RAISE(ABORT, 'audit_logs is immutable');
+    END;
+    """,
+)
+
+# One source of truth for the Postgres guard: ensure_audit_table runs it at
+# runtime and migration 107 runs it at upgrade, the way migration 012 shares
+# ``modules/ledger/ddl.py`` with the GL trigger tests.
+_PG_AUDIT_GUARD_DDL = (
+    """
+    CREATE OR REPLACE FUNCTION audit_logs_immutable_guard()
+    RETURNS trigger AS $$
+    BEGIN
+        RAISE EXCEPTION 'audit_logs is immutable (op=%)', TG_OP
+            USING HINT = 'audit rows are append-only; see D45';
+    END;
+    $$ LANGUAGE plpgsql;
+    """,
+    "DROP TRIGGER IF EXISTS audit_logs_no_update ON audit_logs",
+    """
+    CREATE TRIGGER audit_logs_no_update
+        BEFORE UPDATE ON audit_logs
+        FOR EACH ROW EXECUTE FUNCTION audit_logs_immutable_guard();
+    """,
+    "DROP TRIGGER IF EXISTS audit_logs_no_delete ON audit_logs",
+    """
+    CREATE TRIGGER audit_logs_no_delete
+        BEFORE DELETE ON audit_logs
+        FOR EACH ROW EXECUTE FUNCTION audit_logs_immutable_guard();
+    """,
+)
+
+# The function alone is not the guard: a database holding the function with no
+# (or disabled) triggers refuses nothing, and the old check stopped at pg_proc.
+# ``to_regclass`` returns NULL for a missing table instead of raising, so this
+# read cannot abort the caller's transaction.
+_PG_AUDIT_GUARD_PRESENT_SQL = """
+    SELECT
+        EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'audit_logs_immutable_guard')
+        AND (
+            SELECT count(*) FROM pg_trigger
+            WHERE tgrelid = to_regclass('audit_logs')
+              AND tgname IN ('audit_logs_no_update', 'audit_logs_no_delete')
+              AND NOT tgisinternal
+              AND tgenabled <> 'D'
+        ) = 2
+"""
+
+
+def install_pg_audit_guard(conn: Any) -> None:
+    """Issue the Postgres guard DDL on ``conn``. Idempotent; raises on refusal."""
+    for stmt in _PG_AUDIT_GUARD_DDL:
+        conn.execute(text(stmt))
+
+
+def audit_guard_present(conn: Any) -> bool | None:
+    """True/False for whether ``audit_logs`` is guarded on this database.
+
+    ``conn`` is a Connection or a Session. None for a dialect with no guard of
+    its own here. Read-only.
+    """
+    dialect = (getattr(conn, "dialect", None) or conn.get_bind().dialect).name
+    if dialect == "postgresql":
+        return bool(conn.execute(text(_PG_AUDIT_GUARD_PRESENT_SQL)).scalar())
+    if dialect == "sqlite":
+        names = {
+            r[0]
+            for r in conn.execute(
+                text(
+                    "SELECT name FROM sqlite_master WHERE "
+                    "(type = 'table' AND name = 'audit_logs') OR "
+                    "(type = 'trigger' AND tbl_name = 'audit_logs')"
+                )
+            )
+        }
+        return {"audit_logs", *_AUDIT_GUARD_TRIGGERS} <= names
+    return None
+
+
+def _session_has_nothing_open(db: Any) -> bool:
+    """True when committing ``db`` could not harden anything of the caller's.
+
+    No transaction begun and nothing added, dirty or deleted. Anything that is
+    not a Session answers False — the safe answer.
+    """
+    in_transaction = getattr(db, "in_transaction", None)
+    if in_transaction is None:
+        return False
+    try:
+        return not in_transaction() and not _staged_work(db)
+    except Exception:
+        return False
+
+
+def _guard_install_failed(engine: Any, dialect: str, exc: BaseException) -> None:
+    """Say so, and back off a refusal. Called from inside the ``except``.
+
+    A privilege refusal (PG ``42501``), or any SQLite failure, will refuse again: back off
+    ``_AUDIT_GUARD_RETRY_SECONDS`` so it is not re-run and re-logged on every
+    audit write, but do not cache it for the life of the process — a guard
+    installed later, by migration 107 or pave, is then picked up (GDXA-352;
+    GDXA-350 cached it). Anything else (lock timeout, a concurrent install, a
+    dropped connection) is likely transient: no backoff, the next audit write
+    retries (GDXA-350).
+    """
+    log = logging.getLogger(__name__)
+    pgcode = getattr(getattr(exc, "orig", None), "pgcode", None)
+    if dialect == "postgresql" and pgcode != "42501":
+        log.warning(
+            "audit_guard_install_failed dialect=%s — will retry on the next audit "
+            "write; caller's transaction left intact",
+            dialect,
+            exc_info=True,
+        )
+        return
+    _AUDIT_GUARD_RETRY_AT[engine] = time.monotonic() + _AUDIT_GUARD_RETRY_SECONDS
+    log.error(
+        "audit_guard_missing dialect=%s — audit_logs has NO database-level "
+        "immutability guard on this database (a raw UPDATE/DELETE would succeed); "
+        "next attempt in %ds. Install it as the table owner: alembic upgrade head "
+        "(migration 107) as a role that can CREATE FUNCTION and CREATE TRIGGER.",
+        dialect,
+        int(_AUDIT_GUARD_RETRY_SECONDS),
+        exc_info=True,
+    )
 
 
 def ensure_audit_table(db: Any) -> None:
@@ -238,6 +410,15 @@ def ensure_audit_table(db: Any) -> None:
     branch now installs BEFORE UPDATE + BEFORE DELETE triggers; the
     SQLite branch gains the matching UPDATE guard (previously only
     DELETE was blocked).
+
+    GDXA-352 (2026-10-06): it never commits or rolls back work the caller has
+    open. The Postgres DDL runs on a connection of its own, and the SQLite DDL
+    commits only when the session holds nothing; otherwise it runs inside a
+    savepoint and rides the caller's own commit. An engine is marked
+    initialized only once the guard is seen in place. A refused install is
+    logged at ERROR and retried after ``_AUDIT_GUARD_RETRY_SECONDS``; a
+    transient one is retried on the next write (``_guard_install_failed``).
+    GDXA-350 had already moved the Postgres DDL off the caller's session.
     """
     bind = getattr(db, "bind", None) or getattr(db, "get_bind", lambda: None)()
     if bind is None:
@@ -247,158 +428,83 @@ def ensure_audit_table(db: Any) -> None:
     # with the same Python id() is never incorrectly treated as initialized.
     if engine in _AUDIT_GUARD_INITIALIZED:
         return
+    retry_at = _AUDIT_GUARD_RETRY_AT.get(engine)
+    if retry_at is not None and time.monotonic() < retry_at:
+        return
 
     dialect = bind.dialect.name
     if dialect == "sqlite":
-        db.execute(
-            text(
-                """
-                CREATE TABLE IF NOT EXISTS audit_logs (
-                    id TEXT PRIMARY KEY,
-                    tenant_id TEXT,
-                    user_id TEXT,
-                    action TEXT NOT NULL,
-                    entity_type TEXT NOT NULL,
-                    entity_id TEXT,
-                    details JSON,
-                    ip_address TEXT,
-                    request_id TEXT,
-                    row_hash TEXT NOT NULL,
-                    prev_hash TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    event_type TEXT,
-                    actor_id TEXT,
-                    actor_role TEXT,
-                    payload JSON,
-                    hash TEXT
-                )
-                """
-            )
-        )
-        db.execute(
-            text(
-                """
-                CREATE TRIGGER IF NOT EXISTS audit_logs_no_delete
-                BEFORE DELETE ON audit_logs
-                BEGIN
-                    SELECT RAISE(ABORT, 'audit_logs is immutable');
-                END;
-                """
-            )
-        )
-        db.execute(
-            text(
-                """
-                CREATE TRIGGER IF NOT EXISTS audit_logs_no_update
-                BEFORE UPDATE ON audit_logs
-                BEGIN
-                    SELECT RAISE(ABORT, 'audit_logs is immutable');
-                END;
-                """
-            )
-        )
-        db.commit()
+        _ensure_sqlite_guard(db, engine)
     elif dialect == "postgresql":
-        # Table is created by the ORM via metadata.create_all() or by the
-        # tenant bootstrap pipeline — don't CREATE TABLE IF NOT EXISTS here
-        # because the ORM column set is authoritative. We only install the
-        # guard trigger.
-        #
-        # NO MIGRATION installs the function or its triggers: one did until
-        # the 2026-06-22 squash (b11c6a36). Today the only installer besides
-        # this function is ``tools/pave_tenant_db.py``, run as the owning
-        # role. A role without CREATE on schema public (D97's ``gdx_app``)
-        # cannot run the DDL below. (Checked 2026-10-06: prod and demo connect
-        # as the ``gdx`` superuser and both already carry the guard, so there
-        # this probe is True and the DDL never runs.)
-        guard_present = db.execute(
-            text(
-                """
-                SELECT EXISTS (
-                    SELECT 1 FROM pg_proc
-                    WHERE proname = 'audit_logs_immutable_guard'
-                )
-                """
-            )
-        ).scalar()
-        if guard_present:
-            # Function + triggers were installed during bootstrap; skip DDL.
+        _ensure_pg_guard(db, engine)
+    else:
+        _AUDIT_GUARD_INITIALIZED.add(engine)
+
+
+def _ensure_sqlite_guard(db: Any, engine: Any) -> None:
+    # Read BEFORE the first execute: any statement autobegins a transaction.
+    nothing_open = _session_has_nothing_open(db)
+    if audit_guard_present(db):
+        # Seen from an idle session the table and triggers are committed. Seen
+        # from inside a transaction they may be our own uncommitted savepoint
+        # below, which the caller could still roll back — so do not mark.
+        if nothing_open:
             _AUDIT_GUARD_INITIALIZED.add(engine)
-            return
+        return
 
-        # The DDL runs on its OWN connection and transaction, never the
-        # caller's (GDXA-350). This function runs on the first audit write per
-        # engine, usually AFTER the caller has staged its mutation. The old
-        # ``db.commit()`` hardened that work before its audit row existed. The
-        # old ``db.rollback()`` (privilege denied) DISCARDED it while the audit
-        # row that followed survived: a payment reversal on a cold worker kept
-        # "payment_reversed" in the trail and lost the void.
-        #
-        # Not a savepoint in the caller's transaction: that also spares the
-        # caller's work, but a successful CREATE TRIGGER then holds
-        # ShareRowExclusiveLock on audit_logs until the caller commits, and
-        # every other connection's audit INSERT waits behind it (measured on
-        # PG 16 during the GDXA-350 review). Its own short transaction releases
-        # the lock at once. ``lock_timeout`` bounds the one wait left: a
-        # caller whose transaction already holds a lock on audit_logs.
-        #
-        # Marking the engine initialized:
-        # * success or privilege denied: yes. A refusal would repeat a doomed
-        #   DDL on every audit write; its ERROR says the guard is missing.
-        # * anything else (lock timeout, a concurrent install, a dropped
-        #   connection): no. The next audit write retries.
-        try:
-            with engine.connect() as conn, conn.begin():
-                conn.execute(text("SET LOCAL lock_timeout = '2s'"))
-                _install_pg_audit_guard(conn)
-        except Exception as exc:
-            log = logging.getLogger(__name__)
-            if getattr(getattr(exc, "orig", None), "pgcode", None) == "42501":
-                log.error(
-                    "audit_guard_missing — audit_logs_immutable_guard is absent and this "
-                    "role may not create it; audit rows have NO database-level "
-                    "immutability on this engine until tools/pave_tenant_db.py installs "
-                    "it as the owning role. Caller's transaction left intact."
-                )
-            else:
-                log.warning(
-                    "audit_guard_install_failed — will retry on the next audit write; "
-                    "caller's transaction left intact",
-                    exc_info=True,
-                )
-                return
+    # Not a separate connection, unlike Postgres: an in-memory SQLite engine
+    # hands every checkout the SAME DB-API connection (SingletonThreadPool /
+    # StaticPool), so a "separate" commit would commit the caller's work too,
+    # and on a file database it would wait on the caller's own write lock.
+    if not nothing_open:
+        # ``begin_nested`` flushes the caller's pending objects first. Do it
+        # here, outside the ``try``: a constraint error in the caller's own data
+        # is the caller's, not a missing audit guard to log and back off.
+        db.flush()
+    try:
+        if nothing_open:
+            for stmt in _SQLITE_AUDIT_DDL:
+                db.execute(text(stmt))
+            db.commit()  # the transaction the DDL above opened; nothing else in it
+            _AUDIT_GUARD_INITIALIZED.add(engine)
+        else:
+            with db.begin_nested():
+                for stmt in _SQLITE_AUDIT_DDL:
+                    db.execute(text(stmt))
+    except Exception as exc:
+        _guard_install_failed(engine, "sqlite", exc)
+
+
+def _ensure_pg_guard(db: Any, engine: Any) -> None:
+    # Table is created by the ORM via metadata.create_all() or by the
+    # tenant bootstrap pipeline — don't CREATE TABLE IF NOT EXISTS here
+    # because the ORM column set is authoritative. We only install the
+    # guard trigger.
+    #
+    # D97 Phase 1 (2026-04-26): the runtime role may be ``gdx_app`` with
+    # NOSUPERUSER NOBYPASSRLS and no CREATE on schema public, which cannot
+    # issue the DDL. Migration 107 installs it at upgrade; this is the
+    # fallback for a database that skipped it.
+    if audit_guard_present(db):  # a text() query: no autoflush of the caller's work
+        _AUDIT_GUARD_INITIALIZED.add(engine)
+        return
+
+    # Its own connection and transaction (GDXA-350): the caller's staged
+    # mutation is neither committed nor rolled back by this. Not a savepoint in
+    # the caller's transaction: a successful CREATE TRIGGER would then hold
+    # ShareRowExclusiveLock on audit_logs until the caller commits, and every
+    # other connection's audit INSERT would wait behind it. lock_timeout because CREATE
+    # and DROP TRIGGER want locks on audit_logs that the CALLER's open
+    # transaction may already hold (any earlier audit read or insert in it) —
+    # without a timeout that is a self-deadlock in one thread.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("SET LOCAL lock_timeout = '2s'"))
+            install_pg_audit_guard(conn)
+    except Exception as exc:
+        _guard_install_failed(engine, "postgresql", exc)
+        return
     _AUDIT_GUARD_INITIALIZED.add(engine)
-
-
-def _install_pg_audit_guard(db: Any) -> None:
-    """The guard DDL. Commits nothing; ``ensure_audit_table`` owns the transaction."""
-    db.execute(text(
-        """
-        CREATE OR REPLACE FUNCTION audit_logs_immutable_guard()
-        RETURNS trigger AS $$
-        BEGIN
-            RAISE EXCEPTION 'audit_logs is immutable (op=%)', TG_OP
-                USING HINT = 'audit rows are append-only; see D45';
-        END;
-        $$ LANGUAGE plpgsql;
-        """
-    ))
-    db.execute(text("DROP TRIGGER IF EXISTS audit_logs_no_update ON audit_logs"))
-    db.execute(text(
-        """
-        CREATE TRIGGER audit_logs_no_update
-            BEFORE UPDATE ON audit_logs
-            FOR EACH ROW EXECUTE FUNCTION audit_logs_immutable_guard();
-        """
-    ))
-    db.execute(text("DROP TRIGGER IF EXISTS audit_logs_no_delete ON audit_logs"))
-    db.execute(text(
-        """
-        CREATE TRIGGER audit_logs_no_delete
-            BEFORE DELETE ON audit_logs
-            FOR EACH ROW EXECUTE FUNCTION audit_logs_immutable_guard();
-        """
-    ))
 
 
 def _log_audit_event_impl(db: Any, *args: Any, **kwargs: Any) -> AuditLog:
@@ -514,18 +620,18 @@ def audit_ready_db(db: Any = Depends(get_db)) -> Any:
     """A session whose audit table is already initialized, for use as a FastAPI
     dependency: ``db: Session = Depends(audit_ready_db)``.
 
-    On SQLite ``ensure_audit_table`` commits the **first** time it runs for an
-    engine. `_log_audit_event_impl` calls it on the way in, so a handler that has
-    already staged its mutation gets that commit applied to its own pending
-    work: the change is hardened just before its audit row fails, the pair
-    stops being atomic, and `audit_or_rollback`'s promise becomes a lie. (On
-    Postgres it used to roll back instead, discarding the change while its
-    audit row survived; since GDXA-350 the PG branch installs the guard on its
-    own connection and leaves the caller's transaction alone.)
+    ``ensure_audit_table`` used to commit (SQLite) — or, on a Postgres missing
+    the bootstrap guard function, roll back — the caller's session the
+    **first** time it ran for an engine, hardening or discarding whatever the
+    handler had staged. Since GDXA-352 it no longer touches open work (its
+    Postgres DDL has its own connection; its SQLite DDL commits only an idle
+    session), so this dependency is no longer what keeps the pair atomic.
 
-    Running it as a dependency moves the initialization *before* the handler
-    stages anything, where committing has nothing to disturb. Every subsequent
-    call for that engine is a no-op (see ``_AUDIT_GUARD_INITIALIZED``).
+    It still earns its place: run before the handler stages anything, the
+    SQLite install commits on its own and the engine is marked initialized,
+    instead of riding a savepoint in the handler's transaction and being
+    re-checked on the next write. Every subsequent call for that engine is a
+    no-op (see ``_AUDIT_GUARD_INITIALIZED``).
     """
     ensure_audit_table(db)
     return db
@@ -647,11 +753,11 @@ def audit_best_effort(
 
     Why it is shaped this way (GDXA-44, 2026-09-25):
 
-    1. ``ensure_audit_table`` runs OUTSIDE the savepoint. On SQLite it commits
-       the first time it runs for an engine; inside the savepoint that commit
-       would release the very savepoint meant to contain the write. (Its PG
-       branch has done no transaction control since GDXA-350.) Idempotent —
-       every call after the first for an engine is a no-op.
+    1. ``ensure_audit_table`` runs OUTSIDE the savepoint. It may commit an
+       idle SQLite session the first time it runs for an engine; inside the
+       savepoint that commit would release the very savepoint meant to contain
+       the write. Idempotent — every call after the first successful one for
+       an engine is a no-op.
     2. The write is inside ``begin_nested()``. ``log_audit_event_sync`` ends in
        a ``flush()``, and a failed flush DEACTIVATES the session: every later
        ``execute`` or ``commit`` raises ``PendingRollbackError``. Six helpers

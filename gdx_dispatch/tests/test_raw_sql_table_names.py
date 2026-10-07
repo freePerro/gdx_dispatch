@@ -135,7 +135,8 @@ _EXPR = "\x00"
 
 # Matches the table(s) after FROM / JOIN: the first name, plus any
 # comma-joined follow-ons (FROM a, b). Schema qualifier stripped in the
-# scan. information_schema/pg_catalog system views are skipped there.
+# scan. information_schema/pg_catalog/sqlite_master system views are skipped
+# there (SQLite reserves the sqlite_ prefix: no user table can carry it).
 _NAME = r"[a-zA-Z_][\w.\x00]*"
 _TABLE_RX = re.compile(
     rf"\b(?:FROM|JOIN)\s+({_NAME}(?:\s*,\s*{_NAME})*)", re.IGNORECASE
@@ -266,7 +267,7 @@ def _tables_in_sql(sql: str) -> set[str]:
             raw = raw.strip().lower()
             # Skip system catalogs by their FULL (possibly schema-qualified)
             # name before stripping to the last segment.
-            if raw.startswith(("information_schema", "pg_")) or _EXPR in raw:
+            if raw.startswith(("information_schema", "pg_", "sqlite_")) or _EXPR in raw:
                 continue
             name = raw.split(".")[-1]
             if name and name not in local:
