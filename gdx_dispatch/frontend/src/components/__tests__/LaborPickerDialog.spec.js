@@ -36,15 +36,17 @@ const MATRIX = [
 const CLOSEOUT = {
   has_closeout: true,
   closeout: { hours_worked: 9, techs_on_site: 2, closed_at: '2026-08-19T14:00:00Z' },
-  labor_line: {
+  labor_lines: [{
     description: 'Labor — 18.0 attested man-hours',
     quantity: 1,
     unit_price: 1620,
-    // The server now says WHICH lane produced this. Service jobs => attested.
+    // The server says WHICH lane produced each line. Service jobs => attested.
     source: 'attested',
     labor_price_item_id: null,
     man_hours: 9,
-  },
+    estimated_man_hours: 9,
+    time_entry_ids: ['te-1'],
+  }],
 };
 
 const stubs = {
@@ -179,13 +181,13 @@ describe('LaborPickerDialog — showing the disagreement instead of hiding it', 
   });
 
   it('stays silent when they agree closely enough to be the same story', async () => {
-    // `man_hours` on the server's labor_line is authoritative — it is the
+    // `man_hours` on the server's labor line is authoritative — it is the
     // number that actually priced the attested line — so the fixture has to
     // move that, not just the raw closeout field.
     const close = {
       ...CLOSEOUT,
       closeout: { ...CLOSEOUT.closeout, hours_worked: 6.6 },
-      labor_line: { ...CLOSEOUT.labor_line, man_hours: 6.6 },
+      labor_lines: [{ ...CLOSEOUT.labor_lines[0], man_hours: 6.6 }],
     };
     const w = mountPicker({ closeout: close });
     await flushPromises();
@@ -211,21 +213,21 @@ describe('LaborPickerDialog — showing the disagreement instead of hiding it', 
 
 describe('LaborPickerDialog — an install quote is never relabelled as attested', () => {
   // The blocker the p2 audit caught. /closeout-billing-suggestion returns
-  // `labor_line` from EITHER lane: a service job yields attested hours, an
+  // labor lines from EITHER lane: a service job yields attested hours, an
   // INSTALL job yields a quoted flat price from a matrix row. Treating both as
   // attested recorded a contract price as hours evidence, with hours that did
   // not price it — inverting the one invariant this dialog exists to hold.
   const INSTALL_CLOSEOUT = {
     has_closeout: true,
     closeout: { hours_worked: 9, techs_on_site: 2, closed_at: '2026-08-19T14:00:00Z' },
-    labor_line: {
+    labor_lines: [{
       description: '16x7 Sectional Install',
       quantity: 1,
       unit_price: 650,
       source: 'matrix',
       labor_price_item_id: 'lpi-1',
       man_hours: null,
-    },
+    }],
   };
 
   it('does NOT offer a matrix-sourced suggestion under the attested lane', async () => {
@@ -253,7 +255,7 @@ describe('LaborPickerDialog — an install quote is never relabelled as attested
     // claim — the contract rejects matrix-without-an-id for the same reason.
     const noId = {
       ...INSTALL_CLOSEOUT,
-      labor_line: { ...INSTALL_CLOSEOUT.labor_line, labor_price_item_id: null },
+      labor_lines: [{ ...INSTALL_CLOSEOUT.labor_lines[0], labor_price_item_id: null }],
     };
     const w = mountPicker({ closeout: noId });
     await flushPromises();
@@ -301,75 +303,65 @@ describe('LaborPickerDialog — an install quote is never relabelled as attested
   });
 });
 
-// Multi-day jobs PR 3 (plan §5.4a, Billing, round 36): the days closed with
-// "No" bill as their own "Labor — earlier visits" line. It is read without the
-// has_closeout guard — a Close-without-work job has no closeout and this is
-// the only line that bills its earlier days.
-describe('LaborPickerDialog — earlier visits', () => {
-  const EARLIER = {
-    description: 'Labor — earlier visits',
-    quantity: 16,
-    unit_price: 95,
-    line_total: 1520,
-    source: 'attested',
-    labor_price_item_id: null,
-    man_hours: 16,
+// Labor billed through a point: the server prices a job's labor as one line,
+// or a first-hour line plus an hourly line, and exactly one of them names the
+// day rows it priced (`time_entry_ids`). The save sends those ids back and the
+// server claims the rows, so the same days can never be billed twice.
+describe('LaborPickerDialog — the day rows a line bills', () => {
+  const FIRST = {
+    description: 'Service labor — first hour', quantity: 1, unit_price: 125, line_total: 125,
+    source: 'attested', labor_price_item_id: null, man_hours: 2.5,
+  };
+  const HOURLY = {
+    description: 'Service labor — 2.5 man-hours over 2 days', quantity: 1.5, unit_price: 100,
+    line_total: 150, source: 'attested', labor_price_item_id: null, man_hours: 2.5,
+    estimated_man_hours: 2.5, time_entry_ids: ['te-1', 'te-2'],
   };
 
-  it('adds the earlier-visits line as a second line after the final day', async () => {
-    const w = mountPicker({ closeout: { ...CLOSEOUT, earlier_visits_line: EARLIER } });
+  it('a split pair is shown and added as two lines; only the hourly one carries the ids', async () => {
+    const w = mountPicker({ closeout: { ...CLOSEOUT, labor_lines: [FIRST, HOURLY] } });
     await flushPromises();
-    expect(w.find('[data-testid="labor-earlier-visits"]').text()).toContain('Labor — earlier visits');
+    expect(w.findAll('[data-testid="labor-attested-line"]')).toHaveLength(2);
     await w.find('[data-testid="labor-add-attested"]').trigger('click');
-    const lines = w.emitted('add')[0][0];
-    expect(lines).toHaveLength(2);
-    expect(lines[0].description).toBe('Labor — 18.0 attested man-hours');
-    expect(lines[1]).toMatchObject({
-      description: 'Labor — earlier visits',
-      quantity: 16,
-      unit_price: 95,
-      category: 'Labor',
-      taxable: false,
-      labor_source: 'attested',
-      estimated_man_hours: 16,
+    const [first, hourly] = w.emitted('add')[0][0];
+    expect(first).toMatchObject({ description: 'Service labor — first hour', quantity: 1, unit_price: 125, labor_source: 'attested' });
+    expect('time_entry_ids' in first).toBe(false);
+    expect(first.estimated_man_hours).toBeNull();
+    expect(hourly).toMatchObject({
+      quantity: 1.5, unit_price: 100, labor_source: 'attested', estimated_man_hours: 2.5,
+      time_entry_ids: ['te-1', 'te-2'], _provenanceQty: 1.5, _provenancePrice: 100,
     });
-    expect(lines[1].labor_price_item_id).toBeUndefined();
   });
 
-  it('a job with no closeout still offers the earlier-visits line, alone', async () => {
-    const w = mountPicker({ closeout: { has_closeout: false, labor_line: null, earlier_visits_line: EARLIER } });
+  it('an empty id list is kept: it still marks a suggestion line', async () => {
+    const w = mountPicker({ closeout: { ...CLOSEOUT, labor_lines: [{ ...CLOSEOUT.labor_lines[0], time_entry_ids: [] }] } });
+    await flushPromises();
+    await w.find('[data-testid="labor-add-attested"]').trigger('click');
+    expect(w.emitted('add')[0][0][0].time_entry_ids).toEqual([]);
+  });
+
+  it('a job closed without work (no closeout) still offers its closed days', async () => {
+    const w = mountPicker({ closeout: { has_closeout: false, closeout: null, labor_lines: [HOURLY] } });
     await flushPromises();
     expect(w.find('[data-testid="labor-lane-attested"]').exists()).toBe(true);
-    expect(w.find('[data-testid="labor-attested-price"]').exists()).toBe(false);
     await w.find('[data-testid="labor-add-attested"]').trigger('click');
     const lines = w.emitted('add')[0][0];
     expect(lines).toHaveLength(1);
-    expect(lines[0].description).toBe('Labor — earlier visits');
+    expect(lines[0].time_entry_ids).toEqual(['te-1', 'te-2']);
   });
 
-  it('an install adds it beside the quoted price, and shows it in one lane only', async () => {
+  it('no labor lines hides the attested lane', async () => {
+    const w = mountPicker({ closeout: { has_closeout: true, closeout: {}, labor_lines: [] } });
+    await flushPromises();
+    expect(w.find('[data-testid="labor-lane-attested"]').exists()).toBe(false);
+  });
+
+  it('a matrix line is never offered as attested hours, even with no closeout', async () => {
     const w = mountPicker({
-      closeout: {
-        has_closeout: true,
-        closeout: { hours_worked: 6 },
-        labor_line: { description: '16x7 Sectional Install', quantity: 1, unit_price: 650, source: 'matrix', labor_price_item_id: 'lpi-1', man_hours: null },
-        earlier_visits_line: EARLIER,
-      },
+      closeout: { has_closeout: false, labor_lines: [{ description: 'x', quantity: 1, unit_price: 650, source: 'matrix', labor_price_item_id: 'lpi-1' }] },
     });
     await flushPromises();
     expect(w.find('[data-testid="labor-lane-attested"]').exists()).toBe(false);
-    expect(w.findAll('[data-testid="labor-earlier-visits"]')).toHaveLength(1);
-    await w.find('[data-testid="labor-add-suggested-matrix"]').trigger('click');
-    const lines = w.emitted('add')[0][0];
-    expect(lines.map((l) => l.description)).toEqual(['16x7 Sectional Install', 'Labor — earlier visits']);
-    expect(lines[1].labor_source).toBe('attested');
-  });
-
-  it('mid-job (earlier_visits_line null) emits the single attested line as before', async () => {
-    const w = mountPicker({ closeout: { ...CLOSEOUT, earlier_visits_line: null } });
-    await flushPromises();
-    expect(w.find('[data-testid="labor-earlier-visits"]').exists()).toBe(false);
-    await w.find('[data-testid="labor-add-attested"]').trigger('click');
-    expect(w.emitted('add')[0][0]).toHaveLength(1);
+    expect(w.find('[data-testid="labor-lane-suggested-matrix"]').exists()).toBe(false);
   });
 });

@@ -80,7 +80,7 @@ def _invoice_line_calls(path: Path):
 # Converted so far: all 7 in routers/invoices.py (the ~98% of live volume).
 _PENDING_CONVERSION = {
     Path("routers/mobile_invoicing.py"): 5,
-    Path("core/closeout_billing.py"): 3,
+    Path("core/closeout_billing.py"): 2,
     Path("modules/deposits/service.py"): 2,
     Path("modules/quickbooks/sync.py"): 2,
     Path("routers/sub_resources.py"): 1,

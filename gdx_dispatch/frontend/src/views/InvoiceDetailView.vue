@@ -1275,8 +1275,14 @@ async function loadCloseoutSuggestion() {
   const jobId = invoice.value?.job_id;
   if (!jobId) return;
   try {
+    // Asked AS this invoice: the day rows it already bills count as unbilled
+    // for it, and its own labor line is not "the first hour charged
+    // elsewhere". Without it, replacing a draft's labor line would be offered
+    // only the closeout hours, without the first hour.
+    const asking = invoice.value?.id || route.params.id;
     closeoutSuggestion.value = await api.get(
-      `/api/jobs/${jobId}/closeout-billing-suggestion`,
+      `/api/jobs/${jobId}/closeout-billing-suggestion`
+        + (asking ? `?invoice_id=${encodeURIComponent(asking)}` : ''),
       { suppressErrorToast: true },
     );
   } catch {
@@ -2200,6 +2206,11 @@ function enterEditMode() {
     estimated_man_hours: ln.estimated_man_hours ?? null,
     ...(ln.labor_source === 'matrix'
       ? { _provenancePrice: toNum(ln.unit_price) } : {}),
+    // An attested line downgrades on an hours or rate change, in the editor
+    // as on the server, so the label never shows "attested" for an office
+    // number.
+    ...(ln.labor_source === 'attested'
+      ? { _provenancePrice: toNum(ln.unit_price), _provenanceQty: toNum(ln.quantity) } : {}),
   }));
   // Without this the Add Labor picker's attested lane is DEAD on this screen:
   // it hides lane 2 when `closeout` is null and never fetches for itself. The
@@ -2342,9 +2353,36 @@ async function saveEdit() {
   savingEdit.value = true;
   try {
     const id = route.params.id;
-    const keptIds = new Set();
+    // The kept set is built BEFORE any write, by the same rule the loop
+    // below follows: the server-owned netting lines, plus saved lines with a
+    // description. A saved line whose description was cleared is still
+    // deleted, as the `billable` pre-pass intends; `editLines.filter(l =>
+    // l.id)` would instead keep it without ever PATCHing it.
+    const keptIds = new Set(
+      editLines.value
+        .filter((ln) => ln.id && (isDepositNettingLine(ln) || (ln.description || "").trim()))
+        .map((ln) => String(ln.id)),
+    );
 
-    // 1. Updates + inserts
+    // 1. Deletions FIRST — anything in original that is not in the kept set.
+    // A removed labor line releases the day rows it billed, so a replacement
+    // line added below can claim them; inserting first would have the new
+    // line refused (409) for days the old one still held. The netting line is excluded twice over (the
+    // editor can't remove it, and this guard) — deleting it would re-bill
+    // an already-collected deposit, and the server 409s the attempt.
+    for (const orig of original) {
+      if (isDepositNettingLine(orig)) continue;
+      const oid = String(orig.id ?? "");
+      // Only real server line ids (UUIDs) are deletable — fetchInvoice's
+      // offline placeholder rows carry ids like 1/2, and firing DELETEs
+      // derived from fabricated data must never happen (audit 2026-07-24).
+      if (oid.length < 32) continue;
+      if (!keptIds.has(oid)) {
+        await api.del(`/api/invoices/${id}/lines/${oid}`);
+      }
+    }
+
+    // 2. Updates + inserts
     for (const ln of editLines.value) {
       // The deposit-netting line is server-owned: never PATCH it (the 409
       // aside, the Math.max(0, price) clamp below would zero its negative
@@ -2462,6 +2500,10 @@ async function saveEdit() {
         if (ln.part_id) body.part_id = ln.part_id;
         if (ln.includes_labor) body.includes_labor = true;
         if (cost != null) body.cost = cost;
+        // The day rows a suggested labor line bills; the server claims them
+        // with the line. An empty list is sent too: it marks a suggestion
+        // line.
+        if (Array.isArray(ln.time_entry_ids)) body.time_entry_ids = [...ln.time_entry_ids];
         if (marginOverrideDec != null) body.margin_pct_override = marginOverrideDec;
         // Labor provenance rides the CREATE only. Which lane priced a line is
         // decided when it is added and does not change by editing its text or
@@ -2484,22 +2526,6 @@ async function saveEdit() {
             life: 8000,
           });
         }
-      }
-    }
-
-    // 2. Deletions — anything in original that didn't appear in the
-    // post-edit kept set. The netting line is excluded twice over (the
-    // editor can't remove it, and this guard) — deleting it would re-bill
-    // an already-collected deposit, and the server 409s the attempt.
-    for (const orig of original) {
-      if (isDepositNettingLine(orig)) continue;
-      const oid = String(orig.id ?? "");
-      // Only real server line ids (UUIDs) are deletable — fetchInvoice's
-      // offline placeholder rows carry ids like 1/2, and firing DELETEs
-      // derived from fabricated data must never happen (audit 2026-07-24).
-      if (oid.length < 32) continue;
-      if (!keptIds.has(oid)) {
-        await api.del(`/api/invoices/${id}/lines/${oid}`);
       }
     }
 

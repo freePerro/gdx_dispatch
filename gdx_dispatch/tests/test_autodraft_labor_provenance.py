@@ -24,7 +24,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
-from gdx_dispatch.core.billing_lanes import InstallLaborLine, ServiceLaborLine
+from gdx_dispatch.core.billing_lanes import InstallLaborLine, job_labor_lines
 from gdx_dispatch.core.closeout_billing import build_closeout_lines
 from gdx_dispatch.core.job_taxonomy import INSTALLATION, SERVICE_CALL
 from gdx_dispatch.models.labor_pricing import LaborPriceItem
@@ -160,8 +160,16 @@ class TestLanesCarryWhatProvenanceNeeds:
     def test_install_lane_names_its_matrix_row(self):
         assert "matrix_item_id" in InstallLaborLine.__dataclass_fields__
 
-    def test_service_lane_carries_attested_hours(self):
-        assert "attested_hours" in ServiceLaborLine.__dataclass_fields__
+    def test_service_lane_carries_attested_hours(self, db):
+        from types import SimpleNamespace
+
+        lines = job_labor_lines(
+            db,
+            SimpleNamespace(id=uuid4(), job_type=SERVICE_CALL),
+            SimpleNamespace(hours_worked=2.0, techs_on_site=1, closed_at=None),
+            day_rows=[],
+        )
+        assert lines[-1]["estimated_man_hours"] == Decimal("2.00")
 
 
 @pytest.fixture(scope="module")
@@ -291,6 +299,9 @@ class TestAutodraftWritesProvenance:
         )
         line = _labor_line(db, invoice)
         assert line.labor_source == "attested"
+        # The label the first-hour-once test reads: an autodrafted attested
+        # line must count as "first hour charged" for the job.
+        assert line.pricing_source == "labor_attested"
         assert line.estimated_man_hours is not None
         assert Decimal(str(line.estimated_man_hours)) > 0
 

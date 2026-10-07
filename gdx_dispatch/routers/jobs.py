@@ -2455,7 +2455,9 @@ def closeout_job(
             autodraft_invoice_for_closeout,
             release_untouched_autodraft,
         )
-        reused_autodraft = release_untouched_autodraft(db, job=job)
+        reused_autodraft = release_untouched_autodraft(
+            db, job=job, actor=user_id, request=request
+        )
 
         # 1) Insert one JobPart row per closeout part WHEN the part is in
         #    inventory (has a real parts.id). Free-text closeout lines
@@ -3195,6 +3197,7 @@ def ready_for_billing(
 def closeout_billing_suggestion(
     job_id: str,
     request: Request,
+    invoice_id: str | None = None,
     current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -3208,6 +3211,15 @@ def closeout_billing_suggestion(
     the UI a priced labor line (same core/billing_lanes math the autodraft
     and mobile paths use) plus the closeout context to display. Nothing is
     written or claimed — the operator still confirms every line.
+
+    ``labor_lines`` carries whichever lane's lines apply: the service lane's
+    one or two hourly lines (exactly one of them names the day rows it priced
+    in ``time_entry_ids``, which the create request sends back to claim), or
+    the install lane's single matrix line.
+
+    ``?invoice_id=`` is the invoice asking (an edit of an existing invoice):
+    the day rows it already holds count as unbilled for it, and its own labor
+    line does not count as "first hour already charged".
     """
     try:
         jid = uuid.UUID(job_id)
@@ -3221,11 +3233,25 @@ def closeout_billing_suggestion(
 
     from gdx_dispatch.core.billing_lanes import (
         install_labor_line,
+        job_labor_lines,
         lane_for_job,
-        service_labor_line,
     )
     from gdx_dispatch.core.closeouts import get_current_closeout
     from gdx_dispatch.modules.proposals.models import Estimate
+
+    asking: uuid.UUID | None = None
+    if invoice_id:
+        try:
+            asking = uuid.UUID(str(invoice_id))
+        except (ValueError, AttributeError):
+            return jsonable_response({"detail": "invoice_id is not a valid id"}, 422)
+        owner = db.execute(
+            select(Invoice.job_id).where(Invoice.id == asking, Invoice.deleted_at.is_(None))
+        ).first()
+        # Only an invoice on THIS job may ask: another job's invoice would
+        # make its own rows and first hour "this invoice's" here.
+        if owner is None or owner[0] != jid:
+            return jsonable_response({"detail": "invoice not found on this job"}, 404)
 
     estimate_exists = db.execute(
         select(Estimate.id).where(
@@ -3235,25 +3261,30 @@ def closeout_billing_suggestion(
         ).limit(1)
     ).first() is not None
 
-    # The day rows' line (multi-day jobs plan §5.4a Billing), computed BEFORE
-    # the no-closeout return: a job finished by Close-without-work or
-    # /complete has no closeout, and its earlier days would otherwise reach
-    # no invoice (round 35). Offered only on a completed job, so a hand-made
-    # mid-job invoice is never offered the same days again at the end.
-    earlier_visits: dict[str, Any] | None = None
-    if (job.lifecycle_stage or "").lower() == "completed":
-        from gdx_dispatch.core.closeout_billing import earlier_visits_line
+    def _wire(line: dict) -> dict:
+        out = dict(line)
+        for k in ("quantity", "unit_price", "line_total", "estimated_man_hours"):
+            if out.get(k) is not None:
+                out[k] = float(out[k])
+        return out
 
-        earlier_visits = earlier_visits_line(db, job)
-
+    # The day rows are offered only on a completed job (multi-day jobs plan
+    # §5.4a Billing), so a hand-made mid-job invoice is never offered the same
+    # days again at the end. Read BEFORE the no-closeout return: a job finished
+    # by Close-without-work or /complete has no closeout, and its days would
+    # otherwise reach no invoice (round 35).
+    completed = (job.lifecycle_stage or "").lower() == "completed"
     closeout = get_current_closeout(db, jid)
     if closeout is None:
         return jsonable_response({
             "has_closeout": False,
             "estimate_exists": estimate_exists,
             "closeout": None,
-            "labor_line": None,
-            "earlier_visits_line": earlier_visits,
+            "labor_lines": [
+                _wire(ln) for ln in job_labor_lines(
+                    db, job, None, invoice_id=asking, include_day_rows=completed,
+                )
+            ],
             # Mobile and van captures happen on jobs that never get a
             # closeout, and van rows are exactly what started billing in
             # v1.69. Omitting the key here made the warning unreachable for
@@ -3261,7 +3292,7 @@ def closeout_billing_suggestion(
             "duplicate_part_warnings": duplicate_capture_groups(db, str(jid)),
         })
 
-    labor: dict[str, Any] | None = None
+    labor_lines: list[dict[str, Any]] = []
     lane = lane_for_job(job.job_type)
     # `source` is NOT decoration. These two lanes produce numbers that mean
     # different things, and callers were left to guess which they had:
@@ -3278,7 +3309,7 @@ def closeout_billing_suggestion(
     if lane == "install" and getattr(closeout, "labor_matrix_item_id", None):
         _install = install_labor_line(db, closeout.labor_matrix_item_id)
         if _install is not None:
-            labor = {
+            labor_lines.append({
                 "description": _install.description,
                 "quantity": _install.quantity,
                 "unit_price": float(_install.unit_price),
@@ -3288,22 +3319,13 @@ def closeout_billing_suggestion(
                 # needs, and which this payload used to drop on the floor.
                 "labor_price_item_id": str(closeout.labor_matrix_item_id),
                 "man_hours": None,
-            }
-    if lane == "service" and float(closeout.hours_worked or 0) > 0:
-        _svc = service_labor_line(
-            db,
-            hours_worked=float(closeout.hours_worked or 0),
-            techs_on_site=int(getattr(closeout, "techs_on_site", 1) or 1),
-        )
-        labor = {
-            "description": _svc.description,
-            "quantity": _svc.quantity,
-            "unit_price": float(_svc.unit_price),
-            "line_total": float(_svc.line_total),
-            "source": "attested",
-            "labor_price_item_id": None,
-            "man_hours": float(closeout.hours_worked or 0),
-        }
+            })
+    if lane == "service":
+        labor_lines = [
+            _wire(ln) for ln in job_labor_lines(
+                db, job, closeout, invoice_id=asking, include_day_rows=completed,
+            )
+        ]
 
     # The tech's JOB notes too (Doug 2026-08-07 round 2: "it is missing the
     # notes the tech put on it") — the real work summary usually lives in
@@ -3341,8 +3363,7 @@ def closeout_billing_suggestion(
             "closed_at": closeout.closed_at.isoformat() if closeout.closed_at else None,
         },
         "job_notes": job_notes,
-        "labor_line": labor,
-        "earlier_visits_line": earlier_visits,
+        "labor_lines": labor_lines,
         # Parts this job captured more than once and that are still unbilled
         # (2026-08-19). Capture rows are never machine-merged — AUDIT-R1 ruled
         # any automatic dedup either undercounts or double-counts — so the

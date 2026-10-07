@@ -1526,3 +1526,51 @@ describe('LineItemEditor — a seeded tier changes the PRICE, not just the dropd
     expect(await priceAfterCost(100, { seeded: false })).toBeCloseTo(153.85, 2);
   });
 });
+
+// Labor billed through a point: an attested labor line carries the day rows it
+// bills (`time_entry_ids`), which the save sends to the server to claim. A
+// copy is a hand-typed line — claiming the same rows again would refuse the
+// whole save — and a changed hour count is an office number, not the tech's.
+describe('LineItemEditor — an attested labor line and its day rows', () => {
+  const ATTESTED = {
+    description: 'Service labor — 2.5 man-hours over 2 days', quantity: 2.5, unit_price: 100,
+    category: 'Labor', labor_source: 'attested', estimated_man_hours: 2.5,
+    time_entry_ids: ['te-1', 'te-2'], _provenancePrice: 100, _provenanceQty: 2.5,
+  };
+
+  it('a duplicate carries no day-row ids; the original keeps them', async () => {
+    const wrapper = mountEditor({ lines: [{ ...ATTESTED }] });
+    await wrapper.find('[data-testid="line-copy-0"]').trigger('click');
+    const last = lastLines(wrapper);
+    expect(last).toHaveLength(2);
+    expect(last[0].time_entry_ids).toEqual(['te-1', 'te-2']);
+    expect(last[1]).not.toHaveProperty('time_entry_ids');
+    expect(last[1].description).toBe(ATTESTED.description);
+  });
+
+  it('changing the hours makes the line manual and keeps its ids', async () => {
+    const wrapper = mountEditor({ lines: [{ ...ATTESTED }], fractionalQuantity: true });
+    await wrapper.find('[data-testid="line-qty-0"]').setValue('3');
+    await flushPromises();
+    const [line] = lastLines(wrapper);
+    expect(line.quantity).toBe(3);
+    expect(line.labor_source).toBe('manual');
+    expect(line.time_entry_ids).toEqual(['te-1', 'te-2']);
+  });
+
+  it('committing the same hours leaves it attested', async () => {
+    const wrapper = mountEditor({ lines: [{ ...ATTESTED }], fractionalQuantity: true });
+    await wrapper.find('[data-testid="line-qty-0"]').setValue('2.5');
+    await flushPromises();
+    expect(lastLines(wrapper)[0].labor_source).toBe('attested');
+  });
+
+  it('a matrix line is not downgraded by a quantity change (two doors at the quoted price)', async () => {
+    const wrapper = mountEditor({
+      lines: [{ description: '16x7 Install', quantity: 1, unit_price: 650, labor_source: 'matrix', labor_price_item_id: 'lpi-1', _provenancePrice: 650 }],
+    });
+    await wrapper.find('[data-testid="line-qty-0"]').setValue('2');
+    await flushPromises();
+    expect(lastLines(wrapper)[0].labor_source).toBe('matrix');
+  });
+});

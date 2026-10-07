@@ -775,8 +775,8 @@ function useNoteAsLaborDescription(note) {
   target.description = body.slice(0, 500);
 }
 
-// One suggestion line (`labor_line` or `earlier_visits_line`, the same shape)
-// as an invoice line, with its provenance.
+// One suggested labor line (an entry of the suggestion's `labor_lines`) as an
+// invoice line, with its provenance and the day rows it bills.
 function _prefillLaborLine(line) {
   // Provenance rides the prefill too. This is the DOMINANT path — most
   // invoices get their labor line here, not from the picker — so leaving it
@@ -802,8 +802,16 @@ function _prefillLaborLine(line) {
       ? {
           labor_source: 'attested',
           _provenancePrice: Number(line.unit_price || 0),
-          ...(line.man_hours != null
-            ? { estimated_man_hours: Number(line.man_hours) } : {}),
+          _provenanceQty: recordedQuantity(line.quantity),
+          // The raw attested man-hours ride on the one line that names the
+          // day rows; a first-hour line beside it carries none.
+          ...(line.estimated_man_hours != null
+            ? { estimated_man_hours: Number(line.estimated_man_hours) } : {}),
+          // The day rows this line priced. The save sends them back and the
+          // server claims them, so the same days are never billed twice. An
+          // empty list is kept: it still marks a suggestion line.
+          ...(Array.isArray(line.time_entry_ids)
+            ? { time_entry_ids: [...line.time_entry_ids] } : {}),
         }
       : {};
   return {
@@ -821,6 +829,10 @@ function _prefillLaborLine(line) {
   };
 }
 
+// The server's two "these days' labor is already on a bill" refusals. Neither
+// is the job-level double-billing prompt, and forcing would not get past them.
+const LABOR_409_CODES = new Set(['labor_already_billed', 'labor_already_on_invoice']);
+
 async function prefillFromJobCloseout(jobId) {
   closeoutSuggestion.value = null;
   if (!jobId) return;
@@ -834,12 +846,12 @@ async function prefillFromJobCloseout(jobId) {
     // closeout. Gating the whole payload on has_closeout made the warning
     // dead for the exact rows this release started pricing.
     closeoutSuggestion.value = s;
-    // Multi-day jobs PR 3 (plan §5.4a, Billing, round 36): the days closed
-    // with "No" bill as "Labor — earlier visits", and that line comes on the
-    // has_closeout:false path too — a job finished by Close-without-work has
-    // no closeout and would otherwise never invoice its earlier days. So it
-    // is read BEFORE the has_closeout gate below, never behind it.
-    const earlier = s?.earlier_visits_line || null;
+    // The labor lines come on the has_closeout:false path too: a job
+    // finished by Close-without-work has no closeout, and its closed days
+    // would otherwise never reach an invoice. So they are read BEFORE the
+    // has_closeout gate below, never behind it. The server offers day rows
+    // only on a completed job.
+    const suggested = Array.isArray(s?.labor_lines) ? s.labor_lines : [];
     const starterOnly =
       form.value.line_items.length === 1 &&
       !form.value.line_items[0].description &&
@@ -853,11 +865,10 @@ async function prefillFromJobCloseout(jobId) {
       form.value.notes = s.closeout.notes;
     }
     if (!starterOnly) return;
-    const lines = [];
-    if (hasCloseout && s.labor_line) lines.push(_prefillLaborLine(s.labor_line));
-    // A second line, never merged into the final day's: each carries its own
-    // hours and provenance.
-    if (earlier) lines.push(_prefillLaborLine(earlier));
+    // A matrix (install) line is the closeout's quote: it needs a closeout.
+    const lines = suggested
+      .filter((l) => l && (l.source === 'attested' || hasCloseout))
+      .map(_prefillLaborLine);
     if (lines.length) form.value.line_items = lines;
   } catch (e) {
     // closeout prefill is best-effort — a blank editor is the old behavior
@@ -1008,6 +1019,10 @@ async function createInvoice() {
             out.estimated_man_hours = toNum(l.estimated_man_hours);
           }
         }
+        // The day rows a suggested labor line bills: the server claims them
+        // with the line. Forwarded whenever present, even edited to manual,
+        // because those days are still what the line bills.
+        if (Array.isArray(l.time_entry_ids)) out.time_entry_ids = [...l.time_entry_ids];
         return out;
       });
 
@@ -1056,6 +1071,10 @@ async function createInvoice() {
       // job completion, the backend 409s when the job already has a real
       // invoice. Confirm and re-submit with force — deliberate second
       // invoices (progress billing, re-bill) stay one click away.
+      // The labor 409s first: their text also says "already billed", and a
+      // forced retry would only 409 again. The outer catch toasts the
+      // server's own message, which says what to do.
+      if (e.status === 409 && LABOR_409_CODES.has(e.code)) throw e;
       if (e.status === 409 && /already billed/i.test(e.message || '')) {
         if (!window.confirm(`${e.message}\n\nCreate another invoice for this job anyway?`)) {
           return;

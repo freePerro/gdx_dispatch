@@ -31,9 +31,9 @@ describe('InvoiceCreateView — closeout prefill', () => {
     const span = nextFn === -1 ? rest : rest.slice(0, nextFn + 1);
     expect(span).toMatch(/closeout-billing-suggestion/);
     expect(span).toMatch(/starterOnly/);
-    // Multi-day PR 3: both suggestion lines (labor_line, earlier_visits_line)
-    // go through one builder, so the line shape is pinned there.
-    expect(span).toMatch(/_prefillLaborLine\(s\.labor_line\)/);
+    // Every suggested labor line (`labor_lines`) goes through one builder,
+    // so the line shape is pinned there.
+    expect(span).toMatch(/\.map\(_prefillLaborLine\)/);
     const hStart = SRC.indexOf('function _prefillLaborLine(line)');
     expect(hStart).toBeGreaterThan(-1);
     const hRest = SRC.slice(hStart);
@@ -136,17 +136,17 @@ describe('InvoiceCreateView — closeout prefill', () => {
     expect(block).toMatch(/closeoutSuggestion\?\.duplicate_part_warnings/);
   });
 
-  // Multi-day PR 3 (round 36) removed the early return: the earlier-visits
-  // line comes on the has_closeout:false path, so nothing may return on
+  // Multi-day PR 3 (round 36) removed the early return: the closed days'
+  // labor comes on the has_closeout:false path, so nothing may return on
   // has_closeout before it is read. Behaviour is pinned in
-  // InvoiceCreateView.spec.js ("earlier visits"); this pins the order.
-  it('the suggestion payload is stored, and earlier_visits_line read, before any has_closeout gate', () => {
+  // InvoiceCreateView.spec.js ("labor lines"); this pins the order.
+  it('the suggestion payload is stored, and labor_lines read, before any has_closeout gate', () => {
     const start = SRC.indexOf('async function prefillFromJobCloseout');
     const rest = SRC.slice(start);
     const nextFn = rest.slice(1).search(/\n(async )?function \w+\(/);
     const span = nextFn === -1 ? rest : rest.slice(0, nextFn + 1);
     const assign = span.indexOf('closeoutSuggestion.value = s;');
-    const earlier = span.indexOf('s?.earlier_visits_line');
+    const earlier = span.indexOf('s?.labor_lines');
     const gate = span.indexOf('has_closeout;');
     expect(assign).toBeGreaterThan(-1);
     expect(earlier).toBeGreaterThan(assign);

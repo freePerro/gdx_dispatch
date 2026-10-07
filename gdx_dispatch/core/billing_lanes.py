@@ -16,15 +16,23 @@ Precedence (the §15.1 correction — the estimate outranks everything):
        there, never silently $0-lined to a customer (a $0 line on a PDF the
        customer reads is worse than a flagged draft).
 
-Service-lane math (§11/§15 decisions, ORDER IS LOAD-BEARING):
-    man_hours = roundup_to_half(hours_worked) × techs_on_site
-    man_hours = max(1.0, man_hours)                # first-hour minimum
-    amount    = first_hour_price + hourly_rate × (man_hours − 1)
+Service-lane math (§11/§15 decisions, ORDER IS LOAD-BEARING), extended for
+multi-day jobs (D15, D16):
+    final_day = roundup_to_half(hours_worked) × techs_on_site   (0 without one)
+    day_rows  = Σ unbilled day-row minutes, rounded up to the half hour ONCE
+    man_hours = final_day + day_rows
+    man_hours = max(1.0, man_hours)     # floor, only when the first hour applies
 
     Round FIRST, floor SECOND: 0.25h → 0.5 → floor 1.0 → $100.
-    Both settings are $100 today so this collapses to man_hours × 100, but
-    they are two columns (pricing_settings) so "first hour $125 then $100"
-    is a settings change, not a code change.
+    The first-hour price and the floor apply once per JOB: not when another
+    live invoice on the job already carries a line from attested hours.
+
+The line says what it bills: quantity = hours, unit price = the rate.
+    rates equal, or first hour already charged → one "Service labor" line,
+        quantity = man_hours at the hourly rate
+    rates differ → "Service labor — first hour" 1 × first-hour price, then
+        "Service labor" (man_hours − 1) × hourly rate, omitted at 0
+    Either way the total is first + hourly × (man_hours − 1), as before.
 
 BILLED ≠ ATTESTED, permanently: rounding and the floor produce the CUSTOMER
 quantity on the invoice line; `hours_worked` and the labor time_entry keep
@@ -36,30 +44,19 @@ from __future__ import annotations
 import math
 import uuid as _uuid
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.job_taxonomy import pricing_lane
 from gdx_dispatch.models.pricing_engine import PricingSettings
 
 
-@dataclass(frozen=True)
-class ServiceLaborLine:
-    description: str
-    quantity: int          # always 1 — the math lives in the description
-    unit_price: Decimal    # == line_total
-    line_total: Decimal
-    billed_man_hours: float
-    attested_hours: float
-    techs_on_site: int
-    first_hour_price: Decimal
-    hourly_rate: Decimal
-
-
 def _money(v: float | Decimal) -> Decimal:
-    return Decimal(str(v)).quantize(Decimal("0.01"))
+    # HALF_UP, as routers/invoices.py rounds: the default HALF_EVEN would bill
+    # 2.5 × $33.33 = 83.325 as $83.32.
+    return Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def _as_uuid(v: str) -> _uuid.UUID:
@@ -84,15 +81,6 @@ def service_rates(db: Session) -> tuple[Decimal, Decimal]:
     )
 
 
-def billed_man_hours(hours_worked: float, techs_on_site: int) -> float:
-    """Round to the next half hour FIRST, multiply by crew, THEN apply the
-    one-hour minimum. The order is a decided rule — flooring before rounding
-    would bill 0.75h jobs differently than the worked examples Doug approved."""
-    rounded = roundup_to_half(hours_worked)
-    man = rounded * max(1, int(techs_on_site or 1))
-    return max(1.0, man)
-
-
 # The auto-filled line text (Doug 2026-08-07: the FIELD was editable but
 # what it fills in was not). Tenants override it via
 # pricing_settings.service_labor_description_template (migration 060);
@@ -111,21 +99,10 @@ def service_labor_description_template(db: Session) -> str:
     return tpl.strip() if tpl and tpl.strip() else DEFAULT_SERVICE_LABOR_TEMPLATE
 
 
-def service_labor_line(
-    db: Session, *, hours_worked: float, techs_on_site: int
-) -> ServiceLaborLine:
-    first, hourly = service_rates(db)
-    man = billed_man_hours(hours_worked, techs_on_site)
-    amount = _money(first + hourly * Decimal(str(man - 1.0)))
-    crew = max(1, int(techs_on_site or 1))
-    _vars = {
-        "man_hours": man,
-        "hours": float(hours_worked),
-        "techs": crew,
-        "tech_plural": "s" if crew != 1 else "",
-        "first_hour_price": first,
-        "hourly_rate": hourly,
-    }
+FIRST_HOUR_DESCRIPTION = "Service labor — first hour"
+
+
+def _render_service_description(db: Session, _vars: dict) -> str:
     tpl = service_labor_description_template(db)
     try:
         desc = tpl.format(**_vars)
@@ -136,17 +113,162 @@ def service_labor_line(
             "service_labor_template_invalid, falling back to default: %r", tpl
         )
         desc = DEFAULT_SERVICE_LABOR_TEMPLATE.format(**_vars)
-    return ServiceLaborLine(
-        description=desc[:500],
-        quantity=1,
-        unit_price=amount,
-        line_total=amount,
-        billed_man_hours=man,
-        attested_hours=float(hours_worked),
-        techs_on_site=crew,
-        first_hour_price=first,
-        hourly_rate=hourly,
+    return desc
+
+
+def first_hour_charged_elsewhere(db: Session, job_id, *, invoice_id=None) -> bool:
+    """True when another live, non-void invoice on the job carries a live line
+    whose ``pricing_source`` is ``labor_attested`` — a line that came from
+    attested hours. Then the first-hour price and the 1 h floor were already
+    charged once on this job and must not be charged again.
+
+    ``invoice_id`` is the invoice asking; it is never "another" invoice.
+    """
+    from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine  # noqa: PLC0415
+
+    try:
+        jid = _as_uuid(job_id)
+    except (ValueError, AttributeError, TypeError):
+        return False
+    q = (
+        select(InvoiceLine.id)
+        .join(Invoice, Invoice.id == InvoiceLine.invoice_id)
+        .where(
+            Invoice.job_id == jid,
+            Invoice.deleted_at.is_(None),
+            or_(Invoice.status.is_(None), Invoice.status != "void"),
+            InvoiceLine.deleted_at.is_(None),
+            InvoiceLine.pricing_source == "labor_attested",
+        )
     )
+    if invoice_id is not None:
+        q = q.where(Invoice.id != _as_uuid(invoice_id))
+    return db.execute(q.limit(1)).first() is not None
+
+
+def job_labor_lines(
+    db: Session,
+    job,
+    closeout,
+    *,
+    invoice_id=None,
+    include_day_rows: bool = True,
+    day_rows: list | None = None,
+) -> list[dict]:
+    """The service-lane labor lines for a job: one line, or a first-hour line
+    and an hourly line. Empty when the job is not service-lane or has no
+    attested man-hours (nothing invents hours).
+
+    ``job`` is a ``Job``. ``closeout`` is its current closeout or None.
+
+    ``invoice_id`` is the invoice asking: its own claimed day rows count as
+    unbilled for it, and it is excluded from the first-hour test.
+
+    ``include_day_rows=False`` leaves the day rows out (the suggestion offers
+    them only on a completed job). ``day_rows`` overrides the lookup with the
+    rows the caller actually claimed, as ``(id, clock_in, minutes)``.
+
+    Each dict: description, quantity, unit_price, line_total (Decimal),
+    source "attested", labor_price_item_id None, man_hours (raw attested,
+    float), and on exactly one line — the hourly line, or the first-hour line
+    when it stands alone — ``time_entry_ids`` (list of str, possibly empty)
+    and ``estimated_man_hours`` (Decimal, the raw attested man-hours).
+    """
+    from gdx_dispatch.core.closeout_billing import unbilled_day_rows  # noqa: PLC0415
+
+    if lane_for_job(getattr(job, "job_type", None)) != "service":
+        return []
+
+    final_hours = Decimal(str(getattr(closeout, "hours_worked", 0) or 0)) if closeout else Decimal(0)
+    techs = max(1, int(getattr(closeout, "techs_on_site", 1) or 1)) if closeout else 1
+    final_man = (
+        Decimal(str(roundup_to_half(final_hours))) * techs if final_hours > 0 else Decimal(0)
+    )
+
+    if day_rows is None:
+        day_rows = unbilled_day_rows(db, job.id, invoice_id=invoice_id) if include_day_rows else []
+    minutes = sum(int(m) for _id, _c, m in day_rows)
+    # Rounded up to the half hour ONCE, in exact integer arithmetic: a float
+    # 7.2 * 2 is not guaranteed to ceil to 15.
+    rows_man = Decimal(-(-minutes // 30)) / 2 if minutes > 0 else Decimal(0)
+
+    man = final_man + rows_man
+    if man <= 0:
+        return []
+
+    first, hourly = service_rates(db)
+    first_applies = not first_hour_charged_elsewhere(db, job.id, invoice_id=invoice_id)
+    if first_applies:
+        man = max(Decimal(1), man)
+    man = man.quantize(Decimal("0.01"))
+
+    raw_man = (final_hours * techs + Decimal(minutes) / 60).quantize(Decimal("0.01"))
+
+    # The days billed: each priced day row's shop day, plus the closeout's
+    # own day when it attests hours. Without day rows it is one day, and the
+    # shop's time zone is not read at all.
+    days = 1
+    if day_rows:
+        from gdx_dispatch.core.pay_periods import (  # noqa: PLC0415
+            shop_day_of,
+            shop_tz_name_from_settings,
+        )
+
+        tz_name = shop_tz_name_from_settings(db)
+        days_set = {shop_day_of(c, tz_name) for _id, c, _m in day_rows}
+        if final_hours > 0 and closeout is not None and getattr(closeout, "closed_at", None):
+            days_set.add(shop_day_of(closeout.closed_at, tz_name))
+        days_set.discard(None)
+        days = max(1, len(days_set))
+
+    over = f" over {days} days" if days > 1 else ""
+
+    def _line(description: str, qty: Decimal, unit: Decimal) -> dict:
+        return {
+            "description": description[:500],
+            "quantity": qty,
+            "unit_price": unit,
+            "line_total": _money(qty * unit),
+            "source": "attested",
+            "labor_price_item_id": None,
+            "man_hours": float(raw_man),
+        }
+
+    # The tenant's template describes one day's crew ({hours} on site ×
+    # {techs}) and both rates on a single line, so it is true only for that
+    # case: no day rows, one line, the first hour charged here. Every other
+    # line gets a text that states its own quantity and rate, so a customer
+    # never reads hours or a first-hour price the line does not bill (D16).
+    lines: list[dict] = []
+    if not first_applies or first == hourly:
+        if first_applies and not day_rows:
+            desc = _render_service_description(db, {
+                "man_hours": float(man),
+                "hours": float(final_hours),
+                "techs": techs,
+                "tech_plural": "s" if techs != 1 else "",
+                "first_hour_price": first,
+                "hourly_rate": hourly,
+            })
+        else:
+            # No word on where the first hour went: rule 3 reads the job's
+            # other live invoices at build time, and a later void can make any
+            # such sentence false on a line already sent.
+            desc = f"Service labor — {man:.2f} man-hours at ${hourly}/hr{over}"
+        lines.append(_line(desc, man, hourly))
+    else:
+        lines.append(_line(FIRST_HOUR_DESCRIPTION, Decimal("1.00"), first))
+        rest = man - 1
+        if rest > 0:
+            lines.append(_line(
+                f"Service labor — {rest:.2f} h after the first hour at ${hourly}/hr"
+                f" ({man:.2f} man-hours{over})",
+                rest, hourly,
+            ))
+    carrier = lines[-1]
+    carrier["time_entry_ids"] = [str(_id) for _id, _c, _m in day_rows]
+    carrier["estimated_man_hours"] = raw_man
+    return lines
 
 
 @dataclass(frozen=True)

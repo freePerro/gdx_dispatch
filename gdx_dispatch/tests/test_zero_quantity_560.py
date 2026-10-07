@@ -320,8 +320,9 @@ INVOICE_LINE_ALLOWED = {
         1, "the payload line_items branch — validated gt=0 by InvoiceLineCreateIn"),
     ("routers/invoices.py", "add_invoice_line", "payload.quantity"): (
         1, "payload — validated gt=0 by InvoiceLineCreateIn"),
-    ("core/closeout_billing.py", "build_closeout_lines", "labor.quantity"): (
-        1, "a computed service labor line (rates x attested hours), not a stored quantity"),
+    ("core/closeout_billing.py", "build_closeout_lines", "labor['quantity']"): (
+        1, "a computed service labor line from job_labor_lines (rates x attested hours), "
+           "never emitted at 0: it returns no line for 0 man-hours and no remainder at 0"),
     ("core/closeout_billing.py", "build_closeout_lines", "_install.quantity"): (
         1, "a computed install labor line (a picked matrix row), not a stored quantity"),
     ("routers/sub_resources.py", "create_job_line_item", "Decimal(str(_raw_qty))"): (

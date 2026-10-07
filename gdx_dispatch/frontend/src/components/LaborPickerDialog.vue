@@ -24,10 +24,13 @@
   Contract:
     v-model:visible → open/close (parent owns visibility)
     :closeout       → the /api/jobs/:id/closeout-billing-suggestion payload the
-                      parent already fetched. Absent/!has_closeout hides lane 2.
+                      parent already fetched. Lane 2 shows its `labor_lines`
+                      whose source is 'attested'; none hides it.
     @add(lines)     → array of ready-to-use line objects, each carrying
                       labor_source ('matrix' | 'attested') plus, for matrix
-                      rows, labor_price_item_id + estimated_man_hours.
+                      rows, labor_price_item_id + estimated_man_hours, and
+                      for the attested line that priced day rows, the
+                      `time_entry_ids` the save claims.
 -->
 <template>
   <Dialog
@@ -56,24 +59,23 @@
 
     <!-- Lane 2 first: when a tech has attested hours on THIS job, that is the
          evidence, and it should not be below the fold. -->
-    <section v-if="attested || earlierInAttestedLane" class="labor-lane" data-testid="labor-lane-attested">
+    <section v-if="attested" class="labor-lane" data-testid="labor-lane-attested">
       <h4 class="labor-lane-head">From the tech's attested hours</h4>
-      <p v-if="attested" class="labor-lane-sub">
-        {{ attested.hours }} h × {{ attested.techs }} tech{{ attested.techs === 1 ? '' : 's' }}
+      <p v-if="attested.hours != null" class="labor-lane-sub">
+        {{ attested.hours }} man-hours
         <template v-if="attested.closedAt"> · closed {{ attested.closedAt }}</template>
       </p>
-      <div v-if="attested" class="labor-attested-row">
-        <span class="labor-attested-desc">{{ attested.description }}</span>
+      <!-- One line, or a first-hour line and an hourly line: the server's
+           pricing, shown as it will be billed. -->
+      <div
+        v-for="(l, i) in attested.lines"
+        :key="i"
+        class="labor-attested-row"
+        data-testid="labor-attested-line"
+      >
+        <span class="labor-attested-desc">{{ l.description }}</span>
         <span class="labor-attested-price" data-testid="labor-attested-price">
-          {{ currency(lineAmount(attested.quantity, attested.unitPrice)) }}
-        </span>
-      </div>
-      <!-- Multi-day jobs PR 3: the days closed with "No, not finished". A
-           second line, never folded into the final day's. -->
-      <div v-if="earlierInAttestedLane" class="labor-attested-row" data-testid="labor-earlier-visits">
-        <span class="labor-attested-desc">{{ earlierVisits.description }}</span>
-        <span class="labor-attested-price" data-testid="labor-earlier-visits-price">
-          {{ currency(lineAmount(earlierVisits.quantity, earlierVisits.unitPrice)) }}
+          {{ currency(lineAmount(l.quantity, l.unitPrice)) }}
         </span>
       </div>
       <div class="labor-attested-row labor-lane-action">
@@ -105,13 +107,6 @@
         <span class="labor-attested-desc">{{ suggestedMatrixLine.description }}</span>
         <span class="labor-attested-price">
           {{ currency(lineAmount(suggestedMatrixLine.quantity, suggestedMatrixLine.unitPrice)) }}
-        </span>
-      </div>
-      <!-- The earlier days' attested hours ride along as their own line. -->
-      <div v-if="earlierVisits" class="labor-attested-row" data-testid="labor-earlier-visits">
-        <span class="labor-attested-desc">{{ earlierVisits.description }}</span>
-        <span class="labor-attested-price" data-testid="labor-earlier-visits-price">
-          {{ currency(lineAmount(earlierVisits.quantity, earlierVisits.unitPrice)) }}
         </span>
       </div>
       <div class="labor-attested-row labor-lane-action">
@@ -302,26 +297,39 @@ const filtered = computed(() => {
 // recomputed, so the dialog cannot disagree with the prefill about what the
 // hours are worth.
 //
-// CRITICAL: `labor_line` is NOT always attested hours. The server computes it
-// per job lane — a service job yields attested hours x rate, an INSTALL job
-// yields a quoted flat price from a labor-matrix row. Treating both as
-// "attested" recorded a contract price as hours evidence, with hours that did
-// not price it, which inverts the one invariant this dialog exists to hold.
-// The API now says which (`labor_line.source`); this lane accepts ONLY the
-// attested one. A matrix-sourced suggestion is offered under the matrix lane's
-// terms instead — see `suggestedMatrixLine`.
+// CRITICAL: a suggested labor line is NOT always attested hours. The server
+// prices per job lane — a service job yields attested hours x rate, an
+// INSTALL job yields a quoted flat price from a labor-matrix row. Treating
+// both as "attested" recorded a contract price as hours evidence, with hours
+// that did not price it, which inverts the one invariant this dialog exists
+// to hold. Each line says which (`source`); this lane accepts ONLY the
+// attested ones. A matrix-sourced suggestion is offered under the matrix
+// lane's terms instead — see `suggestedMatrixLine`.
+//
+// Read WITHOUT the has_closeout guard: a job finished by Close-without-work
+// has no closeout, and its closed days are the only labor it has. The server
+// offers day rows only on a completed job.
+const suggestedLines = computed(() => {
+  const ls = props.closeout?.labor_lines;
+  return Array.isArray(ls) ? ls : [];
+});
+
 const attested = computed(() => {
   const c = props.closeout;
-  const l = c?.labor_line;
-  if (!c?.has_closeout || !l) return null;
-  if (l.source !== 'attested') return null;
+  const ls = suggestedLines.value.filter((l) => l && l.source === 'attested');
+  if (!ls.length) return null;
   return {
-    description: l.description,
-    quantity: recordedQuantity(l.quantity),
-    unitPrice: Number(l.unit_price || 0),
-    hours: l.man_hours ?? c.closeout?.hours_worked,
-    techs: c.closeout?.techs_on_site ?? 1,
-    closedAt: (c.closeout?.closed_at || '').slice(0, 10),
+    lines: ls.map((l) => ({
+      description: l.description,
+      quantity: recordedQuantity(l.quantity),
+      unitPrice: Number(l.unit_price || 0),
+      estimatedManHours: l.estimated_man_hours ?? null,
+      // Present on exactly one line of the set: the day rows it priced. An
+      // empty list still marks a suggestion line, so it is kept as sent.
+      timeEntryIds: Array.isArray(l.time_entry_ids) ? [...l.time_entry_ids] : undefined,
+    })),
+    hours: ls[0].man_hours ?? c?.closeout?.hours_worked ?? null,
+    closedAt: (c?.closeout?.closed_at || '').slice(0, 10),
   };
 });
 
@@ -329,61 +337,16 @@ const attested = computed(() => {
 // a matrix row for. Offered as what it is — quoted, not attested — and it
 // carries the matrix row id so the invoice line can name what priced it.
 const suggestedMatrixLine = computed(() => {
-  const l = props.closeout?.labor_line;
-  if (!props.closeout?.has_closeout || !l || l.source !== 'matrix') return null;
-  return {
-    description: l.description,
-    quantity: recordedQuantity(l.quantity),
-    unitPrice: Number(l.unit_price || 0),
-    laborPriceItemId: l.labor_price_item_id || null,
-  };
-});
-
-// Multi-day jobs PR 3 (plan §5.4a, Billing, round 36): "Labor — earlier
-// visits", the days closed with "No". Read WITHOUT the has_closeout guard: a
-// job finished by Close-without-work has no closeout and this is the only
-// line that bills its earlier days. Non-null only on a completed job (the
-// server decides), so a mid-job invoice is never offered those days.
-const earlierVisits = computed(() => {
-  const l = props.closeout?.earlier_visits_line;
+  if (!props.closeout?.has_closeout) return null;
+  const l = suggestedLines.value.find((x) => x && x.source === 'matrix');
   if (!l) return null;
   return {
     description: l.description,
     quantity: recordedQuantity(l.quantity),
     unitPrice: Number(l.unit_price || 0),
-    source: l.source,
-    hours: l.man_hours,
     laborPriceItemId: l.labor_price_item_id || null,
   };
 });
-// Shown in exactly one lane, so one click cannot add it twice: beside the
-// install's quoted price when there is one, else in the attested lane.
-const earlierInAttestedLane = computed(() => !!earlierVisits.value && !suggestedMatrixLine.value);
-
-function _earlierLine() {
-  const e = earlierVisits.value;
-  if (!e) return [];
-  const provenance = e.source === 'matrix' && e.laborPriceItemId
-    ? { labor_source: 'matrix', labor_price_item_id: e.laborPriceItemId, _provenancePrice: e.unitPrice }
-    : e.source === 'attested'
-      ? {
-          labor_source: 'attested',
-          estimated_man_hours: Number(e.hours) || null,
-          _provenancePrice: e.unitPrice,
-        }
-      : { labor_source: 'manual' };
-  return [{
-    description: e.description,
-    quantity: e.quantity,
-    unit_price: e.unitPrice,
-    category: 'Labor',
-    cost: null,
-    // Follows the tenant's "Tax labor lines" setting — see addMatrix.
-    taxable: taxLabor.value,
-    _priceOverridden: true,
-    ...provenance,
-  }];
-}
 
 // Only meaningful once the operator has picked a matrix row to compare against.
 const hoursDisagreement = computed(() => {
@@ -437,28 +400,26 @@ function addMatrix() {
 
 function addAttested() {
   const a = attested.value;
-  if (!a) {
-    // Earlier visits only (e.g. a Close-without-work job): just that line.
-    const only = _earlierLine();
-    if (only.length) emit('add', only);
-    emit('update:visible', false);
-    return;
-  }
-  emit('add', [{
-    description: a.description,
-    quantity: a.quantity,
-    unit_price: a.unitPrice,
+  if (!a) return;
+  emit('add', a.lines.map((l) => ({
+    description: l.description,
+    quantity: l.quantity,
+    unit_price: l.unitPrice,
     category: 'Labor',
     cost: null,
     // Follows the tenant's "Tax labor lines" setting — see addMatrix.
     taxable: taxLabor.value,
     _priceOverridden: true,
-    estimated_man_hours: Number(a.hours) || null,
+    estimated_man_hours: l.estimatedManHours == null ? null : Number(l.estimatedManHours),
     labor_source: 'attested',
-    // Baseline for the downgrade: repricing attested hours means an office
-    // number, not tech-signed evidence.
-    _provenancePrice: a.unitPrice,
-  }, ..._earlierLine()]);
+    // The server claims these day rows when the line is saved, so the same
+    // days can never be billed twice.
+    ...(l.timeEntryIds ? { time_entry_ids: l.timeEntryIds } : {}),
+    // Baselines for the downgrade: re-pricing or re-counting attested hours
+    // means an office number, not tech-signed evidence.
+    _provenancePrice: l.unitPrice,
+    _provenanceQty: l.quantity,
+  })));
   emit('update:visible', false);
 }
 
@@ -482,7 +443,7 @@ function addSuggestedMatrix() {
           _provenancePrice: m.unitPrice,
         }
       : { labor_source: 'manual' }),
-  }, ..._earlierLine()]);
+  }]);
   emit('update:visible', false);
 }
 </script>

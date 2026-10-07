@@ -636,6 +636,99 @@ def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
             invoice.paid_at = datetime.now(UTC)
 
 
+def _hand_line_pricing_source(line: "InvoiceLineCreateIn") -> str:
+    """The lane a hand-built line was priced by.
+
+    ``labor_attested`` outranks an operator margin or a client cost: it names
+    the ORIGIN (attested hours × the configured rates), and the cost and
+    margin fields are still stored beside it. The key is ``time_entry_ids``
+    being sent at all — an empty list included — because the browser may
+    already have downgraded ``labor_source`` on an hours edit before the
+    first save; ``labor_source='attested'`` is the other signal.
+    """
+    if line.time_entry_ids is not None or line.labor_source == "attested":
+        return "labor_attested"
+    if line.margin_pct_override is not None:
+        return "line_override"
+    if line.cost is not None:
+        return "client_cost"
+    return "manual"
+
+
+def _claim_labor_day_rows(db: Session, invoice: Invoice, ids: list | None) -> int:
+    """Claim the day rows a labor line bills, in the caller's transaction.
+
+    Free rows only, even against this same invoice, so a second labor line for
+    the same days is refused rather than billed twice. Every id must be one of
+    this invoice's job's day rows (the predicate ``day_row_entries`` reads), or
+    it is a 422. When fewer rows are claimed than were named, the transaction
+    is rolled back and a 409 says who holds them:
+
+    * ``labor_already_billed`` — another invoice (it wins when holders mix);
+    * ``labor_already_on_invoice`` — this invoice, including one being created.
+
+    Returns how many rows were claimed (0 for an absent or empty list).
+    """
+    if not ids:
+        return 0
+    from gdx_dispatch.core.closeout_billing import claim_day_rows, day_row_clauses
+    from gdx_dispatch.models.tenant_models import TimeEntry
+
+    unique = list(dict.fromkeys(ids))
+    if len(unique) != len(ids):
+        db.rollback()
+        raise HTTPException(status_code=422, detail="time_entry_ids names a day row twice")
+    eligible = set()
+    if invoice.job_id is not None:
+        eligible = set(db.execute(
+            select(TimeEntry.id).where(
+                TimeEntry.id.in_(unique),
+                TimeEntry.job_id == invoice.job_id,
+                *day_row_clauses(TimeEntry),
+            )
+        ).scalars())
+    if len(eligible) != len(unique):
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail="time_entry_ids names rows that are not this job's closed day rows",
+        )
+    claimed = claim_day_rows(db, invoice.id, unique)
+    if claimed == len(unique):
+        return claimed
+    holders = [
+        h for h in db.execute(
+            select(TimeEntry.billed_invoice_id).where(TimeEntry.id.in_(unique))
+        ).scalars()
+        if h is not None and h != invoice.id
+    ]
+    if holders:
+        other = db.execute(
+            select(Invoice.invoice_number).where(Invoice.id == holders[0])
+        ).scalar_one_or_none()
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "labor_already_billed",
+                "message": (
+                    f"These days' labor is already billed on invoice {other or 'another invoice'}"
+                    " — reload the labor suggestion."
+                ),
+            },
+        )
+    db.rollback()
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "labor_already_on_invoice",
+            "message": (
+                "This invoice already has these days' labor — remove one of the labor lines."
+            ),
+        },
+    )
+
+
 class InvoiceLineCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     description: str = Field(min_length=1, max_length=500)
@@ -671,6 +764,12 @@ class InvoiceLineCreateIn(BaseModel):
     labor_price_item_id: UUID | None = None
     estimated_man_hours: float | None = Field(default=None, ge=0, le=999)
     labor_source: Literal["matrix", "attested", "manual"] | None = None
+    # Multi-day jobs (migration 110): the day rows this labor line bills, as
+    # the billing suggestion named them. A non-empty list is CLAIMED in the
+    # same transaction (free rows only); a 409 when any is already billed.
+    # `None` (absent) and `[]` differ: `[]` still marks a line that came from
+    # the suggestion, so it records `pricing_source='labor_attested'`.
+    time_entry_ids: list[UUID] | None = Field(default=None, max_length=500)
 
     @model_validator(mode="after")
     def _labor_provenance_is_coherent(self) -> "InvoiceLineCreateIn":
@@ -1525,6 +1624,8 @@ def create_invoice(
     from gdx_dispatch.core.closeout_billing import flush_invoice_with_number_retry
 
     flush_invoice_with_number_retry(db, invoice)
+    # Day rows the labor lines below claim (migration 110), for the audit row.
+    claimed_time_entries = 0
 
     if estimate:
         # Accepted TIER (2026-08-14): the contract is the accepted tier's
@@ -1728,11 +1829,7 @@ def create_invoice(
                 # (cost, unit_price). On the invoice side the client is the
                 # pricing authority, so the two can legitimately differ and both
                 # statements are true.
-                    pricing_source=(
-                        "line_override" if line.margin_pct_override is not None
-                        else "client_cost" if line.cost is not None
-                        else "manual"
-                    ),
+                    pricing_source=_hand_line_pricing_source(line),
                     cost_snapshot=line.cost,
                     margin_pct_override=line.margin_pct_override,
                     # D-S122-line-removal-unbill — line-level part_id so a
@@ -1748,6 +1845,9 @@ def create_invoice(
                     sort_order=idx,
                 )
             )
+            # Lines claim in order: the second line naming the same days gets
+            # 0 rows and the whole create is refused (409).
+            claimed_time_entries += _claim_labor_day_rows(db, invoice, line.time_entry_ids)
 
     # D2 — materialize an operator-entered discount as the same negative line
     # the estimate-copy path mints above. `sort_order` follows the operator's
@@ -2024,6 +2124,11 @@ def create_invoice(
             # create screen, inherited from the estimate, or the plain default.
             "hide_line_prices": bool(invoice.hide_line_prices),
             "hide_line_prices_origin": hide_line_prices_origin,
+            # Day rows this create billed (migration 110). Absent when none.
+            **(
+                {"claimed_time_entries": claimed_time_entries}
+                if claimed_time_entries else {}
+            ),
             # Which estimate this came from, and HOW — "copied" means the
             # server built the lines, "prefilled" means the operator arrived
             # with them and may have edited them before saving. Those are
@@ -2670,6 +2775,13 @@ def delete_invoice(
         update(_CO)
         .where(_CO.billed_invoice_id == invoice.id)
         .values(billed_invoice_id=None)
+    )
+    # The day rows it billed (migration 110) go back too. Their audit row is
+    # staged into THIS commit, so the release never lands without its trail.
+    from gdx_dispatch.core.closeout_billing import release_day_rows
+
+    release_day_rows(
+        db, invoice, actor=resolve_audit_actor(current_user), why="invoice_deleted",
     )
     db.commit()
     try:
@@ -3415,11 +3527,7 @@ def add_invoice_line(
         # S122-b — estimate-parity fields.
         category=payload.category,
         # Same lane rule as the create path — see the note there.
-        pricing_source=(
-            "line_override" if payload.margin_pct_override is not None
-            else "client_cost" if payload.cost is not None
-            else "manual"
-        ),
+        pricing_source=_hand_line_pricing_source(payload),
         cost_snapshot=payload.cost,
         margin_pct_override=payload.margin_pct_override,
         # 2026-08-19: this handler dropped BOTH of these on the floor.
@@ -3482,6 +3590,10 @@ def add_invoice_line(
                 ),
             )
 
+    # The day rows this labor line bills (migration 110): claimed here, in
+    # the same transaction, or the whole add is refused.
+    claimed_time_entries = _claim_labor_day_rows(db, invoice, payload.time_entry_ids)
+
     _recalculate_invoice(invoice, db)
     db.commit()
     db.refresh(line)
@@ -3501,7 +3613,10 @@ def add_invoice_line(
                 action="add_invoice_line",
                 entity_type="invoice_line",
                 entity_id=str(invoice_id),
-                details={},
+                details=(
+                    {"claimed_time_entries": claimed_time_entries}
+                    if claimed_time_entries else {}
+                ),
                 request=_audit_req,
             )
             _audit_db.commit()
@@ -3552,6 +3667,10 @@ def patch_invoice_line(
         )
 
     updates = payload.model_dump(exclude_unset=True)
+    # Compared by VALUE below: InvoiceDetailView sends quantity and price on
+    # every PATCH, a description edit included.
+    _was_qty = Decimal(str(line.quantity if line.quantity is not None else 0))
+    _was_price = _money(line.unit_price or 0)
     if "description" in updates and updates["description"] is not None:
         line.description = updates["description"].strip()
     if "quantity" in updates and updates["quantity"] is not None:
@@ -3609,6 +3728,15 @@ def patch_invoice_line(
         )
     if "includes_labor" in updates:
         line.includes_labor = bool(updates["includes_labor"])
+    # An edit that changes an attested line's hours or rate makes them a
+    # human's numbers, not the tech's: the line drops to 'manual'. This wins
+    # over an 'attested' sent in the same PATCH. `pricing_source` stays
+    # 'labor_attested' as the record of where the line started.
+    if line.labor_source == "attested" and (
+        Decimal(str(line.quantity if line.quantity is not None else 0)) != _was_qty
+        or _money(line.unit_price or 0) != _was_price
+    ):
+        line.labor_source = "manual"
 
     # Recompute line_total from the post-patch quantity × unit_price so a
     # qty edit doesn't leave the stored line_total stale — but ONLY when one of
@@ -3677,6 +3805,25 @@ def delete_invoice_line(
         )
     line.deleted_at = datetime.now(UTC)
     db.flush()
+    # The day rows go back only with the invoice's LAST live line from
+    # attested hours. Deleting one line of a split pair keeps the claim: the
+    # other line still bills those rows, and a row may be under-billed after
+    # an office delete but never billed twice.
+    released_time_entries = 0
+    if line.pricing_source == "labor_attested":
+        still_attested = db.execute(
+            select(InvoiceLine.id).where(
+                InvoiceLine.invoice_id == invoice.id,
+                InvoiceLine.deleted_at.is_(None),
+                InvoiceLine.pricing_source == "labor_attested",
+            ).limit(1)
+        ).first()
+        if still_attested is None:
+            from gdx_dispatch.core.closeout_billing import release_day_rows
+
+            released_time_entries = release_day_rows(
+                db, invoice, actor=_actor_id(user), why="last_labor_line_deleted",
+            )
     _recalculate_invoice(invoice, db)
     db.commit()
     try:
@@ -3684,7 +3831,13 @@ def delete_invoice_line(
             db=db, tenant_id=None, user_id=_actor_id(user),
             action="invoice_line_deleted", entity_type="invoice_line",
             entity_id=str(line.id),
-            details={"invoice_id": str(invoice.id)},
+            details={
+                "invoice_id": str(invoice.id),
+                **(
+                    {"released_time_entries": released_time_entries}
+                    if released_time_entries else {}
+                ),
+            },
         )
         db.commit()
     except Exception:
@@ -4170,6 +4323,13 @@ def void_invoice(
         .where(_CO.billed_invoice_id == invoice.id)
         .values(billed_invoice_id=None)
     ).rowcount
+    # The day rows it billed (migration 110) go back the same way, with their
+    # own audit row staged into this same commit.
+    from gdx_dispatch.core.closeout_billing import release_day_rows
+
+    released_time_entries = release_day_rows(
+        db, invoice, actor=_actor_id(_), why="invoice_voided",
+    )
     # M39 audit round 2: a void kills what is owed — an ACTIVE payment plan
     # scheduling money on a void invoice would be a standing lie. Cancel it
     # in the same transaction, with its own trail.
@@ -4223,6 +4383,7 @@ def void_invoice(
             "total": _to_float(invoice.total),
             "released_parts": int(released_parts or 0),
             "released_change_orders": int(released_cos or 0),
+            "released_time_entries": released_time_entries,
         },
     )
     db.commit()

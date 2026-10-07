@@ -208,12 +208,18 @@ describe('InvoiceCreateView — query prefill', () => {
   });
 });
 
-// Multi-day jobs PR 3 (plan §5.4a, Billing, round 36): the days closed with
-// "No" bill as a second line, "Labor — earlier visits", and it comes on the
-// has_closeout:false path too (a Close-without-work job has no closeout).
-describe('InvoiceCreateView — earlier visits', () => {
-  const LABOR = { description: 'Labor', quantity: 2, unit_price: 95, line_total: 190, source: 'attested', labor_price_item_id: null, man_hours: 2 };
-  const EARLIER = { description: 'Labor — earlier visits', quantity: 16, unit_price: 95, line_total: 1520, source: 'attested', labor_price_item_id: null, man_hours: 16 };
+// The suggestion's `labor_lines`: one service line, or a first-hour line and
+// an hourly line, and exactly one of them names the day rows it priced. They
+// come on the has_closeout:false path too (a Close-without-work job has no
+// closeout). The whole path is pinned: prefill -> save -> the POST body
+// carries the ids the server claims.
+describe('InvoiceCreateView — labor lines', () => {
+  const FIRST = { description: 'Service labor — first hour', quantity: 1, unit_price: 125, line_total: 125, source: 'attested', labor_price_item_id: null, man_hours: 2.5 };
+  const HOURLY = {
+    description: 'Service labor — 2.5 man-hours over 2 days', quantity: 1.5, unit_price: 100, line_total: 150,
+    source: 'attested', labor_price_item_id: null, man_hours: 2.5, estimated_man_hours: 2.5, time_entry_ids: ['te-1', 'te-2'],
+  };
+  const MATRIX = { description: '16x7 Sectional Install', quantity: 1, unit_price: 650, source: 'matrix', labor_price_item_id: 'lpi-1', man_hours: null };
 
   function routeSuggestion(suggestion) {
     routeQuery.value = { job_id: 'job-1' };
@@ -225,43 +231,92 @@ describe('InvoiceCreateView — earlier visits', () => {
       return Promise.resolve([]);
     });
   }
-  async function lines() {
+  async function mountIt() {
     const wrapper = mount(InvoiceCreateView, { global: { stubs } });
     await flushPromises();
     return { wrapper, lines: JSON.parse(wrapper.find('[data-testid="le-lines"]').text()) };
   }
+  async function submit(wrapper) {
+    await wrapper.find('[data-testid="invoice-create-submit"]').trigger('click');
+    await flushPromises();
+  }
 
-  it('adds the earlier-visits line as a second line after the final day', async () => {
-    routeSuggestion({ has_closeout: true, closeout: { notes: null }, labor_line: LABOR, earlier_visits_line: EARLIER });
-    const { lines: got } = await lines();
+  it('a split pair prefills as two lines and the save posts the ids on the hourly one only', async () => {
+    routeSuggestion({ has_closeout: true, closeout: { notes: null }, labor_lines: [FIRST, HOURLY] });
+    apiPost.mockResolvedValue({ id: 'inv-9', invoice_number: 'INV-0009' });
+    const { wrapper, lines: got } = await mountIt();
     expect(got).toHaveLength(2);
-    expect(got[0].description).toBe('Labor');
     expect(got[1]).toMatchObject({
-      description: 'Labor — earlier visits', quantity: 16, unit_price: 95,
-      category: 'Labor', taxable: false, labor_source: 'attested', estimated_man_hours: 16,
+      quantity: 1.5, unit_price: 100, category: 'Labor', taxable: false,
+      labor_source: 'attested', estimated_man_hours: 2.5, time_entry_ids: ['te-1', 'te-2'],
     });
+    await submit(wrapper);
+    const [url, payload] = apiPost.mock.calls[0];
+    expect(url).toBe('/api/invoices');
+    expect(payload.line_items[0]).not.toHaveProperty('time_entry_ids');
+    expect(payload.line_items[0]).toMatchObject({ description: 'Service labor — first hour', quantity: 1, unit_price: 125, labor_source: 'attested' });
+    expect(payload.line_items[1]).toMatchObject({ quantity: 1.5, unit_price: 100, labor_source: 'attested', time_entry_ids: ['te-1', 'te-2'] });
   });
 
-  it('a job with no closeout (Close-without-work) still gets the earlier-visits line', async () => {
-    routeSuggestion({ has_closeout: false, labor_line: null, earlier_visits_line: EARLIER });
-    const { lines: got } = await lines();
+  it('an empty id list still posts: it marks a suggestion line', async () => {
+    routeSuggestion({ has_closeout: true, closeout: {}, labor_lines: [{ ...HOURLY, time_entry_ids: [] }] });
+    apiPost.mockResolvedValue({ id: 'inv-9', invoice_number: 'INV-0009' });
+    const { wrapper } = await mountIt();
+    await submit(wrapper);
+    expect(apiPost.mock.calls[0][1].line_items[0].time_entry_ids).toEqual([]);
+  });
+
+  it('a job with no closeout (Close-without-work) still gets its closed days', async () => {
+    routeSuggestion({ has_closeout: false, labor_lines: [HOURLY] });
+    const { lines: got } = await mountIt();
     expect(got).toHaveLength(1);
-    expect(got[0].description).toBe('Labor — earlier visits');
+    expect(got[0].time_entry_ids).toEqual(['te-1', 'te-2']);
   });
 
-  it('without a closeout, neither the closeout notes nor a stray labor_line are used', async () => {
-    routeSuggestion({ has_closeout: false, closeout: { notes: 'stale' }, labor_line: LABOR, earlier_visits_line: null });
-    const { wrapper, lines: got } = await lines();
+  it('without a closeout, neither the closeout notes nor a matrix quote are used', async () => {
+    routeSuggestion({ has_closeout: false, closeout: { notes: 'stale' }, labor_lines: [MATRIX] });
+    const { wrapper, lines: got } = await mountIt();
     expect(got).toHaveLength(1);
     expect(got[0].description || '').toBe('');
     expect(wrapper.vm.form?.notes || '').not.toBe('stale');
   });
 
-  it('mid-job (earlier_visits_line null) the prefill is the single labor line as before', async () => {
-    routeSuggestion({ has_closeout: true, closeout: {}, labor_line: LABOR, earlier_visits_line: null });
-    const { lines: got } = await lines();
+  it('an install quote prefills as a matrix line with no ids', async () => {
+    routeSuggestion({ has_closeout: true, closeout: {}, labor_lines: [MATRIX] });
+    const { lines: got } = await mountIt();
     expect(got).toHaveLength(1);
-    expect(got[0].description).toBe('Labor');
+    expect(got[0]).toMatchObject({ labor_source: 'matrix', labor_price_item_id: 'lpi-1' });
+    expect(got[0]).not.toHaveProperty('time_entry_ids');
+  });
+
+  it.each([
+    ['labor_already_billed', "These days' labor is already billed on invoice INV-0004 — reload the labor suggestion."],
+    ['labor_already_on_invoice', "This invoice already has these days' labor — remove one of the labor lines."],
+  ])('a %s 409 is toasted, never offered as "create another anyway"', async (code, message) => {
+    routeSuggestion({ has_closeout: true, closeout: {}, labor_lines: [HOURLY] });
+    apiPost.mockRejectedValue(Object.assign(new Error(message), { status: 409, code }));
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { wrapper } = await mountIt();
+    await submit(wrapper);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(apiPost).toHaveBeenCalledTimes(1);
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'error', detail: message }));
+    expect(routerPush).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it('the job-level "already billed" 409 still offers the forced retry', async () => {
+    routeSuggestion({ has_closeout: true, closeout: {}, labor_lines: [HOURLY] });
+    apiPost
+      .mockRejectedValueOnce(Object.assign(new Error('Job is already billed on INV-0004.'), { status: 409 }))
+      .mockResolvedValueOnce({ id: 'inv-9', invoice_number: 'INV-0009' });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { wrapper } = await mountIt();
+    await submit(wrapper);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(apiPost.mock.calls[1][1]).toMatchObject({ force: true });
+    expect(apiPost.mock.calls[1][1].line_items[0].time_entry_ids).toEqual(['te-1', 'te-2']);
+    confirm.mockRestore();
   });
 });
 

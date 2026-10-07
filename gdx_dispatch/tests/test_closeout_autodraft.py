@@ -599,9 +599,11 @@ def test_closeout_billing_suggestion_prices_labor_and_carries_notes(db) -> None:
     assert body["estimate_exists"] is False
     assert body["closeout"]["hours_worked"] == 4.0
     assert body["closeout"]["notes"] == "Add snirtstopper bottom seal 12ft"
-    # 4.0 h × 1 tech, service lane → $100 first hour + 3 × $100 = $400.
-    assert body["labor_line"] is not None
-    assert body["labor_line"]["line_total"] == 400.0
+    # 4.0 h × 1 tech, service lane, $100/$100 → one line, 4 × $100 = $400.
+    [labor] = body["labor_lines"]
+    assert labor["quantity"] == 4.0
+    assert labor["unit_price"] == 100.0
+    assert labor["line_total"] == 400.0
     # Job notes ride along, visibility included (the UI badges internal
     # notes before the operator copies one to a customer-facing field).
     assert len(body["job_notes"]) == 1
@@ -622,7 +624,7 @@ def test_closeout_billing_suggestion_without_closeout(db) -> None:
     )
     body = json.loads(resp.body)
     assert body["has_closeout"] is False
-    assert body["labor_line"] is None
+    assert body["labor_lines"] == []
 
 
 def test_not_billable_still_409s_on_finalized_invoice(db) -> None:
