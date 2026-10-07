@@ -815,6 +815,34 @@ class Payment(Base):
     invoice: Mapped[Invoice] = relationship(back_populates="payments")
 
 
+class StripeWebhookEvent(Base):
+    """One row per Stripe event the webhook has handled (GDXA-357, migration 109).
+
+    Stripe can deliver an event it already delivered, and the copy can land
+    after a later event for the same charge. Each handler is a
+    no-op on an immediate repeat, but not on that one: a dispute withdrawal
+    redelivered after the dispute was won voided the payment again. (A success
+    redelivered after a refund is refused in ``core/payments.py`` instead;
+    ``payment_intent.succeeded`` is never recorded here, so M14's re-send can
+    still recover a wrongly voided payment.) Keyed on
+    Stripe's event id, which is what Stripe tells integrations to dedupe on.
+    It stops a repeat of the same event id only; distinct events still arrive
+    in whatever order Stripe sends them.
+
+    Written by ``routers/stripe_webhook.py`` only AFTER the handler returns, so
+    a delivery that 500s leaves no row and Stripe's retry still runs.
+    """
+
+    __tablename__ = "stripe_webhook_events"
+
+    event_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    # The handler's own ``status`` for the delivery that was handled, e.g.
+    # "paid", "reversed", "reinstated", so the trail says what it did.
+    result_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class InvoiceAdjustment(Base):
     """Credit memos / refunds / applied credits (GL S7, spec §5.2, P9) —
     replacing the old habit of mutating the deprecated ``amount_paid``
