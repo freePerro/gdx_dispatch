@@ -343,5 +343,5 @@ def test_post_admin_permissions_updates_and_lists(db: Session):
 
 def test_admin_ops_routes_registered_in_main_app():
     app_py = open("gdx_dispatch/app.py", encoding="utf-8").read()
-    assert "from gdx_dispatch.routers.admin_ops import router as admin_ops_router" in app_py
+    assert 'admin_ops_router = _load_router("gdx_dispatch.routers.admin_ops", "router")' in app_py
     assert "app.include_router(admin_ops_router)" in app_py

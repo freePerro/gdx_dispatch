@@ -72,6 +72,17 @@ def _modules_named_by_app_py() -> set[str]:
                     found.add(alias.name)
         elif isinstance(node, ast.Call):
             fn = node.func
+            # GDXA-355: routers load through `_load_router("pkg", "name")`,
+            # which binds what `from pkg import name` binds.
+            if (
+                isinstance(fn, ast.Name)
+                and fn.id == "_load_router"
+                and len(node.args) == 2
+                and all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in node.args)
+            ):
+                found.add(node.args[0].value)
+                found.add(f"{node.args[0].value}.{node.args[1].value}")
+                continue
             is_dunder = isinstance(fn, ast.Name) and fn.id == "__import__"
             is_importlib = isinstance(fn, ast.Attribute) and fn.attr == "import_module"
             if (is_dunder or is_importlib) and node.args and isinstance(node.args[0], ast.Constant):

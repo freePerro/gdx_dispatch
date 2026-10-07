@@ -451,5 +451,5 @@ def test_notes_adds_field_note(session_factory):
 def test_mobile_router_registered_in_app():
     app_py = Path(__file__).resolve().parents[1] / "app.py"
     content = app_py.read_text()
-    assert "from gdx_dispatch.routers import mobile as mobile_router" in content
+    assert 'mobile_router = _load_router("gdx_dispatch.routers", "mobile")' in content
     assert "app.include_router(mobile_router.router if hasattr(mobile_router, \"router\") else mobile_router)" in content

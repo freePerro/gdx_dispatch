@@ -290,5 +290,5 @@ def test_registered_in_main_app():
     with open("gdx_dispatch/app.py", encoding="utf-8") as f:
         app_source = f.read()
 
-    assert "from gdx_dispatch.core.ai_router import router as ai_router_router" in app_source
+    assert 'ai_router_router = _load_router("gdx_dispatch.core.ai_router", "router")' in app_source
     assert "app.include_router(ai_router_router)" in app_source

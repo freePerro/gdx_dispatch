@@ -264,7 +264,7 @@ def test_app_registers_settings_routes():
     app_py = (settings_router.__file__ or "").replace("/routers/settings.py", "/app.py")
     with open(app_py, encoding="utf-8") as f:
         source = f.read()
-    assert "from gdx_dispatch.routers import settings as settings_router" in source
+    assert 'settings_router = _load_router("gdx_dispatch.routers", "settings")' in source
     assert "app.include_router(settings_router.router if hasattr(settings_router, \"router\") else settings_router)" in source
 
 

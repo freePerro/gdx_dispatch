@@ -64,7 +64,7 @@ def test_qb_pnl_monthly_model_columns():
 
 def test_budgets_router_mounted_in_app():
     src = _read("gdx_dispatch/app.py")
-    assert "from gdx_dispatch.routers import budgets as budgets_router" in src
+    assert 'budgets_router = _load_router("gdx_dispatch.routers", "budgets")' in src
     assert "app.include_router(budgets_router.router" in src
 
 
