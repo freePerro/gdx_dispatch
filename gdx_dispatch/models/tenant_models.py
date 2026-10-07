@@ -650,7 +650,10 @@ class InvoiceLine(Base):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     invoice_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("invoices.id"), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
-    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Two decimals since migration 108: an invoice line can carry hours
+    # (2.5 h of labor), not only a count of things. Every other line table
+    # keeps a whole-number quantity.
+    quantity: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, default=1)
     unit_price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     line_total: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     # Per-line taxability — labor lines are typically marked False in MN

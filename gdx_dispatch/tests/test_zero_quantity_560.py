@@ -324,8 +324,8 @@ INVOICE_LINE_ALLOWED = {
         1, "a computed service labor line (rates x attested hours), not a stored quantity"),
     ("core/closeout_billing.py", "build_closeout_lines", "_install.quantity"): (
         1, "a computed install labor line (a picked matrix row), not a stored quantity"),
-    ("routers/sub_resources.py", "create_job_line_item", "int(_raw_qty)"): (
-        1, "raw-dict body, validated just above: 422 unless a whole number >= 1"),
+    ("routers/sub_resources.py", "create_job_line_item", "Decimal(str(_raw_qty))"): (
+        1, "raw-dict body, validated just above: 422 unless above 0, at most 9999, two decimals"),
 }
 
 

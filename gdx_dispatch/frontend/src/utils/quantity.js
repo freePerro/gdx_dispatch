@@ -16,3 +16,23 @@ export function recordedQuantity(q) {
   if (q === null || q === undefined || q === '') return 1;
   return Number(q);
 }
+
+/**
+ * quantity × unit price in dollars, rounded to the cent exactly as the server
+ * rounds it (`_money(Decimal(quantity) * Decimal(unit_price))`, ROUND_HALF_UP).
+ *
+ * An invoice line's quantity takes two decimals since migration 108, and a
+ * float product lands just under a half cent: 2.5 × 33.33 is
+ * 83.32499999999999 in JavaScript, so a live preview printed $83.32 for a
+ * line the server then billed at $83.33. Both factors are carried as whole
+ * hundredths, so the product is an exact integer and the only rounding is the
+ * server's. Half rounds away from zero, as ROUND_HALF_UP does on a negative.
+ */
+export function lineAmount(quantity, unitPrice) {
+  const q = Number(quantity);
+  const p = Number(unitPrice);
+  if (!Number.isFinite(q) || !Number.isFinite(p)) return 0;
+  const product = Math.round(q * 100) * Math.round(p * 100); // cents × 100
+  const cents = Math.sign(product) * Math.round(Math.abs(product) / 100);
+  return cents / 100;
+}

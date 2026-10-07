@@ -154,10 +154,11 @@ def earlier_visits_line(db: Session, job, *, job_type: str | None = None) -> dic
     stamps the INVOICE line's ``source`` column ``AUTODRAFT_LINE_SOURCE``.
 
     ``quantity`` is 1 and ``unit_price`` == ``line_total``, with the math in
-    the description, exactly like the service-lane labor line:
-    ``invoice_lines.quantity`` is an INTEGER column, and a 7.5 written there
-    rounds to 8 on Postgres while ``line_total`` still says 7.5 h — a
-    recalculation from quantity × price would then over-bill.
+    the description, exactly like the service-lane labor line. That shape was
+    forced while ``invoice_lines.quantity`` was an INTEGER column (a 7.5
+    written there rounded to 8 on Postgres while ``line_total`` still said
+    7.5 h). Migration 108 made it ``Numeric(10, 2)``; this line keeps the
+    quantity-1 shape until labor moves to quantity = hours.
 
     The caller owns WHEN it applies (the suggestion endpoint offers it only on
     a completed job). Accepted-estimate jobs never reach the autodraft.

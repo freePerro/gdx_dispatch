@@ -218,7 +218,7 @@ def _serialize_invoice(inv: Invoice, *, include_lines: bool = False, db: Session
             {
                 "id": str(r[0]),
                 "description": r[1],
-                "quantity": int(r[2] or 0),
+                "quantity": float(r[2] or 0),
                 "unit_price": float(r[3] or 0),
                 "line_total": float(r[4] or 0),
                 "sort_order": int(r[5] or 0),
