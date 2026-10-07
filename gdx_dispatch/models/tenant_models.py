@@ -387,6 +387,12 @@ class Job(Base):
     not_billable_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     not_billable_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
     not_billable_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # 2026-10-07 (111_job_cancel_lifecycle, GDXA-374): when a job was moved to
+    # lifecycle_stage='cancelled' and why. NULL on every job that was never
+    # cancelled, and on jobs cancelled before this column existed (the bare
+    # stage flip recorded neither). Who cancelled it is the audit log's job.
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     assigned_to: Mapped[str] = mapped_column(String(50), nullable=True)
