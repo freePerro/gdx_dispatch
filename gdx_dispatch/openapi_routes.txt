@@ -325,6 +325,7 @@ GET /api/jobs/{job_id}/closeout
 GET /api/jobs/{job_id}/closeout-billing-suggestion
 GET /api/jobs/{job_id}/costing
 GET /api/jobs/{job_id}/custom-fields
+GET /api/jobs/{job_id}/day-log
 GET /api/jobs/{job_id}/dependencies
 GET /api/jobs/{job_id}/diagnosis
 GET /api/jobs/{job_id}/duration
@@ -965,6 +966,7 @@ POST /api/jobs/{job_id}/checklist
 POST /api/jobs/{job_id}/close-without-work
 POST /api/jobs/{job_id}/closeout
 POST /api/jobs/{job_id}/complete
+POST /api/jobs/{job_id}/day-close
 POST /api/jobs/{job_id}/dependencies
 POST /api/jobs/{job_id}/diagnosis
 POST /api/jobs/{job_id}/follow-up

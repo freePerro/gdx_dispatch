@@ -161,6 +161,97 @@ describe("job page — Close without work", () => {
     const call = postMock.mock.calls.find(([u]) => String(u).endsWith("/close-without-work"));
     expect(call?.[0]).toBe("/api/jobs/job-1/close-without-work");
     expect(call?.[1]).toEqual({ reason: "duplicate of JOB-12" });
+    expect(call?.[2]).toMatchObject({ suppressErrorToast: true });
     expect(statusPatches()).toHaveLength(0);
+  });
+
+  // Multi-day jobs PR 3, plan §5.4a "The office's way out".
+  function routeDayLog(log) {
+    const base = getMock.getMockImplementation();
+    getMock.mockImplementation(async (url) => {
+      if (String(url) === "/api/jobs/job-1/day-log") return log;
+      return base(url);
+    });
+  }
+
+  it("says how many hours are already logged on earlier days", async () => {
+    routeGet({ job: OPEN });
+    routeDayLog({ rows: [{ id: "r1", date: "2026-10-05", person_name: "Ann", hours: 8 }], logged_hours_total: 8 });
+    const w = await mountView();
+    await w.get('[data-testid="job-detail-close-without-work"]').trigger("click");
+    await flushPromises();
+    expect(w.get('[data-testid="close-without-work-logged"]').text())
+      .toBe("Already logged: 8 h on earlier days (still billed)");
+  });
+
+  it("shows nothing about logged hours on a job with none", async () => {
+    routeGet({ job: OPEN });
+    const w = await mountView();
+    await w.get('[data-testid="job-detail-close-without-work"]').trigger("click");
+    await flushPromises();
+    expect(w.find('[data-testid="close-without-work-logged"]').exists()).toBe(false);
+  });
+
+  it("an earlier_day_open refusal shows inline with a way into the sheet", async () => {
+    routeGet({ job: OPEN });
+    postMock.mockRejectedValue(Object.assign(new Error("open"), {
+      status: 409,
+      body: { detail: "An earlier day is open", code: "earlier_day_open", date: "2026-10-05" },
+    }));
+    const w = await mountView();
+    await w.get('[data-testid="job-detail-close-without-work"]').trigger("click");
+    await w.get('[data-testid="close-without-work-reason"]').setValue("customer cancelled the rest");
+    await w.get('[data-testid="close-without-work-submit"]').trigger("click");
+    await flushPromises();
+    expect(w.get('[data-testid="close-without-work-earlier-day"]').text())
+      .toContain("Monday, Oct 5 is still open. Close that day first");
+    expect(toastAdd).not.toHaveBeenCalled();
+    await w.get('[data-testid="close-without-work-open-sheet"]').trigger("click");
+    await flushPromises();
+    expect(w.find('[data-testid="close-without-work-dialog"]').exists()).toBe(false);
+    expect(w.get('[data-testid="closeout-sheet"]').attributes("data-open")).toBe("true");
+  });
+
+  it("any other refusal is toasted and keeps the dialog open", async () => {
+    routeGet({ job: OPEN });
+    postMock.mockRejectedValue(Object.assign(new Error("Forbidden"), { status: 403, body: { detail: "Forbidden" } }));
+    const w = await mountView();
+    await w.get('[data-testid="job-detail-close-without-work"]').trigger("click");
+    await w.get('[data-testid="close-without-work-reason"]').setValue("duplicate");
+    await w.get('[data-testid="close-without-work-submit"]').trigger("click");
+    await flushPromises();
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: "error", detail: "Forbidden" }));
+    expect(w.find('[data-testid="close-without-work-dialog"]').exists()).toBe(true);
+  });
+});
+
+describe("job page — Daily log card", () => {
+  it("lists the day rows by day and hides when there are none", async () => {
+    routeGet({ job: OPEN });
+    const base = getMock.getMockImplementation();
+    getMock.mockImplementation(async (url) => (String(url) === "/api/jobs/job-1/day-log"
+      ? {
+        rows: [
+          { id: "r2", date: "2026-10-06", person_name: "Bob", hours: 7.5, note: "Track up", closed_by: "Ann" },
+          { id: "r1", date: "2026-10-05", person_name: "Added helper", hours: 4, note: null, closed_by: "Ann" },
+        ],
+        logged_hours_total: 11.5,
+      }
+      : base(url)));
+    const w = await mountView();
+    const card = w.get('[data-testid="job-daily-log"]');
+    expect(card.get('[data-testid="job-daily-log-total"]').text()).toBe("11.5 h logged");
+    const r2 = card.get('[data-testid="job-daily-log-row-r2"]').text();
+    expect(r2).toContain("Bob");
+    expect(r2).toContain("7.5 h");
+    expect(r2).toContain("closed by Ann");
+    expect(r2).toContain("Track up");
+    expect(card.get('[data-testid="job-daily-log-day-2026-10-05"]').text()).toContain("Added helper");
+  });
+
+  it("is hidden on a job with no day rows", async () => {
+    routeGet({ job: OPEN });
+    const w = await mountView();
+    expect(w.find('[data-testid="job-daily-log"]').exists()).toBe(false);
   });
 });

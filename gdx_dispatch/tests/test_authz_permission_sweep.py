@@ -41,7 +41,9 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_unpermissioned_bas
 # in the baseline file.
 # 376 → 380 (2026-09-30): scheduled texts — the two tech schedule-sms routes
 # and the reply schedule / cancel routes; reason recorded in the baseline file.
-BASELINE_SIZE = 380
+# 380 → 381 (2026-10-06): POST /api/jobs/{job_id}/day-close, gated in the
+# handler like closeout; reason recorded in the baseline file.
+BASELINE_SIZE = 381
 
 
 def _baseline() -> set[str]:

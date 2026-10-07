@@ -4,8 +4,10 @@ Sprint dispatch-capacity (2026-05-20). Surfaces "how much each tech beat
 their scheduled time" so dispatch can plan around real velocity and the
 shop can build a bonus structure on top.
 
-Efficiency ratio = sum(scheduled_duration_hours) / sum(closeout.hours_worked)
-over completed jobs (job_closeouts row exists) in the window. Higher = the
+Efficiency ratio = sum(scheduled_duration_hours) / sum(time on site) over
+completed jobs (job_closeouts row exists) in the window. Time on site is the
+closeout's hours_worked plus the job's earlier days (multi-day jobs plan
+§5.4a; ``_actual_hours_by_job``). Higher = the
 tech finished faster than the scheduler's estimate.
 
 Credit is assigned to the LEAD tech on each job; if no lead is marked,
@@ -74,6 +76,7 @@ def _query_efficiency(
             SELECT
                 jc.job_id,
                 jc.hours_worked,
+                jc.created_at AS closeout_created_at,
                 j.scheduled_duration_hours,
                 j.assigned_to
             FROM job_closeouts jc
@@ -89,7 +92,9 @@ def _query_efficiency(
               AND jc.closed_at >= :start
               AND jc.closed_at <  :end
               AND j.scheduled_duration_hours IS NOT NULL
-              AND jc.hours_worked > 0
+              -- No hours filter here (multi-day plan §5.4a): a job whose final
+              -- day attests 0 h can still have earlier days. The "> 0" test
+              -- runs on the whole denominator, in _actual_hours_by_job.
         ),
         lead_for_job AS (
             SELECT DISTINCT ON (ja.job_id)
@@ -105,35 +110,106 @@ def _query_efficiency(
             ORDER BY ja.job_id, ja.is_lead DESC, ja.assigned_at ASC
         )
         SELECT
+            c.job_id                                                        AS job_id,
             COALESCE(lfj.tech_id, c.assigned_to)                            AS tech_id,
             t.name                                                          AS tech_name,
-            SUM(c.scheduled_duration_hours)                                 AS scheduled_hours,
-            SUM(c.hours_worked)                                             AS actual_hours,
-            COUNT(*)                                                        AS job_count
+            c.scheduled_duration_hours                                      AS scheduled_hours,
+            c.hours_worked                                                  AS hours_worked,
+            c.closeout_created_at                                           AS closeout_created_at
         FROM closed_in_window c
         LEFT JOIN lead_for_job lfj ON CAST(lfj.job_id AS TEXT) = CAST(c.job_id AS TEXT)
         LEFT JOIN technicians t
                ON CAST(t.id AS TEXT) = CAST(COALESCE(lfj.tech_id, c.assigned_to) AS TEXT)
               AND t.deleted_at IS NULL
         WHERE COALESCE(lfj.tech_id, c.assigned_to) IS NOT NULL
-        GROUP BY COALESCE(lfj.tech_id, c.assigned_to), t.name
-        ORDER BY (SUM(c.scheduled_duration_hours) / NULLIF(SUM(c.hours_worked), 0)) DESC NULLS LAST
         """
     )
     rows = db.execute(sql, {"start": window_start, "end": window_end}).mappings().all()
+    return _aggregate(db, rows)
+
+
+def _actual_hours_by_job(db: Session, jobs: list[dict[str, Any]]) -> dict[str, Decimal]:
+    """The ratio's denominator per job: time on site, wall-clock.
+
+    Multi-day jobs plan §5.4a ("Tech efficiency"): the closeout's
+    ``hours_worked`` plus, per shop day, the job's LONGEST day row. The
+    closeout's own shop day (``job_closeouts.created_at``, shop-local) counts
+    ``max(hours_worked, longest day row that day)`` instead of adding
+    ``hours_worked`` on top, because ``hours_worked`` is wall-clock for that
+    day too: a helper who left early (a 4 h row beside an 8 h closeout) reads
+    as 8 h, not 12; a crew "No" of 6 h then a 0 h "Yes" the same day reads as
+    6 h, not 0. A job with no day rows is exactly ``hours_worked``.
+
+    ``jobs`` items carry ``job_id``, ``hours_worked`` and
+    ``closeout_created_at``. Keys are ``str(UUID)``.
+    """
+    from gdx_dispatch.core.closeout_billing import (  # noqa: PLC0415
+        _job_uuid,
+        day_row_entries,
+        longest_day_row_minutes,
+    )
+    from gdx_dispatch.core.pay_periods import shop_day_of, shop_tz_name_from_settings  # noqa: PLC0415
+
+    entries = day_row_entries(db, [j["job_id"] for j in jobs])
+    tz_name = shop_tz_name_from_settings(db) if entries else None
+    out: dict[str, Decimal] = {}
+    for j in jobs:
+        jid = str(_job_uuid(j["job_id"]))
+        hours_worked = Decimal(str(j.get("hours_worked") or 0))
+        rows = entries.get(jid)
+        if not rows:
+            out[jid] = hours_worked
+            continue
+        per_day = longest_day_row_minutes(rows, tz_name)
+        closeout_day = shop_day_of(j.get("closeout_created_at"), tz_name)
+        total = Decimal("0")
+        for day, minutes in per_day.items():
+            if day != closeout_day:
+                total += Decimal(minutes) / 60
+        on_closeout_day = Decimal(per_day.get(closeout_day, 0)) / 60
+        total += max(hours_worked, on_closeout_day)
+        out[jid] = total
+    return out
+
+
+def _aggregate(db: Session, rows) -> list[dict[str, Any]]:
+    """Per-job rows (one per closed-out job, with its credited tech) → the
+    leaderboard: one row per tech, ratio descending, no-ratio rows last."""
+    jobs = [dict(r) for r in rows]
+    actual_by_job = _actual_hours_by_job(db, jobs)
+    from gdx_dispatch.core.closeout_billing import _job_uuid  # noqa: PLC0415
+
+    by_tech: dict[str, dict[str, Any]] = {}
+    for j in jobs:
+        actual = actual_by_job.get(str(_job_uuid(j["job_id"])), Decimal("0"))
+        # The old hours-worked-above-zero SQL filter, moved onto the whole
+        # denominator: zero time on site means no ratio to compute.
+        if actual <= 0:
+            continue
+        tid = str(j.get("tech_id"))
+        agg = by_tech.setdefault(tid, {
+            "tech_id": tid,
+            "tech_name": j.get("tech_name") or "Unassigned",
+            "scheduled": Decimal("0"),
+            "actual": Decimal("0"),
+            "job_count": 0,
+        })
+        agg["scheduled"] += Decimal(str(j.get("scheduled_hours") or 0))
+        agg["actual"] += actual
+        agg["job_count"] += 1
     out: list[dict[str, Any]] = []
-    for r in rows:
-        sched = Decimal(str(r.get("scheduled_hours") or 0))
-        actual = Decimal(str(r.get("actual_hours") or 0))
+    for agg in by_tech.values():
+        sched, actual = agg["scheduled"], agg["actual"]
         ratio = float(sched / actual) if actual > 0 else None
         out.append({
-            "tech_id": str(r.get("tech_id")) if r.get("tech_id") else None,
-            "tech_name": r.get("tech_name") or "Unassigned",
+            "tech_id": agg["tech_id"],
+            "tech_name": agg["tech_name"],
             "scheduled_hours": float(sched),
             "actual_hours": float(actual),
-            "job_count": int(r.get("job_count") or 0),
+            "job_count": agg["job_count"],
             "efficiency_ratio": round(ratio, 2) if ratio is not None else None,
         })
+    out.sort(key=lambda r: (r["efficiency_ratio"] is None, -(r["efficiency_ratio"] or 0)))
     return out
 
 

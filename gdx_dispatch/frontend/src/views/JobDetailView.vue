@@ -418,6 +418,13 @@
           <p v-else class="muted">No blocking jobs.</p>
         </div>
 
+        <!-- Multi-day jobs PR 3 (plan §5.4a "Daily log"): the days a crew
+             closed with "No, not finished". Hidden while there are none. -->
+        <JobDailyLogCard
+          :job-id="String(job.id || route.params.id || '')"
+          :refresh-key="dailyLogKey"
+        />
+
         <!-- Plan §1 — the closeout card. job_closeouts was WRITE-ONLY for 2.5
              months: the tech's attested hours, work notes, parts attestation
              and signer name went into the database and never reached a
@@ -1358,7 +1365,8 @@
       :job-title="job.title || ''"
       :job-type="job.job_type || ''"
       :customer-name="customerDisplayName"
-      @closed-out="fetchJob"
+      @closed-out="onCloseoutSaved"
+      @day-closed="onCloseoutSaved"
     />
 
     <Dialog
@@ -1374,6 +1382,16 @@
         nobody worked — an old job, a duplicate, a no-show. If work was done,
         use Complete Job instead.
       </p>
+      <!-- Plan §5.4a: days already closed with "No" are still billed; say so,
+           or the office reads this dialog as "nothing is billable". -->
+      <p v-if="cwwLoggedHours > 0" class="muted" data-testid="close-without-work-logged">
+        Already logged: {{ formatDayHours(cwwLoggedHours) }} h on earlier days (still billed)
+      </p>
+      <div v-if="cwwEarlierDay" class="cww-refusal" role="alert" data-testid="close-without-work-earlier-day">
+        <span>{{ formatDayLong(cwwEarlierDay) }} is still open. Close that day first</span>
+        <Button label="Is this job finished?" size="small" severity="secondary"
+          data-testid="close-without-work-open-sheet" @click="openSheetFromCww" />
+      </div>
       <div class="schedule-form">
         <div class="form-field">
           <label for="close-without-work-reason">Reason *</label>
@@ -1435,6 +1453,8 @@ import UndoArrivalDialog from "../components/UndoArrivalDialog.vue";
 import JobVisitsCard from "../components/JobVisitsCard.vue";
 import { isDispatchManagerRole } from "../utils/visitRefusals";
 import MobileJobCloseoutDialog from "../components/MobileJobCloseoutDialog.vue";
+import JobDailyLogCard from "../components/JobDailyLogCard.vue";
+import { formatHours as formatDayHours, formatDayLong, refusalOf } from "../utils/dayClose";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
 import { formatDate, formatDateTime, formatMoney, formatMoney as formatCurrency, formatPercent as fmtPercent, formatPhone } from "../composables/useFormatters";
@@ -2757,23 +2777,68 @@ function completeJob() {
   closeoutOpen.value = true;
 }
 
+// Bumped after a closeout or a day-close so the Daily log card re-reads.
+const dailyLogKey = ref(0);
+async function onCloseoutSaved() {
+  dailyLogKey.value += 1;
+  await fetchJob();
+}
+
 const closeWithoutWorkOpen = ref(false);
 const closeWithoutWorkReason = ref("");
 const closingWithoutWork = ref(false);
+// Multi-day jobs PR 3: hours already closed with "No" (still billed), and the
+// earlier worked day the server says is still open (409 earlier_day_open).
+const cwwLoggedHours = ref(0);
+const cwwEarlierDay = ref(null);
+async function _loadCwwDayLog() {
+  try {
+    const d = await api.get(`/api/jobs/${route.params.id}/day-log`, { suppressErrorToast: true });
+    cwwLoggedHours.value = Number(d?.logged_hours_total) || 0;
+  } catch {
+    cwwLoggedHours.value = 0;
+  }
+}
 function openCloseWithoutWork() {
   closeWithoutWorkReason.value = "";
+  cwwEarlierDay.value = null;
+  cwwLoggedHours.value = 0;
   closeWithoutWorkOpen.value = true;
+  _loadCwwDayLog();
+}
+// The way out of earlier_day_open: answer "No" for that day on the sheet.
+function openSheetFromCww() {
+  closeWithoutWorkOpen.value = false;
+  closeoutOpen.value = true;
 }
 async function submitCloseWithoutWork() {
   closingWithoutWork.value = true;
+  cwwEarlierDay.value = null;
   try {
     await api.post(`/api/jobs/${route.params.id}/close-without-work`,
       { reason: closeWithoutWorkReason.value.trim() },
-      { successMessage: "Job closed without work" });
+      { successMessage: "Job closed without work", suppressErrorToast: true });
     closeWithoutWorkOpen.value = false;
+    dailyLogKey.value += 1;
     await fetchJob();
-  } catch {
-    // handled in composable; the dialog stays open so the reason isn't lost
+  } catch (err) {
+    // The dialog stays open so the reason isn't lost. An earlier open day is
+    // shown inline with its way out; anything else is toasted here, since
+    // the composable's toast is suppressed to keep the 409 off a toast.
+    const refused = refusalOf(err);
+    if (err?.status === 409 && refused.code === "earlier_day_open") {
+      cwwEarlierDay.value = refused.date || null;
+      if (!cwwEarlierDay.value) {
+        toast.add({ severity: "warn", summary: "Cannot close yet", detail: refused.detail || "An earlier day is still open.", life: 6000 });
+      }
+    } else {
+      toast.add({
+        severity: "error",
+        summary: "Could not close the job",
+        detail: refused.detail || err?.message || "Try again.",
+        life: 6000,
+      });
+    }
   } finally {
     closingWithoutWork.value = false;
   }
@@ -2919,6 +2984,12 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.cww-refusal {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem;
+  margin: 0 0 0.75rem; padding: 0.6rem 0.75rem; border-radius: 6px;
+  border: 1px solid var(--p-orange-500, var(--p-content-border-color));
+  background: color-mix(in srgb, var(--p-orange-500, transparent) 10%, transparent);
+}
 .cost-note {
   display: flex; align-items: flex-start; gap: .5rem;
   margin: .5rem 0 .75rem; padding: .6rem .75rem;

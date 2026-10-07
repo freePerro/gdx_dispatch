@@ -774,6 +774,52 @@ function useNoteAsLaborDescription(note) {
   target.description = body.slice(0, 500);
 }
 
+// One suggestion line (`labor_line` or `earlier_visits_line`, the same shape)
+// as an invoice line, with its provenance.
+function _prefillLaborLine(line) {
+  // Provenance rides the prefill too. This is the DOMINANT path — most
+  // invoices get their labor line here, not from the picker — so leaving it
+  // NULL would mean the column answers "how was this priced?" only for the
+  // minority of lines somebody added by hand.
+  //
+  // The server says which lane it computed; trust that rather than
+  // re-deriving it, and never claim 'matrix' without the row id (the API
+  // rejects that shape, and it would be an unverifiable claim).
+  const src = line.source;
+  const provenance = src === 'matrix' && line.labor_price_item_id
+    ? {
+        labor_source: 'matrix',
+        labor_price_item_id: line.labor_price_item_id,
+        // The price this provenance refers to, so a later reprice
+        // downgrades matrix -> manual. Without it the guard in
+        // markPriceOverride never fires and a repriced line keeps claiming
+        // the matrix quoted it — and THIS is the dominant path: most
+        // invoices get their labor line here, not from the picker.
+        _provenancePrice: Number(line.unit_price || 0),
+      }
+    : src === 'attested'
+      ? {
+          labor_source: 'attested',
+          _provenancePrice: Number(line.unit_price || 0),
+          ...(line.man_hours != null
+            ? { estimated_man_hours: Number(line.man_hours) } : {}),
+        }
+      : {};
+  return {
+    description: line.description,
+    quantity: recordedQuantity(line.quantity),
+    unit_price: Number(line.unit_price || 0),
+    // M34: mirror the tenant's tax_labor setting instead of hardcoding —
+    // a tax-labor tenant under-collected on every prefill (irrelevant at
+    // GDX where labor is never customer-taxed, wrong for self-hosted).
+    taxable: !!tenantTaxLabor.value,
+    category: 'Labor',
+    cost: null,
+    margin_pct_override: null,
+    ...provenance,
+  };
+}
+
 async function prefillFromJobCloseout(jobId) {
   closeoutSuggestion.value = null;
   if (!jobId) return;
@@ -787,61 +833,31 @@ async function prefillFromJobCloseout(jobId) {
     // closeout. Gating the whole payload on has_closeout made the warning
     // dead for the exact rows this release started pricing.
     closeoutSuggestion.value = s;
-    if (!s?.has_closeout) return;
-    // Round 2 (Doug 2026-08-07): the closeout's own note now moves onto the
-    // invoice automatically — it was attested at billing time and the
-    // operator can edit or clear it before saving. Job notes stay opt-in
-    // (they're often internal).
-    if (s.closeout?.notes && !form.value.notes) {
-      form.value.notes = s.closeout.notes;
-    }
+    // Multi-day jobs PR 3 (plan §5.4a, Billing, round 36): the days closed
+    // with "No" bill as "Labor — earlier visits", and that line comes on the
+    // has_closeout:false path too — a job finished by Close-without-work has
+    // no closeout and would otherwise never invoice its earlier days. So it
+    // is read BEFORE the has_closeout gate below, never behind it.
+    const earlier = s?.earlier_visits_line || null;
     const starterOnly =
       form.value.line_items.length === 1 &&
       !form.value.line_items[0].description &&
       !toNum(form.value.line_items[0].unit_price);
-    if (s.labor_line && starterOnly) {
-      // Provenance rides the prefill too. This is the DOMINANT path — most
-      // invoices get their labor line here, not from the picker — so leaving it
-      // NULL would mean the column answers "how was this priced?" only for the
-      // minority of lines somebody added by hand.
-      //
-      // The server says which lane it computed; trust that rather than
-      // re-deriving it, and never claim 'matrix' without the row id (the API
-      // rejects that shape, and it would be an unverifiable claim).
-      const src = s.labor_line.source;
-      const provenance = src === 'matrix' && s.labor_line.labor_price_item_id
-        ? {
-            labor_source: 'matrix',
-            labor_price_item_id: s.labor_line.labor_price_item_id,
-            // The price this provenance refers to, so a later reprice
-            // downgrades matrix -> manual. Without it the guard in
-            // markPriceOverride never fires and a repriced line keeps claiming
-            // the matrix quoted it — and THIS is the dominant path: most
-            // invoices get their labor line here, not from the picker.
-            _provenancePrice: Number(s.labor_line.unit_price || 0),
-          }
-        : src === 'attested'
-          ? {
-              labor_source: 'attested',
-              _provenancePrice: Number(s.labor_line.unit_price || 0),
-              ...(s.labor_line.man_hours != null
-                ? { estimated_man_hours: Number(s.labor_line.man_hours) } : {}),
-            }
-          : {};
-      form.value.line_items = [{
-        description: s.labor_line.description,
-        quantity: recordedQuantity(s.labor_line.quantity),
-        unit_price: Number(s.labor_line.unit_price || 0),
-        // M34: mirror the tenant's tax_labor setting instead of hardcoding —
-        // a tax-labor tenant under-collected on every prefill (irrelevant at
-        // GDX where labor is never customer-taxed, wrong for self-hosted).
-        taxable: !!tenantTaxLabor.value,
-        category: 'Labor',
-        cost: null,
-        margin_pct_override: null,
-        ...provenance,
-      }];
+    const hasCloseout = !!s?.has_closeout;
+    // Round 2 (Doug 2026-08-07): the closeout's own note now moves onto the
+    // invoice automatically — it was attested at billing time and the
+    // operator can edit or clear it before saving. Job notes stay opt-in
+    // (they're often internal).
+    if (hasCloseout && s.closeout?.notes && !form.value.notes) {
+      form.value.notes = s.closeout.notes;
     }
+    if (!starterOnly) return;
+    const lines = [];
+    if (hasCloseout && s.labor_line) lines.push(_prefillLaborLine(s.labor_line));
+    // A second line, never merged into the final day's: each carries its own
+    // hours and provenance.
+    if (earlier) lines.push(_prefillLaborLine(earlier));
+    if (lines.length) form.value.line_items = lines;
   } catch (e) {
     // closeout prefill is best-effort — a blank editor is the old behavior
   }

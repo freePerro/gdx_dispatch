@@ -89,6 +89,7 @@ const stubs = {
       <div data-testid="line-editor-stub">
         <span data-testid="le-job-id">{{ jobId }}</span>
         <span data-testid="le-line-count">{{ lines.length }}</span>
+        <pre data-testid="le-lines">{{ JSON.stringify(lines) }}</pre>
         <span data-testid="le-show-cost">{{ showCost ? 'yes' : 'no' }}</span>
         <span data-testid="le-show-margin">{{ showMargin ? 'yes' : 'no' }}</span>
         <span data-testid="le-cat-count">{{ (categories || []).length }}</span>
@@ -204,6 +205,63 @@ describe('InvoiceCreateView — query prefill', () => {
     // LineEditor stub receives both lines + the job-id binding.
     expect(wrapper.find('[data-testid="le-job-id"]').text()).toBe('job-1');
     expect(wrapper.find('[data-testid="le-line-count"]').text()).toBe('2');
+  });
+});
+
+// Multi-day jobs PR 3 (plan §5.4a, Billing, round 36): the days closed with
+// "No" bill as a second line, "Labor — earlier visits", and it comes on the
+// has_closeout:false path too (a Close-without-work job has no closeout).
+describe('InvoiceCreateView — earlier visits', () => {
+  const LABOR = { description: 'Labor', quantity: 2, unit_price: 95, line_total: 190, source: 'attested', labor_price_item_id: null, man_hours: 2 };
+  const EARLIER = { description: 'Labor — earlier visits', quantity: 16, unit_price: 95, line_total: 1520, source: 'attested', labor_price_item_id: null, man_hours: 16 };
+
+  function routeSuggestion(suggestion) {
+    routeQuery.value = { job_id: 'job-1' };
+    apiGet.mockImplementation((url) => {
+      if (url.startsWith('/api/customers')) return Promise.resolve(CUSTOMERS);
+      if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
+      if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0, rate_pct: 0 });
+      if (url === '/api/jobs/job-1/closeout-billing-suggestion') return Promise.resolve(suggestion);
+      return Promise.resolve([]);
+    });
+  }
+  async function lines() {
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+    return { wrapper, lines: JSON.parse(wrapper.find('[data-testid="le-lines"]').text()) };
+  }
+
+  it('adds the earlier-visits line as a second line after the final day', async () => {
+    routeSuggestion({ has_closeout: true, closeout: { notes: null }, labor_line: LABOR, earlier_visits_line: EARLIER });
+    const { lines: got } = await lines();
+    expect(got).toHaveLength(2);
+    expect(got[0].description).toBe('Labor');
+    expect(got[1]).toMatchObject({
+      description: 'Labor — earlier visits', quantity: 16, unit_price: 95,
+      category: 'Labor', taxable: false, labor_source: 'attested', estimated_man_hours: 16,
+    });
+  });
+
+  it('a job with no closeout (Close-without-work) still gets the earlier-visits line', async () => {
+    routeSuggestion({ has_closeout: false, labor_line: null, earlier_visits_line: EARLIER });
+    const { lines: got } = await lines();
+    expect(got).toHaveLength(1);
+    expect(got[0].description).toBe('Labor — earlier visits');
+  });
+
+  it('without a closeout, neither the closeout notes nor a stray labor_line are used', async () => {
+    routeSuggestion({ has_closeout: false, closeout: { notes: 'stale' }, labor_line: LABOR, earlier_visits_line: null });
+    const { wrapper, lines: got } = await lines();
+    expect(got).toHaveLength(1);
+    expect(got[0].description || '').toBe('');
+    expect(wrapper.vm.form?.notes || '').not.toBe('stale');
+  });
+
+  it('mid-job (earlier_visits_line null) the prefill is the single labor line as before', async () => {
+    routeSuggestion({ has_closeout: true, closeout: {}, labor_line: LABOR, earlier_visits_line: null });
+    const { lines: got } = await lines();
+    expect(got).toHaveLength(1);
+    expect(got[0].description).toBe('Labor');
   });
 });
 

@@ -582,6 +582,17 @@ def update_appointment(
                 "visit_arrived",
                 visit_id=str(a.id),
             )
+    # An arrived visit reads as ON SITE on whatever day its start_at says, so
+    # dragging it to another day would make that day "worked" (multi-day jobs
+    # plan §5.4a, round 33: later_day_started and open_day both read it).
+    # Compared with the STORED start: the edit form resends start_at on every
+    # save, so a notes edit or a tech change still succeeds.
+    if a.arrived_at is not None and data.get("start_at") is not None and a.start_at is not None:
+        from gdx_dispatch.services.visit_sync import shop_day, shop_tz  # noqa: PLC0415
+
+        tz = shop_tz(db)
+        if shop_day(_aware(data["start_at"]), tz) != shop_day(_aware(a.start_at), tz):
+            return _conflict("Undo the arrival first", "visit_arrived", visit_id=str(a.id))
     if (
         data.get("status") == "cancelled"
         and a.status != "cancelled"
@@ -769,6 +780,19 @@ def arrived(
     return _serialize(a)
 
 
+def close_visit(a: Appointment, completed_at: datetime, day_closed_at: datetime | None = None) -> None:
+    """The visit-close write: status completed, ``completed_at``, and — for a
+    day-close ("No", multi-day jobs plan §5.4a) — the submission's raw
+    ``closed_at`` as ``day_closed_at``. ``arrived_at`` is left as it is (no
+    arrival is invented). Never commits and never audits: the office Complete
+    above audits through ``_record``, and day-close audits ``visit_closed``
+    inside its own single transaction."""
+    a.status = "completed"
+    a.completed_at = completed_at
+    if day_closed_at is not None:
+        a.day_closed_at = day_closed_at
+
+
 @router.post("/api/appointments/{appt_id}/complete", response_model=None)
 def complete_appointment(
     appt_id: UUID,
@@ -782,8 +806,7 @@ def complete_appointment(
         raise HTTPException(
             status_code=400, detail="Cannot complete a cancelled appointment"
         )
-    a.status = "completed"
-    a.completed_at = utcnow()
+    close_visit(a, utcnow())
     _record(
         db, a, tenant_id=tenant_id, user=user, action="appointment_completed",
         request=request, job_ids=(a.job_id,),

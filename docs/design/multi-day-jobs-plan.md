@@ -1,7 +1,7 @@
 # Multi-day jobs: one job, many visit days
 
 **Date:** 2026-10-03
-**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) MERGED #846, RELEASED v1.137.0, to §5.2's rules. §5.2a (revision 2, 2026-10-04) replaces those sync rules and adds `recompute_job_schedule`, as PR 1b against `main`: MERGED #868 (2026-10-05), RELEASED v1.138.0 (on prod and demo 2026-10-05; walked in a browser that night: the full write walk on the demo, a read-only look at prod), with one rule the build added (R2's second clause, below, accepted by Doug 2026-10-05); Doug ruled its open questions 2026-10-04 (a day closes only when someone closes it). PR 2a (§5.3a: the visits API, the job page's Visits card, and the "Partial Jobs — Need to Schedule" section Doug ruled 2026-10-05, D10–D12) MERGED #882 (2026-10-06), with its parked-row follow-up (queue rows carry the board's hours) MERGED #886, both RELEASED v1.139.0 (on prod and demo 2026-10-06; a read-only browser look at prod). Doug ruled D13 (2026-10-06): a partial job's queued hours are the hours still left; built with PR 3, which records the attested day hours it subtracts. PR 2b (the board draws each visit day as its own card, "Day k of n", and a drag moves that visit only; `GET /api/dispatch/visits`) built 2026-10-06 to the 2b build spec in §5.3a, MERGED #891, RELEASED v1.140.0 (on prod and demo 2026-10-06; a read-only browser look at both boards, where no multi-day job existed yet to badge). Not built: PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, billing). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); §5.2a went through three plan audits, was rewritten to Doug's rulings after the third, then through sixteen more rounds (2026-10-04), the sixteenth finding no defect, then revised the same day to Doug's ruling that arrival times are always recorded and audited five more rounds (20–24), the last finding no defect; then revised 2026-10-05 to Doug's rulings that a re-open onto a closed day, a mis-tap, and an old arrival with no time are all settled by asking the office, and audited rounds 25–41 on the arrival-undo rules, round 41 finding no logic defect and two wording fixes, applied; §5.2a ships as PR 1b against `main` (see *Packaging*), since #846 merged before it was built.
+**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) MERGED #846, RELEASED v1.137.0, to §5.2's rules. §5.2a (revision 2, 2026-10-04) replaces those sync rules and adds `recompute_job_schedule`, as PR 1b against `main`: MERGED #868 (2026-10-05), RELEASED v1.138.0 (on prod and demo 2026-10-05; walked in a browser that night: the full write walk on the demo, a read-only look at prod), with one rule the build added (R2's second clause, below, accepted by Doug 2026-10-05); Doug ruled its open questions 2026-10-04 (a day closes only when someone closes it). PR 2a (§5.3a: the visits API, the job page's Visits card, and the "Partial Jobs — Need to Schedule" section Doug ruled 2026-10-05, D10–D12) MERGED #882 (2026-10-06), with its parked-row follow-up (queue rows carry the board's hours) MERGED #886, both RELEASED v1.139.0 (on prod and demo 2026-10-06; a read-only browser look at prod). Doug ruled D13 (2026-10-06): a partial job's queued hours are the hours still left; built with PR 3, which records the attested day hours it subtracts. PR 2b (the board draws each visit day as its own card, "Day k of n", and a drag moves that visit only; `GET /api/dispatch/visits`) built 2026-10-06 to the 2b build spec in §5.3a, MERGED #891, RELEASED v1.140.0 (on prod and demo 2026-10-06; a read-only browser look at both boards, where no multi-day job existed yet to badge). PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, B8, billing, D13) built 2026-10-06 to §5.4a, open against `main`, not merged; B7 was narrowed in the build so "On my way" to an estimate or lead job does not start it, and B8 was widened to the phone's Stop and toggle (see B8). Its build spec is §5.4a (2026-10-06, audited 36 rounds, reshaped after round 32 to hours per person; the 0 h "Yes" rule simplified by Doug after round 36 and the spec frozen for the build). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); §5.2a went through three plan audits, was rewritten to Doug's rulings after the third, then through sixteen more rounds (2026-10-04), the sixteenth finding no defect, then revised the same day to Doug's ruling that arrival times are always recorded and audited five more rounds (20–24), the last finding no defect; then revised 2026-10-05 to Doug's rulings that a re-open onto a closed day, a mis-tap, and an old arrival with no time are all settled by asking the office, and audited rounds 25–41 on the arrival-undo rules, round 41 finding no logic defect and two wording fixes, applied; §5.2a ships as PR 1b against `main` (see *Packaging*), since #846 merged before it was built.
 
 **Trigger:** Doug asked, "What happens if a job is not finished and turns into a
 multi-day job? Can a tech or anyone go back to it?" The answer, traced on
@@ -1362,6 +1362,12 @@ crew-less one-day job with its one unassigned slot; the same job
 
 ### 5.4 The closeout sheet asks "Is this job finished?" (fixes B2, B3, B4, B7)
 
+> **Superseded in part by §5.4a (2026-10-06).** Its "No timer open" rule
+> (below) would pay the tech; PR 3 follows #529 instead, and a caller with
+> no timer pays nobody. Its "the tech's visit" and "the tech's timer" are
+> the crew's visits and each person's timers (R-P4, R-P5). Where the two
+> differ, §5.4a is what PR 3 builds.
+
 - **Arrival (B2):** finds the appointment by `job_id` + this tech + today's
   shop day, not `scalar_one_or_none()` over the whole job. This fix ships
   first, in PR 1, because it also guards today's multi-tech jobs.
@@ -1437,6 +1443,11 @@ crew-less one-day job with its one unassigned slot; the same job
 
 ### 5.5 Billing: once, at final closeout (resolves A6's multi-visit half)
 
+> **Superseded in part by §5.4a (2026-10-06).** The earlier days do not go
+> through `service_labor_line`: R-P1 bills them at the plain hourly rate,
+> with no first-hour price and no 1 h floor, on a line named "Labor —
+> earlier visits". Where the two differ, §5.4a is what PR 3 builds.
+
 - **Install lane** (flat matrix price): days don't change the price. The
   final closeout bills as today.
 - **Hourly lane:** billing today reads **only** `closeout.hours_worked`
@@ -1484,6 +1495,1137 @@ Who, what and when are recorded at every step:
 A three-day job can be reconstructed day by day from `audit_logs` plus the
 appointment rows.
 
+### 5.4a PR 3 build spec (2026-10-06; PLAN, not built; hours per person since audit round 32)
+
+PR 3 builds §5.4 and §5.5 against `main` @ f55d7d3e. The line citations in
+§4, §5.4 and §5.5 date from 2026-10-03/04 and have drifted. The citations
+below were re-traced on 2026-10-06 and replace them.
+
+**Doug's rulings for this PR (2026-10-06):**
+
+- **R-P1, money: "Previous days" bills at the plain hourly rate.**
+  - The day rows' man-hours are summed across days and techs, then rounded
+    up to the half hour once.
+  - There is no first-hour price and no 1-hour minimum on this line.
+  - The first-hour price appears once, on the final day's line, as it does
+    today.
+  - Why it needed a ruling: `service_labor_line`
+    (`core/billing_lanes.py:114`) charges the first-hour price and a 1.0
+    man-hour floor (`billed_man_hours`, `:87`). Reusing it would have charged
+    a three-day repair the first-hour price twice.
+- **R-P2: D4 ("on my way" text each day) is moot.**
+  - No on-my-way text is sent anywhere. `mobile_job_en_route` returns
+    `customer_notified: False` (`mobile.py:2335-2338`).
+  - An `on_my_way` template and an auto-fire flag exist, but nothing fires
+    them.
+  - PR 3 builds none. The missing text goes on the found-not-filed list.
+- **R-P3: the daily log shows in two places.** On the desktop job page, and
+  on the phone's job detail, so the next day's tech sees what's left. The
+  customer never sees it (D9).
+- **R-P4: "No" closes the crew's day, not just the submitter's.** One
+  submit closes every checked visit of that day and records every checked
+  person's hours. Without the crew close, a helper's day stays open: the job
+  never advances, and the helper's hours never bill.
+- **R-P5, pay identity: the crew's hours never land on a helper's pay row**
+  (Doug, 2026-10-06).
+  - Payroll's hours read sums `time_entries` by `user_id`
+    (`payroll.py:243-270`), and `mobile_day_summary.py:101-118` shows those
+    hours to the tech as their own.
+  - So a helper's own open timer closes **at 0**, exactly as the final
+    closeout closes a colleague's timer (`jobs.py:2570-2585`). It carries
+    `day_closed_at` but no minutes, so it is not a day row.
+  - The hours typed for that helper go on a **separate day row with
+    `user_id` NULL**. Under #529 that row is costing evidence, not pay.
+  - Only the submitter's own timer becomes their day row, with their
+    `user_id`, as the final closeout does for its caller.
+  - Elapsed clock time is never written as hours: the timer closes at 0
+    because it was not attested, the rule in `_close_labor_entry`
+    (`jobs.py:2029`).
+- **R-P6: the office can answer "No" from the board and the desktop**
+  (Doug, 2026-10-06). It sees the same visits and people as the phone. Every
+  day row a desk user creates has `user_id` NULL, and every timer it
+  consumes closes at 0 (R-P5).
+
+**The sheet's shape: hours per person, visits as checkboxes** (Claude,
+2026-10-06, after audit round 32; Doug may overrule). Hours belong to
+people, not to visits.
+
+- Visits carry no hours. Closing a visit is schedule bookkeeping only.
+- Each person who tapped in that day has one hours row, whichever visits
+  they were on.
+- Someone who didn't tap in goes on an "added helper" row.
+
+Rounds 13–32 asked "which person do a visit's hours belong to?", and each
+answer opened the next edge case: the owner, `resolved`, `_visit_users`,
+the anchor visit, the Techs stepper, the `hours: 0` rule,
+`arrived_by_user_id`, and the timer→visit link. Under this shape that
+question is never asked, so all of that machinery is gone. Billing, D13 and
+tech efficiency read sums per job and per day, so they are unchanged. The
+record of what was replaced is under "Audit rounds 13–33" below.
+
+**What already exists (re-traced 2026-10-06; do not rebuild):**
+
+| Need | Already there |
+|---|---|
+| One closeout endpoint for every surface | `POST /api/jobs/{id}/closeout`, `closeout_job` (`routers/jobs.py:2198`) |
+| One closeout sheet on every surface | `MobileJobCloseoutDialog.vue`, mounted on the phone (`MobileJobDetailView.vue:958`), the board (`DispatchView.vue:772`) and the desktop job page (`JobDetailView.vue:1355`, #842) |
+| Visit close, with recompute | The visit write in `complete_appointment` (`appointments.py:772-790`) and `recompute_job_schedule` (`visit_sync.py:922`). `_record` (`appointments.py:266`) commits on its own, so day-close does **not** call it (below) |
+| The tech's visit for today | `_arrival_visit` (`mobile.py:2343`), rows A1–A3. A visit's `tech_id` is the technician id, not the user id |
+| The day's timer | Arrival opens `entry_type='job'`, `user_id` = the user, `tech_id` = the technician id or else the user id, `clock_in` = now (`_create_time_entry`, `mobile.py:767-790`), guarded by `_find_open_time_entry` (`:725`) |
+| How a labor row is closed and rated | `_close_labor_entry` (`jobs.py:2029`), `_labor_rate_for` (`jobs.py:1879`) |
+| Who a desk-attested row is paid to | Nobody. #529 (Doug, 2026-08-28; `jobs.py:2536-2554`): job rows are costing evidence, the day clock (`timeclock_entries`) is the paid time, and a desk-attested row keeps `user_id` NULL |
+| Partial = a closed visit and no Current one | `partial_clause` (`services/visit_sync.py:713`); the queue is `GET /api/dispatch/partial-jobs` (`dispatch_scheduling.py:275`) |
+| Starting a job | `start_job` (`jobs.py:1443-1500`) sets `lifecycle_stage='in_progress'`, `status='In Progress'`, `started_at` if null |
+| Autodraft line ownership | `AUTODRAFT_LINE_SOURCE` (`closeout_billing.py:52`). Every machine-made line carries it |
+| The hourly rate, and labor taxability | `service_rates` (`billing_lanes.py:74`); the tenant's `labor_taxable` flag (`closeout_billing.py:204`) |
+| Day 2 on Today | `/api/mobile/today` lists a job by the tech's visit for the day (`mobile.py:1317-1334`) |
+
+**Migration `106_day_close_markers`** (D2). It adds one nullable timestamp
+column to each of two tables.
+
+- **`time_entries.day_closed_at`: the day-close marker.** Day-close sets it
+  on every timer it touches and every row it writes. Nothing else writes it.
+  - A **day row** is a row with `day_closed_at` set and `duration_minutes`
+    > 0: one person's attested hours for one shop day.
+  - A timer that day-close closed at 0 also carries the marker. So it is
+    never picked, restated or listed again, and it adds 0 to every sum.
+- **`appointments.day_closed_at`: the visit's close marker.** Day-close
+  stamps the body's raw `closed_at` on every visit it closes. Nothing else
+  writes it.
+  - It makes a visits-only submission replayable (the replay key, below).
+  - It lets a second closer be told who closed the visit first
+    (`already_closed`).
+- **The ORM models `TimeEntry` and `Appointment` gain the columns.**
+  - `time_entries` is created by `create_all` before alembic runs
+    (`entrypoint.sh:46-51`).
+  - So the migration is guarded with `has_table` and a per-column check, as
+    105 is. It is a no-op where `create_all` already built the columns.
+- Batch mode for SQLite.
+- **Downgrade:** drops both columns. Rolling back loses only the markers;
+  the hours rows stay, as plain closed rows.
+- **Existing rows:** NULL, and no backfill runs. Before this PR nothing was
+  day-closed.
+
+No column links a timer to a visit, and no column records who arrived. Both
+existed only to answer the per-visit question, and money no longer asks it.
+
+**"No": `POST /api/jobs/{id}/day-close`** (new).
+
+Body:
+
+- `day`: **required**, an ISO date: the shop date the sheet was read for
+  (`open_day.date`). Missing or malformed is a 422.
+- `visits`: zero or more visit ids to close, each at most once. They must be
+  this job's, and every one must be on `day`.
+- `people`: zero or more `{user_id, hours}`, each `user_id` at most once,
+  with **0 < hours ≤ 24**.
+  - Each names a person with a candidate timer on `day` (below).
+  - A person the sheet showed and the user unchecked is simply not sent,
+    and their timers are left alone.
+- `added`: zero to ten `{hours}`, with 0 < hours ≤ 24. Each is a person who
+  worked and never tapped in, so they have no timer and no `user_id` the
+  server can know.
+- At least one of `visits`, `people` and `added` is non-empty.
+  - A visits-only body closes visits with no hours. That is the closer's
+    attestation that nobody worked them, the same thing a "No" on an
+    untapped visit meant before.
+  - A people-only body closes the timers of a day whose visits are already
+    closed: a person unchecked earlier answering for themselves.
+- `closed_at`: **required**, an ISO timestamp with a zone (missing,
+  malformed or naive is a 422): the tap time, set by the client.
+  - It is **the submission's key**. Day-close stamps the raw body value as
+    `day_closed_at` on every row and visit it writes or consumes.
+  - Only the visits' `completed_at` uses a clamped copy, no later than
+    server `now`. A clamped key would differ on every replay from a phone
+    whose clock runs ahead (round 16).
+  - **The first line of defence is the existing `Idempotency-Key`.** The
+    queue sends one on every replay (`useOfflineSync.js:478`), and the
+    middleware caches 2xx responses in Redis for 24 h
+    (`core/middleware/idempotency_keys.py:21`). `closed_at` covers a Redis
+    outage, and a replay after the cache expired.
+  - A row that was sent once with no clear answer is parked after 23 h as
+    "may have sent" (`useOfflineSync.js:234-239, 412`). A row never sent
+    replays at any age.
+  - **The queue action is a new `job.day_close`,** in no supersede group
+    (`useOfflineSync.js:130`). Two "No"s for two days are both real, and
+    neither retires the other.
+- `note`: optional, ≤ 2000.
+
+The phone, the board and the desktop send the same body. The server never
+looks up "today" or the caller's tech id for a close.
+
+**Why the body names the day, the visits and the people:** the sheet sends
+it through `api.postQueued`, and the offline queue replays every write
+except payments (`useOfflineSync.js:697-702`). A "No" tapped offline on
+day 2 and replayed on day 3 must close day 2, not day 3.
+
+- **Who may call it:** the same permission as closeout. The audit records
+  the actor, every visit and every person's hours.
+- **"Current", never "Live".** The glossary's Live includes closed visits
+  (`is_live`, `visit_sync.py:70`). Every visit test in this PR uses
+  `is_current`.
+  - **Everywhere in this PR, "Current" also means not deleted.** Remove and
+    crew change C5 retire a visit by setting `deleted_at` alone
+    (`visit_sync.py:891`). Its status stays scheduled, and `is_current`
+    never reads `deleted_at` (`:54-67`). The PR adds a `deleted_at IS NULL`
+    test beside every `is_current` call it makes (round 18).
+- **Concurrency.** The **job row** is read `with_for_update()` first, before
+  the replay check. That one lock serializes every day-close and closeout on
+  the job.
+  - Postgres then serializes a tech and a dispatcher who tap "No" at the
+    same moment. The second caller re-reads and is refused with
+    `already_closed` (below).
+  - SQLite ignores `FOR UPDATE`. It is the test and dev database, never
+    production. So this PR makes no concurrency claim for it, and the
+    concurrency tests are Postgres-only.
+- **Candidate timers on day D** (D is always the body's `day`):
+  - `entry_type='job'` on this job, not deleted, `clock_in` on shop day D,
+    and `day_closed_at` NULL.
+  - Each is either open, or Stop-marked: the `MOBILE_STOP_LABOR_NOTE` prefix
+    with 0 or NULL minutes.
+  - This is its own query, **not** a call to `_stopped_job_timer_for`.
+    There is no 24 h window, because a forgotten day can close days later.
+  - **`clock_in` after the job's latest finish**, if it has one: the
+    newest of `job_closeouts.created_at` and the `created_at` of its newest
+    `job_completed` or `job_closed_without_work` audit row. Those two routes
+    write no closeout row, and a re-open clears `jobs.completed_at`
+    (`jobs.py:4420`), so the audit row is the durable record (round 35).
+    A "Yes" 0-closes only running timers
+    (`_open_job_timers`, `jobs.py:2516-2588`), so a helper's Stop-marked
+    timer survives a finished job unmarked. Without the bound, re-opening
+    the job would make that billed day a candidate again, and
+    `earlier_day_open` would force a "No" that bills it twice (round 34).
+  - A timer whose `clock_in` is on another shop day is never a candidate. A
+    day-2 "No" replayed on day 3 cannot touch day 3's timer.
+- **The people of day D** are the distinct `user_id`s of the candidate
+  timers. Which visit a timer was opened on is never asked.
+- **Refusals** (409 with a code):
+  - `job_finished`: the job is completed or cancelled.
+  - `visit_not_open`: a listed visit is not this job's, is deleted, or is
+    not Current.
+  - `day_moved`: a listed visit is not on the body's `day`. The message is
+    "The visit moved; reopen the sheet."
+    - Without it, take a queued "No" whose visit the office moved to
+      tomorrow before the replay. It would close tomorrow's visit (round 23).
+  - `person_not_open`: a `people` entry's user has no candidate timer on D.
+- **Two refusals carry `already_closed`** when the cause is that someone
+  else closed it first:
+  - `visit_not_open` on a visit whose `day_closed_at` is set;
+  - `person_not_open` for a user whose day-D timers carry `day_closed_at`.
+
+  The payload holds D's day rows, each with its person, hours, and who
+  closed it. The sheet, or the failed list for a queued send, shows
+  "Already closed by <name> with N h. Tell the office if your N h on <date>
+  differ." A visit the office Completed by hand has no marker, so its
+  refusal carries no `already_closed`, and the failed list asks for the
+  hours again.
+- **A person who tapped in after the sheet was read** is not in `people`,
+  so their timer is left alone. Nothing is lost:
+  - their timer stays a candidate on D, so `open_day` returns D again with
+    them on it;
+  - "Yes" is blocked by `earlier_day_open` while D is a past day.
+
+  There is no `crew_changed` refusal. Leaving the timer alone is the same
+  outcome as unchecking that person, which the sheet already allows.
+- **Check order**, so every test has one expected code:
+  1. Shape 422s, which read the body only, never server time or stored
+     state. That is what lets a lost-response replay pass them exactly when
+     the original did (round 27). They cover:
+     - types, and hours bounds for `people` and `added`;
+     - `added` holding at most 10;
+     - duplicate visit or user ids;
+     - the empty body;
+     - `note` ≤ 2000;
+     - `day` and `closed_at` present and valid.
+  2. Take the job-row lock, then the replay check (200 no-op).
+  3. `job_finished`.
+  4. `visit_not_open`, then `day_moved`, then `person_not_open`.
+
+  The first failing check answers.
+- **Replay.** **This submission landed** when a time row or a visit on this
+  job carries `day_closed_at` equal to the body's `closed_at`. The response
+  is then a 200 no-op, even if the job has since been finished.
+  - The replay check runs before every check that reads stored state.
+    Otherwise a lost response would replay into `visit_not_open`, and the
+    failed list would ask for hours that were recorded (round 23).
+  - The offline queue resends the stored body, so a replay carries the same
+    `closed_at`. Two different submissions on one job would need the same
+    tap millisecond, and the job-row lock would still serialize them.
+  - The key is per submission, not "a day row exists on D". Otherwise a
+    queued "No" whose visit the office closed by "Yes" meanwhile would
+    no-op as 200, the queue would file it as synced, and the hours would
+    vanish (round 15).
+- **The client must send `conflictIsError: true`.** The offline queue files
+  any 409 as synced unless the call sets it (`useOfflineSync.js:509`), as
+  closeout does (`MobileJobCloseoutDialog.vue:478`). Without the flag, a
+  refused "No" reports success and its hours vanish.
+  - A refused replay stays in the queue's failed list, showing the date and
+    the hours.
+  - The case that matters is a day-2 "No" queued offline, while the job was
+    finished from another device. The replay is refused as `job_finished`.
+    The tech sees "Day not recorded: the job was already finished. Tell the
+    office: N h on <date>."
+  - The office adds those hours to the invoice by hand. No UI hand-adds or
+    edits a `time_entries` row today: `POST /api/jobs/{id}/time-entries` and
+    `PATCH /api/time-entries/{id}` have no frontend caller. So the tech's pay
+    for that day needs an admin (round 26; the missing UI is on the
+    found-not-filed list).
+  - The server does not add hours to a finished job behind the invoice's
+    back.
+- **One transaction, one commit, no `_record`:**
+  1. **Visits.** Each listed visit is set to `status='completed'` with
+     `completed_at` (the clamped `closed_at`) and `day_closed_at` (the raw
+     value).
+     - This is the same write as `complete_appointment`, factored into a
+        shared helper that does not commit.
+     - It is audited `visit_closed`.
+  2. **People.** For each `people` entry P with hours h:
+     - **If P is the submitter** (`_user_id()`, `mobile.py:249`), one of
+       their candidate timers becomes their day row: the open one with the
+       newest `clock_in`, else the newest Stop-marked one.
+       - It is closed through `_close_labor_entry(timer, closed_at, h × 60,
+         _labor_rate_for(db, tech))`.
+       - It keeps its `user_id`, and gets the note (set, not appended) and
+         `day_closed_at`.
+       - Their other candidate timers close at 0, with the marker.
+       - This holds whatever visit the timer was opened on, and for an A3
+         arrival with no visit. It matches the closeout, which restates the
+         caller's own timer whatever the visit (`jobs.py:2525`).
+     - **Otherwise,** every candidate timer of P closes at 0 with no rate if
+       it is open, and gets `day_closed_at` either way. Each 0-close is
+       logged as `closeout_unattested_timer_closed` is today. One new row
+       carries P's hours:
+       - `user_id` NULL and `entry_type='work'`, the closeout's synthetic
+         row shape (`jobs.py:2549-2556`). So no `entry_type == "job"`
+         reader, such as `_stopped_job_timer_for` (`jobs.py:1999`), ever
+         sees it.
+       - `tech_id` = P's earliest candidate timer's `tech_id`, so the
+         daily log can name P.
+       - `clock_in` = that timer's `clock_in`; `clock_out` = `clock_in` +
+         h.
+       - It also gets the rate and `day_closed_at`.
+       - It is audited `day_row_created`.
+  3. **Added helpers.** Each `added` entry gets a new row of the same shape,
+     except:
+     - `tech_id` = the submitter's user id, as the closeout's synthetic row
+       does (`time_entries.tech_id` is NOT NULL, `tenant_models.py:449`);
+     - `clock_in` = the earliest listed visit's `start_at`, else the
+       earliest candidate timer's `clock_in`, else noon of D shop-local;
+     - the note "Added helper (not tapped in)".
+  4. **Unlisted timers are left exactly as they are.** That covers an
+     unchecked person, and a person who tapped in after the sheet was read.
+     The final closeout 0-closes any timer still open, as it does today
+     (`jobs.py:2570-2585`).
+  5. **`Job.dispatch_status`** is rolled up from the job's remaining Current
+     visits on that day: `on_site` if any is arrived, else `en_route` if any
+     has `en_route_at`, else `assigned`.
+  6. **`recompute_job_schedule`:** `scheduled_at` advances to the next
+     Current visit, or the job lands in Partial Jobs (D10).
+  7. **Audit `job_day_closed`:** job, day, the visits, each person's user id
+     with their hours and day-row id, the added helpers' hours and row ids,
+     the actor, the note, and the next visit.
+- **Never touched:** the closeout, the invoice and the job's
+  `lifecycle_stage`.
+- **What it bills and pays, derived:**
+  - Billed man-hours = Σ `people` hours + Σ `added` hours. Every one of
+    them is exactly one row.
+  - The submitter is paid their own hours, if they have a candidate timer.
+    Nobody else is paid by this submission.
+  - A person is one row however many visits they were on, so one
+    submission bills each person once. A second submission naming the same
+    timers finds them marked and is refused `person_not_open`.
+  - **Across submissions the guard is the sheet, not the server.** A person
+    closed by the lead who taps in again has a new, unmarked timer, and a
+    second stint is real work, so the server cannot refuse it. The sheet
+    shows what is already logged for them (`logged`, below) and asks for
+    only the time since. Typing the whole day again bills the first part
+    twice (round 33).
+  - **The other over-bill path is an `added` entry for someone who did
+    tap in.** The sheet guards it with a hint, and the person's own row is
+    right above. It cannot be closed by the server, which has no way to
+    know who an added helper is.
+- **A submitter with no timer** (a desk user, or a tech who never tapped
+  in) has no "You" row. A tech's own hours then go on an `added` row and
+  pay nobody. That is today's single-day closeout rule for a caller without
+  a timer (`jobs.py:2549`, #529). The sheet says so: "You didn't tap I'm
+  here today, so these hours aren't added to your pay. Tell the office."
+
+**`update_appointment` refuses moving an arrived visit to another day**
+(409 `visit_arrived`, "Undo the arrival first").
+
+- It refuses a `start_at` on a different shop day from the stored one, on a
+  visit with `arrived_at` set.
+- The edit form resends every field on every save
+  (`appointments.py:612-613`), so the test compares with the stored value,
+  not "named in the request". A notes edit on an arrived visit succeeds.
+- Every other mover already takes only OPEN visits: Move
+  (`visit_sync.py:665-666`, via `_find_open`, `:624`) and crew changes
+  C1/C6 (`:395-412`).
+- Why: see "Audit rounds 13–33" (round 33).
+
+**The day row's note** lives on that `time_entries.notes`.
+
+- The closeout picker matches only the exact `"Closeout-attached"` marker
+  (`jobs.py:1917`) and the `"Timer stopped on mobile"` prefix (`:1947`).
+- The picker also excludes every `day_closed_at` row explicitly (below).
+
+**Daily log: `GET /api/jobs/{id}/day-log`.**
+
+- It lists each day row (`day_closed_at` set, minutes > 0), newest first,
+  with these fields:
+  - the shop-local date;
+  - the person's name, from the user id the `job_day_closed` audit row
+    records for that row, or "Added helper" for an `added` row;
+  - hours, and the note;
+  - who closed it, from the audit row.
+- Permission: the same as reading the job.
+- UI:
+  - a "Daily log" card on `JobDetailView.vue`;
+  - a section on `MobileJobDetailView.vue` (R-P3);
+  - both hidden when the list is empty.
+
+**Closeout ("Yes")** changes only as follows.
+
+- **The lock, and the earlier-day refusal.** `closeout_job` reads the job
+  row `with_for_update()` **first, before the timer step** (`jobs.py:2517`).
+  That is the same lock as day-close.
+  - It is not taken just before billing. If it were, a racing "No" would
+    commit between the two, and the timer step would overwrite the day row's
+    duration.
+  - Then it refuses `earlier_day_open` (defined under "The sheet", below).
+  - A "No" racing a "Yes" therefore commits entirely before the closeout's
+    timer step, or after the closeout commits. In the second case it is
+    refused `job_finished`, or is the 200 no-op if that same submission
+    already landed.
+- **A 0 h "Yes" is allowed only if today was already closed with "No" and
+  nobody still has a timer running on this job today** (Doug, 2026-10-06, after
+  round 36; replaces the round 34–36 versions, which asked what was left on
+  the whole job and were patched three times).
+  - `closeout_job` refuses `hours <= 0` when the tenant's
+    `require_hours_on_complete` is on (`jobs.py:2282`), and prod has it on.
+  - "Today was closed": the job has a `job_day_closed` audit row whose
+    `details.day` is the tap's shop day. Read in Python from the job's
+    audit rows (compared as `entity_id == str(job.id)`), not through a JSON
+    operator, so SQLite and Postgres agree.
+  - "Nobody still has a timer running today": the job has no candidate
+    timer on the tap's shop day (the definition above: open or
+    Stop-marked, `day_closed_at` NULL). This catches a helper who tapped in
+    again after the "No", and a person the "No" left unlisted, whose timer
+    a "No" never touches; a 0 h "Yes" would otherwise close either at 0.
+  - Otherwise the flag refuses 0 exactly as today. That covers the cases
+    the earlier versions missed: day 2 closed and day 3 worked with a
+    timer, day 3 worked without a tap-in, and a helper who taps in again
+    after today's "No". The hours field starts at **0**
+    (`MobileJobCloseoutDialog.vue:302`, `hours = ref(0)`), so any wider
+    skip restates a running timer at 0 (`jobs.py:2562`) and loses the day.
+  - Falsifier, accepted: work attested after today's "No" with no timer at
+    all (a visit completed by hand). The flag misses that today too.
+- **The other two ways a job finishes** (round 35). `/complete`
+  (`jobs.py:1597`, no SPA caller, reachable over the API) and
+  `/close-without-work` (`jobs.py:1698`, the job page's button at
+  `JobDetailView.vue:2770`) write no closeout row.
+  - Both refuse 409 `earlier_day_open`, the sheet's own predicate, checked
+    after the job-row lock. Close-without-work 0-closes every open timer
+    (`:1743-1745`), so without the gate a forgotten day's timer is lost by
+    that door. A single-day no-show is untouched: its one visit is the
+    latest Current visit, on the same day, and not day-closed.
+  - Neither route locks today (`jobs.py` has no
+    `with_for_update`), so both gain the same locked job select as
+    closeout, before reading timers (round 36). Without it a "No" that
+    commits between close-without-work's timer read and its write has its
+    new day row overwritten with 0.
+  - Both write their audit row with `audit_or_rollback`
+    (`core/audit.py`) **before** `db.commit()`, not
+    `log_audit_event_sync` after it (`jobs.py:1668-1680`, `:1746-1765`).
+    The completion and the row that bounds candidate timers then commit
+    together or not at all. The bound query compares
+    `audit_logs.entity_id` (a String) to `str(job.id)`, the dashed form
+    both routes write, never to a `Uuid` value.
+  - **The office's way out:** the Close-without-work dialog
+    (`JobDetailView.vue:2767-2779`, today a bare `catch {}`) shows the
+    `earlier_day_open` refusal inline: "<weekday, date> is still open.
+    Close that day first", with a button that opens the job page's
+    "Is this job finished?" sheet. `/complete` has no SPA caller, so its
+    409 body carries the same code and date.
+  - Neither checks `later_day_started`. Each acts on the server's now, and
+    `clock_in` is never later than now, so no later day can have started.
+  - Both stay allowed on a job with day rows. Those rows are billed by the
+    suggestion (see Billing: the earlier-visits line no longer needs a
+    closeout), so "customer cancelled the rest" still invoices days 1–2.
+  - Close-without-work's dialog shows "Already logged: N h on earlier days
+    (still billed)" when the job has day rows, so the office is not told
+    nothing is billable.
+  - Their audit rows bound the candidate timers (above).
+- **The labor picker** (`jobs.py:2515-2588`): `_owned_closeout_labor_entry`
+  and `_stopped_job_timer_for` add `day_closed_at IS NULL`. So neither a day
+  row nor a timer day-close consumed at 0 is ever restated or re-targeted.
+  - `_open_job_timers` needs nothing: a `day_closed_at` row is always
+    closed.
+  - **The caller's target timer is unchanged** (`jobs.py:2525`, newest open
+    first). A "No" leaves no open timer behind for any person it named:
+    their own "No" turns it into their day row, and any other "No" closes
+    it at 0.
+  - So a target timer is either today's, or one the caller started after
+    their own close. Its hours are paid on that timer's own day (round 11).
+- **The sheet's hours label** (`MobileJobCloseoutDialog.vue:895`).
+  - On a job with day rows, the label becomes **"Hours worked today"**.
+  - Above it: "Already logged: N h (billed separately)". This counts every
+    day row, including a helper's from earlier today, so "previous days"
+    would be wrong.
+  - When a day row from today exists, the techs-on-site hint reads "Don't
+    count techs whose day is already logged". Techs on site still defaults
+    to 1 (`MobileJobCloseoutDialog.vue:305`); hours starts at 0 (`:302`).
+  - Without this, a tech could enter whole-job hours and bill the previous
+    days twice.
+
+**The sheet** (`MobileJobCloseoutDialog.vue`).
+
+- It opens on **"Is this job finished?"** (Yes / No) before any other
+  section.
+- **Yes:** today's form. The return-visit checkbox is relabelled **"Needs a
+  follow-up job (new work)"**, with the hint **"Not finished? Answer No above
+  instead."** It is shown on Yes only (D8).
+- **No** shows four parts.
+  - **"Visits done for <day>"**: one checkbox per Current visit of
+    `open_day.date`, showing its tech name (or "Unassigned") and time, all
+    checked by default.
+    - Unchecking leaves that visit open. The sheet then warns: "This job
+      stays on the board until every visit is closed."
+  - **"Hours"**: one row per person in `open_day.people`. Each row has a
+    checkbox, checked by default, and a required hours field.
+    - The caller's own row comes first, labelled "You", and its field
+      starts blank.
+    - Every other row shows the "You" value until edited. On a desk
+      sheet, with no "You" row, every row starts blank.
+    - **A person who already has day rows on that day** (a lead's earlier
+      "No" closed them, and they tapped in again) shows "Already logged for
+      <day>: N h (by <closer>). Enter only the time since." Their field
+      then starts blank, never with the "You" value (round 33).
+    - Unchecking a person leaves their timer open, with the warning
+      "<name>'s time stays open until they answer this sheet or the job is
+      finished".
+  - **"+ Add a helper who didn't tap in"** adds an hours row. The hint
+    reads: "Only for someone with no row above — anyone who tapped I'm here
+    already has one."
+  - **Note for the office** (optional, placeholder "What's left?"), and a
+    line pointing to the existing live parts capture. This PR adds no parts
+    path to "No".
+  - It submits through `api.postQueued` with `day`, `visits`, `people`,
+    `added`, `closed_at`, `note` and `conflictIsError: true`.
+- **Where the sheet gets its rows, on every surface:**
+  `GET /api/jobs/{id}/day-log` also returns
+  `open_day: {date, visits: [{id, tech_name, start_at, state}], people:
+  [{user_id, name, mine, logged: [{hours, closed_by}]}]}`.
+  - `people` are the people of `open_day.date`.
+  - `logged` is that person's day rows on that date, read from the
+    `job_day_closed` audit rows (step 7 lists each person's user id with
+    their hours, day-row id and the actor). It is never matched by
+    `tech_id`. A timer's `tech_id` is the user id when the user has no
+    technician record (`mobile.py:784`), and an `added` row carries the
+    submitter's user id, so a `tech_id` match would show a submitter their
+    own added helpers' hours (round 34).
+  - `open_day.date` is the **oldest past worked day**: a day with a Current
+    visit someone arrived on (ON_SITE), **or with a candidate timer**. If
+    there is none, it is today.
+  - The timer counts because the phone's Start button needs only an
+    en-route job (`MobileJobDetailView.vue:1608-1610`), and `mobile_clock_in`
+    never stamps a visit. A tech who tapped On my way, started the clock and
+    forgot to close leaves an OPEN visit and a running timer. Without the
+    timer clause, that day would read as a rain-out, and a later "Yes" would
+    0-close its timer (round 16).
+  - A past day with neither is a no-show, which is not this sheet's to
+    close. PR 1 already routes it: it stays Current, the job sits on the
+    late-open card, and the office reschedules it there.
+  - So a forgotten day comes first. `partial_clause` (`visit_sync.py:727`)
+    counts any not-completed visit as Current, whatever its date, so an
+    unanswered day 2 keeps the job on the late-open card. Nothing would
+    otherwise reach that day again.
+  - **An earlier worked day blocks "Yes".** Suppose `open_day.date` is
+    **before today** (shop-local), **and** either it is before the job's
+    latest Current visit's shop day, or a day-close closed a visit on it
+    (`appointments.day_closed_at` set on a visit of that day). Then a
+    worked past day is still open, and it isn't the final day.
+    - The second arm is a past day whose visits a "No" closed while a
+      person was unchecked: their timer is still open. A "Yes" would 0-close
+      it and their hours would bill nowhere (round 33).
+    - It is keyed on a day-close, not on "no Current visit" (round 34). A
+      job with no visit at all, or one whose only visit the office
+      Completed by hand, can carry a running timer from an A3 arrival. Prod
+      had 11 such timers on 2026-10-06. That job's next-morning "Yes" stays
+      allowed, exactly as today.
+    - "Before today" is what keeps an early finish open. On day 3 of 4,
+      with day 4 booked, `open_day` is today, so Yes is allowed. Yes then
+      retires day 4, per F1.
+    - **Yes is disabled**, and the sheet reads "Close <weekday, date> first:
+      answer No for that day".
+    - The server enforces the same rule: `closeout_job` refuses with 409
+      `earlier_day_open`. The closeout already sends `conflictIsError`.
+    - **"Today" is the tap's shop day, not the server's.** `CloseoutPayload`
+      gains an optional `tapped_at` that the sheet sets. It is clamped to no
+      later than server `now`, and is server `now` when absent.
+      - Without it, take an early finish on day 3 of 4, queued offline and
+        replayed on day 4's morning. It would see day 3 as "before today"
+        and be refused.
+      - `tapped_at` feeds only this refusal. Everything else the closeout
+        stamps still uses server `now`, as today.
+    - **A later day already started refuses too.** The closeout refuses
+      with 409 `later_day_started` if, on a shop day after `tapped_at`'s
+      day, any Current visit is ON_SITE **or** the job has a candidate
+      timer (round 34: Start needs only en route, and `mobile_clock_in`
+      never stamps a visit, the same gap `open_day`'s timer clause closes).
+      The message is "Day not recorded: the crew has already
+      started <date>; tell the office."
+      - Otherwise, a replay landing after the next crew arrived would close
+        their visit through `_finish_visits` (`jobs.py:1559`) and 0-close
+        their timers, and their day would bill nowhere.
+    - A single-visit job closed out the next morning is not blocked: its
+      past day *is* its last Current day.
+    - This works from the late-open card (desk) and from the phone.
+  - The sheet reads `open_day` when it opens, and submits the ids it read
+    then. A replay therefore names the original day.
+  - The dialog needs no surface-specific prop, and a dispatcher gets real
+    rows (R-P6).
+  - Offline on the phone, the rows come from the last cached read.
+- **Nothing to submit:** with no Current visit up to today and no people,
+  "No" shows "No visit is booked on this job today — the office books the
+  next day" (D3), and submits nothing.
+
+**The timer of a forgotten day (B8).** Arrival
+(`mobile_job_arrived`, `mobile.py:2512`) reuses an open timer only if its
+`clock_in` is on today's shop day. Otherwise it opens a new one, and leaves
+the old one open for that day's "No".
+
+- Today it reuses any open timer on the job (`_find_open_time_entry` has no
+  date bound, `mobile.py:725`), so day 3's work would post under day 2's
+  `clock_in`.
+- **Manual clock-in changes the same way.** `mobile_clock_in` (`:2816`)
+  refuses with 409 only when an open timer on today's shop day exists. An
+  older one doesn't block today's.
+- Stop (`:1001`) and the toggle (`:849`) need nothing: they already take the
+  newest open timer (`ORDER BY clock_in DESC`).
+  - **Corrected in the build (2026-10-06, final-diff audit):** wrong once
+    today's timer is stopped, since the newest open timer is then the
+    forgotten day's, which the toggle showed running for 24 h and Stop
+    0-closed. Both now read today's timer only, as arrival and clock-in do.
+- On a single-day job nothing changes: closeout ends every timer, so no
+  timer survives to a later day.
+
+**The phone on day 2 (B3, B4, B7).**
+
+- **The visit payload:** the mobile job payload gains `today_visit`, the
+  tech's visit for today by the A1 rule (`{id, state, en_route_at,
+  arrived_at}`, or null).
+- **The buttons** (`MobileJobDetailView.vue:903-925`) read `today_visit`
+  when it is present:
+  - On my way when it is OPEN and not en route;
+  - I'm here when it is en route;
+  - Complete when it is ON_SITE.
+  - With no `today_visit`, they read `job.dispatch_status` as today.
+- **B3:** `_validate_forward_transition` (`mobile.py:186-204`) runs against
+  the visit's progress when a `today_visit` exists. The job's status is then
+  rolled up from it, as in day-close step 5. Within a visit it still never
+  goes backwards.
+- **B4:** en route stamps `en_route_at` on today's visit if it is null.
+  Arrival already stamps it (`_stamp_arrival`). The JobAssignment first-day
+  columns are unchanged (`job_assignments.py:380-385`).
+- **B7:**
+  - The stage write in `start_job` (`jobs.py:1465-1490`: `started_at` if
+    null, `lifecycle_stage='in_progress'`, `status='In Progress'`) is
+    factored into `_mark_job_started(job, now)`.
+  - En route and arrival call it when the stage is before `in_progress`.
+  - No new stage path is invented. There is no stage-write scanner, so the
+    tests are the guard.
+
+**Billing (§5.5, D1 (a), R-P1)**, in `build_closeout_lines`
+(`core/closeout_billing.py:138`), `service` lane only:
+
+- `prev = Σ duration_minutes/60` over the job's day rows: `day_closed_at`
+  set, `deleted_at` null, `clock_out` set. A consumed timer adds 0.
+- If `prev > 0`, there is one line, **"Labor — earlier visits"**:
+  - It is not called "previous days", because a helper's day closed by "No"
+    earlier the same day is on it too.
+  - quantity = `prev` rounded up to the half hour;
+  - unit price = `service_call_hourly_rate`;
+  - `taxable` = the tenant's `labor_taxable` flag, the same as the final-day
+    labor line. This PR changes no tax behavior;
+  - `source = AUTODRAFT_LINE_SOURCE`, so a re-closeout's
+    `release_untouched_autodraft` owns and rebuilds it.
+- The final-day line (`:264-269`) is unchanged.
+- The earlier-visits line is built **outside** the final-day line's
+  `hours_worked > 0` check. A job whose final day attests 0 h still bills
+  the previous days.
+- **Invoice prefill:** `GET /{id}/closeout-billing-suggestion`
+  (`jobs.py:3055`) gains an `earlier_visits_line` (or null) beside
+  `labor_line`. It is computed from the day rows **before** the
+  `closeout is None` early return (`jobs.py:3103`), and returned on that
+  path too. A job finished by Close-without-work or `/complete` has no
+  closeout, and would otherwise never put its earlier days on any invoice
+  (round 35).
+  - It is non-null only when the job is **completed**. Mid-job it is null,
+    so a hand-made mid-job invoice cannot be offered the same days again
+    at the end, and nothing mid-job changes from today.
+  - Every reader's `has_closeout` guard moves below its
+    `earlier_visits_line` use (round 36): `InvoiceCreateView.vue:790`
+    (`if (!s?.has_closeout) return;`) and `LaborPickerDialog.vue:297`
+    and `:314`. `InvoiceDetailView.vue:1278` only fetches; its consumer is
+    the picker. A guard left in place would drop the line exactly on the
+    no-closeout jobs this exists for.
+  - Each reader adds it as a second line: `InvoiceCreateView.vue:802`, and
+    the picker (`LaborPickerDialog.vue:296/313`), which serves both
+    `InvoiceCreateView` and `InvoiceDetailView.vue:1278`. A reader left
+    unchanged would silently drop the previous days.
+- **The mobile invoice path** (`mobile_invoicing.py:849`) calls
+  `build_closeout_lines` and inherits the line.
+- **Accepted-estimate jobs:** the estimate prices them.
+  - The autodraft skip (`closeout_billing.py:523-532`) is unchanged.
+  - So is office invoice creation from an estimate (`create_invoice`,
+    `invoices.py:1198`, which reads no closeout labor).
+  - Day rows add no labor to an estimate-priced invoice. Neither does a
+    single-day closeout today. This settles §5.5's "not yet traced".
+- **Existing rows:** none change. No job has a day row until a "No" is
+  submitted, so every existing and every single-day job bills exactly as
+  today.
+- **Rollback:**
+  - Revert the PR and run the downgrade.
+  - Day rows and visits lose `day_closed_at`.
+    - A submitter's row reads as an ordinary closed job timer.
+    - A `user_id` NULL row reads as a closeout's synthetic `'work'` row.
+    - Their minutes stay on them, and the user-less rows stay unpaid.
+  - A draft rebuilt after the rollback drops the earlier-visits line. An
+    issued invoice is never restated.
+  - A Stop-marked timer that day-close consumed at 0 loses its marker. For
+    24 h after it was stopped, `_stopped_job_timer_for` could pick it for a
+    "Yes" again. That restates the same tech's own timer, as it did before
+    this PR, so the window is bounded and no row is double-billed.
+
+**Tech efficiency** (`routers/tech_efficiency.py:7`, a missed reader). The
+denominator becomes `closeout.hours_worked` plus the job's **wall-clock
+days**.
+
+- Per shop day, that is the longest day row (D13's `worked`).
+- The exception is **the closeout's own shop day**
+  (`job_closeouts.created_at`, shop-local). That day counts
+  `max(hours_worked, longest day row that day)` instead of adding
+  `hours_worked` on top.
+- Otherwise a multi-day job inflates the ratio.
+
+- Why max, not a sum, on the closeout's day: `hours_worked` is wall-clock
+  for that day too.
+  - A helper who left early (a 4 h row beside an 8 h closeout) reads as
+    8 h, not 12.
+  - A crew "No" of 6 h followed by a 0 h "Yes" the same day reads as 6 h,
+    not 0.
+- A next-morning closeout is the known approximation. Its shop day differs
+  from the work day, so a same-work-day helper row is added. That costs
+  only this report's ratio, not money.
+- The ratio compares the job's estimate (wall-clock) with time on site
+  (wall-clock), so it is not keyed by tech.
+- The `closed_in_window` filter `jc.hours_worked > 0` (`:92`) becomes "that
+  sum > 0". Otherwise a job whose final day attests 0 h, which the
+  earlier-visits line deliberately bills, would drop out of the report.
+
+**D13: queued hours.** For a partial job's row, `_duration_fields`
+(`dispatch_scheduling.py:105`) returns `effective_duration_hours`. That
+becomes `max(0, scheduled_duration_hours − worked)`.
+
+- `worked` sums, per shop day, the **longest** day row that day
+  (`day_closed_at` set).
+- The job's hours are wall-clock: tech efficiency compares them with
+  per-tech `hours_worked`. So two techs working 8 h on one day used 8 h of
+  the job, not 16.
+- `scheduled_duration_hours` itself is unchanged.
+- A job with no estimate stays no-est.
+
+**Pay identity (R-P5).** Payroll's `_fetch_tech_hours` reads `time_entries`
+by `user_id` (`payroll.py:243-270`). Day-close writes hours onto a
+`user_id` row only through the submitter's own timer, carrying the one
+number they typed for themselves. So:
+
+- A tech's own "No" pays their own day, whatever visits they were on, and
+  as an A3 arrival too.
+- A person left unchecked keeps an open timer, and their own "No" or "Yes"
+  pays it.
+- A desk "No" pays no one, exactly like a desk "Yes" today: the techs'
+  timers close at 0, and their rows have `user_id` NULL.
+- B8 keeps a forgotten day from costing the next one, because each day keeps
+  its own timer.
+
+**Tests (each must fail with its fix reverted):**
+
+- **day-close, money:**
+  - Solo tech T, one visit, "No" with T 8 h: T's open timer becomes the day
+    row with T's `user_id`, 8 h, the rate and the note. The visit is
+    completed with `day_closed_at`. T is paid 8, and the job bills 8.
+  - T's Stop-marked timer that day is restated, not duplicated, including
+    when the day is closed 3 days later.
+  - **Same-day return:** T arrives on V1, and later on V2 (two timers, or
+    one). One "You" row. T 8 h pays 8 and bills 8. Each of T's other
+    candidate timers closes at 0 with the marker.
+  - **Round-32 fixture A:** T and U both tap unassigned V1. The office books
+    U a same-day V2, and U taps it. `open_day.people` is {T, U}, one row
+    each.
+    - U submits T 8, U 8: U's timer is the day row (8 h, U's `user_id`).
+      T's timer is consumed at 0, and one `user_id` NULL 8 h row has T's
+      `tech_id`. U is paid 8, T 0, and the job bills 16.
+    - The same body submitted by T mirrors it.
+  - **Round-32 fixture B:** the office Completes T's V1 mid-day. T taps
+    again and lands on unassigned V2. `open_day.people` is {T}, one row.
+    T 8 pays 8 and bills 8.
+  - A3: a helper H with no visit is a person like any other. The lead's "No"
+    with H 6: H's timer is consumed at 0, and a `user_id` NULL 6 h row is
+    written.
+  - A desk "No" with T 8 and U 8: both timers are consumed at 0, and there
+    are two `user_id` NULL rows. Nobody is paid, and the job bills 16.
+  - `added` [4]: one `user_id` NULL 4 h row, with `tech_id` = the
+    submitter's id and the "Added helper" note. The insert succeeds on
+    SQLite and Postgres.
+  - A tech submitter with no timer: no "You" row, and their `added` hours
+    pay nobody.
+  - Unchecking U leaves U's timer open and unmarked. U's own people-only
+    "No" later pays U.
+  - A person who tapped in after the sheet was read is not in the body.
+    Their timer is left open, `open_day` returns that day again with them on
+    it, and a past day blocks Yes (`earlier_day_open`).
+  - A visits-only body closes the visits and writes no rows.
+  - Every listed person's timers are consumed, and every unlisted one is
+    untouched (one fixture with three people, one unchecked).
+- **day-close, replay and refusals:**
+  - A lost-response replay with the same `closed_at` is a 200 no-op. That
+    holds after the job was finished, and for a visits-only body, which is
+    matched through `appointments.day_closed_at`.
+  - A replay whose `closed_at` is ahead of server time is the 200 no-op.
+  - A queued "No" replayed after the office's "Yes" closed its visit is
+    `job_finished`, not 200.
+  - `visit_not_open`: a closed visit, a deleted visit, and another job's
+    visit. A visit closed by another day-close carries `already_closed`. One
+    the office Completed by hand does not.
+  - `day_moved`: the office moves a listed visit to tomorrow before the
+    replay. The visit stays open tomorrow, and the timer stays open today.
+  - `person_not_open`: a user with no timer on D. A second closer naming a
+    person already closed carries `already_closed`.
+  - A 422 for each of these:
+    - a duplicate visit id, and a duplicate user id;
+    - hours 0, 24.5 and −4 in `people` and in `added`;
+    - eleven `added` entries;
+    - an empty body;
+    - a 2001-character note;
+    - `day` missing and malformed;
+    - `closed_at` missing, malformed and naive.
+  - Day bound: a day-2 "No" replayed on day 3 with a day-3 timer open closes
+    day 2's visits and timers. The day-3 timer is untouched.
+  - Concurrency, Postgres only:
+    - two sessions submitting the same body produce one set of rows;
+    - a people-only "No" from U and the lead's "No" naming U leave one row
+      for U's day.
+  - Atomicity: a failure in step 2 leaves the visits open.
+- **day-close, state:**
+  - Roll-up: `assigned`, `en_route` and `on_site` cases. The roll-up
+    ignores the closed visits.
+  - Recompute to the next visit, and to Partial Jobs.
+  - The `job_day_closed` audit row names every person and their hours.
+  - Day-close NULL rows are `entry_type='work'`.
+  - The queued action is `job.day_close`. A second queued "No" for another
+    day is not retired by the first.
+- **`open_day`:**
+  - It returns a forgotten earlier day (an arrived visit, or a running
+    timer with no arrival) before today. After that day closes, it returns
+    today.
+  - A rained-out past day (no arrival, no timer) does not block.
+  - `people` lists each user with a candidate timer once, whatever visits
+    they were on.
+  - A day-2 timer started with Start (no arrival) whose OPEN visit the
+    office moved to day 5 gives `open_day` day 2 with no visits and that
+    person. A people-only "No" closes it, and
+    then "Yes" is allowed.
+- **Closeout:**
+  - `earlier_day_open`:
+    - Yes is refused while a worked past day is open and isn't the final
+      day.
+    - A single-visit job closed out the next day is not refused.
+    - An early finish on day 3 of 4 with day 4 booked is not refused.
+    - Tapped on day 3 and replayed on day 4 with `tapped_at`, it is not
+      refused. The same replay after day 4's crew arrived is
+      `later_day_started`.
+  - The picker skips `day_closed_at` rows: a day row is never restated or
+    zeroed, and a consumed Stop-marked timer is never picked.
+  - The closeout's target timer is unchanged (newest open first). No test
+    expects a skip.
+  - Same day: the helper answers "No" for themselves, then the lead
+    answers "Yes". The lead's own timer carries the lead's hours with their
+    `user_id`, and the helper's row bills on the earlier-visits line.
+  - The same with the lead's Yes the next morning: the lead's own timer is
+    still the target.
+  - The lead answers "No", clocks in again, and taps "Yes" offline. It
+    replays after midnight: the new timer is the target and carries the
+    lead's `user_id`.
+  - Closeout lock: the job-row lock is taken before the timer step.
+    Asserted on the statement order, Postgres only.
+- **Round 33:**
+  - `update_appointment` moving an arrived visit to another shop day is
+    409 `visit_arrived`. A notes edit resending the same `start_at`
+    succeeds, and so does a tech change.
+  - The lead's "No" closes U at 4 h. U taps I'm here again, and U's
+    sheet shows "Already logged for <day>: 4 h (by Lead)" with a blank
+    field. U 4 then bills 8 in total.
+  - A "No" closes every visit of a past day with U unchecked: "Yes" is
+    `earlier_day_open` until U's day is closed.
+- **Round 34:**
+  - A job with no visit, and an A3 timer from yesterday: the next morning's
+    "Yes" is not `earlier_day_open`.
+  - So is a job whose only visit the office Completed by hand while a timer
+    ran.
+  - A day-3 "Yes" queued offline and replayed on day 4, after day 4's crew
+    tapped On my way and Start but not I'm here, is `later_day_started`.
+  - A submitter with no technician record adds a helper: their own
+    `logged` does not include the helper's hours.
+  - A finished job with a helper's leftover Stop-marked timer is re-opened
+    and booked a new day: that timer is not a candidate, `open_day` does
+    not return its day, and "Yes" is allowed.
+- **Round 35:**
+  - Close-without-work and `/complete` on a job whose earlier day has an
+    open timer and a later Current visit: 409 `earlier_day_open`, nothing
+    written. A single-day no-show from yesterday still closes.
+  - Close-without-work on a job with day rows: allowed, and the suggestion
+    returns `earlier_visits_line` with no closeout.
+  - Close-without-work leaves a helper's Stop-marked timer; the job is
+    re-opened and booked a new day: that timer is not a candidate.
+- **Round 36:**
+  - A Close-without-work job with day rows: the invoice create page and
+    the labor picker both show the earlier-visits line. The suggestion
+    returns it null on an in-progress job.
+  - Postgres: a "No" racing Close-without-work either lands before it
+    (its day row survives at its hours) or is refused `job_finished`.
+  - An audit write that fails inside Close-without-work rolls the
+    completion back.
+  - Close-without-work refused `earlier_day_open` shows the inline message
+    and its button opens the sheet.
+- **The 0 h "Yes"** (`require_hours_on_complete` on; replaces the round
+  34–36 tests):
+  - Today closed by "No", no timer left today: allowed, and bills only the
+    earlier-visits line.
+  - Day 2 closed by "No", the caller's day-3 timer running: refused; a 5 h
+    "Yes" bills 5 h on the final-day line beside the earlier-visits line.
+  - Day 2 closed by "No", day 3 worked without a tap-in: refused.
+  - Today closed by "No", then a helper taps I'm here: refused.
+  - Today closed by "No" with a person left unlisted, timer running:
+    refused.
+  - A job with no "No" anywhere: refused as today.
+- **B8:**
+  - Arrival on day 3 with day 2's timer still open opens a new timer. Day
+    2's "No" then closes only day 2's timer.
+  - `mobile_clock_in` with yesterday's timer still open opens today's.
+- **Billing:**
+  - Day rows of 3 h and 4.2 h give one 7.5 man-hour line at the hourly rate,
+    with no first-hour price and no 1 h floor.
+  - That line carries `source=autodraft`, and a re-closeout rebuilds it.
+  - The final-day line is unchanged.
+  - An accepted-estimate job is unchanged.
+  - A job with no day rows is byte-for-byte unchanged.
+  - The suggestion's `earlier_visits_line` is shown by each of its three
+    readers.
+- **The migration:** both columns, up, down and up again, on SQLite and on
+  Postgres (in CI). Run it both on a database `create_all` built and on one
+  it did not.
+- **Phone:** the day-2 en-route gate opens from `today_visit`. B7 moves the
+  stage through `_mark_job_started`.
+- **D13:** two techs with 8 h each on one day subtract 8.
+- **Tech efficiency:**
+  - An 8 h closeout plus a same-day 4 h helper row gives a denominator of
+    8, not 12.
+  - A same-day 6 h "No" plus a 0 h "Yes" gives 6.
+- **Sheet:**
+  - The Yes and No branches.
+  - The relabel shows on Yes only.
+  - Visits are checkboxes with no hours field.
+  - There is one hours row per person, "You" first. A desk sheet has no
+    "You" row and starts blank.
+  - "+ Add a helper" adds a row, and the body carries `added`.
+  - The request carries `conflictIsError: true`. A mocked 409 lands in the
+    failed list, not as synced.
+  - The "Hours worked today" label shows when day rows exist.
+
+**Audit rounds 1–12 (2026-10-06)** shaped what is still above:
+
+- **Round 1:**
+  - the body names the day it closes;
+  - no `_record` inside the transaction;
+  - R-P4;
+  - the final-day hours label;
+  - `_mark_job_started`;
+  - #529 for desk rows;
+  - the `labor_taxable` flag;
+  - the missed suggestion readers and tech efficiency.
+- **Round 2:**
+  - visits closed by id, with R-P6;
+  - `conflictIsError`;
+  - the Stop-marker match and the shop-day bound;
+  - R-P5 (crew hours never land on a helper's pay row);
+  - OPEN visits listed.
+- **Round 3:**
+  - the NOT NULL `tech_id` on synthetic rows;
+  - `open_day`, oldest day first.
+- **Round 4:** `is_current` everywhere; wall-clock tech efficiency; the
+  job-row lock.
+- **Round 5:** `open_day` forces only a worked past day; the timer query
+  is its own, with no 24 h window.
+- **Round 6:**
+  - B8;
+  - the closeout lock moved before the timer step;
+  - `earlier_day_open`.
+- **Round 7:** the before-today bound on `earlier_day_open`;
+  `mobile_clock_in` bound to the shop day.
+- **Rounds 8–11:** the closeout's target timer stays "newest open first",
+  with no skip. Every "No" consumes the closed day's timers, so a skip could
+  only ever fire on a timer started after the caller's own close, and would
+  then pay nobody. Tech efficiency takes `max()` on the closeout's own day.
+- **Round 11:** `tapped_at`.
+- **Round 12:** `later_day_started`.
+
+**Audit rounds 13–33 (2026-10-06): the per-visit model, replaced.** From
+round 13 the sheet put hours on **visits**: one hours field per visit, plus
+a Techs stepper on unassigned visits. Money then needed to know which
+person each visit's hours belonged to, and each round answered that and
+found the next case:
+
+- **Round 13:** a timer→visit link (`time_entries.appointment_id`), because
+  "helper" matched every arriver on an unassigned visit and double-billed a
+  desk "No".
+- **Round 14:** hours per tech per day, with `hours: 0` on sibling visits
+  for a same-day return, and a legacy unassigned-visit fallback.
+- **Rounds 15–16:**
+  - `_visit_owner`, grouping a tech's visits into one row;
+  - a per-visit `techs` count;
+  - `closed_at` as the replay key;
+  - a worked day including a running timer.
+- **Rounds 17–21:**
+  - stale links (the office Completes, Moves, Removes or reassigns a
+    visit), with the `crew_changed` refusal, `unchecked_helpers`, and the
+    own-visit fallthrough;
+  - an `update_appointment` guard against changing an arrived visit's tech
+    or day (`visit_arrived`).
+- **Rounds 22–24:**
+  - `appointments.day_closed_at`;
+  - the body's `day` and `day_moved`;
+  - a guard against reopening a day-closed visit (`visit_day_closed`).
+- **Rounds 26–29:**
+  - an explicit check order, and shape checks that read the body only;
+  - an `hours: 0` rule needing every user on the visit to be counted
+    elsewhere;
+  - a no-user row prefilled blank;
+  - one `_visit_users` helper.
+- **Round 30:** `appointments.arrived_by_user_id`, because a solo tech's
+  second tap on an unassigned visit left it with no owner and split the
+  tech across two rows.
+- **Round 31:** the submitter's visits are those they are on, whoever owns
+  them; a grouped row's hours sit on an "anchor" visit.
+- **Round 32** found that rows were grouped by owner while pay followed
+  `_visit_users`.
+  - Two unassigned arrivers plus a same-day V2 put one person on two rows.
+    With the defaults that paid 16 and billed 24 for an 8 h day.
+  - An office Complete mid-day brought back round 20's double row through
+    `arrived_by_user_id`.
+  - Four membership rules now existed, each round patching the last pair.
+
+The fix was to stop asking the question: one hours row per person, with
+visits as checkboxes. What carried over, and what was withdrawn:
+
+- **Kept:**
+  - `closed_at` as the per-submission key;
+  - `appointments.day_closed_at`;
+  - `day` and `day_moved`;
+  - the check order's principle (shape 422s read only the body; replay
+    first);
+  - `already_closed`;
+  - "Current" meaning not deleted;
+  - the running-timer clause of `open_day`.
+- **Withdrawn, because they existed only to map hours to visits:**
+  - `time_entries.appointment_id` and arrival's link;
+  - `appointments.arrived_by_user_id`;
+  - `_timer_visit`, `_visit_owner`, `resolved`, `_visit_users`;
+  - the anchor and the Techs stepper;
+  - the `hours: 0` rule;
+  - `crew_changed`, `unchecked_helpers` and `helper_not_open` (now
+    `person_not_open`).
+- **`visit_day_closed` is withdrawn.** It stopped a reopened visit from
+  billing a second per-visit row. A reopened day-closed visit now carries no
+  hours, and its people's timers are already consumed, so closing it again
+  writes nothing.
+- **`visit_arrived` keeps only its day half** (round 33). Round 32's draft
+  withdrew it whole, judging it by money alone. But `visit_state` reads any
+  `arrived_at` as ON_SITE (`visit_sync.py:59`), and `update_appointment`
+  moves `start_at` without clearing it. So a day-2 arrived visit dragged to
+  day 5 would read as worked on day 5:
+  - `later_day_started` would refuse every "Yes" until then;
+  - `open_day` would treat day 5 as a worked past day.
+
+  Changing an arrived visit's tech stays allowed: no refusal and no money
+  reads it now.
+- The remaining over-bill path, an `added` entry for someone who did tap
+  in, is stated under "What it bills and pays".
+
+**Audit round 33 (2026-10-06)** checked the reshape against the code. It
+found one submission bills each person once, and four problems, all folded
+in above:
+
+1. Withdrawing `visit_arrived` whole let an arrived visit be moved to
+   another day, where it reads as ON_SITE and trips `later_day_started` →
+   the day half is kept.
+2. §5.4's "No timer open" rule and §5.5's `service_labor_line` still
+   contradicted §5.4a → marked superseded in both.
+3. A person closed by the lead who taps in again could be billed twice by
+   their own "No" → the sheet shows what is already logged for them.
+4. `earlier_day_open` had no rule for a past day with no Current visit →
+   defined.
+
+**Audit round 34 (2026-10-06)** confirmed round 33's fixes against the
+code, plus read-only prod queries. It found five problems, all folded in
+above:
+
+1. Prod has `require_hours_on_complete` on, so the 0 h "Yes" every forced
+   "No" ends in was refused → skipped when the job has a day row.
+2. Round 33's "no Current visit" arm blocked a single-day job's
+   next-morning "Yes" when an A3 timer ran on a job with no visit → keyed
+   on a day-closed visit instead.
+3. `later_day_started` missed a later day started with Start but no
+   arrival → it counts candidate timers too.
+4. `logged` matched by `tech_id`, which collides → read from the audit
+   rows.
+5. A helper's Stop-marked timer outlived a finished job, and a re-open
+   could bill that day twice → candidates start after the latest closeout.
+
+**Audit round 35 (2026-10-06)** confirmed round 34's fixes (the
+`later_day_started` timer arm, the closeout bound across re-open, audit-row
+durability, the day-closed arm of `earlier_day_open`). It found two
+problems, folded in above:
+
+1. The 0 h "Yes" skip fired on any job with a day row, so a crew answering
+   "Yes" on day 3 with the hours field left at 0 lost the day → skipped
+   only when no candidate timer remains. Also corrected: the field starts
+   at 0, not 1.
+2. Close-without-work and `/complete` were outside §5.4a: they could
+   0-close a forgotten day's timer, never billed earlier days (the
+   suggestion returned early without a closeout), and left no closeout to
+   bound candidates → both refuse `earlier_day_open`, the suggestion
+   computes the earlier-visits line without a closeout, and the bound uses
+   their audit rows.
+
+**Audit round 36 (2026-10-06)** confirmed the server half of round 35's
+suggestion change and the 0 h narrowing's logic. It found five problems,
+folded in above:
+
+1. Every suggestion reader returns before the new line when there is no
+   closeout → the `has_closeout` guards move, and the line is returned
+   only on a completed job.
+2. A final day worked without a tap-in has no timer, so the narrowed skip
+   still fired. Doug then ruled the rule be made simple instead: 0 h only
+   when today was closed by "No" and no timer is still running today.
+3. The spec cited a job-row lock the two routes do not take → both gain
+   one.
+4. The bounding audit row commits after the completion → written with
+   `audit_or_rollback` before the commit, compared as a string.
+5. Close-without-work's 409 had no message or way out → an inline message
+   and a button to the sheet.
+
 ## 6. PRs (stacked, merged bottom-up)
 
 1. **Visits survive and arrival is safe (B1, B2).** Covers §5.2 and the
@@ -1509,9 +2651,11 @@ appointment rows.
    visits API is one more writer and gets its own test.)
 3. **"Is this job finished?" and summed billing (B3, B4, B6, B7).**
    Covers §5.4 and §5.5.
-   - D2 picked the column, so this PR adds an Alembic migration
-     (`time_entries.appointment_id`, nullable) that runs on SQLite and
-     Postgres and has a downgrade. Existing rows stay NULL.
+   - D2 picked a column, so this PR adds an Alembic migration (106:
+     nullable `day_closed_at` on `time_entries` and `appointments`, §5.4a)
+     that runs on SQLite and Postgres and has a downgrade. Existing rows
+     stay NULL. (D2 named `appointment_id`; audit round 32 replaced the
+     per-visit hours model, and with it the timer→visit link.)
    - If #842 has not merged by then, the desktop surface waits for it.
      (#842 MERGED 2026-10-04, so nothing waits.)
    - D13: a partial job's queued hours become the hours still left, the
@@ -1543,7 +2687,7 @@ status line ships with the code").
 | # | Question | Ruling |
 |---|---|---|
 | D1 | Hourly-lane labor on a multi-day job: (a) a separate "Previous days" invoice line built from the attested day rows, or (b) the final closeout's hours pre-filled with the day total? | **(a) Separate line** (recommendation accepted). |
-| D2 | How a day row is marked: a nullable `time_entries.appointment_id` column, or a note label? | **The column** (recommendation accepted). |
+| D2 | How a day row is marked: a nullable `time_entries.appointment_id` column, or a note label? | **The column** (recommendation accepted). PR 3 marks day rows with `time_entries.day_closed_at` instead of `appointment_id` (§5.4a, after audit round 32). |
 | D3 | After a "No" day with no next day booked: the office books it, or the tech picks the day? | **The office books it** (recommendation accepted). |
 | D4 | Does the customer get an "on my way" text each day? | **Yes, each day** (recommendation accepted). |
 | D5 | Can the crew differ by day? | **Yes** (recommendation accepted). |

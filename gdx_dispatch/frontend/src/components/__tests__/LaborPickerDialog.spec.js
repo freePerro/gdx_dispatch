@@ -300,3 +300,76 @@ describe('LaborPickerDialog — an install quote is never relabelled as attested
     expect(w.emitted('add')[0][0][0].taxable).toBe(false);
   });
 });
+
+// Multi-day jobs PR 3 (plan §5.4a, Billing, round 36): the days closed with
+// "No" bill as their own "Labor — earlier visits" line. It is read without the
+// has_closeout guard — a Close-without-work job has no closeout and this is
+// the only line that bills its earlier days.
+describe('LaborPickerDialog — earlier visits', () => {
+  const EARLIER = {
+    description: 'Labor — earlier visits',
+    quantity: 16,
+    unit_price: 95,
+    line_total: 1520,
+    source: 'attested',
+    labor_price_item_id: null,
+    man_hours: 16,
+  };
+
+  it('adds the earlier-visits line as a second line after the final day', async () => {
+    const w = mountPicker({ closeout: { ...CLOSEOUT, earlier_visits_line: EARLIER } });
+    await flushPromises();
+    expect(w.find('[data-testid="labor-earlier-visits"]').text()).toContain('Labor — earlier visits');
+    await w.find('[data-testid="labor-add-attested"]').trigger('click');
+    const lines = w.emitted('add')[0][0];
+    expect(lines).toHaveLength(2);
+    expect(lines[0].description).toBe('Labor — 18.0 attested man-hours');
+    expect(lines[1]).toMatchObject({
+      description: 'Labor — earlier visits',
+      quantity: 16,
+      unit_price: 95,
+      category: 'Labor',
+      taxable: false,
+      labor_source: 'attested',
+      estimated_man_hours: 16,
+    });
+    expect(lines[1].labor_price_item_id).toBeUndefined();
+  });
+
+  it('a job with no closeout still offers the earlier-visits line, alone', async () => {
+    const w = mountPicker({ closeout: { has_closeout: false, labor_line: null, earlier_visits_line: EARLIER } });
+    await flushPromises();
+    expect(w.find('[data-testid="labor-lane-attested"]').exists()).toBe(true);
+    expect(w.find('[data-testid="labor-attested-price"]').exists()).toBe(false);
+    await w.find('[data-testid="labor-add-attested"]').trigger('click');
+    const lines = w.emitted('add')[0][0];
+    expect(lines).toHaveLength(1);
+    expect(lines[0].description).toBe('Labor — earlier visits');
+  });
+
+  it('an install adds it beside the quoted price, and shows it in one lane only', async () => {
+    const w = mountPicker({
+      closeout: {
+        has_closeout: true,
+        closeout: { hours_worked: 6 },
+        labor_line: { description: '16x7 Sectional Install', quantity: 1, unit_price: 650, source: 'matrix', labor_price_item_id: 'lpi-1', man_hours: null },
+        earlier_visits_line: EARLIER,
+      },
+    });
+    await flushPromises();
+    expect(w.find('[data-testid="labor-lane-attested"]').exists()).toBe(false);
+    expect(w.findAll('[data-testid="labor-earlier-visits"]')).toHaveLength(1);
+    await w.find('[data-testid="labor-add-suggested-matrix"]').trigger('click');
+    const lines = w.emitted('add')[0][0];
+    expect(lines.map((l) => l.description)).toEqual(['16x7 Sectional Install', 'Labor — earlier visits']);
+    expect(lines[1].labor_source).toBe('attested');
+  });
+
+  it('mid-job (earlier_visits_line null) emits the single attested line as before', async () => {
+    const w = mountPicker({ closeout: { ...CLOSEOUT, earlier_visits_line: null } });
+    await flushPromises();
+    expect(w.find('[data-testid="labor-earlier-visits"]').exists()).toBe(false);
+    await w.find('[data-testid="labor-add-attested"]').trigger('click');
+    expect(w.emitted('add')[0][0]).toHaveLength(1);
+  });
+});

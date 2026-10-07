@@ -24,6 +24,7 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { db, QUEUE_STATUS, getMetadata, setMetadata } from '../lib/offlineDb'
 import { useOnlineState } from './useOnlineState'
+import { alreadyClosedText, jobFinishedText, dayCloseTotalHours, formatHours, formatDayLong } from '../utils/dayClose'
 
 const { isOnline } = useOnlineState()
 const pendingCount = ref(0)
@@ -79,6 +80,10 @@ async function _refreshFailedActions() {
         uncertain: !!r.uncertain,
         missing: Array.isArray(r.last_error_missing) ? r.last_error_missing : [],
         amount: _paymentAmount(r),
+        // Multi-day PR 3: a refused "No" shows the day and the hours it
+        // carried, so the tech can tell the office (plan §5.4a).
+        day_close: _dayCloseSummary(r),
+        already_closed: r.last_error_already_closed || null,
         created_at: r.created_at,
       }))
   } catch {
@@ -87,12 +92,23 @@ async function _refreshFailedActions() {
 }
 
 // "Tell the office" needs something to tell them: what the payment was.
+function _dayCloseSummary(row) {
+  if (row.action_type !== 'job.day_close') return null
+  const day = typeof row.body?.day === 'string' ? row.body.day : null
+  return { day, hours: dayCloseTotalHours(row.body) }
+}
+
 function _paymentAmount(row) {
   if (row.action_type !== 'invoice.payment') return null
   const n = Number(row.body?.amount)
   if (!Number.isFinite(n) || n <= 0) return null
   const method = typeof row.body?.method === 'string' ? row.body.method.trim() : ''
   return `$${n.toFixed(2)}${method ? ` ${method}` : ''}`
+}
+
+function _alreadyClosed(body) {
+  const a = body?.already_closed ?? body?.detail?.already_closed
+  return a && typeof a === 'object' && Array.isArray(a.rows) ? a : null
 }
 
 // The server's refusal as a sentence. `detail` is sometimes structured — a
@@ -559,7 +575,14 @@ async function _send(entry, { acknowledgeRefusal = false } = {}) {
       // The closeout gate's checklist ("add: signature, hours") — the one
       // refusal detail a tech can act on without calling the office.
       last_error_missing: Array.isArray(parsedBody?.missing) ? parsedBody.missing : null,
-      last_error_reason: typeof parsedBody?.detail?.code === 'string' ? parsedBody.detail.code : null,
+      // The code rides under `detail` (HTTPException(detail={...})) or beside
+      // it at the top level (the day-close 409s); read both.
+      last_error_reason: typeof parsedBody?.detail?.code === 'string'
+        ? parsedBody.detail.code
+        : (typeof parsedBody?.code === 'string' ? parsedBody.code : null),
+      // A day-close 409's "who closed it, with how many hours" — the words
+      // the failed list shows instead of "the server refused it".
+      last_error_already_closed: _alreadyClosed(parsedBody),
       acknowledged: acknowledgeRefusal,
       attempt_count: (entry.attempt_count || 0) + 1,
     })
@@ -845,6 +868,7 @@ const ACTION_LABELS = {
   'parts.status': 'Parts status',
   'change_order.create': 'Change order',
   'invoice.payment': 'Payment',
+  'job.day_close': "Day's hours",
 }
 
 /** What a queued write was, in the words a tech uses. */
@@ -870,10 +894,23 @@ const GONE_LABELS = {
 }
 
 /** Why the server refused it — what the tech can actually do about it. */
-export function describeQueuedRefusal({ action_type: actionType, http_status: status, error, missing, uncertain } = {}) {
+export function describeQueuedRefusal({
+  action_type: actionType, http_status: status, error, missing, uncertain,
+  reason, day_close: dayClose, already_closed: alreadyClosed,
+} = {}) {
   if (uncertain) {
     return 'The phone never got a clear answer while sending it — it may already be on the server.'
       + (isRetryable(actionType) ? ' Check the job before you Retry.' : '')
+  }
+  // Multi-day PR 3 (plan §5.4a): a refused "No" is hours nobody has recorded
+  // yet. Every wording names the day and the hours, so the tech can tell the
+  // office what to add.
+  if (actionType === 'job.day_close' && dayClose && status !== 403 && status !== 404) {
+    if (alreadyClosed) return alreadyClosedText(alreadyClosed, dayClose.hours, dayClose.day)
+    if (reason === 'job_finished') return jobFinishedText(dayClose.hours, dayClose.day)
+    const said = error && !/^HTTP \d+$/.test(error) ? `The server said: ${error}` : 'The server refused it.'
+    return `${said} Not recorded: ${formatHours(dayClose.hours)} h on ${formatDayLong(dayClose.day)}.`
+      + (status === 409 ? ' Open the job and answer the sheet again, or tell the office.' : '')
   }
   if (Array.isArray(missing) && missing.length) {
     return 'Still needs: ' + missing.map((m) => MISSING_LABELS[m] || m).join(', ')

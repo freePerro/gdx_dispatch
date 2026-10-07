@@ -324,6 +324,7 @@ gdx_dispatch/routers/planner.py                              jobs-dispatch
 gdx_dispatch/services/planner_today.py                       jobs-dispatch
 gdx_dispatch/services/visit_sync.py                          jobs-dispatch
 gdx_dispatch/services/arrival_undo.py                        jobs-dispatch
+gdx_dispatch/services/day_close.py                           jobs-dispatch
 gdx_dispatch/routers/tasks.py                                jobs-dispatch
 gdx_dispatch/routers/service_calls.py                        jobs-dispatch
 gdx_dispatch/routers/service_triggers.py                     jobs-dispatch
@@ -382,6 +383,8 @@ gdx_dispatch/frontend/src/components/TechTimelineColumn.vue  jobs-dispatch
 gdx_dispatch/frontend/src/components/GoogleMapsIntegrationCard.vue jobs-dispatch
 gdx_dispatch/frontend/src/constants/jobTypes.js              jobs-dispatch
 gdx_dispatch/frontend/src/utils/jobDisplayState.js           jobs-dispatch
+gdx_dispatch/frontend/src/components/JobDailyLogCard.vue     jobs-dispatch
+gdx_dispatch/frontend/src/utils/dayClose.js                  jobs-dispatch
 
 ## ---------------------------------------------------------------------------
 ## estimates-pricing — estimates, proposals, change orders, catalog, door
