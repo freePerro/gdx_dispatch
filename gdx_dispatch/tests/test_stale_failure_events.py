@@ -238,6 +238,9 @@ def test_a_redelivered_success_can_recover_a_wrongly_voided_payment(db, paid_inv
     """
     payment = db.execute(select(Payment).where(Payment.reference == INTENT)).scalars().one()
     payment.voided_at = datetime.now(UTC)
+    # What the failure path writes (migration 076). GDXA-357: only a void a
+    # failure event made may be re-recorded; a refund's may not.
+    payment.voided_reason = "charge.failed"
     db.commit()
 
     out = handle_payment_webhook(

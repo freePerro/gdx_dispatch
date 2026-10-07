@@ -1097,6 +1097,8 @@ def _recorded_payment(db: Session, invoice, reference: str):
     reversed payment (a late ``charge.failed`` on a retried intent) left a
     voided row here, and this check then blocked the redelivered ``succeeded``
     from re-recording it — the invoice stayed open with the money collected.
+    GDXA-357 narrows that to voids a failure event made: ``_mark_invoice_paid``
+    checks ``_deliberately_voided`` next, so a refund stays refunded.
 
     ⚠ NOT the predicate the settled-intent recovery may use — see
     ``_reference_ever_recorded``, and the warning there about why sharing one
@@ -1109,6 +1111,46 @@ def _recorded_payment(db: Session, invoice, reference: str):
             Payment.voided_at.is_(None),
         )
     ).first()
+
+
+# The only void reasons a later `succeeded` may re-record over: M14's, where a
+# stale failure (read while Stripe was unreachable) voided money that is still
+# collected. Anything else (a refund, a dispute, the office's void, or a NULL
+# from before migration 076) leaves the intent `succeeded` for good, so a
+# `succeeded` arriving after it can only be a stale copy, and it must not
+# reverse that decision.
+#
+# Left as before GDXA-357: a failure void made with Stripe reachable and naming
+# the intent's current charge is re-recordable too, because the row stores the
+# same reason and no charge id. Stripe documents no such failure after
+# `succeeded`: an ACH failure then "creates a dispute" (docs.stripe.com/payments/
+# ach-direct-debit/accept-a-payment, read 2026-10-06, API 2026-09-30.preview),
+# which is refused above. Pinned as a strict xfail, marked hypothetical, in
+# tests/test_stripe_webhook_redelivery.py.
+_FAILURE_VOID_REASONS = frozenset({"charge.failed", "payment_intent.payment_failed"})
+
+
+def _deliberately_voided(db: Session, invoice, reference: str) -> str | None:
+    """The ``voided_reason`` of a void on ``reference`` that no failure event made.
+
+    GDXA-357. ``_recorded_payment`` skips voids so M14 can re-record a wrongly
+    reversed payment, and that let a `payment_intent.succeeded` redelivered
+    after a full refund book the refunded money a second time. Measured
+    through the signed webhook route: a second $500 row, the cash re-posted and
+    the invoice back to paid. Returns None when every void on the reference
+    is a failure's (or there is none), else the reason that blocks it.
+    """
+    reasons = db.scalars(
+        select(Payment.voided_reason).where(
+            Payment.invoice_id == invoice.id,
+            Payment.reference == reference,
+            Payment.voided_at.is_not(None),
+        )
+    ).all()
+    for reason in reasons:
+        if (reason or "") not in _FAILURE_VOID_REASONS:
+            return reason or "unrecorded"
+    return None
 
 
 def _reference_ever_recorded(db: Session, invoice, reference: str) -> bool:
@@ -1182,6 +1224,15 @@ def _mark_invoice_paid(
 
     if external_ref and _recorded_payment(db, invoice, external_ref) is not None:
         return  # already recorded (idempotent across confirm + webhook + recovery)
+    if external_ref:
+        blocked_by = _deliberately_voided(db, invoice, external_ref)
+        if blocked_by is not None:
+            logger.warning(
+                "payment_rerecord_refused reference=%s invoice=%s voided_reason=%s source=%s — "
+                "this charge was reversed on purpose; not booking it again",
+                external_ref, invoice.id, blocked_by, source,
+            )
+            return
 
     # #422: read the status BEFORE recording. The chokepoint now refuses to
     # leave a void, so the invoice will still be void afterwards — but the
@@ -2860,6 +2911,12 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
         # genuine payment on an already-paid invoice must still be recorded —
         # otherwise the customer's money sits at Stripe with no Payment row
         # and nothing to refund against.
+        blocked_by = _deliberately_voided(db, invoice, str(data.get("id") or ""))
+        if blocked_by is not None:
+            # GDXA-357: a stale copy of the success after a refund, dispute or
+            # office void. `_mark_invoice_paid` refuses it too; this branch
+            # says so instead of answering "paid".
+            return {"status": "already_reversed", "invoice_id": invoice_id, "voided_reason": blocked_by}
         received = int(data.get("amount_received") or 0)
         fee = _split_surcharge(
             data, received, connect={"stripe_account": connected_account} if connected_account else {}
