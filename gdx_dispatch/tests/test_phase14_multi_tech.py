@@ -225,7 +225,8 @@ def test_d2_two_techs_have_independent_timestamps(db):
 
 def test_d2_lazy_backfill_creates_row(db):
     jid = _seed_job(db)
-    # NO add_assignment — simulate a legacy job.
+    # NO add_assignment — simulate a legacy job: assigned_to names the tech.
+    db.execute(text("UPDATE jobs SET assigned_to=:a WHERE id=:i"), {"a": _TECH_A_ID, "i": jid})
     row = ja.ensure_assignment_for_legacy_job(db, job_id=jid, tech_id=_TECH_A_ID, user_id="user-a")
     db.commit()
     assert row.tech_id == _TECH_A_ID

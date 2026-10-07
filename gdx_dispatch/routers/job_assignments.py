@@ -29,7 +29,7 @@ from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.permissions import is_dispatch_manager
-from gdx_dispatch.models.tenant_models import Job, JobAssignment, Technician
+from gdx_dispatch.models.tenant_models import Appointment, Job, JobAssignment, Technician
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.services.visit_sync import (
     apply_visit_plan,
@@ -386,6 +386,44 @@ def stamp_tech_state(
     return row
 
 
+def _is_callers_legacy_job(db: Session, job: Job, tech_id: str, user_id: str | None) -> bool:
+    """Whether a row for the caller leaves job_crew naming the right people.
+
+    With no live crew row (either job id form) the first row replaces the
+    assigned_to fallback, so only the lead may write it: assigned_to is one
+    of the caller's technician ids (a recreated record shares
+    technicians.user_id) or their users.id, or assigned_to is NULL and the
+    live appointments name the caller and nobody else. A NULL job with no
+    appointment is refused: a technician cannot open one through
+    job_belongs_to_user, so only a dispatch manager would reach it. Once
+    crew rows exist, adding one displaces nobody, so a caller a live
+    appointment names (a helper after the lead) may join."""
+    mine = {tech_id}
+    if user_id:
+        mine.add(str(user_id))
+        mine.update(db.execute(
+            select(Technician.id).where(Technician.user_id == str(user_id))
+        ).scalars())
+    appt_techs = list(db.execute(
+        select(Appointment.tech_id).where(
+            Appointment.job_id == job.id,
+            Appointment.deleted_at.is_(None),
+            Appointment.tech_id.is_not(None),
+        )
+    ).scalars())
+    has_crew = db.execute(
+        select(JobAssignment.id).where(
+            JobAssignment.job_id.in_([str(job.id), job.id.hex]),
+            JobAssignment.deleted_at.is_(None),
+        ).limit(1)
+    ).first() is not None
+    if has_crew:
+        return any(t in mine for t in appt_techs)
+    if job.assigned_to is not None:
+        return str(job.assigned_to) in mine
+    return bool(appt_techs) and all(t in mine for t in appt_techs)
+
+
 def ensure_assignment_for_legacy_job(
     db: Session,
     *,
@@ -399,7 +437,12 @@ def ensure_assignment_for_legacy_job(
     Called from mobile state-machine handlers as a safety net for
     pre-Phase-1.4 jobs that haven't been touched by the back-fill
     migration yet. Idempotent. Caller commits. Returns None (writes
-    nothing) when tech_id is not a real technicians.id.
+    nothing) when tech_id is not a real technicians.id, or when
+    _is_callers_legacy_job refuses. The caller's gate (_assert_job_access)
+    also admits any dispatch manager, and the first row replaces the
+    assigned_to fallback in job_crew, so writing it for anyone but the lead
+    rewrites the crew (GDXA-378). A refused caller's stamp no-ops in
+    stamp_tech_state.
     """
     existing = db.execute(
         select(JobAssignment).where(
@@ -410,6 +453,15 @@ def ensure_assignment_for_legacy_job(
     ).scalar_one_or_none()
     if existing is not None:
         return existing
+    job = _load_job(db, job_id)
+    if job is None or job.deleted_at is not None:
+        return None
+    if not _is_callers_legacy_job(db, job, tech_id, user_id):
+        log.warning(
+            "ensure_assignment_for_legacy_job: refusing tech_id=%s on job_id=%s "
+            "(assigned_to=%s): not the caller's legacy job", tech_id, job_id, job.assigned_to,
+        )
+        return None
     # tech_id must resolve to a real technician row: the ownership gate
     # (job_belongs_to_user) joins ja.tech_id -> technicians.id, so a row
     # holding anything else (e.g. a users.id) is unreachable garbage that
