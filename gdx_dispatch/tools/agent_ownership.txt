@@ -60,6 +60,7 @@ sgconfig.yml                                                 platform-core
 .authz_unpermissioned_baseline                               platform-core
 .doc_link_baseline                                           platform-core
 .duplicate_block_baseline                                    platform-core
+.pii_literal_baseline                                        platform-core
 .ruff_baseline                                               platform-core
 .tenant_plane_redundant_filter_baseline                      platform-core
 .semgrepignore                                               platform-core
