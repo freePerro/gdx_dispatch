@@ -167,9 +167,116 @@ def _pnl_sections(totals: dict, *, start: date, end: date, basis: str) -> dict:
     }
 
 
+def _as_date(value) -> date | None:
+    if value is None:
+        return None
+    return value.date() if hasattr(value, "date") and callable(value.date) else value
+
+
+def completeness(
+    session: Session, company_id: str, *, start: date | None, end: date
+) -> dict:
+    """What the ledger's net income does NOT contain yet (GDXA-356, Doug ruled
+    option A: label it, no new postings, no money-math change).
+
+    Two known holes, both by design of the posting rules:
+
+    - **Vendor bills** reach the GL only when a line is confirmed into an
+      Expense (P5 via ``vendor_invoices.confirm``), one line at a time; the
+      cost the P&L does not show is the sum of a bill's pending lines, or
+      its header total when it has no lines at all. Windowed by the date
+      the confirm path would give that expense
+      (``vendor_invoices.payments.effective_expense_date``: settlement date
+      for a paid bill, else the bill date), so the cost is reported in the
+      month it will post to.
+    - **Payroll** has no posting rule, and no default expense category maps
+      to the WAGES / PAYROLL_TAX accounts (6050 / 6060): a bank match creates
+      an Expense in one of the eight canonical categories. Wages reach the GL
+      only if an operator maps a category onto one of those accounts, so in
+      practice this half stays flagged until a payroll posting rule exists.
+      No row links a ``PayrollEntry`` to a GL line, so the count is the
+      coarse one the data supports: entries whose period ends in the window,
+      reported unreconciled while the wages posted in the window fall short
+      of their gross. ``no_wages_posted`` says the plainer thing when there
+      are no entries to count.
+
+    The window is clamped to the GL cutover: an expense dated before it was
+    never this ledger's to post, and a window that ends before the cutover is missing
+    nothing. Read-only."""
+    from gdx_dispatch.models.tenant_models import PayrollEntry
+    from gdx_dispatch.modules.ledger.models import ROLE_PAYROLL_TAX, ROLE_WAGES
+    from gdx_dispatch.modules.ledger.rules import _cutover_date
+    from gdx_dispatch.modules.vendor_invoices.models import (
+        LINE_PENDING,
+        STATUS_VOID,
+        VendorInvoice,
+    )
+    from gdx_dispatch.modules.vendor_invoices.payments import effective_expense_date
+
+    cutover = _cutover_date(session, company_id)
+    lo = start
+    if cutover is not None and (lo is None or lo < cutover):
+        lo = cutover
+
+    def _in_window(day: date | None) -> bool:
+        return day is not None and (lo is None or day >= lo) and day <= end
+
+    bill_count = 0
+    bill_total_cents = 0
+    for bill in session.scalars(
+        select(VendorInvoice).where(
+            VendorInvoice.deleted_at.is_(None), VendorInvoice.status != STATUS_VOID
+        )
+    ).all():
+        lines = bill.lines
+        if lines:
+            pending = [line for line in lines if line.status == LINE_PENDING]
+            if not pending:
+                continue
+            missing_cents = sum(to_cents(_dec(line.line_total)) for line in pending)
+        else:
+            missing_cents = to_cents(_dec(bill.total))
+        if not _in_window(effective_expense_date(session, bill)):
+            continue
+        bill_count += 1
+        bill_total_cents += missing_cents
+
+    payroll_count = 0
+    payroll_gross_cents = 0
+    for entry in session.scalars(
+        select(PayrollEntry).where(PayrollEntry.deleted_at.is_(None))
+    ).all():
+        if not _in_window(_as_date(entry.period_end)):
+            continue
+        payroll_count += 1
+        payroll_gross_cents += to_cents(_dec(entry.gross_pay))
+
+    wages_posted_cents = sum(
+        _natural(account, amount)
+        for account, amount in _line_rows(session, company_id, start=lo, end=end)
+        if account.role in (ROLE_WAGES, ROLE_PAYROLL_TAX)
+    )
+    payroll_unreconciled = (
+        payroll_count if wages_posted_cents < payroll_gross_cents else 0
+    )
+    window_before_cutover = lo is not None and lo > end
+    no_wages_posted = wages_posted_cents == 0 and not window_before_cutover
+    return {
+        "incomplete": bool(bill_count or payroll_unreconciled or no_wages_posted),
+        "unconfirmed_vendor_bills": bill_count,
+        "unconfirmed_vendor_bills_total_cents": bill_total_cents,
+        "unreconciled_payroll_entries": payroll_unreconciled,
+        "payroll_gross_cents": payroll_gross_cents,
+        "wages_posted_cents": wages_posted_cents,
+        "no_wages_posted": no_wages_posted,
+    }
+
+
 def pnl_accrual(session: Session, company_id: str, *, start: date, end: date) -> dict:
     totals = _sum_by_account(_line_rows(session, company_id, start=start, end=end))
-    return _pnl_sections(totals, start=start, end=end, basis="accrual")
+    out = _pnl_sections(totals, start=start, end=end, basis="accrual")
+    out["completeness"] = completeness(session, company_id, start=start, end=end)
+    return out
 
 
 @dataclass
@@ -330,6 +437,7 @@ def pnl_cash(session: Session, company_id: str, *, start: date, end: date) -> di
     # Visible omission beats silent truncation: any invoice whose cash events
     # couldn't be attributed is named in the payload.
     out["skipped_invoices"] = skipped
+    out["completeness"] = completeness(session, company_id, start=start, end=end)
     return out
 
 
@@ -380,6 +488,9 @@ def balance_sheet(session: Session, company_id: str, *, as_of: date) -> dict:
             - section_totals["liability"]
             - equity_total,
         },
+        # The computed retained earnings ARE net income to date, so they carry
+        # the same holes as the P&L (GDXA-356).
+        "completeness": completeness(session, company_id, start=None, end=as_of),
     }
 
 

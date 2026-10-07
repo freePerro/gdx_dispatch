@@ -119,6 +119,49 @@ describe('AccountingLedgerView', () => {
     expect(wrapper.find('[data-testid="pnl-revenue-total"]').text()).toContain('$500.00');
   });
 
+  it('labels the P&L and balance sheet incomplete with the missing counts (GDXA-356)', async () => {
+    const completeness = {
+      incomplete: true,
+      unconfirmed_vendor_bills: 3,
+      unconfirmed_vendor_bills_total_cents: 125000,
+      unreconciled_payroll_entries: 0,
+      payroll_gross_cents: 0,
+      wages_posted_cents: 0,
+      no_wages_posted: true,
+    };
+    apiGet.mockImplementation(async (url) => {
+      const body = route(url);
+      return url.includes('/pnl') || url.includes('balance-sheet') ? { ...body, completeness } : body;
+    });
+    const wrapper = mount(AccountingLedgerView, { global: { stubs } });
+    await flushPromises();
+    wrapper.vm.activeTab = 'pnl';
+    await flushPromises();
+    const note = wrapper.find('[data-testid="pnl-incomplete-note"]');
+    expect(note.exists()).toBe(true);
+    expect(note.text()).toContain('3 vendor bill(s) have $1,250.00 of lines not yet confirmed');
+    expect(note.text()).toContain('No wages or payroll taxes are posted');
+    // the figures themselves are unchanged — a label, not a recomputation
+    expect(wrapper.find('[data-testid="pnl-net-income"]').text()).toContain('$440.00');
+
+    wrapper.vm.activeTab = 'balance-sheet';
+    await flushPromises();
+    expect(wrapper.find('[data-testid="bs-incomplete-note"]').text()).toContain('retained earnings may be overstated');
+  });
+
+  it('shows no incomplete notice when nothing is missing', async () => {
+    apiGet.mockImplementation(async (url) => {
+      const body = route(url);
+      return url.includes('/pnl') ? { ...body, completeness: { incomplete: false } } : body;
+    });
+    const wrapper = mount(AccountingLedgerView, { global: { stubs } });
+    await flushPromises();
+    wrapper.vm.activeTab = 'pnl';
+    await flushPromises();
+    expect(wrapper.find('[data-testid="pnl-report"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="pnl-incomplete-note"]').exists()).toBe(false);
+  });
+
   it('renders journal entries with source drill and line detail', async () => {
     const wrapper = mount(AccountingLedgerView, { global: { stubs } });
     await flushPromises();
