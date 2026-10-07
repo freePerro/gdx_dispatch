@@ -171,7 +171,7 @@
           </span>
           <span v-if="showMargin" class="col-margin locked-cell"></span>
           <span class="col-total line-total-display" :data-testid="`line-total-${idx}`">
-            {{ currency(toNum(item.quantity) * toNum(item.unit_price)) }}
+            {{ currency(lineAmount(item.quantity, item.unit_price)) }}
           </span>
           <span class="col-action"></span>
         </template>
@@ -217,7 +217,9 @@
         </span>
         <InputNumber
           v-model="item.quantity"
-          :min="1"
+          :min="fractionalQuantity ? 0.01 : 1"
+          :maxFractionDigits="fractionalQuantity ? 2 : 0"
+          :pt="fractionalQuantity ? DECIMAL_KEYPAD_PT : undefined"
           :useGrouping="false"
           class="col-qty"
           :data-testid="`line-qty-${idx}`"
@@ -284,7 +286,7 @@
           @input="onMarginInput(item, $event)"
         />
         <span class="col-total line-total-display" :data-testid="`line-total-${idx}`">
-          {{ currency(toNum(item.quantity) * toNum(item.unit_price)) }}
+          {{ currency(lineAmount(item.quantity, item.unit_price)) }}
         </span>
         <Button
           icon="pi pi-clone"
@@ -347,7 +349,7 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
-import { recordedQuantity } from '../utils/quantity';
+import { lineAmount, recordedQuantity } from '../utils/quantity';
 import Button from 'primevue/button';
 import InputText from 'primevue/inputtext';
 import InputNumber from 'primevue/inputnumber';
@@ -362,6 +364,12 @@ import {
   isRenderableOption,
   loadPricingCategories,
 } from '../composables/useLineCategories';
+
+// PrimeVue's InputNumber hints inputmode="numeric" unless minFractionDigits is
+// set, and a phone's numeric keypad has no decimal point: a tech could not
+// type 2.5 hours. Its passthrough lands after the inherited attrs, so this
+// wins without forcing a trailing ".0" onto whole quantities.
+const DECIMAL_KEYPAD_PT = { pcInputText: { root: { inputmode: 'decimal' } } };
 
 const props = defineProps({
   lines: { type: Array, default: () => [] },
@@ -384,6 +392,10 @@ const props = defineProps({
   // 409s any edit/delete of it anyway.
   lockedPredicate: { type: Function, default: null },
   lockedTooltip: { type: String, default: "This line is locked and can't be edited" },
+  // Invoice lines take a two-decimal quantity (2.5 hours of labor; migration
+  // 108). Change-order lines do not — their server 422s a fraction — so the
+  // whole-number input stays the default and only the invoice views opt in.
+  fractionalQuantity: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(['update:lines', 'update:fromPartIds']);
@@ -885,7 +897,7 @@ function currency(v) {
 }
 
 const subtotal = computed(() =>
-  localLines.value.reduce((sum, l) => sum + toNum(l.quantity) * toNum(l.unit_price), 0),
+  localLines.value.reduce((sum, l) => sum + lineAmount(l.quantity, l.unit_price), 0),
 );
 
 // Browser-walk fix (2026-05-11): grid-template-columns must match the actual

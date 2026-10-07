@@ -65,7 +65,7 @@
       <div v-if="attested" class="labor-attested-row">
         <span class="labor-attested-desc">{{ attested.description }}</span>
         <span class="labor-attested-price" data-testid="labor-attested-price">
-          {{ currency(attested.unitPrice * attested.quantity) }}
+          {{ currency(lineAmount(attested.quantity, attested.unitPrice)) }}
         </span>
       </div>
       <!-- Multi-day jobs PR 3: the days closed with "No, not finished". A
@@ -73,7 +73,7 @@
       <div v-if="earlierInAttestedLane" class="labor-attested-row" data-testid="labor-earlier-visits">
         <span class="labor-attested-desc">{{ earlierVisits.description }}</span>
         <span class="labor-attested-price" data-testid="labor-earlier-visits-price">
-          {{ currency(earlierVisits.unitPrice * earlierVisits.quantity) }}
+          {{ currency(lineAmount(earlierVisits.quantity, earlierVisits.unitPrice)) }}
         </span>
       </div>
       <div class="labor-attested-row labor-lane-action">
@@ -104,14 +104,14 @@
       <div class="labor-attested-row">
         <span class="labor-attested-desc">{{ suggestedMatrixLine.description }}</span>
         <span class="labor-attested-price">
-          {{ currency(suggestedMatrixLine.unitPrice * suggestedMatrixLine.quantity) }}
+          {{ currency(lineAmount(suggestedMatrixLine.quantity, suggestedMatrixLine.unitPrice)) }}
         </span>
       </div>
       <!-- The earlier days' attested hours ride along as their own line. -->
       <div v-if="earlierVisits" class="labor-attested-row" data-testid="labor-earlier-visits">
         <span class="labor-attested-desc">{{ earlierVisits.description }}</span>
         <span class="labor-attested-price" data-testid="labor-earlier-visits-price">
-          {{ currency(earlierVisits.unitPrice * earlierVisits.quantity) }}
+          {{ currency(lineAmount(earlierVisits.quantity, earlierVisits.unitPrice)) }}
         </span>
       </div>
       <div class="labor-attested-row labor-lane-action">
@@ -185,7 +185,7 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue';
-import { recordedQuantity } from '../utils/quantity';
+import { lineAmount, recordedQuantity } from '../utils/quantity';
 import Button from 'primevue/button';
 import InputText from 'primevue/inputtext';
 import Dialog from 'primevue/dialog';

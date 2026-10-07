@@ -286,6 +286,7 @@
           show-cost
           show-margin
           show-labor
+          fractional-quantity
           data-testid="invoice-edit-line-items"
         />
         <!-- Editable tax rate + dates + notes when in edit mode -->
@@ -1096,7 +1097,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from "vue";
-import { recordedQuantity } from "../utils/quantity";
+import { lineAmount, recordedQuantity } from "../utils/quantity";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
@@ -1525,7 +1526,7 @@ function lineTotal(item) {
   if (item?.line_total != null && Number.isFinite(Number(item.line_total))) {
     return Number(item.line_total);
   }
-  return toNum(item.quantity) * toNum(item.unit_price);
+  return lineAmount(item.quantity, item.unit_price);
 }
 
 // The deposit-netting line the server adds to a final invoice: category
@@ -1597,7 +1598,7 @@ function normalizeInvoice(payload) {
     date: p.date || p.paid_at || p.created_at || "",
   }));
 
-  const computedTotal = lineItems.reduce((s, li) => s + toNum(li.quantity) * toNum(li.unit_price), 0);
+  const computedTotal = lineItems.reduce((s, li) => s + lineAmount(li.quantity, li.unit_price), 0);
   // Trust the server for the rate. Don't default to a hardcoded 8.25% —
   // that's been silently distorting QB-imported invoices' totals (Doug
   // 2026-05-06 / S110). Only overwrite the tenant-default rate (loaded
@@ -2237,8 +2238,11 @@ async function saveEdit() {
   // left the view rendering the pre-save snapshot (Cancel then discarded an
   // edit that was already half-committed).
   //
-  // Predicate, filter and `Math.floor` are the loop's own, unchanged — this
-  // moves WHEN the refusal happens, never WHICH invoices it refuses. Shape
+  // Predicate and filter are the loop's own, unchanged — this moves WHEN the
+  // refusal happens, never WHICH invoices it refuses. Neither floors the
+  // quantity any more: an invoice line takes two decimals since migration
+  // 108 (2.5 hours of labor), and the typed value is sent as typed — the
+  // server refuses a third decimal place rather than rounding it. Shape
   // matches the three sibling screens that always got this right:
   // InvoiceCreateView `createInvoice`, EstimateView `save`,
   // ChangeOrdersView `saveCo` — collect every offender, name them all in
@@ -2280,7 +2284,7 @@ async function saveEdit() {
   const changedFields = (ln) => {
     const orig = ln.id ? originalById.get(String(ln.id)) || null : null;
     const desc = (ln.description || "").trim();
-    const qty = Math.floor(toNum(ln.quantity));
+    const qty = toNum(ln.quantity);
     const price = ln.id ? toNum(ln.unit_price) : Math.max(0, toNum(ln.unit_price));
     const cost = ln.cost != null && toNum(ln.cost) > 0 ? toNum(ln.cost) : null;
     const origCost = orig && orig.cost_snapshot != null ? toNum(orig.cost_snapshot) : null;
@@ -2296,7 +2300,7 @@ async function saveEdit() {
   // check was: a recorded 0 is a contradictory row that must be fixed at the
   // source, not laundered into an invoice — the owner's ruling of 2026-09-11,
   // reasoned out in `core/quantities.py` (`zero_quantity_verdict`).
-  const badQty = billable.filter((ln) => !(Math.floor(toNum(ln.quantity)) > 0));
+  const badQty = billable.filter((ln) => !(toNum(ln.quantity) > 0));
   if (badQty.length) {
     problems.push(
       `No quantity on: ${badQty.map(nameOf).join(", ")}. Enter one or remove the line — a cleared quantity is never billed as 1.`,
@@ -2353,7 +2357,7 @@ async function saveEdit() {
       if (!desc) continue;  // skip rows with no description
       // M31: a cleared quantity refuses instead of becoming 1 — in the
       // pre-pass at the top of this function, never from in here.
-      const qty = Math.floor(toNum(ln.quantity));
+      const qty = toNum(ln.quantity);
       // M33: clamp ONLY lines added in this edit session. A loaded line with
       // a negative price (QB-imported discount, future promo) passes through
       // untouched — the old unconditional Math.max(0, …) zeroed it and the

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -225,7 +226,7 @@ def job_line_items(job_id: str, user: dict = Depends(get_current_user), db: Sess
                 Invoice.deleted_at.is_(None),
             ).order_by(InvoiceLine.sort_order)
         ).scalars().all()
-        return {"items": [{"id": str(r.id), "description": r.description, "quantity": r.quantity, "unit_price": float(r.unit_price or 0), "line_total": float(r.line_total or 0), "created_at": str(r.created_at) if r.created_at else None} for r in rows], "total": len(rows)}
+        return {"items": [{"id": str(r.id), "description": r.description, "quantity": float(r.quantity or 0), "unit_price": float(r.unit_price or 0), "line_total": float(r.line_total or 0), "created_at": str(r.created_at) if r.created_at else None} for r in rows], "total": len(rows)}
     except Exception:
         log.exception("job_line_items_query_failed")
         return {"items": [], "total": 0}
@@ -250,22 +251,32 @@ def create_job_line_item(job_id: str, request: Request, payload: dict, user: dic
     # This handler takes a raw dict, so InvoiceLineCreateIn's `gt=0` never ran
     # here: it was the one writer in the app that could put a 0 on an invoice
     # line, and a 0 line is one the invoice API itself refuses (#560).
+    #
+    # Invoice-line quantity takes two decimals since migration 108 (hours on
+    # a labor line), so the rule here is InvoiceLineCreateIn's: more than 0,
+    # at most 9999, at most two decimal places. A third place is refused, not
+    # rounded — rounding would bill an amount nobody typed. `bool` is refused
+    # first because Decimal(str(True)) is not a number but True is an int.
     _raw_qty = payload.get("quantity", 1)
+    _qty_error = "quantity must be a number above 0 with at most two decimal places"
+    if isinstance(_raw_qty, bool):
+        raise HTTPException(422, _qty_error)
     try:
-        qty = int(_raw_qty)
-        # int() truncates, so 2.9 would silently bill 2 — compare against the
-        # real number. Both calls raise OverflowError on an infinity or a
-        # 400-digit integer (json.loads accepts `Infinity`), which is bad input
-        # answered with a 422, not an unhandled 500.
-        _is_whole = qty == float(_raw_qty)
-    except (TypeError, ValueError, OverflowError):
-        raise HTTPException(422, "quantity must be a whole number") from None
-    if not _is_whole:
-        raise HTTPException(422, "quantity must be a whole number")
-    if qty < 1:
-        raise HTTPException(422, "quantity must be at least 1 — a line with no quantity is not billed as 1")
+        qty = Decimal(str(_raw_qty))
+    except (InvalidOperation, ValueError):
+        raise HTTPException(422, _qty_error) from None
+    # is_finite: json.loads accepts `Infinity` and `NaN`. The range check runs
+    # before quantize, which raises on a 400-digit integer.
+    if not qty.is_finite():
+        raise HTTPException(422, _qty_error)
+    if qty <= 0:
+        raise HTTPException(422, "quantity must be above 0 — a line with no quantity is not billed as 1")
+    if qty > 9999:
+        raise HTTPException(422, "quantity must be at most 9999")
+    if qty != qty.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP):
+        raise HTTPException(422, _qty_error)
     price = float(payload.get("unit_price", 0))
-    line_total = qty * price
+    line_total = (qty * Decimal(str(price))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     now = datetime.now(UTC)
     ensure_audit_table(db)  # before staging: its first run on an engine commits
     try:

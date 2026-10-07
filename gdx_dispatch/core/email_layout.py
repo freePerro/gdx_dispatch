@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.core.money_format import format_money
+from gdx_dispatch.core.quantities import format_quantity
 
 # One default accent when the tenant hasn't set a primary color. Matches the
 # AppSettings.primary_color column default family (slate/blue) rather than the
@@ -218,7 +219,7 @@ def line_items_table(line_items: list[dict], *, hide_prices: bool = False) -> st
             )
         rows += f"""<tr>
       <td style="{cell}">{nl2br(li.get('description', ''))}</td>
-      <td style="{cell}text-align:center;white-space:nowrap;">{esc(li.get('quantity', 1))}</td>
+      <td style="{cell}text-align:center;white-space:nowrap;">{esc(format_quantity(li.get('quantity', 1)))}</td>
       {price_cells}
     </tr>"""
     price_heads = ""

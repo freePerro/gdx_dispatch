@@ -60,3 +60,25 @@ def zero_quantity_verdict(quantity: Any, line_total: Any) -> str | None:
     except (InvalidOperation, ValueError):
         # Not an amount we can reason about — keep the line rather than drop it.
         return None
+
+
+def format_quantity(value: Any) -> str:
+    """A quantity as a customer reads it: ``3``, ``2.5``, ``0.25``.
+
+    An invoice line's quantity is ``Numeric(10, 2)`` since migration 108, so it
+    reads back as ``Decimal("3.00")``; printed raw, the PDF and the email would
+    say "3.00" for three doors. A whole number prints without decimals and a
+    fraction without trailing zeros. Whole-number line types (estimate, change
+    order) pass through unchanged. A blank quantity reads as 1, as
+    ``recorded_quantity`` rules.
+    """
+    raw = recorded_quantity(value)
+    try:
+        d = Decimal(str(raw))
+    except (InvalidOperation, ValueError):
+        return str(raw)
+    if not d.is_finite():
+        return str(raw)
+    if d == d.to_integral_value():
+        return str(int(d))
+    return format(d.normalize(), "f")

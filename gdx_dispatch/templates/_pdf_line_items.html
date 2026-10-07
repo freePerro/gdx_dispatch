@@ -16,7 +16,7 @@
 <tr>
   {% if show_cat_col %}<td class="cat">{{ line.category or '' }}</td>{% endif %}
   <td>{{ line.description }}{% if show_nontax and line.taxable is defined and not line.taxable %} <span class="nontax">non-taxable</span>{% endif %}</td>
-  <td class="num">{{ line.quantity }}</td>
+  <td class="num">{{ line.quantity | qty }}</td>
   {% if not hide_prices %}
   <td class="num">{{ line.unit_price | money }}</td>
   <td class="num">{{ line.line_total | money }}</td>

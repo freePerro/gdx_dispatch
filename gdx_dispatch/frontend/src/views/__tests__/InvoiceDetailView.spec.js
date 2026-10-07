@@ -1454,4 +1454,23 @@ describe('InvoiceDetailView — GDXA-91: the server bounds refuse before writing
     expect(r.lineWrites).toHaveLength(1); // only the line the operator changed
     expect(r.invoiceWrites).toHaveLength(1); // and the header edits landed
   });
+
+  // Migration 108: an invoice line takes a two-decimal quantity. The save used
+  // to `Math.floor` it, so 2.5 hours PATCHed as 2 (billing half an hour less
+  // than typed) and 0.5 floored to 0 and was refused as "No quantity". The
+  // typed value now goes to the server as it is, with no arithmetic — the
+  // server 422s a third decimal place, so float noise must never be computed
+  // into a quantity here.
+  it('a fractional quantity is sent as typed, never floored', async () => {
+    const r = await attempt(stored(), [
+      { id: GOOD_ID, description: 'Spring', quantity: 2.5, unit_price: 100, taxable: true },
+      { id: BAD_ID, description: 'Opener', quantity: 1, unit_price: 200, taxable: true },
+      { description: 'Half-hour labor', quantity: 0.5, unit_price: 100, taxable: false },
+    ]);
+    expect(r.warns).toEqual([]);
+    const patched = apiPatch.mock.calls.find(([u]) => u.includes(`/lines/${GOOD_ID}`));
+    expect(patched[1].quantity).toBe(2.5);
+    const posted = apiPost.mock.calls.find(([u]) => u.endsWith('/lines'));
+    expect(posted[1].quantity).toBe(0.5);
+  });
 });

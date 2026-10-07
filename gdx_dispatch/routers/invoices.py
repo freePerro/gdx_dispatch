@@ -204,7 +204,7 @@ def _serialize_line(line: InvoiceLine) -> dict[str, object]:
         "id": str(line.id),
         "invoice_id": str(line.invoice_id),
         "description": line.description,
-        "quantity": line.quantity,
+        "quantity": _to_float(line.quantity),
         "unit_price": _to_float(line.unit_price),
         "line_total": _to_float(line.line_total),
         # Default True so older serialized rows still round-trip; the
@@ -639,7 +639,10 @@ def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
 class InvoiceLineCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     description: str = Field(min_length=1, max_length=500)
-    quantity: int = Field(default=1, gt=0, le=9999)
+    # Two decimals (migration 108): a labor line bills 2.5 hours. A third
+    # decimal place is refused, not rounded, so float noise from a client
+    # (0.30000000000000004) answers 422 rather than billing a rounded amount.
+    quantity: Decimal = Field(default=Decimal("1"), gt=0, le=9999, max_digits=6, decimal_places=2)
     unit_price: float = Field(default=0, ge=0, le=999999.99)
     # Defaults True so a caller that doesn't know about taxability still
     # gets the historical "everything is taxable" behavior. Labor lines
@@ -723,7 +726,7 @@ class InvoiceLineCreateIn(BaseModel):
 class InvoiceLinePatchIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     description: str | None = Field(default=None, min_length=1, max_length=500)
-    quantity: int | None = Field(default=None, gt=0, le=9999)
+    quantity: Decimal | None = Field(default=None, gt=0, le=9999, max_digits=6, decimal_places=2)
     unit_price: float | None = Field(default=None, ge=0, le=999999.99)
     taxable: bool | None = None
     sort_order: int | None = Field(default=None, ge=1, le=9999)
@@ -1361,7 +1364,7 @@ def create_invoice(
         subtotal_value = float(estimate.total or 0)
     elif payload.line_items:
         subtotal_value = sum(
-            float(line.unit_price) * int(line.quantity) for line in payload.line_items
+            float(_money(Decimal(str(line.unit_price)) * line.quantity)) for line in payload.line_items
         )
     else:
         subtotal_value = 0.0
@@ -1714,7 +1717,7 @@ def create_invoice(
                     description=line.description,
                     quantity=line.quantity,
                     unit_price=_money(line.unit_price),
-                    line_total=_money(float(line.unit_price) * int(line.quantity)),
+                    line_total=_money(Decimal(str(line.unit_price)) * line.quantity),
                     taxable=bool(line.taxable),
                     includes_labor=bool(getattr(line, "includes_labor", False)),
                     # S122-b — persist the new estimate-parity fields when set.
@@ -1767,7 +1770,7 @@ def create_invoice(
         # skipping the paid auto-flip so the row sat in AR forever. The client
         # showed $0.00 for the same input, so nothing on screen revealed it.
         _goods = sum(
-            (Decimal(str(li.unit_price)) * int(li.quantity) for li in payload.line_items),
+            (Decimal(str(li.unit_price)) * li.quantity for li in payload.line_items),
             Decimal("0"),
         )
         if _op_discount > _goods:
@@ -2868,7 +2871,7 @@ def _prepare_invoice_email(
     lines_data = [
         {
             "description": ln.description,
-            "quantity": ln.quantity,
+            "quantity": _to_float(ln.quantity),
             "unit_price": _to_float(ln.unit_price),
             "line_total": _to_float(ln.line_total),
         }
@@ -3397,7 +3400,9 @@ def add_invoice_line(
 
     max_sort = db.execute(select(func.max(InvoiceLine.sort_order)).where(InvoiceLine.invoice_id == invoice.id)).scalar_one_or_none()
     sort_order = int(max_sort or 0) + 1
-    line_total = _money(payload.quantity * payload.unit_price)
+    # Decimal × Decimal: quantity is a Decimal since migration 108, and
+    # Decimal × float raises TypeError.
+    line_total = _money(payload.quantity * Decimal(str(payload.unit_price)))
 
     line = build_invoice_line(
         company_id=invoice.company_id,

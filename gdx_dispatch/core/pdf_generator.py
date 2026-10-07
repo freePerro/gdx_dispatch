@@ -9,6 +9,7 @@ from weasyprint import HTML
 
 from gdx_dispatch.core.branding_logo import resolve_logo_for_pdf
 from gdx_dispatch.core.money_format import format_money
+from gdx_dispatch.core.quantities import format_quantity
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 _JINJA_ENV = Environment(
@@ -16,6 +17,7 @@ _JINJA_ENV = Environment(
     autoescape=select_autoescape(["html", "xml"]),
 )
 _JINJA_ENV.filters["money"] = format_money
+_JINJA_ENV.filters["qty"] = format_quantity
 
 # ---------------------------------------------------------------------------
 # Template-editor config (Settings → PDF Templates)

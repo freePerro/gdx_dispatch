@@ -213,6 +213,7 @@
               show-cost
               show-margin
               show-labor
+              fractional-quantity
               data-testid="invoice-line-editor"
             />
           </div>
@@ -376,7 +377,7 @@
 
 <script setup>
 import { computed, ref, onMounted, watch } from 'vue';
-import { recordedQuantity } from '../utils/quantity';
+import { lineAmount, recordedQuantity } from '../utils/quantity';
 
 // M21/M34 audit round 2: the first cut referenced tenantTaxLabor without
 // defining it — a ReferenceError swallowed by the prefill's own try/catch,
@@ -528,13 +529,13 @@ function toNum(v) {
 }
 
 const subtotal = computed(() =>
-  form.value.line_items.reduce((s, l) => s + toNum(l.quantity) * toNum(l.unit_price), 0),
+  form.value.line_items.reduce((s, l) => s + lineAmount(l.quantity, l.unit_price), 0),
 );
 
 const taxableSubtotal = computed(() =>
   form.value.line_items
     .filter((l) => l.taxable !== false)
-    .reduce((s, l) => s + toNum(l.quantity) * toNum(l.unit_price), 0),
+    .reduce((s, l) => s + lineAmount(l.quantity, l.unit_price), 0),
 );
 
 // The discount comes off the TAXABLE base, floored at 0 — mirroring

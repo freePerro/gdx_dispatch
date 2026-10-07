@@ -1,7 +1,7 @@
 # Multi-day jobs: one job, many visit days
 
 **Date:** 2026-10-03
-**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) MERGED #846, RELEASED v1.137.0, to §5.2's rules. §5.2a (revision 2, 2026-10-04) replaces those sync rules and adds `recompute_job_schedule`, as PR 1b against `main`: MERGED #868 (2026-10-05), RELEASED v1.138.0 (on prod and demo 2026-10-05; walked in a browser that night: the full write walk on the demo, a read-only look at prod), with one rule the build added (R2's second clause, below, accepted by Doug 2026-10-05); Doug ruled its open questions 2026-10-04 (a day closes only when someone closes it). PR 2a (§5.3a: the visits API, the job page's Visits card, and the "Partial Jobs — Need to Schedule" section Doug ruled 2026-10-05, D10–D12) MERGED #882 (2026-10-06), with its parked-row follow-up (queue rows carry the board's hours) MERGED #886, both RELEASED v1.139.0 (on prod and demo 2026-10-06; a read-only browser look at prod). Doug ruled D13 (2026-10-06): a partial job's queued hours are the hours still left; built with PR 3, which records the attested day hours it subtracts. PR 2b (the board draws each visit day as its own card, "Day k of n", and a drag moves that visit only; `GET /api/dispatch/visits`) built 2026-10-06 to the 2b build spec in §5.3a, MERGED #891, RELEASED v1.140.0 (on prod and demo 2026-10-06; a read-only browser look at both boards, where no multi-day job existed yet to badge). PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, B8, billing, D13) built 2026-10-06 to §5.4a, MERGED #916 (2026-10-07 UTC), not yet released; B7 was narrowed in the build so "On my way" to an estimate or lead job does not start it, and B8 was widened to the phone's Stop and toggle (see B8). Doug ruled D14–D18 on #916 the same day (§8); their build spec is §5.4b (PLAN, not built): PR A (decimal invoice-line quantity), PR B (one labor line, labor billed through a point), PR C (shift-end auto-stop), PR D (travel). Its build spec is §5.4a (2026-10-06, audited 36 rounds, reshaped after round 32 to hours per person; the 0 h "Yes" rule simplified by Doug after round 36 and the spec frozen for the build). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); §5.2a went through three plan audits, was rewritten to Doug's rulings after the third, then through sixteen more rounds (2026-10-04), the sixteenth finding no defect, then revised the same day to Doug's ruling that arrival times are always recorded and audited five more rounds (20–24), the last finding no defect; then revised 2026-10-05 to Doug's rulings that a re-open onto a closed day, a mis-tap, and an old arrival with no time are all settled by asking the office, and audited rounds 25–41 on the arrival-undo rules, round 41 finding no logic defect and two wording fixes, applied; §5.2a ships as PR 1b against `main` (see *Packaging*), since #846 merged before it was built.
+**Status:** PARTIALLY BUILT. PR 1 (§5.2 sync, and the arrival lookup from §5.4) MERGED #846, RELEASED v1.137.0, to §5.2's rules. §5.2a (revision 2, 2026-10-04) replaces those sync rules and adds `recompute_job_schedule`, as PR 1b against `main`: MERGED #868 (2026-10-05), RELEASED v1.138.0 (on prod and demo 2026-10-05; walked in a browser that night: the full write walk on the demo, a read-only look at prod), with one rule the build added (R2's second clause, below, accepted by Doug 2026-10-05); Doug ruled its open questions 2026-10-04 (a day closes only when someone closes it). PR 2a (§5.3a: the visits API, the job page's Visits card, and the "Partial Jobs — Need to Schedule" section Doug ruled 2026-10-05, D10–D12) MERGED #882 (2026-10-06), with its parked-row follow-up (queue rows carry the board's hours) MERGED #886, both RELEASED v1.139.0 (on prod and demo 2026-10-06; a read-only browser look at prod). Doug ruled D13 (2026-10-06): a partial job's queued hours are the hours still left; built with PR 3, which records the attested day hours it subtracts. PR 2b (the board draws each visit day as its own card, "Day k of n", and a drag moves that visit only; `GET /api/dispatch/visits`) built 2026-10-06 to the 2b build spec in §5.3a, MERGED #891, RELEASED v1.140.0 (on prod and demo 2026-10-06; a read-only browser look at both boards, where no multi-day job existed yet to badge). PR 3 (the "Is this job finished?" sheet, B3, B4, B6, B7, B8, billing, D13) built 2026-10-06 to §5.4a, MERGED #916 (2026-10-07 UTC), not yet released; B7 was narrowed in the build so "On my way" to an estimate or lead job does not start it, and B8 was widened to the phone's Stop and toggle (see B8). Doug ruled D14–D18 on #916 the same day (§8); their build spec is §5.4b, PARTIALLY BUILT: PR A (decimal invoice-line quantity, migration 108) built 2026-10-06 on `feat/multi-day-qty-decimal`, not yet merged; PR B (one labor line, labor billed through a point), PR C (shift-end auto-stop) and PR D (travel) not built. Its build spec is §5.4a (2026-10-06, audited 36 rounds, reshaped after round 32 to hours per person; the 0 h "Yes" rule simplified by Doug after round 36 and the spec frozen for the build). Doug ruled all decisions on 2026-10-04 (§8) and moved the day's stop into the closeout sheet (§5.4). The first draft was audited 2026-10-04 (§10); §5.2a went through three plan audits, was rewritten to Doug's rulings after the third, then through sixteen more rounds (2026-10-04), the sixteenth finding no defect, then revised the same day to Doug's ruling that arrival times are always recorded and audited five more rounds (20–24), the last finding no defect; then revised 2026-10-05 to Doug's rulings that a re-open onto a closed day, a mis-tap, and an old arrival with no time are all settled by asking the office, and audited rounds 25–41 on the arrival-undo rules, round 41 finding no logic defect and two wording fixes, applied; §5.2a ships as PR 1b against `main` (see *Packaging*), since #846 merged before it was built.
 
 **Trigger:** Doug asked, "What happens if a job is not finished and turns into a
 multi-day job? Can a tech or anyone go back to it?" The answer, traced on
@@ -2634,10 +2634,10 @@ billing half becomes its own PR (B), stacked on the quantity PR (A):
 
 | PR | Rulings | Base | Migration |
 |---|---|---|---|
-| A | D16's half: `invoice_lines.quantity` holds hours | `main` | 107 |
-| B | D15, D16, D18: one labor line, quantity = hours, labor billed through a point | A | 108 |
+| A | D16's half: `invoice_lines.quantity` holds hours | `main` | 108 |
+| B | D15, D16, D18: one labor line, quantity = hours, labor billed through a point | A | 109 |
 | C | D14: shift-end warning and auto-stop | `main` | none |
-| D | D17: "On my way" logs travel, confirmed by the tech | B | 109 (only if the build needs it) |
+| D | D17: "On my way" logs travel, confirmed by the tech | B | 110 (only if the build needs it) |
 
 Each PR gets its own build, full matrix, browser walk and final audit, and
 updates this doc's status line in the same commit.
@@ -2672,7 +2672,7 @@ Verified against `main` @ `ae22453a`, 2026-10-06.
 
 #### PR A: `invoice_lines.quantity` becomes a 2-decimal number
 
-**Migration `107_invoice_line_quantity_decimal`** (down_revision `106_day_close_markers`):
+**Migration `108_invoice_line_qty_decimal`** (down_revision `107_audit_logs_guard`):
 - **Upgrade:** `batch_alter_table("invoice_lines")` alters `quantity` from
   `Integer` to `Numeric(10, 2)`, keeping `NOT NULL`.
   - There is no server default today, only the model's Python-side
@@ -2836,7 +2836,7 @@ unbilled *for it*, and it is excluded from rule 3's "other invoice" test.
    - **The older final-day lines** were built with a bare `InvoiceLine()` and
      have a NULL `pricing_source` (the column has no default,
      `tenant_models.py` ~685).
-     - Migration 108 backfills `pricing_source='labor_attested'` where
+     - Migration 109 backfills `pricing_source='labor_attested'` where
        `labor_source='attested' AND (pricing_source IS NULL OR
        pricing_source = 'manual')`.
      - Prod's 10 attested lines (read-only, audit round 3) break down as:
@@ -2949,7 +2949,7 @@ left (CLAUDE.md: when something is to be deleted, delete it).
 
 **Billed through a point (D18).**
 
-*Migration `108_time_entry_billed_invoice`* (down_revision 107):
+*Migration `109_time_entry_billed_invoice`* (down_revision 108):
 - Adds nullable `time_entries.billed_invoice_id` (`Uuid`, FK `invoices.id`,
   indexed).
 - Backfills `invoice_lines.pricing_source` on the older attested labor lines
@@ -3102,7 +3102,7 @@ goes on the found-not-filed list.
   (above).
 - The only new money behavior is that a second invoice on a job no longer
   re-bills days already billed, and no longer charges a second first hour.
-- Rollback: downgrade 108, then 107 (107 refuses once fractional quantities
+- Rollback: downgrade 109, then 108 (108 refuses once fractional quantities
   exist), or pin the previous `APP_VERSION`.
 
 #### PR C: shift end warns, then stops the job timer (D14)
@@ -3209,8 +3209,8 @@ This is an outline. It gets its own build spec, audited, before the build.
      estimate stays no-est.
 
 4. **After PR 3: Doug's rulings D14–D18** (§5.4b). PR A, decimal
-   invoice-line quantity (migration 107), base `main`; PR B, one labor line
-   and labor billed through a point (migration 108), stacked on A; PR C,
+   invoice-line quantity (migration 108), base `main`; PR B, one labor line
+   and labor billed through a point (migration 109), stacked on A; PR C,
    shift-end warning and auto-stop, base `main`; PR D, travel time, stacked
    on B. PLAN, not built.
 
