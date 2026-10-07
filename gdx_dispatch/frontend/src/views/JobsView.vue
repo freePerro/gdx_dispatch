@@ -663,6 +663,10 @@ const statusFlow = ["Service Call", "Estimate", "Scheduled", "In Progress", "Com
 // the job already is (a re-save resends it unchanged), and a finished job's
 // bar is read-only — finishing and re-opening live on the job page.
 const editStartStatus = ref("");
+// Whether the edit form opened holding a date. An edit that never held one
+// omits scheduled_at rather than sending null: null is "clear the date", and
+// a form seeded from the wrong shape must not be able to say that (GDXA-371).
+const editStartHadDate = ref(false);
 const editStatusLocked = computed(() => ["Complete", "Cancelled"].includes(editStartStatus.value));
 const editStatusOptions = computed(() =>
   statusFlow.filter((s) => s !== "Complete" || editStartStatus.value === "Complete"),
@@ -976,15 +980,17 @@ async function openEditDialog(job) {
   formError.value = "";
   formErrorToAppointments.value = false;
   editStartStatus.value = job.status || "";
+  const seededDate = job.scheduledDate || job.scheduled_at || null;
+  editStartHadDate.value = !!seededDate;
   _seedingLocation.value = true;
   jobForm.value = {
     id: job.id,
-    title: job.title || "",
+    title: (job.storedTitle ?? job.title) || "",
     description: job.description || "",
     customer_id: job.customer_id ? String(job.customer_id) : null,
     job_type: job.job_type || "Service Call",
     priority: job.priority || "Normal",
-    scheduled_at: job.scheduledDate ? new Date(job.scheduledDate) : null,
+    scheduled_at: seededDate ? new Date(seededDate) : null,
     scheduled_duration_hours: job.scheduled_duration_hours != null
       ? Number(job.scheduled_duration_hours) : null,
     location_id: job.location_id ? String(job.location_id) : null,
@@ -1248,6 +1254,7 @@ async function submitForm() {
     if (isEditMode.value) {
       payload.lifecycle_stage = jobForm.value.status;
       payload.status = jobForm.value.status;
+      if (payload.scheduled_at == null && !editStartHadDate.value) delete payload.scheduled_at;
       await api.patch(`/api/jobs/${jobForm.value.id}`, payload);
       primaryWriteOk = true;
       toast.add({ severity: "success", summary: "Job Updated", detail: "Job saved successfully.", life: 3000 });
@@ -1356,6 +1363,40 @@ async function confirmDelete() {
   }
 }
 
+// 2026-04-29: replace QB-import boilerplate titles with the job_type so
+// the list reads "Service Call" / "Install" rather than 163 rows of
+// "QuickBooks Import — <name>" — same fix as DashboardView.jobDisplayTitle.
+// Match both "QuickBooks Import — <name>" (recent imports) and the older
+// "QB Import" format. Either way → fall back to job_type.
+const _isQbBoilerplate = (t) =>
+  /^(quickbooks|qb)\s+import(\s*[—-].*)?$/i.test((t || "").trim());
+
+// The one shape a job takes in this view. The list rows and the ?edit=
+// deep-link fallback both go through it: openEditDialog reads list-shaped
+// fields (scheduledDate), and a raw /api/jobs/{id} row handed to it seeded
+// the form with no date, so saving any edit cleared the job's date and its
+// appointment (GDXA-371).
+function toListRow(job, customerMap = {}, techMap = {}) {
+  const rawTitle = (job.title || "").trim();
+  const display = !rawTitle || _isQbBoilerplate(rawTitle) ? job.job_type || "Service Call" : rawTitle;
+  return {
+    ...job,
+    jobNumber: job.job_number || job.jobNumber || `JOB-${String(job.id).substring(0, 8).toUpperCase()}`,
+    title: display,
+    // The stored title, for the edit form: `title` above is display-only, and
+    // seeding the form from it made Save rename a QB-import job to its type.
+    storedTitle: job.storedTitle ?? job.title ?? "",
+    customer: job.customer?.name || job.customer_name || customerMap[String(job.customer_id)] || "",
+    customer_id: job.customer_id,
+    status: job.lifecycle_stage || job.status || "Estimate",
+    scheduledDate: job.scheduled_at || job.scheduledDate || "",
+    tech: job.tech_name || job.assigned_tech?.name || job.tech || techMap[String(job.assigned_to || job.assigned_tech_id)] || "",
+    assigned_tech_id: job.assigned_tech_id,
+    priority: job.priority || "Normal",
+    job_type: job.job_type || "Service Call",
+  };
+}
+
 async function fetchJobs() {
   isLoading.value = true;
   try {
@@ -1395,31 +1436,7 @@ async function fetchJobs() {
     const customerMap = Object.fromEntries(rawCustomers.map((c) => [String(c.id), c.name]));
     const techMap = Object.fromEntries(rawTechs.map((t) => [String(t.id), t.name || t.display_name || `${t.first_name || ""} ${t.last_name || ""}`.trim()]));
 
-    // 2026-04-29: replace QB-import boilerplate titles with the job_type so
-    // the list reads "Service Call" / "Install" rather than 163 rows of
-    // "QuickBooks Import — <name>" — same fix as DashboardView.jobDisplayTitle.
-    // Match both "QuickBooks Import — <name>" (recent imports) and the older
-    // "QB Import" format. Either way → fall back to job_type.
-    const _isQbBoilerplate = (t) =>
-      /^(quickbooks|qb)\s+import(\s*[—-].*)?$/i.test((t || "").trim());
-
-    jobs.value = rawJobs.map((job) => {
-      const rawTitle = (job.title || "").trim();
-      const display = !rawTitle || _isQbBoilerplate(rawTitle) ? job.job_type || "Service Call" : rawTitle;
-      return {
-        ...job,
-        jobNumber: job.job_number || job.jobNumber || `JOB-${String(job.id).substring(0, 8).toUpperCase()}`,
-        title: display,
-        customer: job.customer?.name || job.customer_name || customerMap[String(job.customer_id)] || "",
-        customer_id: job.customer_id,
-        status: job.lifecycle_stage || job.status || "Estimate",
-        scheduledDate: job.scheduled_at || job.scheduledDate || "",
-        tech: job.tech_name || job.assigned_tech?.name || job.tech || techMap[String(job.assigned_to || job.assigned_tech_id)] || "",
-        assigned_tech_id: job.assigned_tech_id,
-        priority: job.priority || "Normal",
-        job_type: job.job_type || "Service Call",
-      };
-    });
+    jobs.value = rawJobs.map((job) => toListRow(job, customerMap, techMap));
   } catch (error) {
     toast.add({ severity: "error", summary: "Load Error", detail: error?.message || "Failed to load jobs.", life: 5000 });
   } finally {
@@ -1471,7 +1488,7 @@ onMounted(async () => {
       // came from — but a deep-link from a stale tab could miss it).
       try {
         const j = await api.get(`/api/jobs/${editId}`);
-        if (j) openEditDialog(j);
+        if (j) openEditDialog(toListRow(j));
       } catch (_e) { /* api composable surfaces the toast */ }
     }
     window.history.replaceState({}, "", route.path);
