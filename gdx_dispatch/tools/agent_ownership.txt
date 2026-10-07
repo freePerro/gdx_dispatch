@@ -605,6 +605,7 @@ gdx_dispatch/core/timesheet_hours.py                         people-time
 gdx_dispatch/modules/timeclock/*                             people-time
 gdx_dispatch/modules/payroll/*                               people-time
 gdx_dispatch/tasks/payroll_timesheet.py                      people-time
+gdx_dispatch/tasks/job_timer_sweep.py                        people-time
 gdx_dispatch/tasks/timeclock_sweep.py                        people-time
 gdx_dispatch/frontend/src/views/TechniciansView.vue          people-time
 gdx_dispatch/frontend/src/views/TimeclockView.vue            people-time
