@@ -324,6 +324,182 @@ def test_balance_sheet_re_rollup_balances(db):
 
 
 # ---------------------------------------------------------------------------
+# Completeness notice (GDXA-356): net income without vendor bills / payroll
+# ---------------------------------------------------------------------------
+
+def _bill(db, total, *, invoice_date):
+    from gdx_dispatch.modules.vendor_invoices.models import (
+        VendorInvoice,
+        VendorInvoiceLine,
+    )
+
+    bill = VendorInvoice(
+        vendor_name_raw="Sample Supplier",
+        vendor_key=f"sample-{uuid4().hex[:8]}",
+        invoice_number=f"VB{uuid4().hex[:8]}",
+        invoice_date=invoice_date,
+        total=Decimal(total),
+        subtotal=Decimal(total),
+    )
+    db.add(bill)
+    db.flush()
+    line = VendorInvoiceLine(
+        vendor_invoice_id=bill.id, line_no=0, kind="item", description="springs",
+        quantity=Decimal("1"), unit_cost=Decimal(total), line_total=Decimal(total),
+    )
+    db.add(line)
+    db.commit()
+    return bill, line
+
+
+def _post_wages(db, amount, *, on):
+    # No posting rule exists for payroll; an operator-mapped expense category
+    # onto 6050 is the only route wages have into the GL today.
+    settings = ensure_gl_seed(db, COMPANY)
+    settings.expense_category_account_map = {
+        "payroll": str(_account_by_code(db, "6050").id)
+    }
+    db.commit()
+    expense = Expense(
+        id=uuid4(), vendor="Payroll Co", amount=Decimal(amount),
+        category="payroll", date=on, company_id=COMPANY,
+    )
+    db.add(expense)
+    db.flush()
+    post_expense_recorded(db, expense, actor="t")
+    db.commit()
+
+
+def test_pnl_flags_unconfirmed_vendor_bills_and_missing_payroll(db):
+    from gdx_dispatch.models.tenant_models import PayrollEntry
+
+    ensure_gl_seed(db, COMPANY).cutover_month = CUTOVER
+    _bill(db, "980.00", invoice_date=date(2026, 7, 12))
+    _bill(db, "45.00", invoice_date=date(2026, 6, 20))  # QBO era: not ours
+    _bill(db, "70.00", invoice_date=date(2026, 8, 2))  # outside the window
+    db.add(
+        PayrollEntry(
+            company_id=COMPANY, tech_user_id="tech-1",
+            period_start=datetime(2026, 7, 1), period_end=datetime(2026, 7, 14),
+            hours_paid=Decimal("80"), gross_pay=Decimal("2400.00"),
+        )
+    )
+    db.commit()
+
+    for basis in ("accrual", "cash"):
+        pnl = report_pnl(
+            start="2026-06-01", end="2026-07-31", basis=basis,
+            db=db, user=USER, _perm=None,
+        )
+        notice = pnl["completeness"]
+        assert notice["incomplete"] is True
+        assert notice["unconfirmed_vendor_bills"] == 1
+        assert notice["unconfirmed_vendor_bills_total_cents"] == 980_00
+        assert notice["unreconciled_payroll_entries"] == 1
+        assert notice["no_wages_posted"] is True
+        # a label, never a money-math change
+        assert pnl["totals"]["expense_cents"] == 0
+
+    bs = reports.balance_sheet(db, COMPANY, as_of=date(2026, 7, 31))
+    assert bs["completeness"]["unconfirmed_vendor_bills"] == 1
+
+
+def test_pnl_notice_absent_once_bills_confirmed_and_wages_posted(db):
+    from gdx_dispatch.models.tenant_models import PayrollEntry
+    from gdx_dispatch.modules.vendor_invoices.confirm import confirm_line
+
+    bill, line = _bill(db, "980.00", invoice_date=date(2026, 7, 12))
+    confirm_line(db, bill, line, disposition="overhead", company_id=COMPANY, actor_id="tester")
+    db.add(
+        PayrollEntry(
+            company_id=COMPANY, tech_user_id="tech-1",
+            period_start=datetime(2026, 7, 1), period_end=datetime(2026, 7, 14),
+            hours_paid=Decimal("80"), gross_pay=Decimal("2400.00"),
+        )
+    )
+    db.commit()
+    _post_wages(db, "2400.00", on=date(2026, 7, 15))
+
+    pnl = reports.pnl_accrual(db, COMPANY, start=date(2026, 7, 1), end=date(2026, 7, 31))
+    notice = pnl["completeness"]
+    assert notice == {
+        "incomplete": False,
+        "unconfirmed_vendor_bills": 0,
+        "unconfirmed_vendor_bills_total_cents": 0,
+        "unreconciled_payroll_entries": 0,
+        "payroll_gross_cents": 2400_00,
+        "wages_posted_cents": 2400_00,
+        "no_wages_posted": False,
+    }
+    assert pnl["totals"]["expense_cents"] == 980_00 + 2400_00
+
+
+def test_pnl_notice_counts_only_the_pending_lines_of_a_part_confirmed_bill(db):
+    from gdx_dispatch.modules.vendor_invoices.confirm import confirm_line
+    from gdx_dispatch.modules.vendor_invoices.models import VendorInvoiceLine
+
+    bill, springs = _bill(db, "990.00", invoice_date=date(2026, 7, 12))
+    bill.total = bill.subtotal = Decimal("1000.00")
+    db.add(
+        VendorInvoiceLine(
+            vendor_invoice_id=bill.id, line_no=1, kind="item", description="rollers",
+            quantity=Decimal("1"), unit_cost=Decimal("10.00"), line_total=Decimal("10.00"),
+        )
+    )
+    db.commit()
+    db.refresh(bill)
+    confirm_line(db, bill, springs, disposition="overhead", company_id=COMPANY, actor_id="tester")
+    db.commit()
+
+    pnl = reports.pnl_accrual(db, COMPANY, start=date(2026, 7, 1), end=date(2026, 7, 31))
+    assert pnl["totals"]["expense_cents"] == 990_00
+    assert pnl["completeness"]["unconfirmed_vendor_bills"] == 1
+    assert pnl["completeness"]["unconfirmed_vendor_bills_total_cents"] == 10_00
+
+
+def test_pnl_notice_reports_a_paid_bill_in_the_month_it_will_post(db):
+    from gdx_dispatch.modules.vendor_invoices.confirm import confirm_line
+    from gdx_dispatch.modules.vendor_invoices.models import PAY_SOURCE_MANUAL
+    from gdx_dispatch.modules.vendor_invoices.payments import record_payment
+
+    ensure_gl_seed(db, COMPANY).cutover_month = CUTOVER
+    db.commit()
+    late, late_line = _bill(db, "500.00", invoice_date=date(2026, 7, 28))
+    qbo, qbo_line = _bill(db, "300.00", invoice_date=date(2026, 6, 25))
+    record_payment(db, late, amount=Decimal("500.00"), paid_date=date(2026, 8, 3),
+                   source=PAY_SOURCE_MANUAL, created_by="tester")
+    record_payment(db, qbo, amount=Decimal("300.00"), paid_date=date(2026, 7, 5),
+                   source=PAY_SOURCE_MANUAL, created_by="tester")
+    db.commit()
+
+    def notice(month_start, month_end):
+        return reports.pnl_accrual(db, COMPANY, start=month_start, end=month_end)
+
+    july = notice(date(2026, 7, 1), date(2026, 7, 31))["completeness"]
+    august = notice(date(2026, 8, 1), date(2026, 8, 31))["completeness"]
+    assert july["unconfirmed_vendor_bills_total_cents"] == 300_00
+    assert august["unconfirmed_vendor_bills_total_cents"] == 500_00
+
+    # and the confirm path agrees: each cost posts where the notice put it
+    confirm_line(db, late, late_line, disposition="overhead", company_id=COMPANY, actor_id="tester")
+    confirm_line(db, qbo, qbo_line, disposition="overhead", company_id=COMPANY, actor_id="tester")
+    db.commit()
+    assert notice(date(2026, 7, 1), date(2026, 7, 31))["totals"]["expense_cents"] == 300_00
+    assert notice(date(2026, 8, 1), date(2026, 8, 31))["totals"]["expense_cents"] == 500_00
+
+
+def test_pnl_notice_absent_for_a_window_before_the_cutover(db):
+    ensure_gl_seed(db, COMPANY).cutover_month = CUTOVER
+    db.commit()
+    _bill(db, "45.00", invoice_date=date(2026, 3, 20))  # QBO era
+
+    pnl = reports.pnl_accrual(db, COMPANY, start=date(2026, 1, 1), end=date(2026, 3, 31))
+    assert pnl["completeness"]["incomplete"] is False
+    assert pnl["completeness"]["unconfirmed_vendor_bills"] == 0
+    assert pnl["completeness"]["no_wages_posted"] is False
+
+
+# ---------------------------------------------------------------------------
 # Journal browser
 # ---------------------------------------------------------------------------
 

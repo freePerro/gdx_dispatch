@@ -66,6 +66,17 @@
             <Button label="Run" size="small" data-testid="pnl-run" @click="loadPnl" />
           </div>
           <div v-if="pnl" data-testid="pnl-report">
+            <div
+              v-if="pnl.completeness && pnl.completeness.incomplete"
+              class="skip-note"
+              role="status"
+              data-testid="pnl-incomplete-note"
+            >
+              <strong>Incomplete — net income may be overstated.</strong>
+              <ul class="incomplete-list">
+                <li v-for="reason in incompleteReasons(pnl.completeness)" :key="reason">{{ reason }}</li>
+              </ul>
+            </div>
             <h3 class="section-heading">Revenue</h3>
             <table class="report-table">
               <tbody>
@@ -125,6 +136,17 @@
               :value="bs.totals.zero_proof_cents === 0 ? 'Balanced' : `OUT OF BALANCE: ${fmt(bs.totals.zero_proof_cents)}`"
               data-testid="bs-zero-proof"
             />
+          </div>
+          <div
+            v-if="bs && bs.completeness && bs.completeness.incomplete"
+            class="skip-note"
+            role="status"
+            data-testid="bs-incomplete-note"
+          >
+            <strong>Incomplete — retained earnings may be overstated.</strong>
+            <ul class="incomplete-list">
+              <li v-for="reason in incompleteReasons(bs.completeness)" :key="reason">{{ reason }}</li>
+            </ul>
           </div>
           <div v-if="bs" class="bs-sections" data-testid="bs-report">
             <div v-for="section in bsSections" :key="section.key">
@@ -290,6 +312,27 @@ const fmt = (cents) => {
   return dollars.toLocaleString(undefined, { style: 'currency', currency: 'USD' });
 };
 
+// What the ledger's net income does not contain yet (GDXA-356). The report
+// stays as posted; this only says so.
+const incompleteReasons = (c) => {
+  const reasons = [];
+  if (c.unconfirmed_vendor_bills) {
+    reasons.push(
+      `${c.unconfirmed_vendor_bills} vendor bill(s) have ${fmt(c.unconfirmed_vendor_bills_total_cents)} `
+        + 'of lines not yet confirmed; whatever is routed to a job or overhead will add to expenses.',
+    );
+  }
+  if (c.unreconciled_payroll_entries) {
+    reasons.push(
+      `${c.unreconciled_payroll_entries} payroll entr${c.unreconciled_payroll_entries === 1 ? 'y' : 'ies'} `
+        + `(gross ${fmt(c.payroll_gross_cents)}) exceed the ${fmt(c.wages_posted_cents)} of wages posted to the ledger.`,
+    );
+  } else if (c.no_wages_posted) {
+    reasons.push('No wages or payroll taxes are posted in this period. The ledger has no payroll posting yet, so payroll cost is not in this report.');
+  }
+  return reasons;
+};
+
 const iso = (value) => {
   if (!value) return '';
   const d = value instanceof Date ? value : new Date(value);
@@ -357,6 +400,8 @@ onMounted(loadTrialBalance);
   border-radius: 6px;
   font-size: 0.9rem;
 }
+
+.incomplete-list { margin: 0.35rem 0 0; padding-left: 1.25rem; }
 
 .bs-sections { display: grid; gap: 0.5rem; }
 .entry-lines { margin: 0.25rem 0 0.5rem 3rem; max-width: 60rem; }
