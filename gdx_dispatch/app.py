@@ -24,823 +24,330 @@ from gdx_dispatch.core.prometheus import router as prometheus_router
 from gdx_dispatch.core.request_logging import RequestLoggingMiddleware
 from gdx_dispatch.core.tenant import TenantMiddleware
 
-try:
-    from gdx_dispatch.routers import auth
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: auth")
-    auth = APIRouter(prefix="/auth", tags=["auth"])
-
-
-try:
-    from gdx_dispatch.routers import jobs
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: jobs")
-    jobs = APIRouter(prefix="/jobs", tags=["jobs"])
-
-try:
-    from gdx_dispatch.routers import job_diagnosis as job_diagnosis_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: job_diagnosis")
-    job_diagnosis_router = APIRouter(tags=["job-diagnosis"])
-
-try:
-    from gdx_dispatch.routers import job_hazards_receipts as job_hazards_receipts_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: job_hazards_receipts")
-    job_hazards_receipts_router = APIRouter(tags=["job-hazards-receipts"])
-
-try:
-    from gdx_dispatch.routers import tech_locations as tech_locations_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: tech_locations")
-    tech_locations_router = APIRouter(tags=["tech-locations"])
-
-try:
-    from gdx_dispatch.routers import vehicle_inspections as vehicle_inspections_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: vehicle_inspections")
-    vehicle_inspections_router = APIRouter(tags=["vehicle-inspections"])
-
-try:
-    from gdx_dispatch.routers import me_settings as me_settings_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: me_settings")
-    me_settings_router = APIRouter(tags=["me-settings"])
-
-try:
-    from gdx_dispatch.routers import estimates
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: estimates")
-    estimates = APIRouter(prefix="/api/estimates", tags=["estimates"])
-
-try:
-    from gdx_dispatch.routers import technicians
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: technicians")
-    technicians = APIRouter(prefix="/api/technicians", tags=["technicians"])
-
-try:
-    from gdx_dispatch.routers import stripe_webhook
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: stripe_webhook")
-    stripe_webhook = APIRouter(tags=["stripe"])
-
-try:
-    from gdx_dispatch.routers import audit as audit_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: audit_router")
-    audit_router = APIRouter(prefix="/api/audit", tags=["audit"])
-
-try:
-    from gdx_dispatch.routers import payments as payments_gdx_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: payments_gdx_router")
-    payments_gdx_router = APIRouter(prefix="/payments", tags=["payments"])
-
-try:
-    from gdx_dispatch.routers import expenses as expenses_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: expenses_router")
-    expenses_router = APIRouter(prefix="/api", tags=["expenses"])
-
-try:
-    from gdx_dispatch.routers import customers as customers_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: customers_router")
-    customers_router = APIRouter(prefix="/api/customers", tags=["customers"])
-
-try:
-    from gdx_dispatch.routers import customer_statements as customer_statements_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: customer_statements_router")
-    customer_statements_router = APIRouter(prefix="/api/customers", tags=["customer-statements"])
-
-try:
-    from gdx_dispatch.routers import segments as segments_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: segments_router")
-    segments_router = APIRouter(prefix="/api/segments", tags=["segments"])
-
-try:
-    from gdx_dispatch.routers import invoices as invoices_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: invoices_router")
-    invoices_router = APIRouter(prefix="/api/invoices", tags=["invoices"])
-
-try:
-    from gdx_dispatch.routers import documents as documents_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: documents_router")
-    documents_router = APIRouter(tags=["documents"])
-
-try:
-    from gdx_dispatch.routers import uploads as uploads_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: uploads_router")
-    uploads_router = APIRouter(tags=["uploads"])
-
-try:
-    from gdx_dispatch.routers import pdf as pdf_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: pdf_router")
-    pdf_router = APIRouter(tags=["pdf"])
-
-try:
-    from gdx_dispatch.routers import mobile as mobile_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: mobile_router")
-    mobile_router = APIRouter(prefix="/api/mobile", tags=["mobile"])
-
-try:
-    from gdx_dispatch.routers import mobile_quoting as mobile_quoting_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: mobile_quoting_router")
-    mobile_quoting_router = APIRouter(prefix="/api/mobile", tags=["mobile-quoting"])
-
-try:
-    from gdx_dispatch.routers import mobile_invoicing as mobile_invoicing_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: mobile_invoicing_router")
-    mobile_invoicing_router = APIRouter(prefix="/api/mobile", tags=["mobile-invoicing"])
-
-try:
-    from gdx_dispatch.routers import mobile_day_summary as mobile_day_summary_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: mobile_day_summary_router")
-    mobile_day_summary_router = APIRouter(prefix="/api/mobile", tags=["mobile-day-summary"])
-
-try:
-    from gdx_dispatch.routers import mobile_chat as mobile_chat_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: mobile_chat_router")
-    mobile_chat_router = APIRouter(prefix="/api/mobile", tags=["mobile-chat"])
-
-try:
-    from gdx_dispatch.routers import reports as reports_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: reports_router")
-    reports_router = APIRouter(prefix="/api/reports", tags=["reports"])
-
-try:
-    from gdx_dispatch.routers import labor as labor_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: labor_router")
-    labor_router = APIRouter(prefix="/api", tags=["labor"])
-
-try:
-    from gdx_dispatch.routers import tech_efficiency as tech_efficiency_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: tech_efficiency_router")
-    tech_efficiency_router = APIRouter(prefix="/api/reports/tech-efficiency", tags=["reports"])
-
-try:
-    from gdx_dispatch.routers import budgets as budgets_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: budgets_router")
-    budgets_router = APIRouter(prefix="/api/budgets", tags=["budgets"])
-
-try:
-    from gdx_dispatch.routers import overhead as overhead_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: overhead_router")
-    overhead_router = APIRouter(prefix="/api/overhead", tags=["overhead"])
-
-try:
-    from gdx_dispatch.routers import warranties as warranties_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: warranties_router")
-    warranties_router = APIRouter(prefix="/api/warranties", tags=["warranties"])
-
-try:
-    from gdx_dispatch.routers import catalog as catalog_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: catalog_router")
-    catalog_router = APIRouter(tags=["catalog"])
-
-try:
-    from gdx_dispatch.routers import inventory as inventory_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: inventory_router")
-    inventory_router = APIRouter(tags=["inventory"])
-
-try:
-    from gdx_dispatch.routers import vendors as vendors_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: vendors_router")
-    vendors_router = APIRouter(tags=["vendors"])
-
-try:
-    from gdx_dispatch.routers import purchase_orders as purchase_orders_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: purchase_orders_router")
-    purchase_orders_router = APIRouter(tags=["purchase_orders"])
-
-try:
-    from gdx_dispatch.routers import change_orders as change_orders_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: change_orders_router")
-    change_orders_router = APIRouter(tags=["change_orders"])
-
-try:
-    from gdx_dispatch.routers import maintenance as maintenance_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("maintenance_router_load_failed")
-    maintenance_router = APIRouter(tags=["maintenance"])
-
-try:
-    from gdx_dispatch.routers import gdpr as gdpr_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("gdpr_router_load_failed")
-    gdpr_router = APIRouter(tags=["gdpr"])
-
-try:
-    from gdx_dispatch.routers import collections as collections_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: collections_router")
-    collections_router = APIRouter(tags=["collections"])
-
-try:
-    from gdx_dispatch.routers import invoice_reminders as invoice_reminders_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("invoice_reminders_router_load_failed")
-    invoice_reminders_router = APIRouter(tags=["invoice_reminders"])
-
-try:
-    from gdx_dispatch.routers import outbound_emails as outbound_emails_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("outbound_emails_router_load_failed")
-    outbound_emails_router = APIRouter(tags=["outbound-emails"])
-
-try:
-    from gdx_dispatch.routers import tasks as tasks_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("tasks_router_load_failed")
-    tasks_router = APIRouter(tags=["tasks"])
-
-try:
-    from gdx_dispatch.routers import appointments as appointments_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("appointments_router_load_failed")
-    appointments_router = APIRouter(tags=["appointments"])
-
-try:
-    from gdx_dispatch.routers import gps as gps_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("gps_router_load_failed")
-    gps_router = APIRouter(tags=["gps"])
-
-try:
-    from gdx_dispatch.routers import leads as leads_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("leads_router_load_failed")
-    leads_router = APIRouter(tags=["leads"])
-
-try:
-    from gdx_dispatch.routers import scheduling as scheduling_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("scheduling_router_load_failed")
-    scheduling_router = APIRouter(tags=["scheduling"])
-
-try:
-    from gdx_dispatch.routers import payroll as payroll_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("payroll_router_load_failed")
-    payroll_router = APIRouter(tags=["payroll"])
-
-try:
-    from gdx_dispatch.routers import exports as exports_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("exports_router_load_failed")
-    exports_router = APIRouter(tags=["exports"])
-
-try:
-    from gdx_dispatch.routers import job_costing as job_costing_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("job_costing_router_load_failed")
-    job_costing_router = APIRouter(tags=["job_costing"])
-
-try:
-    from gdx_dispatch.routers import onboarding as onboarding_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("onboarding_router_load_failed")
-    onboarding_router = APIRouter(tags=["onboarding"])
-
-try:
-    from gdx_dispatch.routers import tours as tours_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("tours_router_load_failed")
-    tours_router = APIRouter(tags=["tours"])
-
-try:
-    from gdx_dispatch.routers import ux_telemetry as ux_telemetry_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("ux_telemetry_router_load_failed")
-    ux_telemetry_router = APIRouter(tags=["ux_telemetry"])
-
-try:
-    from gdx_dispatch.routers import service_agreements as service_agreements_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("service_agreements_router_load_failed")
-    service_agreements_router = APIRouter(tags=["service_agreements"])
-
-try:
-    from gdx_dispatch.routers import winback as winback_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("winback_router_load_failed")
-    winback_router = APIRouter(tags=["winback"])
-
-try:
-    from gdx_dispatch.routers import notes as notes_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("notes_router_load_failed")
-    notes_router = APIRouter(tags=["notes"])
-
-try:
-    from gdx_dispatch.routers import messages as messages_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("messages_router_load_failed")
-    messages_router = APIRouter(tags=["team_messages"])
-
-try:
-    from gdx_dispatch.routers import signatures as signatures_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("signatures_router_load_failed")
-    signatures_router = None
-
-try:
-    from gdx_dispatch.routers import inbound_comms as inbound_comms_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("inbound_comms_router_load_failed")
-    inbound_comms_router = None
-
-try:
-    from gdx_dispatch.routers import cell_gateway as cell_gateway_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("cell_gateway_router_load_failed")
-    cell_gateway_router = None
-
-try:
-    from gdx_dispatch.routers import surveys as surveys_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("surveys_router_load_failed")
-    surveys_router = None
-
-try:
-    from gdx_dispatch.routers import photos as photos_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("photos_router_load_failed")
-    photos_router = APIRouter(tags=["photos"])
-
-try:
-    from gdx_dispatch.routers import tags as tags_router_module
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("tags_router_load_failed")
-    tags_router_module = APIRouter(tags=["tags_router"])
-
-try:
-    from gdx_dispatch.routers import games as games_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("games_router_load_failed")
-    games_router = APIRouter(tags=["games"])
-
-try:
-    from gdx_dispatch.routers import activity as activity_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: activity_router")
-    activity_router = APIRouter(tags=["activity"])
-
-try:
-    from gdx_dispatch.routers import webhooks as webhooks_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("webhooks_router_load_failed")
-    webhooks_router = APIRouter(tags=["webhooks"])
-
-try:
-    from gdx_dispatch.routers import role_permissions as role_permissions_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("role_permissions_router_load_failed")
-    role_permissions_router = APIRouter(tags=["role_permissions"])
-
-try:
-    from gdx_dispatch.routers import pricing as pricing_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: pricing_router")
-    pricing_router = APIRouter(tags=["pricing"])
-
-try:
-    from gdx_dispatch.routers import loyalty as loyalty_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: loyalty_router")
-    loyalty_router = APIRouter(prefix="/api/loyalty", tags=["loyalty"])
-
-try:
-    from gdx_dispatch.routers import marketing as marketing_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: marketing_router")
-    marketing_router = APIRouter(prefix="/api", tags=["marketing"])
-
-try:
-    from gdx_dispatch.routers import branding_public as branding_public_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: branding_public_router")
-    branding_public_router = APIRouter(prefix="/api/settings", tags=["settings-public"])
-
-try:
-    from gdx_dispatch.routers import settings as settings_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: settings_router")
-    settings_router = APIRouter(prefix="/api/settings", tags=["settings"])
-
-try:
-    from gdx_dispatch.routers import admin_settings as admin_settings_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: admin_settings_router")
-    admin_settings_router = APIRouter(prefix="/api/admin", tags=["admin-settings"])
-
-try:
-    from gdx_dispatch.routers import maps as maps_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: maps_router")
-    maps_router = APIRouter(prefix="/api/maps", tags=["maps"])
-
-try:
-    from gdx_dispatch.routers import notifications as notifications_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: notifications_router")
-    notifications_router = APIRouter(tags=["notifications"])
-
-try:
-    from gdx_dispatch.routers import timeclock as timeclock_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: timeclock_router")
-    timeclock_router = APIRouter(prefix="/api/timeclock", tags=["timeclock-router"])
-
-try:
-    from gdx_dispatch.routers import time_off as time_off_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: time_off_router")
-    time_off_router = APIRouter(prefix="/api/timeclock/time-off", tags=["time-off"])
-
-try:
-    from gdx_dispatch.routers import checklists as checklists_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: checklists_router")
-    checklists_router = APIRouter(tags=["checklists"])
-
-try:
-    from gdx_dispatch.routers import ui_compat as ui_compat_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: ui_compat_router")
-    ui_compat_router = APIRouter(tags=["ui-compat"])
-
-try:
-    from gdx_dispatch.routers import sub_resources as sub_resources_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: sub_resources_router")
-    sub_resources_router = APIRouter(tags=["sub-resources"])
-
-try:
-    from gdx_dispatch.routers import reviews as reviews_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: reviews_router")
-    reviews_router = APIRouter(prefix="/api/reviews", tags=["reviews"])
-
-try:
-    from gdx_dispatch.routers import referrals as referrals_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: referrals_router")
-    referrals_router = APIRouter(prefix="/api/referrals", tags=["referrals"])
-
-try:
-    from gdx_dispatch.routers import search as search_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: search_router")
-    search_router = APIRouter(prefix="/api/search", tags=["search"])
-
-try:
-    from gdx_dispatch.routers import users as users_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: users_router")
-    users_router = APIRouter(prefix="/api/users", tags=["users"])
-
-try:
-    # Forecasting module — /api/forecast/* + /api/quickbooks/recurring-transactions.
-    from gdx_dispatch.modules.forecasting import router as forecasting_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: forecasting_router")
-    forecasting_router = None  # type: ignore
-
-try:
-    # GL ledger (S4.5) — /api/accounting/* Accounting Settings (CoA + config store).
-    from gdx_dispatch.modules.ledger import router as ledger_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: ledger_router")
-    ledger_router = None  # type: ignore
-
-try:
-    # Bank feeds (Banno Consumer API) — /api/bank-feeds/*.
-    from gdx_dispatch.modules.bank_feeds import router as bank_feeds_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: bank_feeds_router")
-    bank_feeds_router = None  # type: ignore
-
-try:
-    from gdx_dispatch.modules.quickbooks import qb_router as quickbooks
-except Exception:
-    # 2026-05-20: legacy `gdx_dispatch/routers/quickbooks.py` file DELETED. S122-10
-    # already removed the fallback registration here; the file itself was
-    # dead code that wrote tokens to a now-orphan `qb_connections` table
-    # (caused the 2026-05-20 QB-reconnect-not-visible incident). If the
-    # modules-based router fails to import, fail loud.
-    logging.getLogger("gdx_dispatch.app").exception("quickbooks module import failed — failing loud")
-    quickbooks = APIRouter(tags=["quickbooks"])
-
-try:
-    from gdx_dispatch.modules.timeclock import router as timeclock
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: timeclock")
-    timeclock = APIRouter(tags=["timeclock"])
-
-try:
-    from gdx_dispatch.modules.workflows import router as workflows
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: workflows")
-    workflows = APIRouter(tags=["workflows"])
-
-try:
-    from gdx_dispatch.modules.proposals import router as proposals
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: proposals")
-    proposals = APIRouter(tags=["proposals"])
+# Router wiring fails closed (GDXA-355). Every router used to sit in its own
+# try/except that logged the ImportError and bound an empty APIRouter() in its
+# place, so a module that would not import in the production image took its
+# routes away while /health stayed green and update.sh called the deploy good.
+# Now a failed import raises and the app never serves /health: the release
+# workflow's /health smoke test refuses to publish that image, and a failure
+# that shows only in the production env leaves update.sh's health gate
+# unanswered (it calls a restarting container "may still be migrating", so
+# read docker logs for router_import_failed). Only a surface on _OPTIONAL_ROUTERS keeps the logged
+# fallback; each one that fires is recorded in ROUTER_FALLBACKS and named by
+# /health. tests/test_app_router_wiring_fails_closed.py keeps the old pattern out.
+# Empty on purpose: no router is optional today. WeasyPrint looked like the
+# candidate, but routers/payments.py imports routers/portal.py, which imports
+# routers/pdf.py and so core/pdf_generator.py, so an image without WeasyPrint
+# loses payments too (checked 2026-10-07). An entry maps "<module>.<attr>" to
+# the empty router served in its place.
+_OPTIONAL_ROUTERS: dict[str, APIRouter] = {}
+ROUTER_FALLBACKS: list[str] = []
+
+
+def _load_router(module: str, attr: str) -> Any:
+    """Return what ``from <module> import <attr>`` binds, or raise.
+
+    A surface named on ``_OPTIONAL_ROUTERS`` gets its empty fallback router
+    instead, and the failure is recorded in ``ROUTER_FALLBACKS``.
+    """
+    import importlib
+
+    dotted = f"{module}.{attr}"
+    try:
+        mod = importlib.import_module(module)
+        try:
+            return getattr(mod, attr)
+        except AttributeError:
+            # `from pkg import sub` imports the submodule when the package
+            # does not already bind the name; do the same.
+            return importlib.import_module(dotted)
+    except Exception:
+        if dotted not in _OPTIONAL_ROUTERS:
+            logging.getLogger("gdx_dispatch.app").critical(
+                "router_import_failed: %s (refusing to boot without it)", dotted, exc_info=True,
+            )
+            raise
+        logging.getLogger("gdx_dispatch.app").exception("optional_router_unavailable: %s", dotted)
+        ROUTER_FALLBACKS.append(dotted)
+        return _OPTIONAL_ROUTERS[dotted]
+
+
+auth = _load_router("gdx_dispatch.routers", "auth")
+
+
+jobs = _load_router("gdx_dispatch.routers", "jobs")
+
+job_diagnosis_router = _load_router("gdx_dispatch.routers", "job_diagnosis")
+
+job_hazards_receipts_router = _load_router("gdx_dispatch.routers", "job_hazards_receipts")
+
+tech_locations_router = _load_router("gdx_dispatch.routers", "tech_locations")
+
+vehicle_inspections_router = _load_router("gdx_dispatch.routers", "vehicle_inspections")
+
+me_settings_router = _load_router("gdx_dispatch.routers", "me_settings")
+
+estimates = _load_router("gdx_dispatch.routers", "estimates")
+
+technicians = _load_router("gdx_dispatch.routers", "technicians")
+
+stripe_webhook = _load_router("gdx_dispatch.routers", "stripe_webhook")
+
+audit_router = _load_router("gdx_dispatch.routers", "audit")
+
+payments_gdx_router = _load_router("gdx_dispatch.routers", "payments")
+
+expenses_router = _load_router("gdx_dispatch.routers", "expenses")
+
+customers_router = _load_router("gdx_dispatch.routers", "customers")
+
+customer_statements_router = _load_router("gdx_dispatch.routers", "customer_statements")
+
+segments_router = _load_router("gdx_dispatch.routers", "segments")
+
+invoices_router = _load_router("gdx_dispatch.routers", "invoices")
+
+documents_router = _load_router("gdx_dispatch.routers", "documents")
+
+uploads_router = _load_router("gdx_dispatch.routers", "uploads")
+
+pdf_router = _load_router("gdx_dispatch.routers", "pdf")
+
+mobile_router = _load_router("gdx_dispatch.routers", "mobile")
+
+mobile_quoting_router = _load_router("gdx_dispatch.routers", "mobile_quoting")
+
+mobile_invoicing_router = _load_router("gdx_dispatch.routers", "mobile_invoicing")
+
+mobile_day_summary_router = _load_router("gdx_dispatch.routers", "mobile_day_summary")
+
+mobile_chat_router = _load_router("gdx_dispatch.routers", "mobile_chat")
+
+reports_router = _load_router("gdx_dispatch.routers", "reports")
+
+labor_router = _load_router("gdx_dispatch.routers", "labor")
+
+tech_efficiency_router = _load_router("gdx_dispatch.routers", "tech_efficiency")
+
+budgets_router = _load_router("gdx_dispatch.routers", "budgets")
+
+overhead_router = _load_router("gdx_dispatch.routers", "overhead")
+
+warranties_router = _load_router("gdx_dispatch.routers", "warranties")
+
+catalog_router = _load_router("gdx_dispatch.routers", "catalog")
+
+inventory_router = _load_router("gdx_dispatch.routers", "inventory")
+
+vendors_router = _load_router("gdx_dispatch.routers", "vendors")
+
+purchase_orders_router = _load_router("gdx_dispatch.routers", "purchase_orders")
+
+change_orders_router = _load_router("gdx_dispatch.routers", "change_orders")
+
+maintenance_router = _load_router("gdx_dispatch.routers", "maintenance")
+
+gdpr_router = _load_router("gdx_dispatch.routers", "gdpr")
+
+collections_router = _load_router("gdx_dispatch.routers", "collections")
+
+invoice_reminders_router = _load_router("gdx_dispatch.routers", "invoice_reminders")
+
+outbound_emails_router = _load_router("gdx_dispatch.routers", "outbound_emails")
+
+tasks_router = _load_router("gdx_dispatch.routers", "tasks")
+
+appointments_router = _load_router("gdx_dispatch.routers", "appointments")
+
+gps_router = _load_router("gdx_dispatch.routers", "gps")
+
+leads_router = _load_router("gdx_dispatch.routers", "leads")
+
+scheduling_router = _load_router("gdx_dispatch.routers", "scheduling")
+
+payroll_router = _load_router("gdx_dispatch.routers", "payroll")
+
+exports_router = _load_router("gdx_dispatch.routers", "exports")
+
+job_costing_router = _load_router("gdx_dispatch.routers", "job_costing")
+
+onboarding_router = _load_router("gdx_dispatch.routers", "onboarding")
+
+tours_router = _load_router("gdx_dispatch.routers", "tours")
+
+ux_telemetry_router = _load_router("gdx_dispatch.routers", "ux_telemetry")
+
+service_agreements_router = _load_router("gdx_dispatch.routers", "service_agreements")
+
+winback_router = _load_router("gdx_dispatch.routers", "winback")
+
+notes_router = _load_router("gdx_dispatch.routers", "notes")
+
+messages_router = _load_router("gdx_dispatch.routers", "messages")
+
+signatures_router = _load_router("gdx_dispatch.routers", "signatures")
+
+inbound_comms_router = _load_router("gdx_dispatch.routers", "inbound_comms")
+
+cell_gateway_router = _load_router("gdx_dispatch.routers", "cell_gateway")
+
+surveys_router = _load_router("gdx_dispatch.routers", "surveys")
+
+photos_router = _load_router("gdx_dispatch.routers", "photos")
+
+tags_router_module = _load_router("gdx_dispatch.routers", "tags")
+
+games_router = _load_router("gdx_dispatch.routers", "games")
+
+activity_router = _load_router("gdx_dispatch.routers", "activity")
+
+webhooks_router = _load_router("gdx_dispatch.routers", "webhooks")
+
+role_permissions_router = _load_router("gdx_dispatch.routers", "role_permissions")
+
+pricing_router = _load_router("gdx_dispatch.routers", "pricing")
+
+loyalty_router = _load_router("gdx_dispatch.routers", "loyalty")
+
+marketing_router = _load_router("gdx_dispatch.routers", "marketing")
+
+branding_public_router = _load_router("gdx_dispatch.routers", "branding_public")
+
+settings_router = _load_router("gdx_dispatch.routers", "settings")
+
+admin_settings_router = _load_router("gdx_dispatch.routers", "admin_settings")
+
+maps_router = _load_router("gdx_dispatch.routers", "maps")
+
+notifications_router = _load_router("gdx_dispatch.routers", "notifications")
+
+timeclock_router = _load_router("gdx_dispatch.routers", "timeclock")
+
+time_off_router = _load_router("gdx_dispatch.routers", "time_off")
+
+checklists_router = _load_router("gdx_dispatch.routers", "checklists")
+
+ui_compat_router = _load_router("gdx_dispatch.routers", "ui_compat")
+
+sub_resources_router = _load_router("gdx_dispatch.routers", "sub_resources")
+
+reviews_router = _load_router("gdx_dispatch.routers", "reviews")
+
+referrals_router = _load_router("gdx_dispatch.routers", "referrals")
+
+search_router = _load_router("gdx_dispatch.routers", "search")
+
+users_router = _load_router("gdx_dispatch.routers", "users")
+
+# Forecasting module — /api/forecast/* + /api/quickbooks/recurring-transactions.
+forecasting_router = _load_router("gdx_dispatch.modules.forecasting", "router")
+
+# GL ledger (S4.5) — /api/accounting/* Accounting Settings (CoA + config store).
+ledger_router = _load_router("gdx_dispatch.modules.ledger", "router")
+
+# Bank feeds (Banno Consumer API) — /api/bank-feeds/*.
+bank_feeds_router = _load_router("gdx_dispatch.modules.bank_feeds", "router")
+
+quickbooks = _load_router("gdx_dispatch.modules.quickbooks", "qb_router")
+
+timeclock = _load_router("gdx_dispatch.modules.timeclock", "router")
+
+workflows = _load_router("gdx_dispatch.modules.workflows", "router")
+
+proposals = _load_router("gdx_dispatch.modules.proposals", "router")
 
 # modules/gps_dispatch/router.py left 2026-09-10 (#637): its two routes,
 # POST /api/dispatch/location and /api/dispatch/routes, had no caller and took
 # the technician id from the request body. Tech GPS is POST /api/mobile/location.
 
-try:
-    from gdx_dispatch.routers import portal as customer_portal_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: customer_portal_router")
-    customer_portal_router = APIRouter(tags=["customer_portal"])
+customer_portal_router = _load_router("gdx_dispatch.routers", "portal")
 
-try:
-    from gdx_dispatch.routers import custom_fields as custom_fields_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("custom_fields_router_load_failed")
-    custom_fields_router = APIRouter(tags=["custom_fields"])
+custom_fields_router = _load_router("gdx_dispatch.routers", "custom_fields")
 
-try:
-    from gdx_dispatch.core.webhooks import monitor as webhook_monitor
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: webhook_monitor")
-    webhook_monitor = APIRouter(tags=["webhook_monitor"])
+webhook_monitor = _load_router("gdx_dispatch.core.webhooks", "monitor")
 
-try:
-    from gdx_dispatch.core.pwa import PWARouter as pwa_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: pwa_router")
-    pwa_router = APIRouter(tags=["pwa"])
+pwa_router = _load_router("gdx_dispatch.core.pwa", "PWARouter")
 
-try:
-    from gdx_dispatch.modules.distributor.order_portal import dealer_router as dealer_order_router
-    from gdx_dispatch.modules.distributor.order_portal import distributor_router as distributor_order_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: dealer_order_router")
-    dealer_order_router = APIRouter(prefix="/api/dealer", tags=["dealer-orders"])
-    distributor_order_router = APIRouter(prefix="/api/distributor", tags=["distributor-orders"])
+dealer_order_router = _load_router("gdx_dispatch.modules.distributor.order_portal", "dealer_router")
+distributor_order_router = _load_router("gdx_dispatch.modules.distributor.order_portal", "distributor_router")
 
-try:
-    from gdx_dispatch.core.jwks import JWKSRouter as jwks_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: jwks_router")
-    jwks_router = APIRouter(tags=["jwks"])
+jwks_router = _load_router("gdx_dispatch.core.jwks", "JWKSRouter")
 
-try:
-    from gdx_dispatch.core.onboarding import router as core_onboarding_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: core_onboarding_router")
-    core_onboarding_router = APIRouter(tags=["onboarding"])
+core_onboarding_router = _load_router("gdx_dispatch.core.onboarding", "router")
 
-try:
-    from gdx_dispatch.routers.admin_ops import read_router as admin_ops_read_router
-    from gdx_dispatch.routers.admin_ops import router as admin_ops_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: admin_ops_router")
-    admin_ops_router = APIRouter(prefix="/api/admin", tags=["admin"])
-    admin_ops_read_router = APIRouter(prefix="/api/admin", tags=["admin"])
+admin_ops_read_router = _load_router("gdx_dispatch.routers.admin_ops", "read_router")
+admin_ops_router = _load_router("gdx_dispatch.routers.admin_ops", "router")
 
-try:
-    from gdx_dispatch.routers.admin_db import router as admin_db_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: admin_db_router")
-    admin_db_router = APIRouter(prefix="/api/admin/db", tags=["admin-db"])
+admin_db_router = _load_router("gdx_dispatch.routers.admin_db", "router")
 
-try:
-    from gdx_dispatch.core.integrations import router as integrations_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: integrations_router")
-    integrations_router = APIRouter(prefix="/api/integrations", tags=["integrations"])
+integrations_router = _load_router("gdx_dispatch.core.integrations", "router")
 
-try:
-    from gdx_dispatch.core.push_notifications import router as push_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: push_router")
-    push_router = APIRouter(prefix="/api/push", tags=["push"])
+push_router = _load_router("gdx_dispatch.core.push_notifications", "router")
 
-try:
-    from gdx_dispatch.core.payments import public_router as payments_public_router
-    from gdx_dispatch.core.payments import router as payments_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: payments_router")
-    payments_router = APIRouter(prefix="/api/payments", tags=["payments"])
-    payments_public_router = APIRouter(tags=["payments-public"])
+payments_public_router = _load_router("gdx_dispatch.core.payments", "public_router")
+payments_router = _load_router("gdx_dispatch.core.payments", "router")
 
-try:
-    from gdx_dispatch.core.api_keys import APIKeyMiddleware
-    from gdx_dispatch.core.api_keys import router as api_keys_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: api_keys_router")
-    api_keys_router = APIRouter(prefix="/api/developer", tags=["developer"])
-    APIKeyMiddleware = None  # type: ignore[assignment,misc]
+from gdx_dispatch.core.api_keys import APIKeyMiddleware  # noqa: E402
 
-try:
-    from gdx_dispatch.routers.resources import router as resources_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: resources_router")
-    resources_router = APIRouter(prefix="/api/resources", tags=["resources"])
+api_keys_router = _load_router("gdx_dispatch.core.api_keys", "router")
 
-try:
-    from gdx_dispatch.core.locations import router as locations_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: locations_router")
-    locations_router = APIRouter(prefix="/api/locations", tags=["locations"])
+resources_router = _load_router("gdx_dispatch.routers.resources", "router")
 
-try:
-    from gdx_dispatch.api.public_router import router as public_v1_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: public_v1_router")
-    public_v1_router = APIRouter(prefix="/api/v1", tags=["public-api"])
+locations_router = _load_router("gdx_dispatch.core.locations", "router")
 
-try:
-    from gdx_dispatch.routers.ai_communication import router as ai_comms_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: ai_comms_router")
-    ai_comms_router = APIRouter(prefix="/api/ai/communication", tags=["ai-communication"])
+public_v1_router = _load_router("gdx_dispatch.api.public_router", "router")
 
-try:
-    from gdx_dispatch.routers.ai_estimates import router as ai_estimates_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: ai_estimates_router")
-    ai_estimates_router = APIRouter(prefix="/api/ai/estimates", tags=["ai-estimates"])
+ai_comms_router = _load_router("gdx_dispatch.routers.ai_communication", "router")
 
-try:
-    from gdx_dispatch.routers.door_catalog import router as door_catalog_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: door_catalog_router")
-    door_catalog_router = APIRouter(prefix="/api/catalog", tags=["door-catalog"])
+ai_estimates_router = _load_router("gdx_dispatch.routers.ai_estimates", "router")
 
-try:
-    from gdx_dispatch.routers.install_sheet import router as install_sheet_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: install_sheet_router")
-    install_sheet_router = APIRouter(tags=["install-sheet"])
+door_catalog_router = _load_router("gdx_dispatch.routers.door_catalog", "router")
 
-try:
-    from gdx_dispatch.routers.planner import router as planner_router_mod
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: planner_router_mod")
-    planner_router_mod = APIRouter(prefix="/api/planner", tags=["planner"])
+install_sheet_router = _load_router("gdx_dispatch.routers.install_sheet", "router")
 
-try:
-    from gdx_dispatch.core.audit_dashboard import router as audit_dashboard_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: audit_dashboard_router")
-    audit_dashboard_router = APIRouter(tags=["audit-dashboard"])
+planner_router_mod = _load_router("gdx_dispatch.routers.planner", "router")
+
+audit_dashboard_router = _load_router("gdx_dispatch.core.audit_dashboard", "router")
 
 
-try:
-    from gdx_dispatch.core.recommendation_routes import router as recommendation_routes_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: recommendation_routes_router")
-    recommendation_routes_router = APIRouter(prefix="/api", tags=["recommendations"])
+recommendation_routes_router = _load_router("gdx_dispatch.core.recommendation_routes", "router")
 
-try:
-    from gdx_dispatch.core.ai_quote import router as ai_quote_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: ai_quote_router")
-    ai_quote_router = APIRouter(prefix="/api/ai", tags=["ai-quote"])
+ai_quote_router = _load_router("gdx_dispatch.core.ai_quote", "router")
 
-try:
-    from gdx_dispatch.core.ai_router import router as ai_router_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: ai_router_router")
-    ai_router_router = APIRouter(prefix="/api/ai", tags=["ai-router"])
+ai_router_router = _load_router("gdx_dispatch.core.ai_router", "router")
 
-try:
-    from gdx_dispatch.core.ai_usage_logger import router as ai_usage_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: ai_usage_router")
-    ai_usage_router = APIRouter(prefix="/api/ai", tags=["ai-usage"])
+ai_usage_router = _load_router("gdx_dispatch.core.ai_usage_logger", "router")
 
-try:
-    from gdx_dispatch.core.performance import (
-        SlowEndpointMiddleware,
-        SlowQueryMiddleware,
-    )
-    from gdx_dispatch.core.performance import (
-        router as performance_router,
-    )
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("import/init failed")
-    SlowEndpointMiddleware = None  # type: ignore[assignment,misc]
-    SlowQueryMiddleware = None  # type: ignore[assignment,misc]
-    performance_router = APIRouter(prefix="/api/admin", tags=["performance"])
+from gdx_dispatch.core.performance import SlowEndpointMiddleware, SlowQueryMiddleware  # noqa: E402
 
-try:
-    from gdx_dispatch.core.security_logger import router as security_log_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: security_log_router")
-    security_log_router = APIRouter(prefix="/api/admin", tags=["security"])
+performance_router = _load_router("gdx_dispatch.core.performance", "router")
 
-try:
-    from gdx_dispatch.core.webhook_logger import router as webhook_delivery_log_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: webhook_delivery_log_router")
-    webhook_delivery_log_router = APIRouter(prefix="/api/admin/webhooks", tags=["webhooks-log"])
+security_log_router = _load_router("gdx_dispatch.core.security_logger", "router")
 
-try:
-    from gdx_dispatch.core.data_access_logger import GDPRDataAccessMiddleware
-    from gdx_dispatch.core.data_access_logger import router as gdpr_access_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("import/init failed")
-    GDPRDataAccessMiddleware = None  # type: ignore[assignment,misc]
-    gdpr_access_router = APIRouter(prefix="/api/admin/gdpr", tags=["gdpr-access-log"])
+webhook_delivery_log_router = _load_router("gdx_dispatch.core.webhook_logger", "router")
 
-try:
-    from gdx_dispatch.core.rate_limiter import TenantRateLimitMiddleware as _TenantRateLimitMiddleware
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("import/init failed")
-    _TenantRateLimitMiddleware = None  # type: ignore[assignment,misc]
+from gdx_dispatch.core.data_access_logger import GDPRDataAccessMiddleware  # noqa: E402
 
-try:
-    from gdx_dispatch.core.audit_middleware import AuditMiddleware
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("import/init failed")
-    AuditMiddleware = None  # type: ignore[assignment,misc]
+gdpr_access_router = _load_router("gdx_dispatch.core.data_access_logger", "router")
 
-try:
-    from gdx_dispatch.routers.dispatch_ws import router as dispatch_ws_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: dispatch_ws_router")
-    dispatch_ws_router = APIRouter(tags=["dispatch-ws"])
+from gdx_dispatch.core.audit_middleware import AuditMiddleware  # noqa: E402
+from gdx_dispatch.core.rate_limiter import TenantRateLimitMiddleware as _TenantRateLimitMiddleware  # noqa: E402
 
-try:
-    from gdx_dispatch.core.ai_quote import router as ai_quote_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: ai_quote_router")
-    ai_quote_router = APIRouter(prefix="/api/ai", tags=["ai-quotes"])
+dispatch_ws_router = _load_router("gdx_dispatch.routers.dispatch_ws", "router")
 
-try:
-    from gdx_dispatch.core.parts_pricing import router as parts_pricing_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: parts_pricing_router")
-    parts_pricing_router = APIRouter(prefix="/api/parts", tags=["parts-pricing"])
+parts_pricing_router = _load_router("gdx_dispatch.core.parts_pricing", "router")
 
-try:
-    from gdx_dispatch.routers import van_inventory as van_inventory_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: van_inventory_router")
-    van_inventory_router = APIRouter(prefix="/api/van-inventory", tags=["van-inventory"])
+van_inventory_router = _load_router("gdx_dispatch.routers", "van_inventory")
 
-try:
-    from gdx_dispatch.routers import commission as commission_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: commission_router")
-    commission_router = APIRouter(prefix="/api/commissions", tags=["commissions"])
+commission_router = _load_router("gdx_dispatch.routers", "commission")
 
-try:
-    from gdx_dispatch.routers import service_triggers as service_triggers_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: service_triggers_router")
-    service_triggers_router = APIRouter(prefix="/api/service-triggers", tags=["service-triggers"])
+service_triggers_router = _load_router("gdx_dispatch.routers", "service_triggers")
 
-try:
-    from gdx_dispatch.routers import variance_report as variance_report_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: variance_report_router")
-    variance_report_router = APIRouter(prefix="/api/variance", tags=["variance"])
+variance_report_router = _load_router("gdx_dispatch.routers", "variance_report")
 
-try:
-    from gdx_dispatch.routers import warranty_claims as warranty_claims_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: warranty_claims_router")
-    warranty_claims_router = APIRouter(prefix="/api/warranty-claims", tags=["warranty-claims"])
+warranty_claims_router = _load_router("gdx_dispatch.routers", "warranty_claims")
 
-try:
-    from gdx_dispatch.routers import safety_checklist as safety_checklist_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: safety_checklist_router")
-    safety_checklist_router = APIRouter(prefix="/api/safety", tags=["safety"])
+safety_checklist_router = _load_router("gdx_dispatch.routers", "safety_checklist")
 
 # estimate_nurture removed 2026-09-19 (silent-success sweep): its /run
 # endpoint counted "sent" nurture emails while sending nothing, and no UI,
@@ -849,98 +356,37 @@ except Exception:
 # note run's fake log rows would suppress a real send via the already-sent
 # dedup if the feature is ever rebuilt — clear the log table first.
 
-try:
-    from gdx_dispatch.routers import performance as user_performance_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: user_performance_router")
-    user_performance_router = APIRouter(prefix="/api/performance", tags=["performance"])
+user_performance_router = _load_router("gdx_dispatch.routers", "performance")
 
-try:
-    from gdx_dispatch.routers import email_settings as email_settings_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: email_settings_router")
-    from fastapi import APIRouter
-    email_settings_router = APIRouter(prefix="/api/settings", tags=["email-settings"])
+email_settings_router = _load_router("gdx_dispatch.routers", "email_settings")
 
-try:
-    from gdx_dispatch.routers import parts_needed as parts_needed_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: parts_needed_router")
-    from fastapi import APIRouter
-    parts_needed_router = APIRouter(prefix="/api", tags=["parts-needed"])
+parts_needed_router = _load_router("gdx_dispatch.routers", "parts_needed")
 
-try:
-    from gdx_dispatch.routers import job_assignments as job_assignments_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: job_assignments_router")
-    from fastapi import APIRouter
-    job_assignments_router = APIRouter(prefix="/api", tags=["job-assignments"])
+job_assignments_router = _load_router("gdx_dispatch.routers", "job_assignments")
 
-try:
-    from gdx_dispatch.routers import job_visits as job_visits_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: job_visits_router")
-    from fastapi import APIRouter
-    job_visits_router = APIRouter(prefix="/api", tags=["job-visits"])
+job_visits_router = _load_router("gdx_dispatch.routers", "job_visits")
 
-try:
-    from gdx_dispatch.routers import push as push_v2_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: push_v2_router")
-    from fastapi import APIRouter
-    push_v2_router = APIRouter(prefix="/api/push/v2", tags=["push-v2"])
+push_v2_router = _load_router("gdx_dispatch.routers", "push")
 
-try:
-    from gdx_dispatch.routers import holding_areas as holding_areas_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: holding_areas_router")
-    from fastapi import APIRouter
-    holding_areas_router = APIRouter(prefix="/api/holding-areas", tags=["holding-areas"])
+holding_areas_router = _load_router("gdx_dispatch.routers", "holding_areas")
 
-try:
-    from gdx_dispatch.routers import service_calls as service_calls_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: service_calls_router")
-    from fastapi import APIRouter
-    service_calls_router = APIRouter(prefix="/api/service-calls", tags=["service-calls"])
+service_calls_router = _load_router("gdx_dispatch.routers", "service_calls")
 
-try:
-    from gdx_dispatch.routers import bug_reports as bug_reports_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: bug_reports_router")
-    from fastapi import APIRouter
-    bug_reports_router = APIRouter(prefix="/api/feedback", tags=["feedback"])
+bug_reports_router = _load_router("gdx_dispatch.routers", "bug_reports")
 
-try:
-    from gdx_dispatch.routers import support as support_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: support_router")
-    from fastapi import APIRouter
-    support_router = APIRouter(prefix="/api/support", tags=["support"])
+support_router = _load_router("gdx_dispatch.routers", "support")
 
-try:
-    from gdx_dispatch.routers import instant_estimate as instant_estimate_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: instant_estimate_router")
-    instant_estimate_router = APIRouter(prefix="/api/ai", tags=["ai"])
+instant_estimate_router = _load_router("gdx_dispatch.routers", "instant_estimate")
 
-try:
-    from gdx_dispatch.routers import pdf_templates as pdf_templates_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: pdf_templates_router")
-    pdf_templates_router = APIRouter(prefix="/api/pdf-templates", tags=["pdf-templates"])
+pdf_templates_router = _load_router("gdx_dispatch.routers", "pdf_templates")
 
 # circuit_breaker module-level instances are imported here so they are
 # initialised at startup; routes can import them directly from gdx_dispatch.core.circuit_breaker.
-try:
-    from gdx_dispatch.core.circuit_breaker import (  # noqa: F401 – side-effect import
-        email_circuit,
-        qb_circuit,
-        stripe_circuit,
-    )
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("import/init failed")
-    qb_circuit = stripe_circuit = email_circuit = None  # type: ignore[assignment]
+from gdx_dispatch.core.circuit_breaker import (  # noqa: E402,F401 – side-effect import
+    email_circuit,
+    qb_circuit,
+    stripe_circuit,
+)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -1300,16 +746,11 @@ def create_app() -> FastAPI:
         app.add_middleware(ErrorHandlerMiddleware)
     except ImportError:
         logging.getLogger("gdx_dispatch.app").exception("error_handler_middleware_unavailable")
-    if SlowQueryMiddleware is not None:
-        app.add_middleware(SlowQueryMiddleware)
-    if SlowEndpointMiddleware is not None:
-        app.add_middleware(SlowEndpointMiddleware)
-    if GDPRDataAccessMiddleware is not None:
-        app.add_middleware(GDPRDataAccessMiddleware)
-    if AuditMiddleware is not None:
-        app.add_middleware(AuditMiddleware)
-    if APIKeyMiddleware is not None:
-        app.add_middleware(APIKeyMiddleware)
+    app.add_middleware(SlowQueryMiddleware)
+    app.add_middleware(SlowEndpointMiddleware)
+    app.add_middleware(GDPRDataAccessMiddleware)
+    app.add_middleware(AuditMiddleware)
+    app.add_middleware(APIKeyMiddleware)
     # ServiceKeyMiddleware (X-Service-Key / svc_live_ keys) was REMOVED
     # 2026-08-12. It granted admin-equivalent access but shipped with no way
     # to provision a key — no web UI, and the CLI its own docstring pointed at
@@ -1319,8 +760,7 @@ def create_app() -> FastAPI:
     # "service_account"` branch in routers/auth/core.py now fails closed.
     # Its ORM model was deleted 2026-09-03 with the SaaS-residue purge and
     # migration 087 dropped the empty `service_accounts` table.
-    if _TenantRateLimitMiddleware is not None:
-        app.add_middleware(_TenantRateLimitMiddleware)
+    app.add_middleware(_TenantRateLimitMiddleware)
     try:
         from gdx_dispatch.core.middleware.tracing import PlatformTracingMiddleware
         app.add_middleware(PlatformTracingMiddleware)
@@ -1453,6 +893,10 @@ def create_app() -> FastAPI:
         result: dict[str, str] = {"status": "ok", "db": "ok", "denylist_backend": denylist_backend}
         if pgbouncer_url:
             result["pgbouncer"] = "ok"
+        # An allow-listed router that did not import (GDXA-355). The app is up
+        # by design without it, so this names the gap rather than failing.
+        if ROUTER_FALLBACKS:
+            result["router_fallbacks"] = ",".join(ROUTER_FALLBACKS)
         return result
 
     app.include_router(auth.router if hasattr(auth, "router") else auth)
@@ -1529,19 +973,15 @@ def create_app() -> FastAPI:
     app.include_router(winback_router.router if hasattr(winback_router, "router") else winback_router)
     app.include_router(notes_router.router if hasattr(notes_router, "router") else notes_router)
     app.include_router(messages_router.router if hasattr(messages_router, "router") else messages_router)
-    if signatures_router is not None:
-        # Public routes first so `/api/signatures/token/{token}` matches before the
-        # admin `/api/signatures/{document_type}/{document_id}` collision path.
-        app.include_router(signatures_router.public_router)
-        app.include_router(signatures_router.admin_router)
-    if inbound_comms_router is not None:
-        app.include_router(inbound_comms_router.public_router)
-        app.include_router(inbound_comms_router.admin_router)
-    if cell_gateway_router is not None:
-        app.include_router(cell_gateway_router.public_router)
-    if surveys_router is not None:
-        app.include_router(surveys_router.public_router)
-        app.include_router(surveys_router.admin_router)
+    # Public routes first so `/api/signatures/token/{token}` matches before the
+    # admin `/api/signatures/{document_type}/{document_id}` collision path.
+    app.include_router(signatures_router.public_router)
+    app.include_router(signatures_router.admin_router)
+    app.include_router(inbound_comms_router.public_router)
+    app.include_router(inbound_comms_router.admin_router)
+    app.include_router(cell_gateway_router.public_router)
+    app.include_router(surveys_router.public_router)
+    app.include_router(surveys_router.admin_router)
     app.include_router(photos_router.router if hasattr(photos_router, "router") else photos_router)
     app.include_router(tags_router_module.router if hasattr(tags_router_module, "router") else tags_router_module)
     app.include_router(games_router.router if hasattr(games_router, "router") else games_router)
@@ -1550,45 +990,22 @@ def create_app() -> FastAPI:
     app.include_router(role_permissions_router.router if hasattr(role_permissions_router, "router") else role_permissions_router)
     app.include_router(pricing_router.router if hasattr(pricing_router, "router") else pricing_router)
     # Sprint 1.0.5 — pricing-engine admin endpoints (tier sets + volume discount + preview)
-    try:
-        from gdx_dispatch.routers import pricing_admin as _pricing_admin_router
-        app.include_router(_pricing_admin_router.router)
-    except Exception:
-        logging.getLogger("gdx_dispatch.app").exception("Failed to import router: pricing_admin")
+    app.include_router(_load_router("gdx_dispatch.routers", "pricing_admin").router)
     # Sprint S97 — labor pricing matrix admin (size/SKU-keyed flat-rate labor)
-    try:
-        from gdx_dispatch.routers import labor_pricing_admin as _labor_pricing_admin_router
-        app.include_router(_labor_pricing_admin_router.router)
-    except Exception:
-        logging.getLogger("gdx_dispatch.app").exception("Failed to import router: labor_pricing_admin")
+    app.include_router(_load_router("gdx_dispatch.routers", "labor_pricing_admin").router)
     # Sprint S97 slice 8 — labor variance (estimated vs actual hours/cost)
-    try:
-        from gdx_dispatch.routers import labor_variance as _labor_variance_router
-        app.include_router(_labor_variance_router.router)
-    except Exception:
-        logging.getLogger("gdx_dispatch.app").exception("Failed to import router: labor_variance")
+    app.include_router(_load_router("gdx_dispatch.routers", "labor_variance").router)
     # Sprint vendor-statement-recon — Midwest statement upload + parse
-    try:
-        from gdx_dispatch.routers import vendor_statements as _vendor_statements_router
-        app.include_router(_vendor_statements_router.router)
-    except Exception:
-        logging.getLogger("gdx_dispatch.app").exception("Failed to import router: vendor_statements")
+    app.include_router(_load_router("gdx_dispatch.routers", "vendor_statements").router)
     # Door listings — doors for sale, published to garagedoorxperts.com.
     # `public_router` serves photo bytes unauthenticated and is deliberately
     # NOT under /api: the per-key 60 req/min cap in core/api_keys.py would trip
     # on a page of thumbnails and hand an <img> tag a 429 JSON body.
-    try:
-        from gdx_dispatch.routers import door_listings as _door_listings_router
-        app.include_router(_door_listings_router.router)
-        app.include_router(_door_listings_router.public_router)
-    except Exception:
-        logging.getLogger("gdx_dispatch.app").exception("Failed to import router: door_listings")
+    _door_listings_router = _load_router("gdx_dispatch.routers", "door_listings")
+    app.include_router(_door_listings_router.router)
+    app.include_router(_door_listings_router.public_router)
     # Sprint vendor-invoice-intake — supplier bill upload + parse + match/confirm
-    try:
-        from gdx_dispatch.routers import vendor_invoices as _vendor_invoices_router
-        app.include_router(_vendor_invoices_router.router)
-    except Exception:
-        logging.getLogger("gdx_dispatch.app").exception("Failed to import router: vendor_invoices")
+    app.include_router(_load_router("gdx_dispatch.routers", "vendor_invoices").router)
     app.include_router(loyalty_router.router if hasattr(loyalty_router, "router") else loyalty_router)
     app.include_router(marketing_router.router if hasattr(marketing_router, "router") else marketing_router)
     # Register the public branding router BEFORE the gated settings router
@@ -1622,12 +1039,9 @@ def create_app() -> FastAPI:
     app.include_router(search_router.router if hasattr(search_router, "router") else search_router)
     app.include_router(users_router.router if hasattr(users_router, "router") else users_router)
     app.include_router(quickbooks.router if hasattr(quickbooks, "router") else quickbooks)
-    if forecasting_router is not None:
-        app.include_router(forecasting_router.router)
-    if ledger_router is not None:
-        app.include_router(ledger_router.router)
-    if bank_feeds_router is not None:
-        app.include_router(bank_feeds_router.router)
+    app.include_router(forecasting_router.router)
+    app.include_router(ledger_router.router)
+    app.include_router(bank_feeds_router.router)
     # NOTE: gdx_dispatch/modules/*/router.py (legacy) and gdx_dispatch/routers/*.py (newer) both
     # register some overlapping paths with the same function names. The newer
     # versions are richer and tenant-scoped; the legacy modules have some
@@ -1647,30 +1061,24 @@ def create_app() -> FastAPI:
         customer_portal_router.router if hasattr(customer_portal_router, "router") else customer_portal_router
     )
     # Staff-side portal management (/api/portal) — real endpoints behind the
-    # PortalView screen; falls back to an empty router if the import failed.
-    app.include_router(getattr(customer_portal_router, "staff_router", APIRouter()))
+    # PortalView screen.
+    app.include_router(customer_portal_router.staff_router)
     app.include_router(custom_fields_router.router if hasattr(custom_fields_router, "router") else custom_fields_router)
     app.include_router(webhook_monitor.router if hasattr(webhook_monitor, "router") else webhook_monitor)
-    app.include_router(pwa_router if hasattr(pwa_router, "routes") else APIRouter())
+    app.include_router(pwa_router)
     app.include_router(jwks_router)
     app.include_router(core_onboarding_router, prefix="/api", tags=["onboarding"])
     app.include_router(admin_ops_router)
     app.include_router(admin_ops_read_router)
     app.include_router(admin_db_router)
     # Third-party plugin proxy: forwards /api/plugins/* to the plugin-host
-    # container with the authenticated principal (ADR-013). Guarded so a missing
-    # plugin stack never blocks core boot.
-    try:
-        # WS browser-stream proxy (ADR-014) — registered first; it's a websocket
-        # route so it won't collide with the HTTP catch-all below.
-        from gdx_dispatch.routers.browser_proxy import router as browser_proxy_router
-        app.include_router(browser_proxy_router)
-        from gdx_dispatch.routers.plugins_proxy import router as plugins_proxy_router
-        app.include_router(plugins_proxy_router)
-        from gdx_dispatch.routers.admin_plugins import router as admin_plugins_router
-        app.include_router(admin_plugins_router)
-    except Exception:
-        logging.getLogger("gdx_dispatch.app").exception("plugins proxy router failed to load")
+    # container with the authenticated principal (ADR-013). A plugin-host that
+    # is down is a runtime 502 from the proxy, not an import failure here.
+    # WS browser-stream proxy (ADR-014) — registered first; it's a websocket
+    # route so it won't collide with the HTTP catch-all below.
+    app.include_router(_load_router("gdx_dispatch.routers.browser_proxy", "router"))
+    app.include_router(_load_router("gdx_dispatch.routers.plugins_proxy", "router"))
+    app.include_router(_load_router("gdx_dispatch.routers.admin_plugins", "router"))
     app.include_router(push_router)
     app.include_router(locations_router)
     app.include_router(ai_comms_router)
@@ -1693,23 +1101,11 @@ def create_app() -> FastAPI:
     app.include_router(dealer_order_router)
     app.include_router(prometheus_router)
 
-    try:
-        from gdx_dispatch.routers.auth import sso as sso_router
-        app.include_router(sso_router.router if hasattr(sso_router, "router") else sso_router)
-    except Exception:
-        logging.getLogger("gdx_dispatch.app").exception("Failed to import router: sso_router")
+    app.include_router(_load_router("gdx_dispatch.routers.auth", "sso").router)
 
-    try:
-        from gdx_dispatch.routers import dispatch_scheduling as dispatch_sched_router
-        app.include_router(dispatch_sched_router.router if hasattr(dispatch_sched_router, "router") else dispatch_sched_router)
-    except Exception:
-        logging.getLogger("gdx_dispatch.app").exception("Failed to import router: dispatch_scheduling")
+    app.include_router(_load_router("gdx_dispatch.routers", "dispatch_scheduling").router)
 
-    try:
-        from gdx_dispatch.routers import voice as voice_router
-        app.include_router(voice_router.router if hasattr(voice_router, "router") else voice_router)
-    except Exception:
-        logging.getLogger("gdx_dispatch.app").exception("Failed to import router: voice")
+    app.include_router(_load_router("gdx_dispatch.routers", "voice").router)
 
     app.include_router(integrations_router)
     app.include_router(van_inventory_router.router if hasattr(van_inventory_router, "router") else van_inventory_router)
@@ -1731,212 +1127,87 @@ def create_app() -> FastAPI:
     app.include_router(instant_estimate_router.router if hasattr(instant_estimate_router, "router") else instant_estimate_router)
     app.include_router(pdf_templates_router.router if hasattr(pdf_templates_router, "router") else pdf_templates_router)
     app.include_router(dispatch_ws_router)
-    # ai_quote_router is already included at line ~1125 — don't register twice
+    # ai_quote_router is already included above — don't register twice
     # (was causing Duplicate Operation ID warnings for api_quote_history/feedback)
     app.include_router(parts_pricing_router)
     app.include_router(resources_router)
     app.include_router(public_v1_router)
 
     # Sprint 1.x-S26: admin AI settings router.
-    try:
-        from gdx_dispatch.routers import admin_ai_settings as ai_settings_mod
-        app.include_router(ai_settings_mod.router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire admin_ai_settings (1.x-S26)')
+    app.include_router(_load_router("gdx_dispatch.routers", "admin_ai_settings").router)
 
     # Sprint tech_mobile S1-Z4: per-tenant tech-mobile feature settings.
-    try:
-        from gdx_dispatch.routers import admin_tech_mobile_settings as tech_mobile_settings_mod
-        app.include_router(tech_mobile_settings_mod.router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire admin_tech_mobile_settings (S1-Z4)')
+    app.include_router(_load_router("gdx_dispatch.routers", "admin_tech_mobile_settings").router)
 
     # Sprint tech_mobile S1-A8: customer-alert tag taxonomy CRUD.
-    try:
-        from gdx_dispatch.routers import admin_customer_tags as customer_tags_mod
-        app.include_router(customer_tags_mod.router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire admin_customer_tags (S1-A8)')
+    app.include_router(_load_router("gdx_dispatch.routers", "admin_customer_tags").router)
 
     # Sprint phone-com pc-s8/s9/s10/s11/s12: integration card + ops + webhooks.
-    try:
-        from gdx_dispatch.routers import phone_com_settings as pc_settings_mod
-        app.include_router(pc_settings_mod.router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire phone_com_settings router (pc-s8)')
-    try:
-        from gdx_dispatch.modules.phone_com import router as pc_ops_router
-        app.include_router(pc_ops_router.router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire phone_com ops router (pc-s9/s10/s11)')
-    try:
-        from gdx_dispatch.modules.phone_com import webhook_router as pc_webhook_router
-        app.include_router(pc_webhook_router.router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire phone_com webhook router (pc-s12)')
+    app.include_router(_load_router("gdx_dispatch.routers", "phone_com_settings").router)
+    app.include_router(_load_router("gdx_dispatch.modules.phone_com", "router").router)
+    app.include_router(_load_router("gdx_dispatch.modules.phone_com", "webhook_router").router)
 
     # Sprint Outlook Integration: OAuth + read views + send + webhook receiver.
-    try:
-        from gdx_dispatch.routers import outlook_oauth as outlook_oauth_mod
-        app.include_router(outlook_oauth_mod.router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire outlook_oauth router')
-    try:
-        from gdx_dispatch.modules.outlook import views_router as outlook_views_router
-        app.include_router(outlook_views_router.router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire outlook views_router')
-    try:
-        from gdx_dispatch.modules.outlook import send_router as outlook_send_router
-        app.include_router(outlook_send_router.router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire outlook send_router')
-    try:
-        from gdx_dispatch.modules.outlook import webhook_router as outlook_webhook_router
-        app.include_router(outlook_webhook_router.router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire outlook webhook_router')
-    try:
-        from gdx_dispatch.modules.outlook import admin_settings_router as outlook_admin_router
-        app.include_router(outlook_admin_router.router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire outlook admin_settings_router')
-    try:
-        from gdx_dispatch.modules.outlook import folders_router as outlook_folders_router
-        app.include_router(outlook_folders_router.router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire outlook folders_router')
+    app.include_router(_load_router("gdx_dispatch.routers", "outlook_oauth").router)
+    app.include_router(_load_router("gdx_dispatch.modules.outlook", "views_router").router)
+    app.include_router(_load_router("gdx_dispatch.modules.outlook", "send_router").router)
+    app.include_router(_load_router("gdx_dispatch.modules.outlook", "webhook_router").router)
+    app.include_router(_load_router("gdx_dispatch.modules.outlook", "admin_settings_router").router)
+    app.include_router(_load_router("gdx_dispatch.modules.outlook", "folders_router").router)
 
     # 2026-04-29 — Tax module (default rate per tenant + customer exemptions).
     # Sprint-shaped so jurisdiction lookup, category overrides, and
     # provider plugins (Avalara/TaxJar) can layer in without a refactor.
-    try:
-        from gdx_dispatch.modules.tax.router import router as tax_router
-        app.include_router(tax_router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire tax module')
+    app.include_router(_load_router("gdx_dispatch.modules.tax.router", "router"))
 
     # 2026-04-29 / UX audit F-11 — Numbering module (per-tenant job number
     # format + counter). Same module shape as tax: today only jobs use it,
     # tomorrow estimates/invoices share the same format engine.
-    try:
-        from gdx_dispatch.modules.numbering.router import router as numbering_router
-        app.include_router(numbering_router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire numbering module')
+    app.include_router(_load_router("gdx_dispatch.modules.numbering.router", "router"))
 
     # 2026-04-29 / UX audit F-8 — Job workflow flags (per-tenant toggles
     # for schedule lock, arrival event, arrival SMS, complete-time
     # required fields). Default behavior baked into routers/jobs.py.
-    try:
-        from gdx_dispatch.modules.workflow.router import router as workflow_router
-        app.include_router(workflow_router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire workflow module')
+    app.include_router(_load_router("gdx_dispatch.modules.workflow.router", "router"))
 
     # 2026-04-29 / UX audit F-18 — Self-hosted error sink (replaces Sentry).
     # Captures 5xx + unhandled exceptions to control-plane server_errors.
-    try:
-        from gdx_dispatch.modules.error_sink.router import router as error_sink_router
-        app.include_router(error_sink_router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire error_sink module')
+    app.include_router(_load_router("gdx_dispatch.modules.error_sink.router", "router"))
 
     # 2026-04-29 / UX audit F-36 — billing terms (per-tenant payment-terms
     # defaults + per-class overrides + early-pay / late-fee / interest config).
-    try:
-        from gdx_dispatch.modules.billing_terms.router import router as billing_terms_router
-        app.include_router(billing_terms_router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire billing_terms module')
+    app.include_router(_load_router("gdx_dispatch.modules.billing_terms.router", "router"))
 
     # 2026-04-29 / UX audit F-74 — Catalog description policy.
-    try:
-        from gdx_dispatch.modules.catalog_policy.router import router as catalog_policy_router
-        app.include_router(catalog_policy_router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire catalog_policy module')
+    app.include_router(_load_router("gdx_dispatch.modules.catalog_policy.router", "router"))
 
     # 2026-04-30 — Estimates feature toggles (per-line margin override, etc.).
-    try:
-        from gdx_dispatch.modules.estimates_features.router import router as estimates_features_router
-        app.include_router(estimates_features_router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire estimates_features module')
+    app.include_router(_load_router("gdx_dispatch.modules.estimates_features.router", "router"))
 
     # 2026-05-01 — Dispatch settings (scheduled-no-tech gates + lane visibility).
-    try:
-        from gdx_dispatch.modules.dispatch_settings.router import router as dispatch_settings_router
-        app.include_router(dispatch_settings_router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire dispatch_settings module')
+    app.include_router(_load_router("gdx_dispatch.modules.dispatch_settings.router", "router"))
 
     # Session policy — tenant-wide inactivity auto-logout.
-    try:
-        from gdx_dispatch.routers.session_policy import router as session_policy_router
-        app.include_router(session_policy_router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire session_policy router')
+    app.include_router(_load_router("gdx_dispatch.routers.session_policy", "router"))
 
     # 2026-04-29 / UX audit F-82 — Payroll module (true vs estimated cost).
-    # Local var name MUST NOT be `payroll_router` — that name binds to the
-    # module-level import at app.py:274, and a function-local assignment
-    # would shadow it for the whole create_app scope, causing
-    # UnboundLocalError at the earlier app.include_router(payroll_router) site.
-    try:
-        from gdx_dispatch.modules.payroll.router import router as f82_payroll_router
-        app.include_router(f82_payroll_router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire payroll module')
+    app.include_router(_load_router("gdx_dispatch.modules.payroll.router", "router"))
 
     # 2026-04-29 / UX audit F-89 — Maps provider selector.
-    # Same shadow-trap as the F-82 payroll case — `maps_router` is
-    # already a function-scope name from an earlier include_router
-    # block. Use a distinct name.
-    try:
-        from gdx_dispatch.modules.maps_provider.router import router as f89_maps_provider_router
-        app.include_router(f89_maps_provider_router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception('failed to wire maps_provider module')
+    app.include_router(_load_router("gdx_dispatch.modules.maps_provider.router", "router"))
 
     # Sprint 1.x-S14: per-tenant AI assistant skeleton (`/api/ai/ask`).
-    # Defensive try/except matches the SS router pattern below — a broken
-    # AI dependency must not take down the whole app.
-    try:
-        from gdx_dispatch.routers import ai as ai_router
-        app.include_router(ai_router.router if hasattr(ai_router, "router") else ai_router)
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception("failed to wire ai router (sprint 1.x-S14)")
+    app.include_router(_load_router("gdx_dispatch.routers", "ai").router)
 
     # -----------------------------------------------------------------
     # Sprint 0.9-n: SS-14..35 platform routers.
-    #
-    # Each SS router is wired via try/except so a single broken import
-    # doesn't take down the whole app (matches the legacy defensive
-    # pattern used above for other routers).
     # -----------------------------------------------------------------
-    _ss_log = logging.getLogger("gdx_dispatch.app")
-    # Slice 8 (auth-cluster consolidation): the auth-cluster modules
-    # moved into gdx_dispatch.routers.auth.*; non-auth SS routers stay flat under
-    # gdx_dispatch.routers.*. Dotted import paths are explicit so a future move
-    # of any of these gets caught at edit-time, not lost in the silent
-    # except branch.
     # Command Center / SaaS-platform routers were removed for this single-tenant
     # release (their tables are gone from the squashed baseline). Only the
     # app-level metadata endpoints. (The PAT/SCIM identity cluster was
     # removed with the single-tenant cleanup.)
-    _ss_routers: list[tuple[str, str, str]] = [
-        # (SS-label, dotted-import-path, friendly-name-for-logs)
-        ("SS-25", "gdx_dispatch.routers.api_metadata", "api_metadata"),
-        ("SS-26", "gdx_dispatch.routers.well_known", "well_known"),
-    ]
-    for _ss_label, _ss_dotted, _ss_friendly in _ss_routers:
-        try:
-            _ss_mod = __import__(_ss_dotted, fromlist=["router"])
-            _ss_router = getattr(_ss_mod, "router", _ss_mod)
-            app.include_router(_ss_router)
-        except Exception:
-            _ss_log.exception("ss_router_unavailable: %s/%s", _ss_label, _ss_friendly)
+    app.include_router(_load_router("gdx_dispatch.routers.api_metadata", "router"))  # SS-25
+    app.include_router(_load_router("gdx_dispatch.routers.well_known", "router"))  # SS-26
 
     # Universal route reorder: move literal-path routes ahead of
     # parameterized ones so /customers/duplicates doesn't get eaten by

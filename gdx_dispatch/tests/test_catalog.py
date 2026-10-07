@@ -250,7 +250,7 @@ def test_pricing_calculate_422_for_unknown_margin_or_customer_type():
 
 def test_catalog_routes_registered_in_main_app():
     app_py = Path("gdx_dispatch/app.py").read_text(encoding="utf-8")
-    assert "from gdx_dispatch.routers import catalog as catalog_router" in app_py
+    assert 'catalog_router = _load_router("gdx_dispatch.routers", "catalog")' in app_py
     assert "app.include_router(catalog_router.router if hasattr(catalog_router, \"router\") else catalog_router)" in app_py
 
 

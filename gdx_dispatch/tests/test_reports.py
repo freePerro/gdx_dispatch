@@ -787,7 +787,7 @@ def test_reports_router_registered_in_create_app():
     from pathlib import Path
 
     app_py = Path("gdx_dispatch/app.py").read_text(encoding="utf-8")
-    assert "from gdx_dispatch.routers import reports as reports_router" in app_py
+    assert 'reports_router = _load_router("gdx_dispatch.routers", "reports")' in app_py
     assert "app.include_router(reports_router.router if hasattr(reports_router, \"router\") else reports_router)" in app_py
 
 

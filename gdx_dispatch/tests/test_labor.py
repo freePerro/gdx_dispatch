@@ -255,7 +255,7 @@ def test_labor_routes_registered_in_main_app():
     from pathlib import Path
 
     source = Path("gdx_dispatch/app.py").read_text()
-    assert "from gdx_dispatch.routers import labor as labor_router" in source
+    assert 'labor_router = _load_router("gdx_dispatch.routers", "labor")' in source
     assert "app.include_router(labor_router.router if hasattr(labor_router, \"router\") else labor_router)" in source
 
 

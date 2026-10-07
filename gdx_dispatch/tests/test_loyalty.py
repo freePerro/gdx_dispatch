@@ -182,5 +182,5 @@ def test_create_referral_requires_fields():
 
 def test_loyalty_routes_registered_in_main_app():
     app_source = (Path(__file__).resolve().parents[1] / "app.py").read_text()
-    assert "from gdx_dispatch.routers import loyalty as loyalty_router" in app_source
+    assert 'loyalty_router = _load_router("gdx_dispatch.routers", "loyalty")' in app_source
     assert "app.include_router(loyalty_router.router if hasattr(loyalty_router, \"router\") else loyalty_router)" in app_source
