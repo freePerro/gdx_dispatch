@@ -38,7 +38,6 @@ except Exception:
 
 # ---------------------------------------------------------------------------
 # Uses TenantBase since api_keys are tenant-scoped (have tenant_id column)
-import contextlib
 
 from gdx_dispatch.core.audit import TenantBase as APIKeyBase  # noqa: E402
 
@@ -223,19 +222,13 @@ async def list_api_keys(
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid tenant_id in token") from None
 
-    try:
-        keys = (
-            db.query(APIKey)
-            .filter(APIKey.tenant_id == tenant_uuid)
-            .order_by(APIKey.created_at.desc())
-            .all()
-        )
-    except Exception:
-        import logging
-        logging.getLogger(__name__).exception("list_api_keys: api_keys table may not exist")
-        with contextlib.suppress(Exception):
-            db.rollback()
-        return JSONResponse({"data": []})
+    # No blanket except: a failed read is a 500, not "no keys" (GDXA-344).
+    keys = (
+        db.query(APIKey)
+        .filter(APIKey.tenant_id == tenant_uuid)
+        .order_by(APIKey.created_at.desc())
+        .all()
+    )
 
     def _serialize(k: APIKey) -> dict:
         return {

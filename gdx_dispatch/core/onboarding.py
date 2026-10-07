@@ -4,7 +4,7 @@ Tenant onboarding wizard — GDX (single-tenant, self-hosted). The
 serves; they are not a cross-tenant selector.
 
 Provides:
-  - OnboardingStep dataclass (in-memory / Redis-backed state)
+  - OnboardingStep dataclass (Redis-backed state; Redis down -> 503)
   - Six wizard steps: company_info, first_technician, service_area,
     first_job_type, payment_setup, branding
   - get_onboarding_status(tenant_id)  -> list[OnboardingStepState]
@@ -29,7 +29,7 @@ mobile routers, not in the MCP tools. What the app actually uses is
 ``gdx_dispatch/routers/onboarding.py`` (``/api/onboarding/state|step|complete|
 checklist``, DB-backed, modelling a different six steps), and
 ``OnboardingView.vue`` calls ``/api/onboarding/complete`` on that router. This
-module's Redis-or-process-memory state is a parallel implementation of the same
+module's Redis-backed state is a parallel implementation of the same
 idea, so it is a candidate for the same treatment the wizard just got. That is a
 separate decision and is NOT made here: GDXA-24's brief required this route to
 stay mounted, and a guard now holds it there.
@@ -37,7 +37,6 @@ Guard: ``gdx_dispatch/tests/test_onboarding_jinja_wizard_retired.py``.
 """
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
@@ -45,7 +44,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import text  # noqa: F401 – available for callers
 
 logger = logging.getLogger(__name__)
@@ -72,21 +71,28 @@ STEP_TITLES: dict[str, str] = {
 # TTL for onboarding state in Redis (30 days)
 _ONBOARDING_TTL = 30 * 24 * 60 * 60
 
-# ── Redis helper (optional — falls back to in-memory dict) ────────────────────
-_mem_store: dict[str, dict[str, Any]] = {}
+# ── Redis store (the only store) ──────────────────────────────────────────────
+# Until GDXA-344 every helper here swallowed a Redis failure and fell back to a
+# per-process dict, so with Redis down progress read back as "nothing done"
+# (HTTP 200) and every write vanished on restart — and differed per worker.
+# Redis is now the only store: when it cannot answer, the helpers raise
+# OnboardingStateUnavailable and GET /api/onboarding answers 503.
+
+
+class OnboardingStateUnavailable(RuntimeError):
+    """The onboarding state store (Redis) could not be read or written."""
 
 
 def _get_redis():
-    """Return a Redis client or None if unavailable."""
+    """Return a connected Redis client, or raise OnboardingStateUnavailable."""
     try:
         from redis import from_url as redis_from_url
         url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
         client = redis_from_url(url, decode_responses=True, socket_connect_timeout=1)
         client.ping()
         return client
-    except Exception:  # returns None if redis is unavailable
-        logging.getLogger(__name__).exception("_get_redis caught exception")
-        return None
+    except Exception as exc:
+        raise OnboardingStateUnavailable("onboarding state store is unreachable") from exc
 
 
 def _redis_key(tenant_id: str) -> str:
@@ -94,30 +100,22 @@ def _redis_key(tenant_id: str) -> str:
 
 
 def _load_state(tenant_id: str) -> dict[str, Any]:
-    """Load per-tenant onboarding state (Redis preferred, in-memory fallback)."""
+    """Load per-tenant onboarding state. A missing key is a real empty state."""
     redis = _get_redis()
-    if redis is not None:
-        try:
-            raw = redis.get(_redis_key(tenant_id))
-            if raw:
-                return json.loads(raw)
-        except Exception:
-            logging.getLogger(__name__).exception("_load_state caught exception")
-            pass
-    return _mem_store.get(tenant_id, {})
+    try:
+        raw = redis.get(_redis_key(tenant_id))
+        return json.loads(raw) if raw else {}
+    except Exception as exc:
+        raise OnboardingStateUnavailable("onboarding state could not be read") from exc
 
 
 def _save_state(tenant_id: str, state: dict[str, Any]) -> None:
     """Persist per-tenant onboarding state."""
     redis = _get_redis()
-    if redis is not None:
-        try:
-            redis.set(_redis_key(tenant_id), json.dumps(state), ex=_ONBOARDING_TTL)
-            return
-        except Exception:
-            logging.getLogger(__name__).exception("_save_state caught exception")
-            pass
-    _mem_store[tenant_id] = state
+    try:
+        redis.set(_redis_key(tenant_id), json.dumps(state), ex=_ONBOARDING_TTL)
+    except Exception as exc:
+        raise OnboardingStateUnavailable("onboarding state could not be written") from exc
 
 
 # ── Domain model ───────────────────────────────────────────────────────────────
@@ -199,10 +197,10 @@ def is_onboarding_complete(tenant_id: str) -> bool:
 def reset_onboarding(tenant_id: str) -> None:
     """Clear all onboarding state for a tenant (useful in tests / re-onboarding)."""
     redis = _get_redis()
-    if redis is not None:
-        with contextlib.suppress(Exception):
-            redis.delete(_redis_key(tenant_id))
-    _mem_store.pop(tenant_id, None)
+    try:
+        redis.delete(_redis_key(tenant_id))
+    except Exception as exc:
+        raise OnboardingStateUnavailable("onboarding state could not be cleared") from exc
 
 
 # ── Request helpers ────────────────────────────────────────────────────────────
@@ -221,38 +219,36 @@ router = APIRouter()
 
 @router.get("/onboarding")
 def get_onboarding_api(request: Request) -> dict:
-    """JSON endpoint: returns wizard progress for the current tenant."""
+    """JSON endpoint: returns wizard progress for the current tenant.
+
+    A store failure is a 503, never an empty-progress 200 (GDXA-344); any other
+    failure propagates as a 500.
+    """
+    tenant_id = _tenant_id_from_request(request)
     try:
-        tenant_id = _tenant_id_from_request(request)
         steps = get_onboarding_status(tenant_id)
-        complete_count = sum(1 for s in steps if s.is_complete)
-        total = len(steps)
-        return {
-            "tenant_id": tenant_id,
-            "total": total,
-            "complete": complete_count,
-            "percent": round(complete_count / total * 100) if total else 0,
-            "is_complete": is_onboarding_complete(tenant_id),
-            "next_step": get_next_step(tenant_id),
-            "steps": [
-                {
-                    "step_name": s.step_name,
-                    "title": s.title,
-                    "is_complete": s.is_complete,
-                    "completed_at": s.completed_at,
-                    "position": s.position,
-                }
-                for s in steps
-            ],
-        }
-    except Exception:
-        logger.exception("get_onboarding_api failed")
-        return {
-            "tenant_id": "unknown",
-            "total": len(WIZARD_STEPS),
-            "complete": 0,
-            "percent": 0,
-            "is_complete": False,
-            "next_step": WIZARD_STEPS[0],
-            "steps": [],
-        }
+        is_complete = is_onboarding_complete(tenant_id)
+        next_step = get_next_step(tenant_id)
+    except OnboardingStateUnavailable as exc:
+        logger.exception("get_onboarding_api: onboarding state store unavailable")
+        raise HTTPException(status_code=503, detail="Onboarding state is unavailable") from exc
+    complete_count = sum(1 for s in steps if s.is_complete)
+    total = len(steps)
+    return {
+        "tenant_id": tenant_id,
+        "total": total,
+        "complete": complete_count,
+        "percent": round(complete_count / total * 100) if total else 0,
+        "is_complete": is_complete,
+        "next_step": next_step,
+        "steps": [
+            {
+                "step_name": s.step_name,
+                "title": s.title,
+                "is_complete": s.is_complete,
+                "completed_at": s.completed_at,
+                "position": s.position,
+            }
+            for s in steps
+        ],
+    }
