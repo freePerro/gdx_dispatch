@@ -460,6 +460,13 @@ class TimeEntry(Base):
     # submission's raw `closed_at` — the replay key. A row with this set and
     # minutes > 0 is a day row; one with 0 minutes is a consumed timer.
     day_closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Multi-day jobs (migration 110): the invoice that billed this day row.
+    # Claimed with `... WHERE billed_invoice_id IS NULL`, so a day is billed
+    # once; a void, an invoice delete, or deleting the invoice's last attested
+    # labor line sets it back to NULL.
+    billed_invoice_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("invoices.id"), nullable=True, index=True
+    )
     # -- columns from production schema not yet in ORM --
     company_id: Mapped[str] = mapped_column(String(36), nullable=False)
     entry_type_old: Mapped[str] = mapped_column(String(50), nullable=True)

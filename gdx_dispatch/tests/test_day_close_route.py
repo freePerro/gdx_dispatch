@@ -3,8 +3,8 @@ jobs plan §5.4a): money, replay, refusals and state.
 
 The route functions are called directly against an ORM-built SQLite schema,
 as test_closeout_labor_trail does. Payroll is read through payroll's OWN query
-(``_fetch_tech_hours``) and billing through ``earlier_visits_line``'s
-``man_hours``, never a paraphrase of either. The Postgres-only concurrency
+(``_fetch_tech_hours``) and billing through ``day_row_entries``, the rows a
+labor line prices, never a paraphrase of either. The Postgres-only concurrency
 tests skip without ``GDX_PROOF_PG_URL``.
 
 Every date here is relative to the real shop "today": the closeout's day
@@ -234,11 +234,13 @@ def paid(db) -> dict[str, float]:
 
 
 def billed_man_hours(db, job) -> float:
-    from gdx_dispatch.core.closeout_billing import earlier_visits_line
+    """The raw man-hours of the job's day rows, billed or not: what the labor
+    prices before it rounds (an autodraft may already hold them)."""
+    from gdx_dispatch.core.closeout_billing import day_row_entries
 
     db.expire_all()
-    line = earlier_visits_line(db, db.get(Job, job.id))
-    return 0.0 if line is None else line["man_hours"]
+    rows = day_row_entries(db, [job.id]).get(str(job.id), [])
+    return round(sum(minutes for _at, minutes in rows) / 60, 2)
 
 
 def audits(db, job, action: str) -> list[AuditLog]:

@@ -865,6 +865,8 @@ def mobile_create_invoice(
                 closeout=closeout,
                 job_type=job_job_type,
                 job_id=str(job_id),
+                actor=user_id,
+                request=request,
             )
 
         if _new_lines_total > 0:

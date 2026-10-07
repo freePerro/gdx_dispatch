@@ -2,7 +2,7 @@
 closeout's day refusals and ``tapped_at``, the timer pickers skipping day
 rows, the 0 h "Yes", /complete and /close-without-work refusing a forgotten
 day and auditing before their commit, the suggestion's
-``earlier_visits_line``, and update_appointment's round-33 ``visit_arrived``.
+``labor_lines``, and update_appointment's round-33 ``visit_arrived``.
 
 The harness is test_day_close_route's; dates are relative to the real shop
 today (see that module's docstring).
@@ -473,19 +473,23 @@ def test_a_failed_audit_rolls_the_completion_back(db, door, monkeypatch):
     assert stage(db, job) == "in_progress"
 
 
-def test_close_without_work_with_day_rows_bills_the_earlier_visits_line(db):
+def test_close_without_work_with_day_rows_bills_the_day_rows(db):
     t = technician(db, LEAD)
     job = make_job(db)
     v = visit(db, job, at(-1), tech=t, arrived=True)
     timer(db, job, LEAD, at(-1), tech=t)
     assert day_close(db, job, body(-1, visits=[v], people=[(LEAD, 7)]))[0] == 200
 
-    assert suggestion(db, job)["earlier_visits_line"] is None, "null while in progress"
+    assert suggestion(db, job)["labor_lines"] == [], "nothing offered while in progress"
 
     code, out = close_without_work(db, job)
     assert code == 200, out
-    line = suggestion(db, job)["earlier_visits_line"]
-    assert line is not None and line["man_hours"] == 7.0
+    # No closeout, so the day rows alone are the labor: one line, hours as
+    # its quantity, carrying the ids it bills.
+    [line] = suggestion(db, job)["labor_lines"]
+    assert line["man_hours"] == 7.0
+    assert line["quantity"] == 7.0
+    assert len(line["time_entry_ids"]) == 1
     assert closeouts(db, job) == 0
 
 

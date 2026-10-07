@@ -223,7 +223,7 @@
           :useGrouping="false"
           class="col-qty"
           :data-testid="`line-qty-${idx}`"
-          @update:modelValue="emitLines"
+          @update:modelValue="onQtyCommit(item)"
           @input="onQtyInput(item, $event)"
         />
         <InputNumber
@@ -533,8 +533,11 @@ function duplicateLineAt(idx) {
   // `_autoMargin` is blur-echo state that means nothing on a fresh row. The
   // margin VALUE and its persist flags are kept on purpose — a copy of an
   // override line is still an override line.
+  // `time_entry_ids` goes the way of `part_id`: the day rows a labor line
+  // bills are claimed once, and a copy claiming them again would refuse the
+  // whole save. The copy is a hand-typed line.
   const {
-    id, _key, tempId, part_id, _priceOverridden, _autoMargin, ...rest
+    id, _key, tempId, part_id, time_entry_ids, _priceOverridden, _autoMargin, ...rest
   } = src;
   localLines.value.splice(idx + 1, 0, { ...rest });
   emitLines();
@@ -859,6 +862,26 @@ function markPriceOverride(item) {
 // types instead of appearing frozen until focus leaves the field.
 function onQtyInput(item, e) {
   item.quantity = e.value;
+  markQtyOverride(item);
+}
+
+function onQtyCommit(item) {
+  markQtyOverride(item);
+}
+
+// Attested hours are the tech's. A changed hour count is an office number,
+// so the line stops claiming to be attested — the same rule as a repriced
+// line (markPriceOverride). It compares against the quantity the provenance
+// refers to, so a blur that changed nothing never downgrades.
+function markQtyOverride(item) {
+  if (
+    item.labor_source === 'attested'
+    && item._provenanceQty != null
+    && item.quantity != null
+    && Math.abs(toNum(item.quantity) - toNum(item._provenanceQty)) > 0.005
+  ) {
+    item.labor_source = 'manual';
+  }
   emitLines();
 }
 

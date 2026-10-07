@@ -1474,3 +1474,106 @@ describe('InvoiceDetailView — GDXA-91: the server bounds refuse before writing
     expect(posted[1].quantity).toBe(0.5);
   });
 });
+
+// Labor billed through a point. Editing an invoice's labor means removing the
+// old labor line (which releases the day rows it billed) and adding the
+// suggestion's line (which claims them). The server claims free rows only, so
+// the delete must reach it FIRST — inserting first is a 409 for days the old
+// line still holds. The kept set is fixed before any write, by the loop's own
+// rule, so a saved line whose description was cleared is still deleted.
+describe('InvoiceDetailView — replacing a labor line deletes before it inserts', () => {
+  const OLD_LABOR = '3333333333333333333333333333cccc';
+  const KEEP = '4444444444444444444444444444dddd';
+  const CLEARED = '5555555555555555555555555555eeee';
+
+  const REPLACE_STUB = {
+    props: ['lines'],
+    emits: ['update:lines', 'update:fromPartIds'],
+    template: `
+      <div>
+        <button data-testid="emit-replace" @click="$emit('update:lines', [
+          { id: '${KEEP}', description: 'Spring', quantity: 1, unit_price: 100, taxable: true },
+          { id: '${CLEARED}', description: '', quantity: 1, unit_price: 25, taxable: true },
+          { description: 'Service labor — 3 man-hours over 2 days', quantity: 3, unit_price: 100, taxable: false,
+            category: 'Labor', labor_source: 'attested', estimated_man_hours: 3, time_entry_ids: ['te-1', 'te-2'] },
+          { description: 'Copy of labor', quantity: 1, unit_price: 100, taxable: false, category: 'Labor' },
+        ])">replace</button>
+      </div>`,
+  };
+
+  function mountReplace() {
+    const payload = buildInvoicePayload({
+      job_id: 'job-1',
+      lines: [
+        { id: KEEP, description: 'Spring', quantity: 1, unit_price: 100, taxable: true, line_total: 100 },
+        { id: CLEARED, description: 'Cable', quantity: 1, unit_price: 25, taxable: true, line_total: 25 },
+        { id: OLD_LABOR, description: 'Service labor', quantity: 2, unit_price: 100, taxable: false,
+          line_total: 200, category: 'Labor', labor_source: 'attested' },
+      ],
+    });
+    mockApi(payload);
+    const base = apiGet.getMockImplementation();
+    apiGet.mockImplementation((url, ...rest) => (
+      String(url).startsWith('/api/jobs/job-1/closeout-billing-suggestion')
+        ? Promise.resolve({ has_closeout: true, closeout: {}, labor_lines: [] })
+        : base(url, ...rest)
+    ));
+    apiPatch.mockResolvedValue({});
+    apiPost.mockResolvedValue({ id: 'new-line' });
+    apiDel.mockResolvedValue({});
+    return mount(InvoiceDetailView, {
+      global: { stubs: { ...baseStubs, LineItemEditor: REPLACE_STUB } },
+    });
+  }
+
+  async function save(wrapper) {
+    await wrapper.get('[data-testid="invoice-edit-btn"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="emit-replace"]').trigger('click');
+    await wrapper.get('[data-testid="invoice-edit-save"]').trigger('click');
+    await flushPromises();
+  }
+
+  it('asks for the suggestion as this invoice', async () => {
+    const wrapper = mountReplace();
+    await flushPromises();
+    await wrapper.get('[data-testid="invoice-edit-btn"]').trigger('click');
+    await flushPromises();
+    const asked = apiGet.mock.calls.map(([u]) => u).filter((u) => u.includes('closeout-billing-suggestion'));
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.every((u) => u === '/api/jobs/job-1/closeout-billing-suggestion?invoice_id=inv-1')).toBe(true);
+  });
+
+  it('every delete lands before the first insert, and the kept set is the loop rule', async () => {
+    const wrapper = mountReplace();
+    await flushPromises();
+    await save(wrapper);
+
+    const deleted = apiDel.mock.calls.map(([u]) => u);
+    expect(deleted.sort()).toEqual([
+      `/api/invoices/inv-1/lines/${OLD_LABOR}`,
+      `/api/invoices/inv-1/lines/${CLEARED}`,
+    ].sort());
+    const inserts = apiPost.mock.calls
+      .map(([u], i) => [u, apiPost.mock.invocationCallOrder[i]])
+      .filter(([u]) => u === '/api/invoices/inv-1/lines');
+    expect(inserts).toHaveLength(2);
+    const lastDelete = Math.max(...apiDel.mock.invocationCallOrder);
+    expect(inserts.every(([, order]) => order > lastDelete)).toBe(true);
+    // The untouched kept line is neither deleted nor patched.
+    expect(deleted.some((u) => u.includes(KEEP))).toBe(false);
+  });
+
+  it('the inserted labor line carries its day-row ids; the hand-typed copy carries none', async () => {
+    const wrapper = mountReplace();
+    await flushPromises();
+    await save(wrapper);
+    const bodies = apiPost.mock.calls
+      .filter(([u]) => u === '/api/invoices/inv-1/lines')
+      .map(([, b]) => b);
+    expect(bodies[0]).toMatchObject({
+      quantity: 3, unit_price: 100, labor_source: 'attested', time_entry_ids: ['te-1', 'te-2'],
+    });
+    expect(bodies[1]).not.toHaveProperty('time_entry_ids');
+  });
+});
