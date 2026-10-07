@@ -256,6 +256,17 @@ def test_pause_reader_fails_closed_on_unexpected_error(db, monkeypatch):
 # ─── /api/workflow/flags round trip ─────────────────────────────────────
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "GDXA-292 deferred, SQLite only: core/settings_row.py now binds the tenant id "
+        "as a typed Uuid (dashless hex on SQLite), but raw tenant_settings SQL on this "
+        "test's path still binds str(tenant_id) (at least core/settings_flags.py:40; the full "
+        "deferred list is in GDXA-292), so it misses the row on SQLite. Postgres is "
+        "unaffected. When every site on the path binds through "
+        "settings_sql()/tenant_id_value() this XPASSes and the marker must go."
+    ),
+)
 def test_workflow_flags_round_trip_includes_pause(db):
     """GET seeds the row and returns all 9 flags; PATCH persists the pause.
     First real coverage of this endpoint — the control-model drift (047,

@@ -45,13 +45,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import text
-
 from gdx_dispatch.core.audit import (
     ensure_audit_table,
     log_audit_event_sync,
     resolve_audit_actor,
 )
+from gdx_dispatch.core.settings_row import settings_sql, tenant_id_value
 
 
 def _client_host(request: Any) -> str | None:
@@ -93,7 +92,9 @@ def audited_settings_upsert(
         f"VALUES (:tid, {', '.join(':' + c for c in cols)}) "
         f"ON CONFLICT (tenant_id) DO UPDATE SET {set_clause}"
     )
-    db.execute(text(sql), {"tid": str(tenant_id), **values})
+    # Typed `:tid`, same spelling as the reader's — a dashed string here
+    # upserts a second row on SQLite instead of updating the one `read` sees.
+    db.execute(settings_sql(sql), {"tid": tenant_id_value(tenant_id), **values})
 
     # Same session, same transaction — this sees the staged write.
     after = read(db, tenant_id)

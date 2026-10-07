@@ -30,7 +30,12 @@ from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.core.settings_row import read_settings_row, settings_column
+from gdx_dispatch.core.settings_row import (
+    read_settings_row,
+    settings_column,
+    settings_sql,
+    tenant_id_value,
+)
 from gdx_dispatch.routers.auth import get_current_user
 
 TID = "11111111-1111-1111-1111-111111111111"
@@ -41,9 +46,12 @@ sqlite3.register_adapter(Decimal, float)
 
 
 def _engine(columns):
-    """SQLite with a hand-built tenant_settings — the table is not in ORM
-    metadata (see core/settings_row.py for why). Untyped columns so values
-    round-trip as written."""
+    """SQLite with a hand-built tenant_settings carrying exactly the columns
+    under test (the ORM model lacks some live columns — see
+    core/settings_row.py). Untyped value columns so values round-trip as
+    written; `tenant_id` holds whatever the helper's `Uuid`-typed bind writes,
+    which on SQLite is 32 dashless hex, the same as an ORM-built table. Raw SQL
+    in these tests binds the id through `settings_sql`, never dashed."""
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
@@ -91,7 +99,10 @@ def test_seeds_once_and_commits_only_on_the_create_branch():
 
         # A staged (uncommitted) write is visible to the next read in the same
         # session: that is exactly how settings_audit computes its diff.
-        db.execute(text("UPDATE tenant_settings SET alpha = 7 WHERE tenant_id = :tid"), {"tid": TID})
+        db.execute(
+            settings_sql("UPDATE tenant_settings SET alpha = 7 WHERE tenant_id = :tid"),
+            {"tid": tenant_id_value(TID)},
+        )
         third = read_settings_row(db, TID, ("alpha",))
         assert third[0] == 7
         assert commits["n"] == 1, "reading a staged write must not commit it"
@@ -175,28 +186,25 @@ def test_each_settings_get_seeds_the_row_through_the_helper(modpath, path, cols_
         engine.dispose()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "PRE-EXISTING, carried over from all seven copies: the tenant id is bound "
-        "dashed, an ORM-built SQLite schema stores Uuid as dashless hex, so the "
-        "read misses the row and the seed inserts a second one. Fixing it means "
-        "binding the same spelling on the read and on settings_audit's write "
-        "together. When that lands this XPASSes and the marker must go."
-    ),
-)
 def test_uuid_binding_matches_an_orm_built_sqlite_schema():
-    """The sharp edge CLAUDE.md names, pinned where it now lives. Builds the
-    schema from the ORM (not by hand), inserts a settings row through the ORM,
-    and reads it back through the helper."""
+    """GDXA-292 — the sharp edge CLAUDE.md names ("SQLite stores a Uuid column
+    as 32 dashless hex"). Builds the schema from the ORM (not by hand), inserts
+    a settings row through the ORM, reads it back through the helper — with
+    both a `UUID` and the dashed string callers hold — then writes through
+    `audited_settings_upsert` and checks it UPDATED that row. Before the typed
+    bind the read missed, the seed inserted a second row, and the upsert added
+    a third."""
+    from types import SimpleNamespace
     from uuid import UUID
 
+    from gdx_dispatch.core.settings_audit import audited_settings_upsert
     from gdx_dispatch.core.tenant_settings import TenantSettings
 
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
     TenantSettings.metadata.create_all(engine, tables=[TenantSettings.__table__])
+    TenantBase.metadata.create_all(engine, checkfirst=True)  # audit_logs
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     db = Session()
     try:
@@ -205,6 +213,124 @@ def test_uuid_binding_matches_an_orm_built_sqlite_schema():
         row = read_settings_row(db, UUID(TID), ("session_idle_timeout_minutes",))
         assert row[0] == 42, "read the row the ORM wrote, not a freshly seeded default"
         assert _rows(engine) == 1, "no second row seeded under the other uuid spelling"
+        assert read_settings_row(db, TID, ("session_idle_timeout_minutes",))[0] == 42, (
+            "the dashed string a request carries reads the same row"
+        )
+
+        def _read(d, tid):
+            return {"t": read_settings_row(d, tid, ("session_idle_timeout_minutes",))[0]}
+
+        after = audited_settings_upsert(
+            db, SimpleNamespace(), {"user_id": "user-42", "role": "admin"},
+            tenant_id=TID, values={"session_idle_timeout_minutes": 7},
+            action="session_policy_updated", read=_read,
+        )
+        assert after == {"t": 7}
+        assert _rows(engine) == 1, "the audited upsert updated the ORM's row, not a new one"
+        db.expire_all()
+        assert db.get(TenantSettings, UUID(TID)).session_idle_timeout_minutes == 7
+    finally:
+        db.close()
+        engine.dispose()
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "GDXA-292 deferred (maintainer ruled the fix narrow, two files): "
+        "routers/session_policy.py:79 upserts with a raw str(tid) bind, so on "
+        "SQLite its PATCH lands in a second, dashed row that read_settings_row "
+        "never reads, and the saved timeout is lost. Postgres is unaffected. When "
+        "session_policy binds through settings_sql()/tenant_id_value() this "
+        "XPASSes and the marker must go."
+    ),
+)
+def test_session_policy_patch_round_trips_on_an_orm_built_sqlite_schema():
+    """The lost-write half of the split: GET seeds through the helper, PATCH
+    writes through session_policy's own SQL, a second GET must see it."""
+    from gdx_dispatch.core.tenant_settings import TenantSettings
+    from gdx_dispatch.routers.session_policy import router
+
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    TenantSettings.metadata.create_all(engine, tables=[TenantSettings.__table__])
+    TenantBase.metadata.create_all(engine, checkfirst=True)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def _override_db():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def _inject_tenant(request, call_next):
+        request.state.tenant = {"id": TID}
+        return await call_next(request)
+
+    app.include_router(router)
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_current_user] = lambda: {
+        "user_id": "user-42", "role": "admin", "tenant_id": TID,
+    }
+    client = TestClient(app, raise_server_exceptions=True)
+    try:
+        assert client.get("/api/session-policy").status_code == 200
+        r = client.patch("/api/session-policy", json={"idle_timeout_minutes": 5})
+        assert r.status_code == 200, r.text
+        assert _rows(engine) == 1, "the PATCH must update the seeded row, not add one"
+        assert client.get("/api/session-policy").json()["idle_timeout_minutes"] == 5
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "GDXA-292 deferred (maintainer ruled the fix narrow, two files): "
+        "routers/jobs.py:1417-1419 _load_workflow_flags reads with a raw "
+        "str(tenant_id) bind, so on SQLite it misses the row the typed audited "
+        "write updated and every job-completion gate reads OFF. Postgres is "
+        "unaffected. When jobs.py binds through settings_sql()/tenant_id_value() "
+        "this XPASSes and the marker must go."
+    ),
+)
+def test_job_workflow_gates_read_the_row_the_audited_write_updated(monkeypatch):
+    """The silent half of the split: a gate turned ON through the typed
+    upsert must read ON where the job-completion path checks it."""
+    from types import SimpleNamespace
+    from uuid import UUID
+
+    from gdx_dispatch.core.settings_audit import audited_settings_upsert
+    from gdx_dispatch.core.tenant_settings import TenantSettings
+    from gdx_dispatch.routers import jobs
+
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    TenantSettings.metadata.create_all(engine, tables=[TenantSettings.__table__])
+    TenantBase.metadata.create_all(engine, checkfirst=True)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(jobs, "SessionLocal", Session)
+    db = Session()
+    try:
+        db.add(TenantSettings(tenant_id=UUID(TID)))
+        db.commit()
+
+        def _read(d, tid):
+            return {"inv": read_settings_row(d, tid, ("workflow_require_invoice_on_complete",))[0]}
+
+        audited_settings_upsert(
+            db, SimpleNamespace(), {"user_id": "user-42", "role": "admin"},
+            tenant_id=TID, values={"workflow_require_invoice_on_complete": True},
+            action="workflow_settings_updated", read=_read,
+        )
+        assert _rows(engine) == 1
+        assert jobs._load_workflow_flags(TID)["require_invoice_on_complete"] is True
     finally:
         db.close()
         engine.dispose()
