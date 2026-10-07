@@ -147,9 +147,13 @@ class TenantRateLimitMiddleware(BaseHTTPMiddleware):
         constant company-keyed bucket would cause in single-tenant)."""
         path = request.url.path
         # Auth/signup: no authenticated principal yet, and the abuse vector is
-        # per-source — key by IP with the stricter limit.
+        # per-source — key by IP with the stricter limit. The key is its own
+        # bucket, never the anonymous ``ip:`` one below: that bucket also
+        # counts the SPA's asset loads (16 for one /customer-portal load,
+        # measured 2026-10-06), so sharing it 429'd a customer's FIRST sign-in
+        # attempt after a page load or two.
         if any(path.startswith(p) for p in self._AUTH_PREFIXES):
-            return f"ip:{self._client_ip(request)}", DEFAULT_LIMITS["auth"]
+            return f"auth-ip:{self._client_ip(request)}", DEFAULT_LIMITS["auth"]
         # Authenticated / general traffic: prefer the most specific stable caller
         # identity. Hash the credential so raw secrets never land in a Redis key.
         api_key = request.headers.get("x-api-key")
