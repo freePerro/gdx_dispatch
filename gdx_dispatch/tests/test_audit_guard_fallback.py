@@ -28,7 +28,11 @@ from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 
 from gdx_dispatch.core import audit as audit_mod
-from gdx_dispatch.core.audit import _AUDIT_GUARD_INITIALIZED, log_audit_event_sync
+from gdx_dispatch.core.audit import (
+    _AUDIT_GUARD_INITIALIZED,
+    _AUDIT_GUARD_RETRY_AT,
+    log_audit_event_sync,
+)
 
 _GUARD_EXISTS = "SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'audit_logs_immutable_guard')"
 
@@ -101,7 +105,9 @@ def test_refused_guard_ddl_keeps_the_callers_staged_work(runtime_role_engine, ca
     assert _audit_actions(owner) == ["payment_reversed"]
     assert not _guard_exists(owner)
     # A privilege refusal is not retried on every write, and it says so loudly.
-    assert app_engine in _AUDIT_GUARD_INITIALIZED
+    # Nor is it cached for the process: it backs off and retries (GDXA-352).
+    assert app_engine not in _AUDIT_GUARD_INITIALIZED
+    assert app_engine in _AUDIT_GUARD_RETRY_AT
     assert any("audit_guard_missing" in r.getMessage() for r in caplog.records)
 
     # The next write on the warm engine is unaffected.
@@ -168,7 +174,7 @@ def test_a_failure_other_than_privilege_is_retried(pg_test_engine, monkeypatch):
         db.execute(text("SELECT 1"))
         raise RuntimeError("could not obtain lock on relation audit_logs")
 
-    monkeypatch.setattr(audit_mod, "_install_pg_audit_guard", _flaky)
+    monkeypatch.setattr(audit_mod, "install_pg_audit_guard", _flaky)
     with SessionLocal() as db:
         _stage_and_audit(db, 1, "during_flake")
         db.commit()

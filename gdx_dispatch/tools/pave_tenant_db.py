@@ -17,9 +17,12 @@ one slice of it. Everything between those two is what pave has to put back:
   4. **Non-table objects** — functions, triggers, views, enums, sequences,
      extensions. Some come back with a migration (the GL trigger set); some
      come back with nothing at all. ``audit_logs_immutable_guard`` and its two
-     triggers are the ones that matter: no migration installs them, and the
-     runtime role cannot, so a pave that dropped them left ``audit_logs``
-     UPDATE/DELETE-able with ARCHITECTURAL INVARIANT #2 unenforced.
+     triggers are the ones that matter. Before migration 107 nothing but the
+     runtime installed them, and the runtime role cannot, so a pave that
+     dropped them left ``audit_logs`` UPDATE/DELETE-able with ARCHITECTURAL
+     INVARIANT #2 unenforced. Step 4b now runs 107 on the empty schema; 107
+     logs and carries on when its DDL is refused, so the step 4c replay is
+     still what guarantees they come back.
 
 Kinds 3 and 4 have their DDL captured BEFORE the drop (step 0b) and replayed
 after it (step 4c); an object kind pave has no DDL for refuses the run before
@@ -308,16 +311,15 @@ def capture_table_schemas(db_info: dict, tables: list[str]) -> dict[tuple[str, s
 # `DROP SCHEMA public CASCADE` takes everything in the schema, not just tables,
 # and only tables are rebuilt by create_all()/Alembic. On a real tenant database
 # that difference is `audit_logs_immutable_guard` and its two triggers — the
-# DB-level enforcement of ARCHITECTURAL INVARIANT #2 (audit immutability). No
-# migration installs them, and `core/audit.py` installs them once per engine
-# and then skips forever — it adds the engine to `_AUDIT_GUARD_INITIALIZED`
-# whether or not the DDL succeeded, so a boot that could not create them will
-# not try again. (That code also expects a NOSUPERUSER runtime role, `gdx_app`,
-# which cannot issue the DDL at all; whether a given deployment has made that
-# switch — D97 Phase 1, still open in docs/d97_rls_runbook.md — only changes
-# whether the loss is recoverable by restart, not whether pave caused it.) A
-# pave that dropped them used to report `✅ PAVE COMPLETE` with audit_logs
-# freely UPDATE/DELETE-able.
+# DB-level enforcement of ARCHITECTURAL INVARIANT #2 (audit immutability).
+# Step 4b's `alembic upgrade head` runs migration 107, which installs them —
+# but 107 logs and carries on when its DDL is refused rather than fail the
+# upgrade, and `core/audit.py`'s runtime install (retried every few minutes
+# since GDXA-352, logged at ERROR when it fails) expects a NOSUPERUSER runtime
+# role, `gdx_app`, which cannot issue the DDL at all — whether a given
+# deployment has made that switch is D97 Phase 1, still open in
+# docs/d97_rls_runbook.md. Before 107 a pave that dropped them reported
+# `✅ PAVE COMPLETE` with audit_logs freely UPDATE/DELETE-able.
 #
 # Every non-table object therefore gets its DDL read out of the catalog before
 # the drop, and step 4c puts back whatever the rebuild did not. Over-capture is

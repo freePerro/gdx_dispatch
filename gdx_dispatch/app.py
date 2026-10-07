@@ -1150,11 +1150,42 @@ def _check_encryption_at_rest() -> None:
     )
 
 
+def _check_audit_guard() -> None:
+    """Say at boot whether audit_logs carries its immutability guard (GDXA-352).
+
+    Read-only and never fatal: a database without the guard has been serving
+    that way, and refusing to boot over it would take prod down to fix a
+    hardening gap. Postgres only — on SQLite ``ensure_audit_table`` installs the
+    triggers itself on first use, with no role to refuse it.
+    """
+    log = logging.getLogger("gdx_dispatch.app.startup_audit_guard")
+    try:
+        from gdx_dispatch.core.audit import audit_guard_present
+        from gdx_dispatch.core.database import engine
+
+        if engine.dialect.name != "postgresql":
+            return
+        with engine.connect() as conn:
+            present = audit_guard_present(conn)
+    except Exception:  # noqa: BLE001
+        log.exception("STARTUP_AUDIT_GUARD_CHECK_FAILED")
+        return
+    if present:
+        log.info("STARTUP_AUDIT_GUARD_OK")
+        return
+    log.error(
+        "STARTUP_AUDIT_GUARD_MISSING audit_logs has no audit_logs_immutable_guard "
+        "triggers — a raw UPDATE/DELETE on the audit trail would succeed "
+        "(ARCHITECTURAL INVARIANT #2). Install it as the table owner: migration 107."
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     observability.init_otel(service_name="gdx-api", app=app)
     _check_encryption_at_rest()
     _check_customer_facing_config()
+    _check_audit_guard()
     # The plugin-host internal token is normally DERIVED from SECRET_KEY, so a
     # container that disagrees breaks plugin events, the restart hook, the
     # credential store and the browser stream at once — while every container
