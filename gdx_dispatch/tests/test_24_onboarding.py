@@ -48,8 +48,14 @@ TENANT_ID = "test-tenant-wizard-99"
 
 
 @pytest.fixture(autouse=True)
-def _clean_state():
-    """Reset in-memory onboarding state before and after every test."""
+def _clean_state(monkeypatch):
+    """Give every test its own in-process Redis — the module's only store."""
+    import fakeredis
+
+    from gdx_dispatch.core import onboarding
+
+    client = fakeredis.FakeRedis(server=fakeredis.FakeServer(), decode_responses=True)
+    monkeypatch.setattr(onboarding, "_get_redis", lambda: client)
     reset_onboarding(TENANT_ID)
     yield
     reset_onboarding(TENANT_ID)

@@ -158,21 +158,18 @@ def list_tax_jurisdictions(
     offset: int = Query(default=0, ge=0),
 ) -> dict:
     tid = _tid(request)
-    try:
-        rows = db.execute(
-            _text("""
-                SELECT id, name, rate, is_default, created_at, updated_at
-                FROM tax_jurisdictions
-                WHERE company_id = :tid AND deleted_at IS NULL
-                ORDER BY name
-                LIMIT :limit OFFSET :offset
-            """),
-            {"tid": tid, "limit": limit, "offset": offset},
-        ).mappings().all()
-        return {"items": [dict(r) for r in rows]}
-    except Exception:
-        log.exception("list_tax_jurisdictions_failed")
-        return {"items": []}
+    # No blanket except: a failed read is a 500, not an empty list (GDXA-344).
+    rows = db.execute(
+        _text("""
+            SELECT id, name, rate, is_default, created_at, updated_at
+            FROM tax_jurisdictions
+            WHERE company_id = :tid AND deleted_at IS NULL
+            ORDER BY name
+            LIMIT :limit OFFSET :offset
+        """),
+        {"tid": tid, "limit": limit, "offset": offset},
+    ).mappings().all()
+    return {"items": [dict(r) for r in rows]}
 
 
 @router.post("/tax-jurisdictions", response_model=None, status_code=201)

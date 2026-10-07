@@ -188,13 +188,6 @@ def _reset_all_in_memory_state() -> None:
     except Exception:
         pass
 
-    # Onboarding module
-    try:
-        from gdx_dispatch.core.onboarding import _mem_store
-        _mem_store.clear()
-    except Exception:
-        pass
-
     # Push notifications
     try:
         from gdx_dispatch.core.push_notifications import _subscriptions
