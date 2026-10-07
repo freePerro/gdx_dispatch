@@ -1,5 +1,5 @@
 """Migration 108: an invoice line's quantity takes two decimals
-(docs/design/multi-day-jobs-plan.md §5.4b, PR A).
+(the multi-day jobs plan, PR A: an invoice line holds hours).
 
 The class this PR owns is *code that treats an invoice-line quantity as an
 int*: it coerces it, refuses a fraction, or multiplies it in a way that breaks
