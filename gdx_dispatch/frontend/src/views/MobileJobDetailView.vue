@@ -804,6 +804,16 @@
             />
           </div>
         </div>
+        <!-- D14: modelled on the day clock's stale note. The sweep stops the
+             job timer at the shift end at 0 h, so the tech is told before it
+             happens and where the day's hours are entered instead. -->
+        <p
+          v-if="shiftEndNote"
+          class="clock-stale-note"
+          data-testid="mjd-job-clock-shift-end-note"
+        >
+          {{ shiftEndNote }}
+        </p>
         <div v-if="job.arrived_at" class="detail-meta" data-testid="mobile-job-detail-timer">
           <i class="pi pi-clock" />
           <!-- Deliberately NOT "arrived → completed". A job arrived at in May
@@ -1008,7 +1018,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { recordedQuantity } from '../utils/quantity'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
@@ -1105,6 +1115,9 @@ function emptyClocks() {
       pays: true,
     },
     job: { running: false, entry_id: null, since: null, elapsed_minutes: 0, pays: false },
+    // D14: today's effective shift end ({ end_at, end_label, workday,
+    // warn_minutes }), or null when the server could not read the schedule.
+    shift: null,
   }
 }
 const clocks = ref(emptyClocks())
@@ -1637,6 +1650,21 @@ function goToTimeclock() {
   router.push('/mobile/timeclock')
 }
 
+// D14 — the job timer stops at the shift end (tasks/job_timer_sweep.py), so
+// the card says so in the half hour before, on workdays only. The phone's own
+// clock decides when the half hour starts: this screen does not refetch on a
+// timer, and a note that waits for the next refresh would arrive late.
+const nowMs = ref(Date.now())
+let nowTimer = null
+const shiftEndNote = computed(() => {
+  const shift = clocks.value.shift
+  if (!clocks.value.job.running || !shift || !shift.workday || !shift.end_at) return null
+  const left = Date.parse(shift.end_at) - nowMs.value
+  const span = (Number(shift.warn_minutes) || 30) * 60000
+  if (!(left >= 0 && left <= span)) return null
+  return `Your shift ends at ${shift.end_label} — this timer stops then. Close the day with 'Is this job finished?'`
+})
+
 function formatElapsed(minutes) {
   const m = Math.max(0, Math.round(Number(minutes) || 0))
   const h = Math.floor(m / 60)
@@ -2119,6 +2147,11 @@ function openChatFromLink() {
 onMounted(() => {
   load().then(openChatFromLink)
   loadCatalogs()
+  nowTimer = setInterval(() => { nowMs.value = Date.now() }, 60000)
+})
+
+onBeforeUnmount(() => {
+  if (nowTimer) clearInterval(nowTimer)
 })
 </script>
 

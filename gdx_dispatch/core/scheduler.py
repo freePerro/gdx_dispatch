@@ -264,6 +264,15 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(minute="*/30"),
             "options": {"queue": "priority:low"},
         },
+        "job-timer-sweep-past-shift-end-every-15m": {
+            # D14 — stop per-job timers left running past the tech's shift
+            # end (users.shift_end, else AppSettings.default_shift_end, in the
+            # shop time zone), or past shop midnight for a timer started after
+            # it. Stops at 0 h like the phone's Stop; never writes hours.
+            "task": "gdx_dispatch.tasks.job_timer_sweep.sweep_job_timers_past_shift_end",
+            "schedule": crontab(minute="*/15"),
+            "options": {"queue": "priority:low"},
+        },
         "qb-sync-schedule-dispatcher-every-5m": {
             # 2026-05-20 Banking sprint. Walks every tenant DB, picks
             # rows whose qb_sync_schedule.next_run_at has passed, and

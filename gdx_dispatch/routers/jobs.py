@@ -5,6 +5,7 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Request
@@ -2076,7 +2077,7 @@ def _stopped_job_timer_for(db: Session, job_uuid: uuid.UUID, user_id: str) -> Ti
     # Local import: mobile.py owns the marker its own writer stamps, and a
     # module-level import here would couple two routers that are otherwise
     # independent.
-    from gdx_dispatch.routers.mobile import MOBILE_STOP_LABOR_NOTE
+    from gdx_dispatch.routers.mobile import MOBILE_AUTO_STOP_LABOR_NOTE, MOBILE_STOP_LABOR_NOTE
 
     cutoff = datetime.now(UTC) - STOPPED_TIMER_RESTATE_WINDOW
     row = db.execute(
@@ -2099,6 +2100,24 @@ def _stopped_job_timer_for(db: Session, job_uuid: uuid.UUID, user_id: str) -> Ti
         .limit(1)
     ).scalars().first()
     if row is None:
+        return None
+
+    # A timer the shift-end sweep stopped (D14) was, until the sweep, an open
+    # timer, and `_open_job_timers` restates an open timer at any age. The 24 h
+    # window is for a tech's own Stop; applying it here would turn the sweep
+    # into the thing that sends a next-morning "Yes" to the user-less row,
+    # unpaid. Bounded by the job's latest finish, as day_close's candidates
+    # are (§5.4a: a timer from before a finish belongs to that finish), so
+    # today's hours never post to an old clock_in's pay period. That bound
+    # makes this STRICTER than `_open_job_timers`, which has none: after an
+    # API-only `/complete`, an open timer is still restated and a swept one
+    # is not.
+    if (row.notes or "").startswith(MOBILE_AUTO_STOP_LABOR_NOTE):
+        from gdx_dispatch.services import day_close  # noqa: PLC0415
+
+        bound = day_close.latest_finish(db, SimpleNamespace(id=job_uuid))
+        if bound is None or day_close.aware(row.clock_in) > bound:
+            return row
         return None
 
     clock_in_at = row.clock_in

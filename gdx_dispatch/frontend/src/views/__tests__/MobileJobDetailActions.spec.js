@@ -587,6 +587,72 @@ describe("view-only grants (2026-08-17 field report)", () => {
   });
 });
 
+describe("shift end warning on the job clock (D14)", () => {
+  // The sweep stops a running job timer at the tech's shift end, at 0 h. The
+  // half hour before, the card says so and says where the day's hours go.
+  function shiftPayload(minutesAhead, overrides = {}) {
+    return {
+      ...clocksPayload({ running: true, elapsed_minutes: 120, entry_id: "te-1" }),
+      shift: {
+        end_at: new Date(Date.now() + minutesAhead * 60000).toISOString(),
+        end_label: "4:30 PM",
+        workday: true,
+        warn_minutes: 30,
+        ...overrides,
+      },
+    };
+  }
+  const note = (w) => w.find('[data-testid="mjd-job-clock-shift-end-note"]');
+
+  it("shows at shift end minus 20 minutes, naming the time and the way to close the day", async () => {
+    const w = await mountWith({ dispatch_status: "on_site" }, { clocks: shiftPayload(20) });
+    expect(note(w).exists()).toBe(true);
+    expect(note(w).text()).toBe(
+      "Your shift ends at 4:30 PM — this timer stops then. Close the day with 'Is this job finished?'",
+    );
+  });
+
+  it("does not show at shift end minus 40 minutes", async () => {
+    const w = await mountWith({ dispatch_status: "on_site" }, { clocks: shiftPayload(40) });
+    expect(note(w).exists()).toBe(false);
+  });
+
+  it("does not show on a non-workday, though the sweep still stops the timer", async () => {
+    const w = await mountWith(
+      { dispatch_status: "on_site" },
+      { clocks: shiftPayload(20, { workday: false }) },
+    );
+    expect(note(w).exists()).toBe(false);
+  });
+
+  it("does not show when no job timer is running", async () => {
+    const payload = shiftPayload(20);
+    payload.job.running = false;
+    const w = await mountWith({ dispatch_status: "on_site" }, { clocks: payload });
+    expect(note(w).exists()).toBe(false);
+  });
+
+  it("does not show once the shift end has passed", async () => {
+    const w = await mountWith({ dispatch_status: "on_site" }, { clocks: shiftPayload(-5) });
+    expect(note(w).exists()).toBe(false);
+  });
+
+  it("appears when the phone's clock crosses into the window, without a refetch", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      const w = await mountWith({ dispatch_status: "on_site" }, { clocks: shiftPayload(31) });
+      expect(note(w).exists()).toBe(false);
+      const gets = getMock.mock.calls.length;
+      vi.advanceTimersByTime(2 * 60000);
+      await flushPromises();
+      expect(note(w).exists()).toBe(true);
+      expect(getMock.mock.calls.length).toBe(gets);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("both clocks — the tech must never guess which one pays", () => {
   it("labels the day clock as paid time and the job clock as not", async () => {
     const w = await mountWith({ dispatch_status: "on_site" });
