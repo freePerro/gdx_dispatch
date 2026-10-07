@@ -8,7 +8,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
@@ -18,6 +17,7 @@ from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import Job
 from gdx_dispatch.modules.phone_com.models import PhoneComCall, PhoneComVoicemail
 from gdx_dispatch.modules.phone_com.router import router as phone_com_router
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 
 @pytest.fixture
@@ -28,7 +28,7 @@ def db_session():
         poolclass=StaticPool,
     )
     TenantBase.metadata.create_all(e)
-    sm = sessionmaker(bind=e, expire_on_commit=False)
+    sm = production_sessionmaker(e)
     return sm()
 
 

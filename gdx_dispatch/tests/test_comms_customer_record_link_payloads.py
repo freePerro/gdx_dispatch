@@ -41,7 +41,6 @@ from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
@@ -55,6 +54,7 @@ from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookMessage
 from gdx_dispatch.modules.outlook.views_router import _to_detail, _to_out_all
 from gdx_dispatch.modules.phone_com.models import PhoneComCall, PhoneComMessage
 from gdx_dispatch.modules.phone_com.router import router as phone_com_router
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 
 @pytest.fixture(autouse=True)
@@ -99,7 +99,7 @@ def tenant_engine():
 
 @pytest.fixture
 def tenant_id(control_engine):
-    sm = sessionmaker(bind=control_engine, expire_on_commit=False)
+    sm = production_sessionmaker(control_engine)
     s = sm()
     tid = uuid4()
     s.add(Tenant(id=tid, slug="t1", name="T"))
@@ -110,15 +110,15 @@ def tenant_id(control_engine):
 
 @pytest.fixture
 def tsm(tenant_engine):
-    return sessionmaker(bind=tenant_engine, expire_on_commit=False)
+    return production_sessionmaker(tenant_engine)
 
 
 @pytest.fixture
 def client(control_engine, tenant_engine, tenant_id):
     app = FastAPI()
     app.include_router(phone_com_router)
-    csm = sessionmaker(bind=control_engine, expire_on_commit=False)
-    tsm_ = sessionmaker(bind=tenant_engine, expire_on_commit=False)
+    csm = production_sessionmaker(control_engine)
+    tsm_ = production_sessionmaker(tenant_engine)
 
     def fake_control_db():
         s = csm()

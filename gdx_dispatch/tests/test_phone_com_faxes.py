@@ -5,6 +5,7 @@ import httpx
 import respx
 
 from gdx_dispatch.modules.phone_com.client import BASE_URL, PhoneComClient
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 _VID = 1000000
 
@@ -69,7 +70,6 @@ def test_classifier_routes_fax_payload_to_fax():
 def test_upsert_fax_idempotent_in_memory():
     """Use a per-test in-memory sqlite tenant DB to confirm upsert keys on phone_com_fax_id."""
     from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
 
     from gdx_dispatch.modules.phone_com import upserts as u
     from gdx_dispatch.modules.phone_com.models import PhoneComFax
@@ -77,7 +77,7 @@ def test_upsert_fax_idempotent_in_memory():
     engine = create_engine("sqlite:///:memory:")
     # Only create the bare tenant tables we need; full schema needs Customers etc.
     PhoneComFax.__table__.create(engine)
-    sm = sessionmaker(bind=engine, expire_on_commit=False)
+    sm = production_sessionmaker(engine)
     sess = sm()
     payload = {
         "id": "fax-001",

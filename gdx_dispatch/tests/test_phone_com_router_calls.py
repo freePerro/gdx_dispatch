@@ -16,7 +16,6 @@ from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
@@ -32,6 +31,7 @@ from gdx_dispatch.modules.phone_com.models import (
     PhoneComVoicemail,
 )
 from gdx_dispatch.modules.phone_com.router import router as ops_router
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 
 @pytest.fixture(autouse=True)
@@ -73,7 +73,7 @@ def tenant_engine():
 
 @pytest.fixture
 def tenant_id(control_engine):
-    sm = sessionmaker(bind=control_engine, expire_on_commit=False)
+    sm = production_sessionmaker(control_engine)
     s = sm()
     tid = uuid4()
     s.add(Tenant(id=tid, slug="t1", name="T"))
@@ -87,8 +87,8 @@ def _make_app(control_engine, tenant_engine, tid, *, role="admin",
     app = FastAPI()
     app.include_router(ops_router)
 
-    csm = sessionmaker(bind=control_engine, expire_on_commit=False)
-    tsm = sessionmaker(bind=tenant_engine, expire_on_commit=False)
+    csm = production_sessionmaker(control_engine)
+    tsm = production_sessionmaker(tenant_engine)
 
     def fake_user():
         return {"user_id": str(uuid4()), "role": role, "tenant_id": str(tid)}
@@ -223,11 +223,11 @@ def test_recording_404_when_no_url(control_engine, tenant_engine, tenant_id):
 @respx.mock
 def test_recording_proxy_streams_audio(control_engine, tenant_engine, tenant_id):
     # Seed token + voip_id so _get_phone_com_client succeeds.
-    csm = sessionmaker(bind=control_engine, expire_on_commit=False)
+    csm = production_sessionmaker(control_engine)
     cs = csm()
     key_storage.set_token(cs, tenant_id, "phc-token")
     cs.close()
-    tsm = sessionmaker(bind=tenant_engine, expire_on_commit=False)
+    tsm = production_sessionmaker(tenant_engine)
     ts = tsm()
     ts.add(AppSettings(phone_com_voip_id="1000000"))
     ts.commit()
@@ -276,11 +276,11 @@ def test_voicemail_transcript_returns_inline_field(
 def test_voicemail_audio_uses_cp_url_when_present(
     control_engine, tenant_engine, tenant_id,
 ):
-    csm = sessionmaker(bind=control_engine, expire_on_commit=False)
+    csm = production_sessionmaker(control_engine)
     cs = csm()
     key_storage.set_token(cs, tenant_id, "phc-token")
     cs.close()
-    tsm = sessionmaker(bind=tenant_engine, expire_on_commit=False)
+    tsm = production_sessionmaker(tenant_engine)
     ts = tsm()
     ts.add(AppSettings(phone_com_voip_id="1000000"))
     ts.commit()

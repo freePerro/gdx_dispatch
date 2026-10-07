@@ -430,6 +430,24 @@ def make_fresh_db():
     return engine
 
 
+def production_sessionmaker(bind):
+    """A sessionmaker on ``bind`` configured exactly as ``core.database.SessionLocal``.
+
+    Copied from ``SessionLocal.kw`` rather than restated, so a test session
+    cannot drift from production (GDXA-368). The point is ``expire_on_commit``:
+    production leaves it True, so reading an attribute off a just-committed
+    instance issues a SELECT — and 500s if that read happens after the session
+    is closed or its connection is gone. A factory pinned to
+    ``expire_on_commit`` off serves that read from memory and can never show
+    the bug. ``test_no_expire_on_commit_pin.py`` keeps the pin
+    out of the suite.
+    """
+    from gdx_dispatch.core.database import SessionLocal as _prod
+
+    kw = {k: v for k, v in _prod.kw.items() if k != "bind"}
+    return sessionmaker(bind=bind, **kw)
+
+
 @pytest.fixture
 def tenant_db():
     """Isolated tenant DB for test_02 e2e tests."""

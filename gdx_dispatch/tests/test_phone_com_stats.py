@@ -6,7 +6,6 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
@@ -21,6 +20,7 @@ from gdx_dispatch.modules.phone_com.stats import (
     roll_up_all_history,
     roll_up_recent,
 )
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def tenant_db():
         poolclass=StaticPool,
     )
     TenantBase.metadata.create_all(e)
-    sm = sessionmaker(bind=e, expire_on_commit=False)
+    sm = production_sessionmaker(e)
     return sm()
 
 

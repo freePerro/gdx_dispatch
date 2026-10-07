@@ -7,13 +7,13 @@ from uuid import uuid4
 import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.tenant_settings import Base as ControlBase
 from gdx_dispatch.core.tenant_settings import Tenant, TenantSettings
 from gdx_dispatch.modules.outlook import key_storage
 from gdx_dispatch.modules.outlook.models import OutlookAccount
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def fernet_env(monkeypatch):
 def control_session():
     engine = create_engine("sqlite:///:memory:")
     ControlBase.metadata.create_all(engine)
-    sm = sessionmaker(bind=engine, expire_on_commit=False)
+    sm = production_sessionmaker(engine)
     sess = sm()
     tid = uuid4()
     sess.add(Tenant(id=tid, slug="t1", name="Test"))
@@ -38,7 +38,7 @@ def control_session():
 def tenant_session():
     engine = create_engine("sqlite:///:memory:")
     TenantBase.metadata.create_all(engine)
-    sm = sessionmaker(bind=engine, expire_on_commit=False)
+    sm = production_sessionmaker(engine)
     sess = sm()
     # User.id in tenant_models is String(36) — match that for the test fixture.
     yield sess, str(uuid4())
@@ -107,6 +107,11 @@ def test_set_user_tokens_upserts_on_repeat(tenant_session, fernet_env):
     expires = datetime.now(timezone.utc) + timedelta(hours=1)
     key_storage.set_user_tokens(sess, uid, access_token="a1", refresh_token="r1",
                                  access_token_expires_at=expires)
+    # Every production caller (outlook_oauth callback, token_refresh) commits
+    # right after the call. Without this commit the second lookup cannot see
+    # the first row: SessionLocal is autoflush=False, and this test only passed
+    # before GDXA-368 because its session had autoflush on.
+    sess.commit()
     key_storage.set_user_tokens(sess, uid, access_token="a2", refresh_token="r2",
                                  access_token_expires_at=expires)
     sess.commit()

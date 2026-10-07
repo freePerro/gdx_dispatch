@@ -15,7 +15,6 @@ from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
@@ -28,6 +27,7 @@ from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.modules.phone_com import key_storage
 from gdx_dispatch.modules.phone_com.models import PhoneComMessage
 from gdx_dispatch.modules.phone_com.router import router as ops_router
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 
 @pytest.fixture(autouse=True)
@@ -69,7 +69,7 @@ def tenant_engine():
 
 @pytest.fixture
 def tenant_id(control_engine):
-    sm = sessionmaker(bind=control_engine, expire_on_commit=False)
+    sm = production_sessionmaker(control_engine)
     s = sm()
     tid = uuid4()
     s.add(Tenant(id=tid, slug="t1", name="T"))
@@ -81,8 +81,8 @@ def tenant_id(control_engine):
 def _make_app(control_engine, tenant_engine, tid):
     app = FastAPI()
     app.include_router(ops_router)
-    csm = sessionmaker(bind=control_engine, expire_on_commit=False)
-    tsm = sessionmaker(bind=tenant_engine, expire_on_commit=False)
+    csm = production_sessionmaker(control_engine)
+    tsm = production_sessionmaker(tenant_engine)
 
     def fake_user():
         return {"user_id": str(uuid4()), "role": "admin", "tenant_id": str(tid)}
@@ -109,10 +109,10 @@ def _make_app(control_engine, tenant_engine, tid):
 
 
 def _seed_token_and_settings(control_engine, tenant_engine, tenant_id, **app_kw):
-    cs = sessionmaker(bind=control_engine, expire_on_commit=False)()
+    cs = production_sessionmaker(control_engine)()
     key_storage.set_token(cs, tenant_id, "phc-token")
     cs.close()
-    ts = sessionmaker(bind=tenant_engine, expire_on_commit=False)()
+    ts = production_sessionmaker(tenant_engine)()
     ts.add(AppSettings(phone_com_voip_id="1000000", **app_kw))
     ts.commit()
     ts.close()

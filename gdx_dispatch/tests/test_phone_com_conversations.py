@@ -8,6 +8,7 @@ import pytest
 import respx
 
 from gdx_dispatch.modules.phone_com.client import BASE_URL, PhoneComAPIError, PhoneComClient
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 _VID = 1000000
 
@@ -34,14 +35,13 @@ def test_patch_conversation_empty_raises():
 def test_upsert_message_captures_conversation_id():
     """Webhook payload with conversation_id lands on the message row."""
     from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
 
     from gdx_dispatch.core.audit import TenantBase
     from gdx_dispatch.modules.phone_com import upserts as u
     # Tenant-plane has FKs to customers/jobs/users; create the full schema.
     engine = create_engine("sqlite:///:memory:")
     TenantBase.metadata.create_all(engine)
-    sess = sessionmaker(bind=engine, expire_on_commit=False)()
+    sess = production_sessionmaker(engine)()
 
     payload = {
         "id": "msg-001",

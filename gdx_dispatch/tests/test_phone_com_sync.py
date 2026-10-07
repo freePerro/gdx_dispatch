@@ -12,7 +12,6 @@ import pytest
 import respx
 from cryptography.fernet import Fernet
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
@@ -29,6 +28,7 @@ from gdx_dispatch.modules.phone_com.models import (
     PhoneComVoicemail,
 )
 from gdx_dispatch.modules.phone_com.sync import run_full_resync
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 VID = 1000000
 
@@ -80,7 +80,7 @@ def tenant_engine():
 
 @pytest.fixture
 def setup(control_engine, tenant_engine, monkeypatch):
-    csm = sessionmaker(bind=control_engine, expire_on_commit=False)
+    csm = production_sessionmaker(control_engine)
     cs = csm()
     tid = uuid4()
     cs.add(Tenant(id=tid, slug="t1", name="T"))
@@ -88,7 +88,7 @@ def setup(control_engine, tenant_engine, monkeypatch):
     key_storage.set_token(cs, tid, "phc-good-token-12345")
     cs.close()
 
-    tsm = sessionmaker(bind=tenant_engine, expire_on_commit=False)
+    tsm = production_sessionmaker(tenant_engine)
     ts = tsm()
     ts.add(AppSettings(phone_com_voip_id=str(VID)))
     ts.commit()
@@ -268,7 +268,7 @@ def test_resync_synthesizes_voicemail_from_inline_call_payload(setup):
 
 @respx.mock
 def test_resync_no_token_returns_error(control_engine, tenant_engine, monkeypatch):
-    csm = sessionmaker(bind=control_engine, expire_on_commit=False)
+    csm = production_sessionmaker(control_engine)
     cs = csm()
     tid = uuid4()
     cs.add(Tenant(id=tid, slug="t1", name="T"))
@@ -276,7 +276,7 @@ def test_resync_no_token_returns_error(control_engine, tenant_engine, monkeypatc
     cs.close()
     # No key_storage.set_token call
 
-    tsm = sessionmaker(bind=tenant_engine, expire_on_commit=False)
+    tsm = production_sessionmaker(tenant_engine)
     monkeypatch.setattr("gdx_dispatch.modules.phone_com.sync.SessionLocal", tsm)
 
     cs = csm()
@@ -693,7 +693,7 @@ def test_sync_recent_calls_respects_cap(setup):
 def test_sync_recent_calls_no_token_returns_error(control_engine, tenant_engine, monkeypatch):
     from gdx_dispatch.modules.phone_com.sync import sync_recent_calls
 
-    csm = sessionmaker(bind=control_engine, expire_on_commit=False)
+    csm = production_sessionmaker(control_engine)
     cs = csm()
     tid = uuid4()
     cs.add(Tenant(id=tid, slug="t1", name="T"))
@@ -701,7 +701,7 @@ def test_sync_recent_calls_no_token_returns_error(control_engine, tenant_engine,
     cs.close()
     # No key_storage.set_token call
 
-    tsm = sessionmaker(bind=tenant_engine, expire_on_commit=False)
+    tsm = production_sessionmaker(tenant_engine)
     monkeypatch.setattr("gdx_dispatch.modules.phone_com.sync.SessionLocal", tsm)
 
     cs = csm()

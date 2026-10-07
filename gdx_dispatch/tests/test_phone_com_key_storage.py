@@ -13,7 +13,6 @@ from uuid import uuid4
 import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from gdx_dispatch.core.tenant_settings import Base, Tenant, TenantSettings
 from gdx_dispatch.modules.phone_com.key_storage import (
@@ -26,13 +25,14 @@ from gdx_dispatch.modules.phone_com.key_storage import (
     mark_validated,
     set_token,
 )
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 
 @pytest.fixture
 def session_with_tenant():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
-    SessionMaker = sessionmaker(bind=engine, expire_on_commit=False)
+    SessionMaker = production_sessionmaker(engine)
     sess = SessionMaker()
 
     tenant_id = uuid4()
