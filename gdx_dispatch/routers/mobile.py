@@ -1164,7 +1164,7 @@ def _job_card(
     }
 
 
-def _resolve_tzinfo(tz: str | None) -> ZoneInfo:
+def _resolve_tzinfo(tz: str | None, user_id: str | None = None) -> ZoneInfo:
     """IANA name → ZoneInfo, falling back to UTC on anything invalid.
 
     The client sends its device zone (``Intl.DateTimeFormat().resolvedOptions()
@@ -1175,7 +1175,12 @@ def _resolve_tzinfo(tz: str | None) -> ZoneInfo:
         try:
             return ZoneInfo(tz)
         except Exception:  # noqa: BLE001 — ZoneInfoNotFoundError, ValueError, OSError
-            pass
+            # The tech's day boundaries silently become UTC's; leave a trace.
+            # Client-controlled: truncate, and %r keeps it one quoted line.
+            log.warning(
+                "mobile_client_timezone_invalid user_id=%s tz=%r — falling back to UTC",
+                user_id, tz[:64],
+            )
     return ZoneInfo("UTC")
 
 
@@ -1279,7 +1284,7 @@ async def get_mobile_today(
     # share the bottom nav and keep the empty day.
     _refuse_deactivated_technician(db, user_id, current_user)
     technician_id = _get_technician_id(db, tenant_id, user_id)
-    tzinfo = _resolve_tzinfo(tz)
+    tzinfo = _resolve_tzinfo(tz, user_id)
     target_date = date or datetime.now(tzinfo).date()
     empty = {
         "date": target_date.isoformat(),

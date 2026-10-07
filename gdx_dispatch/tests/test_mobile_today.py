@@ -596,13 +596,42 @@ class TestLocalTimezone:
         ).json()
         assert utc_view["count"] == 0
 
-    def test_invalid_tz_falls_back_to_utc(self, app_and_db):
+    def test_invalid_tz_falls_back_to_utc(self, app_and_db, caplog):
         client, db = app_and_db
         _seed_tech(db)
         c = _seed_customer(db)
         j = _seed_job(db, customer_id=c.id)
         _seed_appointment(db, job_id=j.id, customer_id=c.id, start=_now())
-        body = client.get(
-            f"/api/mobile/today?date={_now().date().isoformat()}&tz=Not/AZone"
-        ).json()
+        with caplog.at_level("WARNING", logger=mobile_router.log.name):
+            body = client.get(
+                f"/api/mobile/today?date={_now().date().isoformat()}&tz=Not/AZone"
+            ).json()
         assert body["count"] == 1
+        # GDXA-340: the fallback is no longer silent on the real route.
+        assert any(
+            "mobile_client_timezone_invalid" in r.getMessage() and "'Not/AZone'" in r.getMessage()
+            for r in caplog.records
+        )
+
+
+def test_resolve_tzinfo_bad_zone_returns_utc_and_logs(caplog):
+    """GDXA-340: the UTC fallback used to be a bare ``pass`` — now it leaves
+    one warning naming the client's zone, truncated and repr-quoted."""
+    hostile = "Not/AZone\n" + "x" * 200
+    with caplog.at_level("WARNING", logger=mobile_router.log.name):
+        assert mobile_router._resolve_tzinfo(hostile, "tech-42") == ZoneInfo("UTC")
+    records = [r for r in caplog.records if "mobile_client_timezone_invalid" in r.getMessage()]
+    assert len(records) == 1
+    msg = records[0].getMessage()
+    assert repr(hostile[:64]) in msg
+    assert "user_id=tech-42" in msg
+    assert "x" * 65 not in msg
+    assert "\n" not in msg
+
+
+def test_resolve_tzinfo_valid_and_missing_zone_do_not_log(caplog):
+    with caplog.at_level("WARNING", logger=mobile_router.log.name):
+        assert mobile_router._resolve_tzinfo("America/Chicago") == ZoneInfo("America/Chicago")
+        assert mobile_router._resolve_tzinfo(None) == ZoneInfo("UTC")
+        assert mobile_router._resolve_tzinfo("") == ZoneInfo("UTC")
+    assert not [r for r in caplog.records if "mobile_client_timezone_invalid" in r.getMessage()]
