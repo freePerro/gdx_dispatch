@@ -8,7 +8,6 @@ import pytest
 import respx
 from cryptography.fernet import Fernet
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.tenant_settings import Base as ControlBase
@@ -19,6 +18,7 @@ from gdx_dispatch.modules.phone_com.key_storage import set_token
 from gdx_dispatch.modules.phone_com.key_storage import (
     test_and_cache_account as run_test_and_cache,
 )
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 _ACCT = {
     "filters": {}, "sort": {"id": "desc"}, "total": 1, "limit": 25, "offset": None,
@@ -46,7 +46,7 @@ def _no_audit(monkeypatch):
 def control_session():
     engine = create_engine("sqlite:///:memory:")
     ControlBase.metadata.create_all(engine)
-    sm = sessionmaker(bind=engine, expire_on_commit=False)
+    sm = production_sessionmaker(engine)
     sess = sm()
     tid = uuid4()
     sess.add(Tenant(id=tid, slug="t1", name="Test"))
@@ -66,7 +66,7 @@ def tenant_engine_factory(monkeypatch):
         poolclass=StaticPool,
     )
     TenantBase.metadata.create_all(engine)
-    sm = sessionmaker(bind=engine, expire_on_commit=False)
+    sm = production_sessionmaker(engine)
 
     monkeypatch.setattr("gdx_dispatch.modules.phone_com.key_storage._SessionLocal", sm)
     return sm

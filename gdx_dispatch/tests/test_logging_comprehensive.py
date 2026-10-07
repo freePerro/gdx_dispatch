@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.ai_usage_logger import log_ai_usage
@@ -36,6 +36,7 @@ from gdx_dispatch.core.security_logger import log_security_event
 from gdx_dispatch.core.security_logger import router as security_router
 from gdx_dispatch.core.webhook_logger import log_webhook_delivery
 from gdx_dispatch.core.webhook_logger import router as webhook_router
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 
 @pytest.fixture()
@@ -45,7 +46,7 @@ def tenant_engine():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    SessionLocal = production_sessionmaker(engine)
     db = SessionLocal()
     db.execute(
         text(
@@ -68,7 +69,7 @@ def tenant_engine():
 
 @pytest.fixture()
 def tenant_db_session(tenant_engine) -> Session:
-    SessionLocal = sessionmaker(bind=tenant_engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    SessionLocal = production_sessionmaker(tenant_engine)
     db = SessionLocal()
     yield db
     db.close()
@@ -81,7 +82,7 @@ def _reset_performance_state() -> None:
 
 @pytest.fixture()
 def client(tenant_engine) -> TestClient:
-    SessionLocal = sessionmaker(bind=tenant_engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    SessionLocal = production_sessionmaker(tenant_engine)
     app = FastAPI()
 
     @app.middleware("http")

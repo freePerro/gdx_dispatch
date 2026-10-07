@@ -7,7 +7,6 @@ from uuid import uuid4
 import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from gdx_dispatch.core.tenant_settings import Base, Tenant
 from gdx_dispatch.modules.phone_com.key_storage import get_or_create_webhook_secret
@@ -17,6 +16,7 @@ from gdx_dispatch.modules.phone_com.webhook_signing import (
     verify_payload_voip_id,
     verify_webhook_path,
 )
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 
 @pytest.fixture
@@ -28,7 +28,7 @@ def fernet_env(monkeypatch):
 def control_session():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
-    sm = sessionmaker(bind=engine, expire_on_commit=False)
+    sm = production_sessionmaker(engine)
     sess = sm()
     tid = uuid4()
     sess.add(Tenant(id=tid, slug="t1", name="Test"))

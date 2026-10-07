@@ -7,11 +7,11 @@ import httpx
 import pytest
 import respx
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from gdx_dispatch.modules.phone_com.client import BASE_URL, PhoneComClient
 from gdx_dispatch.modules.phone_com.models import PhoneComStatsDaily
 from gdx_dispatch.modules.phone_com.reconcile import reconcile_recent
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 _VID = 1000000
 
@@ -20,7 +20,7 @@ _VID = 1000000
 def tenant_session():
     e = create_engine("sqlite:///:memory:")
     PhoneComStatsDaily.__table__.create(e)
-    sm = sessionmaker(bind=e, expire_on_commit=False)
+    sm = production_sessionmaker(e)
     return sm()
 
 

@@ -12,13 +12,13 @@ from uuid import uuid4
 import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.tenant_settings import Base as ControlBase
 from gdx_dispatch.core.tenant_settings import Tenant
 from gdx_dispatch.modules.phone_com import key_storage
 from gdx_dispatch.modules.phone_com import tasks as pc_tasks
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 
 @pytest.fixture(autouse=True)
@@ -44,7 +44,7 @@ def control_db(monkeypatch):
     for n in ("tenants", "tenant_settings"):
         if n in ControlBase.metadata.tables:
             ControlBase.metadata.tables[n].create(e, checkfirst=True)
-    sm = sessionmaker(bind=e, expire_on_commit=False)
+    sm = production_sessionmaker(e)
     # Replace SessionLocal so the task uses our in-memory DB.
     monkeypatch.setattr(
         "gdx_dispatch.modules.phone_com.tasks.SessionLocal", sm,

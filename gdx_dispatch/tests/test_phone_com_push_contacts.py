@@ -7,12 +7,12 @@ from uuid import uuid4
 import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.modules.phone_com.models import PhoneComContactPush
 from gdx_dispatch.modules.phone_com.push_contacts import push_contacts_for_tenant
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 
 @pytest.fixture(autouse=True)
@@ -28,7 +28,7 @@ def tenant_session():
         poolclass=StaticPool,
     )
     TenantBase.metadata.create_all(e)
-    sm = sessionmaker(bind=e, expire_on_commit=False)
+    sm = production_sessionmaker(e)
     return sm()
 
 

@@ -9,7 +9,6 @@ from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
@@ -24,6 +23,7 @@ from gdx_dispatch.modules.phone_com.models import (
     PhoneComStatsDaily,
 )
 from gdx_dispatch.modules.phone_com.router import router as ops_router
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 
 @pytest.fixture(autouse=True)
@@ -48,8 +48,8 @@ def _engines():
 def _app(ce, te, tid):
     app = FastAPI()
     app.include_router(ops_router)
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
-    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
+    tsm = production_sessionmaker(te)
 
     def fake_user():
         return {"user_id": str(uuid4()), "role": "admin", "tenant_id": str(tid)}
@@ -86,7 +86,7 @@ def _seed_tenant(csm):
 
 def test_stats_summary_empty():
     ce, te = _engines()
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
     tid = _seed_tenant(csm)
     app, _, _ = _app(ce, te, tid)
     r = TestClient(app).get("/api/phone-com/stats/summary?days=7")
@@ -98,9 +98,9 @@ def test_stats_summary_empty():
 
 def test_stats_summary_aggregates():
     ce, te = _engines()
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
     tid = _seed_tenant(csm)
-    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    tsm = production_sessionmaker(te)
     s = tsm()
     today = date.today()
     for i in range(3):
@@ -125,9 +125,9 @@ def test_stats_summary_aggregates():
 
 def test_list_extensions():
     ce, te = _engines()
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
     tid = _seed_tenant(csm)
-    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    tsm = production_sessionmaker(te)
     s = tsm()
     s.add(PhoneComExtension(
         phone_com_extension_id="ext-100", name="Example Owner", number="100", is_active=True,
@@ -148,9 +148,9 @@ def test_list_extensions():
 
 def test_list_numbers_default_outbound_first():
     ce, te = _engines()
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
     tid = _seed_tenant(csm)
-    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    tsm = production_sessionmaker(te)
     s = tsm()
     s.add(PhoneComNumber(phone_com_number="+13205550100", label="local",
                           is_default_outbound=False))

@@ -11,7 +11,6 @@ from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
@@ -25,6 +24,7 @@ from gdx_dispatch.modules.phone_com import key_storage
 from gdx_dispatch.modules.phone_com.client import BASE_URL
 from gdx_dispatch.modules.phone_com.models import PhoneComMessage
 from gdx_dispatch.modules.phone_com.router import router as ops_router
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 
 @pytest.fixture(autouse=True)
@@ -57,8 +57,8 @@ def _engines():
 def _app(ce, te, tid, role="admin"):
     app = FastAPI()
     app.include_router(ops_router)
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
-    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
+    tsm = production_sessionmaker(te)
 
     app.dependency_overrides[get_current_user] = lambda: {
         "user_id": str(uuid4()), "role": role, "tenant_id": str(tid),
@@ -88,7 +88,7 @@ def _seed_tenant(csm):
 
 def test_list_threads_empty():
     ce, te = _engines()
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
     tid = _seed_tenant(csm)
     app, _, _ = _app(ce, te, tid)
     r = TestClient(app).get("/api/phone-com/messages/threads")
@@ -98,9 +98,9 @@ def test_list_threads_empty():
 
 def test_list_threads_groups_by_thread_key():
     ce, te = _engines()
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
     tid = _seed_tenant(csm)
-    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    tsm = production_sessionmaker(te)
     s = tsm()
     base = datetime.now(timezone.utc)
     # Two messages in thread A, one in thread B.
@@ -133,9 +133,9 @@ def test_list_threads_groups_by_thread_key():
 
 def test_get_thread_returns_messages_in_order():
     ce, te = _engines()
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
     tid = _seed_tenant(csm)
-    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    tsm = production_sessionmaker(te)
     s = tsm()
     base = datetime.now(timezone.utc)
     for i in range(5):
@@ -161,12 +161,12 @@ def test_get_thread_returns_messages_in_order():
 @respx.mock
 def test_send_message_persists_outbound_row():
     ce, te = _engines()
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
     tid = _seed_tenant(csm)
     cs = csm()
     key_storage.set_token(cs, tid, "phc-token")
     cs.close()
-    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    tsm = production_sessionmaker(te)
     ts = tsm()
     ts.add(AppSettings(phone_com_voip_id="1000000",
                        phone_com_default_caller_id="+18005550199"))
@@ -199,12 +199,12 @@ def test_send_message_persists_outbound_row():
 
 def test_send_message_400_when_no_default_caller():
     ce, te = _engines()
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
     tid = _seed_tenant(csm)
     cs = csm()
     key_storage.set_token(cs, tid, "phc-token")
     cs.close()
-    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    tsm = production_sessionmaker(te)
     ts = tsm()
     ts.add(AppSettings(phone_com_voip_id="1000000"))  # no caller_id
     ts.commit()
@@ -220,7 +220,7 @@ def test_send_message_400_when_no_default_caller():
 
 def test_send_message_rejects_garbage_to():
     ce, te = _engines()
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
     tid = _seed_tenant(csm)
     app, _, _ = _app(ce, te, tid)
     r = TestClient(app).post(
@@ -232,7 +232,7 @@ def test_send_message_rejects_garbage_to():
 
 def test_send_message_rejects_oversize_body():
     ce, te = _engines()
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
     tid = _seed_tenant(csm)
     app, _, _ = _app(ce, te, tid)
     r = TestClient(app).post(
@@ -255,9 +255,9 @@ def _seed_msg(s, *, mid, thread, direction, sent_at, read_at=None, conversation_
 
 def test_unread_count_counts_inbound_unread_only():
     ce, te = _engines()
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
     tid = _seed_tenant(csm)
-    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    tsm = production_sessionmaker(te)
     s = tsm()
     base = datetime.now(timezone.utc)
     _seed_msg(s, mid="m1", thread="+1|+2", direction="in", sent_at=base)                    # unread
@@ -280,9 +280,9 @@ def test_open_thread_stamps_read():
     """GET-ing a conversation marks its inbound messages locally read — the
     badge and thread dot must clear just by reading the thread."""
     ce, te = _engines()
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
     tid = _seed_tenant(csm)
-    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    tsm = production_sessionmaker(te)
     s = tsm()
     base = datetime.now(timezone.utc)
     _seed_msg(s, mid="m1", thread="+1|+2", direction="in", sent_at=base)
@@ -301,9 +301,9 @@ def test_mark_thread_read_clears_local_without_conversation_ids():
     """Rows from before P2.9 have no phone_com_conversation_id, so the
     upstream sync no-ops — the LOCAL read marker must still clear."""
     ce, te = _engines()
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
     tid = _seed_tenant(csm)
-    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    tsm = production_sessionmaker(te)
     s = tsm()
     base = datetime.now(timezone.utc)
     _seed_msg(s, mid="m1", thread="+1|+2", direction="in", sent_at=base)
@@ -321,9 +321,9 @@ def test_open_thread_stamps_beyond_current_page():
     """The read stamp covers the WHOLE thread, not just the fetched page —
     a long conversation opened at per_page=2 must still zero the badge."""
     ce, te = _engines()
-    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    csm = production_sessionmaker(ce)
     tid = _seed_tenant(csm)
-    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    tsm = production_sessionmaker(te)
     s = tsm()
     base = datetime.now(timezone.utc)
     for i in range(5):

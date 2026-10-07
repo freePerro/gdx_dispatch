@@ -14,7 +14,6 @@ from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
@@ -26,6 +25,7 @@ from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.modules.phone_com import key_storage
 from gdx_dispatch.modules.phone_com.client import BASE_URL
 from gdx_dispatch.routers import phone_com_settings
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 LISTENERS_URL = f"{BASE_URL}/accounts/1000000/integrations/events/listeners"
 FILTERS_URL = f"{LISTENERS_URL}/55/filters"
@@ -68,7 +68,7 @@ def tenant_engine():
 
 @pytest.fixture
 def tenant_id(control_engine):
-    sm = sessionmaker(bind=control_engine, expire_on_commit=False)
+    sm = production_sessionmaker(control_engine)
     s = sm()
     tid = uuid4()
     s.add(Tenant(id=tid, slug="t1", name="T"))
@@ -80,8 +80,8 @@ def tenant_id(control_engine):
 def _make_app(control_engine, tenant_engine, tid, *, role="admin"):
     app = FastAPI()
     app.include_router(phone_com_settings.router)
-    csm = sessionmaker(bind=control_engine, expire_on_commit=False)
-    tsm = sessionmaker(bind=tenant_engine, expire_on_commit=False)
+    csm = production_sessionmaker(control_engine)
+    tsm = production_sessionmaker(tenant_engine)
 
     def fake_user():
         return {"user_id": "u-1", "role": role, "tenant_id": str(tid)}

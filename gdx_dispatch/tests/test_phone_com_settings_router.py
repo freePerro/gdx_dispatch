@@ -17,7 +17,6 @@ from cryptography.fernet import Fernet
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
@@ -28,6 +27,7 @@ from gdx_dispatch.core.tenant_settings import Tenant
 from gdx_dispatch.modules.phone_com import key_storage
 from gdx_dispatch.modules.phone_com.client import BASE_URL
 from gdx_dispatch.routers import phone_com_settings
+from gdx_dispatch.tests.conftest import production_sessionmaker
 
 _ACCT = {
     "filters": {}, "sort": {"id": "desc"}, "total": 1, "limit": 25, "offset": None,
@@ -91,7 +91,7 @@ def tenant_engine():
 
 @pytest.fixture
 def tenant_id_with_tenant_row(control_engine):
-    sm = sessionmaker(bind=control_engine, expire_on_commit=False)
+    sm = production_sessionmaker(control_engine)
     sess = sm()
     tid = uuid4()
     sess.add(Tenant(id=tid, slug="test-tenant", name="Test"))
@@ -105,8 +105,8 @@ def _make_app(control_engine, tenant_engine, *, role: str = "admin",
     app = FastAPI()
     app.include_router(phone_com_settings.router)
 
-    control_sm = sessionmaker(bind=control_engine, expire_on_commit=False)
-    tenant_sm = sessionmaker(bind=tenant_engine, expire_on_commit=False)
+    control_sm = production_sessionmaker(control_engine)
+    tenant_sm = production_sessionmaker(tenant_engine)
 
     def fake_user():
         return {"user_id": "u-1", "role": role, "tenant_id": str(tenant_id)}
@@ -158,7 +158,7 @@ def test_get_never_returns_token(
     control_engine, tenant_engine, tenant_id_with_tenant_row,
 ):
     SECRET = "phc-secret-token-MUST-NOT-LEAK-12345"
-    sm = sessionmaker(bind=control_engine, expire_on_commit=False)
+    sm = production_sessionmaker(control_engine)
     s = sm()
     key_storage.set_token(s, tenant_id_with_tenant_row, SECRET)
     s.close()
@@ -264,7 +264,7 @@ def test_patch_rejects_garbage_caller_id(
 def test_delete_clears_token(
     control_engine, tenant_engine, tenant_id_with_tenant_row,
 ):
-    sm = sessionmaker(bind=control_engine, expire_on_commit=False)
+    sm = production_sessionmaker(control_engine)
     s = sm()
     key_storage.set_token(s, tenant_id_with_tenant_row, "phc-token")
     s.close()
@@ -302,7 +302,7 @@ def test_test_endpoint_no_token(
 def test_test_endpoint_with_token(
     control_engine, tenant_engine, tenant_id_with_tenant_row,
 ):
-    sm = sessionmaker(bind=control_engine, expire_on_commit=False)
+    sm = production_sessionmaker(control_engine)
     s = sm()
     key_storage.set_token(s, tenant_id_with_tenant_row, "phc-good")
     s.close()
