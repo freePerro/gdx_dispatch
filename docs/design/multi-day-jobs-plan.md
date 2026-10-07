@@ -1495,7 +1495,7 @@ Who, what and when are recorded at every step:
 A three-day job can be reconstructed day by day from `audit_logs` plus the
 appointment rows.
 
-### 5.4a PR 3 build spec (2026-10-06; MERGED #916; hours per person since audit round 32)
+### 5.4a PR 3 build spec (2026-10-06; MERGED #916, RELEASED v1.141.0; hours per person since audit round 32)
 
 PR 3 builds §5.4 and §5.5 against `main` @ f55d7d3e. The line citations in
 §4, §5.4 and §5.5 date from 2026-10-03/04 and have drifted. The citations
@@ -2626,7 +2626,7 @@ folded in above:
 5. Close-without-work's 409 had no message or way out → an inline message
    and a button to the sheet.
 
-### 5.4b After PR 3: Doug's rulings D14–D18 (2026-10-06; PARTIALLY BUILT: PR A MERGED #920, PR C MERGED #923, PR B built; D not built)
+### 5.4b After PR 3: Doug's rulings D14–D18 (2026-10-06; PARTIALLY BUILT: PR A MERGED #920, PR B MERGED #926, PR C MERGED #923, all RELEASED v1.141.0; D not built)
 
 Doug read #916 and ruled five things (§8, D14–D18). They split into four PRs,
 merged bottom-up. #916 merged before these rulings could ride in it, so the
@@ -2642,7 +2642,7 @@ billing half becomes its own PR (B), stacked on the quantity PR (A):
 Each PR gets its own build, full matrix, browser walk and final audit, and
 updates this doc's status line in the same commit.
 
-Some of §5.4a's billing text is superseded once B merges:
+Some of §5.4a's billing text is superseded by B (MERGED #926; none of it is left in the code as of v1.141.0):
 - R-P1's separate "Labor — earlier visits" line, and its "no first-hour price,
   no floor";
 - the "quantity is always 1" comments in `core/closeout_billing.py` and
@@ -2928,6 +2928,7 @@ reads `1 × $250`.
   - Example: a 0.5 h final day plus 2 h of day rows at $100/$100. #916 bills
     $100 + $200 = $300; this bills 2.5 h = $250.
   - #916 is unreleased, so no customer has ever been billed the #916 figure.
+    (Still true: #916 and B shipped together in v1.141.0.)
 - **Existing invoices** are not touched.
 
 **Ratchet:** converting the final-day line's bare `InvoiceLine()` to
@@ -2964,7 +2965,8 @@ left (CLAUDE.md: when something is to be deleted, delete it).
   (rule 3).
 - **Existing rows:** NULL everywhere. Day rows only exist from #916, which is
   unreleased; prod has no `day_closed_at` column yet (prod at revision 105,
-  2026-10-06), so no billed day row is left unstamped.
+  2026-10-06), so no billed day row is left unstamped. (Held: 106 and 110
+  reached prod in the same v1.141.0 boot, 2026-10-07.)
 - **Downgrade:** drop the column. The provenance backfill is left in place: it
   is a true label, and the old code ignores it.
 
@@ -3224,12 +3226,14 @@ This is an outline. It gets its own build spec, audited, before the build.
      records, floored at 0. They are never booked visit lengths or timer
      clock time, which are not evidence of hours worked. A job with no
      estimate stays no-est.
+   - MERGED #916, RELEASED v1.141.0.
 
 4. **After PR 3: Doug's rulings D14–D18** (§5.4b). PR A, decimal
    invoice-line quantity (migration 108), base `main`; PR B, one labor line
    and labor billed through a point (migration 110), stacked on A; PR C,
    shift-end warning and auto-stop, base `main`; PR D, travel time, stacked
-   on B. PARTIALLY BUILT: A MERGED #920, C MERGED #923, B built; D not built.
+   on B. PARTIALLY BUILT: A MERGED #920, B MERGED #926, C MERGED #923, all
+   RELEASED v1.141.0; D not built.
 
 Each PR updates this doc's status line in the same commit (CLAUDE.md, "The
 status line ships with the code").
