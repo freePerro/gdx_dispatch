@@ -959,12 +959,54 @@ def _clock_states(
                 started + _timedelta(hours=MAX_SHIFT_HOURS)
             ).isoformat()
 
-    return {"day": day_state, "job": job_state}
+    return {"day": day_state, "job": job_state, "shift": _shift_end_state(db, user_id, now)}
+
+
+#: How far ahead of the shift end the job clock warns that it will stop (D14).
+SHIFT_END_WARN_MINUTES = 30
+
+
+def _shift_end_state(db: Session, user_id: str, now: datetime) -> dict[str, Any] | None:
+    """Today's effective shift end for the job clock's warning (D14).
+
+    ``end_at`` is the instant ``tasks/job_timer_sweep.py`` stops a timer
+    started before it; the phone compares it with its own clock so the note
+    appears on time without a refetch. ``workday`` gates only the warning:
+    the sweep stops timers on every day. ``None`` when the schedule cannot be
+    read — the card then shows no warning rather than a wrong time.
+    """
+    from gdx_dispatch.core.pay_periods import shop_day_of, shop_tz_name_from_settings  # noqa: PLC0415
+    from gdx_dispatch.core.time_off import (  # noqa: PLC0415
+        person_schedule,
+        shift_end_at,
+        shift_end_label,
+    )
+    from gdx_dispatch.models.tenant_models import AppSettings  # noqa: PLC0415
+
+    try:
+        with contained_read(db):
+            tz_name = shop_tz_name_from_settings(db)
+            settings = db.execute(select(AppSettings).limit(1)).scalars().first()
+            schedule = person_schedule(db, settings, user_id)
+    except Exception:
+        log.exception("shift_end_state_failed user_id=%s", user_id)
+        return None
+    today = shop_day_of(now, tz_name)
+    return {
+        "end_at": shift_end_at(today, schedule, tz_name).isoformat(),
+        "end_label": shift_end_label(schedule),
+        "workday": schedule.works_on(today),
+        "warn_minutes": SHIFT_END_WARN_MINUTES,
+    }
 
 
 #: Stamped on a row the tech stopped by hand, so the office can tell it apart
 #: from a closeout-attested row at a glance. Mirrors jobs.py::CLOSEOUT_LABOR_NOTE.
 MOBILE_STOP_LABOR_NOTE = "Timer stopped on mobile"
+#: What tasks/job_timer_sweep.py stamps on a timer it stops at the shift end
+#: (D14). It LEADS with the Stop marker so every prefix reader still sees a
+#: stopped timer; jobs.py's closeout also tells it apart from a hand Stop.
+MOBILE_AUTO_STOP_LABOR_NOTE = f"{MOBILE_STOP_LABOR_NOTE} — auto-stopped at shift end"
 
 
 def _close_open_time_entry(

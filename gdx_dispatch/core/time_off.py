@@ -73,6 +73,9 @@ MAX_LOOKAHEAD_DAYS = 366
 WEEKDAY_BITS = (1, 2, 4, 8, 16, 32, 64)
 DEFAULT_WORKDAYS = 31  # Mon–Fri
 DEFAULT_SHIFT_START = time(8, 0)
+#: `AppSettings.default_shift_end` is NOT NULL with this server default; the
+#: fallback only covers a database with no settings row at all.
+DEFAULT_SHIFT_END = time(17, 0)
 
 
 def is_time_off(entry_type: Any) -> bool:
@@ -106,21 +109,41 @@ def workdays_between(start: date, end: date, workdays_mask: int | None) -> list[
 class PersonSchedule:
     shift_start: time
     workdays: int
+    shift_end: time = DEFAULT_SHIFT_END
+
+    def works_on(self, day: date) -> bool:
+        """Whether ``day``'s weekday bit is set in the person's mask."""
+        return bool(int(self.workdays or 0) & WEEKDAY_BITS[day.weekday()])
 
 
 def person_schedule(db: Session, settings: AppSettings | None, user_id: str) -> PersonSchedule:
-    """The person's shift start and workday mask: their `users` override when
-    set, else the shop default. Mirrors how the dispatch board reads them."""
+    """The person's shift start, shift end and workday mask: their `users`
+    override when set, else the shop default, per field. Mirrors how the
+    dispatch board reads them (routers/technicians.py `_tech_to_dict`)."""
     shift_start = getattr(settings, "default_shift_start", None) or DEFAULT_SHIFT_START
+    shift_end = getattr(settings, "default_shift_end", None) or DEFAULT_SHIFT_END
     workdays = getattr(settings, "default_workdays", None)
     workdays = DEFAULT_WORKDAYS if workdays is None else int(workdays)
     user = _load_user(db, user_id)
     if user is not None:
         if getattr(user, "shift_start", None):
             shift_start = user.shift_start
+        if getattr(user, "shift_end", None):
+            shift_end = user.shift_end
         if getattr(user, "workdays", None) is not None:
             workdays = int(user.workdays)
-    return PersonSchedule(shift_start=shift_start, workdays=workdays)
+    return PersonSchedule(shift_start=shift_start, workdays=workdays, shift_end=shift_end)
+
+
+def shift_end_at(day: date, schedule: PersonSchedule, tz_name: Any) -> datetime:
+    """The UTC instant of the person's shift end on shop-local ``day``."""
+    end = schedule.shift_end.replace(tzinfo=None)
+    return datetime.combine(day, end, tzinfo=resolve_zone(tz_name)).astimezone(UTC)
+
+
+def shift_end_label(schedule: PersonSchedule) -> str:
+    """"4:30 PM" — the wall-clock shift end, as the timesheet prints a time."""
+    return schedule.shift_end.strftime("%-I:%M %p")
 
 
 def _load_user(db: Session, user_id: str) -> User | None:

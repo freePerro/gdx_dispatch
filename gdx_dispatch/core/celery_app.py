@@ -55,6 +55,8 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
             "gdx_dispatch.modules.bank_feeds.tasks",
             "gdx_dispatch.tasks.tech_locations_prune",
             "gdx_dispatch.tasks.timeclock_sweep",
+            # D14 — stops job timers left running past shift end.
+            "gdx_dispatch.tasks.job_timer_sweep",
         ],
     )
     app.conf.update(
@@ -110,6 +112,7 @@ from gdx_dispatch.tasks import audit_chain_verify as _audit_chain_verify_tasks  
 from gdx_dispatch.tasks import customer_volume_refresh as _customer_volume_refresh_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import estimate_archive as _estimate_archive_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import estimate_expiry as _estimate_expiry_tasks  # noqa: E402,F401
+from gdx_dispatch.tasks import job_timer_sweep as _job_timer_sweep_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import tech_locations_prune as _tech_locations_prune_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import timeclock_sweep as _timeclock_sweep_tasks  # noqa: E402,F401
 
