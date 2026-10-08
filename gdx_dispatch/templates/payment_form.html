@@ -622,6 +622,23 @@
     document.getElementById("payment-success").classList.remove("visible");
   }
 
+  // Stripe.js's own text only when it is about the payer's card or what they
+  // typed; anything else (a bad key, a bad request, an outage) is ours to fix
+  // and its message names our setup. "For card errors, these messages can be
+  // shown to your users." — https://docs.stripe.com/api/errors
+  const PAYMENT_UNAVAILABLE = "We couldn't process this payment right now. Please try again in a few minutes, or contact us to pay another way.";
+  // A failed or cancelled 3D Secure check comes back as invalid_request_error,
+  // yet the payer's next step is a different card (core/payments.py, same text).
+  const PAYMENT_AUTH_FAILED = "Your bank couldn't verify this card. Please use a different card or payment method.";
+  const AUTH_FAILURE_CODES = ["payment_intent_authentication_failure", "setup_intent_authentication_failure"];
+  function stripeErrorText(error) {
+    const t = error && error.type;
+    if ((t === "card_error" || t === "validation_error") && error.message) return error.message;
+    if (error && AUTH_FAILURE_CODES.includes(error.code)) return PAYMENT_AUTH_FAILED;
+    console.error("Stripe error", t, error && error.code);
+    return PAYMENT_UNAVAILABLE;
+  }
+
   function showSuccess(msg) {
     const el = document.getElementById("payment-success");
     el.textContent = msg;
@@ -780,7 +797,7 @@
 
   async function settleCard(result) {
     if (result.error) {
-      showError(result.error.message);
+      showError(stripeErrorText(result.error));
       return;
     }
     if (result.paymentIntent.status === "succeeded") {
@@ -802,7 +819,7 @@
         // Step 1: the card first, so the server can ask Stripe whether it
         // may carry the fee. Nothing is charged here.
         const created = await stripe.createPaymentMethod({ type: "card", card: cardElement });
-        if (created.error) { showError(created.error.message); return; }
+        if (created.error) { showError(stripeErrorText(created.error)); return; }
         cardPaymentMethodId = created.paymentMethod.id;
         renderCardBreakdown(await createIntent("card", cardPaymentMethodId));
         document.getElementById("card-form").hidden = true;
@@ -939,7 +956,7 @@
       });
 
       if (result.error) {
-        showError(result.error.message);
+        showError(stripeErrorText(result.error));
         return;
       }
       const pi = result.paymentIntent;
@@ -983,7 +1000,7 @@
       // records it (IP, user agent, timestamp) and emails the customer a copy.
       const result = await stripe.confirmUsBankAccountPayment(achClientSecret);
       if (result.error) {
-        showError(result.error.message);
+        showError(stripeErrorText(result.error));
         return;
       }
       const pi = result.paymentIntent;

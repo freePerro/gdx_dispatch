@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 import jwt
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.security import OAuth2PasswordBearer
 from jwt.exceptions import InvalidTokenError as JWTError
 from pydantic import BaseModel, Field
@@ -35,7 +35,7 @@ from gdx_dispatch.modules.door_listings import service as _listing_service
 from gdx_dispatch.modules.door_listings.models import DoorListing
 from gdx_dispatch.modules.estimates_features import effective_hide_line_prices, get_features
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
-from gdx_dispatch.routers.pdf import line_category_mode_for
+from gdx_dispatch.routers.pdf import _invoice_settlement, invoice_pdf_bytes, line_category_mode_for
 
 log = logging.getLogger(__name__)
 
@@ -632,29 +632,127 @@ def portal_invoices(
         .where(*_portal_invoice_filter(principal.customer_id))
         .order_by(Invoice.created_at.desc())
     ).scalars()
+    return [_serialize_portal_invoice(row) for row in rows]
+
+
+def _serialize_portal_invoice(row: Invoice) -> dict[str, Any]:
     from gdx_dispatch.core.payments import public_pay_url
 
-    return [
-        {
-            "id": str(row.id),
-            "invoice_number": row.invoice_number,
-            "billing_type": row.billing_type,
-            "status": row.status,
-            "payment_status": _payment_status(row),
-            "total": float(row.total or 0),
-            "balance_due": float(row.balance_due or 0),
-            "due_date": row.due_date.isoformat() if row.due_date else None,
-            "created_at": row.created_at.isoformat() if row.created_at else None,
-            # The E2E-verified public Stripe page — the portal's Pay button.
-            # None when Stripe/base-URL isn't configured or nothing is owed.
-            "pay_url": (
-                public_pay_url(row.public_token)
-                if float(row.balance_due or 0) > 0 and row.status in ("sent", "overdue")
-                else None
-            ),
-        }
-        for row in rows
-    ]
+    return {
+        "id": str(row.id),
+        "invoice_number": row.invoice_number,
+        "billing_type": row.billing_type,
+        "status": row.status,
+        "payment_status": _payment_status(row),
+        "total": float(row.total or 0),
+        "balance_due": float(row.balance_due or 0),
+        "due_date": row.due_date.isoformat() if row.due_date else None,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        # The E2E-verified public Stripe page — the portal's Pay button.
+        # None when Stripe/base-URL isn't configured or nothing is owed.
+        "pay_url": (
+            public_pay_url(row.public_token)
+            if float(row.balance_due or 0) > 0 and row.status in ("sent", "overdue")
+            else None
+        ),
+    }
+
+
+def _get_customer_invoice_or_404(invoice_id: UUID, principal: PortalPrincipal, db: Session) -> Invoice:
+    """Same scope as the list: draft, void, deleted and other customers'
+    invoices are all the same 404."""
+    invoice = db.execute(
+        select(Invoice).where(Invoice.id == invoice_id, *_portal_invoice_filter(principal.customer_id))
+    ).scalar_one_or_none()
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    return invoice
+
+
+def _serialize_portal_line(line, cat_mode: str, hide_prices: bool) -> dict[str, Any]:
+    """One estimate or invoice line as the portal sends it. ``cat_mode`` 'off'
+    keeps the category off the wire; ``hide_prices`` (total-only) strips the
+    per-line money rather than leaving it for the template to hide."""
+    return {
+        "id": str(line.id),
+        "description": line.description,
+        "quantity": float(line.quantity or 0),
+        **({} if cat_mode == "off" else {"category": (line.category or "").strip() or None}),
+        **(
+            {}
+            if hide_prices
+            else {
+                "unit_price": float(line.unit_price or 0),
+                "line_total": float(line.line_total or 0),
+            }
+        ),
+    }
+
+
+@router.get("/invoices/{invoice_id}", response_model=None)
+def portal_invoice_detail(
+    invoice_id: UUID,
+    principal: PortalPrincipal = Depends(get_current_portal_customer),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """One invoice as the customer's PDF shows it: lines, totals, what has been
+    paid and what is still owed. Read-only; paying goes through ``pay_url``."""
+    invoice = _get_customer_invoice_or_404(invoice_id, principal, db)
+
+    body = _serialize_portal_invoice(invoice)
+    invoice_date = invoice.invoice_date or (invoice.created_at.date() if invoice.created_at else None)
+    body["invoice_date"] = invoice_date.isoformat() if invoice_date else None
+    body["notes"] = invoice.notes or None
+    # "Total-only" display, same as the invoice PDF: per-line prices and the
+    # Subtotal/Tax rows are dropped, Total and Balance Due stay. This is a JSON
+    # API, so the values are STRIPPED here, not hidden in the template.
+    hide_prices = bool(invoice.hide_line_prices)
+    body["hide_line_prices"] = hide_prices
+    cat_mode = line_category_mode_for(db, "invoice")
+    body["line_category"] = cat_mode
+    lines = sorted(invoice.lines, key=lambda row: (row.sort_order, row.created_at, row.id))
+    body["lines"] = [_serialize_portal_line(line, cat_mode, hide_prices) for line in lines]
+    # The PDF's settlement numbers, from the PDF's own helper, so the portal
+    # and the emailed invoice never disagree about what was paid.
+    paid_to_date, credits_applied = _invoice_settlement(invoice, db)
+    totals: dict[str, Any] = {
+        "total": float(invoice.total or 0),
+        "paid_to_date": paid_to_date,
+        "credits_applied": credits_applied,
+        "balance_due": float(invoice.balance_due or 0),
+    }
+    if not hide_prices:
+        totals["subtotal"] = float(invoice.subtotal or 0)
+        totals["tax"] = float(invoice.tax_amount or 0)
+    body["totals"] = totals
+    return body
+
+
+def _portal_pdf_response(pdf: bytes, kind: str, number: str | None) -> Response:
+    safe = "".join(c for c in str(number or "") if c.isalnum() or c in "-_") or kind
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            # Same disposition as the public proposal PDF: the portal hands the
+            # bytes to the browser, which opens or saves them by this name.
+            "Content-Disposition": f'inline; filename="{kind}-{safe}.pdf"',
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+@router.get("/invoices/{invoice_id}/pdf", response_model=None)
+def portal_invoice_pdf(
+    invoice_id: UUID,
+    principal: PortalPrincipal = Depends(get_current_portal_customer),
+    db: Session = Depends(get_db),
+) -> Response:
+    """The invoice PDF the office sends, for one of the customer's own issued
+    invoices. Same scope as the list and detail: draft, void, deleted and
+    other customers' invoices are all the same 404. Read-only."""
+    invoice = _get_customer_invoice_or_404(invoice_id, principal, db)
+    return _portal_pdf_response(invoice_pdf_bytes(invoice, db), "invoice", invoice.invoice_number)
 
 
 # NOTE: ``POST /portal/invoices/{invoice_id}/pay`` was removed 2026-09-16. The
@@ -1030,23 +1128,7 @@ def portal_estimate_detail(
         .where(EstimateLine.estimate_id == estimate.id)
         .order_by(EstimateLine.sort_order)
     ).scalars().all()
-    body["lines"] = [
-        {
-            "id": str(line.id),
-            "description": line.description,
-            "quantity": float(line.quantity or 0),
-            **({} if cat_mode == "off" else {"category": (line.category or "").strip() or None}),
-            **(
-                {}
-                if hide_prices
-                else {
-                    "unit_price": float(line.unit_price or 0),
-                    "line_total": float(line.line_total or 0),
-                }
-            ),
-        }
-        for line in lines
-    ]
+    body["lines"] = [_serialize_portal_line(line, cat_mode, hide_prices) for line in lines]
 
     # Image attachments only (door photos/renderings staff attach to the
     # estimate) — PDFs and other docs stay staff-side for now.
@@ -1116,6 +1198,28 @@ def _get_customer_estimate_or_404(estimate_id: UUID, principal: PortalPrincipal,
     if not estimate:
         raise HTTPException(status_code=404, detail="Estimate not found")
     return estimate
+
+
+@router.get("/estimates/{estimate_id}/pdf", response_model=None)
+def portal_estimate_pdf(
+    estimate_id: UUID,
+    request: Request,
+    principal: PortalPrincipal = Depends(get_current_portal_customer),
+    db: Session = Depends(get_db),
+) -> Response:
+    """The estimate PDF — the same bytes the email attaches and the texted
+    proposal page serves (``_estimate_pdf_bytes``), scoped like the detail.
+    Read-only, and no view is recorded."""
+    from gdx_dispatch.routers.estimates import _estimate_pdf_bytes  # lazy: import cycle
+
+    estimate = _get_customer_estimate_or_404(estimate_id, principal, db)
+    customer = db.execute(
+        select(Customer).where(Customer.id == estimate.customer_id, Customer.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    tenant_id = str((getattr(request.state, "tenant", {}) or {}).get("id") or estimate.company_id or "")
+    return _portal_pdf_response(
+        _estimate_pdf_bytes(db, estimate, customer, tenant_id), "estimate", estimate.estimate_number
+    )
 
 
 class DeclineEstimateIn(BaseModel):

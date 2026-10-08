@@ -2003,3 +2003,98 @@ def test_a_preview_hides_the_microdeposit_verification_link(client, invoice):
     assert 'data-testid="ach-verifying-link"' in plain.text
     assert 'data-testid="ach-verifying-link"' not in preview.text
     assert 'data-testid="pay-preview-banner"' in preview.text
+
+
+# ---------------------------------------------------------------------------
+# What the payer is told when Stripe refuses (2026-10-07). With a bad key the
+# pay page used to print "Invalid API Key provided: sk_test_…" to the customer.
+# Only a card error is about the payer's card; every other type is ours.
+# ---------------------------------------------------------------------------
+
+def _card_error(msg="Your card was declined."):
+    import stripe as _stripe
+
+    return _stripe.error.CardError(
+        msg, None, "card_declined", json_body={"error": {"type": "card_error", "message": msg}}
+    )
+
+
+def _setup_errors():
+    import stripe as _stripe
+
+    return [
+        _stripe.error.AuthenticationError("Invalid API Key provided: sk_test_abc123"),
+        _stripe.error.InvalidRequestError("No such payment_intent: 'pi_x'", "intent"),
+        _stripe.error.APIConnectionError("Network error talking to api.stripe.com"),
+        _stripe.error.PermissionError("The provided key 'rk_live_x' does not have access"),
+    ]
+
+
+def test_payer_facing_detail_shows_a_card_decline_and_hides_everything_else():
+    from gdx_dispatch.core.payments import PAYMENT_UNAVAILABLE_DETAIL, payer_facing_stripe_detail
+
+    assert payer_facing_stripe_detail(_card_error()) == "Your card was declined."
+    for exc in _setup_errors():
+        assert payer_facing_stripe_detail(exc) == PAYMENT_UNAVAILABLE_DETAIL, type(exc).__name__
+
+
+@pytest.mark.parametrize("code", ["payment_intent_authentication_failure", "setup_intent_authentication_failure"])
+def test_a_failed_3d_secure_check_tells_the_payer_to_use_another_card(code):
+    """Stripe types it invalid_request_error, but the payer is the one who
+    can fix it — "try again in a few minutes" would send them back to the
+    same card."""
+    import stripe as _stripe
+
+    from gdx_dispatch.core.payments import PAYMENT_AUTH_FAILED_DETAIL, payer_facing_stripe_detail
+
+    exc = _stripe.error.InvalidRequestError(
+        "We are unable to authenticate your payment method.", None, code=code
+    )
+    assert payer_facing_stripe_detail(exc) == PAYMENT_AUTH_FAILED_DETAIL
+
+
+@pytest.mark.parametrize("which", range(4))
+def test_create_intent_never_shows_the_payer_our_stripe_setup(client, invoice, which):
+    from gdx_dispatch.core.payments import PAYMENT_UNAVAILABLE_DETAIL
+
+    exc = _setup_errors()[which]
+    with patch("stripe.PaymentIntent.list", return_value=MagicMock(data=[], has_more=False)), \
+            patch("stripe.PaymentIntent.create", side_effect=exc):
+        resp = client.post("/api/payments/create-intent", json={"invoice_token": TOKEN, "method": "card"})
+    assert resp.status_code == 402
+    assert resp.json()["detail"] == PAYMENT_UNAVAILABLE_DETAIL
+    assert str(exc) not in resp.text and "sk_test" not in resp.text
+
+
+def test_create_intent_still_tells_the_payer_their_card_was_declined(client, invoice):
+    with patch("stripe.PaymentIntent.list", return_value=MagicMock(data=[], has_more=False)), \
+            patch("stripe.PaymentIntent.create", side_effect=_card_error("Your card has insufficient funds.")):
+        resp = client.post("/api/payments/create-intent", json={"invoice_token": TOKEN, "method": "card"})
+    assert resp.status_code == 402
+    assert resp.json()["detail"] == "Your card has insufficient funds."
+
+
+def test_confirm_never_shows_the_payer_our_stripe_setup(client, invoice):
+    import stripe as _stripe
+
+    from gdx_dispatch.core.payments import PAYMENT_UNAVAILABLE_DETAIL
+
+    with patch("stripe.PaymentIntent.retrieve",
+               side_effect=_stripe.error.AuthenticationError("Invalid API Key provided: sk_test_abc123")):
+        resp = client.post(
+            "/api/payments/confirm", json={"invoice_token": TOKEN, "payment_intent_id": "pi_x"}
+        )
+    assert resp.status_code == 402
+    assert resp.json()["detail"] == PAYMENT_UNAVAILABLE_DETAIL
+    assert "sk_test" not in resp.text
+
+
+def test_the_pay_page_no_longer_prints_stripe_js_errors_raw():
+    """Errors Stripe.js returns in the browser go through the page's filter.
+    Only absence is asserted here; PayFormStripeErrors.spec.js runs the
+    filter itself."""
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parents[1] / "templates" / "payment_form.html").read_text()
+    assert "showError(result.error.message)" not in html
+    assert "showError(created.error.message)" not in html

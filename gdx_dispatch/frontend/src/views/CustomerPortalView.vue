@@ -6,8 +6,8 @@
         <span class="company-name">{{ company.name }}</span>
       </div>
       <div v-if="jwt && !error" class="header-actions">
-        <Button icon="pi pi-key" label="Password" text size="small" @click="openSetPassword" data-testid="set-password-btn" />
-        <Button icon="pi pi-sign-out" label="Sign out" text size="small" @click="signOut" data-testid="sign-out-btn" />
+        <Button icon="pi pi-key" label="Password" aria-label="Password" text size="small" @click="openSetPassword" data-testid="set-password-btn" />
+        <Button icon="pi pi-sign-out" label="Sign out" aria-label="Sign out" text size="small" @click="signOut" data-testid="sign-out-btn" />
       </div>
     </header>
 
@@ -94,22 +94,44 @@
           </TabPanel>
 
           <TabPanel value="invoices">
-            <DataTable :value="invoices" responsiveLayout="stack" breakpoint="640px" data-testid="invoices-table">
-              <template #empty>No invoices found.</template>
-              <Column field="invoice_number" header="Invoice #">
-                <template #body="{ data }">
-                  {{ data.invoice_number }}
-                  <Tag v-if="data.billing_type === 'deposit'" value="Deposit" severity="info" data-testid="portal-deposit-tag" />
+            <!-- Cards, not a table (2026-10-07): the Pay button sat in a
+                 trailing DataTable column, off-screen on a phone, and a row
+                 led nowhere. A card opens the invoice and carries the Pay
+                 button where a thumb can reach it. -->
+            <div v-if="!invoices.length" class="empty-msg" data-testid="invoices-empty">No invoices found.</div>
+            <div v-else class="card-grid" data-testid="invoices-list">
+              <Card
+                v-for="inv in invoices"
+                :key="inv.id"
+                class="portal-card clickable"
+                data-testid="invoice-card"
+                role="button"
+                tabindex="0"
+                @click="openInvoice(inv.id)"
+                @keydown.enter.self="openInvoice(inv.id)"
+              >
+                <template #title>
+                  <div class="card-title-row">
+                    <span>
+                      {{ inv.invoice_number }}
+                      <Tag v-if="inv.billing_type === 'deposit'" value="Deposit" severity="info" data-testid="portal-deposit-tag" />
+                    </span>
+                    <Tag :value="invoiceStatus(inv)" :severity="statusSeverity(invoiceStatus(inv))" />
+                  </div>
                 </template>
-              </Column>
-              <Column field="total" header="Amount"><template #body="{ data }">{{ currency(data.total) }}</template></Column>
-              <Column field="balance_due" header="Balance Due"><template #body="{ data }">{{ currency(data.balance_due) }}</template></Column>
-              <Column field="payment_status" header="Status"><template #body="{ data }"><Tag :value="data.payment_status" :severity="statusSeverity(data.payment_status)" /></template></Column>
-              <Column field="due_date" header="Due"><template #body="{ data }">{{ formatDate(data.due_date) }}</template></Column>
-              <Column header="" :style="{ width: '110px' }"><template #body="{ data }">
-                <Button v-if="data.pay_url" label="Pay" icon="pi pi-credit-card" size="small" severity="success" data-testid="invoice-pay-btn" @click="openPayUrl(data.pay_url)" />
-              </template></Column>
-            </DataTable>
+                <template #content>
+                  <p class="amount">{{ currency(inv.balance_due > 0 ? inv.balance_due : inv.total) }}</p>
+                  <p class="meta">{{ inv.balance_due > 0 ? `Balance due of ${currency(inv.total)}` : 'Paid in full' }}</p>
+                  <p v-if="inv.due_date && inv.balance_due > 0" class="meta">Due: {{ formatDate(inv.due_date) }}</p>
+                  <p class="meta view-hint"><i class="pi pi-eye" /> View details</p>
+                </template>
+                <template v-if="inv.pay_url" #footer>
+                  <div class="action-row">
+                    <Button :label="`Pay ${currency(inv.balance_due)}`" icon="pi pi-credit-card" severity="success" class="flex-1" data-testid="invoice-pay-btn" @click.stop="openPayUrl(inv.pay_url)" />
+                  </div>
+                </template>
+              </Card>
+            </div>
           </TabPanel>
 
           <TabPanel value="jobs">
@@ -210,7 +232,7 @@
                 </template>
               </Column>
               <Column field="quantity" header="Qty" :style="{ width: '70px' }" />
-              <Column v-if="!detail.hide_line_prices" field="unit_price" header="Price" :style="{ width: '110px' }"><template #body="{ data }">{{ currency(data.unit_price) }}</template></Column>
+              <Column v-if="!detail.hide_line_prices" field="unit_price" header="Price" header-class="line-price-col" body-class="line-price-col" :style="{ width: '110px' }"><template #body="{ data }">{{ currency(data.unit_price) }}</template></Column>
               <Column v-if="!detail.hide_line_prices" field="line_total" header="Total" :style="{ width: '110px' }"><template #body="{ data }">{{ currency(data.line_total) }}</template></Column>
             </DataTable>
 
@@ -235,6 +257,81 @@
               <Button :label="`Pay ${currency(detail.deposit_ask.amount)} deposit`" icon="pi pi-credit-card" severity="success" class="flex-1" :loading="actionBusy[detail.id]" @click="startDepositPayFromDetail" data-testid="detail-pay-deposit-ask-btn" />
             </div>
             <p v-else-if="detail.status === 'declined' && detail.declined_reason" class="meta">Declined: {{ detail.declined_reason }}</p>
+            <div class="action-row detail-actions">
+              <Button label="Download PDF" icon="pi pi-download" severity="secondary" outlined class="flex-1" :loading="pdfBusy" data-testid="estimate-pdf-btn" @click="downloadPdf('estimates', detail.id, `estimate-${detail.estimate_number}`)" />
+            </div>
+          </div>
+        </Dialog>
+
+        <!-- Invoice detail (2026-10-07). Same numbers as the invoice PDF:
+             lines, totals, paid to date, credits, balance due. Paying opens
+             the public pay page — the portal has no card mint of its own. -->
+        <Dialog
+          v-model:visible="invoiceVisible"
+          :header="invoiceDetail ? `Invoice ${invoiceDetail.invoice_number}` : 'Invoice'"
+          :modal="true"
+          :style="{ width: 'min(640px, 94vw)' }"
+          data-testid="invoice-detail-dialog"
+        >
+          <div v-if="invoiceLoading" class="loading-wrap"><ProgressSpinner /></div>
+          <div v-else-if="invoiceDetail" class="detail-body">
+            <div class="detail-status-row">
+              <Tag :value="invoiceStatus(invoiceDetail)" :severity="statusSeverity(invoiceStatus(invoiceDetail))" />
+              <Tag v-if="invoiceDetail.billing_type === 'deposit'" value="Deposit" severity="info" />
+              <span v-if="invoiceDetail.invoice_date" class="meta">Date: {{ formatDate(invoiceDetail.invoice_date) }}</span>
+              <span v-if="invoiceDetail.due_date" class="meta">Due: {{ formatDate(invoiceDetail.due_date) }}</span>
+            </div>
+
+            <!-- Category follows the invoice PDF's template setting. -->
+            <DataTable
+              :value="invoiceRows"
+              class="detail-lines"
+              data-testid="invoice-lines-table"
+              :row-group-mode="invoiceCatMode === 'grouped' ? 'subheader' : undefined"
+              :group-rows-by="invoiceCatMode === 'grouped' ? '_category' : undefined"
+            >
+              <template #empty>No line items.</template>
+              <template v-if="invoiceCatMode === 'grouped'" #groupheader="{ data: row }">
+                <span v-if="row._category" class="line-cat-heading">{{ row._category }}</span>
+                <span v-else class="line-cat-heading-empty" />
+              </template>
+              <Column v-if="invoiceCatMode === 'grouped'" field="_category" />
+              <Column v-if="invoiceCatMode === 'column'" field="category" header="Category" header-class="line-cat-col" body-class="line-cat-col" />
+              <Column header="Item">
+                <template #body="{ data }">
+                  <span v-if="invoiceCatMode === 'column' && data.category" class="line-cat-inline">{{ data.category }}</span>{{ data.description }}
+                </template>
+              </Column>
+              <Column field="quantity" header="Qty" :style="{ width: '60px' }" />
+              <Column v-if="!invoiceDetail.hide_line_prices" field="unit_price" header="Price" header-class="line-price-col" body-class="line-price-col" :style="{ width: '100px' }"><template #body="{ data }">{{ currency(data.unit_price) }}</template></Column>
+              <Column v-if="!invoiceDetail.hide_line_prices" field="line_total" header="Total" :style="{ width: '100px' }"><template #body="{ data }">{{ currency(data.line_total) }}</template></Column>
+            </DataTable>
+
+            <div class="totals-block" data-testid="invoice-totals">
+              <div v-if="invoiceDetail.totals.subtotal !== undefined" class="totals-row"><span>Subtotal</span><span>{{ currency(invoiceDetail.totals.subtotal) }}</span></div>
+              <div v-if="invoiceDetail.totals.tax" class="totals-row"><span>Tax</span><span>{{ currency(invoiceDetail.totals.tax) }}</span></div>
+              <div class="totals-row"><span>Total</span><span>{{ currency(invoiceDetail.totals.total) }}</span></div>
+              <div v-if="invoiceDetail.totals.paid_to_date" class="totals-row"><span>Paid to date</span><span>-{{ currency(invoiceDetail.totals.paid_to_date) }}</span></div>
+              <div v-if="invoiceDetail.totals.credits_applied" class="totals-row"><span>Credits applied</span><span>-{{ currency(invoiceDetail.totals.credits_applied) }}</span></div>
+              <div class="totals-row grand" data-testid="invoice-balance-due"><span>Balance due</span><span>{{ currency(invoiceDetail.totals.balance_due) }}</span></div>
+            </div>
+
+            <p v-if="invoiceDetail.notes" class="meta invoice-notes">{{ invoiceDetail.notes }}</p>
+
+            <div v-if="invoiceDetail.pay_url" class="action-row detail-actions">
+              <Button :label="`Pay ${currency(invoiceDetail.balance_due)}`" icon="pi pi-credit-card" severity="success" class="flex-1" data-testid="invoice-detail-pay-btn" @click="openPayUrl(invoiceDetail.pay_url)" />
+            </div>
+            <!-- Owed but no online payment set up: say how to pay instead of
+                 leaving the customer with a balance and no next step. -->
+            <p v-else-if="invoiceDetail.balance_due > 0" class="meta" data-testid="invoice-pay-offline">
+              <i class="pi pi-info-circle" /> Online payment isn't available for this invoice.
+              <template v-if="company.phone || company.email">
+                To pay, contact us{{ company.phone ? ` at ${company.phone}` : '' }}{{ company.phone && company.email ? ' or' : '' }}{{ company.email ? ` ${company.email}` : '' }}.
+              </template>
+            </p>
+            <div class="action-row detail-actions">
+              <Button label="Download PDF" icon="pi pi-download" severity="secondary" outlined class="flex-1" :loading="pdfBusy" data-testid="invoice-pdf-btn" @click="downloadPdf('invoices', invoiceDetail.id, `invoice-${invoiceDetail.invoice_number}`)" />
+            </div>
           </div>
         </Dialog>
 
@@ -373,6 +470,15 @@ const detailRows = computed(() => {
   const rows = detail.value?.lines || [];
   return detailCatMode.value === "grouped" ? rowsGroupedByCategory(rows) : rows;
 });
+const invoiceDetail = ref(null);
+const invoiceVisible = ref(false);
+const invoiceLoading = ref(false);
+// 'off' | 'column' | 'grouped' — the invoice PDF's line-items setting.
+const invoiceCatMode = computed(() => lineCategoryMode(invoiceDetail.value?.line_category));
+const invoiceRows = computed(() => {
+  const rows = invoiceDetail.value?.lines || [];
+  return invoiceCatMode.value === "grouped" ? rowsGroupedByCategory(rows) : rows;
+});
 const email = ref("");
 const password = ref("");
 const remember = ref(false);
@@ -394,6 +500,10 @@ function currency(v) { return formatMoney(Number(v) || 0); }
 function statusSeverity(s) {
   const map = { sent: "info", accepted: "success", paid: "success", declined: "danger", unpaid: "warn", overdue: "danger", expired: "secondary", scheduled: "info", in_progress: "info", completed: "success" };
   return map[(s || "").toLowerCase()] || "secondary";
+}
+// An overdue invoice says so; otherwise paid / unpaid.
+function invoiceStatus(inv) {
+  return inv.status === "overdue" && inv.balance_due > 0 ? "overdue" : inv.payment_status;
 }
 function jobStatusLabel(job) {
   return (job.lifecycle_stage || "").replace(/_/g, " ") || "-";
@@ -601,6 +711,34 @@ function openPayUrl(url) {
   if (url) window.open(url, "_blank", "noopener");
 }
 
+// The PDF needs the portal's bearer token, so a plain link can't fetch it:
+// load it as a blob and hand the browser a download of that.
+const pdfBusy = ref(false);
+async function downloadPdf(kind, id, name) {
+  pdfBusy.value = true;
+  try {
+    const res = await fetch(`/portal/${kind}/${id}/pdf`, { headers: { Authorization: `Bearer ${jwt.value}` } });
+    if (res.status === 401) {
+      clearStoredJwt();
+      error.value = "Your portal session has expired.";
+      return;
+    }
+    if (!res.ok) throw new Error(`pdf ${res.status}`);
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${name}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch {
+    toast.add({ severity: "error", summary: "Download failed", detail: "Could not load the PDF. Try again.", life: 4000 });
+  } finally {
+    pdfBusy.value = false;
+  }
+}
+
 async function startDepositPay(estimateId) {
   actionBusy[estimateId] = true;
   // Open the tab SYNCHRONOUSLY, inside the click gesture — window.open
@@ -763,6 +901,20 @@ async function openEstimate(id) {
   }
 }
 
+async function openInvoice(id) {
+  invoiceVisible.value = true;
+  invoiceLoading.value = true;
+  try {
+    invoiceDetail.value = await authedFetch(`/portal/invoices/${id}`);
+  } catch (e) {
+    invoiceVisible.value = false;
+    if (e?.auth) { error.value = "Your portal session has expired."; return; }
+    toast.add({ severity: "error", summary: "Error", detail: "Could not load invoice", life: 4000 });
+  } finally {
+    invoiceLoading.value = false;
+  }
+}
+
 async function actFromDetail(action, successMsg) {
   if (!detail.value) return;
   const id = detail.value.id;
@@ -780,9 +932,12 @@ onMounted(init);
 <style scoped>
 /* PrimeVue v4 --p-* tokens flip with data-theme; the --surface-* names do not exist here. */
 .portal-wrapper { min-height: 100vh; background: color-mix(in srgb, var(--p-content-background, #f3f4f6) 96%, var(--p-text-color, #000)); color: var(--p-text-color, #1e293b); }
-.portal-header { position: relative; background: var(--p-content-background, #fff); padding: 1rem 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; justify-content: center; border-bottom: 1px solid var(--p-content-border-color, transparent); }
-.logo-container { display: flex; align-items: center; gap: 0.75rem; }
-.company-name { font-size: 1.25rem; font-weight: 700; color: var(--p-text-color, #1e293b); }
+/* Three columns: the name stays centred in the middle one and the actions get
+   their own column, so a long name truncates instead of running under the
+   buttons (it used to: the actions were absolutely positioned over it). */
+.portal-header { background: var(--p-content-background, #fff); padding: 1rem 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: grid; grid-template-columns: 1fr minmax(0, auto) 1fr; align-items: center; gap: 0.5rem; border-bottom: 1px solid var(--p-content-border-color, transparent); }
+.logo-container { grid-column: 2; display: flex; align-items: center; gap: 0.75rem; min-width: 0; }
+.company-name { font-size: 1.25rem; font-weight: 700; color: var(--p-text-color, #1e293b); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .portal-content { max-width: 900px; margin: 0 auto; padding: 1rem; }
 .loading-wrap { display: flex; justify-content: center; padding: 3rem; }
 .empty-msg { text-align: center; padding: 2rem; color: var(--p-text-muted-color, #6b7280); }
@@ -806,10 +961,14 @@ onMounted(init);
 .totals-row { display: flex; justify-content: space-between; font-size: 0.95rem; }
 .totals-row.grand { font-weight: 700; font-size: 1.1rem; border-top: 1px solid var(--p-content-border-color, #e5e7eb); padding-top: 0.35rem; color: var(--p-primary-color); }
 .detail-actions { margin-top: 0.25rem; }
+.invoice-notes { white-space: pre-line; }
 .card-title-row { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
 .amount { font-size: 1.5rem; font-weight: 700; color: var(--p-primary-color); margin: 0.5rem 0; }
 .meta { font-size: 0.85rem; color: var(--p-text-muted-color, #6b7280); }
 .action-row { display: flex; gap: 0.5rem; }
+/* No utility CSS is loaded on this page, so the class the action buttons
+   have always carried is defined here: they share the row's full width. */
+.action-row > .flex-1 { flex: 1 1 0; }
 .contact-list { display: flex; flex-direction: column; gap: 1rem; }
 .contact-list div { display: flex; align-items: center; gap: 0.75rem; }
 .contact-list i { color: var(--p-primary-color); }
@@ -817,7 +976,7 @@ onMounted(init);
 .request-link-card { margin-top: 1rem; }
 .request-link-row { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
 .sent-note { margin-top: 0.75rem; color: var(--p-primary-color); }
-.header-actions { position: absolute; right: 1.25rem; top: 50%; transform: translateY(-50%); display: flex; gap: 0.25rem; align-items: center; }
+.header-actions { grid-column: 3; justify-self: end; display: flex; gap: 0.25rem; align-items: center; }
 .login-wrap { max-width: 460px; margin: 2rem auto; }
 .login-form { display: flex; flex-direction: column; gap: 0.9rem; }
 .field { display: flex; flex-direction: column; gap: 0.35rem; }
@@ -826,7 +985,13 @@ onMounted(init);
 .field :deep(.p-password), .field :deep(.p-password input) { width: 100%; }
 .remember-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; cursor: pointer; }
 .magic-fallback { display: flex; flex-direction: column; align-items: flex-start; gap: 0.4rem; }
-@media (max-width: 640px) { .card-grid { grid-template-columns: 1fr; } .company-name { font-size: 1rem; } }
+@media (max-width: 640px) {
+  .card-grid { grid-template-columns: 1fr; }
+  .company-name { font-size: 1rem; }
+  .portal-header { padding: 0.75rem 1rem; }
+  /* Icon-only on a phone; the aria-label keeps the name for screen readers. */
+  .header-actions :deep(.p-button-label) { display: none; }
+}
 .line-cat-heading { font-weight: 700; }
 /* No heading for the uncategorized group — the PDF gives it none. */
 .detail-lines :deep(.p-datatable-row-group-header:has(.line-cat-heading-empty)) { display: none; }
@@ -836,4 +1001,6 @@ onMounted(init);
   .detail-lines :deep(.line-cat-col) { display: none; }
   .line-cat-inline { display: block; font-size: 0.75rem; font-weight: 600; color: var(--p-text-muted-color, #6b7280); }
 }
+/* A phone has room for Item, Qty and Total; the unit price is the one to drop. */
+@media (max-width: 640px) { .detail-lines :deep(.line-price-col) { display: none; } }
 </style>
