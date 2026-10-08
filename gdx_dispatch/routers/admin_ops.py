@@ -367,9 +367,18 @@ def full_export(
     invoices = list(
         db.execute(select(Invoice).where(Invoice.deleted_at.is_(None)).order_by(Invoice.created_at.asc())).scalars().all()
     )
+    # `billing_status` comes from the invoices, never the column: the column
+    # is a stale cache that stopped advancing in July 2026 (never "paid"). Same
+    # derivation as the jobs API.
+    from gdx_dispatch.routers.jobs import _derived_billing_status, _display_state_for_jobs
+
+    ds_map = _display_state_for_jobs(db, [(j.id, j.lifecycle_stage) for j in jobs])
+    jobs_out = jsonable_encoder(jobs)
+    for job, row in zip(jobs, jobs_out, strict=True):
+        row["billing_status"] = _derived_billing_status(ds_map.get(str(job.id)))
     payload = {
         "customers": jsonable_encoder(customers),
-        "jobs": jsonable_encoder(jobs),
+        "jobs": jobs_out,
         "invoices": jsonable_encoder(invoices),
     }
     log_audit_event_sync(

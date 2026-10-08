@@ -1,7 +1,7 @@
 """Canonical "is this job billed" predicate — ONE definition, shared.
 
-PR2-billing-capture (2026-07-07). `Job.billing_status` is a dead cache (only
-ever written "unbilled" — see core/job_display_state.py's header), so every
+PR2-billing-capture (2026-07-07). `Job.billing_status` is a stale cache (it
+never advances past "invoiced" — see core/job_display_state.py's header), so every
 consumer that filtered on it was wrong: the unbilled-work alert counted paid
 jobs, and the two Ready-for-Billing queries disagreed with the display state
 about voided invoices. Per the locked derive-don't-cache model (Doug
@@ -32,9 +32,10 @@ Three deliberate exclusions:
   operator said "this is free", stop nagging).
 
 Known edge (documented, accepted): the display state's `live_invoices` still
-counts a $0 draft as "Invoiced" — the locked display model is untouched here.
-A job with only the fabricated $0 draft shows "Invoiced" on the job card but
-stays in Ready-for-Billing/alerts, which is the cash-flow-safe direction.
+counts a $0 draft — the locked display model is untouched here. This note
+used to say such a job shows "Invoiced"; it shows "Paid" (a zero balance
+reads as settled — verified 2026-10-07). It still stays in Ready-for-Billing/
+alerts, and the API's derived `billing_status` says "unbilled".
 """
 from __future__ import annotations
 

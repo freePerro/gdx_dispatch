@@ -22,6 +22,7 @@ from gdx_dispatch.core.job_display_state import (
     TYPE_LOST,
     TYPE_OPEN,
     TYPE_WON,
+    derive_job_billing_status,
     derive_job_display_state,
 )
 
@@ -353,3 +354,53 @@ def test_missing_billing_type_is_billing_real_backcompat():
         invoices=[{"status": "paid", "balance_due": 0, "amount_paid": 500}],
     )
     assert st.stage == "paid" and st.deposit_paid is False
+
+
+# --- billing_status (the API's replacement for the stale column) ----------
+
+def _inv(status, balance_due, amount_paid=0, total=100, billing_type="standard"):
+    return {
+        "status": status, "balance_due": balance_due, "amount_paid": amount_paid,
+        "total": total, "billing_type": billing_type,
+    }
+
+
+def test_billing_status_no_invoice_is_unbilled():
+    assert derive_job_billing_status(None) == "unbilled"
+    assert derive_job_billing_status([]) == "unbilled"
+
+
+def test_billing_status_money_axis_values():
+    assert derive_job_billing_status([_inv("paid", 0, 100)]) == "paid"
+    assert derive_job_billing_status([_inv("sent", 100)]) == "invoiced"
+    assert derive_job_billing_status([_inv("overdue", 100)]) == "overdue"
+    assert derive_job_billing_status([_inv("sent", 60, 40)]) == "partial_paid"
+    # Settled by balance even when the status lags.
+    assert derive_job_billing_status([_inv("sent", 0, 100)]) == "paid"
+
+
+def test_billing_status_excludes_what_does_not_bill_a_job():
+    # Same exclusions as billing_predicates.invoice_bills_job.
+    assert derive_job_billing_status([_inv("void", 100)]) == "unbilled"
+    assert derive_job_billing_status(
+        [_inv("paid", 0, 500, billing_type="deposit")]
+    ) == "unbilled"
+    assert derive_job_billing_status([_inv("draft", 0, total=0)]) == "unbilled"
+    assert derive_job_billing_status([_inv("draft", 0, total=None)]) == "unbilled"
+    assert derive_job_billing_status([_inv("draft", 450, total=450)]) == "invoiced"
+
+
+def test_billing_status_multi_invoice_paid_only_when_all_settled():
+    both = [_inv("paid", 0, 100), _inv("sent", 50)]
+    assert derive_job_billing_status(both) == "invoiced"
+    assert derive_job_billing_status([_inv("paid", 0, 100), _inv("paid", 0, 50)]) == "paid"
+
+
+def test_display_state_carries_billing_status_independent_of_work_axis():
+    paid = [_inv("paid", 0, 100)]
+    st = derive_job_display_state(lifecycle_stage="cancelled", invoices=paid)
+    assert st.stage == "cancelled" and st.billing_status == "paid"
+    st = derive_job_display_state(lifecycle_stage="completed", invoices=paid)
+    assert st.stage == "paid" and st.as_dict()["billing_status"] == "paid"
+    st = derive_job_display_state(lifecycle_stage="completed")
+    assert st.stage == "ready_to_bill" and st.billing_status == "unbilled"

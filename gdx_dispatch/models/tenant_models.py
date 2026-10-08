@@ -371,11 +371,13 @@ class Job(Base):
     description: Mapped[str] = mapped_column(Text, nullable=True)
     lifecycle_stage: Mapped[str] = mapped_column(Enum("lead", "service_call", "estimate", "scheduled", "in_progress", "completed", "cancelled", name="job_lifecycle_stage"), nullable=False, default="service_call", server_default="service_call")
     dispatch_status: Mapped[str] = mapped_column(Enum("unassigned", "assigned", "en_route", "on_site", "done", name="job_dispatch_status"), nullable=False, default="unassigned")
-    # DEPRECATED (PR2-billing-capture 2026-07-07): dead cache — only ever
-    # written "unbilled"; no code advances it. Every reader now derives from
+    # DEPRECATED (PR2-billing-capture 2026-07-07): stale cache — nothing has
+    # advanced it since July 2026 (older rows say "invoiced", newer ones
+    # "unbilled", none "paid"). Every reader now derives from
     # invoices via core/billing_predicates.job_billed_exists() (locked
-    # derive-don't-cache model, core/job_display_state.py). Still serialized
-    # for API back-compat; column drop is a later cleanup migration.
+    # derive-don't-cache model, core/job_display_state.py). The API's
+    # `billing_status` key is derived from invoices, never read from here
+    # (derive_job_billing_status); column drop is a later cleanup migration.
     billing_status: Mapped[str] = mapped_column(Enum("unbilled", "invoiced", "partial_paid", "paid", "overdue", "void", name="job_billing_status"), nullable=False, default="unbilled", server_default="unbilled")
     # 2026-08-04 (055_job_not_billable): the office's dismiss verb for the
     # Ready-for-Billing queue — "this completed job will never get an invoice"
