@@ -50,16 +50,20 @@
         <Message v-if="showSetPwPrompt" severity="info" :closable="true" class="mb-3" data-testid="set-pw-prompt" @close="showSetPwPrompt = false">
           Want faster sign-in next time? <a href="#" @click.prevent="openSetPassword">Set a password</a>.
         </Message>
-        <Tabs value="estimates" data-testid="portal-tabs">
+        <Tabs v-model:value="activeTab" data-testid="portal-tabs">
           <TabList>
             <Tab value="estimates">Estimates</Tab>
             <Tab value="invoices">Invoices</Tab>
             <Tab value="jobs">Jobs</Tab>
+            <Tab value="quote" data-testid="quote-request-tab-btn">Request a quote</Tab>
             <Tab value="contact">Contact</Tab>
           </TabList>
           <TabPanels>
           <TabPanel value="estimates">
-            <div v-if="!estimates.length" class="empty-msg">No estimates available.</div>
+            <div v-if="!estimates.length" class="empty-msg">
+              No estimates available.
+              <div><Button label="Request a quote for new doors" icon="pi pi-plus" text data-testid="empty-estimates-quote-link" @click="activeTab = 'quote'" /></div>
+            </div>
             <div v-else class="card-grid">
               <Card v-for="est in estimates" :key="est.id" class="portal-card clickable" data-testid="estimate-card" @click="openEstimate(est.id)">
                 <template #title>
@@ -144,6 +148,10 @@
               <Column field="scheduled_at" header="Scheduled"><template #body="{ data }">{{ formatDate(data.scheduled_at) }}</template></Column>
               <Column field="completed_at" header="Completed"><template #body="{ data }">{{ formatDate(data.completed_at) }}</template></Column>
             </DataTable>
+          </TabPanel>
+
+          <TabPanel value="quote">
+            <PortalQuoteRequestTab :fetcher="authedFetch" />
           </TabPanel>
 
           <TabPanel value="contact">
@@ -347,6 +355,7 @@ import TabPanel from "primevue/tabpanel";
 import TabPanels from "primevue/tabpanels";
 import Tabs from "primevue/tabs";
 import Tag from "primevue/tag";
+import PortalQuoteRequestTab from "../components/PortalQuoteRequestTab.vue";
 import { formatDate, formatMoney } from "../composables/useFormatters";
 import { lineCategoryMode, rowsGroupedByCategory } from "../utils/lineCategories";
 
@@ -363,6 +372,7 @@ const estimates = ref([]);
 const invoices = ref([]);
 const jobs = ref([]);
 const actionBusy = reactive({});
+const activeTab = ref("estimates");
 const detail = ref(null);
 const detailVisible = ref(false);
 const detailLoading = ref(false);

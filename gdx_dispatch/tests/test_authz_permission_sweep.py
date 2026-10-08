@@ -43,7 +43,11 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_unpermissioned_bas
 # and the reply schedule / cancel routes; reason recorded in the baseline file.
 # 380 → 381 (2026-10-06): POST /api/jobs/{job_id}/day-close, gated in the
 # handler like closeout; reason recorded in the baseline file.
-BASELINE_SIZE = 381
+# 381 → 383 (2026-10-07): the customer's portal quote request and its photo
+# upload, owned by principal.customer_id; reason recorded in the baseline file.
+# 383 → 385 (2026-10-07): the customer changing or withdrawing that request,
+# under the same ownership check; reason recorded in the baseline file.
+BASELINE_SIZE = 385
 
 
 def _baseline() -> set[str]:

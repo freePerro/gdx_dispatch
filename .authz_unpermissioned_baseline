@@ -65,6 +65,19 @@
 # below: core/job_access.job_write_denial (the jobs write key AND a claim on the
 # job — assignment, visit or crew row — or office tier). The sweep cannot see a
 # gate reached through that helper. Plan: multi-day jobs plan §5.4a.
+#
+# 381 → 383 (2026-10-07, portal quote request): POST /portal/quote-requests and
+# /portal/quote-requests/{request_id}/photos — ADDED, customer-portal routes
+# like their neighbours below. Ownership is in the handler: the request is
+# created for principal.customer_id, and a photo is refused (404) unless the
+# request's customer_id is the caller's (test_portal_quote_requests.py,
+# test_a_customer_sees_only_their_own_requests). Plan:
+# docs/design/portal-quote-request-plan.md.
+#
+# 383 → 385 (2026-10-07, same plan): PATCH /portal/quote-requests/{request_id}
+# and POST /portal/quote-requests/{request_id}/withdraw — the customer changing
+# or withdrawing their own request. Same ownership check (_own_request_or_404,
+# 404 for another customer's id: test_another_customer_can_neither_edit_nor_withdraw).
 
 # ── customer portal ───────────────────────────────────────────────────────
 # These authenticate a CUSTOMER, not a tenant user, so no role or permission
@@ -79,6 +92,7 @@
 # route still needs a per-record OWNERSHIP check, and that is what to verify
 # on each of these, not a permission key.
 DELETE /payments/methods/{method_id}
+PATCH /portal/quote-requests/{request_id}
 POST /payments/ach/setup
 POST /payments/intent
 POST /payments/methods/{method_id}/charge
@@ -90,6 +104,9 @@ POST /portal/estimates/{estimate_id}/decline
 POST /portal/estimates/{estimate_id}/deposit/pay
 POST /portal/message
 POST /portal/password
+POST /portal/quote-requests
+POST /portal/quote-requests/{request_id}/photos
+POST /portal/quote-requests/{request_id}/withdraw
 
 # ── staff surface ─────────────────────────────────────────────────────────
 DELETE /api/appointments/{appt_id}

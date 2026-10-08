@@ -461,10 +461,12 @@ gdx_dispatch/routers/surveys.py                              customers-crm
 gdx_dispatch/routers/winback.py                              customers-crm
 gdx_dispatch/routers/marketing.py                            customers-crm
 gdx_dispatch/routers/portal.py                               customers-crm
+gdx_dispatch/routers/quote_requests.py                       customers-crm
 gdx_dispatch/core/customer_alert_tags.py                     customers-crm
 gdx_dispatch/core/name_normalize.py                          customers-crm
 gdx_dispatch/core/locations.py                               customers-crm
 gdx_dispatch/modules/customer_portal/*                       customers-crm
+gdx_dispatch/modules/quote_requests/*                        customers-crm
 gdx_dispatch/modules/locations/*                             customers-crm
 gdx_dispatch/services/customer_rolling_volume.py             customers-crm
 gdx_dispatch/tasks/customer_volume_refresh.py                customers-crm
@@ -474,6 +476,9 @@ gdx_dispatch/frontend/src/views/CustomerDuplicatesView.vue   customers-crm
 gdx_dispatch/frontend/src/views/LeadsView.vue                customers-crm
 gdx_dispatch/frontend/src/components/LeadIntakeForm.vue      customers-crm
 gdx_dispatch/frontend/src/components/LeadEstimatesPanel.vue  customers-crm
+gdx_dispatch/frontend/src/components/QuoteRequestDoors.vue   customers-crm
+gdx_dispatch/frontend/src/components/PortalQuoteRequestTab.vue customers-crm
+gdx_dispatch/frontend/src/components/quoteRequestOptions.js customers-crm
 gdx_dispatch/frontend/src/views/SegmentsView.vue             customers-crm
 gdx_dispatch/frontend/src/views/TagsView.vue                 customers-crm
 gdx_dispatch/frontend/src/views/LoyaltyView.vue              customers-crm

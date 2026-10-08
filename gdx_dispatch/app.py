@@ -1063,6 +1063,10 @@ def create_app() -> FastAPI:
     # Staff-side portal management (/api/portal) — real endpoints behind the
     # PortalView screen.
     app.include_router(customer_portal_router.staff_router)
+    # Portal quote requests — customers ask for new doors; each opens a Lead.
+    _quote_requests_router = _load_router("gdx_dispatch.routers", "quote_requests")
+    app.include_router(_quote_requests_router.portal_router)
+    app.include_router(_quote_requests_router.router)
     app.include_router(custom_fields_router.router if hasattr(custom_fields_router, "router") else custom_fields_router)
     app.include_router(webhook_monitor.router if hasattr(webhook_monitor, "router") else webhook_monitor)
     app.include_router(pwa_router)

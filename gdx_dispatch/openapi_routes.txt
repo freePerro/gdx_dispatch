@@ -501,6 +501,8 @@ GET /api/qb/oauth/callback
 GET /api/qb/schedule
 GET /api/qb/status
 GET /api/quickbooks/recurring-transactions
+GET /api/quote-requests/by-lead/{lead_id}
+GET /api/quote-requests/{request_id}/photos/{photo_id}
 GET /api/referrals
 GET /api/referrals/stats
 GET /api/reports/cash-risk
@@ -654,6 +656,7 @@ GET /portal/invoices
 GET /portal/jobs
 GET /portal/jobs/{job_id}/photos
 GET /portal/jobs/{job_id}/photos/{photo_id}
+GET /portal/quote-requests
 GET /portal/verify
 GET /public/door-listings.json
 GET /public/door-listings/{photo_id}.jpg
@@ -768,6 +771,7 @@ PATCH /api/warranties/{warranty_id}
 PATCH /api/warranty-claims/{claim_id}
 PATCH /api/webhooks/subscriptions/{sub_id}
 PATCH /api/workflow/flags
+PATCH /portal/quote-requests/{request_id}
 POST /api/accounting/accounts
 POST /api/accounting/opening/apply
 POST /api/accounting/settings/cpa-review
@@ -1242,6 +1246,9 @@ POST /portal/login
 POST /portal/login/password
 POST /portal/message
 POST /portal/password
+POST /portal/quote-requests
+POST /portal/quote-requests/{request_id}/photos
+POST /portal/quote-requests/{request_id}/withdraw
 PUT /api/admin/ai-settings
 PUT /api/admin/customer-tags/{tag_id}
 PUT /api/admin/feature-settings/tech-mobile
