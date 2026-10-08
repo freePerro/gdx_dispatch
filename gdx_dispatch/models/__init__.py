@@ -143,6 +143,8 @@ with suppress(ImportError):
     from gdx_dispatch.modules.vendor_statements.models import VendorStatement, VendorStatementLine  # noqa: F401
 with suppress(ImportError):
     from gdx_dispatch.modules.door_listings.models import DoorListing, DoorListingPhoto  # noqa: F401
+with suppress(ImportError):
+    from gdx_dispatch.modules.quote_requests.models import QuoteRequest, QuoteRequestPhoto  # noqa: F401
 
 # Phase 2: register models from modules/routers/core that use TenantBase
 # but were never imported here (2026-04-12 an earlier session)

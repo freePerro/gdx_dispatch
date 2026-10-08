@@ -434,6 +434,11 @@
             </div>
           </div>
 
+          <!-- The doors, when the lead came from a portal quote request -->
+          <div v-if="editingLead" class="form-field full-width">
+            <QuoteRequestDoors :lead-id="editingLead.id" />
+          </div>
+
           <!-- Every estimate made for this lead, and which one counts as won -->
           <div v-if="editingLead && canSeeLeadEstimates" class="form-field full-width">
             <LeadEstimatesPanel
@@ -609,6 +614,7 @@ import Toolbar from 'primevue/toolbar';
 import EmptyState from '../components/EmptyState.vue';
 import PhoneInput from '../components/PhoneInput.vue';
 import LeadEstimatesPanel from '../components/LeadEstimatesPanel.vue';
+import QuoteRequestDoors from '../components/QuoteRequestDoors.vue';
 import JobStateChip from '../components/JobStateChip.vue';
 import { leadProgressAsJob } from '../utils/leadProgress';
 import DoorOrderTag from '../components/DoorOrderTag.vue';

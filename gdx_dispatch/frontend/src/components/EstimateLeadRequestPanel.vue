@@ -29,6 +29,8 @@
             <p class="field-notes" data-testid="lead-request-notes">{{ lead.notes }}</p>
           </div>
 
+          <QuoteRequestDoors :lead-id="lead.id" />
+
           <div class="meta-grid">
             <div v-if="lead.source" class="meta-item">
               <span class="meta-label">Source</span>
@@ -70,6 +72,7 @@ import { useAuthStore } from '../stores/auth';
 import { useApi } from '../composables/useApi';
 import { formatDate } from '../composables/useFormatters';
 import Card from 'primevue/card';
+import QuoteRequestDoors from './QuoteRequestDoors.vue';
 
 const props = defineProps({
   estimateId: {

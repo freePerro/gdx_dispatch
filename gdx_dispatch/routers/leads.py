@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import audit_or_rollback, ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import has_permission, require_module, require_permission
+from gdx_dispatch.modules.quote_requests.models import QuoteRequest
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.custom_fields import (
     CustomFieldValueUpsert,
@@ -1597,10 +1598,20 @@ def start_estimate(
     if status == "new":
         _audit_customer_created(db, tenant_id=tenant_id, user=user, request=request, customer=customer, lead=lead)
 
+    # A lead the customer opened from the portal names its job; the estimate's
+    # Job Name starts as that name.
+    job_name = db.execute(
+        select(QuoteRequest.job_name).where(
+            QuoteRequest.lead_id == lead.id,
+            QuoteRequest.deleted_at.is_(None),
+            QuoteRequest.withdrawn_at.is_(None),
+        )
+    ).scalars().first()
     estimate = create_draft_estimate_record(
         db,
         tenant_id=tenant_id,
         customer_id=customer.id,
+        label=job_name,
         jobsite_address=lead.address,
         lead_id=lead.id,
     )
