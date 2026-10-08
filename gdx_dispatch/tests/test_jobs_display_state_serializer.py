@@ -64,7 +64,7 @@ def _job(lifecycle_stage: str) -> Job:
 
 def _invoice(
     job_id, status, balance_due, amount_paid, deleted=False,
-    billing_type="standard",
+    billing_type="standard", total=None,
 ) -> Invoice:
     """Build an invoice, and carry `amount_paid` as a real PAYMENT.
 
@@ -85,6 +85,7 @@ def _invoice(
         status=status,
         balance_due=balance_due,
         billing_type=billing_type,
+        total=total,
         deleted_at=datetime.now(timezone.utc) if deleted else None,
         created_at=datetime.now(timezone.utc),
     )
@@ -128,7 +129,7 @@ def test_completed_with_paid_invoice_serializes_as_Paid(db):
     st = _ds(db, job)
     assert st == {
         "stage": "paid", "type": "won", "label": "Paid", "is_finished": True,
-        "deposit_paid": False,
+        "deposit_paid": False, "billing_status": "paid",
     }
 
 
@@ -165,7 +166,7 @@ def test_declined_estimate_serializes_as_Declined(db):
     st = _ds(db, job)
     assert st == {
         "stage": "declined", "type": "lost", "label": "Declined",
-        "is_finished": True, "deposit_paid": False,
+        "is_finished": True, "deposit_paid": False, "billing_status": "unbilled",
     }
 
 
@@ -277,3 +278,34 @@ def test_batched_multi_job_single_call(db):
     assert out[str(j1.id)]["stage"] == "paid"
     assert out[str(j2.id)]["stage"] == "service_call"
     assert out[str(j3.id)]["stage"] == "scheduled"
+
+
+# --- billing_status: derived from invoices, never the stale column -------
+# Every fixture job stores billing_status="unbilled", so each
+# assertion below can only pass if the value came from the invoices.
+
+def test_billing_status_partial_payment_from_payments_table(db):
+    job = _job("completed")
+    db.add(job)
+    db.add(_invoice(job.id, "sent", 300, 200, total=500))
+    assert _ds(db, job)["billing_status"] == "partial_paid"
+
+
+def test_billing_status_zero_dollar_draft_is_unbilled_priced_draft_is_not(db):
+    # Pins Invoice.total flowing through the enrichment query: without it a
+    # draft reads as $0 and every priced draft would say "unbilled".
+    zero, priced = _job("completed"), _job("completed")
+    db.add_all([zero, priced])
+    db.add(_invoice(zero.id, "draft", 0, 0, total=0))
+    db.add(_invoice(priced.id, "draft", 450, 0, total=450))
+    assert _ds(db, zero)["billing_status"] == "unbilled"
+    assert _ds(db, priced)["billing_status"] == "invoiced"
+
+
+def test_billing_status_cancelled_job_keeps_its_money_axis(db):
+    job = _job("cancelled")
+    db.add(job)
+    db.add(_invoice(job.id, "paid", 0, 400, total=400))
+    st = _ds(db, job)
+    assert st["stage"] == "cancelled"
+    assert st["billing_status"] == "paid"

@@ -413,7 +413,9 @@ def _job_to_dict(job: Job, customer: Customer | None = None) -> dict[str, Any]:
         "status": job.status,
         "lifecycle_stage": job.lifecycle_stage,
         "dispatch_status": job.dispatch_status,
-        "billing_status": job.billing_status,
+        # `billing_status` is NOT read from the column — it is a stale cache
+        # that stopped advancing in July 2026. get_job fills it from the invoices
+        # (display_state.billing_status).
         "scheduled_at": job.scheduled_at,
         "completed_at": job.completed_at,
         # 2026-07-29: the third face of the same bug. `notes` (the "Dispatch
@@ -499,6 +501,7 @@ def _display_state_for_jobs(
                     Invoice.status,
                     Invoice.balance_due,
                     Invoice.billing_type,
+                    Invoice.total,
                 ).where(Invoice.job_id.in_(uuid_ids), Invoice.deleted_at.is_(None))
             ).all():
                 if row.job_id is None:
@@ -512,6 +515,7 @@ def _display_state_for_jobs(
                         "balance_due": row.balance_due,
                         "amount_paid": _paid_by_invoice.get(str(row.id), 0),
                         "billing_type": row.billing_type,
+                        "total": row.total,
                     }
                 )
             if _HAS_ESTIMATE_ORM:
@@ -534,12 +538,35 @@ def _display_state_for_jobs(
         if not jid:
             continue
         sjid = str(jid)
+        # Look up by the canonical dashed form the queries above keyed on.
+        # The raw-SQL list path hands in SQLite's 32-hex storage form, which
+        # never matched, so on SQLite every listed job read as invoice-less.
+        # The output stays keyed by the caller's own form.
+        try:
+            key = str(uuid.UUID(sjid))
+        except ValueError:
+            key = sjid
         out[sjid] = derive_job_display_state(
             lifecycle_stage=lc,
-            estimate_status=est_by_job.get(sjid),
-            invoices=inv_by_job.get(sjid),
+            estimate_status=est_by_job.get(key),
+            invoices=inv_by_job.get(key),
         ).as_dict()
     return out
+
+
+def _derived_billing_status(display_state: dict[str, object] | None) -> str | None:
+    """The API's ``billing_status``: derived from invoices, never the column.
+
+    `Job.billing_status` is a stale cache that stopped advancing in July 2026
+    and never says "paid", so serving it told every API reader that paid jobs
+    were unbilled or merely invoiced. The value
+    rides on the display state (one invoice query, shared). If that
+    enrichment degraded to nothing, say "unknown" with None rather than fall
+    back to the column's lie.
+    """
+    if not display_state:
+        return None
+    return display_state.get("billing_status")  # type: ignore[return-value]
 
 
 @router.get("", response_model=None)
@@ -695,7 +722,7 @@ def list_jobs(
         rows = db.execute(
             _text(
                 "SELECT j.id, j.job_number, j.title, j.description, j.status, j.lifecycle_stage, "  # noqa: S608 — WHERE is joined from literal fragments and order_sql is one of two literals; values are bound
-                "j.dispatch_status, j.billing_status, j.scheduled_at, j.completed_at, "
+                "j.dispatch_status, j.scheduled_at, j.completed_at, "
                 "j.priority, j.job_type, j.customer_id, j.assigned_to, j.holding_area_id, "
                 "j.scheduled_duration_hours, j.location_id, j.is_return_visit, "
                 "j.created_at, j.updated_at, "
@@ -779,6 +806,7 @@ def list_jobs(
         # Also overwrite lifecycle_stage so any consumer preferring it gets the normalized form.
         d["lifecycle_stage"] = canon
         d["display_state"] = _ds_map.get(str(d.get("id")))
+        d["billing_status"] = _derived_billing_status(d["display_state"])
         sched_hours = d.get("scheduled_duration_hours")
         d["effective_duration_hours"] = float(sched_hours) if sched_hours is not None else None
         d["customer"] = (
@@ -4316,6 +4344,7 @@ def get_job(job_id: str, request: Request, current_user: Any = Depends(get_curre
         d["display_state"] = _display_state_for_jobs(
             db, [(job.id, job.lifecycle_stage)]
         ).get(str(job.id))
+        d["billing_status"] = _derived_billing_status(d["display_state"])
         # 2026-04-29: detail endpoint must canonicalize status the same way the
         # list endpoint does (see line 222–228). Without this, /jobs/:id returns
         # status="Estimate" while /jobs returns status="Lead" for the same job —

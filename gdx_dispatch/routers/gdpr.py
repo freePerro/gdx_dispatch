@@ -87,13 +87,29 @@ def _fetch_customer(db: Session, customer_id: str, tenant_id: str) -> Customer |
     ).scalar_one_or_none()
 
 
-def _serialize_job(j: Job) -> dict[str, Any]:
+def _serialize_jobs(db: Session, job_rows: list[Job]) -> list[dict[str, Any]]:
+    """Serialize jobs with ``billing_status`` derived from their invoices.
+
+    The stored `Job.billing_status` column is a stale cache that stopped
+    advancing in July 2026 and never says "paid"; exporting it would tell the
+    data subject a paid job was unbilled or merely invoiced. Same derivation as the jobs API.
+    """
+    from gdx_dispatch.routers.jobs import _derived_billing_status, _display_state_for_jobs
+
+    ds_map = _display_state_for_jobs(db, [(j.id, j.lifecycle_stage) for j in job_rows])
+    return [
+        _serialize_job(j, _derived_billing_status(ds_map.get(str(j.id))))
+        for j in job_rows
+    ]
+
+
+def _serialize_job(j: Job, billing_status: str | None) -> dict[str, Any]:
     return {
         "id": str(j.id),
         "title": j.title,
         "lifecycle_stage": j.lifecycle_stage,
         "dispatch_status": j.dispatch_status,
-        "billing_status": j.billing_status,
+        "billing_status": billing_status,
         "scheduled_at": j.scheduled_at.isoformat() if j.scheduled_at else None,
         "completed_at": j.completed_at.isoformat() if j.completed_at else None,
         "created_at": j.created_at.isoformat() if j.created_at else None,
@@ -148,7 +164,7 @@ def export_my_data(
                 (Job.assigned_to == uid) | (Job.assigned_to == str(user.get("email") or "")),
             )
         ).scalars().all()
-        jobs = [_serialize_job(j) for j in job_rows]
+        jobs = _serialize_jobs(db, list(job_rows))
     except SQLAlchemyError:
         log.exception("gdpr_export_my_data_jobs_lookup_failed")
 
@@ -228,7 +244,7 @@ def export_customer(
                 Job.customer_id == _to_uuid(cid),
             )
         ).scalars().all()
-        jobs = [_serialize_job(j) for j in job_rows]
+        jobs = _serialize_jobs(db, list(job_rows))
     except SQLAlchemyError:
         log.exception("gdpr_export_customer_jobs_failed")
 

@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 
 logger = logging.getLogger(__name__)
@@ -74,6 +74,14 @@ _LIFECYCLE_LABEL = {
 }
 
 
+_MONEY_AXIS_LABEL = {
+    "paid": "Paid",
+    "overdue": "Overdue",
+    "partially_paid": "Partially Paid",
+    "invoiced": "Invoiced",
+}
+
+
 @dataclass(frozen=True)
 class DisplayState:
     """One canonical state for the whole Estimate->Job->Invoice flow."""
@@ -87,6 +95,12 @@ class DisplayState:
     # collected deposit surfaces as this flag/badge instead of flipping the
     # job to a false "Paid".
     deposit_paid: bool = False
+    # The job's billing axis in the `Job.billing_status` vocabulary
+    # ("unbilled" | "invoiced" | "partial_paid" | "paid" | "overdue"),
+    # derived from the same invoices. The stored column is a stale cache
+    # (stopped advancing in July 2026; it never says "paid"); the API serves
+    # this value under that key instead (see derive_job_billing_status).
+    billing_status: str = "unbilled"
 
     @property
     def is_finished(self) -> bool:
@@ -100,6 +114,7 @@ class DisplayState:
             "label": self.label,
             "is_finished": self.is_finished,
             "deposit_paid": self.deposit_paid,
+            "billing_status": self.billing_status,
         }
 
 
@@ -115,6 +130,73 @@ def _num(v: object) -> Decimal:
         return Decimal("0")
 
 
+# Money-axis stage key -> `Job.billing_status` enum value.
+_BILLING_STATUS_FOR_STAGE = {
+    "paid": "paid",
+    "overdue": "overdue",
+    "partially_paid": "partial_paid",
+    "invoiced": "invoiced",
+}
+
+
+def _money_axis_stage(live_invoices: list[dict]) -> str:
+    """Stage key for a non-empty list of live, billing-real invoices.
+
+    Paid when every one is settled; otherwise overdue, partially paid, or
+    invoiced, in that precedence. Shared by the display state and the
+    billing status, so given the same invoices they reach the same stage.
+    They do not always get the same invoices: see derive_job_billing_status.
+    """
+    statuses = [str(i.get("status", "")).strip().lower() for i in live_invoices]
+    if all(
+        s == "paid" or _num(i.get("balance_due")) <= 0
+        for s, i in zip(statuses, live_invoices, strict=True)
+    ):
+        return "paid"
+    if any(s == "overdue" for s in statuses):
+        return "overdue"
+    if any(
+        _num(i.get("amount_paid")) > 0 and _num(i.get("balance_due")) > 0
+        for i in live_invoices
+    ):
+        return "partially_paid"
+    return "invoiced"
+
+
+def derive_job_billing_status(invoices: Iterable[dict] | None = None) -> str:
+    """The job's billing status, derived from its invoices.
+
+    "unbilled" unless the job has a billing-real invoice by the ONE canonical
+    predicate (`billing_predicates.invoice_bills_job`: not void, not a
+    deposit, not a $0 draft); otherwise the money-axis stage of those
+    invoices. Unlike the display state this ignores the work axis, so a
+    cancelled job that was paid still reads "paid" here.
+
+    Known divergence: the display state still counts a $0 draft, and with
+    a zero balance it reads as settled, so a job whose only invoice is a $0
+    draft shows stage "paid" next to billing_status "unbilled". The billed
+    answer follows the canonical predicate; the display state is unchanged
+    here (see the "Known edge" note in billing_predicates.py).
+
+    Each invoice dict carries ``status``, ``balance_due``, ``amount_paid``,
+    ``billing_type`` and ``total``; callers pass live (not soft-deleted)
+    invoices only.
+    """
+    # Local import: billing_predicates imports the ORM models, and this
+    # module is otherwise import-light.
+    from gdx_dispatch.core.billing_predicates import invoice_bills_job
+
+    billed = [
+        i for i in (invoices or [])
+        if i and invoice_bills_job(
+            i.get("status"), i.get("total"), None, i.get("billing_type")
+        )
+    ]
+    if not billed:
+        return "unbilled"
+    return _BILLING_STATUS_FOR_STAGE[_money_axis_stage(billed)]
+
+
 def derive_job_display_state(
     *,
     lifecycle_stage: str | None,
@@ -128,7 +210,7 @@ def derive_job_display_state(
         estimate_status: ``Estimate.status`` of the originating estimate,
             if the job came from one (``None`` if no estimate).
         invoices: iterable of ``{"status", "balance_due", "amount_paid",
-            "billing_type"}`` dicts for invoices linked to the job
+            "billing_type", "total"}`` dicts for invoices linked to the job
             (``None``/empty if none). ``billing_type`` may be absent —
             an invoice without it is treated as billing-real, so legacy
             callers keep their exact pre-deposit-aware behavior.
@@ -139,7 +221,28 @@ def derive_job_display_state(
     they never drive the money-axis stage — a paid deposit sets the
     ``deposit_paid`` flag instead, so a deposit-only job shows its true
     work state with a badge rather than a false terminal "Paid".
+
+    The returned state also carries ``billing_status``
+    (`derive_job_billing_status` over the same invoices). ``total`` only
+    matters there: a draft without it reads as a $0 draft, which does not
+    bill the job.
     """
+    invoices = [i for i in (invoices or []) if i]
+    state = _derive_flow_state(
+        lifecycle_stage=lifecycle_stage,
+        estimate_status=estimate_status,
+        invoices=invoices,
+    )
+    return replace(state, billing_status=derive_job_billing_status(invoices))
+
+
+def _derive_flow_state(
+    *,
+    lifecycle_stage: str | None,
+    estimate_status: str | None,
+    invoices: list[dict],
+) -> DisplayState:
+    """The display state proper; the public wrapper adds billing_status."""
     lc = (lifecycle_stage or "").strip().lower()
     est = (estimate_status or "").strip().lower()
     inv_list = [i for i in (invoices or []) if i]
@@ -189,28 +292,16 @@ def derive_job_display_state(
         return DisplayState("written_off", TYPE_LOST, "Written Off", deposit_paid)
 
     if live_invoices:
-        statuses = [str(i.get("status", "")).strip().lower() for i in live_invoices]
-
         # --- 4. Paid (won) — every live billing-real invoice settled. ---
-        all_paid = all(
-            s == "paid" or _num(i.get("balance_due")) <= 0
-            for s, i in zip(statuses, live_invoices, strict=True)
+        # --- 5. Money-axis open states (work done, money pending): ---
+        # overdue, then partially paid, else billed and awaiting payment.
+        stage = _money_axis_stage(live_invoices)
+        return DisplayState(
+            stage,
+            TYPE_WON if stage == "paid" else TYPE_OPEN,
+            _MONEY_AXIS_LABEL[stage],
+            deposit_paid,
         )
-        if all_paid:
-            return DisplayState("paid", TYPE_WON, "Paid", deposit_paid)
-
-        # --- 5. Money-axis open states (work done, money pending). ---
-        if any(s == "overdue" for s in statuses):
-            return DisplayState("overdue", TYPE_OPEN, "Overdue", deposit_paid)
-        if any(
-            _num(i.get("amount_paid")) > 0 and _num(i.get("balance_due")) > 0
-            for i in live_invoices
-        ):
-            return DisplayState(
-                "partially_paid", TYPE_OPEN, "Partially Paid", deposit_paid
-            )
-        # Anything else with a live invoice = billed, awaiting payment.
-        return DisplayState("invoiced", TYPE_OPEN, "Invoiced", deposit_paid)
 
     # No live billing-real invoice (a deposit alone doesn't bill the job).
     # Work physically done but not yet billed.

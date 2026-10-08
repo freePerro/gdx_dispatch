@@ -360,3 +360,41 @@ def test_tenant_scope(tenant_db_session):
             db=tenant_db_session,
         )
     assert exc.value.status_code == 404
+
+
+def test_export_customer_job_billing_status_is_derived_from_invoices(tenant_db_session):
+    """The stored Job.billing_status is a stale cache (never "paid"); the
+    export must not tell the data subject a paid job was unbilled."""
+    from gdx_dispatch.models.tenant_models import Invoice, Payment
+
+    cid = _seed_customer(tenant_db_session, name="Paula", email="paula@example.com")
+    job = Job(
+        title="Spring replacement",
+        lifecycle_stage="completed",
+        billing_status="unbilled",
+        customer_id=uuid.UUID(cid),
+        company_id=TENANT_A,
+    )
+    tenant_db_session.add(job)
+    tenant_db_session.flush()
+    inv = Invoice(
+        job_id=job.id,
+        customer_id=uuid.UUID(cid),
+        company_id=TENANT_A,
+        invoice_number="INV-GDPR-1",
+        public_token="tok-gdpr-1",
+        status="paid",
+        total=400,
+        balance_due=0,
+    )
+    inv.payments.append(Payment(amount=400, company_id=TENANT_A))
+    tenant_db_session.add(inv)
+    tenant_db_session.commit()
+
+    out = export_customer(
+        customer_id=uuid.UUID(cid),
+        request=_mock_request(),
+        user=_mock_user(role="admin"),
+        db=tenant_db_session,
+    )
+    assert [j["billing_status"] for j in out["data"]["jobs"]] == ["paid"]
