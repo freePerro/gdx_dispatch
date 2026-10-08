@@ -307,6 +307,221 @@ def test_admin_list_counts_paid_invoices_without_a_job(tenant_db_session):
     assert by_id[str(seeded["customer_b_id"])]["payments_made"] == 0
 
 
+def _seed_invoice_with_lines(db, customer_id, *, hide_line_prices=False):
+    from decimal import Decimal
+
+    from gdx_dispatch.models.tenant_models import InvoiceAdjustment, InvoiceLine, Payment
+
+    inv = Invoice(
+        customer_id=customer_id,
+        invoice_number="INV-DETAIL",
+        subtotal=Decimal("500.00"),
+        tax_amount=Decimal("20.00"),
+        total=Decimal("520.00"),
+        balance_due=Decimal("320.00"),
+        status="sent",
+        public_token="pub-detail",
+        notes="Thanks for your business",
+        hide_line_prices=hide_line_prices,
+        company_id="tenant-test",
+    )
+    db.add(inv)
+    db.flush()
+    db.add_all([
+        # Inserted out of order: the detail sorts by sort_order like the PDF.
+        InvoiceLine(invoice_id=inv.id, description="Labor", quantity=Decimal("2.5"),
+                    unit_price=Decimal("80.00"), line_total=Decimal("200.00"), sort_order=1,
+                    company_id="tenant-test"),
+        InvoiceLine(invoice_id=inv.id, description="Torsion spring", quantity=Decimal("2"),
+                    unit_price=Decimal("150.00"), line_total=Decimal("300.00"), sort_order=0,
+                    company_id="tenant-test"),
+        Payment(invoice_id=inv.id, amount=Decimal("150.00"), method="card", company_id="tenant-test"),
+        # A voided payment is not money received; the PDF leaves it out too.
+        Payment(invoice_id=inv.id, amount=Decimal("999.00"), method="card", company_id="tenant-test",
+                voided_at=datetime.now(UTC)),
+        InvoiceAdjustment(invoice_id=inv.id, kind="credit_memo", amount=Decimal("50.00"), company_id="tenant-test"),
+    ])
+    db.commit()
+    return inv
+
+
+def test_invoice_detail_includes_lines_totals_and_settlement(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    inv = _seed_invoice_with_lines(tenant_db_session, seeded["customer_a_id"])
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    body = portal_router.portal_invoice_detail(invoice_id=inv.id, principal=principal, db=tenant_db_session)
+    assert body["id"] == str(inv.id)
+    assert body["invoice_number"] == "INV-DETAIL"
+    assert body["notes"] == "Thanks for your business"
+    assert body["hide_line_prices"] is False
+    assert [(ln["description"], ln["quantity"], ln["unit_price"], ln["line_total"]) for ln in body["lines"]] == [
+        ("Torsion spring", 2.0, 150.0, 300.0),
+        ("Labor", 2.5, 80.0, 200.0),
+    ]
+    assert body["totals"] == {
+        "subtotal": 500.0,
+        "tax": 20.0,
+        "total": 520.0,
+        "paid_to_date": 150.0,
+        "credits_applied": 50.0,
+        "balance_due": 320.0,
+    }
+    # The detail and the list agree on the card fields.
+    listed = {r["id"]: r for r in portal_router.portal_invoices(principal=principal, db=tenant_db_session)}
+    for key in ("status", "payment_status", "total", "balance_due", "pay_url"):
+        assert listed[str(inv.id)][key] == body[key]
+
+
+def test_invoice_detail_strips_prices_when_total_only(tenant_db_session):
+    # Same "total-only" rule as the invoice PDF, and since this is JSON the
+    # hidden values must be ABSENT from the payload, not just unrendered.
+    seeded = _seed_customer_data(tenant_db_session)
+    inv = _seed_invoice_with_lines(tenant_db_session, seeded["customer_a_id"], hide_line_prices=True)
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    body = portal_router.portal_invoice_detail(invoice_id=inv.id, principal=principal, db=tenant_db_session)
+    assert body["hide_line_prices"] is True
+    assert [ln["description"] for ln in body["lines"]] == ["Torsion spring", "Labor"]
+    for line in body["lines"]:
+        assert "unit_price" not in line
+        assert "line_total" not in line
+    assert "subtotal" not in body["totals"]
+    assert "tax" not in body["totals"]
+    assert body["totals"]["total"] == 520.0
+    assert body["totals"]["balance_due"] == 320.0
+
+
+def test_invoice_detail_404s_what_the_list_hides(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    db = tenant_db_session
+    a = seeded["customer_a_id"]
+    draft = _add_invoice(db, a, "INV-DRAFT", status="draft")
+    void = _add_invoice(db, a, "INV-VOID", status="void")
+    deleted = _add_invoice(db, a, "INV-DELETED", deleted=True)
+    principal = _principal(seeded["user_a_id"], a)
+
+    for hidden in (draft, void, deleted, seeded["inv_b_id"], uuid4()):
+        with pytest.raises(Exception) as exc:
+            portal_router.portal_invoice_detail(invoice_id=hidden, principal=principal, db=db)
+        assert getattr(exc.value, "status_code", None) == 404
+
+
+def test_invoice_detail_pay_url_only_when_owed_and_stripe_configured(tenant_db_session, monkeypatch):
+    seeded = _seed_customer_data(tenant_db_session)
+    db = tenant_db_session
+    paid = _add_invoice(db, seeded["customer_a_id"], "INV-PAID", status="paid")
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://example.test")
+    body = portal_router.portal_invoice_detail(invoice_id=seeded["inv_a_id"], principal=principal, db=db)
+    assert body["pay_url"] is None
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+    body = portal_router.portal_invoice_detail(invoice_id=seeded["inv_a_id"], principal=principal, db=db)
+    assert body["pay_url"] == "https://example.test/pay/pub-a"
+    body = portal_router.portal_invoice_detail(invoice_id=paid, principal=principal, db=db)
+    assert body["pay_url"] is None
+
+
+def test_invoice_detail_line_category_follows_the_invoice_template(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    inv = _seed_invoice_with_lines(tenant_db_session, seeded["customer_a_id"])
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+    inv.lines[0].category = "Parts"
+    tenant_db_session.commit()
+
+    body = portal_router.portal_invoice_detail(invoice_id=inv.id, principal=principal, db=tenant_db_session)
+    assert body["line_category"] == "off"
+    assert all("category" not in line for line in body["lines"])
+
+    # The ESTIMATE template does not drive the invoice.
+    _save_estimate_pdf_template(tenant_db_session, show_category=True, category_display="grouped")
+    body = portal_router.portal_invoice_detail(invoice_id=inv.id, principal=principal, db=tenant_db_session)
+    assert body["line_category"] == "off"
+
+    _save_estimate_pdf_template(tenant_db_session, show_category=True, template_type="invoice")
+    body = portal_router.portal_invoice_detail(invoice_id=inv.id, principal=principal, db=tenant_db_session)
+    assert body["line_category"] == "column"
+    by_desc = {line["description"]: line["category"] for line in body["lines"]}
+    assert by_desc[inv.lines[0].description] == "Parts"
+
+
+def _pdf_text(response) -> str:
+    import io
+
+    from pypdf import PdfReader
+
+    assert response.media_type == "application/pdf"
+    assert response.body.startswith(b"%PDF")
+    text = "".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(response.body)).pages)
+    # pypdf splits kerned pairs ("T orsion"), so compare with whitespace gone.
+    return "".join(text.split())
+
+
+def test_invoice_pdf_renders_the_customers_own_invoice(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    inv = _seed_invoice_with_lines(tenant_db_session, seeded["customer_a_id"])
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    resp = portal_router.portal_invoice_pdf(invoice_id=inv.id, principal=principal, db=tenant_db_session)
+    text = _pdf_text(resp)
+    assert "INV-DETAIL" in text
+    assert "Torsionspring" in text
+    assert "80.00" in text  # a per-line price, which total-only would strip
+    assert resp.headers["content-disposition"] == 'inline; filename="invoice-INV-DETAIL.pdf"'
+    assert resp.headers["cache-control"] == "private, no-store"
+
+
+def test_invoice_pdf_total_only_drops_line_prices(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    inv = _seed_invoice_with_lines(tenant_db_session, seeded["customer_a_id"], hide_line_prices=True)
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    text = _pdf_text(portal_router.portal_invoice_pdf(invoice_id=inv.id, principal=principal, db=tenant_db_session))
+    assert "Torsionspring" in text
+    assert "80.00" not in text and "200.00" not in text  # Labor's unit price and line total
+
+
+def test_invoice_pdf_404s_what_the_list_hides(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    db = tenant_db_session
+    a = seeded["customer_a_id"]
+    draft = _add_invoice(db, a, "INV-DRAFT", status="draft")
+    void = _add_invoice(db, a, "INV-VOID", status="void")
+    deleted = _add_invoice(db, a, "INV-DELETED", deleted=True)
+    principal = _principal(seeded["user_a_id"], a)
+
+    for hidden in (draft, void, deleted, seeded["inv_b_id"], uuid4()):
+        with pytest.raises(Exception) as exc:
+            portal_router.portal_invoice_pdf(invoice_id=hidden, principal=principal, db=db)
+        assert getattr(exc.value, "status_code", None) == 404
+
+
+def test_estimate_pdf_renders_and_is_scoped_like_the_detail(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    db = tenant_db_session
+    a, b = seeded["customer_a_id"], seeded["customer_b_id"]
+    est = _seed_estimate_with_lines(db, a)
+    principal = _principal(seeded["user_a_id"], a)
+
+    resp = portal_router.portal_estimate_pdf(
+        estimate_id=est.id, request=_mock_request("tenant-test"), principal=principal, db=db
+    )
+    text = _pdf_text(resp)
+    assert est.estimate_number in text
+    assert "16x7insulateddoor" in text
+    assert resp.headers["content-disposition"] == f'inline; filename="estimate-{est.estimate_number}.pdf"'
+
+    for hidden in (_seed_estimate(db, a, status="draft").id, _seed_estimate(db, b).id, uuid4()):
+        with pytest.raises(Exception) as exc:
+            portal_router.portal_estimate_pdf(
+                estimate_id=hidden, request=_mock_request("tenant-test"), principal=principal, db=db
+            )
+        assert getattr(exc.value, "status_code", None) == 404
+
+
 def test_the_portal_has_no_card_mint_of_its_own():
     """`POST /portal/invoices/{id}/pay` was deleted 2026-09-16. The portal's
     Pay buttons open the public pay page (`pay_url`), which is the one mint
@@ -717,18 +932,18 @@ def test_estimate_detail_strips_line_prices_when_hidden(tenant_db_session):
 
 
 
-def _save_estimate_pdf_template(db, *, show_category, category_display="column"):
+def _save_estimate_pdf_template(db, *, show_category, category_display="column", template_type="estimate"):
     import json
 
     from gdx_dispatch.core import pdf_generator
     from gdx_dispatch.models.tenant_models import PdfTemplate
 
-    blocks = pdf_generator.default_blocks("estimate")
+    blocks = pdf_generator.default_blocks(template_type)
     for b in blocks:
         if b["type"] == "line_items":
             b["settings"] = {**b["settings"], "show_category": show_category, "category_display": category_display}
     db.add(PdfTemplate(
-        id=str(uuid4()), company_id="tenant-test", template_type="estimate", blocks=json.dumps(blocks),
+        id=str(uuid4()), company_id="tenant-test", template_type=template_type, blocks=json.dumps(blocks),
         created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
     ))
     db.commit()

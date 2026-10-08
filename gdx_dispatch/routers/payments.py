@@ -24,7 +24,7 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 
 # One currency constant for every money path on this router (M4).
-from gdx_dispatch.core.payments import CURRENCY
+from gdx_dispatch.core.payments import CURRENCY, payer_facing_stripe_detail
 from gdx_dispatch.core.stripe_payments import (
     charge_saved_method,
     create_ach_verification,
@@ -219,7 +219,7 @@ def payment_intent(
         )
     except stripe.error.StripeError as exc:
         logger.error("Stripe error creating PaymentIntent for customer %s: %s", stripe_cid, exc)
-        raise HTTPException(status_code=402, detail=str(exc.user_message or exc)) from exc
+        raise HTTPException(status_code=402, detail=payer_facing_stripe_detail(exc)) from exc
     # The audit write used to read `locals().get('db')` on a handler that took
     # no `db` parameter, so it was ALWAYS None and this endpoint has never
     # written a single row — a money path with a silent no-op where its trail
@@ -270,7 +270,7 @@ def setup_intent(
         intent = create_setup_intent(customer_id=stripe_cid)
     except stripe.error.StripeError as exc:
         logger.error("Stripe error creating SetupIntent for customer %s: %s", stripe_cid, exc)
-        raise HTTPException(status_code=402, detail=str(exc.user_message or exc)) from exc
+        raise HTTPException(status_code=402, detail=payer_facing_stripe_detail(exc)) from exc
     # Was `locals().get('db')` on a handler that took no `db` — always None,
     # so this never wrote a row; `entity_id=""` + `details={}` would have said
     # nothing had it fired. Threaded through, and given a subject.
@@ -320,7 +320,7 @@ def get_payment_methods(
             )
     except stripe.error.StripeError as exc:
         logger.error("Stripe error listing cards for customer %s: %s", stripe_cid, exc)
-        raise HTTPException(status_code=402, detail=str(exc.user_message or exc)) from exc
+        raise HTTPException(status_code=402, detail=payer_facing_stripe_detail(exc)) from exc
 
     try:
         bank_accounts = list_payment_methods(customer_id=stripe_cid, pm_type="us_bank_account")
@@ -415,7 +415,7 @@ def charge_method(
             stripe_cid,
             exc,
         )
-        raise HTTPException(status_code=402, detail=str(exc.user_message or exc)) from exc
+        raise HTTPException(status_code=402, detail=payer_facing_stripe_detail(exc)) from exc
 
     # GL S6 (bug #1, spec §5.3 Stripe consolidation): the portal charge was
     # the last money path moving processor funds with NO Payment row. Route
@@ -513,7 +513,7 @@ def ach_setup(
         )
     except stripe.error.StripeError as exc:
         logger.error("Stripe error setting up ACH for customer %s: %s", stripe_cid, exc)
-        raise HTTPException(status_code=402, detail=str(exc.user_message or exc)) from exc
+        raise HTTPException(status_code=402, detail=payer_facing_stripe_detail(exc)) from exc
     # Was `locals().get('db')` on a handler that took no `db` — always None,
     # so this never wrote a row; `entity_id=""` + `details={}` would have said
     # nothing had it fired. Threaded through, and given a subject.
@@ -560,7 +560,7 @@ def remove_payment_method(
             stripe_cid,
             exc,
         )
-        raise HTTPException(status_code=402, detail=str(exc.user_message or exc)) from exc
+        raise HTTPException(status_code=402, detail=payer_facing_stripe_detail(exc)) from exc
     logger.info("Detached PaymentMethod %s from customer %s", method_id, stripe_cid)
     # Was `locals().get('db')` on a handler that took no `db` — always None,
     # so this never wrote a row; `entity_id=""` + `details={}` would have said

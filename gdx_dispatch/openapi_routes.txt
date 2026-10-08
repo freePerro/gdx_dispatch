@@ -650,7 +650,10 @@ GET /portal/door-listings
 GET /portal/estimates
 GET /portal/estimates/{estimate_id}
 GET /portal/estimates/{estimate_id}/attachments/{document_id}
+GET /portal/estimates/{estimate_id}/pdf
 GET /portal/invoices
+GET /portal/invoices/{invoice_id}
+GET /portal/invoices/{invoice_id}/pdf
 GET /portal/jobs
 GET /portal/jobs/{job_id}/photos
 GET /portal/jobs/{job_id}/photos/{photo_id}

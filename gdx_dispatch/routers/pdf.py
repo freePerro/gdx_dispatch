@@ -587,16 +587,9 @@ def estimate_pdf(
     )
 
 
-@router.get("/api/invoices/{invoice_id}/pdf")
-def invoice_pdf(invoice_id: UUID, db: Session = Depends(get_db)) -> StreamingResponse:
-    invoice = db.execute(
-        select(Invoice)
-        .options(selectinload(Invoice.lines), selectinload(Invoice.payments))
-        .where(Invoice.id == invoice_id, Invoice.deleted_at.is_(None))
-    ).scalar_one_or_none()
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-
+def invoice_pdf_bytes(invoice: Invoice, db: Session) -> bytes:
+    """Render the invoice PDF — the one document the office downloads and the
+    customer portal serves, so the two can never disagree."""
     # job_id is optional (QB-imported invoices have customer_id but no job).
     job = None
     if invoice.job_id is not None:
@@ -607,12 +600,24 @@ def invoice_pdf(invoice_id: UUID, db: Session = Depends(get_db)) -> StreamingRes
         customer = db.execute(
             select(Customer).where(Customer.id == customer_lookup_id, Customer.deleted_at.is_(None))
         ).scalar_one_or_none()
-
-    pdf_bytes = generate_invoice_pdf(
+    return generate_invoice_pdf(
         invoice_data=_invoice_payload(invoice, customer, db),
         tenant_branding=_branding_payload(db),
         template_config=_template_config(db, "invoice"),
     )
+
+
+@router.get("/api/invoices/{invoice_id}/pdf")
+def invoice_pdf(invoice_id: UUID, db: Session = Depends(get_db)) -> StreamingResponse:
+    invoice = db.execute(
+        select(Invoice)
+        .options(selectinload(Invoice.lines), selectinload(Invoice.payments))
+        .where(Invoice.id == invoice_id, Invoice.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    pdf_bytes = invoice_pdf_bytes(invoice, db)
     filename = f"invoice-{invoice.invoice_number}.pdf"
     return StreamingResponse(
         _byte_stream(pdf_bytes),

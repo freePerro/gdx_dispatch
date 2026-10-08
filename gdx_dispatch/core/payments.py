@@ -364,6 +364,44 @@ DEBIT_REFUSED_DETAIL = (
 # is the only way to keep the rule; reloading gives the two-step flow.
 STALE_CARD_FLOW_DETAIL = "This payment page is out of date. Please refresh the page and try again."
 
+# What a payer sees when Stripe refuses for a reason that is ours, not theirs.
+PAYMENT_UNAVAILABLE_DETAIL = (
+    "We couldn't process this payment right now. Please try again in a few "
+    "minutes, or contact us to pay another way."
+)
+# A 3D Secure check the bank failed or the payer cancelled. Stripe types it
+# invalid_request_error, but the fix is the payer's: "Provide a new payment
+# method" (https://docs.stripe.com/error-codes, read 2026-10-07). The pay
+# page carries the same text for the Stripe.js side.
+PAYMENT_AUTH_FAILED_DETAIL = (
+    "Your bank couldn't verify this card. Please use a different card or "
+    "payment method."
+)
+_AUTH_FAILURE_CODES = frozenset({
+    "payment_intent_authentication_failure",
+    "setup_intent_authentication_failure",
+})
+
+
+def payer_facing_stripe_detail(exc: stripe.StripeError) -> str:
+    """The text a payer may see for a Stripe failure.
+
+    Only a ``CardError`` is about the payer's own card ("Your card was
+    declined."); Stripe's error guide answers every other type by fixing the
+    integration — a bad key, a bad request, an outage. Those messages name the
+    key prefix and our request shape, so they go to the log and the payer gets
+    the generic line. ``user_message`` is no filter: in stripe-python it is
+    the raw message for every type (11.6.0: ``return self._message``). The
+    one non-card type the payer can fix is a failed 3D Secure check, matched
+    by its code.
+    https://docs.stripe.com/error-handling#error-types (read 2026-10-07)
+    """
+    if isinstance(exc, stripe.CardError) and exc.user_message:
+        return str(exc.user_message)
+    if getattr(exc, "code", None) in _AUTH_FAILURE_CODES:
+        return PAYMENT_AUTH_FAILED_DETAIL
+    return PAYMENT_UNAVAILABLE_DETAIL
+
 
 def is_refused_debit(card: Any) -> bool:
     """A US-issued debit card. Everything else is taken: credit, prepaid,
@@ -1782,7 +1820,7 @@ def create_intent(
         )
     except stripe.StripeError as exc:
         logger.error("Stripe create_intent error (method=%s): %s", method, exc)
-        raise HTTPException(status_code=402, detail=str(exc)) from None
+        raise HTTPException(status_code=402, detail=payer_facing_stripe_detail(exc)) from None
 
     surcharge_cents = 0
     surcharge_status = "not_applicable"
@@ -1815,7 +1853,7 @@ def create_intent(
                 )
             except stripe.StripeError as exc:
                 logger.error("Stripe surcharge sizing error intent=%s: %s", pi.id, exc)
-                raise HTTPException(status_code=402, detail=str(exc)) from None
+                raise HTTPException(status_code=402, detail=payer_facing_stripe_detail(exc)) from None
         elif already:
             surcharge_cents = already
             surcharge_status = "applied"
@@ -1889,7 +1927,7 @@ def confirm_payment(
         )
     except stripe.StripeError as exc:
         logger.error("Stripe retrieve error: %s", exc)
-        raise HTTPException(status_code=402, detail=str(exc)) from None
+        raise HTTPException(status_code=402, detail=payer_facing_stripe_detail(exc)) from None
 
     intent_invoice_id = str((getattr(pi, "metadata", None) or {}).get("invoice_id") or "")
     if intent_invoice_id != str(invoice.id):

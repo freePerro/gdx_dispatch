@@ -426,3 +426,19 @@ def test_charge_also_drops_client_metadata_and_fixes_the_currency(client, db_ses
     assert resp.status_code == 200, resp.text
     assert ch.call_args[1]["currency"] == "usd"
     assert ch.call_args[1]["metadata"] == {"invoice_id": str(mine.id)}
+
+
+def test_portal_stripe_failures_never_show_the_customer_our_setup(client):
+    """``exc.user_message`` was no filter: stripe-python returns the raw
+    message for every error type, so a bad key reached the customer as
+    "Invalid API Key provided: sk_…"."""
+    import stripe
+
+    from gdx_dispatch.core.payments import PAYMENT_UNAVAILABLE_DETAIL
+
+    bad_key = stripe.error.AuthenticationError("Invalid API Key provided: sk_test_abc123")
+    with patch("stripe.PaymentMethod.detach", side_effect=bad_key):
+        resp = client.delete("/payments/methods/pm_x")
+    assert resp.status_code == 402
+    assert resp.json()["detail"] == PAYMENT_UNAVAILABLE_DETAIL
+    assert "sk_test" not in resp.text
