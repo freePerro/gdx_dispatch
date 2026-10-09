@@ -1,9 +1,9 @@
 # Contractor resale quotes — a branded PDF and a private markup, in the portal
 
 Status: PARTIALLY BUILT — PR A (backend: migration 113, models, service, portal
-routes, the PDF) is built on branch `feat/reseller-quotes-backend`, not yet
-merged. PR B (the portal tabs: My Branding, My Quotes, the "Resell this"
-dialog) is not built.
+routes, the PDF) is open as #937, not yet merged. PR B (the portal tabs: My
+Branding, My Quotes, the "Resell this" dialog) is not built. The GDPR and tax
+questions below are open.
 Date: 2026-10-08
 
 ## The ask
