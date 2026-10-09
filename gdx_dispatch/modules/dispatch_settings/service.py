@@ -5,9 +5,9 @@ import logging
 from dataclasses import dataclass
 
 from fastapi import HTTPException
-from sqlalchemy import text
 
 from gdx_dispatch.core.database import SessionLocal, tenant_context
+from gdx_dispatch.core.settings_row import settings_sql, tenant_id_value
 
 log = logging.getLogger(__name__)
 
@@ -24,13 +24,13 @@ def get_settings(tenant_id: str) -> DispatchSettings:
     try:
         with tenant_context(), SessionLocal() as cdb:
             row = cdb.execute(
-                text(
+                settings_sql(
                     "SELECT dispatch_warn_save_no_tech, "
                     "       dispatch_block_save_no_tech, "
                     "       dispatch_show_unassigned_lane "
                     "FROM tenant_settings WHERE tenant_id = :tid"
                 ),
-                {"tid": tenant_id},
+                {"tid": tenant_id_value(tenant_id)},
             ).first()
             if row is None:
                 return DispatchSettings()

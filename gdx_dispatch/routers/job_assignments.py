@@ -22,7 +22,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
@@ -145,9 +145,17 @@ def _recompute_primary(db: Session, job_id: str) -> str | None:
             break
     if primary is None and rows:
         primary = rows[0].tech_id
+    try:
+        job_uuid = UUID(str(job_id))
+    except ValueError:
+        return primary
+    # Through the ORM so `Job.id` binds in each dialect's storage form: a raw
+    # `id = :j` with the dashed string never matches SQLite's 32 dashless hex,
+    # and this write was silently lost there (GDXA-382).
     db.execute(
-        text("UPDATE jobs SET assigned_to = :p WHERE id = :j AND deleted_at IS NULL"),
-        {"p": primary, "j": job_id},
+        update(Job)
+        .where(Job.id == job_uuid, Job.deleted_at.is_(None))
+        .values(assigned_to=primary)
     )
     return primary
 

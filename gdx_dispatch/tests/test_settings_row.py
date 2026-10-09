@@ -288,17 +288,6 @@ def test_session_policy_patch_round_trips_on_an_orm_built_sqlite_schema():
         engine.dispose()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "GDXA-292 deferred (maintainer ruled the fix narrow, two files): "
-        "routers/jobs.py:1417-1419 _load_workflow_flags reads with a raw "
-        "str(tenant_id) bind, so on SQLite it misses the row the typed audited "
-        "write updated and every job-completion gate reads OFF. Postgres is "
-        "unaffected. When jobs.py binds through settings_sql()/tenant_id_value() "
-        "this XPASSes and the marker must go."
-    ),
-)
 def test_job_workflow_gates_read_the_row_the_audited_write_updated(monkeypatch):
     """The silent half of the split: a gate turned ON through the typed
     upsert must read ON where the job-completion path checks it."""

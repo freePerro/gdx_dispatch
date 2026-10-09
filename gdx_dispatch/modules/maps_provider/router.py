@@ -7,11 +7,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.settings_audit import audited_settings_upsert
+from gdx_dispatch.core.settings_row import settings_sql, tenant_id_value
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -43,8 +43,8 @@ def get_provider(
 ) -> dict[str, Any]:
     _ = user
     row = cdb.execute(
-        text("SELECT maps_provider FROM tenant_settings WHERE tenant_id = :tid"),
-        {"tid": str(_tid(request))},
+        settings_sql("SELECT maps_provider FROM tenant_settings WHERE tenant_id = :tid"),
+        {"tid": _tid(request)},
     ).first()
     return {
         "provider": (row[0] if row else "google_maps") or "google_maps",
@@ -82,8 +82,8 @@ def set_provider(
         read=lambda db, t: {
             "maps_provider": (
                 db.execute(
-                    text("SELECT maps_provider FROM tenant_settings WHERE tenant_id = :tid"),
-                    {"tid": str(t)},
+                    settings_sql("SELECT maps_provider FROM tenant_settings WHERE tenant_id = :tid"),
+                    {"tid": tenant_id_value(t)},
                 ).scalar()
             )
         },
