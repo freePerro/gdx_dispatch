@@ -539,12 +539,93 @@ def test_notes_edit_resending_the_same_start_succeeds(db):
     assert code == 200, out
 
 
-def test_tech_change_on_an_arrived_visit_succeeds(db):
+def test_tech_change_on_an_arrived_visit_is_visit_arrived(db):
+    # GDXA-383: the arrival is the lead's, and Undo arrival matches a tap only
+    # to its own tech's visit, so the visit cannot be handed to the helper.
     tl, th = technician(db, LEAD), technician(db, HELPER)
     job = make_job(db)
     v = visit(db, job, at(0), tech=tl, arrived=True)
     code, out = _patch(db, v, start_at=at(0, 30), end_at=at(0) + timedelta(hours=8), tech_id=th.id)
+    assert code == 409 and out["code"] == "visit_arrived", out
+    assert "Undo arrival" in out["detail"] and out["visit_id"] == str(v.id)
+    db.expire_all()
+    assert db.get(Appointment, v.id).tech_id == tl.id
+
+
+def test_clearing_the_tech_on_an_arrived_visit_is_visit_arrived(db):
+    tl = technician(db, LEAD)
+    job = make_job(db)
+    v = visit(db, job, at(0), tech=tl, arrived=True)
+    code, out = _patch(db, v, tech_id=None)
+    assert code == 409 and out["code"] == "visit_arrived", out
+
+
+def test_tech_change_on_a_status_only_arrival_is_visit_arrived(db):
+    # An old arrival with no time is still one Undo arrival can act on.
+    tl, th = technician(db, LEAD), technician(db, HELPER)
+    job = make_job(db)
+    v = visit(db, job, at(0), tech=tl, status="arrived")
+    assert v.arrived_at is None
+    code, out = _patch(db, v, tech_id=th.id)
+    assert code == 409 and out["code"] == "visit_arrived", out
+    db.expire_all()
+    assert db.get(Appointment, v.id).tech_id == tl.id
+
+
+def test_tech_change_on_a_completed_visit_with_no_arrival_is_still_allowed(db):
+    # Undo arrival refuses it (no_arrival), so a 409 pointing there would be a
+    # dead end; with no tap recorded, there is nothing to strand.
+    tl, th = technician(db, LEAD), technician(db, HELPER)
+    job = make_job(db)
+    v = visit(db, job, at(0), tech=tl, status="completed")
+    assert v.arrived_at is None
+    code, out = _patch(db, v, tech_id=th.id)
     assert code == 200, out
+    db.expire_all()
+    assert db.get(Appointment, v.id).tech_id == th.id
+
+
+def test_assigning_a_tech_to_an_unassigned_arrived_visit_is_allowed(db):
+    # An office-recorded arrival (no tap) on an unassigned visit; the tapped
+    # case, where only the tapper may be named, is in test_arrival_undo.py.
+    tl = technician(db, LEAD)
+    job = make_job(db)
+    v = visit(db, job, at(0), tech=None, arrived=True)
+    code, out = _patch(db, v, tech_id=tl.id)
+    assert code == 200, out
+    db.expire_all()
+    assert db.get(Appointment, v.id).tech_id == tl.id
+
+
+def test_tech_change_on_an_unworked_cancelled_visit_is_still_allowed(db):
+    tl, th = technician(db, LEAD), technician(db, HELPER)
+    job = make_job(db)
+    v = visit(db, job, at(0), tech=tl, status="cancelled")
+    code, out = _patch(db, v, tech_id=th.id)
+    assert code == 200, out
+
+
+def test_notes_edit_resending_the_same_tech_on_an_arrived_visit_succeeds(db):
+    # The edit form resends every field, tech included.
+    tl = technician(db, LEAD)
+    job = make_job(db)
+    v = visit(db, job, at(0), tech=tl, arrived=True)
+    code, out = _patch(
+        db, v, start_at=at(0), end_at=at(0) + timedelta(hours=8), tech_id=tl.id, notes="gate code 1234",
+    )
+    assert code == 200, out
+    db.expire_all()
+    assert db.get(Appointment, v.id).notes == "gate code 1234"
+
+
+def test_tech_change_on_an_unarrived_visit_is_still_allowed(db):
+    tl, th = technician(db, LEAD), technician(db, HELPER)
+    job = make_job(db)
+    v = visit(db, job, at(0), tech=tl)
+    code, out = _patch(db, v, tech_id=th.id)
+    assert code == 200, out
+    db.expire_all()
+    assert db.get(Appointment, v.id).tech_id == th.id
 
 
 def test_moving_an_unarrived_visit_is_still_allowed(db):

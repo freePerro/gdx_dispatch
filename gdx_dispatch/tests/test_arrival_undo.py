@@ -894,3 +894,50 @@ def test_a_patch_to_cancelled_on_a_status_only_row_needs_an_answer_and_writes_no
     before = _snapshot(db, job)
     _assert_needs_answer(client.patch(f"/api/appointments/{old.id}", json={"status": "cancelled"}), old)
     assert _snapshot(db, job) == before
+
+
+# ── a tapped visit's tech (GDXA-383) ─────────────────────────────────
+
+
+@pytest.mark.parametrize("tapper,status", [(TECH, 200), (TECH2, 409)], ids=["the_tapper", "someone_else"])
+def test_an_unassigned_tapped_visit_takes_only_its_tapper(ctx, tapper, status):
+    # A1 stamps an unassigned visit and leaves its tech empty; the tap is
+    # matched only while the visit's tech is empty or the tapper's.
+    client, db, _ = ctx
+    job = _job(db)
+    v = _visit(db, job, at(1, 9), tech=None)
+    tap = _seed_tap(db, job, at(1, 8, 14))
+    assert _fresh(db, Appointment, v.id).arrived_at is not None
+    r = client.patch(f"/api/appointments/{v.id}", json={"tech_id": tapper})
+    assert r.status_code == status, r.text
+    if status == 409:
+        assert r.json()["code"] == "visit_arrived"
+    assert _fresh(db, Appointment, v.id).tech_id == (tapper if status == 200 else None)
+    preview = client.get(f"/api/appointments/{v.id}/undo-arrival").json()
+    assert preview["tap"] is not None and preview["tap"]["id"] == tap
+
+
+def test_an_unassigned_visit_tapped_with_no_tech_cannot_be_given_one(ctx):
+    # A tap by an account with no technician row stamps the unassigned visit
+    # and carries no tech; any name breaks the match and strands the tap.
+    client, db, _ = ctx
+    job = _job(db)
+    v = _visit(db, job, at(1, 9), tech=None)
+    tap = _seed_tap(db, job, at(1, 8, 14), tech=None, user=OFFICE)
+    matched = client.get(f"/api/appointments/{v.id}/undo-arrival").json()["tap"]
+    assert matched["id"] == tap and not matched["tech_id"], matched
+    r = client.patch(f"/api/appointments/{v.id}", json={"tech_id": TECH})
+    assert r.status_code == 409 and r.json()["code"] == "visit_arrived", r.text
+    assert _fresh(db, Appointment, v.id).tech_id is None
+    assert client.get(f"/api/appointments/{v.id}/undo-arrival").json()["tap"]["id"] == tap
+
+
+def test_a_tapped_visit_cannot_be_handed_to_another_tech(ctx):
+    client, db, _ = ctx
+    job = _job(db, crew=(TECH, TECH2))
+    v = _visit(db, job, at(1, 9))
+    tap = _seed_tap(db, job, at(1, 8, 14))
+    r = client.patch(f"/api/appointments/{v.id}", json={"tech_id": TECH2, "notes": "swap"})
+    assert r.status_code == 409 and r.json()["code"] == "visit_arrived", r.text
+    assert _fresh(db, Appointment, v.id).tech_id == TECH
+    assert client.get(f"/api/appointments/{v.id}/undo-arrival").json()["tap"]["id"] == tap
