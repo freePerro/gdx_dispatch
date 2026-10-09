@@ -83,6 +83,44 @@ def stop_due_at(
     return shop_instant(day + timedelta(days=1), time(0, 0), tz_name), REASON_MIDNIGHT
 
 
+def running_job_timer_filters() -> tuple[Any, ...]:
+    """WHERE terms for a per-job timer a person still has running."""
+    return (
+        TimeEntry.entry_type == "job",
+        TimeEntry.clock_out.is_(None),
+        TimeEntry.deleted_at.is_(None),
+        # A user-less open row is an office-entered labor row
+        # (routers/labor.py leaves user_id NULL): there is no person, so
+        # no shift end to apply. Left alone, and counted.
+        TimeEntry.user_id.is_not(None),
+    )
+
+
+def stop_open_job_timer(
+    db: Session, entry_id: Any, *, clock_out: datetime, note: str, now: datetime,
+) -> bool:
+    """Stop one open timer row the way Stop does; False if it was already stopped.
+
+    ``note`` leads whatever note the row held: readers match the Stop marker
+    as a prefix. Shared with ``POST /api/jobs/{id}/cancel`` (GDXA-375).
+    """
+    result = db.execute(
+        update(TimeEntry)
+        .where(TimeEntry.id == entry_id, TimeEntry.clock_out.is_(None))
+        .values(
+            clock_out=clock_out,
+            duration_minutes=0,
+            notes=case(
+                (or_(TimeEntry.notes.is_(None), TimeEntry.notes == ""), note),
+                else_=note + " -- " + TimeEntry.notes,
+            ),
+            updated_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount == 1
+
+
 def stop_timers_past_shift_end(
     db: Session, tenant_id: str, now: datetime | None = None,
 ) -> dict[str, int]:
@@ -98,15 +136,7 @@ def stop_timers_past_shift_end(
     settings = db.execute(select(AppSettings).limit(1)).scalars().first()
     rows = db.execute(
         select(TimeEntry.id, TimeEntry.job_id, TimeEntry.user_id, TimeEntry.clock_in)
-        .where(
-            TimeEntry.entry_type == "job",
-            TimeEntry.clock_out.is_(None),
-            TimeEntry.deleted_at.is_(None),
-            # A user-less open row is an office-entered labor row
-            # (routers/labor.py leaves user_id NULL): there is no person, so
-            # no shift end to apply. Left alone, and counted.
-            TimeEntry.user_id.is_not(None),
-        )
+        .where(*running_job_timer_filters())
         .order_by(TimeEntry.clock_in, TimeEntry.id)
     ).all()
     schedules: dict[str, PersonSchedule] = {}
@@ -122,21 +152,7 @@ def stop_timers_past_shift_end(
                 continue
             started = _aware(row.clock_in)
             elapsed = int(max((due - started).total_seconds(), 0) // 60)
-            result = db.execute(
-                update(TimeEntry)
-                .where(TimeEntry.id == row.id, TimeEntry.clock_out.is_(None))
-                .values(
-                    clock_out=due,
-                    duration_minutes=0,
-                    notes=case(
-                        (or_(TimeEntry.notes.is_(None), TimeEntry.notes == ""), note),
-                        else_=note + " -- " + TimeEntry.notes,
-                    ),
-                    updated_at=now,
-                )
-                .execution_options(synchronize_session=False)
-            )
-            if result.rowcount != 1:
+            if not stop_open_job_timer(db, row.id, clock_out=due, note=note, now=now):
                 # The tech's own Stop (or a closeout) got there first.
                 db.rollback()
                 continue

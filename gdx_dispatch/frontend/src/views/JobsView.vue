@@ -626,7 +626,7 @@ const activeStatus = ref("All");
 // "Back to Jobs" buttons on JobDetailView, which hard-push /jobs). Valid set
 // mirrors statusTabs; a stale/removed status falls back to "All" so the list
 // never silently filters to empty.
-const JOB_STATUS_KEYS = ["All", "Service Call", "Estimate", "Scheduled", "In Progress", "Complete"];
+const JOB_STATUS_KEYS = ["All", "Service Call", "Estimate", "Scheduled", "In Progress", "Complete", "Cancelled"];
 useListPrefs(
   "jobs",
   { activeStatus, searchQuery },
@@ -662,6 +662,9 @@ const statusFlow = ["Service Call", "Estimate", "Scheduled", "In Progress", "Com
 // a finished one, through this PATCH (409). So "Complete" is offered only when
 // the job already is (a re-save resends it unchanged), and a finished job's
 // bar is read-only — finishing and re-opening live on the job page.
+// Cancelling follows the same rule (GDXA-375): it lives on the job page's
+// Cancel job, which records the reason, so "Cancelled" is offered only when
+// the job already is.
 const editStartStatus = ref("");
 // Whether the edit form opened holding a date. An edit that never held one
 // omits scheduled_at rather than sending null: null is "clear the date", and
@@ -669,7 +672,7 @@ const editStartStatus = ref("");
 const editStartHadDate = ref(false);
 const editStatusLocked = computed(() => ["Complete", "Cancelled"].includes(editStartStatus.value));
 const editStatusOptions = computed(() =>
-  statusFlow.filter((s) => s !== "Complete" || editStartStatus.value === "Complete"),
+  statusFlow.filter((s) => !["Complete", "Cancelled"].includes(s) || editStartStatus.value === s),
 );
 // Plan §9: ONE vocabulary, shared with CustomerDetailView and pinned against
 // core/job_taxonomy.py by a backend test. This list diverging from the other
@@ -899,6 +902,7 @@ const statusTabs = computed(() => [
   { key: "Scheduled", label: "Scheduled", count: statusCounts.value.Scheduled || 0 },
   { key: "In Progress", label: "In Progress", count: statusCounts.value["In Progress"] || 0 },
   { key: "Complete", label: "Completed", count: statusCounts.value.Complete || 0 },
+  { key: "Cancelled", label: "Cancelled", count: statusCounts.value.Cancelled || 0 },
 ]);
 
 const filteredJobs = computed(() => {

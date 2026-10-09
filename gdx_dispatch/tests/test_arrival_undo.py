@@ -600,16 +600,11 @@ def test_a_mistapped_job_cancelled_undone_then_reactivated_without_a_tech_reads_
     job = _job(db)
     v = _visit(db, job, at(1, 9))
     _seed_tap(db, job, at(1, 8, 14))
-    r = client.patch(f"/api/jobs/{job.id}", json={"lifecycle_stage": "cancelled"})
+    r = client.post(f"/api/jobs/{job.id}/cancel", json={"reason": "customer went elsewhere"})
     assert r.status_code == 200, r.text
     v1 = _fresh(db, Appointment, v.id)
     assert v1.status == "cancelled" and v1.arrived_at is not None  # X1: CLOSED, arrival kept
-    j = _fresh(db, Job, job.id)
-    if j.lifecycle_stage != "cancelled":
-        # update_job writes the stage with raw SQL that does not land on
-        # SQLite (plan §5.2a X1); finish the cancel through the ORM.
-        j.lifecycle_stage = "cancelled"
-        db.commit()
+    assert _fresh(db, Job, job.id).lifecycle_stage == "cancelled"
     assert _fresh(db, Job, job.id).dispatch_status == "on_site"
     r = _undo_visit(client, v)
     assert r.status_code == 200, r.text
@@ -866,7 +861,9 @@ def test_a_job_cancel_holding_a_status_only_row_needs_an_answer_and_writes_nothi
     client, db, _ = ctx
     job, old = _status_only_job(db)
     before = _snapshot(db, job)
-    _assert_needs_answer(client.patch(f"/api/jobs/{job.id}", json={"lifecycle_stage": "cancelled"}), old)
+    _assert_needs_answer(
+        client.post(f"/api/jobs/{job.id}/cancel", json={"reason": "customer went elsewhere"}), old,
+    )
     assert _snapshot(db, job) == before
 
 

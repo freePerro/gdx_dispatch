@@ -48,6 +48,7 @@ from gdx_dispatch.models.tenant_models import (
 )
 from gdx_dispatch.modules.dispatch_settings import require_tech_for_scheduled_job
 from gdx_dispatch.modules.numbering import next_job_number
+from gdx_dispatch.services.day_close import CANCEL_STOP_SUFFIX as CANCEL_TIMER_NOTE_SUFFIX
 
 try:
     from gdx_dispatch.modules.proposals.models import Estimate
@@ -199,8 +200,8 @@ def _user_id(current_user: dict | None) -> str:
 
 
 def _emit_job_event(db, job, event: str, tenant_id: str) -> None:
-    """Stage a job.created / job.completed webhook before the caller's commit.
-    Guarded — never fails the job write."""
+    """Stage a job.created / job.completed / job.cancelled webhook before the
+    caller's commit. Guarded — never fails the job write."""
     from gdx_dispatch.core.webhooks.emit import emit_domain_event
 
     cid = getattr(job, "customer_id", None)
@@ -454,6 +455,9 @@ def _job_to_dict(job: Job, customer: Customer | None = None) -> dict[str, Any]:
         # these; NULLs on every normal billable job.
         "not_billable_at": job.not_billable_at,
         "not_billable_reason": job.not_billable_reason,
+        # 111 / GDXA-375: set by POST /{job_id}/cancel, cleared by /reactivate.
+        "cancelled_at": job.cancelled_at,
+        "cancel_reason": job.cancel_reason,
     }
     if customer is not None:
         d["customer_name"] = customer.name
@@ -1060,6 +1064,15 @@ def _stage_change_refusal(stored_stage: str | None, requested_stage: str) -> dic
                       "when there is nothing to attest), not a status change.",
             "use": "closeout",
         }
+    if requested_stage == "cancelled":
+        # GDXA-375: a cancel records when and why, releases the job's
+        # unordered part requests and stops its running timers — none of
+        # which a bare stage flip did.
+        return {
+            "detail": "Cancel a job with Cancel job on the job page, so the "
+                      "reason is recorded.",
+            "use": "cancel",
+        }
     return None
 
 
@@ -1221,7 +1234,8 @@ def update_job(
         # /uncomplete or /reactivate. A patch that resends the stored stage
         # (the Jobs list edit dialog does, on every save) is dropped rather
         # than rewritten, so it can't flip a closeout's "Completed" to
-        # "Complete". Cancelling stays open here: it has no endpoint yet.
+        # "Complete". Cancelling is refused here too (GDXA-375): it belongs to
+        # /cancel, which records the reason and cleans up after the job.
         requested_stage = updates.get("lifecycle_stage")
         stored_stage = (job.lifecycle_stage or "").lower()
         if requested_stage is not None:
@@ -1249,10 +1263,10 @@ def update_job(
                 return jsonable_response({"detail": detail}, 400)
 
         # The job's visits (multi-day jobs plan §5.2a): planned before anything
-        # is written, so a refusal (R1–R4, or a cancel holding an old
-        # status-only arrival) leaves the job, its visits and the audit log
-        # untouched. A date equal to the stored one to the minute is no date
-        # edit (E1) and is not rewritten.
+        # is written, so a refusal (R1–R4) leaves the job, its visits and the
+        # audit log untouched. A date equal to the stored one to the minute is
+        # no date edit (E1) and is not rewritten. A cancel never reaches here:
+        # the stage guard above sends it to /cancel, which plans X1 itself.
         from gdx_dispatch.services.visit_sync import UNSET, plan_for_job, visit_fields
 
         visit_plan = plan_for_job(
@@ -1262,7 +1276,6 @@ def update_job(
             fields=visit_fields(
                 db, updates.get("title", job.title), updates.get("customer_id", job.customer_id),
             ) if ("title" in updates or "customer_id" in updates) else None,
-            cancel=updates.get("lifecycle_stage") == "cancelled",
         )
         if visit_plan.refusal is not None:
             return _visit_refused(visit_plan.refusal)
@@ -1284,7 +1297,7 @@ def update_job(
 
         # Keep lifecycle/status in sync with scheduled_at: clearing the
         # date drops the job back to a service call unless the caller is also
-        # transitioning the lifecycle explicitly (e.g., to cancelled). Legacy
+        # transitioning the lifecycle explicitly (e.g., to in progress). Legacy
         # "lead" rows are still recognized so a pre-migration row clearing
         # its date doesn't crash; we just rewrite them as service_call.
         if "scheduled_at" in updates and "lifecycle_stage" not in updates and "status" not in data:
@@ -1527,6 +1540,11 @@ def start_job(
         ).scalar_one_or_none()
         if not job:
             return jsonable_response({"detail": "job not found"}, 404)
+        # /reactivate is the only way out of cancelled: it clears the stamp and
+        # restores the released part requests, which a start would not.
+        cancelled = _cancelled_refusal(job)
+        if cancelled is not None:
+            return cancelled
 
         # Auto-assign the starter's TECHNICIAN id (it was the token's user id
         # until 2026-10-05 — a users.id in a technicians.id column). With no
@@ -1645,6 +1663,20 @@ def _locked_job(db: Session, job_id: Any) -> Job | None:
     ).scalar_one_or_none()
 
 
+def _cancelled_refusal(job: Job) -> Any:
+    """409 for a finishing door on a cancelled job. The cancel already stopped
+    the crew's timers at 0, so finishing it here would complete a cancelled
+    job and leave the attested hours on no one's row; the office reactivates
+    it first, or enters the hours through labor."""
+    if (job.lifecycle_stage or "").lower() != "cancelled":
+        return None
+    return jsonable_response({
+        "detail": "This job was cancelled by the office. Ask the office to "
+                  "reactivate it, or to enter your hours through labor.",
+        "code": "job_cancelled",
+    }, 409)
+
+
 def _tap_shop_day(tapped_at: datetime | None, now: datetime, tz: str) -> Any:
     """The closeout tap's shop day: ``tapped_at`` clamped to no later than
     server ``now``, and ``now`` when absent (multi-day jobs plan §5.4a)."""
@@ -1738,6 +1770,9 @@ def complete_job(
         job = _locked_job(db, job_id)
         if not job:
             return jsonable_response({"detail": "job not found"}, 404)
+        refusal = _cancelled_refusal(job)
+        if refusal is not None:
+            return refusal
         refusal = _earlier_day_open_refusal(db, job, None, None, now=now)
         if refusal is not None:
             return refusal
@@ -2164,6 +2199,11 @@ def _stopped_job_timer_for(db: Session, job_uuid: uuid.UUID, user_id: str) -> Ti
     # makes this STRICTER than `_open_job_timers`, which has none: after an
     # API-only `/complete`, an open timer is still restated and a swept one
     # is not.
+    # A timer a cancel stopped (GDXA-375) was settled at 0 by the cancel: after
+    # a /reactivate it is never restated — the office enters any hours worked
+    # before the cancel through labor, once (day_close.CANCEL_STOP_SUFFIX).
+    if (row.notes or "").startswith(MOBILE_STOP_LABOR_NOTE + CANCEL_TIMER_NOTE_SUFFIX):
+        return None
     if (row.notes or "").startswith(MOBILE_AUTO_STOP_LABOR_NOTE):
         from gdx_dispatch.services import day_close  # noqa: PLC0415
 
@@ -2402,6 +2442,9 @@ def closeout_job(
     job = _locked_job(db, job_id)
     if not job:
         return jsonable_response({"detail": "job not found"}, 404)
+    _cancelled = _cancelled_refusal(job)
+    if _cancelled is not None:
+        return _cancelled
 
     # The tap's shop day feeds only the two day refusals and the 0 h rule.
     from gdx_dispatch.services import day_close as _day_close
@@ -5226,6 +5269,29 @@ def reactivate_job(
         else:
             job.lifecycle_stage = "service_call"
             job.status = "Service Call"
+        # GDXA-375: a live job carries no cancel stamp (the cancel's own audit
+        # row keeps it), and the part requests the cancel released are owed
+        # to the job again.
+        prior_cancel = {
+            "cancelled_at": job.cancelled_at.isoformat() if job.cancelled_at else None,
+            "cancel_reason": job.cancel_reason,
+        }
+        job.cancelled_at = None
+        job.cancel_reason = None
+        restored = list(db.execute(
+            select(JobPartNeeded.id).where(
+                JobPartNeeded.job_id == str(job.id),
+                JobPartNeeded.source == "request",
+                JobPartNeeded.status == PART_REQUEST_CANCELLED,
+            )
+        ).scalars().all())
+        if restored:
+            db.execute(
+                update(JobPartNeeded)
+                .where(JobPartNeeded.id.in_(restored))
+                .values(status="needed")
+                .execution_options(synchronize_session=False)
+            )
         db.flush()
         log_audit_event_sync(
             db=db, tenant_id=tenant_id, user_id=_user_id(current_user),
@@ -5234,6 +5300,8 @@ def reactivate_job(
                 "reason": cleaned,
                 "new_scheduled_at": payload.scheduled_at.isoformat() if payload.scheduled_at else None,
                 "prior_scheduled_at": prior_scheduled_at.isoformat() if prior_scheduled_at else None,
+                "prior_cancel": prior_cancel,
+                "restored_part_request_ids": [str(i) for i in restored],
             },
             request=request,
         )
@@ -5247,3 +5315,184 @@ def reactivate_job(
         db.rollback()
         log.exception("reactivate_job_failed", extra={"job_id": job_id})
         return jsonable_response({"detail": "Failed to reactivate job"}, 500)
+
+
+# ---------------------------------------------------------------------------
+# GDXA-375 — the cancel lifecycle.
+#
+# Cancelling used to be a bare stage flip through the generic PATCH: no
+# reason, no time, no webhook, and the job's part requests and running timers
+# carried on as if it were live. /cancel is now the only way in (the PATCH
+# answers 409 "use": "cancel"), and /reactivate the only way out. One
+# transaction writes all of it:
+#
+#   * the stage, cancelled_at and cancel_reason (migration 111);
+#   * the visits (X1: OPEN retired, ON SITE closed as cancelled, arrival kept);
+#   * part requests the office has not ordered yet (source='request',
+#     status='needed') move to 'cancelled', so they leave Parts to Order.
+#     An ordered or received part is a real purchase in flight — it stays as
+#     it is, for the office to return or shelve. /reactivate puts the
+#     released requests back to 'needed';
+#   * per-job timers still running are STOPPED, never deleted, the way the
+#     phone's Stop and the shift-end sweep stop them: clock_out set, 0
+#     minutes banked, the Stop marker leading the note. Elapsed clock time is
+#     not evidence of work (#154); it is recorded in the audit row only, and
+#     the office enters attested hours through labor if any were worked;
+#   * one job_cancelled audit row naming all of the above, and job.cancelled.
+# ---------------------------------------------------------------------------
+
+#: Width of jobs.cancel_reason (migration 111). The audit row keeps the full
+#: reason _validate_reason allows.
+CANCEL_REASON_MAX = 300
+#: CANCEL_TIMER_NOTE_SUFFIX (imported from day_close at the top) is what a
+#: cancel stamps after the Stop marker on a timer it stops. One marker, read by
+#: day_close.is_candidate and _stopped_job_timer_for.
+#: The part-request status a cancel releases to, and /reactivate restores from.
+#: MobileJobCloseoutDialog already reads it as "not a live request".
+PART_REQUEST_CANCELLED = "cancelled"
+
+
+class CancelJobPayload(BaseModel):
+    reason: str  # mandatory, like /uncomplete and /reactivate
+
+
+def _release_part_requests(db: Session, job: Job, now: datetime) -> list[str]:
+    """Move the job's unordered part requests to 'cancelled'; return their ids."""
+    ids = list(db.execute(
+        select(JobPartNeeded.id).where(
+            JobPartNeeded.job_id == str(job.id),
+            JobPartNeeded.source == "request",
+            JobPartNeeded.status == "needed",
+        )
+    ).scalars().all())
+    if ids:
+        db.execute(
+            update(JobPartNeeded)
+            .where(JobPartNeeded.id.in_(ids), JobPartNeeded.status == "needed")
+            .values(status=PART_REQUEST_CANCELLED)
+            .execution_options(synchronize_session=False)
+        )
+    return [str(i) for i in ids]
+
+
+def _stop_running_timers(db: Session, job: Job, now: datetime) -> list[dict[str, Any]]:
+    """Stop every per-job timer still running on the job, banking 0 minutes.
+
+    Same write as tasks/job_timer_sweep.py: a user-less open row is an
+    office-entered labor row (routers/labor.py), not a timer, and is left
+    alone — setting its minutes to 0 would erase hours someone attested.
+    """
+    from gdx_dispatch.routers.mobile import MOBILE_STOP_LABOR_NOTE  # noqa: PLC0415 — mobile imports this router
+    from gdx_dispatch.tasks.job_timer_sweep import (  # noqa: PLC0415 — celery_app imports the sweep
+        running_job_timer_filters,
+        stop_open_job_timer,
+    )
+
+    note = MOBILE_STOP_LABOR_NOTE + CANCEL_TIMER_NOTE_SUFFIX
+    rows = db.execute(
+        select(TimeEntry.id, TimeEntry.user_id, TimeEntry.clock_in).where(
+            TimeEntry.job_id == job.id, *running_job_timer_filters(),
+        )
+    ).all()
+    stopped: list[dict[str, Any]] = []
+    for row in rows:
+        if not stop_open_job_timer(db, row.id, clock_out=now, note=note, now=now):
+            continue  # stopped by the tech (or the sweep) in the meantime
+        started = row.clock_in if row.clock_in.tzinfo else row.clock_in.replace(tzinfo=UTC)
+        stopped.append({
+            "entry_id": str(row.id),
+            "user_id": str(row.user_id),
+            "clock_in": started.isoformat(),
+            # What the clock read vs what was banked: evidence only.
+            "elapsed_minutes": int(max((now - started).total_seconds(), 0) // 60),
+            "recorded_minutes": 0,
+        })
+    return stopped
+
+
+@router.post("/{job_id}/cancel", response_model=None)
+def cancel_job(
+    payload: CancelJobPayload,
+    job_id: str,
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Cancel a live job. Reason is mandatory. See the section comment above."""
+    cleaned = _validate_reason(payload.reason)
+    if not cleaned:
+        return jsonable_response({"detail": "reason is required (≥4 characters)"}, 422)
+    try:
+        job_uuid = uuid.UUID(job_id)  # bind the parsed uuid — see update_job
+    except (ValueError, AttributeError):
+        return jsonable_response({"detail": "job not found"}, 404)
+    tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    # Object-level authz — see update_job.
+    denial = job_write_denial(db, tenant_id, request, current_user, job_id)
+    if denial:
+        return jsonable_response({"detail": denial[1]}, denial[0])
+    now = datetime.now(UTC)
+    try:
+        # The finishing doors' lock, so a racing closeout or day-close commits
+        # wholly before this reads the stage, or after the cancel commits.
+        job = _locked_job(db, job_uuid)
+        if not job:
+            return jsonable_response({"detail": "job not found"}, 404)
+        stage = (job.lifecycle_stage or "").lower()
+        if stage == "cancelled":
+            return jsonable_response({"detail": "this job is already cancelled"}, 409)
+        if stage == "completed":
+            # LIFECYCLE_TRANSITIONS: completed goes nowhere. Re-open it first,
+            # which records why the finished job is being moved.
+            return jsonable_response({
+                "detail": "This job is completed. Use Re-open on the job page "
+                          "first, so the reason is recorded.",
+                "use": "reopen",
+            }, 409)
+
+        # X1, planned before anything is written: a refusal (an old
+        # status-only arrival) leaves the job, its visits and the audit log
+        # untouched.
+        from gdx_dispatch.services.visit_sync import plan_for_job
+
+        plan = plan_for_job(db, job, cancel=True)
+        if plan.refusal is not None:
+            return _visit_refused(plan.refusal)
+
+        prior_stage = job.lifecycle_stage
+        prior_scheduled_at = job.scheduled_at
+        job.lifecycle_stage = "cancelled"
+        job.status = "Cancelled"
+        job.cancelled_at = now
+        job.cancel_reason = cleaned[:CANCEL_REASON_MAX]
+        job.updated_at = now
+        db.flush()
+        _apply_visits(db, job, plan, current_user, "job_cancelled")
+        released = _release_part_requests(db, job, now)
+        stopped = _stop_running_timers(db, job, now)
+        log_audit_event_sync(
+            db=db, tenant_id=tenant_id, user_id=_user_id(current_user),
+            action="job_cancelled", entity_type="job", entity_id=str(job.id),
+            details={
+                "reason": cleaned,
+                "prior_stage": prior_stage,
+                "prior_scheduled_at": prior_scheduled_at.isoformat() if prior_scheduled_at else None,
+                "released_part_request_ids": released,
+                "stopped_timers": stopped,
+            },
+            request=request,
+        )
+        _emit_job_event(db, job, "job.cancelled", tenant_id)
+        db.commit()
+        return jsonable_response({
+            "ok": True, "id": str(job.id),
+            "lifecycle_stage": job.lifecycle_stage,
+            "cancelled_at": job.cancelled_at,
+            "cancel_reason": job.cancel_reason,
+            "released_part_requests": len(released),
+            "stopped_timers": len(stopped),
+        })
+    except SQLAlchemyError:
+        db.rollback()
+        log.exception("cancel_job_failed", extra={"job_id": job_id})
+        return jsonable_response({"detail": "Failed to cancel job"}, 500)
