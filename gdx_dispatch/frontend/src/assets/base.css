@@ -192,8 +192,16 @@ body,
   font-family: 'IBM Plex Sans', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
+/* AppLayout scrolls inside its own main panel, so the page itself must not.
+   A no-shell route (portal, public proposal, login) has no such panel and
+   scrolls as a normal page; App.vue sets the class. A PrimeVue modal's
+   scroll lock (p-overflow-hidden) still wins. */
 body {
   overflow: hidden;
+}
+
+body.no-shell:not(.p-overflow-hidden) {
+  overflow: auto;
 }
 
 a {
