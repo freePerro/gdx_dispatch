@@ -598,21 +598,28 @@ def update_appointment(
     # tech's visit (arrival_undo._match), so a stranger's name leaves the tap
     # reachable only from the job's crew row. An unassigned visit takes any
     # tap, so it may be given the tapper (asked of the ledger, not re-derived);
-    # a tap with no tech has no tapper to give, and naming anyone strands it. A
-    # visit with no arrival Undo could act on (its no_arrival test) stays
-    # editable, so the 409's exit always exists (GDXA-383). Compared with the
-    # STORED tech, for the same resent-form reason.
+    # a tap with no tech has no tapper to give, and naming anyone strands it.
+    # A visit whose tap is already stranded (handed on before this guard) may
+    # go back to a tech whose tap it would match again. A visit with no
+    # arrival Undo could act on (its no_arrival test) stays editable, so the
+    # 409's exit always exists (GDXA-383). Compared with the STORED tech, for
+    # the same resent-form reason.
     if "tech_id" in data and (a.arrived_at is not None or (a.status or "") == "arrived"):
         new_tech = data["tech_id"] or None
-        if a.tech_id:
-            strands = new_tech != a.tech_id
-        elif new_tech and a.job_id is not None:
-            from gdx_dispatch.services.arrival_undo import preview_visit  # noqa: PLC0415
+        stored = a.tech_id or None
+        strands = False
+        if new_tech != stored:
+            job = _job_of(db, a.job_id)
+            if job is None:
+                strands = stored is not None
+            else:
+                from gdx_dispatch.services.arrival_undo import taps_if_tech  # noqa: PLC0415
 
-            tap = preview_visit(db, _job_of(db, a.job_id), a)["tap"]
-            strands = tap is not None and (tap["tech_id"] or None) != new_tech
-        else:
-            strands = False
+                held, regained = taps_if_tech(db, job, a, stored, new_tech)
+                if held is not None:
+                    strands = (held.tech_id or None) != new_tech
+                else:
+                    strands = stored is not None and (new_tech is None or regained is None)
         if strands:
             return _conflict(
                 "This visit has an arrival recorded, so it cannot change tech. Use Undo "

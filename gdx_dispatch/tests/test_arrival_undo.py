@@ -941,3 +941,65 @@ def test_a_tapped_visit_cannot_be_handed_to_another_tech(ctx):
     assert r.status_code == 409 and r.json()["code"] == "visit_arrived", r.text
     assert _fresh(db, Appointment, v.id).tech_id == TECH
     assert client.get(f"/api/appointments/{v.id}/undo-arrival").json()["tap"]["id"] == tap
+
+
+def _stranded(db):
+    # TECH tapped; the old edit form then handed the visit to TECH2, which
+    # left TECH's tap matching nothing (audit round 6 of GDXA-383).
+    job = _job(db, crew=(TECH, TECH2))
+    v = _visit(db, job, at(1, 9))
+    tap = _seed_tap(db, job, at(1, 8, 14))
+    row = db.get(Appointment, v.id)
+    row.tech_id = TECH2
+    db.commit()
+    return job, v, tap
+
+
+def test_a_stranded_visit_can_go_back_to_its_tapper(ctx):
+    client, db, _ = ctx
+    _, v, tap = _stranded(db)
+    assert client.get(f"/api/appointments/{v.id}/undo-arrival").json()["tap"] is None
+    r = client.patch(f"/api/appointments/{v.id}", json={"tech_id": TECH, "notes": "back"})
+    assert r.status_code == 200, r.text
+    assert _fresh(db, Appointment, v.id).tech_id == TECH
+    assert client.get(f"/api/appointments/{v.id}/undo-arrival").json()["tap"]["id"] == tap
+
+
+@pytest.mark.parametrize("new_tech", [str(uuid4()), None], ids=["a_third_tech", "no_tech"])
+def test_a_stranded_visit_goes_only_to_its_tapper(ctx, new_tech):
+    client, db, _ = ctx
+    _, v, _ = _stranded(db)
+    r = client.patch(f"/api/appointments/{v.id}", json={"tech_id": new_tech})
+    assert r.status_code == 409 and r.json()["code"] == "visit_arrived", r.text
+    assert _fresh(db, Appointment, v.id).tech_id == TECH2
+
+
+def test_a_visit_cannot_take_a_tap_another_visit_holds(ctx):
+    # An old record matches by time alone: TECH's old tap stamped Y at 08:14,
+    # and TECH2's X carries a manual arrival at the same minute. Handing X to
+    # TECH would make both visits claim one tap (GDXA-383 audit).
+    client, db, _ = ctx
+    job = _job(db, crew=(TECH, TECH2))
+    y = _visit(db, job, at(1, 9))
+    tap = _seed_tap(db, job, at(1, 8, 14), old=True)
+    assert client.get(f"/api/appointments/{y.id}/undo-arrival").json()["tap"]["id"] == tap
+    x = _visit(db, job, at(1, 9), tech=TECH2, arrived=_fresh(db, Appointment, y.id).arrived_at)
+    r = client.patch(f"/api/appointments/{x.id}", json={"tech_id": TECH})
+    assert r.status_code == 409 and r.json()["code"] == "visit_arrived", r.text
+    assert _fresh(db, Appointment, x.id).tech_id == TECH2
+    assert client.get(f"/api/appointments/{y.id}/undo-arrival").json()["tap"]["id"] == tap
+
+
+@pytest.mark.parametrize("hh", [8, 10], ids=["sorts_first", "sorts_last"])
+def test_an_unassigned_twin_of_a_held_tap_takes_only_the_tapper(ctx, hh):
+    # Y holds TECH's old tap; unassigned Z carries the same arrival, so it
+    # matches the tap by time too. Z may not be given a stranger whichever
+    # visit sorts last (GDXA-383 audit round 2).
+    client, db, _ = ctx
+    job = _job(db, crew=(TECH, TECH2))
+    y = _visit(db, job, at(1, 9))
+    _seed_tap(db, job, at(1, 8, 14), old=True)
+    z = _visit(db, job, at(1, hh), tech=None, arrived=_fresh(db, Appointment, y.id).arrived_at)
+    r = client.patch(f"/api/appointments/{z.id}", json={"tech_id": TECH2})
+    assert r.status_code == 409 and r.json()["code"] == "visit_arrived", r.text
+    assert _fresh(db, Appointment, z.id).tech_id is None

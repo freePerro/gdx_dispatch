@@ -2576,7 +2576,12 @@ visits as checkboxes. What carried over, and what was withdrawn:
   may be given only its tapper, read from the ledger (`preview_visit`),
   or anyone when no tap matches it, because there is no tap to strand; a
   matched tap with no tech (a tap by an account with no technician row)
-  has no tapper, so naming anyone is refused. So may
+  has no tapper, so naming anyone is refused. A visit handed on before
+  this guard, whose tap therefore matches nothing, may go back to a tech
+  whose tap it would match again and no other visit holds
+  (`taps_if_tech`). Clearing its tech would also re-match the tap (an
+  unassigned visit takes any), and is refused on purpose: the visit says
+  who worked it. So may
   changing the tech of a completed visit with no arrival, because Undo
   refuses that visit and the 409's exit would not exist.
 - The remaining over-bill path, an `added` entry for someone who did tap
