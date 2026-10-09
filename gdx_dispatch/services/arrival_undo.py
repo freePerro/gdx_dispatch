@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 from gdx_dispatch.services.visit_sync import (
@@ -280,6 +281,24 @@ def preview_job(db: Any, job: Any, tech_id: str) -> dict:
         "tech_id": tech_id,
         "unmatched_taps": [t.as_dict(ledger.tz) for t in ledger.unmatched(tech_id)],
     }
+
+
+def taps_if_tech(db: Any, job: Any, v: Any, *techs: str | None) -> list[Tap | None]:
+    """The tap ``v`` would match carrying each of ``techs``, in order: what
+    an edit of its tech keeps or strands (GDXA-383). A tap ``v`` does not
+    match now and another visit does is not ``v``'s to take: an old record
+    matches by time alone, so several visits can match one tap, and the
+    answer must not depend on which of them sorts last."""
+    ledger = _ledger(db, job)
+    vid = str(v.id)
+    mine = ledger.matched.get(vid)
+    others = {t.id for k, t in ledger.matched.items() if k != vid}
+    out: list[Tap | None] = []
+    for tech in techs:
+        tap = _match(ledger, SimpleNamespace(id=v.id, arrived_at=v.arrived_at, tech_id=tech))
+        taken = tap is not None and tap.id in others and (mine is None or mine.id != tap.id)
+        out.append(None if taken else tap)
+    return out
 
 
 # ---------------------------------------------------------------- the undo

@@ -104,6 +104,19 @@ this — the budget governs sweeps, not repairs.
   In a linked worktree the script also mounts the gitdir into a docker
   `PYTEST`, so the tracked-set guards pass there instead of failing 14 tests
   for want of the index.
+- **A failed matrix sorts its reds against main** (`tools/matrix_vs_main.py`):
+  NEW (probably yours), FLAKY ON MAIN, or ALREADY FAILING ON MAIN, from a baseline the
+  maintainer's host records once per `origin/main` commit (a user timer outside
+  this repo, ~/.cache/gdx_matrix_baseline). <!-- host paths, outside this repo; link-ok -->
+  It is a report: the exit code is unchanged. With no baseline on the host, the
+  reds say "unclassified", never "not yours"; against a baseline older than the
+  merge-base they say "WAS RED ON MAIN … NOT proven", since main may have fixed
+  the test since. A shard that dies without naming a test is never recorded as
+  green. NEW is not proof: the baseline is a single run, so a flaky test can
+  pass there and fail here. The script also prints the docker
+  image's age and key library versions, and warns when the image predates the
+  last `requirements.txt`/Dockerfile change: requirements.txt pins ranges and
+  CI resolves them fresh each run, so an old image can disagree with CI.
 - `pytest.ini` already carries `-q`; adding another makes output useless. To
   read a CI failure use the `jobs/<id>/logs` API, not `gh run view --log`.
 - **A foreground `sleep` is blocked and a background Bash dies at 600s.** Long

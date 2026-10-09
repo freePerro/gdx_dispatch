@@ -3,8 +3,8 @@
 Status: RELEASED v1.143.0 — PR A (backend: migration 113, models, service,
 portal routes, the PDF) MERGED #937; PR B (the portal tabs: My Branding, My
 Quotes, the "Resell this" dialog) MERGED #938. Eligibility moving from
-`pricing_class` to `customer_type` (see *Who* below) is a later fix, not yet
-released. The GDPR and tax questions below are open.
+`pricing_class` to `customer_type` (see *Who* below) MERGED #940, RELEASED
+v1.143.2. The GDPR and tax questions below are open.
 Date: 2026-10-08
 
 ## The ask
