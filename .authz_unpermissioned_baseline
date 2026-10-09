@@ -89,6 +89,12 @@
 # (404) unless its customer_id is the caller's (_own_quote_or_404;
 # test_portal_resale.py, test_customer_b_cannot_read_or_delete_customer_as_quote).
 # Plan: docs/design/contractor-resale-quotes-plan.md.
+#
+# 389 → 390 (2026-10-09, GDXA-375 job cancel lifecycle): POST /api/jobs/{job_id}/cancel —
+# ADDED, the same handler gate as its siblings POST /api/jobs/{job_id}/reactivate
+# and /uncomplete below: core/job_access.job_write_denial (the jobs write key AND
+# a claim on the job, or office tier). The sweep cannot see a gate reached
+# through that helper.
 
 # ── customer portal ───────────────────────────────────────────────────────
 # These authenticate a CUSTOMER, not a tenant user, so no role or permission
@@ -320,6 +326,7 @@ POST /api/integrations/{integration_type}/connect
 POST /api/inventory/items/{item_id}/adjust
 POST /api/inventory/parts
 POST /api/jobs
+POST /api/jobs/{job_id}/cancel
 POST /api/jobs/{job_id}/checklist
 POST /api/jobs/{job_id}/closeout
 POST /api/jobs/{job_id}/complete

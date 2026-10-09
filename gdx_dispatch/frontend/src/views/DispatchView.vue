@@ -1478,7 +1478,9 @@ const visiblePartialJobs = computed(() =>
 
 const unassignedJobs = computed(() =>
   boardJobs.value.filter((j) => {
-    if (isCompletedStatus(j.status)) return false;
+    // A cancelled job needs no tech and no date (GDXA-375): it left the
+    // queue when it was cancelled, by stage or by its display status.
+    if (isTerminalJob(j) || String(j.status || '').toLowerCase() === 'cancelled') return false;
     // One job, one queue: a partial job is in Partial Jobs above.
     if (partialJobIds.value.has(String(j.id))) return false;
     // 2026-08-17 ("Assign to me"): techs can self-assign at create, so a

@@ -146,6 +146,13 @@ def _routes(job_id: str, dep_id: str) -> list[tuple[str, str, str, dict]]:
             f"/api/jobs/{job_id}/reactivate",
             {"reason": "customer called back"},
         ),
+        # GDXA-375: the twelfth, added with the route.
+        (
+            "cancel_job",
+            "POST",
+            f"/api/jobs/{job_id}/cancel",
+            {"reason": "customer went elsewhere"},
+        ),
     ]
 
 

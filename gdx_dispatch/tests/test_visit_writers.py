@@ -314,12 +314,12 @@ def test_a_visit_booked_by_a_date_or_crew_save_carries_the_jobs_customer(env, sa
     assert {(a.customer_id, a.customer_name) for a in rows} == {(env.cust.id, "Acme")}
 
 
-def test_update_job_cancel_retires_the_open_visits(env):
+def test_cancel_job_retires_the_open_visits(env):
     job = _job(env)
     a = _visit(env, job, DAY1)
     _visit(env, job, DAY2)
     before = _audit_ids(env.db)
-    r = env.client.patch(f"/api/jobs/{job.id}", json={"lifecycle_stage": "cancelled"})
+    r = env.client.post(f"/api/jobs/{job.id}/cancel", json={"reason": "customer went elsewhere"})
     assert r.status_code == 200, r.text
     env.db.expire_all()
     assert env.db.get(Job, job.id).status == "Cancelled"
@@ -328,7 +328,174 @@ def test_update_job_cancel_retires_the_open_visits(env):
     assert env.db.get(Appointment, a.id).deleted_at is not None
     _assert_invariant_i(env.db, job.id, constrained=False)
     acts = _actions(env.db, before, job.id)
-    assert acts.count("visit_retired") == 2 and "job_updated" in acts
+    assert acts.count("visit_retired") == 2 and "job_cancelled" in acts
+
+
+def test_a_patch_to_cancelled_is_refused_and_writes_nothing(env):
+    """GDXA-375: a bare stage flip records no reason and cleans up nothing,
+    so both PATCHes send the caller to /cancel."""
+    job = _job(env)
+    _visit(env, job, DAY1)
+    body = _refused(env, "PATCH", f"/api/jobs/{job.id}", {"lifecycle_stage": "cancelled"}, 409)
+    assert body["use"] == "cancel"
+    body = _refused(env, "PATCH", f"/api/v1/jobs/{job.id}", {"status": "cancelled"}, 409)
+    assert body["detail"]["use"] == "cancel"
+
+
+# ── POST /cancel: the rest of the lifecycle (GDXA-375) ────────────────
+
+
+def _part(env, job, status, source="request"):
+    from gdx_dispatch.models.tenant_models import JobPartNeeded
+
+    p = JobPartNeeded(id=str(uuid4()), company_id=TENANT, job_id=str(job.id),
+                      part_name=f"spring ({status})", status=status, source=source)
+    env.db.add(p)
+    return p
+
+
+def _timer(env, job, user_id, *, minutes_ago=90, entry_type="job", notes=None):
+    from gdx_dispatch.models.tenant_models import TimeEntry
+
+    t = TimeEntry(id=uuid4(), company_id=TENANT, tech_id=str(user_id or "office"),
+                  user_id=user_id, job_id=job.id, entry_type=entry_type, notes=notes,
+                  clock_in=_now() - timedelta(minutes=minutes_ago))
+    env.db.add(t)
+    return t
+
+
+def test_cancel_records_reason_releases_requests_stops_timers_and_emits(env, monkeypatch):
+    from gdx_dispatch.core.webhooks import emit as emit_mod
+    from gdx_dispatch.models.tenant_models import JobPartNeeded, TimeEntry
+
+    emitted = []
+    monkeypatch.setattr(emit_mod, "emit_domain_event",
+                        lambda db, event, entity_id, payload, **kw: emitted.append((event, payload)) or 1)
+    job = _job(env)
+    needed = _part(env, job, "needed")
+    ordered = _part(env, job, "ordered")
+    used = _part(env, job, "needed", source="parts_used")
+    running = _timer(env, job, TECH_USER, notes="hinge swap")
+    office_row = _timer(env, job, None, entry_type="job")  # an office labor row, not a timer
+    env.db.commit()
+    before = _audit_ids(env.db)
+
+    r = env.client.post(f"/api/jobs/{job.id}/cancel", json={"reason": "customer went elsewhere"})
+    assert r.status_code == 200, r.text
+    assert r.json()["released_part_requests"] == 1 and r.json()["stopped_timers"] == 1
+    env.db.expire_all()
+    j = env.db.get(Job, job.id)
+    assert (j.lifecycle_stage, j.status) == ("cancelled", "Cancelled")
+    assert j.cancelled_at is not None and j.cancel_reason == "customer went elsewhere"
+    # Only the unordered request is released; a part in flight stays.
+    assert env.db.get(JobPartNeeded, needed.id).status == "cancelled"
+    assert env.db.get(JobPartNeeded, ordered.id).status == "ordered"
+    assert env.db.get(JobPartNeeded, used.id).status == "needed"
+    # The timer is stopped, not deleted, and banks no invented hours.
+    t = env.db.get(TimeEntry, running.id)
+    assert t.deleted_at is None and t.clock_out is not None and t.duration_minutes == 0
+    assert t.notes.startswith("Timer stopped on mobile — job cancelled") and "hinge swap" in t.notes
+    o = env.db.get(TimeEntry, office_row.id)
+    assert o.clock_out is None and o.duration_minutes is None
+    rows = _new_audit(env.db, before, job.id)
+    cancel_row = next(a for a in rows if a.action == "job_cancelled")
+    details = cancel_row.details if isinstance(cancel_row.details, dict) else __import__("json").loads(cancel_row.details)
+    assert details["reason"] == "customer went elsewhere"
+    assert details["released_part_request_ids"] == [needed.id]
+    assert [s["entry_id"] for s in details["stopped_timers"]] == [str(running.id)]
+    assert details["stopped_timers"][0]["elapsed_minutes"] >= 89
+    assert details["stopped_timers"][0]["recorded_minutes"] == 0
+    assert [e for e, _ in emitted] == ["job.cancelled"]
+    assert emitted[0][1]["lifecycle_stage"] == "cancelled"
+    assert env.client.get(f"/api/jobs/{job.id}").json()["cancel_reason"] == "customer went elsewhere"
+
+
+@pytest.mark.parametrize("reason", ["", "   ", "no"])
+def test_cancel_demands_a_reason_and_writes_nothing(env, reason):
+    job = _job(env)
+    _refused(env, "POST", f"/api/jobs/{job.id}/cancel", {"reason": reason}, 422)
+
+
+@pytest.mark.parametrize("stage", ["cancelled", "completed"])
+def test_cancel_refuses_a_finished_job_and_writes_nothing(env, stage):
+    job = _job(env, stage=stage)
+    _refused(env, "POST", f"/api/jobs/{job.id}/cancel", {"reason": "customer went elsewhere"}, 409)
+
+
+@pytest.mark.parametrize("path, body", [
+    ("start", {}),
+    ("complete", {}),
+    ("closeout", {"parts": [], "hours": 2.5, "no_parts_used": True}),
+])
+def test_a_cancelled_job_cannot_be_finished_and_nothing_is_written(env, path, body):
+    """A phone still showing the job (or an offline replay) must not complete
+    a cancelled job: the cancel stopped the timer at 0, so the hours would
+    land on no one's row and the job would read completed and cancelled.
+    Nor may /start reopen it: only /reactivate clears the cancel."""
+    job = _job(env)
+    _timer(env, job, TECH_USER)
+    env.db.commit()
+    assert env.client.post(f"/api/jobs/{job.id}/cancel",
+                           json={"reason": "customer went elsewhere"}).status_code == 200
+    _refused(env, "POST", f"/api/jobs/{job.id}/{path}", body, 409, code="job_cancelled")
+    env.db.expire_all()
+    assert env.db.get(Job, job.id).lifecycle_stage == "cancelled"
+
+
+def test_reactivate_clears_the_cancel_and_restores_released_requests(env):
+    from gdx_dispatch.models.tenant_models import JobPartNeeded
+
+    job = _job(env)
+    needed = _part(env, job, "needed")
+    env.db.commit()
+    assert env.client.post(f"/api/jobs/{job.id}/cancel",
+                           json={"reason": "customer went elsewhere"}).status_code == 200
+    r = env.client.post(f"/api/jobs/{job.id}/reactivate", json={"reason": "customer called back"})
+    assert r.status_code == 200, r.text
+    env.db.expire_all()
+    j = env.db.get(Job, job.id)
+    assert j.lifecycle_stage != "cancelled"
+    assert j.cancelled_at is None and j.cancel_reason is None
+    assert env.db.get(JobPartNeeded, needed.id).status == "needed"
+
+
+def test_a_timer_the_cancel_stopped_is_settled_after_reactivate(env):
+    """The cancel banked it at 0 and the office enters any hours through
+    labor: after /reactivate it is neither owed at day-close nor restated by
+    the next closeout, which would count the same hours twice."""
+    from gdx_dispatch.routers.jobs import _stopped_job_timer_for
+    from gdx_dispatch.services import day_close
+
+    job = _job(env)
+    stopped = _timer(env, job, TECH_USER)
+    env.db.commit()
+    assert env.client.post(f"/api/jobs/{job.id}/cancel",
+                           json={"reason": "customer went elsewhere"}).status_code == 200
+    assert env.client.post(f"/api/jobs/{job.id}/reactivate",
+                           json={"reason": "customer called back"}).status_code == 200
+    env.db.expire_all()
+    assert stopped.id not in [t.id for t in day_close._all_candidates(env.db, job)]
+    assert _stopped_job_timer_for(env.db, job.id, str(TECH_USER)) is None
+
+
+def test_a_timer_stopped_before_the_cancel_is_still_owed_after_reactivate(env):
+    """A cancel is not a finish: it settles only the timers it stops. One the
+    tech had already Stop-tapped at 0 is unpaid, and after /reactivate the
+    day-close still owes it."""
+    from gdx_dispatch.routers.mobile import MOBILE_STOP_LABOR_NOTE
+    from gdx_dispatch.services import day_close
+
+    job = _job(env)
+    owed = _timer(env, job, TECH_USER, notes=MOBILE_STOP_LABOR_NOTE)
+    owed.clock_out, owed.duration_minutes = _now() - timedelta(minutes=30), 0
+    env.db.commit()
+    assert env.client.post(f"/api/jobs/{job.id}/cancel",
+                           json={"reason": "customer went elsewhere"}).status_code == 200
+    assert env.client.post(f"/api/jobs/{job.id}/reactivate",
+                           json={"reason": "customer called back"}).status_code == 200
+    env.db.expire_all()
+    assert env.db.get(type(owed), owed.id).notes == MOBILE_STOP_LABOR_NOTE
+    assert owed.id in [t.id for t in day_close._all_candidates(env.db, job)]
 
 
 def test_start_job_hands_the_unassigned_visit_to_the_starter(env):
@@ -726,16 +893,13 @@ def test_public_patch_date_moves_the_visit(env):
     assert _actions(env.db, before, job.id) == ["job_updated", "visit_moved"]
 
 
-def test_public_patch_cancel_retires_the_open_visits(env):
+def test_public_patch_cancel_is_refused_in_either_spelling(env):
+    """GDXA-375: the key-authenticated writer used to cancel with no reason
+    (and retire the visits); it now sends the caller to /cancel too."""
     job = _job(env)
     _visit(env, job, DAY1)
-    before = _audit_ids(env.db)
-    r = env.client.patch(f"/api/v1/jobs/{job.id}", json={"status": "Canceled"})
-    assert r.status_code == 200, r.text
-    assert _layout(env.db, job.id) == []
-    job = _assert_invariant_i(env.db, job.id, constrained=False)
-    assert job.lifecycle_stage == "cancelled"
-    assert _actions(env.db, before, job.id) == ["job_updated", "visit_retired"]
+    body = _refused(env, "PATCH", f"/api/v1/jobs/{job.id}", {"status": "Canceled"}, 409)
+    assert body["detail"]["use"] == "cancel"
 
 
 
@@ -794,11 +958,9 @@ def _status_only_job(env):
 
 def test_refused_needs_answer_status_only_arrival_on_a_job_cancel(env):
     job, v = _status_only_job(env)
-    body = _refused(env, "PATCH", f"/api/jobs/{job.id}", {"lifecycle_stage": "cancelled"},
+    body = _refused(env, "POST", f"/api/jobs/{job.id}/cancel", {"reason": "customer went elsewhere"},
                     409, "needs_answer", question="status_only_arrival")
     assert body["visit_ids"] == [str(v.id)]
-    _refused(env, "PATCH", f"/api/v1/jobs/{job.id}", {"status": "cancelled"},
-             409, "needs_answer", question="status_only_arrival")
 
 
 def test_refused_needs_answer_status_only_arrival_on_an_appointment_cancel(env):
