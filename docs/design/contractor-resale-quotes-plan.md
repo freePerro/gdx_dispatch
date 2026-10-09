@@ -1,9 +1,9 @@
 # Contractor resale quotes — a branded PDF and a private markup, in the portal
 
 Status: PARTIALLY BUILT — PR A (backend: migration 113, models, service, portal
-routes, the PDF) is open as #937, not yet merged. PR B (the portal tabs: My
-Branding, My Quotes, the "Resell this" dialog) is built and open as a PR stacked
-on #937, not yet merged. Neither is released. The GDPR and tax questions below
+routes, the PDF) is MERGED #937. PR B (the portal tabs: My Branding, My
+Quotes, the "Resell this" dialog) is built and open as #938, not yet merged.
+Neither is released. The GDPR and tax questions below
 are open.
 Date: 2026-10-08
 
