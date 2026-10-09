@@ -147,6 +147,41 @@ else
   fi
 fi
 
+# ── docker image age ─────────────────────────────────────────────────────────
+# The drift gate above proves the image SATISFIES requirements.txt; it cannot
+# prove the image matches what CI tests with. requirements.txt pins ranges
+# (fastapi>=…,<1.0), CI resolves them fresh on every run, and the local image
+# keeps whatever it resolved the day it was built — so an old image can be red
+# where CI is green, or green where CI is red, with no file having changed.
+# Report-only: say how old the image is and what it carries, loudly when it
+# predates the last requirements/Dockerfile change on this branch.
+# IMAGE_AGE_CHECK=0 opts out.
+IMAGE=""
+if [[ "${PYBIN:-}" == *"docker run"* ]]; then
+  IMAGE="${PYBIN##* }"
+fi
+IMAGE_ID=""
+if [ "${IMAGE_AGE_CHECK:-1}" = "1" ] && [ -n "$IMAGE" ]; then
+  IMAGE_ID="$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null || true)"
+  created="$(docker image inspect -f '{{.Created}}' "$IMAGE" 2>/dev/null || true)"
+  if [ -n "$created" ]; then
+    img_ts="$(date -d "$created" +%s 2>/dev/null || echo 0)"
+    age_d=$(( ( $(date +%s) - img_ts ) / 86400 ))
+    vers="$(docker run --rm --entrypoint python "$IMAGE" -c \
+      "import importlib.metadata as m; print(' '.join(f'{p} {m.version(p)}' for p in ('fastapi','pydantic','sqlalchemy','freezegun')))" 2>/dev/null || true)"
+    echo "image $IMAGE built $(date -d "$created" '+%Y-%m-%d %H:%M') (${age_d}d old): ${vers:-versions unreadable}"
+    req_ts="$(git -C "$REPO_ROOT" log -1 --format=%ct -- gdx_dispatch/requirements.txt gdx_dispatch/docker/Dockerfile 2>/dev/null || true)"
+    if [ -n "$req_ts" ] && [ "$img_ts" -lt "$req_ts" ]; then
+      echo "⚠ image is OLDER than the last requirements.txt/Dockerfile change on this branch"
+      echo "  ($(date -d "@$req_ts" '+%Y-%m-%d %H:%M')). Failures may be the image, not your code. Rebuild:"
+      echo "    docker compose -f gdx_dispatch/docker/docker-compose.yml build app"
+    elif [ "$age_d" -ge "${IMAGE_MAX_AGE_DAYS:-7}" ]; then
+      echo "⚠ image is ${age_d} days old; CI resolves requirements.txt's ranges fresh on every"
+      echo "  run, so this image may carry older library versions than CI tests with."
+    fi
+  fi
+fi
+
 # addopts comes from pytest.ini (marker filter + -q + -p no:schemathesis_xdist).
 # --ignore is REQUIRED on top of it: e2e/test_schemathesis.py performs a
 # network call at import time, and marker filtering happens after import.
@@ -204,6 +239,11 @@ if [ "${MATRIX_LOCK:-1}" = "1" ]; then
     echo "⚠ flock not found — matrix lock NOT taken; two matrices may overlap"
   fi
 fi
+
+# Clear the last run's shard logs: an N=4 run after an N=7 one would otherwise
+# leave groups 5-7 behind, and the error scans and the vs-main report below read
+# group_*.log, so stale reds would be reported as this run's.
+rm -f "$LOG_DIR"/group_*.log
 
 pids=()
 for g in $(seq 1 "$N"); do
@@ -281,6 +321,17 @@ for g in $(seq 1 "$N"); do
     echo "  passed to this script replaced the runner's -ra and dropped 'f'/'E'. Re-run without it."
   fi
 done
+
+# ── failures vs main ────────────────────────────────────────────────────────
+# Sort every named failure into NEW (yours) and ALREADY FAILING ON MAIN, from a
+# baseline the host records once per origin/main commit (matrix_vs_main.py has
+# the why). Report-only: it never changes this script's exit code — a red that
+# is already red on main is still red, it is just not this branch's to chase.
+# MATRIX_VS_MAIN=0 opts out.
+if [ "$fail" -ne 0 ] && [ "${MATRIX_VS_MAIN:-1}" = "1" ]; then
+  python3 -I "$REPO_ROOT/gdx_dispatch/tools/matrix_vs_main.py" compare \
+    --logs "$LOG_DIR" --repo "$REPO_ROOT" --image "$IMAGE_ID" || true
+fi
 
 if [ "$fail" -ne 0 ]; then
   echo
