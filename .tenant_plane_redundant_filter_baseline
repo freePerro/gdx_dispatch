@@ -64,7 +64,7 @@
   "gdx_dispatch/modules/ledger/rules.py:T6:GlJournalEntry.company_id:994",
   "gdx_dispatch/modules/ledger/service.py:T6:GlAccount.company_id:112",
   "gdx_dispatch/modules/ledger/service.py:T6:GlSettings.company_id:165",
-  "gdx_dispatch/modules/outlook/tasks.py:T5:NextAction.tenant_id:1412",
+  "gdx_dispatch/modules/outlook/tasks.py:T5:NextAction.tenant_id:1419",
   "gdx_dispatch/modules/quickbooks/oauth.py:T5:QBTokenStore.tenant_id:200",
   "gdx_dispatch/modules/quickbooks/oauth.py:T5:QBTokenStore.tenant_id:262",
   "gdx_dispatch/modules/quickbooks/oauth.py:T5:QBTokenStore.tenant_id:318",

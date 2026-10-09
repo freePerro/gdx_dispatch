@@ -32,6 +32,7 @@ What this module guarantees, because an SMS cannot be recalled:
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -429,7 +430,8 @@ def _alert_office(db: Session, row: ScheduledSms) -> None:
             category=_KIND_CATEGORY.get(row.kind, "sms"),
         )
     except Exception:  # noqa: BLE001 — an alert must never fail the drain
-        db.rollback()
+        with contextlib.suppress(Exception):  # a dead rollback must not escape (GDXA-391)
+            db.rollback()
         log.exception("scheduled_sms_alert_failed id=%s", row.id)
 
 

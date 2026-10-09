@@ -22,6 +22,7 @@ Returns a count summary the UI can show ("synced 23 calls, 8 messages").
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -98,7 +99,8 @@ def _sync_messages_for_extensions(
                 "phone_com_sync: upsert race for extension=%s (non-fatal)",
                 ext_id,
             )
-            tenant_db.rollback()
+            with contextlib.suppress(Exception):  # a dead rollback must not escape (GDXA-391)
+                tenant_db.rollback()
     return synced
 
 
@@ -163,7 +165,8 @@ def _sync_calls_with_voicemails(
                 "phone_com_sync: call upsert race for id=%s (non-fatal)",
                 item.get("id"),
             )
-            tenant_db.rollback()
+            with contextlib.suppress(Exception):  # a dead rollback must not escape (GDXA-391)
+                tenant_db.rollback()
     return calls_synced, voicemails_synced
 
 
@@ -290,7 +293,8 @@ def run_full_resync(
                 tenant_db.commit()
         except Exception:  # noqa: BLE001
             log.exception("phone_com_sync: stamp last_synced_at failed tenant=%s", tenant_id)
-            tenant_db.rollback()
+            with contextlib.suppress(Exception):  # a dead rollback must not escape (GDXA-391)
+                tenant_db.rollback()
 
         # Refresh recent stats roll-up (Wave D / S6). Last 7 days only —
         # historical backfill happens via the one-shot roll_up_all_history.
@@ -300,7 +304,8 @@ def run_full_resync(
             roll_up_recent(tenant_db, days=7)
         except Exception:  # noqa: BLE001
             log.exception("phone_com_sync: stats roll-up failed tenant=%s (non-fatal)", tenant_id)
-            tenant_db.rollback()
+            with contextlib.suppress(Exception):  # a dead rollback must not escape (GDXA-391)
+                tenant_db.rollback()
 
         # Wave E / S10: a successful sync round-trip is the strongest possible
         # signal that the token is still valid — stamp last_validated_at so the
