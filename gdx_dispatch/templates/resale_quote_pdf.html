@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  {#- A contractor's quote to THEIR customer, under THEIR brand
+     (modules/reseller). Its own template, not estimate_pdf.html: that one
+     prints a Tax row, "Estimate #", our PDF-template header, footer and
+     accent, and deposit wording, and none of those belong here. Everything
+     below comes from the reseller's profile and the quote's frozen snapshot
+     (service.resale_pdf_data); no user text is placed in a src, href or CSS
+     value, so WeasyPrint fetches nothing a reseller typed. -#}
+  {%- import "_pdf_line_items.html" as li -%}
+  {%- set tpl = {"line_items": {"show_category": False, "category_display": "column", "show_taxable_marker": False}} -%}
+  {%- set accent = "#0f172a" %}
+  <title>Quote {{ data.reference }}</title>
+  <style>
+    @page { size: A4; margin: 24px; }
+    body { color: #1f2937; font-size: 12px; font-family: Arial, sans-serif; }
+    .header { border-bottom: 2px solid {{ accent }}; padding-bottom: 10px; margin-bottom: 16px; }
+    .brand { display: flex; align-items: center; justify-content: space-between; }
+    .brand h1 { margin: 0; color: {{ accent }}; font-size: 22px; }
+    .logo { max-height: 60px; max-width: 220px; }
+    .meta { margin-top: 4px; color: #4b5563; }
+    .contact { margin-top: 6px; color: #4b5563; }
+    .section { margin-top: 14px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th { text-align: left; background: #f3f4f6; padding: 8px; }
+    td { padding: 8px; border-bottom: 1px solid #e5e7eb; }
+    .num { text-align: right; }
+    .totals { margin-top: 12px; width: 320px; margin-left: auto; }
+    .totals td { border: none; padding: 4px 0; }
+    .totals .label { color: #4b5563; }
+    .totals .grand { border-top: 1px solid #d1d5db; font-weight: 700; }
+    .tier-option { page-break-inside: avoid; }
+    .tier-head { display: flex; justify-content: space-between; font-weight: 700; font-size: 14px; color: {{ accent }}; border-bottom: 1px solid #d1d5db; padding-bottom: 4px; }
+    .tier-desc { margin-top: 4px; white-space: pre-line; }
+    .tier-meta { margin-top: 2px; color: #4b5563; }
+    .tier-choose { color: #374151; font-weight: 600; }
+    .signature { margin-top: 34px; border-top: 1px solid #9ca3af; padding-top: 6px; width: 280px; color: #4b5563; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="brand">
+      <div>
+        {% if branding.company_name %}<h1>{{ branding.company_name }}</h1>{% endif %}
+        {% if branding.address %}<div class="meta" style="white-space: pre-line">{{ branding.address }}</div>{% endif %}
+        <div class="contact">
+          {%- set contact = [branding.phone, branding.email, branding.website] | select | list -%}
+          {{ contact | join(' · ') }}
+        </div>
+        {% if branding.license_no %}<div class="meta">License #: {{ branding.license_no }}</div>{% endif %}
+      </div>
+      {% if branding.logo %}
+      <img class="logo" src="{{ branding.logo }}" alt="Company logo">
+      {% endif %}
+    </div>
+    <div class="meta">Quote #: {{ data.reference }}</div>
+    {% if data.quote_date %}<div class="meta">Date: {{ data.quote_date }}</div>{% endif %}
+  </div>
+
+  {% if data.prepared_for.name or data.prepared_for.address %}
+  <div class="section">
+    <strong>Prepared for</strong><br>
+    {% if data.prepared_for.name %}{{ data.prepared_for.name }}<br>{% endif %}
+    <div style="white-space: pre-line">{{ data.prepared_for.address }}</div>
+  </div>
+  {% endif %}
+
+  {% if data.tier_options %}
+  {% for option in data.tier_options %}
+  <div class="section tier-option">
+    <div class="tier-head"><span>Option {{ loop.index }}: {{ option.name }}</span><span>{{ option.price | money }}</span></div>
+    {% if option.description %}<div class="tier-desc">{{ option.description }}</div>{% endif %}
+    {% if option.warranty_months %}<div class="tier-meta">Warranty: {{ option.warranty_months }} months</div>{% endif %}
+    {{ li.line_items_table(option, tpl, '') }}
+  </div>
+  {% endfor %}
+  <div class="section tier-choose">Choose one option. Your total is the price of the option you accept.</div>
+  {% else %}
+  {% if data.heading %}
+  <div class="section tier-head"><span>{{ data.heading }}</span></div>
+  {% endif %}
+  {{ li.line_items_table(data, tpl, '') }}
+  <table class="totals">
+    <tr><td class="label">Subtotal</td><td class="num">{{ data.subtotal | money }}</td></tr>
+    {% if (data.discount or 0) > 0 %}
+    <tr><td class="label">Discount</td><td class="num">-{{ data.discount | money }}</td></tr>
+    {% endif %}
+    <tr class="grand"><td>Total</td><td class="num">{{ data.total | money }}</td></tr>
+  </table>
+  {% endif %}
+
+  {% if data.terms %}
+  <div class="section">
+    <strong>Terms</strong>
+    <div style="white-space: pre-line">{{ data.terms }}</div>
+  </div>
+  {% endif %}
+
+  {% if data.notes %}
+  <div class="section">
+    <strong>Notes</strong>
+    <div style="white-space: pre-line">{{ data.notes }}</div>
+  </div>
+  {% endif %}
+
+  <div class="signature">Customer Signature</div>
+</body>
+</html>

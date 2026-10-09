@@ -56,3 +56,23 @@ def resolve_logo_for_pdf(logo: str) -> str:
     if path is not None and path.is_file():
         return path.as_uri()
     return ""
+
+
+# A contractor's own logo for the quotes they resell (modules/reseller). Its
+# own pattern AND its own subdirectory, so neither reader can reach the other's
+# files: the public serve route above only accepts BRANDING_LOGO_RE names in
+# the flat root, and a reseller logo is only ever served to its own customer.
+RESELLER_LOGO_RE = re.compile(r"^reseller-logo-[0-9a-f]{32}\.(png|jpg)$")
+RESELLER_LOGO_SUBDIR = "reseller"
+
+
+def reseller_logo_file(filename: str) -> Path | None:
+    """Resolve a minted reseller-logo filename to its path, fenced like
+    ``branding_logo_file``. None for anything the upload route did not mint."""
+    if not RESELLER_LOGO_RE.match(filename or ""):
+        return None
+    base = os.path.realpath(os.path.join(os.getenv("UPLOAD_DIR", "/app/uploads"), RESELLER_LOGO_SUBDIR))
+    candidate = os.path.realpath(os.path.join(base, filename))
+    if not candidate.startswith(base + os.sep):
+        return None
+    return Path(candidate)
