@@ -1,9 +1,10 @@
 # Contractor resale quotes — a branded PDF and a private markup, in the portal
 
 Status: PARTIALLY BUILT — PR A (backend: migration 113, models, service, portal
-routes, the PDF) is open as #937, not yet merged. PR B (the portal tabs: My
-Branding, My Quotes, the "Resell this" dialog) is not built. The GDPR and tax
-questions below are open.
+routes, the PDF) is MERGED #937. PR B (the portal tabs: My Branding, My
+Quotes, the "Resell this" dialog) is built and open as #938, not yet merged.
+Neither is released. The GDPR and tax questions below
+are open.
 Date: 2026-10-08
 
 ## The ask
@@ -214,10 +215,45 @@ hidden-prices default now falls back to the estimate's company, as
   was read from the rows and the totals code; `compute_estimate_totals` was not
   run on it. The root cause is outside this feature: a taxed contractor
   estimate conflicts with the construction-contract rule.
+- **Reselling an expired or declined estimate.** "Resell this" shows on every
+  estimate the portal shows, and the backend accepts every customer-visible
+  status (sent, accepted, rejected, declined, expired). So a contractor can
+  hand their customer a branded price on an estimate we no longer honour, and
+  nothing warns them. Not built either way: limiting it to sent and accepted
+  is a product call. Raised by the PR B audit, 2026-10-08.
 
-## PR B (not built)
+## PR B (as built)
 
-The portal tabs "My Branding" (disclaimer, profile, logo, default markup) and
-"My Quotes" (tracking list, PDF download, delete), plus a "Resell this" dialog on
-an estimate. They show only when `/portal/context.reseller.eligible` is true.
-Vitest and Playwright e2e.
+Frontend only; no backend, migration or route change.
+
+- `CustomerPortalView.vue` stores `/portal/context.reseller`. Only when
+  `eligible` is true does it show two tabs, **My Branding** and **My Quotes**,
+  and a **Resell this** button on the estimate detail beside Download PDF. A
+  retail account sees none of them.
+- `PortalBrandingTab.vue`: the disclaimer text with **I agree** (a 409, meaning
+  the wording changed, reloads the new text), then the profile form, locked in a
+  disabled fieldset until they agree. It holds company name, phone, email,
+  website, license number, default markup (0–500 %), address and terms. Blank
+  fields save as empty, so clearing a field works. The logo uploads as PNG,
+  JPEG or WebP. The logo is behind the portal token, so the preview is fetched
+  as a blob, not an `<img src>` URL. The logo box is white in both themes
+  because the PDF page is white.
+- `PortalMyQuotesTab.vue`: one card per quote, showing our price before tax
+  (the snapshot carries no tax, and the tax question above is open) beside
+  their price and the markup, or the option list for an options quote. Each
+  card has a PDF download and a delete behind a destructive confirm. Before the
+  disclaimer is agreed, the list's 403 shows a pointer to My Branding rather
+  than an error. Its delete confirm uses the one `ConfirmDialog` that `CustomerPortalView` now
+  mounts for the whole portal. The portal has no AppLayout, and every TabPanel
+  is mounted at once, so the per-tab dialog that the quote-request tab (#935)
+  carried, plus a second one here, stacked two copies of each confirm.
+- `PortalResellDialog.vue`: reads the profile on open and starts the markup at
+  the default. Without agreement it points to My Branding. On success it shows
+  the reference, their price and our price before tax, with Download PDF and
+  See My Quotes. A cleared markup blocks the quote; it is not read as 0 %.
+- PrimeVue mounts every TabPanel, so My Quotes reloads on a counter that the
+  view bumps when branding changes or a quote is made.
+- Tests: vitest for each component and for the view gating (retail sees
+  nothing), plus `e2e/portal-resale-quotes.spec.js`. The e2e seeds a contractor,
+  a sent estimate and a portal session, then walks agree → brand → logo →
+  resell → PDF download (`%PDF-`) → delete.

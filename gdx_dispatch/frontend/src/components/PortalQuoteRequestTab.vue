@@ -248,9 +248,6 @@
       data-testid="qr-file-input"
       @change="onFilesPicked"
     />
-    <!-- The portal renders without AppLayout, which mounts the app's only
-         ConfirmDialog; the withdraw confirm needs one here. -->
-    <ConfirmDialog />
   </div>
 </template>
 
@@ -266,7 +263,6 @@
 import { computed, nextTick, onMounted, reactive, ref } from 'vue';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
-import ConfirmDialog from 'primevue/confirmdialog';
 import InputNumber from 'primevue/inputnumber';
 import InputText from 'primevue/inputtext';
 import Message from 'primevue/message';
