@@ -56,6 +56,8 @@
             <Tab value="invoices">Invoices</Tab>
             <Tab value="jobs">Jobs</Tab>
             <Tab value="quote" data-testid="quote-request-tab-btn">Request a quote</Tab>
+            <Tab v-if="reseller.eligible" value="branding" data-testid="branding-tab-btn">My Branding</Tab>
+            <Tab v-if="reseller.eligible" value="myquotes" data-testid="my-quotes-tab-btn">My Quotes</Tab>
             <Tab value="contact">Contact</Tab>
           </TabList>
           <TabPanels>
@@ -176,6 +178,21 @@
             <PortalQuoteRequestTab :fetcher="authedFetch" />
           </TabPanel>
 
+          <!-- Contractor and wholesale accounts only: their own brand and
+               the quotes they resell our estimates under it. -->
+          <TabPanel v-if="reseller.eligible" value="branding">
+            <PortalBrandingTab :fetcher="authedFetch" :blob-fetcher="authedBlob" @changed="resaleRefresh++" />
+          </TabPanel>
+          <TabPanel v-if="reseller.eligible" value="myquotes">
+            <PortalMyQuotesTab
+              :fetcher="authedFetch"
+              :downloader="downloadFile"
+              :refresh-key="resaleRefresh"
+              @goto-branding="activeTab = 'branding'"
+              @goto-estimates="activeTab = 'estimates'"
+            />
+          </TabPanel>
+
           <TabPanel value="contact">
             <Card data-testid="contact-card">
               <template #title>Contact Us</template>
@@ -267,9 +284,26 @@
             <p v-else-if="detail.status === 'declined' && detail.declined_reason" class="meta">Declined: {{ detail.declined_reason }}</p>
             <div class="action-row detail-actions">
               <Button label="Download PDF" icon="pi pi-download" severity="secondary" outlined class="flex-1" :loading="pdfBusy" data-testid="estimate-pdf-btn" @click="downloadPdf('estimates', detail.id, `estimate-${detail.estimate_number}`)" />
+              <Button v-if="reseller.eligible" label="Resell this" icon="pi pi-tag" severity="secondary" outlined class="flex-1" data-testid="estimate-resell-btn" @click="openResell(detail)" />
             </div>
           </div>
         </Dialog>
+
+        <PortalResellDialog
+          v-model:visible="resellVisible"
+          :estimate="resellEstimate"
+          :fetcher="authedFetch"
+          :downloader="downloadFile"
+          @created="resaleRefresh++"
+          @goto-branding="resellVisible = false; activeTab = 'branding'"
+          @goto-quotes="resellVisible = false; activeTab = 'myquotes'"
+        />
+
+        <!-- The portal renders without AppLayout, which mounts the staff app's
+             only ConfirmDialog. The tabs' confirms (withdraw a quote request,
+             delete a resale quote) share this one: every TabPanel is mounted
+             at once, so a dialog per tab stacks one confirm on another. -->
+        <ConfirmDialog />
 
         <!-- Invoice detail (2026-10-07). Same numbers as the invoice PDF:
              lines, totals, paid to date, credits, balance due. Paying opens
@@ -438,6 +472,7 @@ import Button from "primevue/button";
 import Card from "primevue/card";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
+import ConfirmDialog from "primevue/confirmdialog";
 import Dialog from "primevue/dialog";
 import Image from "primevue/image";
 import InputText from "primevue/inputtext";
@@ -452,7 +487,10 @@ import TabPanel from "primevue/tabpanel";
 import TabPanels from "primevue/tabpanels";
 import Tabs from "primevue/tabs";
 import Tag from "primevue/tag";
+import PortalBrandingTab from "../components/PortalBrandingTab.vue";
+import PortalMyQuotesTab from "../components/PortalMyQuotesTab.vue";
 import PortalQuoteRequestTab from "../components/PortalQuoteRequestTab.vue";
+import PortalResellDialog from "../components/PortalResellDialog.vue";
 import { formatDate, formatMoney } from "../composables/useFormatters";
 import { lineCategoryMode, rowsGroupedByCategory } from "../utils/lineCategories";
 
@@ -470,6 +508,12 @@ const invoices = ref([]);
 const jobs = ref([]);
 const actionBusy = reactive({});
 const activeTab = ref("estimates");
+// /portal/context's reseller flags: the branding and quote tabs show for
+// contractor and wholesale accounts only.
+const reseller = ref({ eligible: false, disclaimer_accepted: false, set_up: false });
+const resellVisible = ref(false);
+const resellEstimate = ref(null);
+const resaleRefresh = ref(0);
 const detail = ref(null);
 const detailVisible = ref(false);
 const detailLoading = ref(false);
@@ -571,6 +615,7 @@ async function fetchAll() {
     authedFetch("/portal/jobs"),
   ]);
   if (ctx?.company) company.value = ctx.company;
+  if (ctx?.reseller) reseller.value = ctx.reseller;
   estimates.value = Array.isArray(est) ? est : [];
   invoices.value = Array.isArray(inv) ? inv : [];
   jobs.value = Array.isArray(job) ? job : [];
@@ -721,32 +766,50 @@ function openPayUrl(url) {
   if (url) window.open(url, "_blank", "noopener");
 }
 
-// The PDF needs the portal's bearer token, so a plain link can't fetch it:
-// load it as a blob and hand the browser a download of that.
-const pdfBusy = ref(false);
-async function downloadPdf(kind, id, name) {
-  pdfBusy.value = true;
+// A file behind the portal's bearer token (a PDF, the reseller logo): a
+// plain link can't send the token, so fetch it as a blob.
+async function authedBlob(path) {
+  const res = await fetch(path, { headers: { Authorization: `Bearer ${jwt.value}` } });
+  if (res.status === 401) {
+    clearStoredJwt();
+    error.value = "Your portal session has expired.";
+    throw Object.assign(new Error("unauthorized"), { auth: true });
+  }
+  if (!res.ok) throw Object.assign(new Error(`file ${res.status}`), { status: res.status });
+  return res.blob();
+}
+
+// Hand the browser a download of an authed file, under a name.
+async function downloadFile(path, filename) {
   try {
-    const res = await fetch(`/portal/${kind}/${id}/pdf`, { headers: { Authorization: `Bearer ${jwt.value}` } });
-    if (res.status === 401) {
-      clearStoredJwt();
-      error.value = "Your portal session has expired.";
-      return;
-    }
-    if (!res.ok) throw new Error(`pdf ${res.status}`);
-    const url = URL.createObjectURL(await res.blob());
+    const url = URL.createObjectURL(await authedBlob(path));
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${name}.pdf`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  } catch {
+  } catch (e) {
+    if (e?.auth) return;
     toast.add({ severity: "error", summary: "Download failed", detail: "Could not load the PDF. Try again.", life: 4000 });
+  }
+}
+
+const pdfBusy = ref(false);
+async function downloadPdf(kind, id, name) {
+  pdfBusy.value = true;
+  try {
+    await downloadFile(`/portal/${kind}/${id}/pdf`, `${name}.pdf`);
   } finally {
     pdfBusy.value = false;
   }
+}
+
+function openResell(est) {
+  resellEstimate.value = est;
+  detailVisible.value = false;
+  resellVisible.value = true;
 }
 
 async function startDepositPay(estimateId) {

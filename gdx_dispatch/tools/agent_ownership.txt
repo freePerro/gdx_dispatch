@@ -482,6 +482,9 @@ gdx_dispatch/frontend/src/components/LeadIntakeForm.vue      customers-crm
 gdx_dispatch/frontend/src/components/LeadEstimatesPanel.vue  customers-crm
 gdx_dispatch/frontend/src/components/QuoteRequestDoors.vue   customers-crm
 gdx_dispatch/frontend/src/components/PortalQuoteRequestTab.vue customers-crm
+gdx_dispatch/frontend/src/components/PortalBrandingTab.vue  customers-crm
+gdx_dispatch/frontend/src/components/PortalMyQuotesTab.vue   customers-crm
+gdx_dispatch/frontend/src/components/PortalResellDialog.vue  customers-crm
 gdx_dispatch/frontend/src/components/quoteRequestOptions.js customers-crm
 gdx_dispatch/frontend/src/views/SegmentsView.vue             customers-crm
 gdx_dispatch/frontend/src/views/TagsView.vue                 customers-crm
