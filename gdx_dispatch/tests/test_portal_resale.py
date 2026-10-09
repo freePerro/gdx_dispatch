@@ -83,9 +83,9 @@ class _Ctx:
             ),
             {"tid": TENANT},
         )
-        s.add(Customer(id=_CUST_A, name="Acme Builders", pricing_class="contractor", company_id=TENANT))
-        s.add(Customer(id=_CUST_B, name="Bulk Wholesale", pricing_class="wholesale", company_id=TENANT))
-        s.add(Customer(id=_CUST_RETAIL, name="Rita Retail", pricing_class="retail", company_id=TENANT))
+        s.add(Customer(id=_CUST_A, name="Acme Builders", customer_type="Contractor", company_id=TENANT))
+        s.add(Customer(id=_CUST_B, name="Bulk Wholesale", customer_type="Wholesale", company_id=TENANT))
+        s.add(Customer(id=_CUST_RETAIL, name="Rita Retail", customer_type="Retail", company_id=TENANT))
         s.add(AppSettings(company_name=OUR_NAME, address=OUR_ADDRESS,
                           logo="/api/settings/branding/logo/branding-logo-" + "a" * 32 + ".png"))
         s.add(PdfTemplate(id="tpl-estimate", company_id=TENANT, template_type="estimate",
@@ -202,6 +202,29 @@ def test_a_retail_customer_gets_403_everywhere_and_context_hides_it(ctx):
     assert ctx.client.get("/portal/context").json()["reseller"] == {
         "eligible": False, "disclaimer_accepted": False, "set_up": False,
     }
+
+
+@pytest.mark.parametrize(
+    ("customer_type", "pricing_class", "eligible"),
+    [
+        # The production shape: the type is set, pricing_class is blank.
+        ("Wholesale", None, True),
+        ("Contractor", None, True),
+        (" wholesale ", None, True),
+        # pricing_class alone no longer grants it.
+        ("Residential", "wholesale", False),
+        (None, "contractor", False),
+        ("Retail", None, False),
+    ],
+)
+def test_eligibility_reads_customer_type_not_pricing_class(ctx, customer_type, pricing_class, eligible):
+    with ctx.Session() as s:
+        cust = s.get(Customer, _CUST_RETAIL)
+        cust.customer_type, cust.pricing_class = customer_type, pricing_class
+        s.commit()
+        assert service.is_eligible(s, _CUST_RETAIL) is eligible
+    ctx.as_(_USER_R, _CUST_RETAIL)
+    assert ctx.client.get("/portal/context").json()["reseller"]["eligible"] is eligible
 
 
 def test_context_reports_eligibility_then_setup(ctx):

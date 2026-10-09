@@ -33,16 +33,18 @@ __all__ = [
     "ALLOWED_LOGO_MIME_TYPES",
     "DISCLAIMER_TEXT",
     "DISCLAIMER_VERSION",
-    "ELIGIBLE_PRICING_CLASSES",
+    "ELIGIBLE_CUSTOMER_TYPES",
     "MAX_LOGO_BYTES",
     "MAX_MARKUP_PCT",
     "PhotoProcessingError",
     "build_snapshot",
 ]
 
-#: Who may resell: every portal account whose customer is priced as a trade
-#: account (Doug, 2026-10-07).
-ELIGIBLE_PRICING_CLASSES = frozenset({"contractor", "wholesale"})
+#: Who may resell: every portal account whose customer type is Contractor or
+#: Wholesale (Doug, 2026-10-09). Not `pricing_class`: on production the trade
+#: accounts carry the type and leave pricing_class blank, so the first version,
+#: which read pricing_class, showed the feature to none of them.
+ELIGIBLE_CUSTOMER_TYPES = frozenset({"contractor", "wholesale"})
 
 #: Shown before first use. The version is a hash of the words, so rewording it
 #: makes every earlier acceptance stale and the reseller agrees again — the
@@ -72,10 +74,11 @@ _CENT = Decimal("0.01")
 
 
 def is_eligible(db: Session, customer_id: Any) -> bool:
-    pricing_class = db.execute(
-        select(Customer.pricing_class).where(Customer.id == customer_id, Customer.deleted_at.is_(None))
+    customer_type = db.execute(
+        select(Customer.customer_type).where(Customer.id == customer_id, Customer.deleted_at.is_(None))
     ).scalar_one_or_none()
-    return pricing_class in ELIGIBLE_PRICING_CLASSES
+    # Free text: the form writes "Wholesale", QuickBooks imports may not.
+    return (customer_type or "").strip().lower() in ELIGIBLE_CUSTOMER_TYPES
 
 
 def get_profile(db: Session, customer_id: Any) -> ResellerProfile | None:

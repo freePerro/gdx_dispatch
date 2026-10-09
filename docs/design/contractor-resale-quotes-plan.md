@@ -1,10 +1,10 @@
 # Contractor resale quotes — a branded PDF and a private markup, in the portal
 
-Status: PARTIALLY BUILT — PR A (backend: migration 113, models, service, portal
-routes, the PDF) is MERGED #937. PR B (the portal tabs: My Branding, My
-Quotes, the "Resell this" dialog) is built and open as #938, not yet merged.
-Neither is released. The GDPR and tax questions below
-are open.
+Status: RELEASED v1.143.0 — PR A (backend: migration 113, models, service,
+portal routes, the PDF) MERGED #937; PR B (the portal tabs: My Branding, My
+Quotes, the "Resell this" dialog) MERGED #938. Eligibility moving from
+`pricing_class` to `customer_type` (see *Who* below) is a later fix, not yet
+released. The GDPR and tax questions below are open.
 Date: 2026-10-08
 
 ## The ask
@@ -18,7 +18,10 @@ that they hand to their customer.
 Decisions (Doug, 2026-10-07):
 
 - **Who:** portal accounts whose customer has `pricing_class` contractor or
-  wholesale. Retail customers never see it.
+  wholesale. Retail customers never see it. *Superseded 2026-10-09 (Doug):
+  eligibility reads `customer_type` Contractor or Wholesale instead. As
+  released in v1.143.0 it read `pricing_class`, which every production trade
+  account leaves blank, so no real customer could see the feature.*
 - **Markup:** one percentage per quote, defaulting from the account's setting.
 - **Private:** their branding, markup and quotes are theirs. A versioned
   disclaimer is accepted before any of it can be used.

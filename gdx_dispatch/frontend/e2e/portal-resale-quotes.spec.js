@@ -25,7 +25,7 @@ async function seed(request) {
 
   const cust = await request.post('/api/customers', {
     headers: staff,
-    data: { name: `Resale E2E ${stamp}`, email, phone: '5550000002', pricing_class: 'contractor' },
+    data: { name: `Resale E2E ${stamp}`, email, phone: '5550000002', customer_type: 'Contractor' },
   });
   expect(cust.ok(), await cust.text()).toBeTruthy();
   const customerId = (await cust.json()).id;
