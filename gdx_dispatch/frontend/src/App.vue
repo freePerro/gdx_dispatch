@@ -34,7 +34,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useToast } from 'primevue/usetoast';
 import ThemeProvider from './components/ThemeProvider.vue';
@@ -53,6 +53,11 @@ const route = useRoute();
 useIdleLogout();
 
 const noShell = computed(() => Boolean(route?.meta?.noShell));
+
+// base.css locks body scrolling because AppLayout scrolls inside its own main
+// panel. A no-shell page has no such panel, so without this the portal and the
+// public proposal page clip everything below the fold (see base.css).
+watch(noShell, (bare) => document.body.classList.toggle('no-shell', bare), { immediate: true });
 
 // Dedupe toasts for repeated identical errors inside a short window — the
 // user only needs to know once per cluster.
