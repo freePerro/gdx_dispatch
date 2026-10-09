@@ -1067,6 +1067,8 @@ def create_app() -> FastAPI:
     _quote_requests_router = _load_router("gdx_dispatch.routers", "quote_requests")
     app.include_router(_quote_requests_router.portal_router)
     app.include_router(_quote_requests_router.router)
+    # Contractor resale quotes — a trade customer's own brand and markup.
+    app.include_router(_load_router("gdx_dispatch.routers", "portal_resale").portal_router)
     app.include_router(custom_fields_router.router if hasattr(custom_fields_router, "router") else custom_fields_router)
     app.include_router(webhook_monitor.router if hasattr(webhook_monitor, "router") else webhook_monitor)
     app.include_router(pwa_router)

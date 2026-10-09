@@ -78,6 +78,17 @@
 # and POST /portal/quote-requests/{request_id}/withdraw — the customer changing
 # or withdrawing their own request. Same ownership check (_own_request_or_404,
 # 404 for another customer's id: test_another_customer_can_neither_edit_nor_withdraw).
+#
+# 385 → 389 (2026-10-08, contractor resale quotes): PUT /portal/reseller/profile,
+# POST /portal/reseller/logo, POST /portal/estimates/{estimate_id}/resale and
+# DELETE /portal/resale-quotes/{quote_id} — a contractor or wholesale portal
+# customer's own branding and resale quotes. The gate is in the handler:
+# pricing_class must be contractor/wholesale (403 otherwise), the current
+# disclaimer must be accepted (403), the estimate must be the caller's and
+# customer-visible (_get_customer_estimate_or_404), and a quote is refused
+# (404) unless its customer_id is the caller's (_own_quote_or_404;
+# test_portal_resale.py, test_customer_b_cannot_read_or_delete_customer_as_quote).
+# Plan: docs/design/contractor-resale-quotes-plan.md.
 
 # ── customer portal ───────────────────────────────────────────────────────
 # These authenticate a CUSTOMER, not a tenant user, so no role or permission
@@ -92,6 +103,7 @@
 # route still needs a per-record OWNERSHIP check, and that is what to verify
 # on each of these, not a permission key.
 DELETE /payments/methods/{method_id}
+DELETE /portal/resale-quotes/{quote_id}
 PATCH /portal/quote-requests/{request_id}
 POST /payments/ach/setup
 POST /payments/intent
@@ -102,11 +114,14 @@ POST /portal/door-listings/{listing_id}/photos
 POST /portal/estimates/{estimate_id}/accept
 POST /portal/estimates/{estimate_id}/decline
 POST /portal/estimates/{estimate_id}/deposit/pay
+POST /portal/estimates/{estimate_id}/resale
 POST /portal/message
 POST /portal/password
 POST /portal/quote-requests
 POST /portal/quote-requests/{request_id}/photos
 POST /portal/quote-requests/{request_id}/withdraw
+POST /portal/reseller/logo
+PUT /portal/reseller/profile
 
 # ── staff surface ─────────────────────────────────────────────────────────
 DELETE /api/appointments/{appt_id}

@@ -845,6 +845,23 @@ def portal_context(
         # The routes below re-check the same helper — hiding a button is not
         # access control.
         "can_submit_listings": _listing_service.customer_may_submit(db, principal.customer_id),
+        "reseller": _reseller_context(db, principal.customer_id),
+    }
+
+
+def _reseller_context(db: Session, customer_id: UUID) -> dict[str, bool]:
+    """Whether to show My Branding / My Quotes. routers/portal_resale.py
+    re-checks eligibility on every route — hiding a tab is not access control."""
+    from gdx_dispatch.modules.reseller import service as reseller
+
+    if not reseller.is_eligible(db, customer_id):
+        return {"eligible": False, "disclaimer_accepted": False, "set_up": False}
+    profile = reseller.get_profile(db, customer_id)
+    accepted = reseller.disclaimer_current(profile)
+    return {
+        "eligible": True,
+        "disclaimer_accepted": accepted,
+        "set_up": bool(accepted and profile is not None and profile.company_name),
     }
 
 

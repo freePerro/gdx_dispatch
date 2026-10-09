@@ -462,11 +462,15 @@ gdx_dispatch/routers/winback.py                              customers-crm
 gdx_dispatch/routers/marketing.py                            customers-crm
 gdx_dispatch/routers/portal.py                               customers-crm
 gdx_dispatch/routers/quote_requests.py                       customers-crm
+gdx_dispatch/routers/portal_resale.py                        customers-crm
 gdx_dispatch/core/customer_alert_tags.py                     customers-crm
 gdx_dispatch/core/name_normalize.py                          customers-crm
 gdx_dispatch/core/locations.py                               customers-crm
 gdx_dispatch/modules/customer_portal/*                       customers-crm
 gdx_dispatch/modules/quote_requests/*                        customers-crm
+# Reseller markup math (modules/reseller/service.py build_snapshot) is
+# co-reviewed by estimates-pricing: it reads routers/pdf._estimate_payload.
+gdx_dispatch/modules/reseller/*                              customers-crm
 gdx_dispatch/modules/locations/*                             customers-crm
 gdx_dispatch/services/customer_rolling_volume.py             customers-crm
 gdx_dispatch/tasks/customer_volume_refresh.py                customers-crm

@@ -100,6 +100,7 @@ DELETE /api/warranties/{warranty_id}
 DELETE /api/webhooks/subscriptions/{sub_id}
 DELETE /api/workflows/{rule_id}
 DELETE /payments/methods/{method_id}
+DELETE /portal/resale-quotes/{quote_id}
 GET /.well-known/gdx-platform
 GET /.well-known/mcp-tools
 GET /.well-known/security.txt
@@ -660,6 +661,10 @@ GET /portal/jobs
 GET /portal/jobs/{job_id}/photos
 GET /portal/jobs/{job_id}/photos/{photo_id}
 GET /portal/quote-requests
+GET /portal/resale-quotes
+GET /portal/resale-quotes/{quote_id}/pdf
+GET /portal/reseller/logo
+GET /portal/reseller/profile
 GET /portal/verify
 GET /public/door-listings.json
 GET /public/door-listings/{photo_id}.jpg
@@ -1245,6 +1250,7 @@ POST /portal/door-listings/{listing_id}/photos
 POST /portal/estimates/{estimate_id}/accept
 POST /portal/estimates/{estimate_id}/decline
 POST /portal/estimates/{estimate_id}/deposit/pay
+POST /portal/estimates/{estimate_id}/resale
 POST /portal/login
 POST /portal/login/password
 POST /portal/message
@@ -1252,6 +1258,7 @@ POST /portal/password
 POST /portal/quote-requests
 POST /portal/quote-requests/{request_id}/photos
 POST /portal/quote-requests/{request_id}/withdraw
+POST /portal/reseller/logo
 PUT /api/admin/ai-settings
 PUT /api/admin/customer-tags/{tag_id}
 PUT /api/admin/feature-settings/tech-mobile
@@ -1279,3 +1286,4 @@ PUT /api/pricing-engine/volume-tiers
 PUT /api/qb/schedule
 PUT /api/settings/email
 PUT /api/workflows/{rule_id}
+PUT /portal/reseller/profile

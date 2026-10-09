@@ -242,3 +242,16 @@ def generate_invoice_pdf(
 ) -> bytes:
     html = _render_template("invoice_pdf.html", invoice_data, tenant_branding, template_config, "invoice")
     return HTML(string=html, base_url=str(_TEMPLATES_DIR)).write_pdf()
+
+
+def generate_resale_quote_pdf(quote_data: dict[str, Any], reseller_branding: dict[str, Any]) -> bytes:
+    """A contractor's branded resale quote (modules/reseller).
+
+    Deliberately NOT routed through _render_template: no PdfTemplate config
+    and no _default_branding, so neither our saved header/footer/accent nor
+    our logo resolver can reach this document. ``reseller_branding["logo"]``
+    is already a file:// URI of a fenced, minted file, or "".
+    """
+    template = _JINJA_ENV.get_template("resale_quote_pdf.html")
+    html = template.render(data=dict(quote_data or {}), branding=dict(reseller_branding or {}))
+    return HTML(string=html, base_url=str(_TEMPLATES_DIR)).write_pdf()

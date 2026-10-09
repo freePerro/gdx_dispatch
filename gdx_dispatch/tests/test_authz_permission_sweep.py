@@ -47,7 +47,10 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_unpermissioned_bas
 # upload, owned by principal.customer_id; reason recorded in the baseline file.
 # 383 → 385 (2026-10-07): the customer changing or withdrawing that request,
 # under the same ownership check; reason recorded in the baseline file.
-BASELINE_SIZE = 385
+# 385 → 389 (2026-10-08): a contractor's resale branding, logo, quote create and
+# quote delete, gated in the handler on pricing class, disclaimer and
+# ownership; reason recorded in the baseline file.
+BASELINE_SIZE = 389
 
 
 def _baseline() -> set[str]:
