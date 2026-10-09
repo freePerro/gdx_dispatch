@@ -712,7 +712,8 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
                         log.warning("sync folder %s (%s) failed: %s",
                                     f.display_name, f.graph_folder_id, exc)
                         failed.append({"folder": f.display_name, "error": str(exc)[:200]})
-                        tdb.rollback()
+                        with contextlib.suppress(Exception):  # a dead rollback must not escape (GDXA-391)
+                            tdb.rollback()
                     except IntegrityError as exc:
                         # A constraint violation (e.g. a duplicate-message race
                         # with a concurrent sync of the same account) must cost
@@ -722,7 +723,8 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
                         log.warning("sync folder %s (%s) hit IntegrityError: %s",
                                     f.display_name, f.graph_folder_id, exc)
                         failed.append({"folder": f.display_name, "error": str(exc)[:200]})
-                        tdb.rollback()
+                        with contextlib.suppress(Exception):  # a dead rollback must not escape (GDXA-391)
+                            tdb.rollback()
 
                 # Every folder's sync state is now committed. Ingest the collected
                 # vendor-bill candidates in an ISOLATED session (gc is still alive)
@@ -745,7 +747,8 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
                     hubx_totals = process_hubx_orders(tdb, gc, account)
                 except Exception:  # noqa: BLE001
                     log.exception("hubx order ingest failed for account %s (sync unaffected)", aid)
-                    tdb.rollback()
+                    with contextlib.suppress(Exception):  # a dead rollback must not escape (GDXA-391)
+                        tdb.rollback()
         except OutlookReconnectRequired as exc:
             log.warning("sync_outlook_mailbox: reconnect required for %s: %s", aid, exc)
             account.last_error = str(exc)[:500]
@@ -768,14 +771,16 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
             resend_totals = process_resends(tdb, account)
         except Exception:
             log.exception("resend_detect failed for account %s (sync unaffected)", aid)
-            tdb.rollback()
+            with contextlib.suppress(Exception):  # a dead rollback must not escape (GDXA-391)
+                tdb.rollback()
         bounce_totals: dict = {}
         try:
             from gdx_dispatch.modules.outlook.bounce_detect import process_bounces
             bounce_totals = process_bounces(tdb, account)
         except Exception:
             log.exception("bounce_detect failed for account %s (sync unaffected)", aid)
-            tdb.rollback()
+            with contextlib.suppress(Exception):  # a dead rollback must not escape (GDXA-391)
+                tdb.rollback()
 
         account.last_sync_at = datetime.now(timezone.utc)
         account.last_error = None
@@ -921,7 +926,8 @@ def backfill_outlook_mailbox(self, account_id: str, tenant_id: str, days: int = 
                     except OutlookGraphAPIError as exc:
                         log.warning("backfill folder %s failed: %s", f.display_name, exc)
                         failed.append({"folder": f.display_name, "error": str(exc)[:200]})
-                        tdb.rollback()
+                        with contextlib.suppress(Exception):  # a dead rollback must not escape (GDXA-391)
+                            tdb.rollback()
         except OutlookReconnectRequired as exc:
             log.warning("backfill: reconnect required for %s: %s", aid, exc)
             account.last_error = str(exc)[:500]
@@ -1247,7 +1253,8 @@ def renew_all_outlook_subscriptions(self) -> dict:
                 created += 1
                 log.info("renew_all: created missing subscription for account=%s", account.id)
             except SubscriptionError:
-                tdb.rollback()
+                with contextlib.suppress(Exception):  # a dead rollback must not escape (GDXA-391)
+                    tdb.rollback()
                 log.exception("renew_all: create failed for account=%s (fallback poll still covers sync)", account.id)
                 create_failed += 1
     except Exception:

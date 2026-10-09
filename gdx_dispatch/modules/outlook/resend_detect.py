@@ -59,6 +59,7 @@ back next cycle; every flip is audited, so the cycle is safe.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -331,7 +332,8 @@ def process_resends(tdb: Session, account: OutlookAccount) -> dict[str, Any]:
                 break
         except Exception:
             log.exception("resend_detect: estimate %s failed", getattr(est, "id", None))
-            tdb.rollback()
+            with contextlib.suppress(Exception):  # a dead rollback must not escape (GDXA-391)
+                tdb.rollback()
     if detected:
         tdb.commit()
     return {"rejected_seen": len(rejected), "resent_detected": detected}
