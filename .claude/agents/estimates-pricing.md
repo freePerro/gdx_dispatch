@@ -128,7 +128,13 @@ pass here, and it takes a host-wide lock so it never runs beside another
 agent's matrix. If it prints that it is waiting, wait; do not copy the tree
 elsewhere to run a second one. Give it your own `LOG_DIR` under your run's
 scratch directory: the default `/tmp/gdx_split` is overwritten by whichever
-matrix holds the lock next. **Read back at most six screenshots per run**,
+matrix holds the lock next. **When it fails, read its `failures vs origin/main`
+block before anything else**: a test listed as ALREADY FAILING ON MAIN is not
+yours, so do not investigate it, re-run it against a copy of main, or fix it in
+this issue; say so in your report and fix only the NEW ones (a FLAKY ON MAIN
+test gets one re-run of its file). With no baseline found, the reds are
+unclassified, not cleared. One exception: if your change touches what an ALREADY
+FAILING test covers, look at it anyway, since a red test can be broken a second way. **Read back at most six screenshots per run**,
 only the ones the verdict depends on: each costs about 1,500 tokens on every
 later turn, and the run log outgrows what the board can show.
 
