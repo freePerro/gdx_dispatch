@@ -586,13 +586,47 @@ def update_appointment(
     # dragging it to another day would make that day "worked" (multi-day jobs
     # plan §5.4a, round 33: later_day_started and open_day both read it).
     # Compared with the STORED start: the edit form resends start_at on every
-    # save, so a notes edit or a tech change still succeeds.
+    # save, so a notes edit still succeeds.
     if a.arrived_at is not None and data.get("start_at") is not None and a.start_at is not None:
         from gdx_dispatch.services.visit_sync import shop_day, shop_tz  # noqa: PLC0415
 
         tz = shop_tz(db)
         if shop_day(_aware(data["start_at"]), tz) != shop_day(_aware(a.start_at), tz):
             return _conflict("Undo the arrival first", "visit_arrived", visit_id=str(a.id))
+    # Nor can an arrived visit be handed to someone other than its tech: the
+    # visit says who worked it, and Undo arrival matches a tap only to its own
+    # tech's visit (arrival_undo._match), so a stranger's name leaves the tap
+    # reachable only from the job's crew row. An unassigned visit takes any
+    # tap, so it may be given the tapper (asked of the ledger, not re-derived);
+    # a tap with no tech has no tapper to give, and naming anyone strands it.
+    # A visit whose tap is already stranded (handed on before this guard) may
+    # go back to a tech whose tap it would match again. A visit with no
+    # arrival Undo could act on (its no_arrival test) stays editable, so the
+    # 409's exit always exists (GDXA-383). Compared with the STORED tech, for
+    # the same resent-form reason.
+    if "tech_id" in data and (a.arrived_at is not None or (a.status or "") == "arrived"):
+        new_tech = data["tech_id"] or None
+        stored = a.tech_id or None
+        strands = False
+        if new_tech != stored:
+            job = _job_of(db, a.job_id)
+            if job is None:
+                strands = stored is not None
+            else:
+                from gdx_dispatch.services.arrival_undo import taps_if_tech  # noqa: PLC0415
+
+                held, regained = taps_if_tech(db, job, a, stored, new_tech)
+                if held is not None:
+                    strands = (held.tech_id or None) != new_tech
+                else:
+                    strands = stored is not None and (new_tech is None or regained is None)
+        if strands:
+            return _conflict(
+                "This visit has an arrival recorded, so it cannot change tech. Use Undo "
+                "arrival for a mis-tap, or reassign the next day's visit instead.",
+                "visit_arrived",
+                visit_id=str(a.id),
+            )
     if (
         data.get("status") == "cancelled"
         and a.status != "cancelled"
