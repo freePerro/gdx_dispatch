@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 import uuid
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
@@ -11,7 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import TextClause, Uuid, bindparam, func, or_, select, update
 from sqlalchemy import text as _text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -31,7 +32,9 @@ from gdx_dispatch.core.part_pricing import (
     resolve_sell_price_with_source,
 )
 from gdx_dispatch.core.roles import is_technician
+from gdx_dispatch.core.settings_row import settings_sql, tenant_id_value
 from gdx_dispatch.models.tenant_models import (
+    Appointment,
     Customer,
     Invoice,
     Job,
@@ -145,6 +148,16 @@ class JobUpdate(BaseModel):
 
 def jsonable_response(content: Any, status_code: int = 200) -> JSONResponse:
     return JSONResponse(status_code=status_code, content=jsonable_encoder(content))
+
+
+def _uuid_text(sql: str, *names: str) -> TextClause:
+    """`_text(sql)` with each named `:param` typed as the `Uuid` column it is
+    compared to; bind a `uuid.UUID`. SQLite stores a Uuid as 32 dashless hex,
+    so a dashed-string bind matches nothing there while Postgres casts it
+    (GDXA-382). Names absent from ``sql`` are skipped, so a dynamic WHERE can
+    name its optional filters unconditionally."""
+    present = [n for n in names if re.search(rf":{n}\b", sql)]
+    return _text(sql).bindparams(*(bindparam(n, type_=Uuid(as_uuid=True)) for n in present))
 
 # Canonical job-status display labels. The source of truth is the
 # `jobs.lifecycle_stage` PG enum (lead/estimate/scheduled/in_progress/
@@ -685,8 +698,11 @@ def list_jobs(
         )
         params["status"] = status
     if customer_id:
-        where.append("j.customer_id = :customer_id")
-        params["customer_id"] = customer_id
+        try:
+            params["customer_id"] = uuid.UUID(customer_id)
+            where.append("j.customer_id = :customer_id")
+        except ValueError:
+            where.append("1 = 0")  # no customer has a malformed id
     if date_lo is not None and date_hi is not None:
         where.append(
             "(j.scheduled_at IS NULL OR (j.scheduled_at >= :date_lo AND j.scheduled_at < :date_hi))"
@@ -697,21 +713,23 @@ def list_jobs(
 
     try:
         total = db.execute(
-            _text(
+            _uuid_text(
                 f"SELECT COUNT(*) FROM jobs j "  # noqa: S608 — WHERE is joined from literal fragments and order_sql is one of two literals; values are bound
                 f"LEFT JOIN customers c ON c.id = j.customer_id AND c.deleted_at IS NULL "
-                f"WHERE {where_sql}"
+                f"WHERE {where_sql}",
+                "customer_id",
             ),
             params,
         ).scalar() or 0
         # Aggregate status counts across the ENTIRE filtered set (not just the current page)
         # so the frontend stat cards and status tabs can show global totals.
         count_rows = db.execute(
-            _text(
+            _uuid_text(
                 "SELECT COALESCE(CAST(j.lifecycle_stage AS text), j.status) AS st, COUNT(*) AS n "  # noqa: S608 — WHERE is joined from literal fragments and order_sql is one of two literals; values are bound
                 "FROM jobs j LEFT JOIN customers c ON c.id = j.customer_id AND c.deleted_at IS NULL "
                 f"WHERE {where_sql} "
-                "GROUP BY COALESCE(CAST(j.lifecycle_stage AS text), j.status)"
+                "GROUP BY COALESCE(CAST(j.lifecycle_stage AS text), j.status)",
+                "customer_id",
             ),
             params,
         ).mappings().all()
@@ -720,7 +738,7 @@ def list_jobs(
             key = _canon_status(cr.get("st"))
             status_counts[key] = status_counts.get(key, 0) + int(cr.get("n") or 0)
         rows = db.execute(
-            _text(
+            _uuid_text(
                 "SELECT j.id, j.job_number, j.title, j.description, j.status, j.lifecycle_stage, "  # noqa: S608 — WHERE is joined from literal fragments and order_sql is one of two literals; values are bound
                 "j.dispatch_status, j.scheduled_at, j.completed_at, "
                 "j.priority, j.job_type, j.customer_id, j.assigned_to, j.holding_area_id, "
@@ -734,7 +752,8 @@ def list_jobs(
                 "LEFT JOIN customer_locations cl ON cl.id = j.location_id AND cl.deleted_at IS NULL "
                 f"WHERE {where_sql} "
                 f"{order_sql}"
-                "LIMIT :page_size OFFSET :offset"
+                "LIMIT :page_size OFFSET :offset",
+                "customer_id",
             ),
             {**params, "page_size": page_size, "offset": offset},
         ).mappings().all()
@@ -885,9 +904,12 @@ def create_job(payload: JobCreate, request: Request, current_user: Any = Depends
         now = datetime.now(UTC)
         customer_name: str | None = None
         if payload.customer_id:
-            cust = db.execute(
-                _text("SELECT name FROM customers WHERE id = :cid"),
-                {"cid": str(payload.customer_id)},
+            try:
+                cust_uuid = uuid.UUID(str(payload.customer_id))
+            except ValueError:
+                cust_uuid = None
+            cust = cust_uuid and db.execute(
+                select(Customer.name).where(Customer.id == cust_uuid)
             ).first()
             if cust:
                 customer_name = cust[0]
@@ -1387,13 +1409,15 @@ def delete_job(
         job.deleted_at = now
         job.updated_at = now
         # Cascade soft-delete to the mirrored appointment so it disappears
-        # from the Appointments page alongside the job.
+        # from the Appointments page alongside the job. Through the ORM so the
+        # Uuid column binds `job_uuid` in each dialect's storage form: a raw
+        # `job_id = :jid` with the dashed string never matches SQLite's 32
+        # dashless hex, and the cascade silently did nothing there (GDXA-382).
         db.execute(
-            _text(
-                "UPDATE appointments SET deleted_at = :now, updated_at = :now "
-                "WHERE job_id = :jid AND deleted_at IS NULL"
-            ),
-            {"now": now, "jid": job_id},
+            update(Appointment)
+            .where(Appointment.job_id == job_uuid, Appointment.deleted_at.is_(None))
+            .values(deleted_at=now, updated_at=now)
+            .execution_options(synchronize_session=False)
         )
         db.flush()
         db.commit()
@@ -1438,14 +1462,14 @@ def _load_workflow_flags(tenant_id: str) -> dict[str, bool]:
     try:
         with SessionLocal() as cdb:
             row = cdb.execute(
-                _text(
+                settings_sql(
                     "SELECT workflow_lock_schedule_on_start, workflow_post_arrival_event, "
                     "workflow_sms_arrival_notify, workflow_require_parts_on_complete, "
                     "workflow_require_hours_on_complete, workflow_require_signature_on_complete, "
                     "workflow_require_invoice_on_complete "
                     "FROM tenant_settings WHERE tenant_id = :tid"
                 ),
-                {"tid": tenant_id},
+                {"tid": tenant_id_value(tenant_id)},
             ).first()
             if row:
                 return {
@@ -2927,8 +2951,7 @@ def closeout_job(
                         if job.customer_id:
                             with contained_read(db):
                                 cust = db.execute(
-                                    _text("SELECT name FROM customers WHERE id = :cid"),
-                                    {"cid": str(job.customer_id)},
+                                    select(Customer.name).where(Customer.id == job.customer_id)
                                 ).first()
                             if cust:
                                 cust_name = cust[0]
@@ -4413,7 +4436,7 @@ def get_job_duration(
 ):
     """Get actual vs estimated duration for a job from time entries."""
     try:
-        uuid.UUID(job_id)
+        job_uuid = uuid.UUID(job_id)
     except (ValueError, AttributeError):
         log.exception("get_job_duration_failed")
         return jsonable_response({"detail": "job not found"}, 404)
@@ -4422,17 +4445,19 @@ def get_job_duration(
     try:
         # Get time entries for this job — kept as raw SQL because TimeEntry
         # has no company_id column in the ORM model but the DB table might.
+        binds = {"job_id": job_uuid, "tenant_id": tenant_id}
         entries = db.execute(
-            _text(
+            _uuid_text(
                 """
                 SELECT COALESCE(SUM(duration_minutes), 0) AS actual_minutes,
                        COUNT(*) AS entry_count
                 FROM time_entries
                 WHERE job_id = :job_id AND company_id = :tenant_id
                   AND deleted_at IS NULL
-                """
+                """,
+                "job_id",
             ),
-            {"job_id": job_id, "tenant_id": tenant_id},
+            binds,
         ).mappings().first()
 
         actual_min = int(entries["actual_minutes"]) if entries else 0
@@ -4443,7 +4468,7 @@ def get_job_duration(
         # lifecycle_stage or any legacy spelling: the status string is NULL or
         # 'Complete' on most historical completed jobs (GDXA-227).
         avg = db.execute(
-            _text(
+            _uuid_text(
                 """
                 SELECT j.job_type,
                        AVG(te.duration_minutes) AS avg_minutes,
@@ -4458,9 +4483,10 @@ def get_job_duration(
                        OR j.status IN ('Complete', 'Completed', 'completed'))
                   AND j.deleted_at IS NULL
                 GROUP BY j.job_type
-                """
+                """,
+                "job_id",
             ),
-            {"job_id": job_id, "tenant_id": tenant_id},
+            binds,
         ).mappings().first()
 
         estimated_hours = round(float(avg["avg_minutes"] or 0) / 60, 2) if avg else None
@@ -4506,13 +4532,14 @@ def get_job_costing(
         # numbers so the UI can show variance.
         from gdx_dispatch.modules.payroll import effective_labor_cost
         time_rows = db.execute(
-            _text(
+            _uuid_text(
                 "SELECT user_id, duration_minutes, hourly_rate, clock_in "
                 "FROM time_entries "
                 "WHERE job_id = :job_id AND company_id = :tenant_id "
-                "AND deleted_at IS NULL"
+                "AND deleted_at IS NULL",
+                "job_id",
             ),
-            {"job_id": job_id, "tenant_id": tenant_id},
+            {"job_id": job_uuid, "tenant_id": tenant_id},
         ).mappings().all()
         true_total = 0.0
         est_total = 0.0
@@ -4954,8 +4981,7 @@ def spawn_return_visit(
                 if original.customer_id:
                     with contained_read(db):
                         cust = db.execute(
-                            _text("SELECT name FROM customers WHERE id = :cid"),
-                            {"cid": str(original.customer_id)},
+                            select(Customer.name).where(Customer.id == original.customer_id)
                         ).first()
                     if cust:
                         cust_name = cust[0]

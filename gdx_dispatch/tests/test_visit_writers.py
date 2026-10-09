@@ -628,6 +628,55 @@ def test_appointment_delete_day_one_moves_the_job(env):
     assert _actions(env.db, before, d1.id) == ["appointment_deleted"]
 
 
+def test_job_delete_soft_deletes_its_visits_and_no_others(env):
+    # GDXA-382: the cascade was raw SQL binding the dashed path id against a
+    # Uuid column, which SQLite stores as 32 dashless hex — it matched nothing
+    # here, so a deleted job's visits stayed live on the Appointments page.
+    job, d1, d2 = _two_day_job(env)
+    other = _job(env, scheduled_at=DAY3)
+    keep = _visit(env, other, DAY3)
+    before = _audit_ids(env.db)
+    r = env.client.delete(f"/api/jobs/{job.id}")
+    assert r.status_code == 200, r.text
+    env.db.expire_all()
+    assert d1.deleted_at is not None and d2.deleted_at is not None
+    assert _utc(d1.updated_at) == _utc(d1.deleted_at)
+    assert keep.deleted_at is None
+    assert env.db.get(Job, job.id).deleted_at is not None
+    assert _actions(env.db, before, job.id) == ["job_deleted"]
+
+
+def test_assignment_delete_moves_the_primary_tech(env):
+    # GDXA-382, same class: `_recompute_primary` bound the dashed job id in a
+    # raw UPDATE, so on SQLite the removed lead stayed `Job.assigned_to`.
+    job = _job(env, crew=(T1, T2))
+    row = env.db.execute(select(JobAssignment).where(
+        JobAssignment.job_id == str(job.id), JobAssignment.tech_id == T1)).scalar_one()
+    r = env.client.delete(f"/api/jobs/{job.id}/assignments/{row.id}")
+    assert r.status_code == 200, r.text
+    env.db.expire_all()
+    assert env.db.get(Job, job.id).assigned_to == T2
+
+
+def test_job_list_filters_by_customer(env):
+    # GDXA-382, same class: `j.customer_id = :customer_id` bound the dashed
+    # query string, so on SQLite the filter returned no jobs at all.
+    mine = _job(env)
+    other_cust = Customer(id=uuid4(), name="Other", phone="556", email="a@x.com",
+                          address="12 Main", company_id=TENANT)
+    env.db.add(other_cust)
+    env.db.commit()
+    theirs = _job(env)
+    theirs.customer_id = other_cust.id
+    env.db.commit()
+    r = env.client.get("/api/jobs", params={"customer_id": str(env.cust.id)})
+    assert r.status_code == 200, r.text
+    assert [UUID(i["id"]) for i in r.json()["items"]] == [mine.id]
+    r = env.client.get("/api/jobs", params={"customer_id": "not-a-uuid"})
+    assert r.status_code == 200, r.text
+    assert r.json()["items"] == []
+
+
 @pytest.mark.parametrize("verb, action, status", [
     ("confirm", "appointment_confirmed", "confirmed"),
     ("on-my-way", "appointment_en_route", "en_route"),

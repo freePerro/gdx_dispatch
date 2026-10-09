@@ -228,17 +228,6 @@ def test_a_noop_save_records_an_empty_diff(mod, prefix, path, payload, action):
         engine.dispose()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "GDXA-292 deferred, SQLite only: core/settings_row.py now binds the tenant id "
-        "as a typed Uuid (dashless hex on SQLite), but raw tenant_settings SQL on this "
-        "test's path still binds str(tenant_id) (at least modules/maps_provider/router.py:46; the full "
-        "deferred list is in GDXA-292), so it misses the row on SQLite. Postgres is "
-        "unaffected. When every site on the path binds through "
-        "settings_sql()/tenant_id_value() this XPASSes and the marker must go."
-    ),
-)
 def test_maps_provider_patch_writes_an_audit_row():
     """maps_provider is the odd one out: the payload field is `provider` while
     the column is `maps_provider`, and it has no `_COLS` tuple. Lowest impact of
