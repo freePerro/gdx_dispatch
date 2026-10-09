@@ -21,6 +21,7 @@ The target is this install's own tenant (``GDX_TENANT_SLUG``, via
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from contextlib import closing
@@ -131,7 +132,8 @@ def seed_outlook_credentials_from_env(
                     "outlook bootstrap: GDX_FERNET_KEY not ready, deferring seed for %s: %s",
                     slug, exc,
                 )
-                control_db.rollback()
+                with contextlib.suppress(Exception):  # a dead rollback must not escape (GDXA-391)
+                    control_db.rollback()
                 return {"seeded": False, "reason": f"fernet_not_ready: {exc}", "tenant_slug": slug}
 
         changed: list[str] = []

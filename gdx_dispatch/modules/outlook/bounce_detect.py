@@ -51,6 +51,7 @@ candidate and are skipped (counted in the result dict).
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -595,7 +596,8 @@ def process_bounces(tdb: Session, account: OutlookAccount) -> dict[str, Any]:
         except Exception:
             # One malformed NDR must not stall the others (or the sync).
             log.exception("bounce_detect: NDR %s failed", msg.graph_message_id)
-            tdb.rollback()
+            with contextlib.suppress(Exception):  # a dead rollback must not escape (GDXA-391)
+                tdb.rollback()
             continue
         # Only now — this NDR's flips and audit rows are durable.
         bells_rung += _ring_estimate_bells(tdb, ndr_bells)

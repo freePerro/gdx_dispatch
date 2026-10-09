@@ -15,6 +15,7 @@ failed badge write must never fail — or roll back — the action itself.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -23,6 +24,24 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 log = logging.getLogger(__name__)
+
+
+def _rollback_quietly(db: Session) -> None:
+    """The cleanup half of a never-raises block (GDXA-391).
+
+    When the error that opened the `except` was not itself a disconnect — the
+    strict `before_commit` invoice invariant, an IntegrityError, a plain Python
+    error — and the connection then fails, `db.rollback()` raises too, and out
+    of an `except` block that raise escapes the guard it was meant to finish:
+    the caller's already-committed accept or payment becomes a 500, or a
+    background task dies. (A disconnect as the FIRST error invalidates the
+    connection and makes the rollback a no-op, so this is the narrower case,
+    not every outage.) Same containment as `api/public_router.py`'s
+    `_swallow_post_commit_failure` (GDXA-145). Callers log with
+    `log.exception` after this, which still reads their live exception.
+    """
+    with contextlib.suppress(Exception):
+        db.rollback()
 
 
 def notify_office(
@@ -49,7 +68,7 @@ def notify_office(
         ))
         db.commit()
     except Exception:
-        db.rollback()
+        _rollback_quietly(db)
         log.exception("office notification write failed: %s", title)
 
 
@@ -96,7 +115,7 @@ def notify_estimate_decision(
             category="estimate",
         )
     except Exception:
-        db.rollback()
+        _rollback_quietly(db)
         log.exception(
             "estimate decision notification failed estimate=%s",
             getattr(estimate, "id", None),
@@ -203,7 +222,7 @@ def notify_payment_received(
             category="payment",
         )
     except Exception:
-        db.rollback()
+        _rollback_quietly(db)
         log.exception(
             "payment notification failed invoice=%s",
             getattr(invoice, "id", None),
