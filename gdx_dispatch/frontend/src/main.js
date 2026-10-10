@@ -11,6 +11,7 @@ import { createAppRouter } from './router';
 import { startKeyboardInsetTracking } from './lib/keyboardInset';
 import { installErrorCapture } from './plugins/errorCapture';
 import { installSwNavigation } from './lib/swNavigation';
+import { installDatePickerTyping } from './lib/datePickerTyping';
 import './assets/base.css';
 import './assets/responsive.css';
 // MH-2: must load AFTER base.css and AFTER PrimeVue's own preset so its
@@ -18,6 +19,10 @@ import './assets/responsive.css';
 // to button-primary (brand-blue) to fix the WCAG-failing 2.53:1 white-
 // on-emerald CTA contrast app-wide.
 import './assets/primevue-cta-contrast.css';
+
+// A half-typed date in any DatePicker stays as typed until it is complete
+// (GDXA-423). Patches the shared component, so it must run before mount.
+installDatePickerTyping();
 
 const app = createApp(App);
 installErrorCapture(app);

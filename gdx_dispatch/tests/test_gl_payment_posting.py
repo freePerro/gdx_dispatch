@@ -268,6 +268,93 @@ def test_void_payment_wrong_invoice_404(db):
     assert exc.value.status_code == 404
 
 
+def _surcharged_payment(db, inv, amount, surcharge, reference):
+    """A card payment carrying a 4950 surcharge leg, posted through the P3 rule.
+
+    `record_payment` takes no surcharge (only the pay page sets one), so the
+    row is written directly and posted the way the pay page's settlement does,
+    then the invoice is recalculated so it carries the status and balance the
+    real recorder leaves (a full payment flips it to paid).
+    """
+    from gdx_dispatch.modules.ledger.rules import post_payment_received
+    from gdx_dispatch.routers.invoices import _recalculate_invoice
+
+    payment = Payment(
+        invoice_id=inv.id, amount=Decimal(amount), method="card",
+        payment_date=dt.date(2026, 7, 5), reference=reference,
+        surcharge_amount=Decimal(surcharge), company_id=COMPANY,
+    )
+    db.add(payment)
+    db.flush()
+    p3 = post_payment_received(db, payment, inv)
+    _recalculate_invoice(inv, db)
+    db.commit()
+    db.refresh(inv)
+    return payment, p3
+
+
+def test_void_payment_reverses_the_card_surcharge_leg_too(db):
+    """GDXA-431: the office void, not just the webhook refund, unwinds 4950.
+
+    The webhook twin is `test_webhook_refund_reverses_the_card_surcharge_leg_too`;
+    every other void test here uses a payment with no surcharge, so a void
+    that left the fee income standing was invisible to the suite.
+    """
+    _enable(db)
+    inv = _invoice(db, total="500.00")
+    transition_invoice_status(db, inv, "sent")
+    db.commit()
+    payment, p3 = _surcharged_payment(db, inv, "500.00", "15.00", "pi_gdxa431_void")
+    assert _lines_by_code(db, p3)["4950"] == -1_500, "setup: no surcharge leg"
+    assert inv.status == "paid" and float(inv.balance_due) == 0.0, "setup: not paid"
+    assert _tb(db) == {"1050": 51_500, "4000": -50_000, "4950": -1_500}
+
+    void_payment(inv.id, payment.id, _=USER, db=db)
+
+    db.refresh(inv)
+    assert inv.status == "sent" and float(inv.balance_due) == 500.0
+    _assert_invariant(db, inv)
+    db.refresh(p3)
+    assert p3.status == "reversed"
+    reversal = [e for e in _entries(db) if e.reverses_entry_id == p3.id]
+    assert len(reversal) == 1
+    assert _lines_by_code(db, reversal[0])["4950"] == 1_500
+    # Only the issuance entry is left standing: cash, AR and fee income unwound.
+    assert _tb(db) == {"1200": 50_000, "4000": -50_000}
+
+
+def test_void_resettle_keeps_the_surviving_payments_surcharge_leg(db):
+    """GDXA-431, the other half: voiding A reverse+reposts surviving B, and
+    the repost must rebuild B's 4950 leg, not just its AR/2300 split.
+
+    B is an overpayment while A stands (40 AR + 20 credit), so the void
+    changes B's split and forces a real repost rather than leaving B alone.
+    """
+    _enable(db)
+    inv = _invoice(db, total="100.00")
+    transition_invoice_status(db, inv, "sent")
+    db.commit()
+    _pay(db, inv, 60.0, reference="A")
+    payment_a = db.scalars(select(Payment).where(Payment.invoice_id == inv.id)).one()
+    payment_b, b_original = _surcharged_payment(db, inv, "60.00", "1.80", "pi_gdxa431_b")
+    assert _lines_by_code(db, b_original) == {
+        "1050": 6_180, "1200": -4_000, "2300": -2_000, "4950": -180,
+    }, "setup: B is not the overpaying surcharged split"
+
+    void_payment(inv.id, payment_a.id, _=USER, db=db)
+
+    db.refresh(b_original)
+    assert b_original.status == "reversed", "B was not reposted — the case proves nothing"
+    live_b = [
+        e for e in _entries(db)
+        if e.source_id == str(payment_b.id) and e.status == "posted" and e.reverses_entry_id is None
+    ]
+    assert len(live_b) == 1
+    assert _lines_by_code(db, live_b[0]) == {"1050": 6_180, "1200": -6_000, "4950": -180}
+    assert _tb(db) == {"1050": 6_180, "1200": 4_000, "4000": -10_000, "4950": -180}
+    _assert_invariant(db, inv)
+
+
 # ---------------------------------------------------------------------------
 # Audit round 2 — the invoice-level GL invariant + replay determinism
 # ---------------------------------------------------------------------------
