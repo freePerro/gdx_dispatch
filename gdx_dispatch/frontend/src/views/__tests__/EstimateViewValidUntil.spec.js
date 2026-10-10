@@ -133,6 +133,10 @@ describe('EstimateView — valid_until is a user choice, not a seeded default', 
     const wrapper = await mountAndSettle();
 
     expect(wrapper.vm.form.valid_until).toBeNull();
+    // Loading alone sends nothing (GDXA-450); the next edit's flush is the
+    // one that must leave valid_until out.
+    wrapper.vm.form.notes = 'an edit';
+    await settle();
     const patches = headerPatches();
     expect(patches.length).toBeGreaterThan(0);
     for (const body of patches) expect(body).not.toHaveProperty('valid_until');
