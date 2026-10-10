@@ -38,7 +38,9 @@ from gdx_dispatch.core.pay_periods import (
     previous_period,
     resolve_zone,
     settings_config,
+    shop_day_of,
     shop_today,
+    shop_tz_name_from_settings,
 )
 from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.core.timesheet_delivery import BLOCKED_UNREADABLE, SendOutcome, send_period_timesheet
@@ -57,6 +59,7 @@ from gdx_dispatch.core.timesheet_hours import (
     build_timesheet,
     open_break_in_shift,
     open_shift_worked_minutes,
+    shop_day_stamp_window,
 )
 from gdx_dispatch.models.tenant_models import AppSettings, TimeclockBreak, TimeclockEntry
 from gdx_dispatch.routers.auth import get_current_user
@@ -576,6 +579,30 @@ def post_clock_out(
         raise HTTPException(status_code=500, detail="Clock-out failed") from None
 
 
+def _entries_on_shop_day(
+    db: Session, tech_id: str, day: date, tz_name: str
+) -> list[TimeclockEntry]:
+    """The tech's live entries that clocked in on shop day `day`.
+
+    One day key for every "today" this router answers: the /status figure,
+    the submit-day count and the audit row the office badge reads. The day
+    is the shop's (`AppSettings.timezone`), decided in Python per row — a
+    UTC prefix match files a 19:30 Central clock-in under tomorrow (GDXA-421).
+    No tenant_id filter: isolation is the connection, and the predicate
+    hides any row whose tenant_id is NULL.
+    """
+    lo, hi = shop_day_stamp_window(day)
+    rows = db.execute(
+        select(TimeclockEntry).where(
+            TimeclockEntry.technician_id == tech_id,
+            TimeclockEntry.deleted_at.is_(None),
+            TimeclockEntry.clock_in_at >= lo,
+            TimeclockEntry.clock_in_at < hi,
+        )
+    ).scalars().all()
+    return [e for e in rows if shop_day_of(e.clock_in_at, tz_name) == day]
+
+
 @router.get("/status", response_model=TimeClockStatusResponse)
 def get_timeclock_status(
     request: Request,
@@ -606,16 +633,14 @@ def get_timeclock_status(
             ).order_by(TimeclockEntry.clock_in_at.desc()).limit(1)
         ).scalars().first()
 
-        today_iso = date.today().isoformat()
-        today_minutes_row = db.execute(
-            select(func.coalesce(func.sum(TimeclockEntry.minutes), 0)).where(
-                TimeclockEntry.tenant_id == tenant_id,
-                TimeclockEntry.technician_id == tech_id,
-                TimeclockEntry.deleted_at.is_(None),
-                func.date(TimeclockEntry.clock_in_at) == today_iso,
-            )
-        ).scalar()
-        today_hours = round((today_minutes_row or 0) / 60.0, 2) if today_minutes_row else 0.0
+        # The shop's day, not the container's: `date.today()` and a UTC
+        # `date(clock_in_at)` made "Today" roll over at 7pm Central (GDXA-421).
+        tz_name = shop_tz_name_from_settings(db)
+        today = shop_today(tz_name)
+        today_iso = today.isoformat()
+        todays_entries = _entries_on_shop_day(db, tech_id, today, tz_name)
+        today_minutes_row = sum(int(e.minutes or 0) for e in todays_entries)
+        today_hours = round(today_minutes_row / 60.0, 2) if today_minutes_row else 0.0
 
         # MH-7 (audit P1 #9): include the open shift's elapsed time in
         # today_hours. Pre-fix the aggregate summed only `.minutes`, which
@@ -639,8 +664,8 @@ def get_timeclock_status(
                 # open elapsed counts toward today (the aggregate excluded
                 # it because minutes=0 on the open row). If the open shift
                 # started on a previous day, add only the portion that
-                # falls inside today (since midnight local).
-                midnight = _dt.now(_tz.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                # falls inside today (since the shop's midnight).
+                midnight = _dt.combine(today, _dt.min.time(), tzinfo=resolve_zone(tz_name))
                 shift_start_today = max(parsed, midnight)
                 today_portion_hours = max(0.0, (now - shift_start_today).total_seconds() / 3600.0)
                 today_hours = round(today_hours + today_portion_hours, 2)
@@ -687,21 +712,11 @@ def get_timeclock_status(
             # so netting the whole shift's breaks would subtract a 19:00 lunch
             # from today AND from yesterday's own timesheet — the same 30
             # minutes taken twice, in opposite days.
-            todays_entries = db.execute(
-                select(TimeclockEntry).where(
-                    # No tenant_id filter: isolation is the connection, and the
-                    # predicate hides any row whose tenant_id is NULL. The
-                    # per-tech filter is the one that matters.
-                    TimeclockEntry.technician_id == tech_id,
-                    TimeclockEntry.deleted_at.is_(None),
-                    func.date(TimeclockEntry.clock_in_at) == today_iso,
-                )
-            ).scalars().all()
             scope = list(todays_entries)
             if entry is not None and not any(str(e.id) == str(entry.id) for e in scope):
                 scope.append(entry)
             today_break_minutes = break_minutes_started_on(
-                db, tenant_id, tech_id, scope, today_iso
+                db, tenant_id, tech_id, scope, today_iso, tz_name
             )
             if today_break_minutes:
                 today_hours = round(max(today_hours - today_break_minutes / 60.0, 0.0), 2)
@@ -1685,7 +1700,7 @@ def list_breaks(
 # ---------------------------------------------------------------------------
 
 class SubmitDayPayload(BaseModel):
-    date: str | None = None  # ISO date; defaults to today UTC
+    date: str | None = None  # ISO date; defaults to the shop's today
 
 
 class SubmitDayResponse(BaseModel):
@@ -1712,20 +1727,22 @@ def submit_day(
     """
     tenant_id = _tenant_id(request)
     user_id = _user_id(current_user)
-    target = (payload.date or datetime.now(UTC).date().isoformat())[:10]
-
     try:
-        # Tenant-plane: connection isolates the tenant; matching the
-        # legacy tenant_id column too because TimeclockEntry still carries
-        # it (S91 drift, deferred to a later cleanup).
-        entries = db.execute(
-            select(TimeclockEntry).where(
-                TimeclockEntry.tenant_id == tenant_id,
-                TimeclockEntry.technician_id == user_id,
-                TimeclockEntry.deleted_at.is_(None),
-                TimeclockEntry.clock_in_at.like(f"{target}%"),
-            )
-        ).scalars().all()
+        # The day is the SHOP's, and entries are matched by the shop day they
+        # clocked in on — the same key /status counts and the office badge
+        # (/submitted-days, keyed on this audit row's entity_id) shows. A UTC
+        # default and a `LIKE 'day%'` prefix made an evening submit attest
+        # tomorrow's UTC day with 0 entries (GDXA-421).
+        tz_name = shop_tz_name_from_settings(db)
+        if payload.date:
+            try:
+                day = date.fromisoformat(payload.date[:10])
+            except ValueError:
+                raise HTTPException(status_code=422, detail="date must be YYYY-MM-DD") from None
+        else:
+            day = shop_today(tz_name)
+        target = day.isoformat()
+        entries = _entries_on_shop_day(db, user_id, day, tz_name)
 
         total_minutes = sum(int(e.minutes or 0) for e in entries)
         ensure_audit_table(db)

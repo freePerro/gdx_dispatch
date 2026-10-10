@@ -76,9 +76,16 @@ freezegun.configure(extend_ignore_list=["_pytest"])
 
 
 @pytest.fixture(autouse=True)
-def _pinned_clock():
+def _pinned_clock(monkeypatch):
     """Freeze `now` for every test here. The subject is break accounting, not
-    the hour the suite happens to run."""
+    the hour the suite happens to run.
+
+    The shop zone is pinned to UTC for the same reason: /status counts "today"
+    from the SHOP's midnight (GDXA-421), and with no AppSettings row that is
+    America/New_York. Every "midnight" in this file is that shop midnight; the
+    zone itself is pinned in test_timeclock_shop_day.py.
+    """
+    monkeypatch.setattr(tc, "shop_tz_name_from_settings", lambda _db: "UTC")
     with freeze_time(_FROZEN_NOW):
         yield
 

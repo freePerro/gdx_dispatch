@@ -581,7 +581,10 @@ async function confirmSubmitDay() {
   // BEFORE the request and swallowed every error, so "Day submitted" could
   // show over a failed call — silent-success class, fixed 2026-09-19.
   // A failed request surfaces through useApi's error toast.
-  await api.post('/api/timeclock/submit-day', { date: new Date().toISOString().slice(0, 10) }, { successMessage: 'Day submitted to payroll' });
+  // The shop's day — the same key the list above filtered on and the server
+  // counts by. `toISOString()` is the UTC day, tomorrow after 7pm Central,
+  // so an evening submit attested a day with 0 entries (GDXA-421).
+  await api.post('/api/timeclock/submit-day', { date: shopTodayKey() }, { successMessage: 'Day submitted to payroll' });
   todaySubmitted.value = true;
 }
 
@@ -660,13 +663,6 @@ function formatTime(iso) {
   }
 }
 
-function toDateStr(date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
 // --- GPS ---
 
 const gpsStatusText = computed(() => {
@@ -734,13 +730,13 @@ function openGpsDialog(entry) {
 
 // --- Today's entries ---
 
+// Today is the SHOP's day on both sides. This compared the browser's local
+// date with the stamp's UTC prefix, so after ~7pm Central a fresh entry
+// dropped out of the list and the Submit Day card with it (GDXA-421).
 const todayEntries = computed(() => {
-  const todayStr = toDateStr(new Date());
+  const todayKey = shopTodayKey();
   return entries.value
-    .filter((e) => {
-      const dateStr = e.date || (e.clock_in ? e.clock_in.split('T')[0] : '');
-      return dateStr === todayStr;
-    })
+    .filter((e) => shopDayKey(e.clock_in) === todayKey)
     .map((e) => ({
       ...e,
       clock_in_display: formatTime(e.clock_in),
@@ -762,6 +758,7 @@ const {
   isCurrentWeek, canGoNext,
   init: initWeek, reload: reloadWeek, prevWeek, nextWeek, thisWeek,
   canSelfEdit, paidMinutes, formatClock: formatShopClock, shopToday,
+  shopDayKey, shopTodayKey,
 } = useWeeklyTimesheet();
 
 const showEntryDialog = ref(false);

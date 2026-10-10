@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -388,14 +388,30 @@ def _short_id(tech_id: str) -> str:
     return f"Unknown ({tech_id[:8]}…)"
 
 
+def shop_day_stamp_window(day: date) -> tuple[str, str]:
+    """`[lo, hi)` TEXT bounds holding every stored stamp of shop day `day`.
+
+    The clock stores instants as ISO TEXT in UTC, and a shop day in any zone
+    lies inside the UTC days before, of and after it. Comparing the TEXT
+    against these bounds is a cheap prefilter that works on SQLite and
+    Postgres alike; the caller then keeps only the rows whose
+    `shop_day_of(stamp, tz)` is `day`. Matching the UTC prefix instead
+    (`LIKE 'YYYY-MM-DD%'`, `date(stamp) = ...`) files every evening entry
+    under tomorrow for a shop west of Greenwich (GDXA-421).
+    """
+    return (day - timedelta(days=1)).isoformat(), (day + timedelta(days=2)).isoformat()
+
+
 def break_minutes_started_on(
     db: Session,
     tenant_id: str,
     user_id: str,
     entries: list[TimeclockEntry],
     day_iso: str,
+    tz_name: Any = "UTC",
 ) -> int:
-    """Ended-break minutes for `user_id` that STARTED on `day_iso`.
+    """Ended-break minutes for `user_id` that STARTED on shop day `day_iso`
+    (the day as seen in `tz_name`).
 
     `break_minutes_by_entry` attributes a break to the shift it happened during,
     which is the right rule for a timesheet. A "hours today" figure needs the
@@ -409,6 +425,8 @@ def break_minutes_started_on(
     by_entry = break_minutes_by_entry(db, tenant_id, entries)
     if not by_entry:
         return 0
+    day = date.fromisoformat(day_iso[:10])
+    lo, hi = shop_day_stamp_window(day)
     try:
         # SAVEPOINT: `db` is the caller's. On Postgres a failed read aborts the
         # whole transaction, so without this the `return 0` below would be a
@@ -416,20 +434,24 @@ def break_minutes_started_on(
         # would find its own session dead. See core.database.contained_read.
         with contained_read(db):
             rows = db.execute(
-                select(TimeclockBreak.id, TimeclockBreak.duration_minutes).where(
+                select(TimeclockBreak.started_at, TimeclockBreak.duration_minutes).where(
                     # No tenant_id filter — see open_break_in_shift.
                     TimeclockBreak.user_id == str(user_id),
                     TimeclockBreak.duration_minutes.isnot(None),
-                    func.date(TimeclockBreak.started_at) == day_iso,
+                    TimeclockBreak.started_at >= lo,
+                    TimeclockBreak.started_at < hi,
                 )
             ).all()
     except SQLAlchemyError:
         log.exception("break_minutes_started_on_failed", extra={"tenant_id": tenant_id})
         return 0
+    started_today = sum(
+        int(m or 0) for started_at, m in rows if shop_day_of(started_at, tz_name) == day
+    )
     # Cap at what the shift-attribution already counted, so a break belonging to
     # nobody's shift cannot subtract from the day.
     attributable = sum(int(v or 0) for v in by_entry.values())
-    return min(sum(int(m or 0) for _id, m in rows), attributable)
+    return min(started_today, attributable)
 
 
 def open_break_in_shift(
