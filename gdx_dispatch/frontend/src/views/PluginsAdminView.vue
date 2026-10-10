@@ -15,6 +15,24 @@
     </Message>
 
     <template v-else>
+      <!-- Consent drift (GDXA-462): a plugin upgrade changed what it runs
+           automatically, so core has stopped running it until the owner
+           re-reads the permissions. Read live, so it clears on re-consent. -->
+      <Message v-if="drifted.length" severity="error" :closable="false"
+               class="drift-banner" data-testid="consent-drift">
+        <strong>Paused until you re-consent.</strong>
+        These plugins changed what they run automatically since you consented,
+        so their automation has stopped.
+        <ul class="drift-list">
+          <li v-for="d in drifted" :key="d.key" :data-plugin="d.key">
+            <span class="drift-name">{{ d.name }}</span>
+            <small class="drift-paused">{{ d.paused.join(' and ') }} paused</small>
+            <Button label="Review & re-consent" size="small" icon="pi pi-shield"
+                    severity="danger" outlined @click="openConsent(d)" />
+          </li>
+        </ul>
+      </Message>
+
       <Message severity="info" :closable="false" class="restart-note">
         Installing or removing a plugin records intent. Hit
         <strong>Restart plugin-host</strong> to apply: it pip-installs the
@@ -225,10 +243,37 @@
            consented to before they can be used (e.g. the browser stream). -->
       <Dialog v-model:visible="consent.show" :header="`Permissions — ${consent.name}`"
               modal :style="{ width: '34rem' }">
-        <p>
+        <p v-if="consent.drift && !consent.items.length" data-testid="consent-retired">
+          This version no longer asks for any permission. Re-consenting records
+          that its paused automation is retired and clears the warning.
+        </p>
+        <p v-else>
           This plugin requests elevated capabilities. An approved plugin runs with
           backend access — only consent to plugins you trust.
         </p>
+        <div v-if="consent.drift" class="drift-changes" data-testid="drift-changes">
+          <strong>Since you consented</strong>
+          <ul>
+            <li v-if="consent.drift.events_added?.length">
+              Now runs on: {{ consent.drift.events_added.join(', ') }}
+            </li>
+            <li v-if="consent.drift.events_removed?.length">
+              No longer runs on: {{ consent.drift.events_removed.join(', ') }}
+            </li>
+            <li v-if="!consent.drift.events_added?.length && !consent.drift.events_removed?.length">
+              Its events are unchanged; what changed is its scheduled jobs or
+              services, which are listed in full below.
+            </li>
+          </ul>
+          <template v-if="consent.drift.schedules?.length">
+            All scheduled jobs it now declares: {{ consent.drift.schedules.join(', ') }}<br>
+          </template>
+          <template v-if="consent.drift.services?.length">
+            All services it now declares: {{ consent.drift.services.join(', ') }}<br>
+          </template>
+          Re-consenting approves what it declares now. If it changes again
+          before you click, nothing is granted and you are shown the new list.
+        </div>
         <ul class="consent-list">
           <li v-for="p in consent.items" :key="p.name">
             <strong>{{ p.name }}</strong>
@@ -240,9 +285,13 @@
         </ul>
         <template #footer>
           <Button label="Close" text @click="consent.show = false" />
-          <Button :label="consent.allConsented ? 'Re-consent' : 'Grant consent'"
+          <!-- A drifted plugin that now declares nothing is still re-consented:
+               the server accepts that empty grant, and it is the only way to
+               clear its drift short of an uninstall (GDXA-462). -->
+          <Button :label="consent.allConsented || (consent.drift && !consent.items.length)
+                    ? 'Re-consent' : 'Grant consent'"
                   icon="pi pi-check" :loading="consent.saving"
-                  :disabled="!consent.items.length" @click="grantConsent" />
+                  :disabled="!consent.items.length && !consent.drift" @click="grantConsent" />
         </template>
       </Dialog>
     </template>
@@ -283,6 +332,7 @@ const isOwner = computed(() => isOwnerRole(auth.role));
 const registry = ref([]);
 const artifacts = ref([]);
 const running = ref([]);
+const drifted = ref([]);
 const loading = ref(false);
 const saving = ref(false);
 const uploading = ref(false);
@@ -290,7 +340,7 @@ const restarting = ref(false);
 const form = reactive({ package: '', version: '' });
 const fileInput = ref(null);
 const picked = ref(null);
-const consent = reactive({ show: false, key: '', name: '', items: [], allConsented: false, saving: false });
+const consent = reactive({ show: false, key: '', name: '', items: [], allConsented: false, saving: false, drift: null });
 const store = reactive({ plugins: [], error: null, loading: false });
 const storeConfirm = reactive({ show: false, plugin: null, saving: false });
 
@@ -349,18 +399,64 @@ async function openConsent(plugin) {
   consent.name = plugin.name;
   consent.items = [];
   consent.allConsented = false;
+  // Read the drift live, not from the page-load snapshot: a plugin that
+  // drifted since would otherwise post unpinned and be refused. Both buttons
+  // then show what changed and pin the grant to it.
+  await loadDrift();
+  consent.drift = drifted.value.find((d) => d.key === plugin.key) || null;
   await _loadPermissions(plugin.key);
   consent.show = true;
 }
 
 async function grantConsent() {
   consent.saving = true;
+  let refused = false;
   try {
-    await api.post(`/api/admin/plugins/${encodeURIComponent(consent.key)}/consent`, {},
+    // From the banner, pin the grant to what the dialog showed: the server
+    // refuses it (409) if the plugin's surface moved since.
+    const body = consent.drift ? { fingerprint: consent.drift.fingerprint } : {};
+    await api.post(`/api/admin/plugins/${encodeURIComponent(consent.key)}/consent`, body,
       { successMessage: `Consent recorded for ${consent.name}` });
     await _loadPermissions(consent.key);
+  } catch (_e) {
+    // Already toasted by useApi (a 409 says the plugin moved again). Swallow
+    // it so the page stays up and the reload below shows the new list.
+    refused = true;
   } finally {
+    // After a grant OR a refusal, show the live state: the drift row (and
+    // its pin) AND the permission list, so the next click approves only what
+    // is on screen. A pinned dialog whose drift row vanished is closed rather
+    // than left to post an unpinned grant; an unpinned one refused because
+    // the plugin drifted meanwhile takes up the new row and its pin.
+    // Unknown (drift read failed) keeps the dialog's row and pin as they were.
+    const known = await loadDrift();
+    const row = known ? drifted.value.find((d) => d.key === consent.key) || null : consent.drift;
+    if (refused && consent.drift && !row) consent.show = false;
+    consent.drift = row;
+    if (refused) {
+      try { await _loadPermissions(consent.key); } catch (_e) { consent.show = false; }
+    } else if (!row && !consent.items.length) {
+      // A retired plugin's empty re-consent leaves nothing to show: an open
+      // dialog would claim it "requests elevated capabilities" instead.
+      consent.show = false;
+    }
     consent.saving = false;
+  }
+}
+
+async function loadDrift() {
+  // Best-effort like the running list: never an error toast on a page whose
+  // other sections still work. Returns whether the answer is authoritative:
+  // a failed read, or plugin-host unreachable (catalog_reachable false, an
+  // empty list that proves nothing), keeps the last known list rather than
+  // reading as "no drift" and hiding the banner.
+  try {
+    const r = await api.get('/api/admin/plugins/consent-drift', { suppressErrorToast: true });
+    if (r?.catalog_reachable === false) return false;
+    drifted.value = r?.drifted || [];
+    return true;
+  } catch (_e) {
+    return false;
   }
 }
 
@@ -378,6 +474,7 @@ async function load() {
     // Best-effort: plugin-host may not be up yet. A failure just means none.
     try { running.value = (await api.get('/api/plugins')) || []; }
     catch (_e) { running.value = []; }
+    await loadDrift();
   } finally {
     loading.value = false;
   }
@@ -508,6 +605,13 @@ onMounted(load);
 .form-label { display: block; margin-bottom: 0.25rem; font-weight: 600; }
 .section-title { margin: 1.5rem 0 0.5rem; }
 .restart-note { margin-bottom: 0.5rem; }
+.drift-banner { margin-bottom: 0.5rem; }
+.drift-list { list-style: none; margin: 0.5rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+.drift-list li { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
+.drift-name { font-weight: 600; }
+.drift-paused { opacity: 0.85; }
+.drift-changes { margin-bottom: 0.75rem; }
+.drift-changes ul { margin: 0.25rem 0; padding-left: 1.25rem; }
 /* PrimeVue v4 token, not the v3 `--text-color-secondary` (undefined here, so
    the text would render un-muted). Guarded by no_legacy_css_tokens.spec.js. */
 .muted { color: var(--p-text-muted-color); }

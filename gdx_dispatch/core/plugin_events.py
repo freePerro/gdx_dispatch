@@ -24,6 +24,7 @@ exactly the footgun the audit called out.
 from __future__ import annotations
 
 import logging
+import time
 
 import httpx
 from sqlalchemy import select
@@ -39,6 +40,13 @@ from gdx_dispatch.core.plugin_consent import (
 log = logging.getLogger(__name__)
 
 
+# The re-arm check below fetches the catalog over HTTP. It runs on a drifted
+# plugin's event/schedule path, so it is attempted at most this often per
+# process rather than on every tick (GDXA-462 audit).
+_REARM_INTERVAL_S = 300.0
+_last_rearm_check = float("-inf")
+
+
 def _signal_consent_drift(db, drifted: list[str], event_name: str) -> None:
     """Record that a plugin's automation is suppressed because its declared
     events changed since consent. THROTTLED: only signals when no drift record
@@ -51,22 +59,41 @@ def _signal_consent_drift(db, drifted: list[str], event_name: str) -> None:
     the maintainer (at most once per fingerprint per hour, daily-capped);
     until then it is a container-log line only. The other is a pending
     `plugin_consent_drift` AIAction row. The throttle makes the alarm fire
-    once per pending row, and no code moves that row out of `pending` (not
-    even re-consent), so after the first drift later ones, from any plugin,
-    raise no alarm until someone clears it. An owner-facing banner/bell
-    that reads that row is Sprint-2b work (frontend); this is NOT yet a UI
-    signal, so do not claim it is."""
+    once per pending row. A row whose drift has provably ended is marked
+    `resolved` (`resolve_drift_signals`, GDXA-462), which re-arms the alarm:
+    when the owner re-consents (audited, in the consent route), and here,
+    when a NEW drift arrives while a row naming only other plugins is still
+    pending (their uninstall or rollback). While a row whose plugins are
+    still drifted is pending, a later drift raises no new alarm. The
+    owner-facing signal is the re-consent banner on the Plugins admin page,
+    which reads the LIVE drift (`GET /api/admin/plugins/consent-drift`), not
+    this throttled row."""
     from gdx_dispatch.core.webhooks.models import AIAction
 
     try:
-        already = db.execute(
-            select(AIAction.id).where(
+        open_rows = db.execute(
+            select(AIAction.payload).where(
                 AIAction.action_type == "plugin_consent_drift",
                 AIAction.status == "pending",
-            ).limit(1)
-        ).first()
-        if already:
-            return  # one open drift flag is enough; don't re-signal per event
+            )
+        ).scalars().all()
+        if open_rows:
+            if all(set((p or {}).get("plugins") or []) & set(drifted) for p in open_rows):
+                return  # one open drift flag is enough; don't re-signal per event
+            global _last_rearm_check
+            now = time.monotonic()
+            if now - _last_rearm_check < _REARM_INTERVAL_S:
+                return
+            _last_rearm_check = now
+            from gdx_dispatch.core.plugin_consent import fetch_catalog, resolve_drift_signals
+
+            closed = resolve_drift_signals(db, fetch_catalog())
+            if closed:
+                log.warning("plugin_consent_drift: closed ended alarm rows %s "
+                            "(system, on new drift of %s)", closed, drifted)
+                db.commit()
+            if len(closed) < len(open_rows):
+                return  # a row for a still-drifted plugin is pending
         log.error(
             "plugin_consent_drift: dispatch suppressed for %s (first seen on "
             "event=%s) — plugin changed its declared events since consent; owner "
