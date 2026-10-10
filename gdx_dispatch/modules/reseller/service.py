@@ -17,7 +17,7 @@ import os
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
@@ -85,6 +85,31 @@ def get_profile(db: Session, customer_id: Any) -> ResellerProfile | None:
     return db.execute(
         select(ResellerProfile).where(ResellerProfile.customer_id == customer_id)
     ).scalar_one_or_none()
+
+
+#: The tables a staff-side customer merge or absorb must never move or count.
+#: `routers/customers.py` discovers every `customer_id` column by reflection;
+#: rewriting these would hand one firm's brand, markup and quotes to another
+#: customer (GDXA-490).
+PRIVATE_TABLES = frozenset({ResellerProfile.__tablename__, ResaleQuote.__tablename__})
+
+
+def customers_with_reseller_data(db: Session, customer_ids: list[UUID]) -> set[UUID]:
+    """Which of these customers own a profile or any resale quote, deleted
+    ones included. Existence only: no column of either row leaves here.
+
+    ORM comparison on the `Uuid` columns, so the dashed-vs-hex spelling that
+    SQLite stores is the driver's problem, not a raw string match's."""
+    wanted = list(customer_ids)
+    if not wanted:
+        return set()
+    found = set(db.execute(
+        select(ResellerProfile.customer_id).where(ResellerProfile.customer_id.in_(wanted))
+    ).scalars())
+    found.update(db.execute(
+        select(ResaleQuote.customer_id).where(ResaleQuote.customer_id.in_(wanted)).distinct()
+    ).scalars())
+    return found
 
 
 def disclaimer_current(profile: ResellerProfile | None) -> bool:

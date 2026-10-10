@@ -4,7 +4,8 @@ Status: RELEASED v1.143.0 — PR A (backend: migration 113, models, service,
 portal routes, the PDF) MERGED #937; PR B (the portal tabs: My Branding, My
 Quotes, the "Resell this" dialog) MERGED #938. Eligibility moving from
 `pricing_class` to `customer_type` (see *Who* below) MERGED #940, RELEASED
-v1.143.2. The GDPR and tax questions below are open.
+v1.143.2. The GDPR and tax questions below are open. Customer merge refuses a
+merged-away reseller and keeps both tables out of its audit row (GDXA-490).
 Date: 2026-10-08
 
 ## The ask
@@ -123,9 +124,11 @@ estimate and invoice, with and without a template config (2026-10-08).
 the models or the `modules.reseller` package are named outside the reseller
 files, including a bare `from gdx_dispatch.modules import reseller`. A new
 staff screen, report, export or MCP tool that names them has to be allowlisted
-in review. It allowlists whole files, which include four outside the package:
-`routers/portal.py`, `core/pdf_generator.py`, `core/branding_logo.py` and
-`models/__init__.py`. A new reader added inside one of those passes it.
+in review. It allowlists whole files, which include five outside the package:
+`routers/portal.py`, `core/pdf_generator.py`, `core/branding_logo.py`,
+`models/__init__.py` and, since GDXA-490, the staff router
+`routers/customers.py`, for the merge's existence check. A new reader added
+inside one of those passes it.
 
 ## Deviations from the plan as written
 
@@ -149,21 +152,28 @@ in review. It allowlists whole files, which include four outside the package:
   rows stay.
 - **Line and option text is ours:** descriptions are copied verbatim from our
   estimate, so a description that names us prints our name on their PDF.
-- **Customer merge.** The merge rewrites `customer_id` everywhere, so a
-  merged-away reseller's profile and quotes move to the kept customer. If
-  *both* customers have a profile, the unique `customer_id` refuses the move.
-  The whole merge rolls back and staff see a generic database error. Nothing
-  is lost, but that merge cannot complete. No route removes a profile, so
-  today the only way through is a hand edit of the database.
-- **The merge also moves a profile silently.** If only the merged-away customer
-  has one, its branding, markup and quotes move to the kept customer, who may be
-  retail (so the rows go dark) or a different firm. The merge's staff-visible
-  audit row counts `reseller_profiles.customer_id` in `rows_updated`, which
-  reveals that a profile existed.
+- **Customer merge refuses a merged-away reseller** (GDXA-490). If any
+  customer being merged away, or absorbed as a site, owns a profile or a resale
+  quote, the merge returns 409 ("… is a reseller; resolve before merging")
+  and nothing moves. When only the loser is a reseller, the message says to
+  keep it and merge the other way. When both are, the merge cannot complete
+  in-app: no route removes a profile, so the only way through is still a hand
+  edit of the database. A keeper-only reseller merges as normal.
+- **The merge never moves or counts the two tables.** The FK sweep in
+  `routers/customers.py` skips `service.PRIVATE_TABLES`, so neither the response
+  nor the audit row's `rows_updated` names them. That is not secrecy: the
+  portal's own audit rows (`reseller_profile_updated`, `resale_quote_created`)
+  and the 409 already tell staff that a customer is a reseller.
+- **A keeper-only reseller merge hands the loser's portal logins to the
+  keeper.** The merge moves `customer_users` like any other table, so a login
+  from the merged-away customer then sees the keeper's brand, markup and
+  quotes, as it sees the keeper's invoices. On a correct merge that is the
+  same firm; on a wrong one it is not. Not fixed by GDXA-490.
 - **The privacy guard allowlists whole files** (see the guard, above). It is a
   text match, so a name assembled at runtime also passes it.
-- Reflection-based tools that walk every table (the merge, `pave_tenant_db`)
-  are invisible to the privacy guard. Neither reads rows back out to a user.
+- Reflection-based tools that walk every table are invisible to the privacy
+  guard. The merge and absorb now skip these tables by name. `pave_tenant_db`
+  does not, and it reads no rows back out to a user.
 - No lock between the disclaimer check and the write; the window is a single
   request.
 
