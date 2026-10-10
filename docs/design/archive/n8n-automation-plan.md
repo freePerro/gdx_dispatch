@@ -5,9 +5,10 @@
 **Sprint 2b, partially built (GDXA-439, 2026-10-10):** the schedule driver
 (`core/plugin_schedules.py`) and plugin-host's token-gated
 `/internal/schedules` route (one body-addressed route, not the
-`/internal/schedule/{key}/{name}` sketched below) exist; the beat entry that
-ticks the driver each minute is a platform-core follow-up, so until it lands
-a declared schedule still never fires.
+`/internal/schedule/{key}/{name}` sketched below) exist, and the beat entry
+`dispatch-plugin-schedules-every-minute` (`core/scheduler.py`, GDXA-463) ticks
+the driver each minute, so a declared, consented schedule fires once that
+change is released.
 **Sprint 2b, re-consent on drift built (GDXA-462, 2026-10-10):** the Plugins
 admin page shows a banner naming each plugin whose events or schedules are
 paused by consent drift, read live from `GET /api/admin/plugins/consent-drift`,
@@ -24,10 +25,11 @@ every 5 minutes per worker); a plugin merely absent from the catalog
 counts as gone only while plugin-host `/ready` is 200 (a stale-withheld plugin
 is absent too). The banner lives only on the Plugins page: no bell or
 dashboard entry carries it.
-**Not built:** the beat entry above (platform-core). Gap 3 (the `gdx-agent` supervisor, the `n8n-nodes-gdxdispatch` npm node) is
+**Not built:** Gap 3 (the `gdx-agent` supervisor, the `n8n-nodes-gdxdispatch` npm node) is
 traction-gated and also unbuilt. The manifest hooks themselves DO exist
-(`plugin_api/manifest.py:32`, `plugin_api/events.py:64`) — it is the driver
-and the consent surface that are missing.
+(`plugin_api/manifest.py:32`, `plugin_api/events.py:64`), and since
+GDXA-439, GDXA-463 and GDXA-462 so do the driver, its beat entry and the
+consent surface.
 
 ## Implementation status (2026-08-17)
 

@@ -8,10 +8,10 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import (
@@ -218,7 +218,11 @@ def _serialize_estimate(estimate: Estimate, include_lines: bool = False) -> dict
         "created_at": estimate.created_at.isoformat() if estimate.created_at else None,
         "updated_at": estimate.updated_at.isoformat() if estimate.updated_at else None,
         "deleted_at": estimate.deleted_at.isoformat() if estimate.deleted_at else None,
+        # The concurrency token (GDXA-450): the editor sends it back as
+        # expected_version and PATCH refuses with 409 when the row moved on.
+        "version": getattr(estimate, "version", None),
     }
+    payload.update(_version_transition(estimate))
     if include_lines:
         lines = sorted(estimate.lines, key=lambda ln: (ln.sort_order, ln.created_at, ln.id))
         payload["lines"] = [_serialize_line(line) for line in lines]
@@ -235,9 +239,79 @@ def _get_estimate_or_404(estimate_id: UUID, db: Session, include_lines: bool = F
     return estimate
 
 
+def _current_version(db: Session, estimate_id) -> int | None:
+    return db.execute(select(Estimate.version).where(Estimate.id == estimate_id)).scalar_one_or_none()
+
+
+def _hold_version(db: Session, estimate: Estimate) -> None:
+    # Take the row's write lock before this request's first change and note
+    # the version it starts from. `SET version = version` names the column,
+    # so the onupdate bump does not fire: the statement changes nothing and
+    # only locks (the row on Postgres, the database on SQLite) until commit.
+    # Under that lock no colleague can commit in between, so the before/after
+    # pair _version_transition reports covers this request's writes only.
+    db.execute(
+        update(Estimate)
+        .where(Estimate.id == estimate.id)
+        .values(version=Estimate.version)
+        .execution_options(synchronize_session=False)
+    )
+    estimate._version_before = _current_version(db, estimate.id)
+
+
+def _commit_versioned(db: Session, estimate: Estimate) -> None:
+    # The write's own commit, with the version it leaves read inside the same
+    # transaction, still under _hold_version's lock. Read after the commit, a
+    # colleague's save could already be folded into it.
+    db.flush()
+    if getattr(estimate, "_version_before", None) is not None:
+        estimate._version_after = _current_version(db, estimate.id)
+    db.commit()
+
+
+def _version_transition(estimate: Estimate, prefix: str = "") -> dict[str, object]:
+    # A write's response reports the version it started from and the version
+    # it left. Every write bumps the token (models: onupdate version + 1), so
+    # the editor's own line edits, sends and reassigns move it too; the editor
+    # adopts the new token only when `before` is the token it holds. A
+    # colleague's write in between breaks that chain, the editor keeps its
+    # stale token, and its next header PATCH is refused instead of silently
+    # overwriting the colleague. Empty on reads, on writes that changed
+    # nothing, and on non-ORM test stubs.
+    before = getattr(estimate, "_version_before", None)
+    after = getattr(estimate, "_version_after", None)
+    if before is None or after is None or after == before:
+        return {}
+    return {f"{prefix}version_before": before, f"{prefix}version": after}
+
+
+def _parse_if_match(if_match: str | None) -> int | None:
+    # RFC 9110 entity-tag: `"3"`, `W/"3"`, or `*` (any version). The token is
+    # the row version; anything else is a malformed precondition, not a
+    # missing one, so it is refused rather than silently ignored.
+    if if_match is None or not if_match.strip() or if_match.strip() == "*":
+        return None
+    tag = if_match.strip()
+    if tag.startswith("W/"):
+        tag = tag[2:]
+    tag = tag.strip('"')
+    if not tag.isdigit():
+        raise HTTPException(status_code=400, detail="If-Match must carry the estimate version")
+    return int(tag)
+
+
 def _ensure_editable(estimate: Estimate) -> None:
     if estimate.status in {"accepted", "declined"}:
         raise HTTPException(status_code=409, detail="cannot edit a finalized estimate")
+
+
+def _held_editable_estimate(estimate_id: UUID, db: Session) -> Estimate:
+    # The line endpoints' opening: load with lines, refuse a finalized
+    # estimate, then hold the version for the write (GDXA-450).
+    estimate = _get_estimate_or_404(estimate_id, db, include_lines=True)
+    _ensure_editable(estimate)
+    _hold_version(db, estimate)
+    return estimate
 
 
 def _recalculate_total(estimate: Estimate, db: Session) -> None:
@@ -530,6 +604,12 @@ class EstimatePatchIn(BaseModel):
     # Turning it off leaves any proposal_tiers rows in place so the toggle is
     # reversible without retyping the tiers; only the presentation changes.
     proposal_mode: bool = False
+    # The `version` the editor last loaded (GDXA-450). When it no longer
+    # matches the row, the PATCH is refused with 409 rather than overwriting
+    # a colleague's save. Omitted = unchecked, as before. Never written: it is
+    # popped before the setattr loop, because assigning `version` directly
+    # would suppress the bump and could move the token backward.
+    expected_version: int | None = Field(default=None, ge=1)
 
 
 class EstimateLineCreateIn(BaseModel):
@@ -1179,11 +1259,45 @@ def patch_estimate(
     payload: EstimatePatchIn,
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
+    if_match: str | None = Header(default=None),
 ) -> dict[str, object]:
     estimate = _get_estimate_or_404(estimate_id, db)
     _ensure_editable(estimate)
 
     updates = payload.model_dump(exclude_unset=True)
+    expected = updates.pop("expected_version", None)
+    header_expected = _parse_if_match(if_match)
+    if expected is None:
+        expected = header_expected
+    elif header_expected is not None and header_expected != expected:
+        raise HTTPException(status_code=400, detail="If-Match and expected_version disagree")
+    if expected is not None:
+        # Claim the row at the expected version in one statement, so two
+        # editors holding the same token cannot both pass a read-then-write
+        # check: the loser's WHERE no longer matches once the winner commits.
+        claimed = db.execute(
+            update(Estimate)
+            .where(Estimate.id == estimate.id, Estimate.version == expected)
+            .values(updated_at=utcnow())
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if claimed != 1:
+            db.rollback()
+            current = db.execute(select(Estimate.version).where(Estimate.id == estimate_id)).scalar_one_or_none()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "estimate_version_conflict",
+                    "message": "This estimate was changed by someone else. Reload to see their changes.",
+                    "expected_version": expected,
+                    "current_version": current,
+                },
+            )
+        # The claim holds the lock from here to commit, like _hold_version.
+        estimate._version_before = expected
+    else:
+        _hold_version(db, estimate)
+
     if "job_id" in updates and updates["job_id"]:
         job = db.execute(select(Job).where(Job.id == updates["job_id"], Job.deleted_at.is_(None))).scalar_one_or_none()
         if not job:
@@ -1195,7 +1309,7 @@ def patch_estimate(
         setattr(estimate, key, value)
 
     estimate.updated_at = utcnow()
-    db.commit()
+    _commit_versioned(db, estimate)
     db.refresh(estimate)
     _audit_db = locals().get('db')
     if _audit_db is not None:
@@ -1265,8 +1379,7 @@ def add_line(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    estimate = _get_estimate_or_404(estimate_id, db, include_lines=True)
-    _ensure_editable(estimate)
+    estimate = _held_editable_estimate(estimate_id, db)
 
     if payload.margin_pct_override is not None:
         _tid = str((getattr(request.state, "tenant", {}) or {}).get("id") or "")
@@ -1349,7 +1462,7 @@ def add_line(
     db.add(line)
     db.flush()
     _recalculate_total(estimate, db)
-    db.commit()
+    _commit_versioned(db, estimate)
     db.refresh(line)
     _audit_db = locals().get('db')
     if _audit_db is not None:
@@ -1373,7 +1486,9 @@ def add_line(
             _audit_db.commit()
         except Exception:
             log.exception('add_line_audit_failed')
-    return _serialize_line(line)
+    out = _serialize_line(line)
+    out.update(_version_transition(estimate, "estimate_"))
+    return out
 
 
 @router.patch("/{estimate_id}/lines/{line_id}", response_model=None)
@@ -1385,8 +1500,7 @@ def patch_line(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    estimate = _get_estimate_or_404(estimate_id, db, include_lines=True)
-    _ensure_editable(estimate)
+    estimate = _held_editable_estimate(estimate_id, db)
 
     if payload.margin_pct_override is not None:
         _tid = str((getattr(request.state, "tenant", {}) or {}).get("id") or "")
@@ -1496,7 +1610,7 @@ def patch_line(
     line.line_total = _money((line.quantity or 0) * _to_float(line.unit_price))
     db.flush()
     _recalculate_total(estimate, db)
-    db.commit()
+    _commit_versioned(db, estimate)
     db.refresh(line)
     _audit_db = locals().get('db')
     if _audit_db is not None:
@@ -1520,7 +1634,9 @@ def patch_line(
             _audit_db.commit()
         except Exception:
             log.exception('patch_line_audit_failed')
-    return _serialize_line(line)
+    out = _serialize_line(line)
+    out.update(_version_transition(estimate, "estimate_"))
+    return out
 
 
 @router.delete("/{estimate_id}/lines/{line_id}", response_model=None)
@@ -1529,9 +1645,8 @@ def delete_line(
     line_id: UUID,
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> dict[str, bool]:
-    estimate = _get_estimate_or_404(estimate_id, db, include_lines=True)
-    _ensure_editable(estimate)
+) -> dict[str, object]:
+    estimate = _held_editable_estimate(estimate_id, db)
 
     line = db.execute(
         select(EstimateLine).where(EstimateLine.id == line_id, EstimateLine.estimate_id == estimate.id)
@@ -1542,7 +1657,7 @@ def delete_line(
     db.delete(line)
     db.flush()
     _recalculate_total(estimate, db)
-    db.commit()
+    _commit_versioned(db, estimate)
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -1565,7 +1680,7 @@ def delete_line(
             _audit_db.commit()
         except Exception:
             log.exception('delete_line_audit_failed')
-    return {"deleted": True}
+    return {"deleted": True, **_version_transition(estimate, "estimate_")}
 
 
 _DEFAULT_SUBJECT_TEMPLATE = "{{job_title}}"
@@ -1792,13 +1907,14 @@ def mark_estimate_sent(
     estimate = _get_estimate_or_404(estimate_id, db)
     if estimate.status in {"accepted", "declined"}:
         raise HTTPException(status_code=409, detail="estimate is finalized")
+    _hold_version(db, estimate)
     channel = (payload or MarkEstimateSentIn()).channel
     estimate.status = "sent"
     estimate.sent_at = utcnow()
     estimate.sent_via = channel
     _apply_send_expiry(estimate)
     estimate.updated_at = utcnow()
-    db.commit()
+    _commit_versioned(db, estimate)
     db.refresh(estimate)
     log_audit_event_sync(
         db=db,
@@ -2378,6 +2494,7 @@ def send_estimate(
         # the customer may have accepted/declined meanwhile (a link from an
         # earlier send). A delivery never undoes their decision — only the
         # channel is noted.
+        _hold_version(db, estimate)
         db.refresh(estimate, with_for_update=True)
         estimate.sent_via = "email"
         estimate.updated_at = utcnow()
@@ -2386,7 +2503,7 @@ def send_estimate(
             estimate.sent_at = utcnow()
             _apply_send_expiry(estimate)
             _emit_estimate_sent(db, estimate)
-        db.commit()
+        _commit_versioned(db, estimate)
         db.refresh(estimate)
         log_audit_event_sync(
             db=db,
@@ -2942,13 +3059,16 @@ def decline_estimate(
         raise HTTPException(status_code=409, detail="already declined")
     if estimate.status == "accepted":
         raise HTTPException(status_code=409, detail="cannot decline an accepted estimate")
+    # Reported like reopen: the editor declines, reopens and edits on, and
+    # must follow both bumps or its next save reads as a colleague's.
+    _hold_version(db, estimate)
     estimate.status = "declined"
     estimate.declined_at = utcnow()
     # Validator guarantees a non-empty, stripped reason — no None fallback.
     estimate.declined_reason = payload.reason
     estimate.updated_at = utcnow()
     _emit_estimate_decision(db, estimate, "estimate.declined")
-    db.commit()
+    _commit_versioned(db, estimate)
     db.refresh(estimate)
     log_audit_event_sync(
         db=db,
@@ -3116,6 +3236,7 @@ def reassign_estimate_customer(
             select(Customer).where(Customer.id == old_customer_id)
         ).scalar_one_or_none()
 
+    _hold_version(db, estimate)
     previous_status = estimate.status
     token_rotated = rotate_public_token(estimate)
     estimate.customer_id = payload.customer_id
@@ -3165,7 +3286,7 @@ def reassign_estimate_customer(
             "lead_start_pointers_cleared": lead_pointers_cleared,
         },
     )
-    db.commit()
+    _commit_versioned(db, estimate)
     db.refresh(estimate)
 
     # Consumers were handed customer_id on estimate.sent and on accept/decline;
@@ -3222,12 +3343,13 @@ def reopen_estimate(
         )
     drift = _compute_price_drift(estimate, db)
 
+    _hold_version(db, estimate)
     estimate.status = "draft"
     estimate.declined_at = None
     estimate.declined_reason = None
     estimate.valid_until = None  # a fresh window is stamped on the next send
     estimate.updated_at = utcnow()
-    db.commit()
+    _commit_versioned(db, estimate)
     db.refresh(estimate)
     log_audit_event_sync(
         db=db,

@@ -1021,6 +1021,11 @@
             <i v-else-if="autosaveState === 'error'" class="pi pi-exclamation-triangle" />
             <span>{{ autosaveLabel }}</span>
           </span>
+          <!-- Someone else saved this estimate after it was loaded here. The
+               header save is refused (409) and autosave stops; reloading shows
+               their changes. Typing since the last save is not kept. -->
+          <Button v-if="versionConflict" label="Reload" icon="pi pi-refresh" severity="warn" size="small"
+            data-testid="estimate-version-conflict-reload" @click="reloadAfterConflict" />
           <!-- Disabled when finalized: forceFlush refuses to run then, so the
                "Saved" toast this button fires would be a lie. -->
           <Button label="Save Changes" icon="pi pi-save" severity="primary"
@@ -2358,6 +2363,11 @@ async function fetchEstimate() {
         : Math.round(rate * 1000000) / 10000;
     }
     const lineSrc = data.lines || data.line_items || data.items || [];
+    // A read is the authority on the token; any own-write links still
+    // pending are older than what was just read.
+    estimateVersion.value = data.version ?? null;
+    _ownVersionSteps.clear();
+    versionConflict.value = false;
     _syncedValidUntil = _validUntilString(_parseDateOnly(data.valid_until || data.expires_at));
     form.value = {
       customer_id: data.customer_id ?? null,
@@ -2404,6 +2414,9 @@ async function fetchEstimate() {
     // different-address answer; blank/NULL means "same as customer".
     jobsiteDiffers.value = Boolean((data.jobsite_address || "").trim());
     acceptedTierId.value = data.accepted_tier_id ?? null;
+    // The reassignment above fires the deep watcher; with the form as loaded
+    // marked synced, that flush sends nothing (see _flushNow).
+    _syncedFormSnapshot = _formSnapshot();
     await loadAttachments();
     if (proposalMode.value) await loadTiers();
   } catch {
@@ -2482,14 +2495,34 @@ async function loadTiers() {
 }
 
 async function onProposalModeToggle(value) {
-  if (!route.params.id) return;
-  try {
-    await api.patch(`/api/estimates/${route.params.id}`, { proposal_mode: Boolean(value) });
-    if (value) await loadTiers();
-  } catch {
-    proposalMode.value = !value;  // server refused — put the switch back
-    toast.add({ severity: "error", summary: "Could not change proposal mode", life: 4000 });
+  // Read at the click: after the flush below the route may name another estimate.
+  const id = route.params.id;
+  if (!id) return;
+  // The toggle bumps the version. Typing saved around it must not carry the
+  // token from before it: save pending typing first, and hold any flush
+  // armed meanwhile until the toggle's new token has been followed.
+  await forceFlush();
+  if (_viewUnmounted) return;
+  if (versionConflict.value) {
+    proposalMode.value = !value;  // someone else changed it — reload before anything else
+    return;
   }
+  const write = (async () => {
+    try {
+      _followOwnWrite(await api.patch(`/api/estimates/${id}`, { proposal_mode: Boolean(value) }));
+      return true;
+    } catch {
+      proposalMode.value = !value;  // server refused — put the switch back
+      toast.add({ severity: "error", summary: "Could not change proposal mode", life: 4000 });
+      return false;
+    }
+  })();
+  // Chained, so a flush waits for every toggle still pending, not just the last.
+  // Cleared once the whole chain has settled, never when only this toggle has.
+  const held = Promise.all([_ownWriteInFlight, write]);
+  _ownWriteInFlight = held;
+  held.then(() => { if (_ownWriteInFlight === held) _ownWriteInFlight = null; });
+  if ((await write) && value && !_viewUnmounted) await loadTiers();
 }
 
 async function saveTier(name) {
@@ -2831,8 +2864,57 @@ let _autosaveDebounce = null;
 let _autosaveInFlight = false;
 let _autosaveInFlightPromise = null;
 let _autosaveQueued = false;
+// A non-autosave write to the estimate row (the proposal-mode toggle) still
+// awaiting its response; a flush waits for it so it sends the token it leaves.
+let _ownWriteInFlight = null;
 let _viewUnmounted = false;
 const FINALIZED = new Set(["accepted", "declined", "Accepted", "Declined"]);
+
+// --- Concurrency token (GDXA-450) ---
+// The header PATCH sends the `version` this view loaded; the server refuses
+// it with 409 when someone else saved since, instead of this view's whole
+// header silently overwriting their save. Every write bumps the version, this
+// view's own line edits, sends and reassigns included, so each write response
+// reports {before, after} and the token follows a step only when `before` is
+// the token held. Steps are kept until the chain reaches them, because
+// responses can arrive out of order (a proposal toggle during a flush). A
+// colleague's write leaves a gap in the chain: the token stays stale and the
+// next header save is the one refused.
+const estimateVersion = ref(null);
+const _ownVersionSteps = new Map();
+const versionConflict = ref(false);
+
+function _followOwnWrite(body, prefix = "") {
+  if (body?.data && typeof body.data === "object") body = body.data;
+  const before = body?.[`${prefix}version_before`];
+  const after = body?.[`${prefix}version`];
+  if (before == null || after == null) return;
+  _ownVersionSteps.set(before, after);
+  while (_ownVersionSteps.has(estimateVersion.value)) {
+    const next = _ownVersionSteps.get(estimateVersion.value);
+    _ownVersionSteps.delete(estimateVersion.value);
+    estimateVersion.value = next;
+  }
+}
+
+// A flush whose form matches what was last loaded or saved sends nothing.
+// It used to be a harmless no-op PATCH, but every write bumps the version, so
+// merely opening an estimate (fetchEstimate's reassignment fires the deep
+// watcher) would make a colleague's open editor 409 on its next save. Line ids
+// are left out: the id a POST writes back is not an edit.
+let _syncedFormSnapshot = null;
+
+function _formSnapshot() {
+  return JSON.stringify(form.value, (key, value) => (key === "id" ? undefined : value));
+}
+
+async function reloadAfterConflict() {
+  if (_autosaveDebounce) { clearTimeout(_autosaveDebounce); _autosaveDebounce = null; }
+  pendingLineDeletes.value = [];
+  await fetchEstimate();
+  autosaveState.value = "idle";
+  autosaveError.value = "";
+}
 
 // Autosave refuses to run for finalized estimates (below), so every line-item
 // control must lock with it — an editable editor whose saves are silently
@@ -2976,10 +3058,15 @@ async function _flushNow() {
   if (_viewUnmounted) return;
   if (!isExisting.value) return;
   if (FINALIZED.has(estimate.value.status)) return;
+  // Refused once already: every further save would be refused too, and the
+  // Reload button is the way on.
+  if (versionConflict.value) return;
   if (_autosaveInFlight) {
     _autosaveQueued = true;
     return;
   }
+  const snapshot = _formSnapshot();
+  if (snapshot === _syncedFormSnapshot && pendingLineDeletes.value.length === 0) return;
   _autosaveInFlight = true;
   let _resolveInFlight;
   _autosaveInFlightPromise = new Promise((resolve) => { _resolveInFlight = resolve; });
@@ -2987,6 +3074,7 @@ async function _flushNow() {
   autosaveError.value = "";
   const id = route.params.id;
   try {
+    if (_ownWriteInFlight) await _ownWriteInFlight;
     // 1. Header.
     const formPct = Number(form.value.tax_rate) || 0;
     const persistTax = Math.abs(formPct - tenantDefaultTaxPct.value) > 0.001;
@@ -2997,6 +3085,7 @@ async function _flushNow() {
     // Sent only when the user changed it: send stamps valid_until server-side
     // without refreshing this form, and an unconditional null would wipe it.
     const validUntil = _validUntilString(form.value.valid_until);
+    let lineRecreate = false;
     const header = {
       label: form.value.label || null,
       jobsite_address: form.value.jobsite_address || null,
@@ -3007,7 +3096,15 @@ async function _flushNow() {
       hide_line_prices: form.value.hide_line_prices ?? null,
     };
     if (validUntil !== _syncedValidUntil) header.valid_until = validUntil;
-    await apiRaw.patch(`/api/estimates/${id}`, header);
+    // The token this view loaded: a colleague's save since then turns this
+    // header write into a 409 instead of an overwrite (GDXA-450).
+    if (estimateVersion.value != null) header.expected_version = estimateVersion.value;
+    try {
+      _followOwnWrite(await apiRaw.patch(`/api/estimates/${id}`, header));
+    } catch (err) {
+      if (err?.status === 409 && err?.code === "estimate_version_conflict") versionConflict.value = true;
+      throw err;
+    }
     if ("valid_until" in header) _syncedValidUntil = validUntil;
 
     // 2. Pending deletes — drain first so newly-added lines don't collide.
@@ -3015,7 +3112,7 @@ async function _flushNow() {
       const toDelete = pendingLineDeletes.value.splice(0);
       for (const lineId of toDelete) {
         try {
-          await apiRaw.del(`/api/estimates/${id}/lines/${lineId}`);
+          _followOwnWrite(await apiRaw.del(`/api/estimates/${id}/lines/${lineId}`), "estimate_");
         } catch {
           // Already gone is fine — last-write-wins.
         }
@@ -3037,20 +3134,25 @@ async function _flushNow() {
         : !_lineHasContent(li)) continue;
       if (li.id) {
         try {
-          await apiRaw.patch(`/api/estimates/${id}/lines/${li.id}`, _linePatchPayload(li));
+          _followOwnWrite(
+            await apiRaw.patch(`/api/estimates/${id}/lines/${li.id}`, _linePatchPayload(li)), "estimate_",
+          );
         } catch (err) {
           // 404 = server line was deleted out from under us; drop the id
-          // so the next flush re-creates it.
-          if (err?.status === 404) li.id = undefined;
+          // so the next flush re-creates it (and mark the form unsynced, or
+          // the snapshot check would skip that flush).
+          if (err?.status === 404) { li.id = undefined; lineRecreate = true; }
           else throw err;
         }
       } else {
         const result = await apiRaw.post(`/api/estimates/${id}/lines`, _linePostPayload(li));
         const created = result?.data || result;
         if (created?.id) li.id = created.id;
+        _followOwnWrite(created, "estimate_");
       }
     }
 
+    _syncedFormSnapshot = lineRecreate ? null : snapshot;
     autosaveLastAt.value = Date.now();
     autosaveState.value = "saved";
   } catch (err) {
@@ -3100,9 +3202,9 @@ function _scheduleFlush() {
 
 // Deep watcher on the form. Vue fires deep watchers for nested edits.
 // fetchEstimate reassigns form.value wholesale, which also fires this
-// watcher exactly once — but the resulting flush is a no-op (header
-// PATCH with same values, no new lines). Acceptable; the alternative is
-// a "loading" guard, which adds bug surface.
+// watcher exactly once — but the resulting flush sends nothing: the form
+// matches _syncedFormSnapshot, and a same-values PATCH would bump the
+// version and 409 a colleague (GDXA-450).
 watch(
   () => form.value,
   () => { if (isExisting.value) _scheduleFlush(); },
@@ -3375,6 +3477,7 @@ async function confirmReassign() {
       { customer_id: reassignCustomerId.value, reason: reassignReason.value.trim() },
     );
     const payload = res?.data || res;
+    _followOwnWrite(payload);
     form.value.customer_id = payload.customer_id ?? reassignCustomerId.value;
     estimate.value.customer_name = payload.customer_name || "";
     showReassign.value = false;
@@ -3556,6 +3659,9 @@ async function sendComposer() {
       }),
     );
     const payload = result?.data || result;
+    // A delivered send bumps the version; without this the next edit after
+    // emailing would 409 against the editor's own send (GDXA-450).
+    _followOwnWrite(payload);
     if (payload.email_sent) {
       estimate.value.status = _titleCase(payload.status || "sent");
       loadActivity();
@@ -3613,6 +3719,7 @@ async function _emailViaMailtoFallback(c, pdfAtt) {
   window.location.href = mailto;
   try {
     const result = await api.post(`/api/estimates/${route.params.id}/mark-sent`, { channel: "email" });
+    _followOwnWrite(result?.data || result);
     estimate.value.status = _titleCase(result?.status || "sent");
     loadActivity();
   } catch {
@@ -3877,6 +3984,7 @@ async function doDeclineEstimate() {
   declineBusy.value = true;
   try {
     const result = await api.post(`/api/estimates/${route.params.id}/decline`, { reason });
+    _followOwnWrite(result?.data || result);
     estimate.value.status = _titleCase(result?.status || "declined");
     if (result?.declined_reason) estimate.value.declined_reason = result.declined_reason;
     declineDialogOpen.value = false;
@@ -3900,6 +4008,7 @@ async function reopenEstimate() {
   reopenBusy.value = true;
   try {
     const result = await api.post(`/api/estimates/${route.params.id}/reopen`, {});
+    _followOwnWrite(result?.data || result);
     estimate.value.status = _titleCase(result?.status || "draft");
     estimate.value.declined_reason = null;
     estimate.value.expires_at = "";

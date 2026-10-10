@@ -25,6 +25,19 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(minute="*"),
             "options": {"queue": "priority:high"},
         },
+        "dispatch-plugin-schedules-every-minute": {
+            # GDXA-463: the driver for manifest `schedules` (GDXA-439). Without
+            # this entry an owner consented to "runs on a fixed schedule" and
+            # nothing ever ran. Every minute, because each tick matches every
+            # cron against the current UTC minute. On priority:high beside event
+            # dispatch: that worker holds GDX_INTERNAL_TOKEN for plugin-host. No
+            # `expires`: a retry reuses this message's options and must outlive
+            # it, and a backlog of late ticks is harmless (plugin-host drops a
+            # repeated run_id; the audit row is deduped on request_id).
+            "task": "gdx_dispatch.core.plugin_events.dispatch_plugin_schedules",
+            "schedule": crontab(minute="*"),
+            "options": {"queue": "priority:high"},
+        },
         "planner-digest-daily": {
             # First staff-facing scheduled reminder. Emails a summary of open
             # planner tasks so call-notes taken on a busy day don't scroll away.

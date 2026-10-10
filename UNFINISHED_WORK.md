@@ -92,8 +92,9 @@ prod and demo and walked on prod in light and dark.
       monthly hand-check against a QuickBooks we can no longer reach. _(carried)_
 - [ ] **`gl-phase2` QBO half** — ⛔ won't build; retired by the QuickBooks phase-out.
 - [ ] **n8n Sprint 2b** — the schedule driver and plugin-host's `/internal/schedules`
-      route (GDXA-439) and the re-consent-on-drift banner (GDXA-462) are built; the
-      beat entry that ticks the driver is not, so no schedule fires yet. (2026-10-10)
+      route (GDXA-439), the beat entry that ticks it each minute (GDXA-463) and the
+      re-consent-on-drift banner (GDXA-462) are on main; unreleased, so no schedule
+      has fired on prod yet. (2026-10-10)
 - [ ] **Bank statement import** — 3 slices on main, never exercised on prod:
       `bank_matches` has 0 rows, so nobody has run a reconcile. _(carried)_
 - [ ] **Plugin storefront S3** — catalog signature with a pinned key absent; §5 labels it
