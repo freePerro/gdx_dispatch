@@ -124,6 +124,7 @@
               @click.stop="openEditDialog(data)"
             />
             <Button
+              v-if="hasPermission('customers.write')"
               v-tooltip="'Delete'"
               icon="pi pi-trash" aria-label="Delete"
               text
@@ -178,6 +179,7 @@ import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { useListPrefs } from "../composables/useListPrefs";
+import { usePermission } from "../composables/usePermission";
 import { useTableExport } from "../composables/useTableExport";
 import { formatPhone } from "../composables/useFormatters";
 import Button from "primevue/button";
@@ -195,6 +197,9 @@ import { normalizeCustomerType } from "../constants/customerTypes";
 
 const api = useApiWithToast();
 const toast = useToast();
+// The delete route demands customers.write (GDXA-418); without it the trash
+// button would only ever produce a "Missing permission" toast.
+const { hasPermission } = usePermission();
 const router = useRouter();
 const route = useRoute();
 

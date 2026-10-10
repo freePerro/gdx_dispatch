@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import bindparam, func, select, text
+from sqlalchemy import bindparam, func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -27,7 +27,7 @@ from gdx_dispatch.core.log_redact import redact_email
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.name_normalize import humanize_name
 from gdx_dispatch.core.tenant import company_id
-from gdx_dispatch.models.tenant_models import Customer, CustomerLocation, Job
+from gdx_dispatch.models.tenant_models import Customer, CustomerLocation, Invoice, Job, Payment
 
 log = logging.getLogger(__name__)
 
@@ -780,7 +780,15 @@ async def update_customer(
     return CustomerOut(**_customer_dict(customer))
 
 
-@router.delete("/{customer_id}", status_code=204)
+@router.delete(
+    "/{customer_id}",
+    status_code=204,
+    # This took a bare get_current_user, so any session — a technician's phone
+    # included — could retire a customer (GDXA-418). customers.write, the key
+    # the merge and absorb paths that also retire customers demand; the
+    # office roles that delete from CustomersView today hold it.
+    dependencies=[Depends(require_permission("customers.write"))],
+)
 async def delete_customer(
     customer_id: str,
     request: Request = None,
@@ -798,6 +806,38 @@ async def delete_customer(
     ).first()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
+    # Refuse while the customer owns any invoice past draft, or a draft that
+    # already carries a live payment. Every customer list filters deleted_at,
+    # so a sent invoice left here is receivable no screen leads to (GDXA-418: a
+    # $50 sent invoice stranded exactly so), and a paid or void one is billing
+    # history cut off from its account. A draft can take a payment
+    # (POST /api/invoices/{id}/payments) and stays draft until its balance hits
+    # zero, so status alone misses money already received. Merge moves
+    # invoices to the surviving record first; delete has no such step. An
+    # unpaid draft is not AR and does not block. ORM, not raw SQL: SQLite
+    # stores the Uuid dashless and a raw `customer_id = :dashed` would match
+    # nothing here.
+    paid_into = select(Payment.id).where(
+        Payment.invoice_id == Invoice.id,
+        Payment.voided_at.is_(None),
+    ).exists()
+    billed = db.query(func.count(Invoice.id)).filter(
+        Invoice.customer_id == cid,
+        Invoice.deleted_at.is_(None),
+        or_(Invoice.status != "draft", paid_into),
+    ).scalar() or 0
+    if billed:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This customer has {billed} invoice{'s' if billed != 1 else ''} "
+                "past draft (sent, paid or void) or with a payment recorded, and "
+                "cannot be deleted: its "
+                "billing history has to stay on a customer the office can see. "
+                "If it duplicates another customer, merge them from Customer "
+                "Duplicates."
+            ),
+        )
     customer.deleted_at = datetime.now(timezone.utc)
     db.commit()
     await log_audit_event(

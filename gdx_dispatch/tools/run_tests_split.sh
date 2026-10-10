@@ -8,6 +8,18 @@
 #   N=4 gdx_dispatch/tools/run_tests_split.sh gdx_dispatch/tests/test_auth_*.py
 #   PYTEST="docker run --rm --entrypoint python -e JWT_SECRET=<32+ bytes> \
 #     -v $PWD:/app -w /app docker-app -m pytest" gdx_dispatch/tools/run_tests_split.sh
+#   LOG_DIR=<dir> gdx_dispatch/tools/run_tests_split.sh --reuse-check   # run nothing
+#
+# Every run ends by writing $LOG_DIR/result.txt: PASS or FAIL, the git tree id
+# of the tracked set when the shards started, the docker image id, any pytest
+# args, the PYTEST used, and whether the run was narrowed (PYTEST_ADDOPTS on
+# the host or inside the docker command; selection after `-m pytest` already
+# leaves the image unknown, which is never reused). `--reuse-check` compares that stamp with
+# the tree and image as they are now: exit 0 and "REUSE" means an un-narrowed
+# full-suite PASS already covers this tracked set on this image, so do not run
+# the matrix again; exit 1 and "RUN" (with the reason) means run it
+# (2026-10-09: a Paperclip continuation found its predecessor's scratch logs
+# gone and re-ran a full matrix it already had).
 #
 # Sweet spot from 2026-04-24 benchmark: N=7 on this laptop (14 cores).
 # Beyond ~7 the per-process startup tax outpaces the parallelism gain.
@@ -106,8 +118,61 @@ if [ "$MODE" = "scans" ]; then
   mapfile -t SCAN_FILES <<< "$scan_files"
 fi
 
+# The git tree id of what is under test: the index's tracked set with each
+# tracked file's working-tree content (a throwaway copy of the index, then
+# `add -u`). The tracked set matters as well as the bytes: the tracked-set
+# guard tests read the index, so a file can pass untracked and fail once
+# added. Hence any untracked, non-ignored file gives "untracked", which never
+# matches; stage new files before the matrix. Two paths are not counted:
+# .matrix-logs/ (this script's output, not ignored on branches cut before the
+# .gitignore line) and .paperclip-worktree-notes.txt (untracked, rewritten by
+# the worktree provisioner on every wake). Committing the tree as it stands
+# gives HEAD the same tree id, so a stamp still matches after the commit.
+# "unknown" outside a git checkout or mid-conflict.
+tree_fingerprint() {
+  local idx out
+  if [ -n "$(cd "$REPO_ROOT" && git ls-files -o --exclude-standard -- . \
+        ':!.matrix-logs' ':!.paperclip-worktree-notes.txt' 2>/dev/null | head -1)" ]; then
+    echo untracked
+    return
+  fi
+  idx="$(mktemp -u)"
+  out="$(cd "$REPO_ROOT" && cp "$(git rev-parse --git-path index)" "$idx" 2>/dev/null \
+         && GIT_INDEX_FILE="$idx" git add -u 2>/dev/null \
+         && GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null)" || out=unknown
+  rm -f "$idx"
+  echo "${out:-unknown}"
+}
+
 N="${N:-7}"
 LOG_DIR="${LOG_DIR:-/tmp/gdx_split}"
+# Keep the in-worktree log dir out of `git add -A` on branches cut before the
+# .gitignore line: the local exclude file is per-clone and never committed.
+excl="$(git -C "$REPO_ROOT" rev-parse --git-path info/exclude 2>/dev/null || true)"
+if [ -n "$excl" ] && ! grep -qx '/.matrix-logs/' "$excl" 2>/dev/null; then
+  mkdir -p "$(dirname "$excl")" 2>/dev/null && echo '/.matrix-logs/' >> "$excl" 2>/dev/null || true
+fi
+
+if [ "${1:-}" = "--reuse-check" ]; then
+  stamp="$LOG_DIR/result.txt"
+  if [ ! -f "$stamp" ]; then echo "RUN: no $stamp"; exit 1; fi
+  read -r verdict _ _ tree _ image _ _ _ args < "$stamp" || true
+  now_tree="$(tree_fingerprint)"
+  now_image="$(docker image inspect -f '{{.Id}}' "${image%%@*}" 2>/dev/null || true)"
+  if [ "$verdict" != PASS ]; then echo "RUN: last result was $verdict"; exit 1; fi
+  if [ -n "$args" ]; then echo "RUN: last run was a subset ($args), not the full matrix"; exit 1; fi
+  case "$now_tree" in
+    untracked) echo "RUN: untracked files present; git add them first"; exit 1 ;;
+    unknown) echo "RUN: cannot fingerprint the tree"; exit 1 ;;
+  esac
+  if [ "$tree" != "$now_tree" ]; then echo "RUN: code or tracked set changed since the last PASS"; exit 1; fi
+  narrowed="$(sed -n 's/^narrowed: //p' "$stamp")"
+  if [ -n "$narrowed" ]; then echo "RUN: last run was narrowed ($narrowed), not the full matrix"; exit 1; fi
+  if [ "${image#*@}" != "$now_image" ] || [ -z "$now_image" ]; then echo "RUN: docker image changed or unknown"; exit 1; fi
+  echo "REUSE: $(head -1 "$stamp")"
+  sed -n 's/^pytest: /  it ran: /p' "$stamp"
+  exit 0
+fi
 mkdir -p "$LOG_DIR"
 
 # Resolve a Python that can actually run the suite. There is usually NO host
@@ -359,7 +424,20 @@ fi
 # Clear the last run's shard logs: an N=4 run after an N=7 one would otherwise
 # leave groups 5-7 behind, and the error scans and the vs-main report below read
 # group_*.log, so stale reds would be reported as this run's.
-rm -f "$LOG_DIR"/group_*.log
+rm -f "$LOG_DIR"/group_*.log "$LOG_DIR/result.txt"
+TREE_FP="$(tree_fingerprint)"
+write_result() {
+  local narrowed=""
+  [ -n "${PYTEST_ADDOPTS:-}" ] && narrowed="PYTEST_ADDOPTS=$PYTEST_ADDOPTS"
+  case " $PYTEST " in
+    *PYTEST_ADDOPTS*|*" -k "*|*"::"*|*".py "*|*"/tests/"*) narrowed="${narrowed:+$narrowed; }test selection inside PYTEST" ;;
+  esac
+  { printf '%s %s tree %s image %s@%s N %s args %s\n' "$1" "$(date -Is)" "$TREE_FP" \
+      "${IMAGE:-none}" "${IMAGE_ID:-none}" "$N" "${*:2}"
+    printf 'pytest: %s\n' "$PYTEST"
+    printf 'narrowed: %s\n' "$narrowed"
+  } > "$LOG_DIR/result.txt"
+}
 
 pids=()
 for g in $(seq 1 "$N"); do
@@ -452,7 +530,9 @@ fi
 if [ "$fail" -ne 0 ]; then
   echo
   echo "FAIL — at least one shard reported errors. Logs in $LOG_DIR/"
+  write_result FAIL "$@"
   exit 1
 fi
 echo
 echo "PASS — all $N shards green. Logs in $LOG_DIR/"
+write_result PASS "$@"
