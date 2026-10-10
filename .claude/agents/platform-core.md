@@ -85,7 +85,7 @@ callers by owner in your report rather than editing their files.
 
 ## Verify a change here
 
-- Backend, targeted: `docker run --rm --entrypoint python -v "$PWD":/app -w /app -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x docker-app -m pytest -rs -k "<pattern>"`.
+- Backend, targeted: `docker run --rm --tmpfs /tmp:rw,exec,size=32g --entrypoint python -v "$PWD":/app -w /app -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x docker-app -m pytest -rs -k "<pattern>"`.
   Your patterns: `auth`, `authz`, `audit`, `migration`, `role`, `users`,
   `settings`, `session`, `api_version`, `rate_limit`, `openapi_snapshot`,
   `route_shadow`, `tenant`, `single_tenant`, `schema_fixture_drift`,

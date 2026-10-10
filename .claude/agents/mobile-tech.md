@@ -83,7 +83,7 @@ jobs-dispatch's state contract. When you change one, that owner reviews.
 
 ## Verify a change here
 
-- Backend, targeted: `docker run --rm --entrypoint python -v "$PWD":/app -w /app -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x docker-app -m pytest -rs -k "<pattern>"`.
+- Backend, targeted: `docker run --rm --tmpfs /tmp:rw,exec,size=32g --entrypoint python -v "$PWD":/app -w /app -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x docker-app -m pytest -rs -k "<pattern>"`.
   Your patterns: `mobile`, `tenant_mobile_settings`, `tech_mobile`,
   `pwa`, `m38`, `chat_threads`.
 - Baseline scans, after `git merge origin/main` and before the matrix:
