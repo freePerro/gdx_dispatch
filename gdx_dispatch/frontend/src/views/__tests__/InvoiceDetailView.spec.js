@@ -431,6 +431,7 @@ describe('InvoiceDetailView — edit save tax rate', () => {
     expect(apiPatch).toHaveBeenCalledWith(
       '/api/invoices/inv-1',
       expect.objectContaining({ tax_rate: 0 }),
+      expect.anything(),
     );
   });
 });
@@ -1250,12 +1251,14 @@ describe('InvoiceDetailView — GDXA-91: the edit save refuses BEFORE it writes'
 
     await wrapper.get('[data-testid="invoice-edit-btn"]').trigger('click');
     await flushPromises();
+    // Edit starts from a fresh read (GDXA-449); count resyncs from there.
+    expect(fetches()).toBe(2);
     await wrapper.get('[data-testid="emit-good-then-bad"]').trigger('click');
     await wrapper.get('[data-testid="invoice-edit-save"]').trigger('click');
     await flushPromises();
     expect(lineWrites()).toEqual([]); // nothing moved...
     expect(invoiceWrites()).toEqual([]);
-    expect(fetches()).toBe(1); // ...so no resync was owed, and none fired.
+    expect(fetches()).toBe(2); // ...so no resync was owed, and none fired.
 
     // Edit mode stays open so the operator keeps their draft and can fix it,
     // and Cancel now discards an edit that really was never applied.
@@ -1263,7 +1266,7 @@ describe('InvoiceDetailView — GDXA-91: the edit save refuses BEFORE it writes'
     await wrapper.get('[data-testid="invoice-edit-cancel"]').trigger('click');
     await flushPromises();
     expect(lineWrites()).toEqual([]);
-    expect(fetches()).toBe(1);
+    expect(fetches()).toBe(2);
   });
 
   it('names EVERY offending line in one toast, not just the first', async () => {
@@ -1618,5 +1621,179 @@ describe('InvoiceDetailView — bank payment pending tag (GDXA-393)', () => {
     await flushPromises();
     expect(wrapper.find('[data-testid="invoice-ach-pending-tag"]').exists()).toBe(false);
     expect(wrapper.get('[data-testid="bill-to-name"]').text()).toContain('Acme Door Co');
+  });
+});
+
+
+describe('InvoiceDetailView — GDXA-449: a stale edit screen is refused, not saved', () => {
+  // Two office users open the same draft. The second Save used to overwrite
+  // the first user's notes, dates and tax rate without a trace. The header
+  // PATCH now carries the version the edit started from and goes FIRST: the
+  // line writes bump the version themselves, so sent last it would 409 on our
+  // own save, and a stale screen must be refused before it touches a line.
+  const LINE_ID = '3333333333333333333333333333cccc';
+  const EDIT_STUB = {
+    props: ['lines'],
+    emits: ['update:lines', 'update:fromPartIds'],
+    template: `<div><button data-testid="emit-qty" @click="$emit('update:lines', [
+      { id: '${LINE_ID}', description: 'Spring', quantity: 2, unit_price: 100, taxable: true },
+    ])">qty</button></div>`,
+  };
+
+  function mountVersioned() {
+    mockApi(buildInvoicePayload({
+      version: 4,
+      lines: [{ id: LINE_ID, description: 'Spring', quantity: 1, unit_price: 100, taxable: true, line_total: 100 }],
+    }));
+    apiPost.mockResolvedValue({});
+    apiDel.mockResolvedValue({});
+    return mount(InvoiceDetailView, { global: { stubs: { ...baseStubs, LineItemEditor: EDIT_STUB } } });
+  }
+
+  async function editAndSave(wrapper) {
+    await flushPromises();
+    await wrapper.get('[data-testid="invoice-edit-btn"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="emit-qty"]').trigger('click');
+    await wrapper.get('[data-testid="invoice-edit-save"]').trigger('click');
+    await flushPromises();
+  }
+
+  it('sends the loaded version on the header PATCH, before any line write', async () => {
+    apiPatch.mockImplementation((url) =>
+      Promise.resolve(url === '/api/invoices/inv-1' ? { version: 5 } : {}));
+    const wrapper = mountVersioned();
+    await editAndSave(wrapper);
+
+    const urls = apiPatch.mock.calls.map(([url]) => url);
+    expect(urls[0]).toBe('/api/invoices/inv-1');
+    expect(urls).toContain(`/api/invoices/inv-1/lines/${LINE_ID}`);
+    expect(apiPatch.mock.calls[0][1].expected_version).toBe(4);
+    expect(toastAdd.mock.calls.find(([t]) => t.severity === 'success')).toBeTruthy();
+  });
+
+  it('on invoice_version_conflict writes no line and tells the operator someone else saved', async () => {
+    apiPatch.mockImplementation((url) => {
+      if (url !== '/api/invoices/inv-1') return Promise.resolve({});
+      const err = new Error('Someone else changed this invoice after you opened it.');
+      err.status = 409;
+      err.code = 'invoice_version_conflict';
+      return Promise.reject(err);
+    });
+    const wrapper = mountVersioned();
+    await editAndSave(wrapper);
+
+    expect(apiPatch.mock.calls.filter(([url]) => url.includes('/lines/'))).toEqual([]);
+    expect(apiPost.mock.calls.filter(([url]) => url.includes('/lines'))).toEqual([]);
+    expect(apiDel.mock.calls).toEqual([]);
+    const conflict = toastAdd.mock.calls.find(([t]) => t.summary === 'Changed by someone else');
+    expect(conflict).toBeTruthy();
+    expect(conflict[0].detail).toMatch(/not saved/);
+    expect(toastAdd.mock.calls.find(([t]) => t.summary === 'Save failed')).toBeFalsy();
+    // The operator keeps the draft: edit mode stays open.
+    expect(wrapper.find('[data-testid="invoice-edit-save"]').exists()).toBe(true);
+  });
+
+  it('retries a half-failed save against its own committed writes, not a false conflict', async () => {
+    // Header and line A commit (each moving the version), then adding line B
+    // fails. The retry has to carry the version our own writes left behind,
+    // or the server refuses it as "someone else saved" and the draft is lost.
+    let server = 4;
+    let postFailures = 1;
+    apiPatch.mockImplementation((url, body) => {
+      if (url === '/api/invoices/inv-1') {
+        if (body.expected_version !== server) {
+          const err = new Error('stale');
+          err.status = 409;
+          err.code = 'invoice_version_conflict';
+          return Promise.reject(err);
+        }
+        server += 1;
+        return Promise.resolve({ version: server });
+      }
+      server += 1;
+      return Promise.resolve({ id: LINE_ID, invoice_version: server });
+    });
+    mockApi(buildInvoicePayload({
+      version: 4,
+      lines: [{ id: LINE_ID, description: 'Spring', quantity: 1, unit_price: 100, taxable: true, line_total: 100 }],
+    }));
+    apiPost.mockImplementation(() => {
+      if (postFailures > 0) {
+        postFailures -= 1;
+        return Promise.reject(Object.assign(new Error('boom'), { status: 500 }));
+      }
+      server += 1;
+      return Promise.resolve({ id: '4444444444444444444444444444dddd', invoice_version: server });
+    });
+    apiDel.mockResolvedValue({});
+    const twoLines = {
+      props: ['lines'],
+      emits: ['update:lines', 'update:fromPartIds'],
+      template: `<div><button data-testid="emit-qty" @click="$emit('update:lines', [
+        { id: '${LINE_ID}', description: 'Spring', quantity: 2, unit_price: 100, taxable: true },
+        { description: 'Cable', quantity: 1, unit_price: 40, taxable: true },
+      ])">qty</button></div>`,
+    };
+    const wrapper = mount(InvoiceDetailView, { global: { stubs: { ...baseStubs, LineItemEditor: twoLines } } });
+    await editAndSave(wrapper);
+    expect(toastAdd.mock.calls.find(([t]) => t.summary === 'Save failed')).toBeTruthy();
+
+    await wrapper.get('[data-testid="invoice-edit-save"]').trigger('click');
+    await flushPromises();
+
+    const headers = apiPatch.mock.calls.filter(([url]) => url === '/api/invoices/inv-1');
+    expect(headers.map(([, b]) => b.expected_version)).toEqual([4, 6]);
+    expect(toastAdd.mock.calls.find(([t]) => t.summary === 'Changed by someone else')).toBeFalsy();
+    expect(toastAdd.mock.calls.find(([t]) => t.severity === 'success')).toBeTruthy();
+  });
+
+  it('Edit starts from a fresh read, so a version moved since page load is not a false conflict', async () => {
+    // Verify, a payment or a colleague's save moves the version after the page
+    // loaded. Edit must snapshot what the server holds now, not the page copy.
+    apiPatch.mockImplementation((url) =>
+      Promise.resolve(url === '/api/invoices/inv-1' ? { version: 8 } : {}));
+    const wrapper = mountVersioned();
+    await flushPromises();
+    const moved = buildInvoicePayload({
+      version: 7,
+      notes: 'colleague note',
+      lines: [{ id: LINE_ID, description: 'Spring', quantity: 1, unit_price: 100, taxable: true, line_total: 100 }],
+    });
+    const base = apiGet.getMockImplementation();
+    apiGet.mockImplementation((url, ...rest) =>
+      (url === '/api/invoices/inv-1' ? Promise.resolve(moved) : base(url, ...rest)));
+    await editAndSave(wrapper);
+
+    const header = apiPatch.mock.calls.find(([url]) => url === '/api/invoices/inv-1');
+    expect(header[1].expected_version).toBe(7);
+    // The colleague's notes are what this edit started from, so they survive.
+    expect(header[1].notes).toBe('colleague note');
+  });
+
+  it('a photo toggle refused as stale rolls back, reloads, and raises one warning', async () => {
+    mockApi(buildInvoicePayload({ version: 4, job_id: 'job-42', attached_photo_ids: [] }));
+    const base = apiGet.getMockImplementation();
+    apiGet.mockImplementation((url, ...rest) =>
+      (url === '/api/jobs/job-42/photos'
+        ? Promise.resolve([{ id: 'ph-1', url: '/x.jpg', kind: 'after' }])
+        : base(url, ...rest)));
+    apiPatch.mockImplementation(() =>
+      Promise.reject(Object.assign(new Error('stale'), { status: 409, code: 'invoice_version_conflict' })));
+    const wrapper = mount(InvoiceDetailView, { global: { stubs: baseStubs } });
+    await flushPromises();
+    const fetches = () => apiGet.mock.calls.filter(([url]) => url === '/api/invoices/inv-1').length;
+    expect(fetches()).toBe(1);
+
+    await wrapper.get('[data-testid="invoice-photo-ph-1"] input').setValue(true);
+    await flushPromises();
+
+    const [, body, opts] = apiPatch.mock.calls[0];
+    expect(body).toEqual({ attached_photo_ids: ['ph-1'], expected_version: 4 });
+    expect(opts).toEqual({ suppressErrorToast: true });
+    expect(fetches()).toBe(2);
+    const warns = toastAdd.mock.calls.filter(([t]) => t.summary === 'Photo not saved');
+    expect(warns).toHaveLength(1);
+    expect(warns[0][0].severity).toBe('warn');
   });
 });

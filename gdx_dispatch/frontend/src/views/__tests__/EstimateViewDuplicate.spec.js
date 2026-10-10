@@ -168,6 +168,9 @@ describe('EstimateView — Duplicate', () => {
     await flushPromises();
     apiPatch.mockClear();
 
+    // A pending edit: with nothing changed the pre-copy flush sends nothing (GDXA-450).
+    wrapper.vm.form.notes = 'pending edit';
+    await flushPromises();
     await wrapper.get('[data-testid="estimate-duplicate"]').trigger('click');
     await flushPromises();
 
@@ -190,6 +193,9 @@ describe('EstimateView — Duplicate', () => {
     await flushPromises();
     apiPost.mockClear();
 
+    // A pending edit: with nothing changed the pre-copy flush sends nothing (GDXA-450).
+    wrapper.vm.form.notes = 'pending edit';
+    await flushPromises();
     await wrapper.get('[data-testid="estimate-duplicate"]').trigger('click');
     await flushPromises();
     // The user opens estimate 9 (command palette) and this view unmounts.
@@ -208,6 +214,9 @@ describe('EstimateView — Duplicate', () => {
     const wrapper = mountView();
     await flushPromises();
 
+    // A pending edit: with nothing changed the pre-copy flush sends nothing (GDXA-450).
+    wrapper.vm.form.notes = 'pending edit';
+    await flushPromises();
     await wrapper.get('[data-testid="estimate-duplicate"]').trigger('click');
     await flushPromises();
 
