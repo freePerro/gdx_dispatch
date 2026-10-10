@@ -79,7 +79,7 @@
         v-model="form.customer_type"
         label="Customer Type"
         as="select"
-        :options="customerTypeOptions"
+        :options="customerTypeOptionsFor(form.customer_type)"
         optionLabel="label"
         optionValue="value"
         data-testid="customer-type-dropdown"
@@ -122,6 +122,7 @@ import Textarea from "primevue/textarea";
 import FormField from "./FormField.vue";
 import PhoneInput from "./PhoneInput.vue";
 import { formatPhone } from "../composables/useFormatters";
+import { customerTypeOptionsFor, normalizeCustomerType } from "../constants/customerTypes";
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -135,26 +136,6 @@ const api = useApiWithToast();
 // so a transient blip mid-typing never nags the user.
 const lookupApi = useApi();
 const toast = useToast();
-
-const customerTypeOptions = [
-  { label: "Residential", value: "Residential" },
-  { label: "Commercial", value: "Commercial" },
-  { label: "Retail", value: "Retail" },
-  { label: "Contractor", value: "Contractor" },
-  { label: "Wholesale", value: "Wholesale" },
-  { label: "Property Manager", value: "Property Manager" },
-];
-
-function normalizeCustomerType(type) {
-  const text = (type || "").toString().trim().toLowerCase();
-  if (text === "commercial") return "Commercial";
-  if (text === "retail") return "Retail";
-  if (text === "contractor") return "Contractor";
-  if (text === "wholesale") return "Wholesale";
-  if (text === "property_manager" || text === "property manager") return "Property Manager";
-  if (text === "residential") return "Residential";
-  return type ? String(type) : "Residential";
-}
 
 const trimOrNull = (value) => {
   const trimmed = value?.trim();
