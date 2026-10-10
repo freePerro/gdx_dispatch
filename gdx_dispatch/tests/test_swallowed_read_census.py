@@ -817,9 +817,9 @@ def test_root_scans_an_extracted_ref_not_this_worktree(tmp_path):
 
 
 def test_detect_repo_root_does_not_require_ai_queue(tmp_path):
-    """`silent_failure_scanner._detect_repo_root` also demands an `ai-queue/`
-    directory, which a fresh clone and a `git archive` extract do not have —
-    there it silently falls back to the CWD and scans nothing."""
+    """`silent_failure_scanner`'s root finder demanded an `ai-queue/` directory
+    until GDXA-404; a fresh clone and a `git archive` extract do not have one,
+    and there it silently fell back to the CWD and scanned nothing."""
     tools = tmp_path / "gdx_dispatch" / "tools"
     tools.mkdir(parents=True)
     assert not (tmp_path / "ai-queue").exists()

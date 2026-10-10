@@ -47,6 +47,32 @@ CHECKS
     bug (mobile, webhooks, public API, integrations), so this is OFF by
     default: ``--check C4``. Use it to hunt dead surface, and read each hit.
 
+GATE
+----
+
+``tests/test_scanner_real_repo_ratchet.py`` runs the default checks on the
+real tree, against the live app's route table, in the default suite and CI.
+It fails when its findings differ from ``.frontend_contract_baseline`` (see
+``tools/scanner_baseline.py``). Before GDXA-404 nothing ran this scanner on
+the real tree at all.
+
+KNOWN BLIND SPOTS (measured on the real tree 2026-10-09, GDXA-404)
+------------------------------------------------------------------
+
+Only calls whose URL is a string LITERAL as the first argument of
+``api.<verb>(`` or ``fetch(`` are seen. Not seen, so never checked:
+
+  * a URL held in a variable or built by a call — ``api.post(url, ...)``,
+    ``api.get(endpoint.value)``: ~45 call sites. Unknowable statically.
+  * string concatenation — ``'/api/qb/banking/sync' + qs``: 1 site.
+  * ``XMLHttpRequest`` (DocumentsView upload progress): 2 sites.
+  * ``window.open('/api/...')``: 0 sites today. Every ``window.open`` passes
+    a variable or a server-supplied redirect URL. A literal one would be missed.
+
+Fixed in GDXA-404: a template literal holding a quote (2 sites were silently
+dropped) and optional chaining ``${x?.id}`` read as a query string (1 bogus
+C2).
+
 ROUTE TABLE
 -----------
 
@@ -211,10 +237,17 @@ def normalize(path: str) -> str:
     never match the three-segment ``/api/plugins/${key}/ui`` the plugin UI
     actually calls — a C1 "no backend route serves this path" against a route
     that serves it fine. It gets its own marker, ``{*}``.
+
+    Template expressions are replaced BEFORE the query string is cut, because
+    a ``?`` inside ``${...}`` is optional chaining, not a query. Splitting
+    first turned `/api/appointments/${visit.value?.id}/undo-arrival` into the
+    literal segment ``${visit.value``, which then matched
+    ``/api/appointments/{appt_id}`` and reported a bogus C2 405 against a
+    POST route that exists (GDXA-404, measured on the real tree).
     """
-    p = path.split("?")[0].split("#")[0]
-    p = re.sub(r"(?<!/)\$\{[^}]*\}.*$", "", p)       # trailing query/suffix var
+    p = re.sub(r"(?<!/)\$\{[^}]*\}.*$", "", path)    # trailing query/suffix var
     p = re.sub(r"\$\{[^}]*\}", "{}", p)              # JS template segment
+    p = p.split("?")[0].split("#")[0]
     # Parked as a brace-free sentinel: the generic `{...}` rule below would
     # otherwise swallow the marker and undo this.
     p = re.sub(r"\{[^}]*:path\}", "\x00", p)         # Starlette catch-all (spans "/")
@@ -434,10 +467,19 @@ def _include_router_prefixes(root: Path) -> dict[str, str]:
 
 # ───────────────────────────── frontend call sites ─────────────────────────
 
+# One string literal, quotes included (strip them with ``[1:-1]``). Each quote
+# kind ends only at its own kind: the old ``([`'"])([^`'"]*)\2`` stopped at
+# the first quote of ANY kind, so a template literal holding a quoted default,
+# `/api/jobs?per_page=20${q ? '&q=' + q : ''}`, never closed and the call
+# vanished from every check. Two such call sites on the real tree (GDXA-404).
+_URL_LITERAL = r"(`[^`]*`|'[^'\n]*'|\"[^\"\n]*\")"
+
 RE_API_CALL = re.compile(
-    r"\bapi\.(get|post|put|patch|del|delete|postQueued|patchQueued)\s*\(\s*([`'\"])([^`'\"]*)\2"
+    r"\bapi\.(get|post|put|patch|del|delete|postQueued|patchQueued)\s*\(\s*" + _URL_LITERAL
 )
-RE_FETCH = re.compile(r"\bfetch\s*\(\s*([`'\"])([^`'\"]*)\1(?:\s*,\s*\{[^}]*?method:\s*[`'\"](\w+)[`'\"])?")
+RE_FETCH = re.compile(
+    r"\bfetch\s*\(\s*" + _URL_LITERAL + r"(?:\s*,\s*\{[^}]*?method:\s*[`'\"](\w+)[`'\"])?"
+)
 RE_JS_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/|<!--.*?-->", re.S)
 
 
@@ -454,7 +496,7 @@ def frontend_calls(root: Path, tracked: list[str]) -> list[dict]:
         # strip comments so documentation examples aren't treated as calls
         src = RE_JS_COMMENT.sub(lambda m: "\n" * m.group(0).count("\n"), raw)
         for m in RE_API_CALL.finditer(src):
-            url = m.group(3)
+            url = m.group(2)[1:-1]
             if not url.startswith("/api"):
                 continue
             calls.append({
@@ -465,13 +507,13 @@ def frontend_calls(root: Path, tracked: list[str]) -> list[dict]:
                 "expr": m.group(0)[:80],
             })
         for m in RE_FETCH.finditer(src):
-            url = m.group(2)
+            url = m.group(1)[1:-1]
             if not url.startswith("/api"):
                 continue
             calls.append({
                 "file": rel,
                 "line": src[: m.start()].count("\n") + 1,
-                "method": (m.group(3) or "GET").upper(),
+                "method": (m.group(2) or "GET").upper(),
                 "path": url,
                 "expr": m.group(0)[:80],
             })
@@ -482,7 +524,7 @@ def frontend_calls(root: Path, tracked: list[str]) -> list[dict]:
 
 RE_ASSIGNED_CALL = re.compile(
     r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+api\.(get|post|put|patch|del|delete)"
-    r"\s*\(\s*([`'\"])([^`'\"]*)\3"
+    r"\s*\(\s*" + _URL_LITERAL
 )
 
 
@@ -607,7 +649,7 @@ def phantom_fields(root: Path, tracked: list[str], handler_keys) -> list[dict]:
         src = RE_JS_COMMENT.sub(lambda m: "\n" * m.group(0).count("\n"), raw)
         lines = src.split("\n")
         for m in RE_ASSIGNED_CALL.finditer(src):
-            var, method, url = m.group(1), FE_METHOD_MAP[m.group(2)], m.group(4)
+            var, method, url = m.group(1), FE_METHOD_MAP[m.group(2)], m.group(3)[1:-1]
             if not url.startswith("/api"):
                 continue
             keys = handler_keys.get((method, normalize(url)))
