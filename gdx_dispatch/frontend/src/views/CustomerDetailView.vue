@@ -12,7 +12,7 @@
         <div class="header-left">
           <Button v-tooltip="'Back to customers'" icon="pi pi-arrow-left" aria-label="Back to customers" text rounded @click="$router.push('/customers')" data-testid="back-btn" />
           <h2>{{ customer.name }}</h2>
-          <Tag :value="customer.customer_type || 'Residential'" :severity="customer.customer_type === 'Commercial' ? 'warn' : 'info'" />
+          <Tag :value="normalizeCustomerType(customer.customer_type)" :severity="normalizeCustomerType(customer.customer_type) === 'Commercial' ? 'warn' : 'info'" />
           <span v-if="qbEnabled" class="qb-sync-chip" data-testid="customer-qb-sync">
             <span class="qb-sync-label">QuickBooks:</span>
             <Tag :value="qbSync.label" :severity="qbSync.severity" data-testid="customer-qb-sync-tag" />
@@ -240,7 +240,7 @@
               offLabel="Set Primary"
               :disabled="updatingPrimary === loc.id"
               :data-testid="`primary-toggle-${loc.id}`"
-              @change="value => updatePrimaryAddress(loc, value)"
+              @update:model-value="value => updatePrimaryAddress(loc, value)"
             />
             <Button v-tooltip="'Edit'" icon="pi pi-pencil" aria-label="Edit" text rounded size="small" @click="editLocation(loc)" :data-testid="`edit-location-${loc.id}`" />
           </div>
@@ -348,7 +348,7 @@
                Edit access notes on the customer's locations instead. -->
           <div class="form-field">
             <label for="edit-type">Customer Type</label>
-            <Select id="edit-type" v-model="editForm.customer_type" :options="['Residential', 'Commercial']" data-testid="edit-customer-type" class="w-full" />
+            <Select id="edit-type" v-model="editForm.customer_type" :options="customerTypeOptionsFor(editForm.customer_type)" optionLabel="label" optionValue="value" data-testid="edit-customer-type" class="w-full" />
           </div>
           <!-- Sprint 1.0.5 — pricing engine inputs -->
           <div class="form-field">
@@ -592,6 +592,7 @@
 
 <script setup>
 import { JOB_TYPE_OPTIONS } from "../constants/jobTypes";
+import { customerTypeOptionsFor, normalizeCustomerType } from "../constants/customerTypes";
 import { computed, ref, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
@@ -901,6 +902,11 @@ async function removePortalAccount() {
 
 async function updatePrimaryAddress(loc, value) {
   updatingPrimary.value = loc.id;
+  // Set the prop to what the switch already shows. ToggleSwitch keeps its own
+  // state and resyncs only when modelValue CHANGES, so on a failed save the
+  // refetch below must be a real true→false change or the card would keep
+  // reading "Primary" while the server says otherwise (GDXA-413 audit).
+  loc.is_primary = value;
   try {
     await api.patch(`/api/customers/${route.params.id}/locations/${loc.id}`, { is_primary: value });
     await fetchLocations();
@@ -918,7 +924,7 @@ function openEditDialog() {
     phone: customer.value.phone || "",
     email: customer.value.email || "",
     address: customer.value.address || "",
-    customer_type: customer.value.customer_type || "Residential",
+    customer_type: normalizeCustomerType(customer.value.customer_type),
     pricing_class: customer.value.pricing_class || null,
     margin_override_pct: customer.value.margin_override_pct ?? null,
   };
