@@ -382,16 +382,48 @@ def test_a_run_still_going_is_checked_back_on_for_its_final_outcome():
     assert "'failed'" in details and "'RuntimeError'" in details and "upstream down" not in details
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "GDXA-439: the beat entry is platform-core's follow-up (core/scheduler.py). "
-    "When it lands this XPASSes and fails: delete this marker in that change."))
 def test_the_driver_is_on_the_beat_schedule():
     """GDXA-438's shape is a dispatcher nothing calls. This guard fails when the
-    driver exists but beat never ticks it."""
+    driver exists but beat never ticks it (GDXA-463), or ticks it less often
+    than every minute: each tick matches crons against its own minute only, so
+    a coarser beat silently skips every minute in between."""
     from gdx_dispatch.core.scheduler import build_beat_schedule
 
-    tasks = {e.get("task") for e in build_beat_schedule().values()}
-    assert "gdx_dispatch.core.plugin_events.dispatch_plugin_schedules" in tasks
+    entries = [e for e in build_beat_schedule().values()
+               if e.get("task") == "gdx_dispatch.core.plugin_events.dispatch_plugin_schedules"]
+    assert len(entries) == 1
+    (entry,) = entries
+    assert entry["schedule"].minute == set(range(60))
+    assert entry["schedule"].hour == set(range(24))
+    assert entry["schedule"].day_of_week == set(range(7))
+    assert entry["schedule"].day_of_month == set(range(1, 32))
+    assert entry["schedule"].month_of_year == set(range(1, 13))
+    assert entry["options"]["queue"] == "priority:high"
+    assert "expires" not in entry["options"]
+
+
+def test_a_declared_schedule_is_dispatched_through_the_beat_entry():
+    """End to end from beat's side: resolve every-minute beat entries by the
+    task NAME they publish and run each the way beat sends it (no args, the
+    worker's clock). An every-minute manifest schedule must run and be audited;
+    if no beat entry dispatches it, nothing here runs it and this fails."""
+    from gdx_dispatch.core.celery_app import celery_app
+    from gdx_dispatch.core.scheduler import build_beat_schedule
+
+    ran: list[PluginScheduleRun] = []
+    client = _host(("poll", "* * * * *", lambda run: ran.append(run)))
+    db = _db()
+    _consent(db, client)
+    every_minute = [e["task"] for e in build_beat_schedule().values()
+                    if e["schedule"].minute == set(range(60))]
+    with (patch.object(ps, "httpx", _Wire(client)),
+          patch.object(ps, "SessionLocal", lambda: db)):
+        for name in every_minute:
+            if name.startswith("gdx_dispatch.core.plugin_events."):
+                celery_app.tasks[name].apply().get()
+
+    assert [r.name for r in ran] == ["poll"]
+    assert len(_audit_rows(db)) == 1
 
 
 def test_the_task_is_registered_and_routed_beside_event_dispatch():

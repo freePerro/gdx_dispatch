@@ -5,9 +5,10 @@
 **Sprint 2b, partially built (GDXA-439, 2026-10-10):** the schedule driver
 (`core/plugin_schedules.py`) and plugin-host's token-gated
 `/internal/schedules` route (one body-addressed route, not the
-`/internal/schedule/{key}/{name}` sketched below) exist; the beat entry that
-ticks the driver each minute is a platform-core follow-up, so until it lands
-a declared schedule still never fires.
+`/internal/schedule/{key}/{name}` sketched below) exist, and the beat entry
+`dispatch-plugin-schedules-every-minute` (`core/scheduler.py`, GDXA-463) ticks
+the driver each minute, so a declared, consented schedule fires once that
+change is released.
 **Not built:** the rest of Sprint 2b — no frontend consent UI
 for `events`/`schedules` or re-consent-on-drift banner (v1's drift signal is
 still an ERROR log plus a `plugin_consent_drift` record that nothing renders).

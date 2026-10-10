@@ -146,8 +146,8 @@ class PluginManifest:
     #   fine), else with none. At-least-once — dedupe on run.run_id. Declaring any REQUIRES the
     #   "schedules" permission; a cron outside the dialect is stripped with a
     #   warning (never raised — discovery would drop the whole plugin).
-    #   Not yet live: nothing ticks the driver until platform-core's beat entry
-    #   lands (test_the_driver_is_on_the_beat_schedule flips when it does).
+    #   Beat ticks the driver each minute (core/scheduler.py,
+    #   dispatch-plugin-schedules-every-minute; test_the_driver_is_on_the_beat_schedule).
     events: tuple[str, ...] = ()
     event_handler: Any = None
     schedules: tuple = ()
