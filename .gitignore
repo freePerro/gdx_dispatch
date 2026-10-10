@@ -146,3 +146,7 @@ gdx_dispatch/frontend/e2e-shots/
 
 # Orchestrator / health-test output (tests/health writes alerts.jsonl here); never repo content
 ai-queue/orchestrator_status/
+
+# Matrix logs an agent keeps in its worktree so a continuation run can reuse
+# them (gdx_dispatch/tools/run_tests_split.sh writes result.txt there).
+.matrix-logs/
