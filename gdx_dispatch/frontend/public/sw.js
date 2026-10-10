@@ -37,27 +37,90 @@ self.addEventListener('push', (event) => {
   event.waitUntil(self.registration.showNotification(title, opts));
 });
 
+// How long a tab gets to acknowledge the route handoff before the worker falls
+// back to navigate(). A tab still running a pre-deploy bundle has no listener
+// and never answers. The SPA refuses a handoff past HANDOFF_ACCEPT_MS, so a
+// tab that wakes late does not route while the worker is navigating it too.
+const HANDOFF_ACK_MS = 1500;
+const HANDOFF_ACCEPT_MS = 1000;
+
+// Same-origin path only; anything else becomes the dashboard.
+function notificationTarget(raw) {
+  try {
+    const u = new URL(raw || '/dashboard', self.location.origin);
+    if (u.origin !== self.location.origin) return '/dashboard';
+    return u.pathname + u.search + u.hash;
+  } catch (_e) {
+    return '/dashboard';
+  }
+}
+
+// The tab the user is looking at, else one that is visible, else any.
+function pickClient(wins) {
+  return (
+    wins.find((w) => w.focused === true) ||
+    wins.find((w) => w.visibilityState === 'visible') ||
+    wins[0] ||
+    null
+  );
+}
+
+// Ask the SPA to router.push(url) instead of reloading the tab, so its stores
+// and session survive. Resolves true only when the SPA acknowledges.
+function handOff(client, url) {
+  return new Promise((resolve) => {
+    let channel;
+    try {
+      channel = new MessageChannel();
+    } catch (_e) {
+      resolve(false);
+      return;
+    }
+    let timer = null;
+    const settle = (ok) => {
+      clearTimeout(timer);
+      channel.port1.onmessage = null;
+      channel.port1.close();
+      resolve(ok);
+    };
+    timer = setTimeout(() => settle(false), HANDOFF_ACK_MS);
+    channel.port1.onmessage = (e) => settle(e.data?.ok === true);
+    try {
+      client.postMessage(
+        { type: 'notification-click', url, acceptBefore: Date.now() + HANDOFF_ACCEPT_MS },
+        [channel.port2],
+      );
+    } catch (_e) {
+      settle(false);
+    }
+  });
+}
+
+async function openNotificationTarget(rawUrl) {
+  const target = notificationTarget(rawUrl);
+  const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  const client = pickClient(wins);
+  if (!client) {
+    if (self.clients.openWindow) await self.clients.openWindow(target);
+    return;
+  }
+  try {
+    await client.focus();
+  } catch (_e) { /* focus can be refused; the handoff still works */ }
+  if (await handOff(client, target)) return;
+  // No SPA listener answered: a full navigation is the fallback. navigate()
+  // rejects for an uncontrolled client, so a new window is the last resort.
+  try {
+    if (typeof client.navigate !== 'function') throw new Error('no navigate');
+    await client.navigate(target);
+  } catch (_e) {
+    if (self.clients.openWindow) await self.clients.openWindow(target);
+  }
+}
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const target = event.notification?.data?.url || '/dashboard';
-  event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((wins) => {
-      // If a GDX tab is already open, focus it and navigate.
-      for (const w of wins) {
-        if ('focus' in w) {
-          w.focus();
-          if ('navigate' in w) {
-            try { w.navigate(target); } catch (_e) { /* old browsers */ }
-          }
-          return;
-        }
-      }
-      // Otherwise open a new tab.
-      if (self.clients.openWindow) {
-        return self.clients.openWindow(target);
-      }
-    }),
-  );
+  event.waitUntil(openNotificationTarget(event.notification?.data?.url));
 });
 
 self.addEventListener('pushsubscriptionchange', (event) => {

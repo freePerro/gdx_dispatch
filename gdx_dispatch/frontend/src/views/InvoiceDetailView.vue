@@ -103,6 +103,20 @@
               v-tooltip.bottom="'Priced by the system from the tech\'s closeout (hours + parts). Review every line before verifying.'"
               data-testid="invoice-autodraft-tag"
             />
+            <!-- GDXA-393: a bank transfer takes up to four business days and
+                 records nothing until it settles, so the status still reads
+                 unpaid. Stripe says it is moving; say so here. -->
+            <Tag
+              v-if="achPending"
+              :value="achPending.stage === 'verifying'
+                ? 'bank payment awaiting verification'
+                : 'bank payment pending'"
+              severity="info"
+              icon="pi pi-clock"
+              style="margin-left: 0.35rem"
+              v-tooltip.bottom="achPendingTooltip"
+              data-testid="invoice-ach-pending-tag"
+            />
             <p>Due: <strong>{{ formatDate(invoice.due_date) }}</strong></p>
             <p>Created: {{ formatDate(invoice.created_at) }}</p>
             <!-- formatStampDateTime: QB-backfilled stamps are UTC midnight
@@ -1478,6 +1492,15 @@ const qbEnabled = computed(() => isEnabled("quickbooks"));
 const smsEnabled = computed(() => isEnabled("phone_com"));
 const showSmsDialog = ref(false);
 const qbSync = computed(() => qbSyncLabel(invoice.value, formatStampDateTime));
+const achPending = ref(null); // GDXA-393 — set by loadAchPending()
+const achPendingTooltip = computed(() => {
+  const p = achPending.value;
+  if (!p) return "";
+  const amt = currency(p.amount);
+  return p.stage === "verifying"
+    ? `The customer started a ${amt} bank payment and still has to confirm the micro-deposits Stripe sent them. Nothing is recorded until it settles; the pay page will not take a second payment meanwhile.`
+    : `A ${amt} bank payment is on its way (up to 4 business days). Nothing is recorded until it settles; the pay page will not take a second payment meanwhile.`;
+});
 
 // --- Computed ---
 const subtotal = computed(() =>
@@ -1823,6 +1846,20 @@ async function loadActivity() {
   }
 }
 
+// GDXA-393 — the "bank payment pending" tag. Its own quiet request, never
+// part of the invoice read: it asks Stripe, and a slow Stripe must cost the
+// tag, not the page. Any failure (or no invoices.read_all) shows no tag.
+async function loadAchPending() {
+  const id = route.params.id;
+  if (!id) return;
+  try {
+    const d = await api.get("/api/invoices/ach-pending", { suppressErrorToast: true });
+    achPending.value = d?.pending?.[id] || null;
+  } catch {
+    achPending.value = null;
+  }
+}
+
 async function fetchInvoice() {
   loading.value = true;
   try {
@@ -1831,6 +1868,7 @@ async function fetchInvoice() {
     fetchJobPhotos(); // fire-and-forget — the picker card fills in when it lands
     fetchUnbilledJobParts(); // fire-and-forget — banner fills in when it lands
     loadActivity(); // fire-and-forget — the trail fills in when it lands
+    loadAchPending(); // fire-and-forget — Stripe is asked off the page's critical path
   } catch {
     toast.add({ severity: "warn", summary: "Offline", detail: "Using placeholder data", life: 3000 });
     normalizeInvoice({
