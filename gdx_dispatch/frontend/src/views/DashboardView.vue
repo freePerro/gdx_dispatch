@@ -386,6 +386,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
 import { useTenantTimezone } from "../composables/useTenantTimezone";
+import { useTenantModules } from "../composables/useTenantModules";
 import { formatMoney, formatPercent, formatDateTime as fmtDateTime, formatUser } from "../composables/useFormatters";
 import { ENTITY_ICONS, formatActivityTitle } from "../constants/activityLabels";
 import { useAuthStore } from "../stores/auth";
@@ -415,6 +416,7 @@ const auth = useAuthStore();
 // both stores swallow module-off and transient errors internally.
 const emailUnread = useEmailUnreadStore();
 const smsUnread = useSmsUnreadStore();
+const { isEnabled, loadTenantModules } = useTenantModules();
 const canSeePipeline = computed(() => {
   // Mirrors server gate: owner/admin/dispatcher/sales/accounting/manager.
   // Technician + viewer hidden — same rule as EstimateProfitPanel.
@@ -1262,11 +1264,19 @@ async function loadDashboard() {
     loadLeadFollowUpSummary(),
     loadRejectedEstimates(),
     loadNextActions(),
-    // One refresh each so the dashboard is correct before the sidebar's 60s
-    // poll ticks. Both fetchCounts swallow their own errors and dedupe
-    // concurrent calls in the store.
-    emailUnread.fetchCount(),
-    smsUnread.fetchCount(),
+    loadUnreadCounts(),
+  ]);
+}
+
+// One refresh each so the dashboard is correct before the sidebar's 60s poll
+// ticks; the stores dedupe concurrent calls. Only for a module that is on:
+// the backend refuses both routes with it off, and the module payload is
+// awaited first because isEnabled() reports "on" until it lands (GDXA-453).
+async function loadUnreadCounts() {
+  await loadTenantModules();
+  await Promise.all([
+    isEnabled("email") ? emailUnread.fetchCount() : null,
+    isEnabled("phone_com") ? smsUnread.fetchCount() : null,
   ]);
 }
 
