@@ -218,6 +218,29 @@ def sweep_stale_intents(
         return {"invoice_id": invoice_id, "results": [], "error": "sweep_failed"}
 
 
+def apply_async_bounded(task, *, args: list, kwargs: dict) -> None:
+    """Queue ``task`` from inside a money path. Raises on a dead broker; the
+    caller catches it, because only the caller knows what not-queued costs.
+
+    The timeouts are load-bearing, not style. Measured on this image:
+    `.delay()` against an unreachable broker takes ~19s, and `retry=False`
+    alone does not fix it — kombu retries the CONNECTION underneath. That
+    latency would land back in `record_payment` and the Stripe webhook,
+    which is the exact thing moving this work onto a task removes. A
+    bounded connection plus `retry=False` makes a broker outage cost
+    milliseconds here instead of seconds. Shared with the payment receipt
+    (`tasks/billing_followup.enqueue_payment_receipt`, GDXA-393).
+    """
+    with celery_app.connection_for_write(
+        transport_options={
+            "socket_connect_timeout": 2,
+            "socket_timeout": 2,
+            "max_retries": 0,
+        }
+    ) as conn:
+        task.apply_async(args=args, kwargs=kwargs, retry=False, connection=conn)
+
+
 def enqueue_stale_intent_sweep(
     invoice, *, why: str, settled: bool = False, connected_account: str = ""
 ) -> bool:
@@ -227,30 +250,15 @@ def enqueue_stale_intent_sweep(
     reporting a cancellation that never happened.
     """
     try:
-        # The timeouts are load-bearing, not style. Measured on this image:
-        # `.delay()` against an unreachable broker takes ~19s, and `retry=False`
-        # alone does not fix it — kombu retries the CONNECTION underneath. That
-        # latency would land back in `record_payment` and the Stripe webhook,
-        # which is the exact thing moving this work onto a task removes. A
-        # bounded connection plus `retry=False` makes a broker outage cost
-        # milliseconds here instead of seconds.
-        with celery_app.connection_for_write(
-            transport_options={
-                "socket_connect_timeout": 2,
-                "socket_timeout": 2,
-                "max_retries": 0,
-            }
-        ) as conn:
-            sweep_stale_intents.apply_async(
-                args=[str(invoice.id)],
-                kwargs={
-                    "why": why,
-                    "settled": bool(settled),
-                    "connected_account": connected_account,
-                },
-                retry=False,
-                connection=conn,
-            )
+        apply_async_bounded(
+            sweep_stale_intents,
+            args=[str(invoice.id)],
+            kwargs={
+                "why": why,
+                "settled": bool(settled),
+                "connected_account": connected_account,
+            },
+        )
         return True
     except Exception:  # noqa: BLE001
         log.exception(
