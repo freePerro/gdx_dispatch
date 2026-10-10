@@ -59,7 +59,8 @@ gdx_dispatch/                  repo root
 │   ├── docs/                  developer, admin, and runbook guides
 │   ├── docker/                Docker Compose stacks + Dockerfiles
 │   ├── tests/                 pytest suite
-│   └── requirements.txt       Python dependencies
+│   ├── requirements.txt       Python dependencies (ranges)
+│   └── requirements.lock      every package pinned; what CI and the images install
 ├── docs/                      ops & runbook docs
 └── pyproject.toml
 ```
@@ -192,7 +193,7 @@ the running version against the latest GitHub release.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r gdx_dispatch/requirements.txt
+pip install --no-deps -r gdx_dispatch/requirements.lock   # the set CI tests and the images ship
 uvicorn gdx_dispatch.main:app --reload --port 8000
 ```
 

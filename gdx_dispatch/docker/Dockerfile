@@ -36,10 +36,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgdk-pixbuf-2.0-0 libffi-dev shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv for fast dependency installation, then install Python deps
+# Install uv for fast dependency installation, then install Python deps from
+# the LOCK, not the ranges in requirements.txt: every package is pinned there,
+# so this build installs the set CI tested instead of whatever PyPI resolves to
+# today (GDXA-467; the GDXA-14 SQLAlchemy 2.1 break was the ranges re-resolving).
+# --no-deps: a package missing from the lock fails the import, loudly, rather
+# than being resolved fresh here; `uv pip check` refuses an inconsistent set.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-COPY gdx_dispatch/requirements.txt ./requirements.txt
-RUN uv pip install --system --no-cache -r requirements.txt
+COPY gdx_dispatch/requirements.lock ./requirements.lock
+RUN uv pip install --system --no-cache --no-deps -r requirements.lock \
+    && uv pip check --system
 
 # Copy application
 COPY gdx_dispatch/ ./gdx_dispatch/
