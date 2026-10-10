@@ -738,6 +738,7 @@ gdx_dispatch/routers/browser_proxy.py                        plugins-host
 gdx_dispatch/core/plugin_consent.py                          plugins-host
 gdx_dispatch/core/plugin_events.py                           plugins-host
 gdx_dispatch/core/plugin_permissions.py                      plugins-host
+gdx_dispatch/core/plugin_schedules.py                        plugins-host
 gdx_dispatch/core/plugin_storefront.py                       plugins-host
 gdx_dispatch/core/session_recorder.py                        plugins-host
 gdx_dispatch/frontend/src/views/PluginsAdminView.vue         plugins-host

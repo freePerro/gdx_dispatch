@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from gdx_dispatch.plugin_api.schedules import parse_cron
+
 log = logging.getLogger(__name__)
 
 # The host SPA renders a plugin's nav icon as a CSS class on an <i> element, so
@@ -48,9 +50,13 @@ PERMISSION_RISKS = {
         "Runs this plugin's code automatically on a fixed schedule (e.g. every "
         "few minutes), without anyone triggering it."
     ),
+    # Reserved, and said so: there is no manifest field to declare a service and
+    # nothing in this app starts one (GDXA-439). Kept in KNOWN_PERMISSIONS
+    # because an unknown permission raises, and a raise drops the plugin.
     "services": (
-        "Runs an extra background container this plugin brings, with its own "
-        "storage and web address. Only install plugins you trust."
+        "Reserved for plugins that will bring their own background container. "
+        "This version of the app does not run plugin containers, so granting "
+        "it enables nothing yet."
     ),
     "email": (
         "Sends email to your customers AS YOUR COMPANY (your branding, your "
@@ -131,8 +137,17 @@ class PluginManifest:
     # event_handler: callable(PluginEvent) -> None, invoked by the plugin-host on
     #   dispatch. Runs in-process on the plugin-host; must be idempotent
     #   (at-least-once, unordered) and finish inside the dispatch budget.
-    # schedules: ((name, cron, callable), ...) run by the core beat driver.
-    #   Declaring any REQUIRES the "schedules" permission.
+    # schedules: ((name, cron, callable), ...). Once a minute the core driver
+    #   (core/plugin_schedules.py) matches each consented plugin's crons (UTC,
+    #   five-field, see plugin_api/schedules.py) and POSTs the due runs to
+    #   plugin-host's token-gated /internal/schedules, which calls the
+    #   callable: with a PluginScheduleRun as the first positional argument
+    #   if it has one that is required or is named ``run`` (``run=None`` is
+    #   fine), else with none. At-least-once — dedupe on run.run_id. Declaring any REQUIRES the
+    #   "schedules" permission; a cron outside the dialect is stripped with a
+    #   warning (never raised — discovery would drop the whole plugin).
+    #   Not yet live: nothing ticks the driver until platform-core's beat entry
+    #   lands (test_the_driver_is_on_the_beat_schedule flips when it does).
     events: tuple[str, ...] = ()
     event_handler: Any = None
     schedules: tuple = ()
@@ -188,6 +203,29 @@ class PluginManifest:
                 raise ValueError(f"schedule callable must be callable: {sc!r}")
         if self.schedules and "schedules" not in self.permissions:
             raise ValueError("declaring schedules requires the 'schedules' permission")
+        # A cron the driver cannot evaluate would never fire — the exact silent
+        # no-op GDXA-438 found. Strip it loudly instead of raising, for the same
+        # reason as nav polish below: a raise here costs the plugin everything.
+        kept = []
+        for sc in self.schedules:
+            # Names address a run (run_id, plugin-host lookup), so a second
+            # schedule by the same name would run the first one's callable.
+            if any(k[0] == sc[0] for k in kept):
+                log.warning("plugin %s: schedule name %r declared twice — "
+                            "ignoring the later one", self.key, sc[0])
+                continue
+            try:
+                parse_cron(sc[1])
+            except ValueError as exc:
+                log.warning(
+                    "plugin %s: schedule %r has cron %r the driver cannot run "
+                    "(%s) — ignoring that schedule",
+                    self.key, sc[0], sc[1], exc,
+                )
+                continue
+            kept.append(tuple(sc))
+        if len(kept) != len(self.schedules) or not isinstance(self.schedules, tuple):
+            object.__setattr__(self, "schedules", tuple(kept))
         # ── nav polish (icon / category) — cosmetic, so a malformed value is
         # STRIPPED with a warning, never raised: discovery skips the whole
         # plugin on any load error (`load_manifests`), and losing a plugin's
