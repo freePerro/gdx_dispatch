@@ -31,6 +31,12 @@ from typing import Any
 
 # Tech-mobile settings catalog. Every key is namespaced "tech_mobile.*".
 # Sprint refs map to the sprint plan (sprint_tech_mobile.md).
+#
+# Every key here must be read by something: the admin form offers each one as
+# a live switch, and a switch nothing reads is a promise the app does not keep.
+# tests/test_feature_defaults.py::TestEveryKeyHasAReader enforces it. Seventeen
+# keys with no reader were deleted under GDXA-493 (two under #644 before them);
+# their stored overrides are ignored on read (core/tenant_mobile_settings.py).
 TECH_MOBILE_SETTINGS: dict[str, dict[str, Any]] = {
     # --- Phase 1.1 — Today's Route ---------------------------------------
     "tech_mobile.drive_time_provider": {
@@ -41,14 +47,6 @@ TECH_MOBILE_SETTINGS: dict[str, dict[str, Any]] = {
         "label": "Drive-time provider",
         "help": "google = Distance Matrix (default); mapbox = planned; off = no real-time drive-time.",
     },
-    "tech_mobile.on_my_way_auto_fire": {
-        "type": "enum",
-        "default": "manual",
-        "bounds": ("auto", "manual"),
-        "phase": "1.1",
-        "label": '"On my way" trigger',
-        "help": "auto fires when state advances to en_route; manual requires the tech to tap.",
-    },
     "tech_mobile.drag_reorder_authority": {
         "type": "enum",
         "default": "live",
@@ -58,14 +56,6 @@ TECH_MOBILE_SETTINGS: dict[str, dict[str, Any]] = {
         "help": "live = tech reorders apply immediately; dispatch_approval = pending until dispatch confirms.",
     },
     # --- Phase 1.2 — Arrival & On-Site -----------------------------------
-    "tech_mobile.photo_slot_tagging": {
-        "type": "enum",
-        "default": "optional",
-        "bounds": ("optional", "required"),
-        "phase": "1.2",
-        "label": "Photo slot tagging (before/during/after)",
-        "help": "required = every photo must be tagged before/during/after; optional = free-form.",
-    },
     "tech_mobile.signature_required_completion": {
         "type": "enum",
         "default": "required",
@@ -121,23 +111,6 @@ TECH_MOBILE_SETTINGS: dict[str, dict[str, Any]] = {
             "clock-in) always require assignment regardless of this setting."
         ),
     },
-    "tech_mobile.multi_tech_jobs": {
-        "type": "bool",
-        "default": True,
-        "bounds": None,
-        "phase": "1.4",
-        "label": "Multi-tech jobs allowed",
-        "help": "Whether a single job can have multiple assigned technicians.",
-    },
-    # --- Phase 1.5 — Push -------------------------------------------------
-    "tech_mobile.push_fallback_policy": {
-        "type": "enum",
-        "default": "badge_only",
-        "bounds": ("badge_only", "badge_plus_email", "hold_features"),
-        "phase": "1.5",
-        "label": "Push fallback (when permission denied/unsupported)",
-        "help": "badge_only = in-app badge; badge_plus_email = badge + email; hold_features = disable push-dependent features for this tenant.",
-    },
     # --- Sprint 2 — Quoting ----------------------------------------------
     "tech_mobile.signature_required_quote": {
         "type": "enum",
@@ -146,14 +119,6 @@ TECH_MOBILE_SETTINGS: dict[str, dict[str, Any]] = {
         "phase": "2.1",
         "label": "Customer signature required for quote acceptance",
         "help": "Whether a signature is required to accept a quote.",
-    },
-    "tech_mobile.quote_tax_shape": {
-        "type": "enum",
-        "default": "line_by_line",
-        "bounds": ("line_by_line", "single_total"),
-        "phase": "2.1",
-        "label": "Quote tax shape",
-        "help": "line_by_line = tax displayed per line; single_total = single tax line at bottom.",
     },
     "tech_mobile.estimate_validity_days": {
         "type": "int",
@@ -186,89 +151,6 @@ TECH_MOBILE_SETTINGS: dict[str, dict[str, Any]] = {
         "label": "Service presets override (advanced)",
         "help": "Optional override of the platform default Good/Better/Best service preset catalog. Empty = use platform defaults. Each entry is a JSON-encoded service block.",
     },
-    # --- Sprint 3 — Offline ----------------------------------------------
-    "tech_mobile.offline_mode_enabled": {
-        "type": "bool",
-        "default": True,
-        "bounds": None,
-        "phase": "3.1",
-        "label": "Offline mode enabled",
-        "help": "When ON, mobile clients queue mutations locally and sync when connectivity returns.",
-    },
-    # --- Sprint 5 — GPS / History ----------------------------------------
-    "tech_mobile.gps_tracking_enabled": {
-        "type": "bool",
-        "default": True,
-        "bounds": None,
-        "phase": "5.3",
-        "label": "GPS tracking enabled",
-        "help": "Master switch for GPS breadcrumb capture. OFF disables location capture entirely.",
-    },
-    "tech_mobile.gps_breadcrumb_interval_sec": {
-        "type": "int",
-        "default": 30,
-        "bounds": (15, 120),
-        "phase": "5.3",
-        "label": "GPS breadcrumb interval (seconds)",
-        "help": "How often the tech's device reports its position while clocked in.",
-    },
-    "tech_mobile.auto_arrival_radius_m": {
-        "type": "int",
-        "default": 100,
-        "bounds": (25, 500),
-        "phase": "5.3",
-        "label": "Auto-arrival detection radius (meters)",
-        "help": "Distance from customer address that counts as 'on-site' for the auto-prompt.",
-    },
-    "tech_mobile.auto_arrival_threshold_min": {
-        "type": "int",
-        "default": 2,
-        "bounds": (1, 10),
-        "phase": "5.3",
-        "label": "Auto-arrival prompt threshold (minutes)",
-        "help": "Minutes inside the auto-arrival radius before prompting 'Mark arrived?'",
-    },
-    "tech_mobile.callback_window_days": {
-        "type": "int",
-        "default": 90,
-        "bounds": (14, 365),
-        "phase": "5.1",
-        "label": "Callback window (days)",
-        "help": "Jobs within this window of a prior visit to the same equipment count as a callback.",
-    },
-    "tech_mobile.callback_compensation": {
-        "type": "enum",
-        "default": "none",
-        "bounds": ("none", "no_commission", "bonus_structure"),
-        "phase": "5.1",
-        "label": "Callback compensation impact",
-        "help": "How callback jobs affect tech payroll/commission.",
-    },
-    # --- Sprint 5 — Diagnosis & Hazards ----------------------------------
-    "tech_mobile.diagnosis_required": {
-        "type": "enum",
-        "default": "optional",
-        "bounds": ("required", "optional"),
-        "phase": "5.2",
-        "label": "Diagnosis form required before completion",
-        "help": "When required, techs must complete the diagnosis form before marking a job complete.",
-    },
-    "tech_mobile.hazard_photo_required": {
-        "type": "enum",
-        "default": "optional",
-        "bounds": ("required", "optional"),
-        "phase": "5.2",
-        "label": "Hazard / safety photo required",
-        "help": "When required, techs must capture a hazard/safety photo for jobs flagged with hazards.",
-    },
-    "tech_mobile.receipt_photo_required": {
-        "type": "enum",
-        "default": "optional",
-        "bounds": ("required", "optional"),
-        "phase": "5.2",
-        "label": "Receipt photo required for road purchases",
-        "help": "When required, techs must attach a receipt photo for any road-purchased parts.",
-    },
     # --- Sprint 5 — GPS & Live Map (Phase 5.3) --------------------------
     "tech_mobile.gps_breadcrumb_enabled": {
         "type": "bool",
@@ -277,14 +159,6 @@ TECH_MOBILE_SETTINGS: dict[str, dict[str, Any]] = {
         "phase": "5.3",
         "label": "Background GPS breadcrumb",
         "help": "Sample tech location on a timer while clocked in. Stops at clock-out. Documented in privacy policy.",
-    },
-    "tech_mobile.gps_breadcrumb_interval_seconds": {
-        "type": "int",
-        "default": 30,
-        "bounds": (10, 600),
-        "phase": "5.3",
-        "label": "GPS sampling interval (seconds)",
-        "help": "How often the tech app samples location while clocked in.",
     },
     "tech_mobile.gps_retention_days": {
         "type": "int",
@@ -311,14 +185,6 @@ TECH_MOBILE_SETTINGS: dict[str, dict[str, Any]] = {
         "help": "How long the tech must remain within the arrival radius before the prompt fires.",
     },
     # --- Sprint 6 — Time / DOT -------------------------------------------
-    "tech_mobile.break_tracking": {
-        "type": "enum",
-        "default": "optional",
-        "bounds": ("required", "optional", "off"),
-        "phase": "6.1",
-        "label": "Break / lunch tracking",
-        "help": "off = no break tracking; optional = tech may log breaks; required = tech must log breaks each shift.",
-    },
     "tech_mobile.vehicle_inspection": {
         "type": "enum",
         "default": "off",

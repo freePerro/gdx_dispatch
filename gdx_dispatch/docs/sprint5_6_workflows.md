@@ -4,6 +4,8 @@
 dispatcher / admin surfaces as of Sprint 5+6, last updated 2026-05-03 (S92).
 Endpoints named here may have moved; `modules/workflows` is the live automation
 path. Useful as the record of what those sprints delivered.
+Annotated 2026-10-10 (GDXA-493): six of the settings keys below were never read
+by any code and have since been deleted from the catalog; they are marked.
 
 
 What a tech, dispatcher, and admin actually do across the new surfaces, and which endpoint backs each step. Updated 2026-05-03 (S92).
@@ -79,16 +81,16 @@ TechMobileSettingsView (admin)
    │
    │ Sprint 5/6 keys (phase 5.3 + 6.1 + 6.2):
    │   tech_mobile.gps_breadcrumb_enabled       (master switch, default true)
-   │   tech_mobile.gps_breadcrumb_interval_seconds  (10–600, default 30)
+   │   tech_mobile.gps_breadcrumb_interval_seconds  (10–600, default 30)  [never read; deleted GDXA-493]
    │   tech_mobile.gps_retention_days           (7–365, default 45)
    │   tech_mobile.gps_arrival_distance_m       (10–1000, default 100)
    │   tech_mobile.gps_arrival_dwell_seconds    (30–600, default 120)
-   │   tech_mobile.diagnosis_required           (required/optional)
-   │   tech_mobile.hazard_photo_required        (required/optional)
-   │   tech_mobile.receipt_photo_required       (required/optional)
-   │   tech_mobile.break_tracking               (off/optional/required)
+   │   tech_mobile.diagnosis_required           (required/optional)  [never read; deleted GDXA-493]
+   │   tech_mobile.hazard_photo_required        (required/optional)  [never read; deleted GDXA-493]
+   │   tech_mobile.receipt_photo_required       (required/optional)  [never read; deleted GDXA-493]
+   │   tech_mobile.break_tracking               (off/optional/required)  [never read; deleted GDXA-493]
    │   tech_mobile.vehicle_inspection           (off/daily/weekly)
-   │   tech_mobile.callback_window_days         (existing, default 90)
+   │   tech_mobile.callback_window_days         (existing, default 90)  [never read — routers/jobs.py hardcodes 90; deleted GDXA-493]
 ```
 
 ## Background jobs (Celery beat)

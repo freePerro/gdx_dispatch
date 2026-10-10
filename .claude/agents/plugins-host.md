@@ -73,7 +73,7 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner plugins-ho
 
 ## Verify a change here
 
-- Backend, targeted: `docker run --rm --entrypoint python -v "$PWD":/app -w /app -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x docker-app -m pytest -rs -k "<pattern>"`.
+- Backend, targeted: `docker run --rm --tmpfs /tmp:rw,exec,size=32g --entrypoint python -v "$PWD":/app -w /app -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x docker-app -m pytest -rs -k "<pattern>"`.
   Your patterns: `plugin`, `plugins_proxy`, `reconcile`,
   `browser_credentials`, `admin_plugins`.
 - Baseline scans, after `git merge origin/main` and before the matrix:
