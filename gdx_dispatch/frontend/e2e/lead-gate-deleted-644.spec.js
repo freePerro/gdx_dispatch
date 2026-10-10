@@ -25,7 +25,6 @@ const GONE = ['tech_mobile.completion_lead_tech_only', 'tech_mobile.lead_tech_on
 // Probe a setting something actually READS (mobile.py resolves this one), so
 // the write-path check is not itself demonstrating a switch nothing acts on.
 const PROBE = 'tech_mobile.techs_see_all_jobs';
-const OTHER = 'tech_mobile.multi_tech_jobs';
 
 async function signIn(page, baseURL) {
   const api = await pwRequest.newContext({ baseURL });
@@ -86,10 +85,12 @@ test('the office is offered no lead-tech completion toggle, in either theme', as
   await page.goto(ROUTE);
   await expect(page.locator('.setting-row').first()).toBeVisible({ timeout: 15000 });
 
-  // Phase 1.4 tab: the two survivors are there, neither dead toggle is.
+  // Phase 1.4 tab: the one survivor is there, neither dead toggle is.
+  // (tech_mobile.multi_tech_jobs, the other row here until GDXA-493, was never
+  // read either and went with that issue's sixteen siblings.)
   await page.getByRole('tab', { name: /1\.4/ }).click();
-  const panel = page.locator('.settings-grid').filter({ hasText: OTHER });
-  await expect(panel.locator('.setting-row')).toHaveCount(2);
+  const panel = page.locator('.settings-grid').filter({ hasText: PROBE });
+  await expect(panel.locator('.setting-row')).toHaveCount(1);
   await expect(page.getByText(PROBE, { exact: true })).toBeVisible();
   for (const k of GONE) {
     await expect(page.getByText(k, { exact: true })).toHaveCount(0);

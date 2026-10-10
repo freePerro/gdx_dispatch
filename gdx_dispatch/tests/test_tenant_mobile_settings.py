@@ -59,8 +59,8 @@ class TestLoad:
         assert resolved["tech_mobile.gps_retention_days"] == 90
         assert resolved["tech_mobile.drive_time_provider"] == "off"
         # Untouched settings still come from the catalog.
-        assert resolved["tech_mobile.gps_breadcrumb_interval_sec"] == tech_mobile_default(
-            "tech_mobile.gps_breadcrumb_interval_sec"
+        assert resolved["tech_mobile.gps_arrival_dwell_seconds"] == tech_mobile_default(
+            "tech_mobile.gps_arrival_dwell_seconds"
         )
 
     def test_stale_override_keys_ignored(self, tenant_db) -> None:

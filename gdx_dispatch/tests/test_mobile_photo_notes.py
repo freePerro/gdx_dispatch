@@ -1,10 +1,11 @@
 """Sprint tech_mobile S1-B3 + S1-B4 — photo slot tagging + notes attribution.
 
-S1-B3 — POST /api/mobile/jobs/{id}/photos accepts a ``kind`` form field
-({before, during, after}); when tech_mobile.photo_slot_tagging is
-"required" the field is mandatory. The uploader's user_id stamps
-JobPhoto.uploaded_by; EXIF GPS + capture_time are extracted from the
-image bytes and recorded on the audit row.
+S1-B3 — the mobile photo route (POST /api/mobile/jobs/{id}/photos) and its
+EXIF helper are gone; the tests below pin that they stay gone. Job photos
+upload through POST /api/jobs/{id}/photos (routers/uploads.py), where the
+``kind`` form field ({before, during, after}) is optional. The tenant setting
+that was to make it mandatory, tech_mobile.photo_slot_tagging, was never read
+and was deleted under GDXA-493.
 
 S1-B4 — POST /api/mobile/jobs/{id}/notes populates JobNote.author_name
 from the calling user's display fields (name / full_name / email).

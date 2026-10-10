@@ -4,7 +4,10 @@
 last substantive edit 2026-09-12 — both lead-tech-completion toggles
 (`completion_lead_tech_only`, `lead_tech_only_completion`) removed with #644:
 the first gated only a deprecated route no client called, the second was never
-read by anything. Lead-tech-only completion is deferred, not shipped).
+read by anything. Lead-tech-only completion is deferred, not shipped;
+2026-10-10 — seventeen more catalog keys that nothing read were deleted with
+GDXA-493, and `tests/test_feature_defaults.py` now fails on any catalog key
+without a reader).
 
 
 Sprint `sprint_tech_mobile` documentation. The mobile surface is a PWA
@@ -22,12 +25,11 @@ on. Anything not listed here is internal and may change.
    order. Each card carries customer name, address, ETA, alerts (gate
    code, dog warning, COD), service type, and a Navigate button.
 3. **On my way** — tap "On my way" → state advances to `en_route`,
-   audit-logged. Optional auto-fire if `tech_mobile.on_my_way_auto_fire`
-   is `auto`.
+   audit-logged. The tech always taps; there is no auto-fire.
 4. **Arrive** — tap "I'm here" → geo-tagged `on_site` stamp; per-tech
    labor timer starts.
-5. **Work the job** — capture photos (slot-tagged before/during/after if
-   the tenant requires it), add notes, request parts via the parts
+5. **Work the job** — capture photos (optionally tagged
+   before/during/after), add notes, request parts via the parts
    modal (SKU autocomplete from tenant catalog), chat with dispatch
    via the per-job thread.
 6. **Quote on-truck** — Phase 2.1: tap "Build quote" → pick a service
@@ -159,13 +161,23 @@ Settings used by mobile (non-exhaustive):
 - `tech_mobile.signature_required_completion`
 - `tech_mobile.signature_required_quote`
 - `tech_mobile.signature_surface` (`phone_handoff` / `customer_link`)
-- `tech_mobile.photo_slot_tagging` (`required` / `optional`)
-- `tech_mobile.on_my_way_auto_fire`
 - `tech_mobile.drag_reorder_authority`
 - `tech_mobile.estimate_validity_days`
 - `tech_mobile.quote_decline_reasons` (list[string])
-- `tech_mobile.quote_tax_shape`
-- `tech_mobile.offline_mode_enabled`
+
+Every catalog key has a reader; `TestEveryKeyHasAReader` in
+`gdx_dispatch/tests/test_feature_defaults.py` is red for one that does not.
+Deleted under GDXA-493 because nothing read them (a tenant's stored override
+for any of them is ignored on read): `on_my_way_auto_fire`,
+`photo_slot_tagging`, `multi_tech_jobs`, `push_fallback_policy` (the live one
+is `push_fallback_mode`), `quote_tax_shape`, `offline_mode_enabled`,
+`gps_tracking_enabled` (the live switch is `gps_breadcrumb_enabled`),
+`gps_breadcrumb_interval_sec`, `gps_breadcrumb_interval_seconds`,
+`auto_arrival_radius_m`, `auto_arrival_threshold_min` (the live arrival
+settings are `gps_arrival_distance_m` and `gps_arrival_dwell_seconds`),
+`callback_compensation`, `callback_window_days` (callback detection in
+`routers/jobs.py` uses a fixed 90 days), `diagnosis_required`, `hazard_photo_required`,
+`receipt_photo_required`, `break_tracking`.
 
 ## Offline sync contract (Phase 3.1)
 
