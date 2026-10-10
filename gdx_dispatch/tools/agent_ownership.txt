@@ -44,6 +44,11 @@ gdx_dispatch/tools/*                                         platform-core
 gdx_dispatch/static/*                                        platform-core
 gdx_dispatch/api/*                                           platform-core
 gdx_dispatch/models/tenant_models.py                         platform-core
+# The models hub: every `suppress(ImportError)` block registers a module's
+# tables in TenantBase.metadata, pinned by the two tests below (GDXA-433).
+gdx_dispatch/models/__init__.py                              platform-core
+gdx_dispatch/tests/test_model_registration_48.py             platform-core
+gdx_dispatch/tests/test_models_hub_imports.py                platform-core
 .github/*                                                    platform-core
 scripts/*                                                    platform-core
 tools/*                                                      platform-core
