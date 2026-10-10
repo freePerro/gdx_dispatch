@@ -64,6 +64,13 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner inventory-
 - Backend, targeted: `docker run --rm --entrypoint python -v "$PWD":/app -w /app -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x docker-app -m pytest -rs -k "<pattern>"`.
   Your patterns: `inventory`, `parts_`, `verify_unbilled_parts`,
   `vendor_on_order`, `vendor_order`, `distributor_orders`, `purchase_order`.
+- Baseline scans, after `git merge origin/main` and before the matrix:
+  `gdx_dispatch/tools/run_tests_split.sh --scans` (~30 s). On red,
+  `run_tests_split.sh --refreeze-baselines` re-freezes the line-keyed
+  baselines and refuses growth; pass `--allow-new` only for a clone or
+  filter you have read and mean to keep. Never a bare `docker run` for
+  these in a worktree: it cannot read the git index. It covers the
+  duplicate-block and tenant-plane baselines only; the matrix still runs.
 - Full matrix before any PR: `gdx_dispatch/tools/run_tests_split.sh`.
 - Frontend: `npx vitest run` on the Inventory and PartsToOrder specs; e2e
   `verify-unbilled-parts-gate.spec.js`.

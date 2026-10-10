@@ -43,10 +43,42 @@ def _checks(findings):
         ("/api/payments${qs}", "/api/payments"),
         ("/api/reports/summary${params}", "/api/reports/summary"),
         ("/api/door-listings${qs}", "/api/door-listings"),
+        # `?.` inside ${} is optional chaining, not a query string (GDXA-404)
+        ("/api/appointments/${visit.value?.id}/undo-arrival", "/api/appointments/{}/undo-arrival"),
+        ("/api/jobs/${id}?expand=${a?.b}", "/api/jobs/{}"),
     ],
 )
 def test_normalize(raw, expected):
     assert normalize(raw) == expected
+
+
+def test_optional_chaining_segment_is_not_a_bogus_405(tmp_path):
+    """The real-tree false positive: POST undo-arrival exists, but splitting
+    on `?` first matched it to /api/appointments/{appt_id} and reported C2."""
+    repo = _mkrepo(tmp_path, {
+        "gdx_dispatch/frontend/src/components/U.vue": """
+            await api.post(`/api/appointments/${visit.value?.id}/undo-arrival`, {});
+        """,
+    })
+    routes = [
+        {"method": "PATCH", "path": "/api/appointments/{appt_id}"},
+        {"method": "POST", "path": "/api/appointments/{appt_id}/undo-arrival"},
+    ]
+    assert scan(repo, ["C1", "C2"], routes=routes) == []
+
+
+def test_template_literal_holding_quotes_is_still_a_call(tmp_path):
+    """A quote inside ${...} used to end the literal match, so the call
+    vanished from every check — two such sites on the real tree (GDXA-404)."""
+    repo = _mkrepo(tmp_path, {
+        "gdx_dispatch/frontend/src/views/Q.vue": """
+            await api.get(`/api/dead?per_page=20${q ? '&q=' + q : ''}`);
+            await api.post(`/api/also-dead/${f ? "a" : "b"}`, {});
+            const r = await api.get(`/api/gone${p || "?"}`);
+        """,
+    })
+    found = scan(repo, ["C1"], routes=[{"method": "GET", "path": "/api/other"}])
+    assert sorted(f["line"] for f in found) == [1, 2, 3]
 
 
 def test_path_matches_treats_either_side_wildcard():

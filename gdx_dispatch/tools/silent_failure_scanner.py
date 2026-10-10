@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 """Silent-failure meta-detector.
 
-AST-walks the codebase looking for shape-1/2/3 silent-failure patterns
-defined in ``ai-queue/operations/silent_failure_registry.md``. Writes a
-JSON report. Designed to run as a deploy gate or periodic cron.
+AST-walks the codebase looking for the shape-1/2/3 silent-failure patterns
+below. Writes a JSON report (to the temp dir unless ``--json`` says where).
+
+GATE: ``tests/test_scanner_real_repo_ratchet.py`` runs every shape on the
+real tree in the default suite and CI, and fails when its findings differ from
+``.silent_failure_baseline`` (new or stale; per file and shape) (see ``tools/scanner_baseline.py``). Until
+GDXA-404 nothing ran it on the real tree, and it reported 94 findings.
+
+The detector-coverage check below walks ``gdx_dispatch/tools/orchestrator/``,
+which does not exist (2026-10-09), so it currently checks nothing.
 
 SHAPES DETECTED
 ---------------
@@ -51,22 +58,20 @@ import ast
 import json
 import re
 import sys
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-
-def _detect_repo_root() -> Path:
-    here = Path(__file__).resolve()
-    for p in [here] + list(here.parents):
-        if (p / "gdx_dispatch" / "tools").is_dir() and (p / "ai-queue").is_dir():
-            return p
-    return Path.cwd()
-
-
-REPO_ROOT = _detect_repo_root()
-REPORT_PATH = REPO_ROOT / "ai-queue/rd/operations/silent_failure_scan.json"
-REGISTRY_PATH = REPO_ROOT / "ai-queue/operations/silent_failure_registry.md"
+# This file lives at gdx_dispatch/tools/. The root used to be found by also
+# demanding an ``ai-queue/`` directory, falling back to the CWD without it;
+# a fresh clone has ai-queue/ only by accident (one tracked report file), and
+# with it gone the scan would silently walk whatever the CWD was (GDXA-404).
+REPO_ROOT = Path(__file__).resolve().parents[2]
+# The report goes to the temp dir, never into the tree: the old default,
+# ai-queue/rd/operations/, wrote an untracked file into the checkout on every
+# run (GDXA-404). Pass --json to put it somewhere else.
+REPORT_PATH = Path(tempfile.gettempdir()) / "silent_failure_scan.json"
 
 
 SCAN_DIRS = [
@@ -387,6 +392,17 @@ def scan_file(path: Path, shapes: set[int]) -> list[Finding]:
     return findings
 
 
+def collect(shapes: set[int] | None = None, coverage: bool = True) -> list[Finding]:
+    """Every finding on the tree at ``REPO_ROOT``. What ``main`` reports."""
+    shapes = shapes or {1, 2, 3}
+    findings: list[Finding] = []
+    for f in iter_scan_files():
+        findings.extend(scan_file(f, shapes))
+    if coverage and shapes == {1, 2, 3}:
+        findings.extend(scan_detector_coverage())
+    return findings
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Silent-failure meta-detector")
     ap.add_argument("--shape", type=int, choices=[1, 2, 3], default=None,
@@ -399,12 +415,7 @@ def main() -> int:
 
     shapes = {args.shape} if args.shape else {1, 2, 3}
 
-    all_findings: list[Finding] = []
-    for f in iter_scan_files():
-        all_findings.extend(scan_file(f, shapes))
-
-    if not args.skip_coverage and (args.shape is None):
-        all_findings.extend(scan_detector_coverage())
+    all_findings = collect(shapes, coverage=not args.skip_coverage)
 
     report = {
         "timestamp": datetime.now(timezone.utc).isoformat(),

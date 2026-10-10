@@ -1,0 +1,10 @@
+# frontend_contract_scan findings on the real tree when this baseline was frozen.
+# <file>|<code>|sha256(finding text)[:16] — content-keyed, not line-keyed;
+# a repeated line is a repeated finding. Written by
+# `python -m gdx_dispatch.tools.scanner_baseline --write frontend_contract_scan`.
+# Gated by gdx_dispatch/tests/test_scanner_real_repo_ratchet.py.
+# Re-freezing to make that test pass is the wrong answer: fix the finding.
+gdx_dispatch/frontend/src/views/SettingsView.vue|C3|75076a01c82d7cc2
+gdx_dispatch/frontend/src/views/SettingsView.vue|C3|fb2b00e90c7e634d
+gdx_dispatch/routers/role_permissions.py|C5|af1c3c7f37e1973f
+gdx_dispatch/routers/role_permissions.py|C6|383260e196c654f6

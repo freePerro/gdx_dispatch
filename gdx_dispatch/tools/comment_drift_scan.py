@@ -37,6 +37,16 @@ absent, and the scanner's ``--prose`` heuristics skip the common forms.
 Review anything it does report — a pointer that reads as live but
 resolves to nothing is the actual bug class here.
 
+GATE
+----
+``tests/test_scanner_real_repo_ratchet.py`` runs every detector on the real
+tree (tests excluded, as here by default) in the default suite and CI, and
+fails when its findings differ from ``.comment_drift_baseline`` (see
+``tools/scanner_baseline.py``). Until GDXA-404 nothing ran it on the real
+tree, and it reported 76 findings. It reads the git index, so it needs a
+``.git``: in docker-app, mount the gitdir as ``run_tests_split.sh`` does, or
+it raises ``TrackedFilesUnavailable``. That refusal is deliberate.
+
 USAGE
 -----
     python3 gdx_dispatch/tools/comment_drift_scan.py                 # full scan

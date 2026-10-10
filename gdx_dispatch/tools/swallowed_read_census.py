@@ -190,9 +190,10 @@ BLIND_SPOTS = (
 def detect_repo_root(start: Path | None = None) -> Path:
     """The repo root, by looking for ``gdx_dispatch/tools/``.
 
-    Deliberately NOT ``silent_failure_scanner._detect_repo_root``, which also
-    requires an ``ai-queue/`` directory — absent from a fresh clone and from
-    the ``git archive`` extract this tool is meant to be pointed at.
+    Deliberately not the root finder ``silent_failure_scanner`` used until
+    GDXA-404, which also required an ``ai-queue/`` directory — absent from a
+    fresh clone and from the ``git archive`` extract this tool is meant to be
+    pointed at.
     """
     here = (start or Path(__file__)).resolve()
     for candidate in [here, *here.parents]:

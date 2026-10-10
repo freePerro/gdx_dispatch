@@ -92,6 +92,13 @@ callers by owner in your report rather than editing their files.
   `celery`, `beat_schedule`, `webhooks`, `well_known`, `workflow`, `lint_gates`,
   `ruff_ratchet`, plus `gdx_dispatch/tests/serial/test_module_system.py` and
   `serial/test_soc2_security.py`.
+- Baseline scans, after `git merge origin/main` and before the matrix:
+  `gdx_dispatch/tools/run_tests_split.sh --scans` (~30 s). On red,
+  `run_tests_split.sh --refreeze-baselines` re-freezes the line-keyed
+  baselines and refuses growth; pass `--allow-new` only for a clone or
+  filter you have read and mean to keep. Never a bare `docker run` for
+  these in a worktree: it cannot read the git index. It covers the
+  duplicate-block and tenant-plane baselines only; the matrix still runs.
 - Full matrix before any PR: `gdx_dispatch/tools/run_tests_split.sh` (N=7,
   never `--network host`), then `-rs` and read the skip categories — the
   Postgres arm skips silently when unreachable.

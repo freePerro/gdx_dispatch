@@ -671,7 +671,7 @@ def ach_in_flight_by_invoice(*, tenant: dict | None = None) -> dict[str, dict] |
     try:
         _init_stripe()
         grouped = _recent_intents_by_invoice(connect=_stripe_extra(tenant or {}))
-    except Exception:
+    except Exception:  # noqa: BLE001  # noqa: silent-failure — None is the caller's "not checked", never "none pending"
         logger.exception("ach_in_flight_scan_failed — the pending-bank-payment tags show nothing")
         return None
     out: dict[str, dict] = {}
@@ -2836,7 +2836,7 @@ def _money_alert(
             "title": title,
             "message": f"{who} — ${float(amount or 0):,.2f} on {number}: {what}",
         }
-    except Exception:
+    except Exception:  # noqa: BLE001  # noqa: silent-failure — no bell, never a disturbed money write; logged
         logger.exception("money_alert_build_failed invoice=%s", getattr(invoice, "id", None))
         return None
 
