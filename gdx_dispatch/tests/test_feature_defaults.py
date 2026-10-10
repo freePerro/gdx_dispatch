@@ -76,12 +76,12 @@ class TestValidator:
             validate_tech_mobile_value("tech_mobile.bogus", True)
 
     def test_bool_accepts_true_false_only(self) -> None:
-        assert validate_tech_mobile_value("tech_mobile.gps_tracking_enabled", True) is True
-        assert validate_tech_mobile_value("tech_mobile.gps_tracking_enabled", False) is False
+        assert validate_tech_mobile_value("tech_mobile.gps_breadcrumb_enabled", True) is True
+        assert validate_tech_mobile_value("tech_mobile.gps_breadcrumb_enabled", False) is False
         with pytest.raises(ValueError, match="expected bool"):
-            validate_tech_mobile_value("tech_mobile.gps_tracking_enabled", 1)
+            validate_tech_mobile_value("tech_mobile.gps_breadcrumb_enabled", 1)
         with pytest.raises(ValueError, match="expected bool"):
-            validate_tech_mobile_value("tech_mobile.gps_tracking_enabled", "yes")
+            validate_tech_mobile_value("tech_mobile.gps_breadcrumb_enabled", "yes")
 
     def test_int_accepts_values_in_bounds(self) -> None:
         assert validate_tech_mobile_value("tech_mobile.gps_retention_days", 7) == 7
@@ -131,13 +131,145 @@ class TestNoLeadTechCompletionToggle:
         assert "tech_mobile.lead_tech_only_completion" not in TECH_MOBILE_SETTINGS
 
 
-# NOTE on what this guard is NOT. The honest general guard is reader-shaped —
-# "every catalog key is read by something" — not spelling-shaped. It is not
-# written here because it would fail today: an /audit scan during #644 found 16
-# of the 33 surviving keys have no reader outside the catalog, including a
-# THIRD duplicate-spelling pair (gps_breadcrumb_interval_sec / _seconds). That
-# is the same class as #644 and wants its own PR; a substring match on "lead"
-# was tried here and rejected — it misses the spelling this repo would actually
-# reach for ("primary", as in _recompute_primary) and reddens on an innocent
-# tech_mobile.lead_time_minutes. Two exact keys, precisely asserted, is a guard
-# that cannot lie.
+class TestEveryKeyHasAReader:
+    """GDXA-493 — every catalog key is read by shipped code, or is allowlisted.
+
+    The admin form renders every catalog entry as a live switch. A key that
+    nothing reads lets the office flip a setting that changes nothing — #644
+    deleted two such keys, GDXA-493 sixteen more (among them three spellings
+    of one idea twice over: ``gps_breadcrumb_interval_sec``/``_seconds`` and
+    ``push_fallback_policy`` beside the live ``push_fallback_mode``).
+
+    A *reader* is a string literal equal to the full key in a tracked
+    ``.py``/``.vue``/``.js``/``.ts`` file under ``gdx_dispatch/`` that is not a
+    test, an e2e spec, a doc or this catalog. Python is parsed, so a docstring
+    or comment naming a key is not a reader; in JS/Vue/TS the key must sit in
+    quotes or backticks, which a ``//`` prose comment usually does not. What
+    this cannot see: a key assembled at runtime (``"tech_mobile." + name``) —
+    none exists today — and a reader that fetches the setting and then
+    ignores it. The second is the #644 shape that only a reviewer catches.
+    """
+
+    _SUFFIXES = (".py", ".vue", ".js", ".ts")
+    _CATALOG = "gdx_dispatch/core/feature_defaults.py"
+
+    # key -> reason it may stay in the catalog with no reader. Empty on
+    # purpose; an entry here needs a reason a reviewer would accept.
+    ALLOWLIST: dict[str, str] = {}
+
+    @classmethod
+    def _is_reader_source(cls, path: str) -> bool:
+        if not path.startswith("gdx_dispatch/") or not path.endswith(cls._SUFFIXES):
+            return False
+        if path == cls._CATALOG:
+            return False
+        parts = path.split("/")
+        if {"tests", "e2e", "__tests__", "docs", "node_modules"} & set(parts):
+            return False
+        name = parts[-1]
+        return ".spec." not in name and ".test." not in name
+
+    @staticmethod
+    def _python_literals(source: str) -> set[str]:
+        import ast
+
+        tree = ast.parse(source)
+        docstrings: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(
+                node,
+                (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
+            ):
+                body = node.body
+                if (
+                    body
+                    and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                ):
+                    docstrings.add(id(body[0].value))
+        return {
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstrings
+        }
+
+    @classmethod
+    def unread_keys(cls, keys, sources: dict[str, str]) -> list[str]:
+        """Keys with no reader among ``sources`` (repo path -> text)."""
+        import re
+
+        py_literals: set[str] = set()
+        other_text: list[str] = []
+        for path, text in sources.items():
+            if path.endswith(".py"):
+                py_literals |= cls._python_literals(text)
+            else:
+                other_text.append(text)
+        blob = "\n".join(other_text)
+        unread = []
+        for key in keys:
+            if key in py_literals:
+                continue
+            if re.search(r"""['"`]""" + re.escape(key) + r"""['"`]""", blob):
+                continue
+            unread.append(key)
+        return sorted(unread)
+
+    @classmethod
+    def _repo_sources(cls) -> dict[str, str]:
+        from gdx_dispatch.tools.tracked_files import REPO_ROOT, read_tracked_files
+
+        return {
+            path: (REPO_ROOT / path).read_text(encoding="utf-8", errors="replace")
+            for path in sorted(read_tracked_files())
+            if cls._is_reader_source(path) and (REPO_ROOT / path).is_file()
+        }
+
+    def test_every_catalog_key_has_a_reader_or_a_reason(self) -> None:
+        unread = self.unread_keys(TECH_MOBILE_SETTINGS, self._repo_sources())
+        unexplained = [k for k in unread if k not in self.ALLOWLIST]
+        assert not unexplained, (
+            "tech-mobile catalog keys the admin form offers that nothing reads: "
+            f"{unexplained}. Wire a reader, delete the entry, or allowlist it "
+            "with a reason in TestEveryKeyHasAReader.ALLOWLIST."
+        )
+
+    def test_allowlist_does_not_rot(self) -> None:
+        # An allowlisted key that is gone, or has since gained a reader, is
+        # a stale exemption: remove it so the next unread key cannot hide
+        # behind it.
+        stale = [k for k in self.ALLOWLIST if k not in TECH_MOBILE_SETTINGS]
+        assert not stale, f"allowlisted keys not in the catalog: {stale}"
+        unread = set(self.unread_keys(self.ALLOWLIST, self._repo_sources()))
+        read_now = [k for k in self.ALLOWLIST if k not in unread]
+        assert not read_now, f"allowlisted keys that now have a reader: {read_now}"
+
+    def test_the_guard_can_fail(self) -> None:
+        # The ratchet is only worth citing if it reddens for the defect.
+        sources = {
+            "gdx_dispatch/routers/x.py": (
+                '"""Docstring naming "tech_mobile.in_docstring" is not a read."""\n'
+                "# tech_mobile.in_comment is not a read either\n"
+                'VALUE = get_setting(db, "tech_mobile.read_py")\n'
+            ),
+            "gdx_dispatch/frontend/src/views/X.vue": (
+                "// tech_mobile.in_js_comment\n"
+                "const v = settings['tech_mobile.read_js']\n"
+            ),
+        }
+        keys = [
+            "tech_mobile.read_py",
+            "tech_mobile.read_js",
+            "tech_mobile.in_docstring",
+            "tech_mobile.in_comment",
+            "tech_mobile.in_js_comment",
+            "tech_mobile.nowhere",
+        ]
+        assert self.unread_keys(keys, sources) == [
+            "tech_mobile.in_comment",
+            "tech_mobile.in_docstring",
+            "tech_mobile.in_js_comment",
+            "tech_mobile.nowhere",
+        ]
