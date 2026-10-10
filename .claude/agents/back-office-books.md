@@ -78,7 +78,7 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner back-offic
 
 ## Verify a change here
 
-- Backend, targeted: `docker run --rm --entrypoint python -v "$PWD":/app -w /app -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x docker-app -m pytest -rs -k "<pattern>"`.
+- Backend, targeted: `docker run --rm --tmpfs /tmp:rw,exec,size=32g --entrypoint python -v "$PWD":/app -w /app -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x docker-app -m pytest -rs -k "<pattern>"`.
   Your patterns: `qb_`, `quickbooks`, `bank_`, `simplefin`, `vendor_`,
   `expenses`, `budget`, `overhead`, `forecast`, `observed_recurring`,
   `recurring_streams`, `reports`, `exports`, `m21`, `m29`, `m30`,

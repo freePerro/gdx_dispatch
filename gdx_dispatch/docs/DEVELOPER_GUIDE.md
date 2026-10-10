@@ -85,7 +85,7 @@ Add route in `router/index.js`.
 # Python backend — there is usually NO host .venv; deps live in the
 # docker-app image, and gdx_dispatch/tests/conftest.py refuses a bare
 # whole-directory run. One file:
-docker run --rm --entrypoint python -v $PWD:/app -w /app docker-app \
+docker run --rm --tmpfs /tmp:rw,exec,size=32g --entrypoint python -v $PWD:/app -w /app docker-app \
   -m pytest gdx_dispatch/tests/test_<feature>.py -v
 # Full suite (pytest-split, N=7):
 PYTEST="docker run --rm --entrypoint python -e JWT_SECRET=<32+ bytes> \

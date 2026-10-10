@@ -87,7 +87,7 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner comms-emai
 
 ## Verify a change here
 
-- Backend, targeted: `docker run --rm --entrypoint python -v "$PWD":/app -w /app -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x docker-app -m pytest -rs -k "<pattern>"`.
+- Backend, targeted: `docker run --rm --tmpfs /tmp:rw,exec,size=32g --entrypoint python -v "$PWD":/app -w /app -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x docker-app -m pytest -rs -k "<pattern>"`.
   Your patterns: `outlook`, `phone_com`, `inbound_comms`, `cell_gateway`,
   `email`, `transactional_email`, `outbound_email`, `notification`,
   `phase15_push`, `team_messages`, `communications_shell`, `twilio_retired`.

@@ -82,6 +82,9 @@ COVERED_ROOTS = (
     "gdx_dispatch/plugin_host/",
     "gdx_dispatch/templates/",
     "gdx_dispatch/frontend/src/",
+    # The agent files carry the copy-paste commands every agent runs, so they
+    # need an owner who keeps them right (GDXA-484: 13 of 14 lacked --tmpfs).
+    ".claude/agents/",
 )
 
 # Repo-root files where every match must have an owner. The root cannot be a
