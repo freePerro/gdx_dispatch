@@ -927,6 +927,9 @@ function openEditDialog() {
     customer_type: normalizeCustomerType(customer.value.customer_type),
     pricing_class: customer.value.pricing_class || null,
     margin_override_pct: customer.value.margin_override_pct ?? null,
+    // The token this dialog loaded (GDXA-448); a colleague's save in between
+    // makes this save a 409 instead of silently reverting theirs.
+    version: customer.value.version ?? null,
   };
   showEditDialog.value = true;
 }
@@ -953,13 +956,21 @@ async function saveCustomer() {
     } else {
       patch.margin_override_pct = editForm.value.margin_override_pct;
     }
+    if (editForm.value.version != null) patch.expected_version = editForm.value.version;
     await api.patch(`/api/customers/${route.params.id}`, patch);
     toast.add({ severity: "success", summary: "Saved", detail: "Customer updated.", life: 3000 });
     showEditDialog.value = false;
     await fetchCustomer();
   } catch (e) {
-    editError.value = e?.message || "Failed to save.";
-    toast.add({ severity: "error", summary: "Error", detail: editError.value, life: 5000 });
+    const message = e?.message || "Failed to save.";
+    // A colleague saved first (GDXA-448): reload the page and the form with
+    // their version so the next save carries the current token.
+    if (e?.code === "version_conflict") {
+      await fetchCustomer();
+      openEditDialog();
+    }
+    editError.value = message;
+    toast.add({ severity: "error", summary: "Error", detail: message, life: 5000 });
   } finally {
     isSaving.value = false;
   }

@@ -152,6 +152,7 @@ function emptyForm() {
     notes: "",
     referral_source: "",
     customer_type: "Residential",
+    version: null,
   };
 }
 
@@ -168,6 +169,9 @@ function formFromCustomer(customer) {
     // payload (2026-05-21). Fall back to source for older clients.
     referral_source: customer.referral_source || customer.source || "",
     customer_type: normalizeCustomerType(customer.customer_type),
+    // The token this dialog loaded (GDXA-448): sent back on save, so a
+    // colleague's edit in between is a 409 here, not silently reverted.
+    version: customer.version ?? null,
   };
 }
 
@@ -293,6 +297,7 @@ async function submitForm() {
   try {
     let saved;
     if (isEditMode.value) {
+      if (form.value.version != null) payload.expected_version = form.value.version;
       saved = await api.patch(`/api/customers/${form.value.id}`, payload);
       toast.add({
         severity: "success",
@@ -313,6 +318,19 @@ async function submitForm() {
     emit("update:visible", false);
   } catch (e) {
     error.value = e?.message || "Failed to save customer.";
+    // A colleague saved first (GDXA-448): show their version in the form, so
+    // the user re-applies the edit against it instead of 409ing forever on a
+    // token the parent will hand back unchanged on reopen.
+    if (e?.code === "version_conflict" && form.value.id) {
+      try {
+        form.value = formFromCustomer(await api.get(`/api/customers/${form.value.id}`));
+        // The reloaded row is the new pristine state: the user's edits are
+        // already gone, so Cancel must not ask to discard them.
+        snapshot();
+      } catch {
+        // The message already says to reload; nothing more to do here.
+      }
+    }
   } finally {
     saving.value = false;
   }
