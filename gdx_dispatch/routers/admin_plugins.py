@@ -20,9 +20,13 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import audit_or_rollback, audit_ready_db, resolve_audit_actor
 from gdx_dispatch.core.plugin_consent import (
+    consent_drift,
+    consent_pin,
     consented_permissions,
+    fetch_catalog,
     fetch_permissions,
     record_consent,
+    resolve_drift_signals,
 )
 from gdx_dispatch.plugin_api.manifest import PERMISSION_RISKS
 from gdx_dispatch.plugin_host.reconcile import (
@@ -390,25 +394,61 @@ def plugin_permissions(
     }
 
 
+class ConsentGrant(BaseModel):
+    # The live fingerprint the owner was shown (a consent-drift row's
+    # ``fingerprint``). When given, the grant is refused if the plugin's
+    # declared surface moved since, so consent covers only what was seen.
+    fingerprint: str | None = None
+
+
 @router.post("/{key}/consent", status_code=201)
 def consent_plugin(
     key: str,
     request: Request,
     user: dict = Depends(_require_owner),
     db: Session = Depends(audit_ready_db),
+    body: ConsentGrant | None = None,
 ) -> dict:
     """Owner grants consent for the plugin's currently-declared permissions.
     Records exactly what was declared now, so a later-added permission isn't
-    silently covered by old consent."""
-    declared = fetch_permissions(key)
-    if not declared:
+    silently covered by old consent.
+
+    One catalog snapshot serves the whole grant: the drift check, the pin
+    check, the permissions granted and the surface recorded all read it, so
+    a second fetch cannot approve a surface the check never saw (GDXA-462)."""
+    catalog = fetch_catalog()
+    if not catalog:
+        raise HTTPException(status_code=503,
+                            detail="plugin-host did not answer; nothing was granted")
+    entry = next((p for p in catalog if p.get("key") == key), None)
+    declared = list((entry or {}).get("permissions") or [])
+    drifted = entry is not None and any(d["key"] == key for d in consent_drift(db, catalog))
+    # A drifted plugin whose upgrade dropped every permission is re-consented
+    # to nothing: refusing it left its drift, banner and alarm row unclearable
+    # (the pending row mutes every later drift alarm), short of an uninstall.
+    if not declared and not drifted:
         raise HTTPException(status_code=400, detail="plugin declares no permissions")
+    if body is not None and body.fingerprint is not None:
+        if consent_pin(entry) != body.fingerprint:
+            raise HTTPException(
+                status_code=409,
+                detail="This plugin changed again since the page showed it. "
+                       "Nothing was granted; review the updated list and retry.",
+            )
+    elif drifted:
+        # An unpinned grant would approve a drifted plugin's new surface
+        # unseen, so a drifted plugin is re-consented only with its pin.
+        raise HTTPException(
+            status_code=409,
+            detail="This plugin changed what it runs since you consented. "
+                   "Review the change on the Plugins page and re-consent there.",
+        )
     # Stage the grant first (commit=False), audit second, commit once — so the
     # consent row and its audit row land in the same transaction. Auditing first
     # would not work: record_consent's ensure_consent_table commits its DDL
     # before the INSERT, which would harden the audit row on its own and leave a
     # record of a grant that never happened if the INSERT then failed.
-    record_consent(db, key, declared, _actor(user), commit=False)
+    record_consent(db, key, declared, _actor(user), commit=False, entry=entry)
     _audit(
         db,
         request,
@@ -419,7 +459,56 @@ def consent_plugin(
         details={"key": key, "permissions": list(declared)},
     )
     db.commit()
+    # Re-consent is what clears drift, so it also closes the drift alarm row
+    # (GDXA-462). After the grant's commit, not inside it: the drift read goes
+    # through ensure_consent_table, which commits, and would harden the grant
+    # without its audit row.
+    _close_drift_alarms(db, request, user, catalog, key)
     return {"key": key, "consented": declared}
+
+
+def _close_drift_alarms(db: Session, request: Request, user: dict,
+                        catalog: list[dict], key: str | None) -> None:
+    """Resolve the ``plugin_consent_drift`` alarm rows whose drift has ended,
+    audited (GDXA-462). Best-effort: a failure must not fail the grant that
+    called it. ``details`` names every plugin on each closed row, which may
+    include plugins other than ``key`` (one uninstalled since its alarm)."""
+    try:
+        resolved = resolve_drift_signals(db, catalog)
+        if resolved:
+            _audit(
+                db,
+                request,
+                user,
+                "plugin.consent_drift_resolved",
+                entity_type="plugin",
+                entity_id=key,
+                details={"key": key, "signals": resolved},
+            )
+            db.commit()
+    except Exception:
+        log.exception("plugin_consent_drift_resolve_failed key=%s", key)
+        db.rollback()
+
+
+@router.get("/consent-drift")
+def plugin_consent_drift(
+    request: Request,
+    user: dict = Depends(_require_owner),
+    db: Session = Depends(audit_ready_db),
+) -> dict:
+    """Plugins whose events or schedules are paused because their declared
+    surface changed since consent, read live (GDXA-462). Drives the re-consent
+    banner. ``catalog_reachable`` false means plugin-host did not answer, so
+    an empty list proves nothing.
+
+    Read-only on purpose: a page load or a prefetch must not close alarm
+    rows. Drift that ends without re-consent (uninstall, rollback) re-arms
+    the alarm when the next drift is signalled (``_signal_consent_drift``)."""
+    catalog = fetch_catalog()
+    if not catalog:
+        return {"catalog_reachable": False, "drifted": []}
+    return {"catalog_reachable": True, "drifted": consent_drift(db, catalog)}
 
 
 @router.post("/restart", status_code=202)

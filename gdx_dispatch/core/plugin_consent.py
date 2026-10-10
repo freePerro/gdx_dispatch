@@ -34,8 +34,8 @@ from gdx_dispatch.core import internal_auth
 #   - the API half degrades quietly. `app.py` wraps browser_proxy +
 #     plugins_proxy + admin_plugins in ONE try/except, so an ImportError here
 #     does not crash the app: it logs "plugins proxy router failed to load" and
-#     boots green with three whole routers missing. That is 25 of the operations
-#     pinned in `openapi_routes.txt` — admin_plugins 11, plugins_proxy 10
+#     boots green with three whole routers missing. That is 26 of the operations
+#     pinned in `openapi_routes.txt` — admin_plugins 12, plugins_proxy 10
 #     (two `api_route` decorators carrying 5 methods each), browser_proxy 4 —
 #     plus one websocket, which OpenAPI does not list.
 #   - the WORKER half does not degrade at all, it crash-loops.
@@ -179,7 +179,11 @@ def fetch_catalog() -> list[dict]:
     """The live plugin catalog from plugin-host (key/permissions/events/…)."""
     try:
         r = httpx.get(f"{_plugin_host_url()}/api/plugins", timeout=5.0)
-        return list(r.json())
+        r.raise_for_status()
+        body = r.json()
+        # An error object is not a catalog: list() of a dict is its keys,
+        # which every reader would then crash on with .get().
+        return [p for p in body if isinstance(p, dict)] if isinstance(body, list) else []
     except Exception:
         return []
 
@@ -209,7 +213,7 @@ def live_fingerprint(entry: dict) -> str:
 
 
 def record_consent(db: Session, key: str, permissions: list[str], by: str,
-                   commit: bool = True) -> dict:
+                   commit: bool = True, entry: dict | None = None) -> dict:
     """Record consent for a plugin's currently-declared permissions AND pin its
     declared event surface (preimage + fingerprint) from the live catalog.
 
@@ -218,9 +222,13 @@ def record_consent(db: Session, key: str, permissions: list[str], by: str,
     ``ensure_consent_table`` commits its DDL, so anything the caller has already
     flushed is committed before this INSERT runs: stage the row first, audit
     after, commit once.
+
+    ``entry`` is the catalog entry the caller already checked (the owner's
+    fingerprint pin); given, it is what gets pinned, so a second fetch cannot
+    record a surface other than the one that was checked.
     """
     ensure_consent_table(db)
-    entry = _live_entry(key) or {}
+    entry = entry if entry is not None else (_live_entry(key) or {})
     declared_events = list(entry.get("events") or [])
     fingerprint = live_fingerprint(entry) if entry else ""
     db.execute(
@@ -459,3 +467,133 @@ def schedule_runners(db: Session, catalog: list[dict]) -> tuple[list[dict], list
             continue
         runners.append({**entry, "consented_by": by})
     return runners, drifted
+
+
+def consent_drift(db: Session, catalog: list[dict]) -> list[dict]:
+    """Plugins whose automatic execution is suppressed RIGHT NOW by consent
+    drift (GDXA-462), for the owner's re-consent banner.
+
+    The same two fail-closed conditions the dispatchers apply, read live:
+    ``events`` drift is exactly what ``event_recipients`` would refuse for some
+    event (stored event list, 'events' consent, loaded, fingerprint moved), and
+    ``schedules`` drift is ``schedule_runners``' own drifted list. A plugin
+    whose fingerprint moved but which had nothing automatic consented is NOT
+    listed: nothing of it is paused, and saying so would be false.
+
+    Read from the live state on purpose, not from the ``plugin_consent_drift``
+    AIAction row: that row is a throttled alarm (one pending row for every
+    plugin and every later drift), so it cannot say who is drifted now."""
+    ensure_consent_table(db)
+    rows = db.execute(
+        text("SELECT plugin_key, declared_events, declared_fingerprint, permissions, "
+             "consented_by, consented_at FROM plugin_consent")
+    ).all()
+    _, schedule_drifted = schedule_runners(db, catalog)
+    out: list[dict] = []
+    for key, ev_json, stored_fp, perms, by, at in rows:
+        entry = _live_entry(key, catalog)
+        if entry is None:
+            continue  # not loaded: nothing of it can run, drifted or not
+        paused: list[str] = []
+        granted = {p.strip() for p in (perms or "").split(",")}
+        if ("events" in granted and ev_json not in (None, "", "[]")
+                and live_fingerprint(entry) != (stored_fp or "")):
+            paused.append("events")
+        if key in schedule_drifted:
+            paused.append("schedules")
+        if paused:
+            live_events = list(entry.get("events") or [])
+            try:
+                stored_events = json.loads(ev_json) if ev_json else []
+            except ValueError:
+                log.warning("plugin_consent: stored events for %s are not JSON; "
+                            "showing every live event as added", key)
+                stored_events = []
+            out.append({
+                "key": key,
+                "name": entry.get("name") or key,
+                "paused": paused,
+                # What re-consent would approve, shown BEFORE the owner clicks:
+                # without it the dialog lists only permission names, already
+                # "consented", and re-consent becomes a click-through.
+                "events_added": sorted(set(live_events) - set(stored_events)),
+                "events_removed": sorted(set(stored_events) - set(live_events)),
+                # No schedule or services preimage is stored (only the
+                # fingerprint), so these are the live lists whole, not a diff.
+                "schedules": [s.get("name") for s in entry.get("schedule_specs") or []
+                              if isinstance(s, dict) and s.get("name")],
+                "services": list(entry.get("services") or []),
+                # What the dialog showed; the grant is refused if the live
+                # surface moved again before the click (consent_plugin, 409).
+                "fingerprint": consent_pin(entry),
+                "consented_by": by,
+                "consented_at": at.isoformat() if hasattr(at, "isoformat") else at,
+            })
+    return out
+
+
+def consent_pin(entry: dict) -> str:
+    """What a pinned grant must match: the capability fingerprint AND the
+    declared permissions. The fingerprint alone leaves permissions out, so an
+    upgrade adding e.g. 'browser' would pass a pin taken before it."""
+    perms = ",".join(sorted(str(p) for p in entry.get("permissions") or ()))
+    return f"{live_fingerprint(entry)}|{perms}"
+
+
+def _host_fully_ready() -> bool:
+    """True only when plugin-host's /ready is 200: every desired plugin is
+    loaded and none is withheld as stale. Unreachable or 503 is False."""
+    status = None
+    try:
+        status = httpx.get(f"{_plugin_host_url()}/ready", timeout=5.0).status_code
+    except Exception as exc:
+        # Not ready is the safe answer: it only keeps a drift alarm open.
+        log.info("plugin_consent: plugin-host /ready unreachable (%s); "
+                 "treating it as not ready", exc)
+    return status == 200
+
+
+def resolve_drift_signals(db: Session, catalog: list[dict]) -> list[dict]:
+    """Close each pending ``plugin_consent_drift`` alarm row whose drift has
+    provably ended, and return ``[{"id", "plugins"}]`` for each. Does not
+    commit: the caller commits it (the owner path with its audit row).
+
+    Drift ends by re-consent, by uninstall, or by rolling the plugin back to
+    what was consented. A row closes only when none of its plugins is drifted
+    in the live catalog AND each is either loaded or taken to be gone.
+    Absence from the catalog alone is not enough: plugin-host withholds a
+    stale plugin from it too, so an absent plugin counts as gone only while
+    /ready is 200 (nothing desired is missing or withheld). Even that is not
+    proof: discovery skips a plugin that fails to import without degrading
+    /ready. A wrong close costs one extra alarm on the next drift, never a
+    silenced one. Without
+    this the row stayed ``pending`` forever, and because the alarm is
+    throttled on "a pending row exists", the first drift ever silenced every
+    later one from any plugin. An empty catalog proves nothing (plugin-host
+    unreachable), so it leaves the rows alone."""
+    from gdx_dispatch.core.webhooks.models import AIAction
+
+    if not catalog:
+        return []
+    pending = db.query(AIAction).filter(
+        AIAction.action_type == "plugin_consent_drift",
+        AIAction.status == "pending",
+    ).all()
+    if not pending:
+        return []
+    still = {d["key"] for d in consent_drift(db, catalog)}
+    loaded = {p.get("key") for p in catalog}
+    ready: bool | None = None
+    closed = []
+    for row in pending:
+        plugins = set((row.payload or {}).get("plugins") or [])
+        if plugins & still:
+            continue
+        if plugins - loaded:
+            if ready is None:
+                ready = _host_fully_ready()
+            if not ready:
+                continue
+        row.status = "resolved"
+        closed.append({"id": str(row.id), "plugins": sorted(plugins)})
+    return closed

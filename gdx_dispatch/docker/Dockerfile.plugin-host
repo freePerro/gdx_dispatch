@@ -14,21 +14,27 @@
 #       dockerfile: gdx_dispatch/docker/Dockerfile.plugin-host
 #
 # Keep the base image's Playwright version in lockstep with the `playwright` pin
-# in each browser-using plugin's pyproject.toml.
+# in gdx_dispatch/requirements-plugin-host.in (tests/test_requirements_lock.py
+# fails when they differ) and in each browser-using plugin's pyproject.toml.
 FROM mcr.microsoft.com/playwright/python:v1.49.1-noble
 
 WORKDIR /app
 
-# Python deps (same requirements as the app — plugin-host imports gdx_dispatch).
+# Python deps: the app's set plus the Python half of Playwright, from ONE lock.
+# The Playwright base ships the browsers (under /ms-playwright) but NOT the
+# Python package; requirements-plugin-host.in pins it to the base image's
+# browser build (v1.49.1-noble ⇒ chromium-1148). Browser-using plugins must stay
+# on this 1.49.x line so reconcile doesn't upgrade playwright out from under the
+# baked-in browsers.
+# One resolution, not two installs: installing requirements.txt and then
+# playwright separately downgraded greenlet under SQLAlchemy and gevent after
+# the fact (GDXA-467). The lock differs from the app's only where playwright
+# forces it; tools/requirements_lock.py names those packages. `uv pip check`
+# refuses the inconsistent set the two-install build used to ship.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-COPY gdx_dispatch/requirements.txt ./requirements.txt
-RUN uv pip install --system --no-cache -r requirements.txt
-
-# The Playwright base ships the browsers (under /ms-playwright) but NOT the Python
-# package. Install it pinned to the base image's browser build (v1.49.1-noble ⇒
-# chromium-1148). Browser-using plugins must stay on this 1.49.x line so reconcile
-# doesn't upgrade playwright out from under the baked-in browsers.
-RUN uv pip install --system --no-cache playwright==1.49.1
+COPY gdx_dispatch/requirements-plugin-host.lock ./requirements.lock
+RUN uv pip install --system --no-cache --no-deps -r requirements.lock \
+    && uv pip check --system
 
 # The app package (plugin-host imports gdx_dispatch.plugin_host / plugin_api /
 # core.database). No frontend build — plugin-host serves no UI.

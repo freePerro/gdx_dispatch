@@ -109,7 +109,7 @@ def test_consent_grant_and_its_audit_row_commit_together(db, monkeypatch):
     staged. `audit_ready_db` moves it before the handler — here we call it
     explicitly, exactly as the FastAPI dependency does.
     """
-    monkeypatch.setattr(ap, "fetch_permissions", lambda key: ["browser"])
+    monkeypatch.setattr(ap, "fetch_catalog", lambda: [{"key": "chipricing", "permissions": ["browser"]}])
     audit_core.audit_ready_db(db)
 
     ap.consent_plugin("chipricing", request=None, user={"sub": "u1", "role": "owner"}, db=db)
@@ -127,7 +127,7 @@ def test_failed_audit_undoes_a_staged_consent_grant(db, monkeypatch):
     consent a moment before the audit row failed. `audit_ready_db` runs that
     initialization up front so nothing is pending when it commits.
     """
-    monkeypatch.setattr(ap, "fetch_permissions", lambda key: ["browser"])
+    monkeypatch.setattr(ap, "fetch_catalog", lambda: [{"key": "chipricing", "permissions": ["browser"]}])
     audit_core.audit_ready_db(db)
 
     # Fail at the FLUSH, not by stubbing log_audit_event_sync: the real helper
@@ -159,7 +159,7 @@ def test_failed_consent_insert_leaves_no_audit_row(db, monkeypatch):
     a CHECK constraint makes the actual INSERT fail so that regression cannot
     return unnoticed.
     """
-    monkeypatch.setattr(ap, "fetch_permissions", lambda key: ["browser"])
+    monkeypatch.setattr(ap, "fetch_catalog", lambda: [{"key": "chipricing", "permissions": ["browser"]}])
     audit_core.audit_ready_db(db)
     # ensure_consent_table's CREATE TABLE IF NOT EXISTS becomes a no-op against
     # this, so record_consent runs its real INSERT and the CHECK rejects it.
