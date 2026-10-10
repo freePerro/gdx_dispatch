@@ -243,13 +243,13 @@ elif ! $PYTEST --version >/dev/null 2>&1; then
 fi
 
 # ── dependency drift gate (#679) ───────────────────────────────────────────
-# The image bakes gdx_dispatch/requirements.txt at BUILD time; the working tree
+# The image bakes gdx_dispatch/requirements.lock at BUILD time; the working tree
 # is bind-mounted over /app at RUN time. So source is always current and deps
 # never are: add a dependency, and it is absent from the harness until someone
 # rebuilds, with nothing to tell you. The failure mode is a COLLECTION error
 # ("ModuleNotFoundError: No module named 'freezegun'"), which takes a whole file
 # out of the run and reads like noise next to a wall of passes. CI is immune —
-# it pip-installs on a fresh runner — which is exactly why this is easy to miss
+# it installs the lock on a fresh runner — which is exactly why this is easy to miss
 # on mid-stack PRs, where the local matrix is the only gate (ci.yml does not
 # trigger on a PR whose base is another feature branch).
 #
@@ -265,8 +265,13 @@ fi
 # packages agree with each other and never reads requirements.txt, so it
 # returns "No broken requirements found" / exit 0 with the defect present.
 #
+# Checked against the LOCK (GDXA-467): CI and the images install exactly its
+# pins, so an image that merely satisfies requirements.txt's ranges can still
+# run a set CI never tests. Every lock line is `==`, so any version difference
+# exits 1 here.
+#
 # SKIP_DEP_CHECK=1 bypasses it. Deliberately not silent when you do.
-REQ_FILE="gdx_dispatch/requirements.txt"
+REQ_FILE="gdx_dispatch/requirements.lock"
 if [ "${SKIP_DEP_CHECK:-0}" = "1" ]; then
   echo "⚠ dependency drift check SKIPPED (SKIP_DEP_CHECK=1)"
 elif [ -n "${PYBIN:-}" ] && [ -f "$REQ_FILE" ]; then
@@ -298,11 +303,10 @@ else
 fi
 
 # ── docker image age ─────────────────────────────────────────────────────────
-# The drift gate above proves the image SATISFIES requirements.txt; it cannot
-# prove the image matches what CI tests with. requirements.txt pins ranges
-# (fastapi>=…,<1.0), CI resolves them fresh on every run, and the local image
-# keeps whatever it resolved the day it was built — so an old image can be red
-# where CI is green, or green where CI is red, with no file having changed.
+# The drift gate above proves the image carries every pin in requirements.lock,
+# the set CI installs (GDXA-467). It cannot see a package the image carries
+# that the lock has since dropped, so an old image can still import something
+# CI no longer has.
 # Report-only: say how old the image is and what it carries, loudly when it
 # predates the last requirements/Dockerfile change on this branch.
 # IMAGE_AGE_CHECK=0 opts out.
@@ -320,14 +324,14 @@ if [ "${IMAGE_AGE_CHECK:-1}" = "1" ] && [ -n "$IMAGE" ]; then
     vers="$(docker run --rm --entrypoint python "$IMAGE" -c \
       "import importlib.metadata as m; print(' '.join(f'{p} {m.version(p)}' for p in ('fastapi','pydantic','sqlalchemy','freezegun')))" 2>/dev/null || true)"
     echo "image $IMAGE built $(date -d "$created" '+%Y-%m-%d %H:%M') (${age_d}d old): ${vers:-versions unreadable}"
-    req_ts="$(git -C "$REPO_ROOT" log -1 --format=%ct -- gdx_dispatch/requirements.txt gdx_dispatch/docker/Dockerfile 2>/dev/null || true)"
+    req_ts="$(git -C "$REPO_ROOT" log -1 --format=%ct -- gdx_dispatch/requirements.txt gdx_dispatch/requirements.lock gdx_dispatch/docker/Dockerfile 2>/dev/null || true)"
     if [ -n "$req_ts" ] && [ "$img_ts" -lt "$req_ts" ]; then
-      echo "⚠ image is OLDER than the last requirements.txt/Dockerfile change on this branch"
+      echo "⚠ image is OLDER than the last requirements.txt/.lock/Dockerfile change on this branch"
       echo "  ($(date -d "@$req_ts" '+%Y-%m-%d %H:%M')). Failures may be the image, not your code. Rebuild:"
       echo "    docker compose -f gdx_dispatch/docker/docker-compose.yml build app"
     elif [ "$age_d" -ge "${IMAGE_MAX_AGE_DAYS:-7}" ]; then
-      echo "⚠ image is ${age_d} days old; CI resolves requirements.txt's ranges fresh on every"
-      echo "  run, so this image may carry older library versions than CI tests with."
+      echo "⚠ image is ${age_d} days old; it may still carry packages requirements.lock has"
+      echo "  since dropped, which CI no longer installs."
     fi
   fi
 fi

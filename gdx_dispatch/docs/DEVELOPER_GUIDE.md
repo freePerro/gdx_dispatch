@@ -101,6 +101,13 @@ PYTEST="docker run --rm --entrypoint python -e JWT_SECRET=<32+ bytes> \
 # after any requirements.txt edit:
 docker compose -f gdx_dispatch/docker/docker-compose.yml build app
 
+# The images and CI install requirements.lock, not requirements.txt's ranges
+# (GDXA-467). After editing requirements.txt, re-lock both locks with the uv
+# commands in gdx_dispatch/tools/requirements_lock.py; the default suite
+# (tests/test_requirements_lock.py) fails while a lock does not satisfy it.
+# Upgrades arrive through .github/workflows/dependency-drift.yml (weekly; red
+# on a major bump), never by themselves at build time.
+
 # Vue frontend
 cd gdx_dispatch/frontend && npx vitest run
 

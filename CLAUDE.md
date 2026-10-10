@@ -136,8 +136,9 @@ this — the budget governs sweeps, not repairs.
   green. NEW is not proof: the baseline is a single run, so a flaky test can
   pass there and fail here. The script also prints the docker
   image's age and key library versions, and warns when the image predates the
-  last `requirements.txt`/Dockerfile change: requirements.txt pins ranges and
-  CI resolves them fresh each run, so an old image can disagree with CI.
+  last `requirements.txt`/`requirements.lock`/Dockerfile change. CI and the
+  images install `gdx_dispatch/requirements.lock` (GDXA-467), and the
+  runner's dependency check fails an image that lacks any of its pins.
 - `pytest.ini` already carries `-q`; adding another makes output useless. To
   read a CI failure use the `jobs/<id>/logs` API, not `gh run view --log`.
 - **A foreground `sleep` is blocked and a background Bash dies at 600s.** Long

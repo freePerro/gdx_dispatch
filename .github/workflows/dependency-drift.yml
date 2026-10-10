@@ -1,0 +1,66 @@
+name: Dependency drift
+
+# Every image and CI run installs from gdx_dispatch/requirements.lock
+# (GDXA-467), so a new release on PyPI no longer reaches production by itself.
+# This job is how one arrives on purpose: it resolves requirements.txt's ranges
+# fresh, as the builds used to, and diffs the result against the locks.
+#   minor/patch moves .... listed in the run summary, job stays green
+#   major move (or a 0.x minor), or a package added/dropped .... job FAILS
+# A red run is the prompt for a deliberate re-lock PR (command in
+# gdx_dispatch/tools/requirements_lock.py) that runs the suite against the new
+# set, or for a cap in requirements.txt with the reason. A green run is not
+# "safe to take": GDXA-14 / #772 was a MINOR move (SQLAlchemy 2.0 -> 2.1) that
+# broke every import. What closes that class is the lock itself: no move, of
+# any size, reaches an image until a re-lock PR has run the suite against it.
+# The cost is that patch releases, security fixes included, also wait for a
+# re-lock; the summary of a green run lists them.
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: "17 7 * * 1"   # Mondays 07:17 UTC
+  workflow_dispatch:
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: app
+            input: gdx_dispatch/requirements.txt
+            lock: gdx_dispatch/requirements.lock
+          - name: plugin-host
+            input: gdx_dispatch/requirements-plugin-host.in
+            lock: gdx_dispatch/requirements-plugin-host.lock
+    name: drift (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # The interpreter the locks are resolved for and the images run.
+          python-version: '3.12'
+
+      - name: Install the checker's one dependency
+        run: pip install packaging==26.3
+
+      - name: The lock satisfies requirements.txt
+        run: python gdx_dispatch/tools/requirements_lock.py check
+
+      - name: Resolve the ranges fresh (dry run, installs nothing)
+        run: |
+          pip install --dry-run --ignore-installed --quiet \
+            --report "$RUNNER_TEMP/fresh.json" -r "${{ matrix.input }}"
+
+      - name: Diff the fresh resolution against the lock
+        run: |
+          set -o pipefail
+          python gdx_dispatch/tools/requirements_lock.py drift \
+            --report "$RUNNER_TEMP/fresh.json" --lock "${{ matrix.lock }}" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
