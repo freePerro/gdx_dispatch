@@ -301,3 +301,136 @@ def test_sql_identifier_is_the_gate_the_merge_noqa_leans_on():
     for bad in ("", "jobs; DROP TABLE users", "a b", 'x"y', "9abc", "cust-id", None, "jobs\n"):
         with pytest.raises(ValueError, match="unsafe SQL identifier"):
             _sql_identifier(bad)
+
+
+# ── reseller data is private to its customer (GDXA-490) ─────────────────────
+#
+# `reseller_profiles` and `resale_quotes` belong to the contractor
+# (modules/reseller). The reflective FK sweep used to move them to the keeper
+# and count them in the audit row's `rows_updated`, which told staff a
+# profile existed; with both customers holding one, the unique customer_id
+# turned the merge into a generic 500.
+
+
+def _profile(db, customer):
+    from gdx_dispatch.modules.reseller.models import ResellerProfile
+
+    p = ResellerProfile(id=uuid.uuid4(), customer_id=customer.id,
+                        company_name="Brand Co", created_at=datetime.now(UTC))
+    db.add(p)
+    db.commit()
+    return p
+
+
+def _profile_owners(db):
+    return {
+        uuid.UUID(r[0]) for r in db.execute(
+            text("SELECT CAST(customer_id AS TEXT) FROM reseller_profiles")
+        ).all()
+    }
+
+
+def test_both_customers_resellers_is_a_409_not_a_500(db):
+    keep = _customer(db, "Troy Example")
+    loser = _customer(db, "Troy example")
+    _profile(db, keep)
+    _profile(db, loser)
+    job = _job(db, loser)
+
+    with pytest.raises(HTTPException) as exc:
+        _merge(db, keep, [loser])
+
+    assert exc.value.status_code == 409
+    assert "is a reseller" in exc.value.detail
+    assert "Brand Co" not in exc.value.detail, "no profile data in the refusal"
+    assert _live(db, loser)
+    owner = db.execute(
+        text("SELECT CAST(customer_id AS TEXT) FROM jobs WHERE id = :i"), {"i": job.id.hex}
+    ).scalar()
+    assert uuid.UUID(owner) == loser.id, "nothing may move on a refused merge"
+    assert _profile_owners(db) == {keep.id, loser.id}
+
+
+def test_only_the_loser_a_reseller_is_refused_and_nothing_moves(db):
+    keep = _customer(db, "Troy Example")
+    loser = _customer(db, "Troy example")
+    _profile(db, loser)
+
+    with pytest.raises(HTTPException) as exc:
+        _merge(db, keep, [loser])
+
+    assert exc.value.status_code == 409
+    # Actionable: the way through is to keep the reseller.
+    assert "Keep 'Troy example'" in exc.value.detail
+    assert _live(db, loser)
+    assert _profile_owners(db) == {loser.id}, "the profile must not move"
+    assert db.execute(text(
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'merge_customers'"
+    )).scalar() == 0
+
+
+def test_a_loser_with_only_resale_quotes_is_refused_too(db):
+    from gdx_dispatch.modules.reseller.models import ResaleQuote
+
+    keep = _customer(db, "Troy Example")
+    loser = _customer(db, "Troy example")
+    db.add(ResaleQuote(id=uuid.uuid4(), customer_id=loser.id, estimate_id=uuid.uuid4(),
+                       created_by=uuid.uuid4(), reference="R-1", markup_pct=10,
+                       lines_snapshot={}, created_at=datetime.now(UTC)))
+    db.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        _merge(db, keep, [loser])
+    assert exc.value.status_code == 409
+
+
+def test_a_keeper_only_reseller_merges_and_the_audit_row_never_names_the_tables(db):
+    """The falsifier for the skip: a keeper's profile is never moved, but the
+    sweep used to visit the table anyway. Neither the response nor the
+    persisted audit row may carry a reseller key."""
+    keep = _customer(db, "Troy Example")
+    loser = _customer(db, "Troy example")
+    _profile(db, keep)
+    _job(db, loser)
+
+    out = _merge(db, keep, [loser])
+
+    assert out.rows_updated.get("jobs.customer_id") == 1
+    assert not any("resel" in k or "resale" in k for k in out.rows_updated), out.rows_updated
+    details = str(db.execute(text(
+        "SELECT details FROM audit_logs WHERE action = 'merge_customers'"
+    )).scalar())
+    assert "resel" not in details and "resale" not in details, details
+    assert _profile_owners(db) == {keep.id}
+
+
+def test_no_reseller_merge_is_unchanged_and_audit_lacks_the_key(db):
+    keep = _customer(db, "Troy Example")
+    loser = _customer(db, "Troy example")
+    out = _merge(db, keep, [loser])
+    assert out.rows_updated == {"customers.soft_deleted": 1}
+    details = str(db.execute(text(
+        "SELECT details FROM audit_logs WHERE action = 'merge_customers'"
+    )).scalar())
+    assert "reseller_profiles" not in details
+
+
+def test_the_sweep_skips_the_private_tables_even_past_the_refusal(db, monkeypatch):
+    """The skip is its own guard, not a restatement of the 409: with the
+    refusal switched off, a loser's profile still stays put and the audit row
+    still carries no reseller key."""
+    import gdx_dispatch.routers.customers as customers_mod
+
+    monkeypatch.setattr(customers_mod, "_resellers_among", lambda *a, **k: ([], False))
+    keep = _customer(db, "Troy Example")
+    loser = _customer(db, "Troy example")
+    _profile(db, loser)
+
+    out = _merge(db, keep, [loser])
+
+    assert not any("resel" in k for k in out.rows_updated), out.rows_updated
+    details = str(db.execute(text(
+        "SELECT details FROM audit_logs WHERE action = 'merge_customers'"
+    )).scalar())
+    assert "reseller_profiles" not in details, details
+    assert _profile_owners(db) == {loser.id}
