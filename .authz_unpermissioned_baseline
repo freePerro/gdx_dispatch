@@ -135,7 +135,6 @@ DELETE /api/catalogs/{catalog_id}
 DELETE /api/catalogs/{catalog_id}/items/{item_id}
 DELETE /api/change-orders/{co_id}
 DELETE /api/collections/reminders/{reminder_id}
-DELETE /api/customers/{customer_id}
 DELETE /api/customers/{customer_id}/locations/{location_id}
 DELETE /api/customers/{customer_id}/tags/{tag_id}
 DELETE /api/developer/keys/{key_id}

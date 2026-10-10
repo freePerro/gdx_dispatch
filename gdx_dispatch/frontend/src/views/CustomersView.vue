@@ -109,7 +109,7 @@
         </Column>
         <Column field="customer_type" header="Type" sortable style="width: 130px">
           <template #body="{ data }">
-            <Tag :value="normalizeCustomerType(data.customer_type)" :severity="normalizeCustomerType(data.customer_type) === 'Commercial' ? 'warn' : 'info'" />
+            <Tag :value="displayCustomerType(data.customer_type)" :severity="displayCustomerType(data.customer_type) === 'Commercial' ? 'warn' : 'info'" />
           </template>
         </Column>
         <Column header="Actions" style="width: 100px; text-align: center">
@@ -124,6 +124,7 @@
               @click.stop="openEditDialog(data)"
             />
             <Button
+              v-if="hasPermission('customers.write')"
               v-tooltip="'Delete'"
               icon="pi pi-trash" aria-label="Delete"
               text
@@ -178,6 +179,7 @@ import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { useListPrefs } from "../composables/useListPrefs";
+import { usePermission } from "../composables/usePermission";
 import { useTableExport } from "../composables/useTableExport";
 import { formatPhone } from "../composables/useFormatters";
 import Button from "primevue/button";
@@ -191,9 +193,13 @@ import Toast from "primevue/toast";
 import Toolbar from "primevue/toolbar";
 import CustomerFormDialog from "../components/CustomerFormDialog.vue";
 import EmptyState from "../components/EmptyState.vue";
+import { normalizeCustomerType } from "../constants/customerTypes";
 
 const api = useApiWithToast();
 const toast = useToast();
+// The delete route demands customers.write (GDXA-418); without it the trash
+// button would only ever produce a "Missing permission" toast.
+const { hasPermission } = usePermission();
 const router = useRouter();
 const route = useRoute();
 
@@ -222,18 +228,8 @@ const formMode = ref("create");
 const editingCustomer = ref(null);
 const deleteTarget = ref(null);
 
-function normalizeCustomerType(type) {
-  const text = (type || "").toString().trim().toLowerCase();
-  if (text === "commercial") return "Commercial";
-  if (text === "retail") return "Retail";
-  if (text === "contractor") return "Contractor";
-  if (text === "wholesale") return "Wholesale";
-  if (text === "property_manager" || text === "property manager") return "Property Manager";
-  if (text === "residential") return "Residential";
-  // Unknown values surface verbatim instead of being silently masked as
-  // "Residential" — that hid 322 of 326 GDX customer rows from view 2026-04-29.
-  return type ? String(type) : "—";
-}
+// Unknown values surface verbatim (see constants/customerTypes.js).
+const displayCustomerType = (type) => normalizeCustomerType(type, "—");
 
 const filteredCustomers = computed(() => {
   const query = searchQuery.value.trim().toLowerCase();

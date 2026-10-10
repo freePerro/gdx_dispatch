@@ -32,6 +32,7 @@ import uuid as _uuid
 from datetime import datetime, timedelta, timezone
 from datetime import time as dt_time
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, Literal
 from uuid import UUID
 
@@ -616,9 +617,19 @@ def _open_intents_for_invoice(invoice, *, connect: dict) -> list:
     same page directs read-after-write flows to the list APIs, which carry no
     such delay.
     """
+    return _recent_intents_by_invoice(connect=connect, label=str(invoice.id)).get(str(invoice.id), [])
+
+
+def _recent_intents_by_invoice(*, connect: dict, label: str = "all") -> dict[str, list]:
+    """Every intent of the lookback window, grouped by ``metadata.invoice_id``.
+
+    The one paged read behind `_open_intents_for_invoice` (one invoice) and
+    `ach_in_flight_by_invoice` (a whole page of them): the list API has no
+    metadata filter, so asking about one invoice already costs reading them
+    all. Raises what Stripe raises; callers decide what failure means.
+    """
     since = int((datetime.now(timezone.utc) - timedelta(days=_INTENT_LOOKBACK_DAYS)).timestamp())
-    want = str(invoice.id)
-    found: list = []
+    grouped: dict[str, list] = {}
     starting_after = None
 
     for _ in range(_INTENT_MAX_PAGES):
@@ -629,20 +640,48 @@ def _open_intents_for_invoice(invoice, *, connect: dict) -> list:
         rows = list(getattr(page, "data", None) or [])
         for pi in rows:
             meta = getattr(pi, "metadata", None) or {}
-            if str(meta.get("invoice_id") or "") == want:
-                found.append(pi)
+            invoice_id = str(meta.get("invoice_id") or "")
+            if invoice_id:
+                grouped.setdefault(invoice_id, []).append(pi)
         if not getattr(page, "has_more", False) or not rows:
-            return found
+            return grouped
         starting_after = getattr(rows[-1], "id", None)
         if not starting_after:
-            return found
+            return grouped
 
     logger.error(
         "stale_intent_scan_truncated invoice=%s pages=%d — more than %d intents in %d days; "
         "an older open intent may not have been checked.",
-        want, _INTENT_MAX_PAGES, _INTENT_MAX_PAGES * _INTENT_PAGE_SIZE, _INTENT_LOOKBACK_DAYS,
+        label, _INTENT_MAX_PAGES, _INTENT_MAX_PAGES * _INTENT_PAGE_SIZE, _INTENT_LOOKBACK_DAYS,
     )
-    return found
+    return grouped
+
+
+def ach_in_flight_by_invoice(*, tenant: dict | None = None) -> dict[str, dict] | None:
+    """Every invoice with a bank debit moving right now, from ONE scan.
+
+    GDXA-393 — the staff "bank payment pending" tag, for the Billing list and
+    the invoice detail alike. Each group goes through `_ach_in_flight`, so the
+    office and the customer's pay page read the same register by the same
+    rule. Returns None when Stripe could not be asked (display-only: the
+    caller shows nothing), never raises.
+    """
+    if not stripe_configured():
+        return {}
+    try:
+        _init_stripe()
+        grouped = _recent_intents_by_invoice(connect=_stripe_extra(tenant or {}))
+    except Exception:  # noqa: BLE001  # noqa: silent-failure — None is the caller's "not checked", never "none pending"
+        logger.exception("ach_in_flight_scan_failed — the pending-bank-payment tags show nothing")
+        return None
+    out: dict[str, dict] = {}
+    for invoice_id, intents in grouped.items():
+        # `_ach_in_flight` reads only ``invoice is None`` off the invoice when
+        # handed its intents; the id is what it would log.
+        pending = _ach_in_flight(SimpleNamespace(id=invoice_id), tenant=tenant, intents=intents)
+        if pending:
+            out[invoice_id] = pending
+    return out
 
 
 def _intent_snapshot(invoice, *, tenant: dict | None = None) -> list:
@@ -1412,6 +1451,7 @@ def _mark_invoice_paid(
                 ),
             },
         )
+    receipt_invoice_id = str(invoice.id)
     db.commit()
 
     # M12. AFTER the commit, and on a task — never inside the transaction.
@@ -1460,6 +1500,17 @@ def _mark_invoice_paid(
         overpaid=max(overpay, 0.0),
         surcharge=float(surcharge or 0),
     )
+
+    # GDXA-393: and tell the customer. The office has had its bell since the
+    # line above shipped; the payer got nothing — not even a receipt for a
+    # bank transfer that settled four days after they paid. Same exactly-once
+    # placement as the bell. Queued for the same reason as the M12 sweep: the
+    # send renders a PDF and talks to a mail server, and neither belongs in
+    # the webhook or in the customer's wait on the pay page. The task decides
+    # whether a receipt is due (only once the invoice reads paid).
+    from gdx_dispatch.tasks.billing_followup import enqueue_payment_receipt
+
+    enqueue_payment_receipt(receipt_invoice_id, reference=str(external_ref or ""))
 
 
 def _split_surcharge(intent: Any, received_cents: int, *, connect: dict | None = None) -> int:
@@ -2277,7 +2328,24 @@ def _apply_charge_refund(db: Session, data: dict) -> dict:
                    "see M3 in money-audit-2026-08-04",
         },
     )
+    # GDXA-393: this is the one Stripe event that needs a person to finish
+    # it — the books still show the full payment until someone records the
+    # refund — and until now it told only the log. `amount_refunded` is the
+    # running total (see 1. above), so the bell says so: a second refund must
+    # not read as one refund of the sum, or an office that recorded the first
+    # records it again.
+    alert = _money_alert(
+        db, db.get(Invoice, payment.invoice_id),
+        title="Partial refund at Stripe — check it is recorded",
+        amount=refunded_total,
+        what=(
+            f"refunded at Stripe IN TOTAL so far, of a ${charge_total:,.2f} charge. Stripe "
+            "refunds never post to the books on their own; record on the Payments page "
+            "whatever part of that total is not already recorded"
+        ),
+    )
     db.commit()
+    _ring_office(db, alert)
     return {
         "status": "partial_refund_not_recorded",
         "reference": reference,
@@ -2363,6 +2431,7 @@ def _reverse_unless_superseded(
     reason: str,
     failed_charge_id: str = "",
     connected_account: str = "",
+    failure_message: str = "",
 ) -> dict:
     """Reverse a recorded payment, UNLESS this event is a superseded attempt.
 
@@ -2402,7 +2471,7 @@ def _reverse_unless_superseded(
             "alone, which is the pre-M14 behaviour.",
             reference, failed_charge_id, reason,
         )
-    return _reverse_recorded_payment(db, reference, reason)
+    return _reverse_recorded_payment(db, reference, reason, failure_message)
 
 
 # ---------------------------------------------------------------------------
@@ -2587,7 +2656,9 @@ def _apply_payment_void_state(
             return invoice
 
 
-def _reverse_recorded_payment(db: Session, reference: str, reason: str) -> dict:
+def _reverse_recorded_payment(
+    db: Session, reference: str, reason: str, failure_message: str = "",
+) -> dict:
     """Void the Payment row recorded for ``reference`` and re-open the invoice.
 
     Money that arrived can leave again: an ACH debit can be returned days later
@@ -2646,12 +2717,22 @@ def _reverse_recorded_payment(db: Session, reference: str, reason: str) -> dict:
         db, payment, action="payment_reversed", reason=reason,
         detail={"invoice_reopened": True},
     )
+    # GDXA-393: every webhook reversal funnels through here, so one bell
+    # covers all of them — full refund, ACH return, failed charge, dispute.
+    alert = _money_alert(
+        db, invoice,
+        title="Payment reversed",
+        amount=float(payment.amount or 0),
+        what=f"{_reason_text(reason, failure_message)} — the invoice is open again",
+    )
+    invoice_id = str(payment.invoice_id)
     db.commit()
     logger.warning(
         "payment_reversed reference=%s invoice=%s reason=%s — invoice re-opened",
-        reference, payment.invoice_id, reason,
+        reference, invoice_id, reason,
     )
-    return {"status": "reversed", "invoice_id": str(payment.invoice_id), "reason": reason}
+    _ring_office(db, alert)
+    return {"status": "reversed", "invoice_id": invoice_id, "reason": reason}
 
 
 def _audit_payment_reversal(
@@ -2697,6 +2778,90 @@ def _audit_payment_reversal(
         )
     except Exception:
         logger.exception("%s_audit_failed reference=%s", action, payment.reference)
+
+
+# ---------------------------------------------------------------------------
+# Office alerts for money that LEFT, or never arrived (GDXA-393)
+# ---------------------------------------------------------------------------
+#
+# `notify_payment_received` rings the bell when money lands. Its mirror was
+# missing: a returned bank debit, a failed charge, a full refund made in the
+# Stripe Dashboard, a dispute — each voided the payment and re-opened the
+# invoice with nothing but an audit row nobody reads, and a bank debit that
+# failed before it ever settled wrote even less. The office learned about it
+# when dunning chased the customer.
+#
+# Same contract as the arrival side: built from plain values read BEFORE the
+# commit, written AFTER it through `notify_office` (own transaction, never
+# raises), so a bell can never roll back or 500 a money event Stripe would
+# then redeliver.
+
+# What each Stripe event means, in office English.
+_ALERT_REASON = {
+    "charge.refunded": "refunded in full at Stripe",
+    "charge.dispute.created": "the customer disputed the charge",
+    "charge.dispute.funds_withdrawn": "dispute — the bank withdrew the funds",
+    "charge.failed": "the charge failed",
+    "payment_intent.payment_failed": "the payment failed",
+}
+
+
+def _money_alert(
+    db: Session, invoice, *, title: str, amount: float, what: str,
+) -> dict | None:
+    """The bell row for ``invoice``, as plain values, or None.
+
+    Call BEFORE the commit — after it every attribute read on ``invoice`` is
+    a refresh SELECT. Never raises: an alert we cannot build is logged and
+    skipped, never allowed near the money path.
+    """
+    try:
+        if invoice is None:
+            return None
+        tenant_id = str(getattr(invoice, "company_id", "") or "")
+        if not tenant_id:
+            logger.error(
+                "money_alert_skipped invoice=%s — no company_id, so no bell to ring",
+                getattr(invoice, "id", None),
+            )
+            return None
+        from gdx_dispatch.models.tenant_models import Customer  # noqa: PLC0415
+
+        customer_id = getattr(invoice, "customer_id", None)
+        customer = db.get(Customer, customer_id) if customer_id is not None else None
+        who = (getattr(customer, "name", None) or "").strip() or "Customer"
+        number = getattr(invoice, "invoice_number", None) or "an invoice"
+        return {
+            "tenant_id": tenant_id,
+            "title": title,
+            "message": f"{who} — ${float(amount or 0):,.2f} on {number}: {what}",
+        }
+    except Exception:  # noqa: BLE001  # noqa: silent-failure — no bell, never a disturbed money write; logged
+        logger.exception("money_alert_build_failed invoice=%s", getattr(invoice, "id", None))
+        return None
+
+
+def _ring_office(db: Session, alert: dict | None) -> None:
+    """Write a bell row built by `_money_alert`. After the commit; never raises."""
+    if not alert:
+        return
+    try:
+        from gdx_dispatch.core.office_notifications import notify_office  # noqa: PLC0415
+
+        notify_office(
+            db, alert["tenant_id"],
+            title=alert["title"], message=alert["message"], category="payment",
+        )
+    except Exception:
+        logger.exception("money_alert_write_failed title=%s", alert.get("title"))
+
+
+def _reason_text(reason: str, failure_message: str = "") -> str:
+    text = _ALERT_REASON.get(reason, reason)
+    detail = (failure_message or "").strip()
+    if detail and detail.lower() != "unknown":
+        text = f"{text} ({detail[:200]})"
+    return text
 
 
 # The only void reasons a dispute reinstatement may undo. Anything else — a
@@ -2812,12 +2977,21 @@ def _reinstate_reversed_payment(db: Session, reference: str, reason: str) -> dic
         db, payment, action="payment_reinstated", reason=reason,
         detail={"dispute_event": reason},
     )
+    # The other end of a dispute the office was told about when it opened.
+    alert = _money_alert(
+        db, invoice,
+        title="Dispute closed in your favor",
+        amount=float(payment.amount or 0),
+        what="the funds were returned and the payment is reinstated",
+    )
+    invoice_id = str(payment.invoice_id)
     db.commit()
     logger.warning(
         "payment_reinstated reference=%s invoice=%s reason=%s — the money stood",
-        reference, payment.invoice_id, reason,
+        reference, invoice_id, reason,
     )
-    return {"status": "reinstated", "invoice_id": str(payment.invoice_id), "reason": reason}
+    _ring_office(db, alert)
+    return {"status": "reinstated", "invoice_id": invoice_id, "reason": reason}
 
 
 def handle_payment_webhook(event: dict, db: Session) -> dict:
@@ -2970,9 +3144,9 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
             # read we make has to look in the same place the object lives."
             connected_account=connected_account,
         )
+        # The customer's receipt is queued inside `_mark_invoice_paid`, the
+        # one place every processor payment passes exactly once (GDXA-393).
         logger.info("Invoice %s marked paid via webhook", invoice_id)
-        # Receipt email placeholder — wire up notification service here
-        # send_receipt_email(invoice)
         return {"status": "paid", "invoice_id": invoice_id}
 
     # Money leaving again. `charge.*` events carry the PaymentIntent id in
@@ -3072,6 +3246,7 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
             # one it pointed at when the event fired.
             failed_charge_id=str(data.get("latest_charge") or ""),
             connected_account=connected_account,
+            failure_message=str(failure_msg or ""),
         )
         # 2026-09-16 audit, round 4: a bounced debit (R01) or a hand-typed
         # account that timed out on its micro-deposit arrives here, and until
@@ -3102,8 +3277,35 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
                 db.commit()
             except Exception:
                 logger.exception("ach_failed_audit_failed invoice=%s", invoice_id)
-        # Tenant notification placeholder — wire up notification service here
-        # notify_tenant_payment_failed(invoice_id, failure_msg)
+            # GDXA-393. The usual bank failure: the debit bounced (or its
+            # micro-deposit timed out) while still `processing`, so there was
+            # never a Payment row and the reversal above found nothing — the
+            # one failure that would otherwise ring nowhere. A reversed
+            # payment has already rung from `_reverse_recorded_payment`; a
+            # superseded attempt is not a failure. Card declines stay out:
+            # the customer sees them on the pay page and retries there.
+            if reversal["status"] in ("no_payment_to_reverse", "no_reference"):
+                alert = None
+                try:
+                    # Stripe sends `charge.failed` for the same attempt. If a
+                    # payment had been recorded, that event already voided it
+                    # and rang; this one then finds nothing left to reverse
+                    # and must not ring a second time.
+                    already_reversed = db.scalars(
+                        select(Payment.id).where(Payment.reference == str(data.get("id") or ""))
+                    ).first() is not None
+                    if not already_reversed:
+                        alert = _money_alert(
+                            db, db.get(Invoice, UUID(str(invoice_id))),
+                            title="Bank payment failed",
+                            amount=int(data.get("amount") or 0) / 100.0,
+                            what=f"{_reason_text('payment_intent.payment_failed', failure_msg)}"
+                                 " — nothing was recorded, the balance is still owed",
+                        )
+                except Exception:
+                    db.rollback()
+                    logger.exception("ach_failed_alert_failed invoice=%s", invoice_id)
+                _ring_office(db, alert)
         return {
             "status": "failed",
             "invoice_id": invoice_id,

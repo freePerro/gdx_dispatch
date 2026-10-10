@@ -1577,3 +1577,46 @@ describe('InvoiceDetailView — replacing a labor line deletes before it inserts
     expect(bodies[1]).not.toHaveProperty('time_entry_ids');
   });
 });
+
+describe('InvoiceDetailView — bank payment pending tag (GDXA-393)', () => {
+  function mockPending(pending) {
+    mockApi(buildInvoicePayload({ status: 'sent' }));
+    const base = apiGet.getMockImplementation();
+    apiGet.mockImplementation((url, opts) => {
+      if (url === '/api/invoices/ach-pending') {
+        return pending instanceof Error ? Promise.reject(pending) : Promise.resolve({ checked: true, pending });
+      }
+      return base(url, opts);
+    });
+  }
+
+  it('shows "bank payment pending" while a bank debit is moving', async () => {
+    mockPending({ 'inv-1': { stage: 'processing', amount: 80.25 } });
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.get('[data-testid="invoice-ach-pending-tag"]').text()).toBe('bank payment pending');
+    expect(apiGet).toHaveBeenCalledWith('/api/invoices/ach-pending', { suppressErrorToast: true });
+  });
+
+  it('names the micro-deposit wait when the customer still has to verify', async () => {
+    mockPending({ 'inv-1': { stage: 'verifying', amount: 80.25 } });
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.get('[data-testid="invoice-ach-pending-tag"]').text()).toBe('bank payment awaiting verification');
+  });
+
+  it('ignores another invoice\'s transfer', async () => {
+    mockPending({ 'inv-2': { stage: 'processing', amount: 10 } });
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="invoice-ach-pending-tag"]').exists()).toBe(false);
+  });
+
+  it('a failed read shows no tag and leaves the invoice rendered', async () => {
+    mockPending(new Error('stripe slow'));
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="invoice-ach-pending-tag"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="bill-to-name"]').text()).toContain('Acme Door Co');
+  });
+});

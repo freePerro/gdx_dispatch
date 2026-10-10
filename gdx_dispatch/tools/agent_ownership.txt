@@ -58,9 +58,13 @@ sgconfig.yml                                                 platform-core
 # so refreeze it with its scanner rather than editing it by hand.
 .authz_ungated_baseline                                      platform-core
 .authz_unpermissioned_baseline                               platform-core
+.comment_drift_baseline                                      platform-core
 .doc_link_baseline                                           platform-core
+.drift_scanner_baseline                                      platform-core
 .duplicate_block_baseline                                    platform-core
+.frontend_contract_baseline                                  platform-core
 .pii_literal_baseline                                        platform-core
+.silent_failure_baseline                                     platform-core
 .ruff_baseline                                               platform-core
 .tenant_plane_redundant_filter_baseline                      platform-core
 .semgrepignore                                               platform-core
@@ -496,6 +500,7 @@ gdx_dispatch/frontend/src/views/WinbackView.vue              customers-crm
 gdx_dispatch/frontend/src/views/CustomerPortalView.vue       customers-crm
 gdx_dispatch/frontend/src/components/CustomerFormDialog.vue  customers-crm
 gdx_dispatch/frontend/src/utils/customerMatch.js             customers-crm
+gdx_dispatch/frontend/src/constants/customerTypes.js         customers-crm
 
 ## ---------------------------------------------------------------------------
 ## comms-email-phone — Outlook/Graph email, Phone.com voice & SMS, inbound
