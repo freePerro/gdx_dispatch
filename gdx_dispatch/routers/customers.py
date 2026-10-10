@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import bindparam, func, or_, select, text
+from sqlalchemy import bindparam, func, or_, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -90,6 +90,11 @@ class CustomerUpdateIn(BaseModel):
     clear_margin_override: bool = False
     notes: str | None = None
     referral_source: str | None = Field(default=None, max_length=50)
+    # The `version` the edit dialog loaded (GDXA-448). Sent, it is checked
+    # against the row and a mismatch is 409, so a stale dialog cannot silently
+    # revert a colleague's save. Omitted, the PATCH is accepted as before.
+    # An `If-Match: "<version>"` header carries the same token.
+    expected_version: int | None = Field(default=None, ge=1)
 
     @field_validator("email")
     @classmethod
@@ -131,6 +136,9 @@ class CustomerOut(BaseModel):
     # drop it, and the next reopen would show stale data.
     notes: str | None = None
     referral_source: str | None = None
+    # Optimistic-concurrency token (migration 114): an edit dialog sends it
+    # back as `expected_version` on PATCH.
+    version: int | None = None
 
 
 class CustomerListOut(BaseModel):
@@ -227,6 +235,7 @@ def _customer_dict(row: Any) -> dict[str, Any]:
             "created_at": _normalize_datetime(row.created_at),
             "notes": row.notes,
             "referral_source": row.source,
+            "version": row.version,
             # Tier 10 — per-record QuickBooks push state (S122-17). Serialized
             # nowhere before; surfaced on the customer detail view so the office
             # can see synced / pending / never-pushed. NULL qb_synced_at = never
@@ -251,6 +260,7 @@ def _customer_dict(row: Any) -> dict[str, Any]:
         "created_at": _normalize_datetime(row.get("created_at")),
         "notes": row.get("notes"),
         "referral_source": row.get("source"),
+        "version": row.get("version"),
         # NB: the QB sync fields (qb_dirty/qb_synced_at/qb_in_quickbooks) are only
         # surfaced on the detail route (get_customer, response_model=None). The
         # list/search routes are CustomerOut-gated and would drop them, and the
@@ -393,6 +403,86 @@ def _ensure_customer_exists(db: Session, customer_id: str) -> Customer:
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     return customer
+
+
+_VERSION_CONFLICT_MESSAGE = (
+    "Someone else changed this customer since you opened it. "
+    "Reload to see their changes, then make your edit again."
+)
+
+
+def _expected_version(body_value: int | None, request: Request | None) -> int | None:
+    """The version token a PATCH claims to have loaded, or None for "no check".
+
+    From the body's `expected_version` or an `If-Match` header (`"3"`, `W/"3"`
+    or `3`; `*` means any version, so no check). Both sent and disagreeing is
+    a client bug, refused rather than guessed at.
+    """
+    headers = getattr(request, "headers", None)
+    raw = headers.get("if-match") if headers is not None else None
+    header_value: int | None = None
+    if raw is not None and raw.strip() != "*":
+        tag = raw.strip()
+        if tag.startswith("W/"):
+            tag = tag[2:]
+        try:
+            header_value = int(tag.strip('"'))
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail="If-Match must be a customer version, e.g. \"3\"",
+            ) from None
+    if body_value is not None and header_value is not None and body_value != header_value:
+        raise HTTPException(
+            status_code=422, detail="expected_version and If-Match disagree",
+        )
+    return body_value if body_value is not None else header_value
+
+
+def _version_claim_stmt(customer_id: UUID, expected: int):
+    """UPDATE customers SET version = version WHERE id = :id AND version = :expected."""
+    return (
+        update(Customer)
+        .where(Customer.id == customer_id, Customer.version == expected)
+        .values(version=Customer.version)
+        .execution_options(synchronize_session=False)
+    )
+
+
+def _claim_customer_version(db: Session, customer: Customer, expected: int) -> None:
+    """Refuse with 409 unless the row is still at `expected` (GDXA-448).
+
+    A compare-and-set, not a read-then-compare: the guarded UPDATE re-reads
+    `version` inside the statement, and on Postgres it holds the row lock until
+    this request commits. A second stale PATCH racing the first therefore
+    waits, re-evaluates the WHERE against the committed row and matches
+    nothing. SET version = version leaves the token alone (an explicit SET
+    suppresses the model's +1 onupdate); the edit's own flush bumps it once.
+    """
+    try:
+        matched = db.execute(_version_claim_stmt(customer.id, expected)).rowcount
+    except SQLAlchemyError:
+        db.rollback()
+        log.exception("update_customer_version_check_failed", extra={"customer_id": str(customer.id)})
+        raise HTTPException(status_code=500, detail="A database error occurred") from None
+    if matched == 1:
+        return
+    db.rollback()
+    current = db.execute(
+        select(Customer.version).where(Customer.id == customer.id)
+    ).scalar_one_or_none()
+    log.info(
+        "update_customer_version_conflict",
+        extra={"customer_id": str(customer.id), "expected": expected, "current": current},
+    )
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "version_conflict",
+            "message": _VERSION_CONFLICT_MESSAGE,
+            "expected_version": expected,
+            "current_version": current,
+        },
+    )
 
 
 @router.get("", response_model=CustomerListOut)
@@ -701,6 +791,9 @@ async def update_customer(
     db: Session = Depends(get_db),
 ) -> CustomerOut:
     updates = payload.model_dump(exclude_unset=True)
+    # Never a column: popped before the setattr loop, which would otherwise
+    # assign it (and assigning `version` directly suppresses its bump).
+    expected_version = _expected_version(updates.pop("expected_version", None), request)
     if "name" in updates and updates["name"] is None:
         raise HTTPException(status_code=422, detail="name cannot be null")
 
@@ -726,6 +819,9 @@ async def update_customer(
         updates["name"] = humanize_name(updates["name"])
 
     customer = _ensure_customer_exists(db, customer_id)
+
+    if expected_version is not None:
+        _claim_customer_version(db, customer, expected_version)
 
     if updates:
         try:

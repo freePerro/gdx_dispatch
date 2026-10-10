@@ -517,6 +517,9 @@ function openEdit() {
     phone: customer.value.phone || '',
     email: customer.value.email || '',
     address: customer.value.address || '',
+    // The token this sheet loaded (GDXA-448): a colleague's save in between
+    // is a 409 here rather than silently reverted. undefined drops from JSON.
+    expected_version: customer.value.version ?? undefined,
   }
   editOpen.value = true
 }
@@ -529,6 +532,12 @@ async function submitEdit() {
     toast.add({ severity: 'success', summary: 'Saved', life: 2000 })
     editOpen.value = false
   } catch (err) {
+    // A colleague saved first (GDXA-448): reload the sheet with their version
+    // so the next save carries the current token.
+    if (err?.code === 'version_conflict') {
+      await fetchCustomer()
+      openEdit()
+    }
     toast.add({ severity: 'error', summary: 'Save failed', detail: err?.message, life: 4000 })
   } finally {
     saving.value = false

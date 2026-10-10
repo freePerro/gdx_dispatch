@@ -2371,6 +2371,8 @@ function openCustomerEditDialog() {
     phone: customerDetail.value.phone || "",
     email: customerDetail.value.email || "",
     address: customerDetail.value.address || "",
+    // The token this dialog loaded (GDXA-448); sent back on save.
+    version: customerDetail.value.version ?? null,
   };
   customerEditDialog.value = true;
 }
@@ -2390,6 +2392,7 @@ async function saveCustomerEdit() {
       email: customerEditForm.value.email?.trim() || "",
       address: customerEditForm.value.address?.trim() || "",
     };
+    if (customerEditForm.value.version != null) patch.expected_version = customerEditForm.value.version;
     await api.patch(
       `/api/customers/${encodeURIComponent(customerDetail.value.id)}`,
       patch,
@@ -2398,7 +2401,14 @@ async function saveCustomerEdit() {
     customerEditDialog.value = false;
     await fetchCustomerDetail();
   } catch (e) {
-    customerEditError.value = e?.message || "Failed to save.";
+    const message = e?.message || "Failed to save.";
+    // A colleague saved first (GDXA-448): reload the form with their version
+    // so the next save carries the current token.
+    if (e?.code === "version_conflict") {
+      await fetchCustomerDetail();
+      openCustomerEditDialog();
+    }
+    customerEditError.value = message;
   } finally {
     savingCustomer.value = false;
   }
