@@ -2185,6 +2185,9 @@ def list_ach_pending(
         try:
             ids.append(UUID(raw))
         except (ValueError, TypeError):
+            # A malformed invoice_id in Stripe metadata: that payment gets no
+            # tag, so say which one rather than drop it unseen.
+            log.warning("ach_in_flight_bad_invoice_id raw=%r", raw)
             continue
     pending: dict[str, dict[str, object]] = {}
     if ids:
@@ -2958,7 +2961,7 @@ def _invoice_pdf_attachments(db: Session, invoice, cust) -> list[dict[str, objec
             "content_type": "application/pdf",
             "content_base64": _b64.b64encode(pdf_bytes).decode("ascii"),
         }]
-    except Exception:
+    except Exception:  # noqa: BLE001  # noqa: silent-failure — None sends the email without the PDF; logged
         log.exception("invoice_send_pdf_attach_failed")
         return None
 
@@ -5318,6 +5321,7 @@ def send_automatic_payment_receipt(db: Session, invoice_id: str, *, reference: s
     try:
         invoice = db.get(Invoice, UUID(str(invoice_id)))
     except (ValueError, TypeError):
+        log.warning("payment_receipt_bad_invoice_id invoice_id=%r", invoice_id)
         invoice = None
     if invoice is None or invoice.deleted_at is not None:
         return {"sent": False, "skip_reason": "invoice_not_found"}

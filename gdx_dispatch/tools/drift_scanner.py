@@ -5,6 +5,13 @@ Run after every feature, before every deploy:
     python gdx_dispatch/tools/drift_scanner.py
 
 Exit code 0 = no drift, 1 = violations found.
+
+The bare exit code is not a gate: it has been 1 on main for as long as anyone
+measured (326 violations on 2026-10-09). The gate is
+``tests/test_scanner_real_repo_ratchet.py``, which runs ``collect()`` on the
+real tree in the default suite and CI and fails when its violations differ from
+``.drift_scanner_baseline`` (new or stale; per file and shape) (see ``tools/scanner_baseline.py``). WARNINGS are
+reported, never gated.
 """
 from __future__ import annotations
 
@@ -418,11 +425,19 @@ def check_pii_in_logs() -> None:
         )
 
 
-def main() -> int:
-    print(f"\n{'=' * 60}")
-    print("GDX Build Rules Drift Scanner")
-    print(f"{'=' * 60}\n")
+def collect() -> list[str]:
+    """Run every check and return the ERROR violations (``rel:line: msg``).
 
+    Resets the module-level lists first, so calling it twice in one process
+    does not double-count.
+    """
+    violations.clear()
+    warnings.clear()
+    _run_checks()
+    return list(violations)
+
+
+def _run_checks() -> None:
     check_sql_portability()
     check_silent_exceptions()
     check_requirements_sync()
@@ -433,6 +448,14 @@ def main() -> int:
     check_audit_logging_coverage()
     check_container_dep_sync()
     check_pii_in_logs()
+
+
+def main() -> int:
+    print(f"\n{'=' * 60}")
+    print("GDX Build Rules Drift Scanner")
+    print(f"{'=' * 60}\n")
+
+    collect()
 
     print()
     if warnings:
