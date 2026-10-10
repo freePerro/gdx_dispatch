@@ -86,7 +86,10 @@ class PluginManifest:
       requires        host-version constraint, e.g. "gdx>=1.2". "" = any version.
       router          the plugin's FastAPI APIRouter (set in step 2; Any here so
                       this module stays import-light).
-      migrations_path filesystem path to the plugin's Alembic version dir, or None.
+      migrations_path accepted and NOT read (GDXA-462): nothing runs a plugin's
+                      Alembic dir. A plugin's tables are created from its
+                      models and drift-ALTERed by plugin_host/schema_reconcile
+                      at boot; a migration placed here never executes.
       ui              declarative UI manifest (screens); schema lands in step 4.
                       Optional nav keys: ``icon`` — one PrimeIcons class pair
                       ("pi pi-bolt") shown on the plugin's sidebar entry, else
@@ -99,10 +102,13 @@ class PluginManifest:
                       warning, never fatal — nav polish must not cost a plugin
                       its event delivery.
       permissions     elevated capabilities the plugin needs, each gated by an
-                      owner consent dialog at install (ADR-014). Currently only
-                      "browser" — a streamed headless browser the operator drives
-                      (e.g. to log into a no-API site). "" / () = no elevated
-                      capability, installs silently like any core module.
+                      owner consent dialog at install (ADR-014). One of
+                      KNOWN_PERMISSIONS, described for the owner in
+                      PERMISSION_RISKS ("services" is reserved and enables
+                      nothing). A change to declared events/schedules after
+                      consent pauses them until the owner re-consents. "" / ()
+                      = no elevated capability, installs silently like any
+                      core module.
       catalog_types   ADR-015 Catalog Pack — types this plugin contributes as
                       DATA, each {key, label, field_schema:[...],
                       pricing_strategy:{id,label,kind,params}}. The core catalog

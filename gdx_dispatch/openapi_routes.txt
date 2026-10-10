@@ -136,6 +136,7 @@ GET /api/admin/permission-audit
 GET /api/admin/permissions
 GET /api/admin/plugins
 GET /api/admin/plugins/artifacts
+GET /api/admin/plugins/consent-drift
 GET /api/admin/plugins/storefront
 GET /api/admin/plugins/{key}/permissions
 GET /api/admin/security-log

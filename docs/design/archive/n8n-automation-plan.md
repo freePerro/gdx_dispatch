@@ -9,13 +9,27 @@
 `dispatch-plugin-schedules-every-minute` (`core/scheduler.py`, GDXA-463) ticks
 the driver each minute, so a declared, consented schedule fires once that
 change is released.
-**Not built:** the rest of Sprint 2b — no frontend consent UI
-for `events`/`schedules` or re-consent-on-drift banner (v1's drift signal is
-still an ERROR log plus a `plugin_consent_drift` record that nothing renders).
-Gap 3 (the `gdx-agent` supervisor, the `n8n-nodes-gdxdispatch` npm node) is
+**Sprint 2b, re-consent on drift built (GDXA-462, 2026-10-10):** the Plugins
+admin page shows a banner naming each plugin whose events or schedules are
+paused by consent drift, read live from `GET /api/admin/plugins/consent-drift`,
+with a re-consent button into the consent dialog, which lists the events
+added and removed and every schedule and service now declared before the
+owner approves them; the grant (from the banner or the table) carries a pin
+of the capability fingerprint and declared permissions the dialog showed, is
+refused (409) if either moved, and records exactly the entry it checked.
+A grant with no pin is refused (409) while the plugin is drifted, and accepted otherwise. The drift read writes nothing. A `plugin_consent_drift` alarm row is marked
+`resolved`, re-arming the throttled alarm, on re-consent (audited
+`plugin.consent_drift_resolved`) or, when its plugins were uninstalled or
+rolled back, on the next drift signal (that re-check is attempted at most
+every 5 minutes per worker); a plugin merely absent from the catalog
+counts as gone only while plugin-host `/ready` is 200 (a stale-withheld plugin
+is absent too). The banner lives only on the Plugins page: no bell or
+dashboard entry carries it.
+**Not built:** Gap 3 (the `gdx-agent` supervisor, the `n8n-nodes-gdxdispatch` npm node) is
 traction-gated and also unbuilt. The manifest hooks themselves DO exist
-(`plugin_api/manifest.py:32`, `plugin_api/events.py:64`) — it is the driver
-and the consent surface that are missing.
+(`plugin_api/manifest.py:32`, `plugin_api/events.py:64`), and since
+GDXA-439, GDXA-463 and GDXA-462 so do the driver, its beat entry and the
+consent surface.
 
 ## Implementation status (2026-08-17)
 

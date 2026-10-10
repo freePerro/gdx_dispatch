@@ -107,9 +107,11 @@ def test_a_storefront_install_records_the_installer(db, monkeypatch):
 
 def test_consent_records_who_granted_it(db, monkeypatch):
     granted = {}
-    monkeypatch.setattr(ap, "fetch_permissions", lambda key: ["events"])
+    monkeypatch.setattr(ap, "fetch_catalog", lambda: [{"key": "n8n", "permissions": ["events"]}])
+    monkeypatch.setattr(ap, "consent_drift", lambda db_, catalog: [])
+    monkeypatch.setattr(ap, "resolve_drift_signals", lambda db_, catalog: [])
     monkeypatch.setattr(ap, "record_consent",
-                        lambda db_, key, perms, by, commit=True: granted.update(by=by))
+                        lambda db_, key, perms, by, commit=True, entry=None: granted.update(by=by))
 
     ap.consent_plugin("n8n", request=None,
                       user={"user_id": "uid-2", "role": "owner"}, db=db)
