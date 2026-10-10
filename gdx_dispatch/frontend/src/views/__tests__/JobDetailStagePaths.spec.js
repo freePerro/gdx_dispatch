@@ -19,6 +19,7 @@ const getMock = vi.fn();
 const postMock = vi.fn();
 const patchMock = vi.fn();
 const toastAdd = vi.fn();
+const confirmMock = vi.fn();
 
 vi.mock("vue-router", () => ({
   useRouter: () => ({ push: vi.fn(), back: vi.fn(), replace: vi.fn() }),
@@ -35,7 +36,7 @@ vi.mock("../../composables/useApiWithToast", () => ({
   }),
 }));
 vi.mock("../../composables/useDestructiveConfirm", () => ({
-  useDestructiveConfirm: () => ({ confirmAsync: vi.fn(), confirmDestructive: vi.fn() }),
+  useDestructiveConfirm: () => ({ confirmAsync: confirmMock, confirmDestructive: vi.fn() }),
 }));
 vi.mock("../../stores/auth", () => ({
   useAuthStore: () => ({ user: { role: "admin" }, hasPermission: () => true }),
@@ -222,6 +223,79 @@ describe("job page — Close without work", () => {
     await flushPromises();
     expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: "error", detail: "Forbidden" }));
     expect(w.find('[data-testid="close-without-work-dialog"]').exists()).toBe(true);
+  });
+});
+
+describe("job page — Cancel job (GDXA-375)", () => {
+  async function submitCancel(w, reason = "customer went elsewhere") {
+    await w.get('[data-testid="job-detail-cancel"]').trigger("click");
+    const submit = w.get('[data-testid="cancel-job-submit"]');
+    expect(submit.attributes("disabled")).toBeDefined();
+    await w.get('[data-testid="cancel-job-reason"]').setValue(reason);
+    await w.get('[data-testid="cancel-job-submit"]').trigger("click");
+    await flushPromises();
+  }
+
+  it("confirms, then posts the reason to /cancel and never PATCHes the stage", async () => {
+    routeGet({ job: OPEN });
+    confirmMock.mockResolvedValue(true);
+    postMock.mockResolvedValue({ ok: true });
+    const w = await mountView();
+    await submitCancel(w);
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    const call = postMock.mock.calls.find(([u]) => String(u).endsWith("/cancel"));
+    expect(call?.[0]).toBe("/api/jobs/job-1/cancel");
+    expect(call?.[1]).toEqual({ reason: "customer went elsewhere" });
+    expect(statusPatches()).toHaveLength(0);
+    expect(w.find('[data-testid="cancel-job-dialog"]').exists()).toBe(false);
+  });
+
+  it("declining the confirm sends nothing and keeps the reason", async () => {
+    routeGet({ job: OPEN });
+    confirmMock.mockResolvedValue(false);
+    const w = await mountView();
+    await submitCancel(w);
+    expect(postMock.mock.calls.find(([u]) => String(u).endsWith("/cancel"))).toBeUndefined();
+    expect(w.get('[data-testid="cancel-job-reason"]').element.value).toBe("customer went elsewhere");
+  });
+
+  it("a refusal is toasted and keeps the dialog open", async () => {
+    routeGet({ job: OPEN });
+    confirmMock.mockResolvedValue(true);
+    postMock.mockRejectedValue(Object.assign(new Error("conflict"), {
+      status: 409, body: { detail: "An arrival needs an answer first" },
+    }));
+    const w = await mountView();
+    await submitCancel(w);
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: "warn", detail: "An arrival needs an answer first" }));
+    expect(w.find('[data-testid="cancel-job-dialog"]').exists()).toBe(true);
+    expect(w.find('[data-testid="cancel-job-appointments"]').exists()).toBe(false);
+  });
+
+  it("a refusal whose way out is Appointments links there", async () => {
+    routeGet({ job: OPEN });
+    confirmMock.mockResolvedValue(true);
+    postMock.mockRejectedValue(Object.assign(new Error("conflict"), {
+      status: 409,
+      body: { code: "needs_answer", question: "status_only_arrival", detail: "An arrival needs an answer first" },
+    }));
+    const w = await mountView();
+    await submitCancel(w);
+    expect(w.find('[data-testid="cancel-job-appointments"]').exists()).toBe(true);
+  });
+
+  for (const [name, job] of [["completed", DONE], ["cancelled", CANCELLED]]) {
+    it(`a ${name} job offers no Cancel job`, async () => {
+      routeGet({ job });
+      const w = await mountView();
+      expect(w.find('[data-testid="job-detail-cancel"]').exists()).toBe(false);
+    });
+  }
+
+  it("a cancelled job shows its recorded cancel", async () => {
+    routeGet({ job: { ...CANCELLED, cancelled_at: "2026-10-09T12:00:00Z", cancel_reason: "customer went elsewhere" } });
+    const w = await mountView();
+    expect(w.find('[data-testid="job-detail-cancelled"]').exists()).toBe(true);
   });
 });
 

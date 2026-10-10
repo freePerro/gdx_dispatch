@@ -37,7 +37,7 @@ def ctx(_authz_ctx):  # noqa: F811 — the fixture param IS the import
     return _authz_ctx
 
 _JOB_COLS = ("lifecycle_stage", "status", "completed_at", "started_at",
-             "dispatch_status", "title", "updated_at")
+             "dispatch_status", "title", "updated_at", "cancel_reason")
 
 
 def _row(db, job_id, cols: str):
@@ -47,7 +47,7 @@ def _row(db, job_id, cols: str):
     row = db.execute(
         text(
             "SELECT lifecycle_stage, status, completed_at, started_at, "
-            "dispatch_status, title, updated_at "
+            "dispatch_status, title, updated_at, cancel_reason "
             "FROM jobs WHERE CAST(id AS TEXT) IN (:j, :jh)"
         ),
         {"j": raw, "jh": raw.replace("-", "").lower()},
@@ -161,16 +161,23 @@ class TestCompletionDoesNotGoThroughPatch:
 
 
 class TestOpenMovesStillWork:
-    def test_cancelling_an_open_job_is_allowed(self, ctx):
-        """No cancel endpoint exists yet; the Jobs list edit dialog is the
-        only way to cancel, so the guard must leave it open."""
+    def test_cancelling_an_open_job_goes_through_cancel(self, ctx):
+        """GDXA-375: a PATCH to Cancelled is refused and writes nothing; the
+        open job is cancelled by POST /cancel, which records the reason."""
         client, db, job, _dep, be, _ = ctx
         _set(db, job, lifecycle_stage="scheduled", status="Scheduled", completed_at=None)
         _office(be)
         r = _call(client, "PATCH", f"/api/jobs/{job.id}", {"status": "Cancelled"})
+        assert r.status_code == 409, r.text[:300]
+        assert r.json()["use"] == "cancel"
+        db.expire_all()
+        assert _row(db, job.id, "status")[0] == "Scheduled"
+        r = _call(client, "POST", f"/api/jobs/{job.id}/cancel",
+                  {"reason": "customer sold the house"})
         assert r.status_code == 200, r.text[:300]
         db.expire_all()
-        assert _row(db, job.id, "status")[0] == "Cancelled"
+        status, reason = _row(db, job.id, "status, cancel_reason")
+        assert status == "Cancelled" and reason == "customer sold the house"
 
     def test_moving_to_in_progress_stamps_started_at_once(self, ctx):
         client, db, job, _dep, be, _ = ctx

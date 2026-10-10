@@ -40,6 +40,14 @@
             <!-- 055: the RFB dismiss mark. The queue only shows unmarked
                  jobs, so this tag is the one place a wrong mark is visible —
                  and therefore where it gets undone. -->
+            <!-- GDXA-375: why it was cancelled, from POST /cancel. -->
+            <Tag
+              v-if="job.cancelled_at"
+              value="CANCELLED"
+              severity="secondary"
+              data-testid="job-detail-cancelled"
+              v-tooltip.bottom="job.cancel_reason || 'no reason recorded'"
+            />
             <Tag
               v-if="job.not_billable_at"
               value="NOT BILLABLE"
@@ -65,6 +73,12 @@
           <Button v-if="!jobFinished && patchable"
             label="Close without work" icon="pi pi-times-circle" severity="secondary" outlined
             @click="openCloseWithoutWork" data-testid="job-detail-close-without-work" />
+          <!-- GDXA-375: cancelling records a reason, releases the job's
+               unordered part requests and stops running timers. Re-open /
+               Warranty → Reactivate is the way back. -->
+          <Button v-if="!jobFinished && patchable"
+            label="Cancel job" icon="pi pi-ban" severity="danger" outlined
+            @click="openCancelJob" data-testid="job-detail-cancel" />
           <!-- 2026-07-23 deposit/progress billing: invoicing is no longer
                gated on completion — deposits and progress invoices happen
                mid-job. Green when Complete (the normal moment), muted
@@ -1409,6 +1423,38 @@
     </Dialog>
 
     <Dialog
+      v-model:visible="cancelJobOpen"
+      header="Cancel job"
+      modal
+      :style="{ width: '480px' }"
+      :breakpoints="{ '768px': '95vw' }"
+      data-testid="cancel-job-dialog"
+    >
+      <p class="muted">
+        The job leaves the schedule and the dispatch board. Part requests not
+        yet ordered are released, and a running timer is stopped with no hours
+        banked — enter any hours actually worked as labor. Reactivate it from
+        Re-open / Warranty.
+      </p>
+      <div class="schedule-form">
+        <div class="form-field">
+          <label for="cancel-job-reason">Reason *</label>
+          <Textarea id="cancel-job-reason" v-model="cancelJobReason" rows="3"
+            placeholder="At least 4 characters. Recorded on the job and in the audit log."
+            data-testid="cancel-job-reason" />
+        </div>
+      </div>
+      <a v-if="cancelJobToAppointments" href="/appointments" data-testid="cancel-job-appointments"
+         @click.prevent="openAppointmentsFromCancel">Open the Appointments page</a>
+      <template #footer>
+        <Button label="Keep job" severity="secondary" @click="cancelJobOpen = false" />
+        <Button label="Cancel job" icon="pi pi-ban" severity="danger" :loading="cancellingJob"
+          :disabled="cancelJobReason.trim().length < 4"
+          @click="submitCancelJob" data-testid="cancel-job-submit" />
+      </template>
+    </Dialog>
+
+    <Dialog
       v-model:visible="customerEditDialog"
       header="Edit Customer"
       modal
@@ -1451,7 +1497,7 @@ import { useRoute, useRouter } from "vue-router";
 import JobStateOverrideDialog from "../components/JobStateOverrideDialog.vue";
 import UndoArrivalDialog from "../components/UndoArrivalDialog.vue";
 import JobVisitsCard from "../components/JobVisitsCard.vue";
-import { isDispatchManagerRole } from "../utils/visitRefusals";
+import { isDispatchManagerRole, pointsAtAppointments, refusalOf as visitRefusalOf } from "../utils/visitRefusals";
 import MobileJobCloseoutDialog from "../components/MobileJobCloseoutDialog.vue";
 import JobDailyLogCard from "../components/JobDailyLogCard.vue";
 import { formatHours as formatDayHours, formatDayLong, refusalOf } from "../utils/dayClose";
@@ -1569,8 +1615,10 @@ const partsNeeded = ref([]);
 // owed to the job (needed/ordered/received) and parts already consumed
 // (used). Rendering them in one "To order" table labelled every installed part
 // as an outstanding order — wrong on the screen the office bills from.
+// A request a cancel released (GDXA-375) is owed to nothing; /reactivate puts
+// it back to "needed".
 const partsToOrder = computed(() =>
-  partsNeeded.value.filter((p) => p.status !== "used" && p.status !== "wont_bill"),
+  partsNeeded.value.filter((p) => !["used", "wont_bill", "cancelled"].includes(p.status)),
 );
 const partsUsedChecklist = computed(() =>
   partsNeeded.value.filter((p) => p.status === "used"),
@@ -2841,6 +2889,53 @@ async function submitCloseWithoutWork() {
     }
   } finally {
     closingWithoutWork.value = false;
+  }
+}
+
+// GDXA-375 — the cancel lifecycle. POST /cancel records the reason, retires
+// the visits, releases unordered part requests and stops running timers.
+const cancelJobOpen = ref(false);
+const cancelJobReason = ref("");
+const cancellingJob = ref(false);
+// Set when the cancel was refused by a visit rule whose way out is the
+// Appointments page (an old arrival with no time): make it one click.
+const cancelJobToAppointments = ref(false);
+function openCancelJob() {
+  cancelJobReason.value = "";
+  cancelJobToAppointments.value = false;
+  cancelJobOpen.value = true;
+}
+function openAppointmentsFromCancel() {
+  cancelJobOpen.value = false;
+  router.push("/appointments");
+}
+async function submitCancelJob() {
+  const ok = await confirmAsync({
+    header: "Cancel this job?",
+    icon: "pi pi-ban",
+    message: "It comes off the schedule and the dispatch board, and its unordered part requests are released.",
+    acceptLabel: "Cancel job",
+  });
+  if (!ok) return;
+  cancellingJob.value = true;
+  try {
+    await api.post(`/api/jobs/${route.params.id}/cancel`,
+      { reason: cancelJobReason.value.trim() },
+      { successMessage: "Job cancelled", suppressErrorToast: true });
+    cancelJobOpen.value = false;
+    await fetchJob();
+  } catch (err) {
+    // The dialog stays open so the reason isn't lost.
+    const refused = refusalOf(err);
+    cancelJobToAppointments.value = pointsAtAppointments(visitRefusalOf(err));
+    toast.add({
+      severity: err?.status === 409 ? "warn" : "error",
+      summary: "Could not cancel the job",
+      detail: refused.detail || err?.message || "Try again.",
+      life: 6000,
+    });
+  } finally {
+    cancellingJob.value = false;
   }
 }
 

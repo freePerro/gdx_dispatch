@@ -975,6 +975,7 @@ POST /api/invoices/{invoice_id}/verify
 POST /api/invoices/{invoice_id}/void
 POST /api/jobs
 POST /api/jobs/{job_id}/assignments
+POST /api/jobs/{job_id}/cancel
 POST /api/jobs/{job_id}/checklist
 POST /api/jobs/{job_id}/close-without-work
 POST /api/jobs/{job_id}/closeout

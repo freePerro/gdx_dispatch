@@ -134,6 +134,19 @@ describe("DispatchView — job drawer Close out (#526)", () => {
     expect(w.find('[data-testid="dispatch-job-closeout"]').exists()).toBe(false);
   });
 
+  // GDXA-375: a cancelled job needs no tech and no date, so it is not intake.
+  for (const [name, overrides] of [
+    ["by stage", { status: "Cancelled", lifecycle_stage: "cancelled" }],
+    ["by display status only", { status: "Cancelled", lifecycle_stage: undefined }],
+  ]) {
+    it(`a cancelled job (${name}) is not in the unassigned lane; a live one is`, async () => {
+      const live = await mountBoard(job());
+      expect(live.find('[data-testid="unassigned-job-job-9"]').exists()).toBe(true);
+      const w = await mountBoard(job(overrides));
+      expect(w.find('[data-testid="unassigned-job-job-9"]').exists()).toBe(false);
+    });
+  }
+
   it("a cancelled job's drawer does not offer Close out", async () => {
     const w = await mountBoard(job({ status: "Cancelled", lifecycle_stage: "cancelled" }));
     expect(w.find('[data-testid="dispatch-job-closeout"]').exists()).toBe(false);

@@ -63,6 +63,13 @@ DAY_CLOSED_ACTION = "job_day_closed"
 #: The two finishing routes that write no closeout row. Their audit rows are the
 #: durable record of the finish: a re-open clears ``jobs.completed_at``.
 FINISH_ACTIONS = ("job_completed", "job_closed_without_work")
+#: What POST /api/jobs/{id}/cancel (GDXA-375) stamps after the Stop marker on a
+#: timer it stops. Such a row is settled at 0 — its elapsed time is in the
+#: job_cancelled audit row and any hours worked go in through labor — so it is
+#: never owed here nor restated by a closeout, even after a /reactivate. Only
+#: the rows the cancel stopped carry it: a timer stopped before the cancel is
+#: still owed (a cancel is deliberately not a FINISH_ACTION).
+CANCEL_STOP_SUFFIX = " — job cancelled"
 ADDED_HELPER_NOTE = "Added helper (not tapped in)"
 
 
@@ -116,12 +123,18 @@ def latest_finish(db: Session, job: Any) -> datetime | None:
 
 
 def is_candidate(t: TimeEntry, stop_note: str) -> bool:
-    """Open, or Stop-marked with 0 or no minutes; never a day-closed row."""
+    """Open, or Stop-marked with 0 or no minutes; never a day-closed row, nor
+    one a cancel stopped (``CANCEL_STOP_SUFFIX``)."""
     if t.deleted_at is not None or t.day_closed_at is not None or t.entry_type != "job":
         return False
     if t.clock_out is None:
         return True
-    return (t.notes or "").startswith(stop_note) and not (t.duration_minutes or 0)
+    notes = t.notes or ""
+    return (
+        notes.startswith(stop_note)
+        and not notes.startswith(stop_note + CANCEL_STOP_SUFFIX)
+        and not (t.duration_minutes or 0)
+    )
 
 
 def _all_candidates(db: Session, job: Any) -> list[TimeEntry]:
