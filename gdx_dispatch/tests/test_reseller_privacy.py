@@ -7,8 +7,9 @@ data. A new reader anywhere else turns this red and has to argue its case
 here, in review, rather than arriving quietly.
 
 What it cannot see: a generic reader that walks every table by reflection
-without naming it (the customer merge does exactly that to move rows; it reads
-nothing back out).
+without naming it. The customer merge and absorb walk every table that way;
+since GDXA-490 they skip these two and refuse to retire a reseller, which
+`test_customer_merge.py` pins.
 """
 from __future__ import annotations
 
@@ -28,6 +29,10 @@ ALLOWED = {
     "routers/portal_resale.py",
     # /portal/context: three booleans for the reseller's own tabs.
     "routers/portal.py",
+    # Merge and absorb: ask service.customers_with_reseller_data which ids own
+    # reseller rows (existence only) to refuse moving them, and skip
+    # service.PRIVATE_TABLES in the FK sweep and its audit row (GDXA-490).
+    "routers/customers.py",
     # Model registration for create_all.
     "models/__init__.py",
     "migrations/versions/113_reseller_quotes.py",

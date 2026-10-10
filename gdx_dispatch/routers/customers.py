@@ -1564,6 +1564,19 @@ def absorb_subcustomers(
                 ),
             )
 
+    # Same sweep as the merge, same private tables (GDXA-490). A reseller is
+    # an account by definition, so there is no "absorb the other way" here.
+    resellers, _ = _resellers_among(db, [(s.id, s.name) for s in subs], parent.id)
+    if resellers:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"'{resellers[0]}' is a reseller; resolve before absorbing. A reseller "
+                "is an account, not a jobsite."
+            ),
+        )
+    private_tables = _private_customer_tables()
+
     tenant_id = _tenant_id(request)
     uid = _user_id(user)
     now = datetime.now(timezone.utc)
@@ -1651,6 +1664,8 @@ def absorb_subcustomers(
         for table, column in fk_tables:
             if table == "customer_locations":
                 continue  # the sites just minted belong to the parent already
+            if table in private_tables:
+                continue  # never moved, never counted or listed in the audit row
             # Capture WHICH rows move, not just how many. A count cannot be
             # reversed: "invoices.customer_id: 15" does not say which fifteen
             # of the parent's invoices arrived from the sub, so an audit row
@@ -1852,6 +1867,43 @@ def _canonical_id(value: str) -> str:
         return str(value)
 
 
+def _private_customer_tables() -> frozenset[str]:
+    """Tables the FK sweep must skip: rows private to the customer they hang
+    from. Moving one hands it to another customer (GDXA-490). Leaving them out
+    of `rows_updated` is not secrecy: the portal's own audit rows and the 409
+    already say a customer is a reseller. It keeps the merge's audit row to
+    what the merge moved."""
+    from gdx_dispatch.modules.reseller.service import PRIVATE_TABLES  # noqa: PLC0415
+
+    return PRIVATE_TABLES
+
+
+def _resellers_among(
+    db: Session, retiring: list[tuple[Any, str]], survivor_id: Any,
+) -> tuple[list[str], bool]:
+    """(names of the retiring customers that own reseller data, whether the
+    survivor owns some too).
+
+    The data is the reseller's own (modules/reseller), and
+    `reseller_profiles.customer_id` is unique, so the FK sweep could only hand
+    it to the survivor, who may be another firm or retail, or hit the
+    constraint and 500. Callers refuse with 409 before anything is staged, and
+    say "is a reseller" and nothing more: no brand, markup or quote."""
+    import uuid as _uuid
+
+    from gdx_dispatch.modules.reseller.service import customers_with_reseller_data  # noqa: PLC0415
+
+    # Every id here was just read out of `customers` (a UUID on Postgres,
+    # 32-char hex on SQLite), so it parses; no fallback to hide a bad one.
+    def as_uuid(value: Any) -> _uuid.UUID:
+        return value if isinstance(value, _uuid.UUID) else _uuid.UUID(str(value))
+
+    holders = customers_with_reseller_data(
+        db, [as_uuid(rid) for rid, _ in retiring] + [as_uuid(survivor_id)])
+    names = [name or "a customer" for rid, name in retiring if as_uuid(rid) in holders]
+    return names, as_uuid(survivor_id) in holders
+
+
 def _discover_customer_fk_tables(db: Session) -> list[tuple[str, str]]:
     """Return [(table_name, column_name)] for every column that references
     a customer. Matches any column named customer_id, related_customer_id,
@@ -1992,10 +2044,33 @@ def merge_customers(
     if len(merge_rows) != len(payload.merge_ids):
         raise HTTPException(status_code=404, detail="one or more merge customers not found")
 
+    # A merged-away reseller: either both sides hold one (the unique
+    # customer_id would 500 the merge) or only the loser does (its brand,
+    # markup and quotes would silently become the keeper's). Refused either
+    # way; a keeper-only reseller merges as normal.
+    resellers, keeper_too = _resellers_among(
+        db, [(r[0], r[1]) for r in merge_rows], keep_row[0])
+    if resellers:
+        hint = (
+            "Only one customer can hold a reseller account, so this merge cannot "
+            "be completed here."
+            if keeper_too or len(resellers) > 1
+            else f"Keep '{resellers[0]}' and merge the other customer into it instead."
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{resellers[0]}' is a reseller; resolve before merging. {hint}",
+        )
+
+    private_tables = _private_customer_tables()
     rows_updated: dict[str, int] = {}
     try:
         fk_tables = _discover_customer_fk_tables(db)
         for table, column in fk_tables:
+            if table in private_tables:
+                # Never moved, never counted. The 409 above means a loser
+                # holds none; this keeps it so if that check is ever wrong.
+                continue
             stmt = text(
                 f"UPDATE {table} SET {column} = :keep WHERE {column} IN :ids"  # noqa: S608 — table/column are catalog names passed through _sql_identifier in _discover_customer_fk_tables; ids are bound
             ).bindparams(bindparam("ids", expanding=True))

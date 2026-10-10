@@ -380,3 +380,41 @@ def test_the_fk_sweep_follows_declared_foreign_keys(db):
     assert any(c != "customer_id" for c in cols), (
         f"only name-matched columns found: {sorted(cols)}"
     )
+
+
+# ── reseller data is private to its customer (GDXA-490) ─────────────────────
+
+
+def test_a_reseller_cannot_be_absorbed_as_a_site(db):
+    """Absorb walks the same reflective FK sweep as merge. A reseller's brand
+    and quotes would move to the parent and be counted in the audit row."""
+    from gdx_dispatch.modules.reseller.models import ResellerProfile
+
+    parent = _customer(db, "Riverbend Lumber")
+    sub = _customer(db, "Site A")
+    db.add(ResellerProfile(id=uuid.uuid4(), customer_id=sub.id, created_at=datetime.now(UTC)))
+    db.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        _absorb(db, parent, [sub])
+
+    assert exc.value.status_code == 409
+    assert "is a reseller" in exc.value.detail
+    assert _locations(db, parent) == [], "nothing minted on a refused absorb"
+    owner = db.execute(text("SELECT CAST(customer_id AS TEXT) FROM reseller_profiles")).scalar()
+    assert uuid.UUID(owner) == sub.id
+
+
+def test_a_reseller_parent_absorbs_and_the_audit_row_never_names_the_tables(db):
+    from gdx_dispatch.modules.reseller.models import ResellerProfile
+
+    parent = _customer(db, "Riverbend Lumber")
+    db.add(ResellerProfile(id=uuid.uuid4(), customer_id=parent.id, created_at=datetime.now(UTC)))
+    db.commit()
+    out = _absorb(db, parent, [_customer(db, "Site A")])
+
+    assert not any("resel" in k or "resale" in k for k in out.rows_updated), out.rows_updated
+    details = str(db.execute(text(
+        "SELECT details FROM audit_logs WHERE action = 'absorb_subcustomers_as_sites'"
+    )).scalar())
+    assert "resel" not in details and "resale" not in details, details
