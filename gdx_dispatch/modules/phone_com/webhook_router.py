@@ -22,7 +22,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import audit_best_effort
 from gdx_dispatch.core.database import SessionLocal
 from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.modules.phone_com import key_storage, upserts, webhook_signing
@@ -111,27 +111,27 @@ def _classify_event(payload: dict[str, Any]) -> str:
 
 
 def _audit(
-    control_db: Session,
+    tenant_db: Session,
     tenant_id: str,
     action: str,
     request: Request,
     details: dict[str, Any],
 ) -> None:
-    try:
-        ip = request.client.host if request.client else ""
-        log_audit_event_sync(
-            control_db,
-            tenant_id=tenant_id,
-            user_id="phone_com_webhook",
-            action=action,
-            entity_type="phone_com_webhook",
-            entity_id=str(details.get("event_id") or ""),
-            details={**details, "ip": ip},
-            request=request,
-        )
-        control_db.commit()
-    except Exception:  # noqa: BLE001
-        log.exception("phone_com_webhook audit failed")
+    """Record an accepted delivery. Runs after the upsert has committed, so a
+    refused trail row must not 5xx (Phone.com would retry-storm a delivery
+    that already landed); ``audit_best_effort`` logs it by name and leaves the
+    session usable (GDXA-476)."""
+    ip = request.client.host if request.client else ""
+    audit_best_effort(
+        tenant_db,
+        action=action,
+        entity_type="phone_com_webhook",
+        entity_id=str(details.get("event_id") or ""),
+        tenant_id=tenant_id,
+        user_id="phone_com_webhook",
+        request=request,
+        details={**details, "ip": ip},
+    )
 
 
 @router.post("/{tenant_slug}/{secret}", status_code=status.HTTP_204_NO_CONTENT)
@@ -215,6 +215,9 @@ async def receive_webhook(
                 "phone_com_webhook upsert failed tenant=%s kind=%s",
                 tenant_slug, kind,
             )
+            # Discard the half-written row: the audit below commits, and must
+            # not harden it (audit_best_effort's nothing-staged precondition).
+            tenant_db.rollback()
 
         # Step 5: audit
         _audit(
