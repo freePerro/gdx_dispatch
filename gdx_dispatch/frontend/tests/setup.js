@@ -13,6 +13,11 @@ import { config } from '@vue/test-utils';
 import PrimeVue from 'primevue/config';
 import ConfirmationService from 'primevue/confirmationservice';
 import ToastService from 'primevue/toastservice';
+import { installDatePickerTyping } from '../src/lib/datePickerTyping';
+
+// Same DatePicker typing patch main.js installs, so a mounted picker behaves
+// in tests as it does in the app (GDXA-423).
+installDatePickerTyping();
 
 config.global.plugins = [
   ...(config.global.plugins || []),
