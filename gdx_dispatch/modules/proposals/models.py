@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, literal_column, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
 
@@ -67,6 +67,12 @@ class Estimate(TenantBase):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Optimistic-concurrency token (migration 114, GDXA-447) — see
+    # Customer.version in models/tenant_models.py.
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1"),
+        onupdate=literal_column("estimates.version", Integer) + 1,
+    )
     lines: Mapped[list["EstimateLine"]] = relationship(
         back_populates="estimate",
         cascade="all, delete-orphan",

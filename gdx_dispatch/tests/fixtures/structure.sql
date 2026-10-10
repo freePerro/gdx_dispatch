@@ -891,7 +891,8 @@ CREATE TABLE public.customers (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     deleted_at timestamp with time zone,
     email_opt_out boolean,
-    sms_opt_out boolean
+    sms_opt_out boolean,
+    version integer DEFAULT 1 NOT NULL
 );
 
 
@@ -1163,7 +1164,8 @@ CREATE TABLE public.estimates (
     public_token character varying(64) NOT NULL,
     created_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone,
-    deleted_at timestamp with time zone
+    deleted_at timestamp with time zone,
+    version integer DEFAULT 1 NOT NULL
 );
 
 
@@ -1485,7 +1487,8 @@ CREATE TABLE public.invoices (
     sent_via character varying(20),
     origin character varying(32),
     attached_photo_ids text,
-    source_estimate_id uuid
+    source_estimate_id uuid,
+    version integer DEFAULT 1 NOT NULL
 );
 
 
