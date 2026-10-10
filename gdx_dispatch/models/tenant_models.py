@@ -3605,6 +3605,36 @@ def _mark_customer_qb_dirty_on_change(_mapper, _connection, target: Customer) ->
     _mark_qb_dirty_on_change(target)
 
 
+# ─── GDXA-448: bookkeeping writes do not move Customer.version ──────────────
+#
+# Customer.version is the token an edit dialog sends back on PATCH; a mismatch
+# is a 409 telling the user someone else changed the customer. The QuickBooks
+# push clearing qb_dirty and the rolling-volume cache refresh are not changes
+# anyone made to the customer, so a flush that touches only these columns
+# SETs version = version (an explicit SET suppresses the +1 onupdate) instead
+# of handing every open dialog a false conflict. Bulk update() statements do
+# not reach this listener and still bump, which errs toward a 409, never past
+# one. Registered AFTER the qb_dirty listener on purpose: assigning `version`
+# first would read to that listener as a real change and re-flip qb_dirty.
+_CUSTOMER_VERSION_INTERNAL_COLS = _QB_DIRTY_INTERNAL_COLS | frozenset({
+    "cached_rolling_volume_paid_12mo", "cached_rolling_volume_at",
+})
+
+
+@event.listens_for(Customer, "before_update")
+def _hold_customer_version_on_bookkeeping_write(_mapper, _connection, target: Customer) -> None:
+    state = inspect(target)
+    internal_changed = False
+    for attr in state.attrs:
+        if attr.key == "version" or not attr.history.has_changes():
+            continue
+        if attr.key not in _CUSTOMER_VERSION_INTERNAL_COLS:
+            return
+        internal_changed = True
+    if internal_changed:
+        target.version = literal_column("customers.version", Integer)
+
+
 class OutboundEmail(Base):
     """Append-only record of every transactional-email send ATTEMPT.
 
