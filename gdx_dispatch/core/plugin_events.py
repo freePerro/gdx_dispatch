@@ -141,3 +141,10 @@ def deliver_plugin_event_task(self, envelope: dict) -> int:
             log.warning("plugin_event_dispatch_http_%s event=%s", r.status_code, event_name)
             return 0
     return len(recipients)
+
+
+# The schedule driver's Celery task is named under this module (so the
+# plugin_events route sends it to priority:high) and is registered by importing
+# it here, because the worker's include list names this module. A module import,
+# not a name import, so either import order works.
+import gdx_dispatch.core.plugin_schedules  # noqa: E402,F401
