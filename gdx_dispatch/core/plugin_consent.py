@@ -421,3 +421,41 @@ def event_recipients(db: Session, event_name: str) -> tuple[list[str], list[str]
             continue
         recipients.append(key)
     return recipients, drifted
+
+
+def schedule_runners(db: Session, catalog: list[dict]) -> tuple[list[dict], list[str]]:
+    """Return (runners, drifted) for the schedule driver (GDXA-439).
+
+    runners — live catalog entries (plus ``consented_by``, for the audit row)
+      that declare schedules, whose owner consented
+      the 'schedules' permission, and whose live fingerprint still matches the
+      consented one. Consent is read on EVERY tick, so a revoked or re-scoped
+      consent stops the next run, not the next boot.
+    drifted — plugins that declare schedules and hold 'schedules' consent, but
+      whose declared surface (events/schedule names/services) changed since:
+      fail closed, like event dispatch.
+
+    Unlike events, there is no stored preimage to enumerate from: schedule
+    NAMES are pinned by the fingerprint, and the cron rides the live catalog
+    (a retiming is not a new capability — see capability_fingerprint)."""
+    ensure_consent_table(db)
+    rows = db.execute(
+        text("SELECT plugin_key, declared_fingerprint, permissions, consented_by "
+             "FROM plugin_consent")
+    ).all()
+    consent = {key: (fp or "", {p.strip() for p in (perms or "").split(",")}, by)
+               for key, fp, perms, by in rows}
+    runners: list[dict] = []
+    drifted: list[str] = []
+    for entry in catalog:
+        key = entry.get("key")
+        if not entry.get("schedule_specs") or key not in consent:
+            continue
+        stored_fp, perms, by = consent[key]
+        if "schedules" not in perms:
+            continue
+        if live_fingerprint(entry) != stored_fp:
+            drifted.append(key)
+            continue
+        runners.append({**entry, "consented_by": by})
+    return runners, drifted

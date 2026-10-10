@@ -52,6 +52,12 @@ from gdx_dispatch.core.internal_auth import (
 )
 from gdx_dispatch.plugin_api.discovery import discover_with_dists
 from gdx_dispatch.plugin_api.events import PluginEvent, event_matches
+from gdx_dispatch.plugin_api.schedules import PluginScheduleRun
+
+# How many schedule run_ids plugin-host remembers to drop a duplicate dispatch
+# (a retried core tick). In-process only: a restart forgets them, so delivery
+# stays at-least-once and the callable dedupes on run_id itself.
+_SEEN_RUNS_MAX = 2048
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +66,28 @@ _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 # INTERNAL_TOKEN_HEADER is imported above rather than defined here: one
 # definition, shared with the core app's caller side. It used to be a second
 # string literal in this file, differing from the caller's only in case.
+
+
+def _takes_argument(fn) -> bool:
+    """Does a schedule callable accept the PluginScheduleRun? The manifest has
+    only ever said "callable", and the one test that declared a schedule used
+    ``lambda: None`` — so a zero-argument callable stays valid."""
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    # A positional parameter named ``run`` (default or not), a required
+    # positional, or *args. Any other defaulted parameter
+    # (``def poll(limit=50)``) is the plugin's own knob, not a slot for the run.
+    P = inspect.Parameter
+    positional = (P.POSITIONAL_ONLY, P.POSITIONAL_OR_KEYWORD)
+    return any(
+        p.kind == p.VAR_POSITIONAL
+        or (p.kind in positional and (p.name == "run" or p.default is p.empty))
+        for p in params
+    )
 
 
 def create_plugin_host(plugins=None, degraded=None, stale=None, dists=None, removed=None) -> FastAPI:
@@ -175,7 +203,12 @@ def create_plugin_host(plugins=None, degraded=None, stale=None, dists=None, remo
              # host). Core reads these to enumerate consented event recipients
              # and to fingerprint the declared automatic-execution surface.
              "events": list(getattr(p, "events", ())),
-             "schedules": [str(s[0]) for s in getattr(p, "schedules", ()) if s]}
+             "schedules": [str(s[0]) for s in getattr(p, "schedules", ()) if s],
+             # The crons the core schedule driver evaluates (GDXA-439). A
+             # separate key so `schedules` stays the names-only fingerprint
+             # preimage existing consents were pinned against.
+             "schedule_specs": [{"name": str(s[0]), "cron": str(s[1])}
+                                for s in getattr(p, "schedules", ()) if s]}
             for p in catalog.values()
         ]
 
@@ -224,6 +257,59 @@ def create_plugin_host(plugins=None, degraded=None, stale=None, dists=None, remo
             except Exception:
                 log.exception("plugin_event_handler_failed key=%s event=%s", key, evt.name)
         return {"dispatched": dispatched}
+
+    # run_id → {"outcome": "running" | "ok" | "failed", "error"}; insertion-
+    # ordered, so the oldest is evicted first. A duplicate answers with it, so
+    # a core send after a timeout can audit the run that really happened.
+    # Per process: correct only while plugin-host runs one uvicorn worker (it
+    # does; no --workers anywhere). More workers would dedupe nothing.
+    seen_runs: dict[str, dict] = {}
+    seen_lock = threading.Lock()
+
+    @app.post("/internal/schedules")
+    def run_schedule(body: dict):
+        """Run one plugin schedule the core driver found due (GDXA-439).
+
+        Mirrors /internal/events: core decides WHO runs and WHEN (consent +
+        fingerprint, cron matched against the minute); plugin-host only runs
+        what it is told, and re-checks the plugin really declares a schedule by
+        that name. Token-gated by the middleware above. A duplicate run_id (a
+        retried tick) is answered without running again — while this process
+        lives. The callable runs inline, so its outcome is the response and
+        core audits what actually happened, not what it asked for."""
+        run = PluginScheduleRun.from_wire(body)
+        if not (run.plugin_key and run.name and run.run_id):
+            raise HTTPException(status_code=422, detail="key, name and run_id are required")
+        p = catalog.get(run.plugin_key)
+        fn = None
+        for sc in getattr(p, "schedules", ()) if p else ():
+            if sc and str(sc[0]) == run.name:
+                fn = sc[2]
+                break
+        if fn is None:
+            return {"status": "unknown", "run_id": run.run_id}
+        with seen_lock:
+            if run.run_id in seen_runs:
+                return {"status": "duplicate", "run_id": run.run_id, **seen_runs[run.run_id]}
+            seen_runs[run.run_id] = {"outcome": "running"}
+            while len(seen_runs) > _SEEN_RUNS_MAX:
+                seen_runs.pop(next(iter(seen_runs)))
+        result = {"status": "ok", "run_id": run.run_id}
+        try:
+            if _takes_argument(fn):
+                fn(run)
+            else:
+                fn()
+        except Exception as exc:
+            log.exception("plugin_schedule_failed key=%s schedule=%s", run.plugin_key, run.name)
+            # Exception type only: the message can carry internals, and the
+            # traceback is in plugin-host's log above (CodeQL #146).
+            result = {"status": "failed", "run_id": run.run_id,
+                      "error": type(exc).__name__}
+        with seen_lock:
+            if run.run_id in seen_runs:
+                seen_runs[run.run_id] = {"outcome": result["status"], "error": result.get("error")}
+        return result
 
     @app.post("/internal/browser/credentials")
     def set_browser_credentials(body: dict):
