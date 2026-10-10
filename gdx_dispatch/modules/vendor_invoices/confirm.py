@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_UP, Decimal
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
@@ -90,11 +90,19 @@ def _post_expense_to_ledger(db: Session, expense: Expense) -> None:
     post_expense_recorded(db, expense)
 
 
-def _int_qty(qty: Decimal) -> int:
-    """Truncating integer coverage — used where a fraction is COVERAGE, not
-    stock (the job-checklist quantity, and the void fallback when the stored
-    StockAdjustment is gone). The STOCK path uses _stock_units below."""
-    return int(qty)
+def _job_part_qty(qty: Decimal) -> int:
+    """Whole-unit COVERAGE for the job checklist row (JobPartNeeded.quantity
+    is Integer). Rounds AWAY FROM ZERO, never truncates (GDXA-399):
+    truncation turned a vendor line of 0.5 into a received part of quantity 0
+    while the full dollar amount still posted to the job's expense. Away from
+    zero rather than ceiling so a credit line of -0.5 cannot become 0 either.
+    Rounding was chosen over
+    a 409 because _stock_units' own refusal tells the office to route a
+    fraction to a job — refusing here too would leave it nowhere to go. The
+    caller records the vendor's exact quantity in the row's notes whenever
+    rounding changed it, so the fraction stays visible to the office."""
+    q = Decimal(str(qty))
+    return int(q.to_integral_value(rounding=ROUND_UP))
 
 
 def _stock_units(qty: Decimal) -> int:
@@ -240,18 +248,25 @@ def confirm_line(
                 result["linked_existing_part"] = True
             else:
                 jpn_id = str(uuid4())
+                jpn_qty = _job_part_qty(line.quantity)
+                jpn_notes = f"From vendor invoice {invoice.invoice_number}"
+                if Decimal(str(line.quantity)) != jpn_qty:
+                    jpn_notes += (
+                        f" (vendor qty {Decimal(str(line.quantity)).normalize():f}, "
+                        f"rounded to {jpn_qty})"
+                    )
                 db.add(
                     JobPartNeeded(
                         id=jpn_id,
                         company_id=company_id,
                         job_id=str(eff_job),
                         part_name=line.description[:200],
-                        quantity=_int_qty(line.quantity),
+                        quantity=jpn_qty,
                         supplier=vendor_name,
                         status="received",
                         source=EXPENSE_SOURCE,
                         unit_price=None,  # office prices it on the invoice
-                        notes=f"From vendor invoice {invoice.invoice_number}",
+                        notes=jpn_notes,
                         created_at=_now(),
                         updated_at=_now(),
                     )
@@ -420,7 +435,12 @@ def reverse_confirmed_line(db: Session, invoice: VendorInvoice, line: VendorInvo
                     "vendor_void_stock_adjustment_missing line=%s adj=%s",
                     line.id, line.stock_adjustment_id,
                 )
-                delta = -_int_qty(line.quantity)
+                # Truncation is deliberate here, unlike the job path: it
+                # re-derives what the confirm APPLIED. Since M30 a stock
+                # confirm refuses fractions (_stock_units), so the quantity is
+                # whole; before M30 it applied int(qty), which this mirrors.
+                # No endpoint edits a confirmed line's quantity (GDXA-399).
+                delta = -int(Decimal(str(line.quantity)))
             apply_stock_delta(
                 db, item, delta=delta,
                 reason="vendor bill voided",
