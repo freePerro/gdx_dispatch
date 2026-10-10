@@ -77,7 +77,7 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner jobs-dispa
 
 ## Verify a change here
 
-- Backend, targeted: `docker run --rm --entrypoint python -v "$PWD":/app -w /app -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x docker-app -m pytest -rs -k "<pattern>"`.
+- Backend, targeted: `docker run --rm --tmpfs /tmp:rw,exec,size=32g --entrypoint python -v "$PWD":/app -w /app -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x docker-app -m pytest -rs -k "<pattern>"`.
   Your patterns: `job`, `jobs`, `closeout`, `appointment`, `scheduling`,
   `dispatch`, `service_`, `maintenance`, `maps`, `drive_time`, `labor`,
   `notes`, `tasks`, `warrant`, `phase14_multi_tech`, `stale_job_timer`; plus
