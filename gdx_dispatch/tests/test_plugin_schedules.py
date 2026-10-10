@@ -154,7 +154,7 @@ def test_host_drops_a_repeated_run_id_and_reports_unknown_and_failed():
     assert client.post("/internal/schedules",
                        json=_body(name="nope", run_id="r2")).json()["status"] == "unknown"
     r = client.post("/internal/schedules", json=_body(name="boom", run_id="r3")).json()
-    assert r["status"] == "failed" and "upstream down" in r["error"]
+    assert r["status"] == "failed" and r["error"] == "RuntimeError"  # no message leaked
     assert client.post("/internal/schedules", json={"key": "poller"}).status_code == 422
 
 
@@ -379,7 +379,7 @@ def test_a_run_still_going_is_checked_back_on_for_its_final_outcome():
     rows = _audit_rows(db)
     assert len(rows) == 1
     details = str(rows[0][2]).replace('"', "'")
-    assert "'failed'" in details and "upstream down" in details
+    assert "'failed'" in details and "'RuntimeError'" in details and "upstream down" not in details
 
 
 @pytest.mark.xfail(strict=True, reason=(

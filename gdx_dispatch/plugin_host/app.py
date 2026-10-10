@@ -302,8 +302,10 @@ def create_plugin_host(plugins=None, degraded=None, stale=None, dists=None, remo
                 fn()
         except Exception as exc:
             log.exception("plugin_schedule_failed key=%s schedule=%s", run.plugin_key, run.name)
+            # Exception type only: the message can carry internals, and the
+            # traceback is in plugin-host's log above (CodeQL #146).
             result = {"status": "failed", "run_id": run.run_id,
-                      "error": f"{type(exc).__name__}: {exc}"[:300]}
+                      "error": type(exc).__name__}
         with seen_lock:
             if run.run_id in seen_runs:
                 seen_runs[run.run_id] = {"outcome": result["status"], "error": result.get("error")}
