@@ -1241,9 +1241,10 @@ async function loadSubmittedDays() {
 }
 
 function isSubmittedDay(entry) {
-  // submit_day keys the attestation on the server day it counted entries
-  // against (the clock_in_at prefix), so the same prefix is the match key.
-  const day = String(entry.clock_in_at || '').slice(0, 10);
+  // submit_day keys the attestation on the shop day it counted entries
+  // against (GDXA-421), so the shop day of clock_in_at is the match key —
+  // never its UTC prefix, which is tomorrow for a Central evening shift.
+  const day = shopDayKey(entry.clock_in_at);
   return submittedDays.value.has(`${entry.technician_id}|${day}`);
 }
 

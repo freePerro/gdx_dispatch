@@ -266,6 +266,22 @@ describe('TimesheetsView — shop time, not browser time', () => {
     expect(() => w.vm.formatDay(LATE_SHIFT.clock_in_at)).not.toThrow();
     expect(w.vm.timecards.length).toBe(1);
   });
+
+  it('badges a submitted day by its shop day, not the UTC prefix (GDXA-421)', async () => {
+    // submit-day keys the attestation on the shop day. LATE_SHIFT (10pm May 2
+    // Central, UTC-dated May 3) belongs to May 2's attestation and not May 3's.
+    mockApi([LATE_SHIFT]);
+    const base = apiGet.getMockImplementation();
+    const days = { value: [] };
+    apiGet.mockImplementation((url) => (url.startsWith('/api/timeclock/submitted-days')
+      ? Promise.resolve(days.value) : base(url)));
+    days.value = [{ technician_id: 'u-tech-a', date: '2026-05-02' }];
+    let w = await mountView(MAY);
+    expect(w.vm.isSubmittedDay(LATE_SHIFT)).toBe(true);
+    days.value = [{ technician_id: 'u-tech-a', date: '2026-05-03' }];
+    w = await mountView(MAY);
+    expect(w.vm.isSubmittedDay(LATE_SHIFT)).toBe(false);
+  });
 });
 
 describe('TimesheetsView — reading the crew', () => {

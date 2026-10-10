@@ -13,7 +13,7 @@
  * Timezone is left null here on purpose: bucketing across zones is the
  * composable spec's job, and null keeps "today" deterministic in any runner.
  */
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import { ref } from 'vue';
 
@@ -198,5 +198,62 @@ describe('TimeclockView — My Timesheet card', () => {
     const urls = apiGet.mock.calls.map((c) => c[0]);
     expect(urls.some((u) => u.includes('include_breaks=true'))).toBe(true);
     expect(urls.some((u) => u.startsWith('/api/timeclock/status'))).toBe(true);
+  });
+});
+
+describe('TimeclockView — Today is the shop day (GDXA-421)', () => {
+  // 21:00 Central on Oct 9 is 02:00 UTC on Oct 10. The list compared the
+  // browser date with the stamp's UTC prefix and submit-day sent the UTC
+  // day, so Today was wrong and the submit attested Oct 10. The fixture is
+  // wrong for the old filter in ANY runner zone: in UTC it kept nothing (the
+  // browser said Oct 10), in Central it kept both entries (both UTC-dated
+  // Oct 9). CI runs in UTC, so a fixture wrong only west of UTC guards nothing.
+  const NOW = new Date('2026-10-10T02:00:00Z');
+  // 18:30-19:45 Central on Oct 9: UTC-dated Oct 9, browser-UTC day Oct 10.
+  const EVENING = {
+    id: 'ev', technician_id: 'me',
+    clock_in_at: '2026-10-09T23:30:00+00:00', clock_out_at: '2026-10-10T00:45:00+00:00',
+    minutes: 75, entry_type: 'clock', notes: null,
+  };
+  // 22:00 Central on Oct 8 — UTC-dated Oct 9, so a UTC key would pull it in.
+  const YESTERDAY_EVENING = {
+    id: 'yd', technician_id: 'me',
+    clock_in_at: '2026-10-09T03:00:00+00:00', clock_out_at: '2026-10-09T04:00:00+00:00',
+    minutes: 60, entry_type: 'clock', notes: null,
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+    tenantTz.value = 'America/Chicago';
+    apiGet.mockImplementation((url) => {
+      if (url.startsWith('/api/timeclock/status')) return Promise.resolve({ clocked_in: false, today_hours: 1.25 });
+      if (url.startsWith('/api/timeclock/entries')) return Promise.resolve([EVENING, YESTERDAY_EVENING]);
+      if (url.startsWith('/api/me/tech-mobile-settings')) {
+        return Promise.resolve({ settings: {}, tenant_timezone: 'America/Chicago' });
+      }
+      if (url.startsWith('/api/me/timezone')) return Promise.resolve({ tenant_timezone: 'America/Chicago' });
+      return Promise.resolve([]);
+    });
+    apiPost.mockResolvedValue({ submitted: true, date: '2026-10-09', entries: 1, total_minutes: 75 });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('lists the evening entry (UTC-dated tomorrow by the browser) under today and submits the shop day', async () => {
+    const w = await mountView();
+    const eod = w.find('.eod-review');
+    expect(eod.exists()).toBe(true);
+    // Only the evening entry is today's; yesterday's is not, though its UTC
+    // date is today's shop date. Asserted by id, not by count.
+    expect(w.vm.todayEntries.map((e) => e.id)).toEqual(['ev']);
+    expect(eod.text()).toContain('Entries1');
+    await w.find('[data-testid="submit-day-btn"]').trigger('click');
+    await flushPromises();
+    expect(apiPost).toHaveBeenCalledWith(
+      '/api/timeclock/submit-day', { date: '2026-10-09' }, expect.anything(),
+    );
   });
 });

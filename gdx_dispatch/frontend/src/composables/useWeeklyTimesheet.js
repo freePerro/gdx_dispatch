@@ -254,5 +254,6 @@ export function useWeeklyTimesheet() {
     isCurrentWeek, canGoNext,
     init, reload, prevWeek, nextWeek, thisWeek,
     canSelfEdit, workedMinutes, timeOffMinutes, paidMinutes, formatClock, shopToday,
+    shopDayKey, shopTodayKey: () => keyOf(shopToday()),
   };
 }
