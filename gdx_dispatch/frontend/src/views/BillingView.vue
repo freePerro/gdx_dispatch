@@ -337,6 +337,18 @@
               class="deposit-tag"
               data-testid="invoice-deposit-tag"
             />
+            <!-- GDXA-393: a bank transfer moving for this invoice. Nothing is
+                 recorded until it settles (up to 4 business days), so the
+                 status alone still reads unpaid. -->
+            <Tag
+              v-if="achPending[data.id]"
+              :value="achPending[data.id].stage === 'verifying' ? 'bank verifying' : 'bank pending'"
+              severity="info"
+              icon="pi pi-clock"
+              class="ach-pending-tag"
+              v-tooltip="'A bank payment is in progress at Stripe. Nothing is recorded until it settles; the pay page will not take a second payment meanwhile.'"
+              :data-testid="`invoice-ach-pending-${data.id}`"
+            />
           </template>
         </Column>
         <Column field="due_date" header="Due Date" sortable>
@@ -655,6 +667,8 @@ const closeoutDiscrepancies = ref([]);
 const creating = ref(false);
 const recordingPayment = ref(false);
 const invoices = ref([]);
+// GDXA-393 — {invoice_id: {stage, amount}} for bank transfers moving now.
+const achPending = ref({});
 const customers = ref([]);
 const jobs = ref([]);
 const searchQuery = ref("");
@@ -1322,6 +1336,17 @@ function normalizeInvoice(raw, customerMap = {}) {
 }
 
 // --- Actions ---
+// GDXA-393. A quiet, separate read: it asks Stripe, and a slow Stripe must
+// cost the tags, not the list. Failure (or Stripe off) shows no tags.
+async function loadAchPending() {
+  try {
+    const d = await api.get("/api/invoices/ach-pending", { suppressErrorToast: true });
+    achPending.value = d?.pending && typeof d.pending === "object" ? d.pending : {};
+  } catch {
+    achPending.value = {};
+  }
+}
+
 async function loadData() {
   loading.value = true;
   try {
@@ -1349,6 +1374,7 @@ async function loadData() {
       const list = Array.isArray(raw) ? raw : raw?.items || raw?.data || [];
       invoices.value = list.map((inv) => normalizeInvoice(inv, customerMap));
     }
+    loadAchPending(); // fire-and-forget — asks Stripe, so never on the list's critical path
     // If the invoice fetch itself failed, surface it instead of silently
     // showing an empty list (otherwise the page renders "No invoices yet"
     // even when there are 305 invoices in the DB).
@@ -1616,8 +1642,14 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.deposit-tag {
+.deposit-tag,
+.ach-pending-tag {
   margin-left: 0.35rem;
+}
+
+/* Wraps as a whole tag under the status, never mid-label. */
+.ach-pending-tag {
+  white-space: nowrap;
 }
 
 .summary-cards {

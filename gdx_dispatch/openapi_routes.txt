@@ -304,6 +304,7 @@ GET /api/inventory/parts/{item_id}
 GET /api/invoice-reminders/auto-send-preview
 GET /api/invoice-reminders/settings
 GET /api/invoices
+GET /api/invoices/ach-pending
 GET /api/invoices/closeout-discrepancies
 GET /api/invoices/summary
 GET /api/invoices/{invoice_id}
