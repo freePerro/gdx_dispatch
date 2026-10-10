@@ -2,8 +2,13 @@
 
 **Status:** **MERGED #343 · RELEASED v1.66.0** — Sprints 1a, 1b, 2, 3, 4a and
 4b are on main and VPS-proven (verified 2026-08-21).
-**Not built:** Sprint 2b — there is no `/internal/schedule/{key}/{name}` route
-and no `schedules` beat driver anywhere on main, and no frontend consent UI
+**Sprint 2b, partially built (GDXA-439, 2026-10-10):** the schedule driver
+(`core/plugin_schedules.py`) and plugin-host's token-gated
+`/internal/schedules` route (one body-addressed route, not the
+`/internal/schedule/{key}/{name}` sketched below) exist; the beat entry that
+ticks the driver each minute is a platform-core follow-up, so until it lands
+a declared schedule still never fires.
+**Not built:** the rest of Sprint 2b — no frontend consent UI
 for `events`/`schedules` or re-consent-on-drift banner (v1's drift signal is
 still an ERROR log plus a `plugin_consent_drift` record that nothing renders).
 Gap 3 (the `gdx-agent` supervisor, the `n8n-nodes-gdxdispatch` npm node) is
