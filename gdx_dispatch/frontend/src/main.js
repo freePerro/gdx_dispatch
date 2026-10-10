@@ -10,6 +10,7 @@ import App from './App.vue';
 import { createAppRouter } from './router';
 import { startKeyboardInsetTracking } from './lib/keyboardInset';
 import { installErrorCapture } from './plugins/errorCapture';
+import { installSwNavigation } from './lib/swNavigation';
 import './assets/base.css';
 import './assets/responsive.css';
 // MH-2: must load AFTER base.css and AFTER PrimeVue's own preset so its
@@ -44,6 +45,10 @@ import('./lib/analytics').then(({ installAnalytics }) => installAnalytics());
 // (index.html handles Chromium/Gecko via interactive-widget). No-op without
 // visualViewport support.
 startKeyboardInsetTracking();
+
+// A tapped push notification routes in-app rather than reloading the tab
+// (public/sw.js posts the route here; it falls back to navigate()).
+installSwNavigation(router);
 
 app.mount('#app');
 
