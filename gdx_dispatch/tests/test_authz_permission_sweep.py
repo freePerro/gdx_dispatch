@@ -52,7 +52,9 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_unpermissioned_bas
 # ownership; reason recorded in the baseline file.
 # 389 → 390 (2026-10-09): POST /api/jobs/{job_id}/cancel (GDXA-375), gated in
 # the handler like reactivate; reason recorded in the baseline file.
-BASELINE_SIZE = 390
+# 390 → 389 (2026-10-09): DELETE /api/customers/{customer_id} now demands
+# customers.write (GDXA-418).
+BASELINE_SIZE = 389
 
 
 def _baseline() -> set[str]:
