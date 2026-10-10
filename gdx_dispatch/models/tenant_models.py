@@ -23,6 +23,7 @@ from sqlalchemy import (
     event,
     func,
     inspect,
+    literal_column,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
@@ -290,6 +291,19 @@ class Customer(Base):
     # which humans edit; new AI tooling appends summaries here so the two
     # sources stay separable.
     notes_appended: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Optimistic-concurrency token (migration 114, GDXA-447). A PATCH that
+    # carries the version its edit dialog loaded is refused when the row has
+    # moved on, so a stale dialog cannot silently revert a colleague's edit.
+    # A SQL-expression onupdate rather than version_id_col: it is applied to
+    # every UPDATE compiled from this table — an ORM flush and a Core or ORM
+    # bulk update() alike — whereas version_id_col only guards flushes.
+    # Qualified by table name so an UPDATE ... FROM cannot make it ambiguous.
+    # Raw text() UPDATEs do not bump it; a writer that needs to must SET
+    # version = version + 1 itself.
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1"),
+        onupdate=literal_column("customers.version", Integer) + 1,
+    )
 
     @validates("name", "email", "phone")
     def _set_hashes(self, key: str, value: str | None) -> str | None:
@@ -649,6 +663,12 @@ class Invoice(Base):
     invoice_date: Mapped[date] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Optimistic-concurrency token (migration 114, GDXA-447) — see
+    # Customer.version.
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1"),
+        onupdate=literal_column("invoices.version", Integer) + 1,
+    )
     lines: Mapped[list[InvoiceLine]] = relationship(
         back_populates="invoice",
         cascade="all, delete-orphan",
