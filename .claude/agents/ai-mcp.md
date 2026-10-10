@@ -80,6 +80,13 @@ limiter. **plugins-host** owns the plugin browser stream, not you.
   Your patterns: `ai_`, `mcp`, `tool_`, `llm`, `ai_quote`, `gdx_ai`,
   `fastmcp`, `openapi_to_capabilities`, `next_action`,
   `module_catalog_llm`.
+- Baseline scans, after `git merge origin/main` and before the matrix:
+  `gdx_dispatch/tools/run_tests_split.sh --scans` (~30 s). On red,
+  `run_tests_split.sh --refreeze-baselines` re-freezes the line-keyed
+  baselines and refuses growth; pass `--allow-new` only for a clone or
+  filter you have read and mean to keep. Never a bare `docker run` for
+  these in a worktree: it cannot read the git index. It covers the
+  duplicate-block and tenant-plane baselines only; the matrix still runs.
 - Full matrix before any PR: `gdx_dispatch/tools/run_tests_split.sh`.
 - Frontend: `npx vitest run` on the five `AIAssistantView*` specs.
 - Live: invoke the tool through the real MCP mount with a real bearer, once
@@ -94,7 +101,23 @@ provisioned for this one issue from `main`. Then: work only on that worktree's
 branch; when the issue asks for a change, build it, verify it as this file
 requires, and commit it on that branch with the Verification Manifest in the
 commit message (the commit gate demands it, and it is yours to write: the
-delta, the assumption, the blind spot, the test gap). **Do not push and do not
+delta, the assumption, the blind spot, the test gap). Two gates read it, and
+first commit attempts were refused in at least three runs on 2026-10-09, each
+costing a rewrite and sometimes a re-audit. Do it this way the first time: use
+the Write tool to create a file named exactly `VERIFICATION_MANIFEST.md` in
+your scratch directory (the session gate reads Write calls to that name), with
+this shape, the labels verbatim:
+
+    ## VERIFICATION MANIFEST
+    **The Delta:** exactly what changed
+    **The Assumption:** what you are taking on trust
+    **The Blind Spot:** must contain "I don't know", "haven't checked" or "not tested"
+    **The Test Gap:** what your tests do not cover
+
+then write the commit message file as the subject line, a blank line and that
+same block, and commit with `git commit --cleanup=whitespace -F <file>` (the
+git hook reads the message itself; `-F` already keeps the `##` line, the flag
+only makes that explicit). **Do not push and do not
 open the pull request yourself.** Your last act is to post the report described
 below as your final comment and create ONE child issue of the issue you are
 working, titled `PR: <commit subject>`, assigned to the `release-mechanic`
@@ -117,18 +140,31 @@ applies when a person is driving you; then you raise it in the conversation.
 
 **Budget the run — measured 2026-09-24, when four runs timed out at 90
 minutes:** half of each was repeated `/audit` calls and a third was duplicate
-test matrices. So **audit once**, on the final diff, after the matrix and
-vitest are green: apply what it finds, re-run the tests that cover the fix,
-and commit. The commit gate wants one critique newer than the last commit,
-not one per revision; a second audit is due only when the post-audit fix adds
-a file under `routers/` or `migrations/`. **Run the backend matrix once**, in
+test matrices. So **audit at most twice**: once on the final diff, after the
+matrix and vitest are green, and once more only if you change anything after
+it. The commit gate's audit half applies to a commit of more than three
+files or any `routers/`, `migrations/` or `.sql` path. It needs a critique
+newer than the last commit whose hash matches the current diff, staged and
+unstaged together: any edit to a tracked file after the audit voids it. So
+batch every post-audit fix, re-run the tests that cover them, stage, run the
+second and last `/audit`, and commit straight after it with no edit in
+between. **Run the backend matrix once**, in
 this worktree, through `gdx_dispatch/tools/run_tests_split.sh` with the
 docker `PYTEST`: it mounts the worktree's gitdir so the tracked-set guards
 pass here, and it takes a host-wide lock so it never runs beside another
 agent's matrix. If it prints that it is waiting, wait; do not copy the tree
-elsewhere to run a second one. Give it your own `LOG_DIR` under your run's
-scratch directory: the default `/tmp/gdx_split` is overwritten by whichever
-matrix holds the lock next. **When it fails, read its `failures vs origin/main`
+elsewhere to run a second one. Give it `LOG_DIR=<worktree root>/.matrix-logs` (ignored
+by git), never a scratch directory: the default `/tmp/gdx_split` is
+overwritten by whichever matrix holds the lock next, and scratch dies with the
+run. **Before any full matrix, run the same command with `--reuse-check`**
+(same `LOG_DIR`, runs nothing): it reads the `result.txt` the last run left
+there, and exit 0 / `REUSE` means a full, un-narrowed PASS already covers
+these tracked files with this content on this docker image (committing does
+not change that), so do not run it again; it prints the `PYTEST` that run
+used. `git add`
+new files before the matrix: with an untracked file present the run cannot be
+reused; `RUN: <reason>` means run it (2026-10-09, GDXA-375 re-ran
+a full matrix because its predecessor's scratch logs were gone). **When it fails, read its `failures vs origin/main`
 block before anything else**: a test listed as ALREADY FAILING ON MAIN is not
 yours, so do not investigate it, re-run it against a copy of main, or fix it in
 this issue; say so in your report and fix only the NEW ones (a FLAKY ON MAIN

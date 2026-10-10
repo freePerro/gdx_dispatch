@@ -95,7 +95,7 @@ def db():
     engine.dispose()
 
 
-def _bill_with_fractional_line(db):
+def _bill_with_fractional_line(db, qty=Decimal("2.5")):
     from gdx_dispatch.modules.vendor_invoices import service as svc
     from gdx_dispatch.modules.vendor_invoices.parsers.midwest_invoice import (
         ParsedInvoice,
@@ -108,7 +108,7 @@ def _bill_with_fractional_line(db):
         tax=Decimal("0"), shipping=Decimal("0"), total=Decimal("250.00"),
         credits_pending=Decimal("0"), amount_due=None,
         lines=[ParsedInvoiceLine(line_no=1, item_label="P", description="Track ft",
-                                 quantity=Decimal("2.5"), package=None,
+                                 quantity=qty, package=None,
                                  unit_price=Decimal("100.00"), line_total=Decimal("250.00"))],
     )
     r = svc._persist_parsed_invoice(
@@ -192,3 +192,48 @@ def test_fractional_job_disposition_still_takes_fractional_coverage(db):
                  actor_id="tester", job_id=job.id)
     db.commit()
     assert line.status == "confirmed"
+
+
+# ── job-route checklist quantity never truncates to 0 (GDXA-399) ───────────
+
+@pytest.mark.parametrize(
+    ("vendor_qty", "want_qty", "want_note"),
+    [
+        (Decimal("0.5"), 1, "(vendor qty 0.5, rounded to 1)"),
+        (Decimal("2.5"), 3, "(vendor qty 2.5, rounded to 3)"),
+        (Decimal("2"), 2, None),
+    ],
+)
+def test_job_route_checklist_quantity_rounds_up_and_says_so(db, vendor_qty, want_qty, want_note):
+    """`int(qty)` made a 0.5 vendor line a received part of quantity 0 while
+    the whole $ still posted to the job. The row is Integer, so it rounds away
+    from zero and the vendor's exact quantity rides in the row's notes."""
+    from gdx_dispatch.models.tenant_models import Customer, Job, JobPartNeeded
+    from gdx_dispatch.modules.vendor_invoices.confirm import confirm_line
+
+    inv, line = _bill_with_fractional_line(db, vendor_qty)
+    cust = Customer(id=uuid.uuid4(), name="C", company_id=TENANT)
+    db.add(cust)
+    job = Job(id=uuid.uuid4(), title="Install", customer_id=cust.id, company_id=TENANT)
+    db.add(job)
+    db.commit()
+    res = confirm_line(db, inv, line, disposition="job", company_id=TENANT,
+                       actor_id="tester", job_id=job.id)
+    db.commit()
+    jpn = db.get(JobPartNeeded, res["job_part_needed_id"])
+    assert jpn.quantity == want_qty
+    assert jpn.notes.startswith(f"From vendor invoice {inv.invoice_number}")
+    if want_note is None:
+        assert "rounded" not in jpn.notes
+    else:
+        assert jpn.notes.endswith(want_note)
+
+
+@pytest.mark.parametrize(
+    ("qty", "want"),
+    [("0.5", 1), ("0.01", 1), ("2.5", 3), ("3", 3), ("3.00", 3), ("-0.5", -1), ("-2.5", -3)],
+)
+def test_job_part_qty_never_yields_zero_for_a_nonzero_line(qty, want):
+    from gdx_dispatch.modules.vendor_invoices.confirm import _job_part_qty
+
+    assert _job_part_qty(Decimal(qty)) == want

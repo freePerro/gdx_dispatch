@@ -94,6 +94,27 @@ this — the budget governs sweeps, not repairs.
   an unreachable Postgres fails them rather than skipping (#440). It does
   **not** run the 8 `TEST_DATABASE_URL` role tests or the
   `GDX_TEST_CONTROL_DB_URL` integration tests — those still skip green there.
+- **After `git merge origin/main` and before the matrix, run
+  `gdx_dispatch/tools/run_tests_split.sh --scans`** (~30 s, one docker
+  process, gitdir mounted, `-ra`, non-zero on red, no wait for the matrix
+  lock). It runs the tests that pin `.tenant_plane_redundant_filter_baseline`
+  and `.duplicate_block_baseline` against the tree; those two line-keyed
+  baselines were the matrix red on at least eight agent issues (GDXA-408).
+  It does **not** cover the doc-link, PII, authz, route-shadow or OpenAPI
+  baselines: green `--scans` is not "baselines clear", and the matrix still
+  runs. The file list is derived by naming convention
+  (`gdx_dispatch/tools/baseline_scan_tests.py`; `--scans --list` prints it):
+  a test file named `*scan_refreeze*`, or one defining
+  `test_the_committed_baseline_is_what_the_tree_scans`, joins without an edit
+  here. On red,
+  `run_tests_split.sh --refreeze-baselines` re-freezes both baselines: it
+  admits shrinkage and line shifts and **refuses growth** (exit 2; the
+  refusing scan's baseline is untouched, the other is still re-frozen; a
+  scanner crash exits 1). It passes `--allow-new` only when you type it; do that only for a
+  clone or filter you have read and mean to keep. A hand-rolled
+  `docker run -v $PWD:/app` in a linked worktree cannot read the git index and
+  fails these tests with `TrackedFilesUnavailable`, which looks like a stale
+  baseline. Use the runner.
 - **`run_tests_split.sh` takes a host-wide lock** (`/tmp/gdx_matrix.lock`): a
   second matrix waits and says so, because two at once are slower than two in
   a row (2026-09-24: four at once put the 20-core box at load 28 with 1.8 GB

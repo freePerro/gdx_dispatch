@@ -8,6 +8,18 @@
 #   N=4 gdx_dispatch/tools/run_tests_split.sh gdx_dispatch/tests/test_auth_*.py
 #   PYTEST="docker run --rm --entrypoint python -e JWT_SECRET=<32+ bytes> \
 #     -v $PWD:/app -w /app docker-app -m pytest" gdx_dispatch/tools/run_tests_split.sh
+#   LOG_DIR=<dir> gdx_dispatch/tools/run_tests_split.sh --reuse-check   # run nothing
+#
+# Every run ends by writing $LOG_DIR/result.txt: PASS or FAIL, the git tree id
+# of the tracked set when the shards started, the docker image id, any pytest
+# args, the PYTEST used, and whether the run was narrowed (PYTEST_ADDOPTS on
+# the host or inside the docker command; selection after `-m pytest` already
+# leaves the image unknown, which is never reused). `--reuse-check` compares that stamp with
+# the tree and image as they are now: exit 0 and "REUSE" means an un-narrowed
+# full-suite PASS already covers this tracked set on this image, so do not run
+# the matrix again; exit 1 and "RUN" (with the reason) means run it
+# (2026-10-09: a Paperclip continuation found its predecessor's scratch logs
+# gone and re-ran a full matrix it already had).
 #
 # Sweet spot from 2026-04-24 benchmark: N=7 on this laptop (14 cores).
 # Beyond ~7 the per-process startup tax outpaces the parallelism gain.
@@ -25,15 +37,153 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# ── committed-baseline scans: the fast pre-check (GDXA-408/410) ─────────────
+#   run_tests_split.sh --scans [pytest args]     run only the baseline scan tests
+#   run_tests_split.sh --scans --list            print which files those are
+#   run_tests_split.sh --refreeze-baselines [--allow-new]
+# Run both after `git merge origin/main` and BEFORE the matrix. The line-keyed
+# `.tenant_plane_redundant_filter_baseline` and `.duplicate_block_baseline`
+# were the matrix red on at least eight agent issues (GDXA-291 … 380), each a
+# ~7 min round trip for what --scans says in ~25 s. The file list comes from
+# tools/baseline_scan_tests.py, which derives it from the test files, so a new
+# baseline scan joins without an edit here.
+# --refreeze-baselines re-freezes both baselines in their `--baseline` mode,
+# which admits only shrinkage and line shifts and REFUSES growth (exit 2). It
+# never passes --allow-new on its own: that flag blesses new clones / filters,
+# so it is forwarded only when the caller types it.
+MODE=matrix
+case "${1:-}" in
+  --scans) MODE=scans; shift ;;
+  --refreeze-baselines) MODE=refreeze; shift ;;
+esac
+
+if [ "$MODE" = "refreeze" ]; then
+  allow=()
+  for arg in "$@"; do
+    case "$arg" in
+      --allow-new) allow=(--allow-new) ;;
+      *) echo "✗ --refreeze-baselines takes only --allow-new (got '$arg')"; exit 2 ;;
+    esac
+  done
+  # Host python on purpose: both scanners are stdlib-only, read the git index
+  # natively (no gitdir mount to get wrong), and write files the caller owns.
+  # REFREEZE_PYTHON exists so tests/test_baseline_scan_tests.py can prove the
+  # argv without rewriting the real baselines.
+  py="${REFREEZE_PYTHON:-python3}"
+  # Each scanner runs whatever the other did, so one refusal leaves the other
+  # baseline re-frozen. Exit 2 from a scanner is its growth refusal; anything
+  # else is a crash, and --allow-new would crash the same way.
+  refused=0
+  crashed=0
+  for scanner in duplicate_block_scan tenant_plane_redundant_filter_scan; do
+    echo "── $scanner --baseline ${allow[*]}"
+    $py -m "gdx_dispatch.tools.$scanner" --baseline "${allow[@]}"
+    rc=$?
+    if [ "$rc" -eq 2 ]; then
+      echo "✗ $scanner refused growth (exit 2) — its baseline is unchanged"
+      refused=1
+    elif [ "$rc" -ne 0 ]; then
+      echo "✗ $scanner crashed (exit $rc) — its baseline is unchanged"
+      crashed=1
+    fi
+  done
+  if [ "$crashed" -ne 0 ]; then
+    echo
+    echo "CRASHED — read the traceback above; --allow-new will not get past it."
+    exit 1
+  fi
+  if [ "$refused" -ne 0 ]; then
+    echo
+    echo "REFUSED — fix what grew, or re-run with --allow-new only for what you have read and mean to keep."
+    exit 2
+  fi
+  echo
+  echo "Re-frozen. Review \`git diff -- .duplicate_block_baseline .tenant_plane_redundant_filter_baseline\`, then $0 --scans"
+  exit 0
+fi
+
+if [ "$MODE" = "scans" ]; then
+  scan_root=()
+  if [ -n "${SCANS_TESTS_ROOT:-}" ]; then
+    scan_root=(--root "$SCANS_TESTS_ROOT")
+  fi
+  if ! scan_files="$(python3 -I "$REPO_ROOT/gdx_dispatch/tools/baseline_scan_tests.py" "${scan_root[@]}")"; then
+    echo "✗ could not derive the baseline scan test list"
+    exit 2
+  fi
+  if [ "${1:-}" = "--list" ]; then
+    echo "$scan_files"
+    exit 0
+  fi
+  mapfile -t SCAN_FILES <<< "$scan_files"
+fi
+
+# The git tree id of what is under test: the index's tracked set with each
+# tracked file's working-tree content (a throwaway copy of the index, then
+# `add -u`). The tracked set matters as well as the bytes: the tracked-set
+# guard tests read the index, so a file can pass untracked and fail once
+# added. Hence any untracked, non-ignored file gives "untracked", which never
+# matches; stage new files before the matrix. Two paths are not counted:
+# .matrix-logs/ (this script's output, not ignored on branches cut before the
+# .gitignore line) and .paperclip-worktree-notes.txt (untracked, rewritten by
+# the worktree provisioner on every wake). Committing the tree as it stands
+# gives HEAD the same tree id, so a stamp still matches after the commit.
+# "unknown" outside a git checkout or mid-conflict.
+tree_fingerprint() {
+  local idx out
+  if [ -n "$(cd "$REPO_ROOT" && git ls-files -o --exclude-standard -- . \
+        ':!.matrix-logs' ':!.paperclip-worktree-notes.txt' 2>/dev/null | head -1)" ]; then
+    echo untracked
+    return
+  fi
+  idx="$(mktemp -u)"
+  out="$(cd "$REPO_ROOT" && cp "$(git rev-parse --git-path index)" "$idx" 2>/dev/null \
+         && GIT_INDEX_FILE="$idx" git add -u 2>/dev/null \
+         && GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null)" || out=unknown
+  rm -f "$idx"
+  echo "${out:-unknown}"
+}
+
 N="${N:-7}"
 LOG_DIR="${LOG_DIR:-/tmp/gdx_split}"
+# Keep the in-worktree log dir out of `git add -A` on branches cut before the
+# .gitignore line: the local exclude file is per-clone and never committed.
+excl="$(git -C "$REPO_ROOT" rev-parse --git-path info/exclude 2>/dev/null || true)"
+if [ -n "$excl" ] && ! grep -qx '/.matrix-logs/' "$excl" 2>/dev/null; then
+  mkdir -p "$(dirname "$excl")" 2>/dev/null && echo '/.matrix-logs/' >> "$excl" 2>/dev/null || true
+fi
+
+if [ "${1:-}" = "--reuse-check" ]; then
+  stamp="$LOG_DIR/result.txt"
+  if [ ! -f "$stamp" ]; then echo "RUN: no $stamp"; exit 1; fi
+  read -r verdict _ _ tree _ image _ _ _ args < "$stamp" || true
+  now_tree="$(tree_fingerprint)"
+  now_image="$(docker image inspect -f '{{.Id}}' "${image%%@*}" 2>/dev/null || true)"
+  if [ "$verdict" != PASS ]; then echo "RUN: last result was $verdict"; exit 1; fi
+  if [ -n "$args" ]; then echo "RUN: last run was a subset ($args), not the full matrix"; exit 1; fi
+  case "$now_tree" in
+    untracked) echo "RUN: untracked files present; git add them first"; exit 1 ;;
+    unknown) echo "RUN: cannot fingerprint the tree"; exit 1 ;;
+  esac
+  if [ "$tree" != "$now_tree" ]; then echo "RUN: code or tracked set changed since the last PASS"; exit 1; fi
+  narrowed="$(sed -n 's/^narrowed: //p' "$stamp")"
+  if [ -n "$narrowed" ]; then echo "RUN: last run was narrowed ($narrowed), not the full matrix"; exit 1; fi
+  if [ "${image#*@}" != "$now_image" ] || [ -z "$now_image" ]; then echo "RUN: docker image changed or unknown"; exit 1; fi
+  echo "REUSE: $(head -1 "$stamp")"
+  sed -n 's/^pytest: /  it ran: /p' "$stamp"
+  exit 0
+fi
 mkdir -p "$LOG_DIR"
 
 # Resolve a Python that can actually run the suite. There is usually NO host
 # venv for this repo — deps live in the docker-app image (see the PYTEST
 # docker example above and docs). Order: explicit $PYTEST > .venv > python3.
 if [ -z "${PYTEST:-}" ]; then
-  if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+  if [ "$MODE" = "scans" ] && [ ! -x "$REPO_ROOT/.venv/bin/python" ]; then
+    # A pre-check nobody runs because it needs a 150-character env var is no
+    # pre-check: --scans defaults to the docker-app image the matrix uses.
+    PYTEST="docker run --rm --entrypoint python -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x -v $REPO_ROOT:/app -w /app docker-app -m pytest"
+  elif [ -x "$REPO_ROOT/.venv/bin/python" ]; then
     PYTEST="$REPO_ROOT/.venv/bin/python -m pytest"
   else
     PYTEST="python3 -m pytest"
@@ -218,6 +368,37 @@ if [ "${FORKED:-0}" = "1" ]; then
   COMMON_OPTS+=(--forked)
 fi
 
+# --scans: one pytest process over the derived files, no shards. Everything
+# above still applied — the gitdir mount (without it every tracked-set guard
+# raises TrackedFilesUnavailable, which reads like a stale baseline), tmpfs,
+# the dependency gate and the image-age report. The matrix lock is NOT taken:
+# it rations N parallel shards, and one ~25 s process waiting ~7 min behind
+# another agent's matrix would defeat the point of a pre-check.
+if [ "$MODE" = "scans" ]; then
+  echo "baseline scans (${#SCAN_FILES[@]} files):"
+  printf '    %s\n' "${SCAN_FILES[@]}"
+  set +e
+  $PYTEST "${COMMON_OPTS[@]}" "${SCAN_FILES[@]}" "$@"
+  rc=$?
+  # 5 = nothing collected, which here means the list or a -k filter is wrong,
+  # not that there was nothing to check — and not a stale baseline.
+  if [ "$rc" -eq 5 ]; then
+    echo
+    echo "FAIL — no baseline scan test was collected (pytest exit 5). Check the -k/args you passed"
+    echo "  and $0 --scans --list. This is not a stale baseline: do not re-freeze for it."
+    exit 1
+  elif [ "$rc" -ne 0 ]; then
+    echo
+    echo "FAIL — baseline scans red (pytest exit $rc). A stale baseline is re-frozen with"
+    echo "  $0 --refreeze-baselines"
+    echo "which refuses anything that GREW. Then re-run $0 --scans."
+    exit 1
+  fi
+  echo
+  echo "PASS — baseline scans green."
+  exit 0
+fi
+
 # ── host-wide matrix lock ────────────────────────────────────────────────
 # Two matrices at once are slower than two in a row: on 2026-09-24 four
 # Paperclip agents ran this concurrently — 28 shards on 20 cores, load 28,
@@ -243,7 +424,20 @@ fi
 # Clear the last run's shard logs: an N=4 run after an N=7 one would otherwise
 # leave groups 5-7 behind, and the error scans and the vs-main report below read
 # group_*.log, so stale reds would be reported as this run's.
-rm -f "$LOG_DIR"/group_*.log
+rm -f "$LOG_DIR"/group_*.log "$LOG_DIR/result.txt"
+TREE_FP="$(tree_fingerprint)"
+write_result() {
+  local narrowed=""
+  [ -n "${PYTEST_ADDOPTS:-}" ] && narrowed="PYTEST_ADDOPTS=$PYTEST_ADDOPTS"
+  case " $PYTEST " in
+    *PYTEST_ADDOPTS*|*" -k "*|*"::"*|*".py "*|*"/tests/"*) narrowed="${narrowed:+$narrowed; }test selection inside PYTEST" ;;
+  esac
+  { printf '%s %s tree %s image %s@%s N %s args %s\n' "$1" "$(date -Is)" "$TREE_FP" \
+      "${IMAGE:-none}" "${IMAGE_ID:-none}" "$N" "${*:2}"
+    printf 'pytest: %s\n' "$PYTEST"
+    printf 'narrowed: %s\n' "$narrowed"
+  } > "$LOG_DIR/result.txt"
+}
 
 pids=()
 for g in $(seq 1 "$N"); do
@@ -336,7 +530,9 @@ fi
 if [ "$fail" -ne 0 ]; then
   echo
   echo "FAIL — at least one shard reported errors. Logs in $LOG_DIR/"
+  write_result FAIL "$@"
   exit 1
 fi
 echo
 echo "PASS — all $N shards green. Logs in $LOG_DIR/"
+write_result PASS "$@"
