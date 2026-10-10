@@ -265,7 +265,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useRoute } from 'vue-router';
 import Button from 'primevue/button';
@@ -304,7 +304,7 @@ const theme = useThemeStore();
 const auth = useAuthStore();
 const tour = useTour();
 const { branding } = storeToRefs(theme);
-const { categories, allEnabledModules, enabledModules } = useTenantModules();
+const { categories, allEnabledModules, enabledModules, loadTenantModules } = useTenantModules();
 
 // Module visibility is permission-driven: `allEnabledModules` / `categories`
 // come from useTenantModules already filtered by the user's permissions (a tech
@@ -453,35 +453,68 @@ let _stopEmailListener = null;
 let _releaseSmsPoll = null;
 let _releaseEmailPoll = null;
 
-onMounted(() => {
+// Each poll runs only while the pin its badge sits on is showing. The pin is
+// the module gate (`inbox` requires `email`, the SMS pin `phone_com`) plus the
+// pin's permission, and the backend refuses both unread-count routes with the
+// module off — so an ungated poll was a failed GET every 60s for the whole
+// session, swallowed by the store (GDXA-453). `modulesReady` waits for the
+// module payload: before it lands isEnabled() reports the optimistic default
+// (on), which would fire one request even for a tenant with the module off.
+// Signed out there is no payload at all: a cold load of /login mounts the
+// shell for the router's first tick, and the inbox pin carries no permission.
+const modulesReady = ref(false);
+const pinShown = (key) =>
+  modulesReady.value && auth.isAuthenticated && topPins.value.some((p) => p.key === key);
+const smsPollOn = computed(() => pinShown('phone_com_messages'));
+const emailPollOn = computed(() => pinShown('inbox'));
+
+function _syncSmsPolling(on) {
+  if (on && !_releaseSmsPoll) {
+    _releaseSmsPoll = smsUnread.startPolling();
+  } else if (!on && _releaseSmsPoll) {
+    _releaseSmsPoll();
+    _releaseSmsPoll = null;
+  }
+}
+
+function _syncEmailPolling(on) {
+  if (on && !_releaseEmailPoll) {
+    // Email badge + new-mail toast (P2.6). The toast fires only on a RISE
+    // after the first poll seeds a baseline — otherwise every page load with
+    // unread mail would announce week-old messages as new.
+    _stopEmailListener = emailUnread.onIncrease((delta) => {
+      toast.add({
+        severity: 'info',
+        summary: delta === 1 ? 'New email' : `${delta} new emails`,
+        detail: 'Open the Inbox to read it.',
+        life: 4000,
+      });
+    });
+    _releaseEmailPoll = emailUnread.startPolling();
+  } else if (!on && _releaseEmailPoll) {
+    _releaseEmailPoll();
+    _releaseEmailPoll = null;
+    if (_stopEmailListener) _stopEmailListener();
+    _stopEmailListener = null;
+  }
+}
+
+watch(smsPollOn, _syncSmsPolling, { immediate: true });
+watch(emailPollOn, _syncEmailPolling, { immediate: true });
+
+onMounted(async () => {
   loadFavorites();
   window.addEventListener('keydown', onKeydown);
-  // SMS unread badge — polls even when the pin is module-gated off; the
-  // store collapses errors to 0 so a phone.com-less tenant never badges.
-  _releaseSmsPoll = smsUnread.startPolling();
-  // Email badge + new-mail toast (P2.6). The toast fires only on a RISE after
-  // the first poll seeds a baseline — otherwise every page load with unread
-  // mail would announce week-old messages as new.
-  _stopEmailListener = emailUnread.onIncrease((delta) => {
-    toast.add({
-      severity: 'info',
-      summary: delta === 1 ? 'New email' : `${delta} new emails`,
-      detail: 'Open the Inbox to read it.',
-      life: 4000,
-    });
-  });
-  _releaseEmailPoll = emailUnread.startPolling();
+  await loadTenantModules();
+  modulesReady.value = true;
 });
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown);
   // Release OUR subscriptions only. On a phone this sidebar lives in a lazy
   // Drawer and unmounts whenever it closes, while AppBottomNav keeps its own
   // email subscription for the Email tab badge (2026-09-22).
-  if (_releaseSmsPoll) _releaseSmsPoll();
-  if (_releaseEmailPoll) _releaseEmailPoll();
-  _releaseSmsPoll = null;
-  _releaseEmailPoll = null;
-  if (_stopEmailListener) _stopEmailListener();
+  _syncSmsPolling(false);
+  _syncEmailPolling(false);
 });
 
 function handleItemClick(_to, _label, _icon) {
