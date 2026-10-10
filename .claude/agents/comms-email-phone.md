@@ -91,6 +91,13 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner comms-emai
   Your patterns: `outlook`, `phone_com`, `inbound_comms`, `cell_gateway`,
   `email`, `transactional_email`, `outbound_email`, `notification`,
   `phase15_push`, `team_messages`, `communications_shell`, `twilio_retired`.
+- Baseline scans, after `git merge origin/main` and before the matrix:
+  `gdx_dispatch/tools/run_tests_split.sh --scans` (~30 s). On red,
+  `run_tests_split.sh --refreeze-baselines` re-freezes the line-keyed
+  baselines and refuses growth; pass `--allow-new` only for a clone or
+  filter you have read and mean to keep. Never a bare `docker run` for
+  these in a worktree: it cannot read the git index. It covers the
+  duplicate-block and tenant-plane baselines only; the matrix still runs.
 - Full matrix before any PR: `gdx_dispatch/tools/run_tests_split.sh`.
 - Frontend: `npx vitest run` on the EmailTimeline, NotificationsDrawer,
   Outlook and PhoneCom specs, `test_mobile_phone_sms_routes.test.js`,
