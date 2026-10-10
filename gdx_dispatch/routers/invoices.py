@@ -327,6 +327,9 @@ def _serialize_invoice(
         # case. This is also the detector for the duplicate-payment classes.
         "amount_overpaid": _amount_overpaid(invoice),
         "status": invoice.status,
+        # Migration 114 row token; an edit screen echoes it back to PATCH as
+        # expected_version (GDXA-449).
+        "version": invoice.version,
         "effective_status": _effective_status(invoice),
         "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
         "due_date": invoice.due_date.isoformat() if invoice.due_date else None,
@@ -523,6 +526,17 @@ def _validated_attached_photo_ids(
         .values(customer_visible=True)
     )
     return ids
+
+
+def _bump_invoice_version(invoice: Invoice) -> None:
+    """Move the invoice's version for a write to one of its lines (GDXA-449).
+
+    The version only moves on an UPDATE of the invoices row, and a line edit
+    that leaves the totals alone (a description, a category) changes nothing
+    there, so a stale edit screen would pass the PATCH check and overwrite the
+    colleague's line. Set explicitly, it moves by exactly one per line write.
+    """
+    invoice.version = Invoice.version + 1
 
 
 def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
@@ -1016,6 +1030,12 @@ class InvoicePatchIn(BaseModel):
     # job_photos.id strings, replaced wholesale on every PATCH. Empty list
     # clears the selection. Capped: a 20-photo invoice PDF is already huge.
     attached_photo_ids: list[str] | None = Field(default=None, max_length=20)
+    # GDXA-449: the `version` the edit screen loaded (migration 114). When it
+    # no longer matches the row, a colleague saved first and this PATCH would
+    # silently revert their edit, so it is refused with 409
+    # `invoice_version_conflict`. Omitted means unchecked, as before, for callers that
+    # never loaded a version.
+    expected_version: int | None = Field(default=None, ge=1)
 
 
 class PaymentCreateIn(BaseModel):
@@ -2734,6 +2754,26 @@ def patch_invoice(
     invoice = _get_invoice_or_404(invoice_id, db)
     if invoice.status != "draft":
         raise HTTPException(status_code=409, detail="only draft invoices can be edited")
+    if payload.expected_version is not None:
+        # Re-read the token under a row lock: two stale PATCHes in flight at
+        # once must not both pass the comparison. Postgres hands the second
+        # one the committed version once the first commits. SQLite ignores
+        # FOR UPDATE, so there the check is sequential only.
+        current_version = db.execute(
+            select(Invoice.version).where(Invoice.id == invoice.id).with_for_update()
+        ).scalar_one()
+        if current_version != payload.expected_version:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "invoice_version_conflict",
+                    "message": (
+                        "Someone else changed this invoice after you opened it. "
+                        "Nothing was saved. Reload to see their changes."
+                    ),
+                    "current_version": current_version,
+                },
+            )
 
     updates = payload.model_dump(exclude_unset=True)
     # Apply tax_rate first so a same-payload tax_amount override (rare,
@@ -2761,6 +2801,12 @@ def patch_invoice(
         invoice.attached_photo_ids = _json.dumps(ids) if ids else None
 
     _recalculate_invoice(invoice, db)
+    if payload.expected_version is not None:
+        # A checked PATCH claims the invoice even when it changes no header
+        # field: an edit screen sends it first and then writes lines, so a
+        # line-only save must still move the version, or a second screen
+        # holding the same one passes too and its lines overwrite ours.
+        _bump_invoice_version(invoice)
     db.commit()
     db.refresh(invoice)
     _audit_db = locals().get('db')
@@ -2779,7 +2825,7 @@ def patch_invoice(
                 action="patch_invoice",
                 entity_type="invoice",
                 entity_id=str(invoice_id),
-                details={},
+                details={"version": invoice.version},
                 request=_audit_req,
             )
             _audit_db.commit()
@@ -3668,6 +3714,7 @@ def add_invoice_line(
     claimed_time_entries = _claim_labor_day_rows(db, invoice, payload.time_entry_ids)
 
     _recalculate_invoice(invoice, db)
+    _bump_invoice_version(invoice)
     db.commit()
     db.refresh(line)
     _audit_db = locals().get('db')
@@ -3696,6 +3743,9 @@ def add_invoice_line(
         except Exception:
             log.exception('add_invoice_line_audit_failed')
     resp = _serialize_line(line)
+    # The line write moved the invoice's version (GDXA-449); an edit screen
+    # follows it so the retry of a half-failed save is not refused by itself.
+    resp["invoice_version"] = invoice.version
     if zero_price_warning:
         resp["warning"] = zero_price_warning
     return resp
@@ -3826,6 +3876,7 @@ def patch_invoice_line(
     db.flush()
 
     _recalculate_invoice(invoice, db)
+    _bump_invoice_version(invoice)
     db.commit()
     db.refresh(line)
     try:
@@ -3838,7 +3889,9 @@ def patch_invoice_line(
         db.commit()
     except Exception:
         log.exception("invoice_line_patch_audit_failed")
-    return _serialize_line(line)
+    resp = _serialize_line(line)
+    resp["invoice_version"] = invoice.version  # see add_invoice_line (GDXA-449)
+    return resp
 
 
 @router.delete("/{invoice_id}/lines/{line_id}", response_model=None, dependencies=[Depends(require_permission("invoices.write"))])
@@ -3898,6 +3951,7 @@ def delete_invoice_line(
                 db, invoice, actor=_actor_id(user), why="last_labor_line_deleted",
             )
     _recalculate_invoice(invoice, db)
+    _bump_invoice_version(invoice)
     db.commit()
     try:
         log_audit_event_sync(

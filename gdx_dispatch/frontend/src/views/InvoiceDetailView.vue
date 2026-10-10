@@ -1194,10 +1194,38 @@ async function togglePhoto(id) {
   photoSaving.value = true;
   const prev = current;
   invoice.value.attached_photo_ids = next; // optimistic — checkbox answers instantly
+  const prevVersion = invoice.value.version;
   try {
-    await api.patch(`/api/invoices/${invoice.value.id}`, { attached_photo_ids: next });
+    // The list is replaced wholesale, so a stale screen would drop a photo a
+    // colleague just ticked: carry the version this list was read at.
+    // suppressErrorToast: the catch below says what happened; the generic
+    // toast would add a second, different message.
+    const saved = await api.patch(`/api/invoices/${invoice.value.id}`, {
+      attached_photo_ids: next,
+      ...(prevVersion != null ? { expected_version: prevVersion } : {}),
+    }, { suppressErrorToast: true });
+    const newVersion = saved?.version ?? null;
+    if (newVersion != null) {
+      invoice.value.version = newVersion;
+      // Our own write moved the token. An open edit started from the version
+      // we just replaced follows it, or its Save would 409 on this click.
+      if (editVersion.value === prevVersion) editVersion.value = newVersion;
+    }
   } catch (e) {
     invoice.value.attached_photo_ids = prev;
+    if (isVersionConflict(e)) {
+      // Outside edit mode the version also moves on this screen's own Verify,
+      // payment or dunning-pause, so this may not be someone else: reload and
+      // let the operator tick again against what is really saved.
+      toast.add({
+        severity: "warn",
+        summary: "Photo not saved",
+        detail: "This invoice changed since the page loaded. It has been reloaded; tick the photo again.",
+        life: 8000,
+      });
+      await fetchInvoice();
+      return;
+    }
     toast.add({ severity: "error", summary: "Photo not saved", detail: e.message || "Try again.", life: 4000 });
   } finally {
     photoSaving.value = false;
@@ -1308,6 +1336,34 @@ const editInvoiceDate = ref("");    // ISO yyyy-mm-dd
 const editDueDate = ref("");
 const editNotes = ref("");
 const editHideLinePrices = ref(false);
+// The invoice version this edit started from (GDXA-449). Snapshotted in
+// enterEditMode from a fresh read, so the content being edited and the
+// version guarding it are the same snapshot; not read live at save: the save-failure resync refreshes
+// invoice.value, and a retry must still be checked against what the operator
+// was looking at when they started typing.
+const editVersion = ref(null);
+
+// The server's answer when a PATCH carried a version that someone else's save
+// has since moved past. Nothing was written.
+function isVersionConflict(err) {
+  return err?.status === 409 && err?.code === "invoice_version_conflict";
+}
+
+// Advance the edit's token past a write this save just committed.
+function followVersion(v) {
+  if (v != null) editVersion.value = v;
+}
+
+function versionConflictToast() {
+  toast.add({
+    severity: "warn",
+    summary: "Changed by someone else",
+    detail:
+      "Someone else saved this invoice while you were editing, so your changes were not saved. "
+      + "Cancel, then Edit again to load their version.",
+    life: 10000,
+  });
+}
 const tenantDefaultRatePct = computed(() => taxRate.value * 100);
 
 const verifying = ref(false);
@@ -1658,6 +1714,9 @@ function normalizeInvoice(payload) {
     // production has zero invoices carrying a photo, which is the same fact
     // seen from the database end.
     job_id: payload.job_id || null,
+    // Row version token (GDXA-449). Echoed back on PATCH as expected_version
+    // so a stale screen gets a 409 instead of reverting a colleague's save.
+    version: payload.version ?? null,
     customer_name: payload.customer_name || payload.customer || (typeof payload.customer === "object" ? payload.customer?.name : "") || "Unknown",
     customer_email: payload.customer_email || "",
     customer_phone: payload.customer_phone || "",
@@ -2192,7 +2251,25 @@ async function recordPayment() {
 }
 
 // --- Edit-mode actions ---
-function enterEditMode() {
+// Edit starts from a fresh read of the invoice, not the page's copy. The
+// page's copy goes stale without anyone else touching it: Verify, a payment
+// and dunning-pause each move the version and none of them reloads, so a
+// snapshot of it would 409 the operator's own Save as "someone else". A
+// colleague's save since the page loaded is picked up here too, so their edit
+// is what this one starts from instead of what it overwrites.
+const enteringEdit = ref(false);
+async function enterEditMode() {
+  if (enteringEdit.value || editing.value) return;
+  enteringEdit.value = true;
+  try {
+    const result = await api.get(`/api/invoices/${route.params.id}`, { suppressErrorToast: true });
+    normalizeInvoice(result?.data || result || {});
+  } catch {
+    // Edit from the copy on screen. A stale version then costs a refused
+    // save, never a silent overwrite: the server still checks it.
+  } finally {
+    enteringEdit.value = false;
+  }
   // Snapshot the current invoice into editLines + edit fields. _key is
   // a Vue v-for key that survives re-orders; lines new since enterEdit
   // get a temporary key so we can identify them at save time.
@@ -2266,6 +2343,7 @@ function enterEditMode() {
   editDueDate.value = invoice.value.due_date || "";
   editNotes.value = invoice.value.notes || "";
   editHideLinePrices.value = Boolean(invoice.value.hide_line_prices);
+  editVersion.value = invoice.value.version ?? null;
   editing.value = true;
 }
 
@@ -2278,7 +2356,8 @@ async function saveEdit() {
   // M31 pre-pass: a refusal the client can COMPUTE must land before the
   // first write. The save below is a multi-request diff loop (per-line
   // PATCH/POST, then per-line DELETE, then the invoice-level PATCH carrying
-  // tax rate / dates / notes / hide_line_prices LAST), so the quantity
+  // tax rate / dates / notes / hide_line_prices LAST — it has gone FIRST
+  // since GDXA-449, as the version check), so the quantity
   // refusal used to fire from inside that loop — after any earlier line had
   // already been committed. Two ways that hurt: the operator's tax-rate,
   // date and notes edits silently went nowhere while line A's change stuck,
@@ -2318,8 +2397,8 @@ async function saveEdit() {
   // surface as a 422 raised from INSIDE the write loop: same class as the
   // quantity refusal above (a refusal the client could compute up front,
   // landing after earlier lines were committed), except a throw at least
-  // reached the catch's resync. The header PATCH is sequenced last, so it
-  // was dropped either way — an operator fixing the tax rate in the same
+  // reached the catch's resync. The header PATCH was then sequenced last, so
+  // it was dropped either way — an operator fixing the tax rate in the same
   // edit silently kept the wrong rate.
   const MAX_DESC = 500;
   const MAX_QTY = 9999;
@@ -2402,6 +2481,32 @@ async function saveEdit() {
         .map((ln) => String(ln.id)),
     );
 
+    // 0. Tax rate / dates / notes via PATCH on the invoice, carrying the
+    // version this edit started from (GDXA-449). FIRST, because it is the
+    // staleness check for the whole save: every line write below recomputes
+    // the totals and moves the version, so this PATCH sent after them would
+    // 409 against our own lines, and a stale screen has to be refused before
+    // it deletes or rewrites a single line. The rate is sent exactly as
+    // displayed, INCLUDING an explicit 0 — the server then recomputes
+    // tax_amount to $0. (Sending null here instead used to PRESERVE the
+    // previously computed tax dollars, so zeroing the field looked like it
+    // silently reverted.) The line writes that follow recompute tax with the
+    // new rate, so the totals come out as they did with this PATCH last.
+    const ratePct = toNum(editTaxRatePct.value);
+    const ratePayload = Number.isFinite(ratePct) ? ratePct / 100 : 0;
+    const header = await api.patch(`/api/invoices/${id}`, {
+      tax_rate: ratePayload,
+      invoice_date: editInvoiceDate.value || null,
+      due_date: editDueDate.value || null,
+      notes: editNotes.value || null,
+      hide_line_prices: editHideLinePrices.value,
+      ...(editVersion.value != null ? { expected_version: editVersion.value } : {}),
+    }, { suppressErrorToast: true }); // the catch below toasts; see togglePhoto
+    // Every write below moves the version too, and each response carries the
+    // new one: followed write by write, a save that fails halfway is retried
+    // against our own committed writes instead of being refused by them.
+    followVersion(header?.version);
+
     // 1. Deletions FIRST — anything in original that is not in the kept set.
     // A removed labor line releases the day rows it billed, so a replacement
     // line added below can claim them; inserting first would have the new
@@ -2416,7 +2521,8 @@ async function saveEdit() {
       // derived from fabricated data must never happen (audit 2026-07-24).
       if (oid.length < 32) continue;
       if (!keptIds.has(oid)) {
-        await api.del(`/api/invoices/${id}/lines/${oid}`);
+        const del = await api.del(`/api/invoices/${id}/lines/${oid}`);
+        followVersion(del?.invoice?.version);
       }
     }
 
@@ -2521,7 +2627,8 @@ async function saveEdit() {
           if ((orig?.labor_source ?? null) !== (ln.labor_source ?? null)) {
             patch.labor_source = ln.labor_source ?? null;
           }
-          await api.patch(`/api/invoices/${id}/lines/${ln.id}`, patch);
+          const patched = await api.patch(`/api/invoices/${id}/lines/${ln.id}`, patch);
+          followVersion(patched?.invoice_version);
         }
       } else {
         const body = {
@@ -2549,6 +2656,7 @@ async function saveEdit() {
         // (it forbids extras, so sending them on a PATCH would 422).
         Object.assign(body, laborFields);
         const lineResp = await api.post(`/api/invoices/${id}/lines`, body);
+        followVersion(lineResp?.invoice_version);
         // Record the server id on the edit row so a retry after a mid-save
         // failure PATCHes this line instead of POSTing a duplicate (the
         // catch below refetches, which puts it in originalById).
@@ -2567,26 +2675,12 @@ async function saveEdit() {
       }
     }
 
-    // 3. Tax rate / dates / notes via PATCH on the invoice. The rate is
-    // sent exactly as displayed, INCLUDING an explicit 0 — the server then
-    // recomputes tax_amount to $0. (Sending null here instead used to
-    // PRESERVE the previously computed tax dollars, so zeroing the field
-    // looked like it silently reverted.)
-    const ratePct = toNum(editTaxRatePct.value);
-    const ratePayload = Number.isFinite(ratePct) ? ratePct / 100 : 0;
-    await api.patch(`/api/invoices/${id}`, {
-      tax_rate: ratePayload,
-      invoice_date: editInvoiceDate.value || null,
-      due_date: editDueDate.value || null,
-      notes: editNotes.value || null,
-      hide_line_prices: editHideLinePrices.value,
-    });
-
     toast.add({ severity: "success", summary: "Saved", detail: "Invoice updated", life: 3000 });
     editing.value = false;
     await fetchInvoice();
   } catch (err) {
-    toast.add({
+    if (isVersionConflict(err)) versionConflictToast();
+    else toast.add({
       severity: "error",
       summary: "Save failed",
       detail: err?.message || "Could not save invoice changes",
