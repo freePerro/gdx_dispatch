@@ -503,3 +503,134 @@ def test_ledger_mutation_routes_depend_on_audit_ready_db():
     for route in mutating:
         dep = inspect.signature(route.endpoint).parameters["db"].default.dependency
         assert dep is audit_ready_db, route.path
+
+
+# ---------------------------------------------------------------------------
+# GDXA-499 — every route that runs the seed leaves a trail; cpa keys allowlisted
+# ---------------------------------------------------------------------------
+
+def _reinit_rows(db):
+    return list(db.scalars(
+        select(AuditLog).where(AuditLog.action == "gl_settings_reinitialized")
+    ).all())
+
+
+def _blank_payment_map(db):
+    from gdx_dispatch.modules.ledger.service import get_gl_settings
+
+    get_gl_settings(db, COMPANY).payment_method_role_map = {}
+    db.commit()
+
+
+@pytest.mark.parametrize("route", ["cpa_review", "patch", "enable", "disable"])
+def test_a_seed_top_up_through_any_route_is_audited_by_the_actor(tenant_db, route):
+    """Only /settings/initialize recorded what ``ensure_gl_seed`` rewrote. The
+    other routes committed a refilled payment-method map — a LOCKED_ONCE_LIVE
+    field — with no row naming it, and PATCH stamped "system:release-topup"."""
+    from gdx_dispatch.modules.ledger.service import get_gl_settings
+
+    _init(tenant_db)
+    _blank_payment_map(tenant_db)
+    call = {
+        "cpa_review": lambda: stamp_cpa_review(
+            CpaReviewIn(keys=["tax_basis"]), db=tenant_db, user=USER, _perm=None),
+        "patch": lambda: _patch(tenant_db, tax_basis="accrual"),
+        "enable": lambda: _enable(tenant_db),
+        "disable": lambda: disable_posting(db=tenant_db, user=USER, _perm=None),
+    }[route]
+    call()
+
+    tenant_db.rollback()  # drop anything staged but not committed
+    assert get_gl_settings(tenant_db, COMPANY).payment_method_role_map, "top-up ran and committed"
+    rows = _reinit_rows(tenant_db)
+    assert len(rows) == 1, route
+    assert rows[0].user_id == "tester"
+    assert rows[0].details["fields"] == ["payment_method_role_map"]
+    assert not tenant_db.scalars(
+        select(AuditLog).where(AuditLog.user_id == "system:release-topup")
+    ).first()
+
+
+def test_enable_on_a_live_ledger_still_commits_its_top_up(tenant_db):
+    """enable_posting used to commit only on the off->on flip, so a top-up on an
+    already-enabled ledger was staged and then dropped with its audit row."""
+    from gdx_dispatch.modules.ledger.service import get_gl_settings
+
+    _init(tenant_db)
+    _enable(tenant_db)
+    _blank_payment_map(tenant_db)
+    _enable(tenant_db)
+
+    tenant_db.rollback()  # anything staged but not committed goes here
+    assert get_gl_settings(tenant_db, COMPANY).payment_method_role_map
+    rows = _reinit_rows(tenant_db)
+    assert len(rows) == 1 and rows[0].user_id == "tester"
+
+
+def test_an_idempotent_stamp_writes_no_reinit_row(tenant_db):
+    _init(tenant_db)
+    stamp_cpa_review(CpaReviewIn(keys=["tax_basis"]), db=tenant_db, user=USER, _perm=None)
+    stamp_cpa_review(CpaReviewIn(keys=["entity_type"]), db=tenant_db, user=USER, _perm=None)
+    assert _reinit_rows(tenant_db) == []
+
+
+def test_stamp_on_unseeded_tenant_records_the_initialization(tenant_db):
+    stamp_cpa_review(CpaReviewIn(keys=["tax_basis"]), db=tenant_db, user=USER, _perm=None)
+    actions = [
+        r.action for r in tenant_db.scalars(
+            select(AuditLog).where(AuditLog.entity_type == "gl_settings")
+            .order_by(AuditLog.created_at.asc(), AuditLog.id.asc())
+        )
+    ]
+    assert actions == ["gl_settings_initialized", "gl_cpa_review_stamped"]
+
+
+@pytest.mark.parametrize("keys", [["not_a_setting"], ["x" * 5000], ["tax_basis", "bogus"]])
+def test_cpa_review_rejects_unknown_keys(keys):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        CpaReviewIn(keys=keys)
+
+
+def test_cpa_review_bogus_key_is_a_422_over_http(tenant_db):
+    """The route itself, not just the model: a real request with an unknown
+    key is refused and stores nothing."""
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+
+    from gdx_dispatch.core.database import get_db
+    from gdx_dispatch.modules.ledger.router import router as ledger_router
+    from gdx_dispatch.modules.ledger.service import get_gl_settings
+    from gdx_dispatch.routers.auth import get_current_user
+
+    _init(tenant_db)
+    app = FastAPI()
+    app.include_router(ledger_router)
+
+    @app.middleware("http")
+    async def _grant_all(request: Request, call_next):
+        request.state.user_permissions = {"*"}
+        return await call_next(request)
+
+    app.dependency_overrides[get_db] = lambda: tenant_db
+    app.dependency_overrides[get_current_user] = lambda: USER
+    client = TestClient(app)
+
+    bad = client.post("/api/accounting/settings/cpa-review", json={"keys": ["bogus"]})
+    assert bad.status_code == 422, bad.text
+    tenant_db.expire_all()
+    assert "bogus" not in (get_gl_settings(tenant_db, COMPANY).cpa_review or {})
+
+    good = client.post("/api/accounting/settings/cpa-review", json={"keys": ["tax_basis"]})
+    assert good.status_code == 200, good.text
+    assert "tax_basis" in good.json()["settings"]["cpa_review"]
+
+
+def test_wrong_enable_phrase_refuses_before_seeding(tenant_db):
+    from gdx_dispatch.modules.ledger.service import get_gl_settings
+
+    with pytest.raises(HTTPException) as exc:
+        _enable(tenant_db, confirm="enable")
+    assert exc.value.status_code == 422
+    assert get_gl_settings(tenant_db, COMPANY) is None, "nothing staged on a wrong phrase"

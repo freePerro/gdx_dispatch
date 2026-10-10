@@ -15,6 +15,7 @@ from __future__ import annotations
 import copy
 import logging
 from datetime import date
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -137,13 +138,28 @@ def _audit_seed_effect(db: Session, company_id: str, actor: str, before: dict | 
     after = _topup_snapshot(settings)
     moved = sorted(f for f in _TOPUP_FIELDS if before.get(f) != after.get(f))
     if moved:
-        # A DISTINCT action from the release-top-up at :282. Both rewrite seed
-        # maps, but they answer different questions: that one is an unattended
-        # migration stamped "system:release-topup" over two fields, this one is
-        # a signed-in operator re-running initialize over four. Sharing a name
-        # would make "who changed the payment_method_role_map" unanswerable
-        # from the action alone — which is the whole point of the row.
+        # Stamped with the signed-in actor whichever route ran the seed. The
+        # PATCH path used to write its own "gl_settings_topped_up" row as
+        # "system:release-topup" over two of these four fields (GDXA-499).
         _audit(db, company_id, actor, "gl_settings_reinitialized", {"fields": moved})
+
+
+def _seed_with_trail(db: Session, company_id: str, actor: str):
+    """``ensure_gl_seed`` plus the audit row for what it did to the settings
+    row: created it, or moved one of ``_TOPUP_FIELDS``. A system account the
+    CoA half of the seed re-inserts is not recorded here.
+
+    Every route that runs the seed must go through here (GDXA-499): a top-up
+    can rewrite the payment-method map, which LOCKED_ONCE_LIVE otherwise
+    guards, and before this only ``/settings/initialize`` recorded it. The
+    cpa-review stamp, enable/disable posting and the PATCH path committed a
+    rewritten map with nothing in the trail naming it.
+    """
+    existing = get_gl_settings(db, company_id)
+    before = _topup_snapshot(existing) if existing is not None else None
+    settings = ensure_gl_seed(db, company_id)
+    _audit_seed_effect(db, company_id, actor, before, settings)
+    return settings
 
 
 def _account_payload(a: GlAccount) -> dict:
@@ -238,10 +254,7 @@ def initialize_accounting(
     """
     company_id = _tenant_id(user)
     actor = _actor(user)
-    existing = get_gl_settings(db, company_id)
-    before = _topup_snapshot(existing) if existing is not None else None
-    settings = ensure_gl_seed(db, company_id)
-    _audit_seed_effect(db, company_id, actor, before, settings)
+    settings = _seed_with_trail(db, company_id, actor)
     try:
         db.commit()
     except IntegrityError:
@@ -251,10 +264,7 @@ def initialize_accounting(
         # against the winner's state: if the retry's top-up moves nothing,
         # there is correctly nothing left to record.
         db.rollback()
-        existing = get_gl_settings(db, company_id)
-        before = _topup_snapshot(existing) if existing is not None else None
-        settings = ensure_gl_seed(db, company_id)
-        _audit_seed_effect(db, company_id, actor, before, settings)
+        settings = _seed_with_trail(db, company_id, actor)
         db.commit()
     return _settings_payload(db, settings, company_id)
 
@@ -287,12 +297,7 @@ def patch_accounting_settings(
     settings = get_gl_settings(db, company_id)
     if settings is None:
         raise HTTPException(status_code=409, detail="accounting not initialized — POST /api/accounting/settings/initialize first")
-    before_maps = (settings.payment_method_role_map, settings.credit_reason_role_map)
-    settings = ensure_gl_seed(db, company_id)  # key top-up (release migration)
-    if (settings.payment_method_role_map, settings.credit_reason_role_map) != before_maps:
-        # Top-up touched config (possibly locked fields) — that mutation must
-        # never be actorless/unaudited (audit round 1).
-        _audit(db, company_id, "system:release-topup", "gl_settings_topped_up", {})
+    settings = _seed_with_trail(db, company_id, actor)  # key top-up (release migration)
     locked = _locked_fields(db, settings, company_id)
 
     updates = payload.model_dump(exclude_unset=True, exclude_none=True)
@@ -413,9 +418,15 @@ def opening_apply(
     from gdx_dispatch.modules.ledger.opening import OpeningDerivationError, apply_opening
 
     company_id = _tenant_id(user)
+    actor = _actor(user)
+    # ``apply_opening`` runs ``ensure_gl_seed`` itself; ``gl_opening_applied``
+    # below says nothing about a map its top-up rewrote, so record that the
+    # same way ``_seed_with_trail`` does (GDXA-499).
+    existing = get_gl_settings(db, company_id)
+    before = _topup_snapshot(existing) if existing is not None else None
     try:
         result = apply_opening(
-            db, company_id, _actor(user),
+            db, company_id, actor,
             expected_cutover=payload.expected_cutover,
             expected_reversals=payload.expected_reversals,
         )
@@ -426,13 +437,30 @@ def opening_apply(
             status_code=409,
             detail=f"initialization touched a locked period — {exc}",
         ) from exc
-    _audit(db, company_id, _actor(user), "gl_opening_applied", result)
+    _audit_seed_effect(db, company_id, actor, before, get_gl_settings(db, company_id))
+    _audit(db, company_id, actor, "gl_opening_applied", result)
     db.commit()
     return result
 
 
+# The CPA-dependent choices a review stamp can attest to: the policy fields
+# SettingsPatchIn edits. Anything else was stored in gl_settings.cpa_review and
+# echoed into the audit row verbatim (GDXA-499).
+CpaReviewKey = Literal[
+    "reporting_basis",
+    "tax_basis",
+    "inventory_treatment",
+    "cutover_month",
+    "entity_type",
+    "payment_method_role_map",
+    "credit_reason_role_map",
+    "expense_category_account_map",
+    "revenue_category_account_map",
+]
+
+
 class CpaReviewIn(BaseModel):
-    keys: list[str] = Field(min_length=1, max_length=50)
+    keys: list[CpaReviewKey] = Field(min_length=1, max_length=50)
 
 
 @router.post("/settings/cpa-review")
@@ -444,7 +472,7 @@ def stamp_cpa_review(
 ) -> dict:
     company_id = _tenant_id(user)
     actor = _actor(user)
-    settings = ensure_gl_seed(db, company_id)
+    settings = _seed_with_trail(db, company_id, actor)
     stamps = dict(settings.cpa_review or {})
     now = utcnow().isoformat()
     for key in payload.keys:
@@ -469,16 +497,20 @@ def enable_posting(
     """The one-way door. Requires the exact confirm phrase; locks the
     guardrailed fields from this moment on."""
     company_id = _tenant_id(user)
-    settings = ensure_gl_seed(db, company_id)
+    # Refuse a wrong phrase before the seed stages anything.
     if payload.confirm != ENABLE_CONFIRM_PHRASE:
         raise HTTPException(
             status_code=422,
             detail=f'type "{ENABLE_CONFIRM_PHRASE}" exactly to enable posting',
         )
+    actor = _actor(user)
+    settings = _seed_with_trail(db, company_id, actor)
     if not settings.ledger_posting_enabled:
         settings.ledger_posting_enabled = True
-        _audit(db, company_id, _actor(user), "gl_posting_enabled", {})
-        db.commit()
+        _audit(db, company_id, actor, "gl_posting_enabled", {})
+    # Committed unconditionally: a top-up on an already-enabled ledger staged
+    # a map rewrite and its audit row, and both must land together.
+    db.commit()
     return _settings_payload(db, settings, company_id)
 
 
@@ -491,7 +523,8 @@ def disable_posting(
     """The abort path — only while the ledger is still empty. Once entries
     exist the door has closed (books can't silently stop being the truth)."""
     company_id = _tenant_id(user)
-    settings = ensure_gl_seed(db, company_id)
+    actor = _actor(user)
+    settings = _seed_with_trail(db, company_id, actor)
     if _entries_exist(db, company_id):
         raise HTTPException(
             status_code=409,
@@ -499,8 +532,9 @@ def disable_posting(
         )
     if settings.ledger_posting_enabled:
         settings.ledger_posting_enabled = False
-        _audit(db, company_id, _actor(user), "gl_posting_disabled", {})
-        db.commit()
+        _audit(db, company_id, actor, "gl_posting_disabled", {})
+    # Unconditional for the same reason as enable_posting.
+    db.commit()
     return _settings_payload(db, settings, company_id)
 
 
