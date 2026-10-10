@@ -136,8 +136,8 @@ class TestEveryKeyHasAReader:
 
     The admin form renders every catalog entry as a live switch. A key that
     nothing reads lets the office flip a setting that changes nothing — #644
-    deleted two such keys, GDXA-493 sixteen more (among them three spellings
-    of one idea twice over: ``gps_breadcrumb_interval_sec``/``_seconds`` and
+    deleted two such keys, GDXA-493 seventeen more (among them two spellings
+    of one idea, twice: ``gps_breadcrumb_interval_sec``/``_seconds``, and
     ``push_fallback_policy`` beside the live ``push_fallback_mode``).
 
     A *reader* is a string literal equal to the full key in a tracked
