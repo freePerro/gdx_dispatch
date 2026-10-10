@@ -78,6 +78,13 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner estimates-
   Your patterns: `estimate`, `proposal`, `catalog`, `pricing`, `labor_pricing`,
   `labor_matrix`, `door`, `change_order`, `part_pricing`, `sku_suggest`,
   `typed_catalog`, `m25`, `m28`, `zero_quantity`, `autodraft_labor_provenance`.
+- Baseline scans, after `git merge origin/main` and before the matrix:
+  `gdx_dispatch/tools/run_tests_split.sh --scans` (~30 s). On red,
+  `run_tests_split.sh --refreeze-baselines` re-freezes the line-keyed
+  baselines and refuses growth; pass `--allow-new` only for a clone or
+  filter you have read and mean to keep. Never a bare `docker run` for
+  these in a worktree: it cannot read the git index. It covers the
+  duplicate-block and tenant-plane baselines only; the matrix still runs.
 - Full matrix before any PR: `gdx_dispatch/tools/run_tests_split.sh`.
 - Frontend: `npx vitest run` on the Estimate and LineItemEditor specs and
   `no_quantity_or_one.spec.js`; e2e `estimate-to-job-lines.spec.js`,

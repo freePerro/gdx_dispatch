@@ -76,6 +76,13 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner people-tim
   Your patterns: `timeclock`, `time_off`, `timesheet`, `pay_period`,
   `payroll`, `technicians`, `me_timezone`, `submitted_days`,
   `time_entry_soft_delete`, `migration_097`, `certifications`.
+- Baseline scans, after `git merge origin/main` and before the matrix:
+  `gdx_dispatch/tools/run_tests_split.sh --scans` (~30 s). On red,
+  `run_tests_split.sh --refreeze-baselines` re-freezes the line-keyed
+  baselines and refuses growth; pass `--allow-new` only for a clone or
+  filter you have read and mean to keep. Never a bare `docker run` for
+  these in a worktree: it cannot read the git index. It covers the
+  duplicate-block and tenant-plane baselines only; the matrix still runs.
 - Full matrix before any PR: `gdx_dispatch/tools/run_tests_split.sh`.
 - Frontend: `npx vitest run` on the TimeEntryDialog, TimeOffRequestPanel,
   HolidayPostDialog and Timesheets specs; e2e `time-off.spec.js`,

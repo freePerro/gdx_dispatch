@@ -90,6 +90,13 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner money-bill
   `m32`, `m35`, `m36`, `m39`, `zz_money_correctness_probe`. The GL has a
   Postgres arm (`test_gl_engine_pg`) that skips silently without a reachable
   Postgres — enumerate skips with `-rs`.
+- Baseline scans, after `git merge origin/main` and before the matrix:
+  `gdx_dispatch/tools/run_tests_split.sh --scans` (~30 s). On red,
+  `run_tests_split.sh --refreeze-baselines` re-freezes the line-keyed
+  baselines and refuses growth; pass `--allow-new` only for a clone or
+  filter you have read and mean to keep. Never a bare `docker run` for
+  these in a worktree: it cannot read the git index. It covers the
+  duplicate-block and tenant-plane baselines only; the matrix still runs.
 - Full matrix before any PR: `gdx_dispatch/tools/run_tests_split.sh`.
 - Frontend: `npx vitest run` on the InvoiceDetail, Billing and
   PaymentCaptureForm specs; e2e `invoice-void-ui.spec.js`,
