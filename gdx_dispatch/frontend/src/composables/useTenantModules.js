@@ -325,6 +325,7 @@ const _allEnabledModules = computed(() => [
   ..._pluginModules.value,
 ]);
 
+// Resolves false when it skipped the fetch pre-auth, true when it loaded.
 async function _doLoad(api) {
   // Skip the fetch pre-auth — the endpoint is behind login and would 403
   // on the /login page, cluttering DevTools and the R&D error feed.
@@ -333,7 +334,7 @@ async function _doLoad(api) {
     const auth = useAuthStore();
     if (!auth.isAuthenticated) {
       _enabledModules.value = {};
-      return;
+      return false;
     }
   } catch (_e) {
     // If we can't resolve the store for any reason, still attempt the fetch.
@@ -357,6 +358,7 @@ async function _doLoad(api) {
   } catch (_error) {
     _plugins.value = [];
   }
+  return true;
 }
 
 export function useTenantModules({ refresh = false } = {}) {
@@ -365,10 +367,15 @@ export function useTenantModules({ refresh = false } = {}) {
   async function loadTenantModules({ force = false } = {}) {
     if (force) _loadPromise = null;
     if (_loadPromise) return _loadPromise;
-    _loadPromise = _doLoad(api).finally(() => {
-      // Keep the resolved promise cached so repeat calls dedupe; a caller
-      // who needs fresh data passes { force: true }.
+    // Keep the resolved promise cached so repeat calls dedupe; a caller who
+    // needs fresh data passes { force: true }. A pre-auth skip is not a load
+    // and is not cached: CommandPalette mounts on /login, sign-in is a
+    // router.push rather than a reload, and a cached skip left the empty
+    // payload — every module "on" — in place for the whole session (GDXA-453).
+    const promise = _doLoad(api).then((loaded) => {
+      if (!loaded && _loadPromise === promise) _loadPromise = null;
     });
+    _loadPromise = promise;
     return _loadPromise;
   }
 
