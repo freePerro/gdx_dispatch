@@ -10,10 +10,11 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.pool import StaticPool
 
-from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core import audit as _audit_mod
+from gdx_dispatch.core.audit import AuditLog, TenantBase
 from gdx_dispatch.core.tenant_settings import Base as ControlBase
 from gdx_dispatch.core.tenant_settings import Tenant
 from gdx_dispatch.models.tenant_models import AppSettings, Customer
@@ -39,8 +40,8 @@ def _no_audit(monkeypatch):
         lambda *a, **kw: None, raising=False,
     )
     monkeypatch.setattr(
-        "gdx_dispatch.modules.phone_com.webhook_router.log_audit_event_sync",
-        lambda *a, **kw: None, raising=False,
+        "gdx_dispatch.modules.phone_com.webhook_router.audit_best_effort",
+        lambda *a, **kw: True,
     )
 
 
@@ -282,9 +283,10 @@ def test_successful_delivery_logs_no_warning(setup, caplog):
     WARNING noise on a busy voice line masks the real warnings this router
     does emit (api-error, unknown_event, upsert failure).
 
-    Scope: the autouse ``_no_audit`` fixture stubs ``log_audit_event_sync``,
-    so this does NOT exercise Step 5's ``phone_com_webhook audit failed``
-    branch — it covers the upsert-and-return path only.
+    Scope: the autouse ``_no_audit`` fixture stubs ``audit_best_effort``, so
+    this does NOT exercise Step 5's refused-audit branch — it covers the
+    upsert-and-return path only. The refusal is covered by the GDXA-476
+    tests below.
     """
     app, _, _, _, secret = setup
     caplog.set_level(logging.WARNING, logger=wr.log.name)
@@ -342,3 +344,85 @@ def test_every_first_party_import_in_router_resolves():
     # The scan must be able to fail: if it found nothing to check, it proves nothing.
     assert imported, "no first-party imports found — the AST walk is broken"
     assert [m for m in imported if not resolves(m)] == []
+
+
+# ── a refused audit row (GDXA-476) ────────────────────────────────────
+
+
+def _refuse_audit_inserts(engine) -> None:
+    """A real storage-layer refusal: only a failed statement deactivates the
+    session the way production would see it (see test_audit_best_effort)."""
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TRIGGER audit_logs_refuse_insert BEFORE INSERT ON audit_logs "
+            "BEGIN SELECT RAISE(ABORT, 'audit storage refuses this row'); END;"
+        ))
+
+
+_CALL = {
+    "voip_id": 1000000, "type": "call.completed",
+    "id": "phc-audit-476", "direction": "in", "caller_id": "+15555550100",
+}
+
+
+def test_delivery_writes_its_audit_row(setup, unified_engine, monkeypatch):
+    """Control for the refusal test below: with storage accepting, the
+    delivery lands one ``phone_com_webhook`` row naming the event."""
+    monkeypatch.setattr(wr, "audit_best_effort", _audit_mod.audit_best_effort)
+    app, sm, _, _, secret = setup
+    r = TestClient(app).post(f"/api/webhooks/phone-com/t1/{secret}", json=_CALL)
+    assert r.status_code == 204
+    s = sm()
+    rows = s.query(AuditLog).filter(AuditLog.entity_type == "phone_com_webhook").all()
+    assert [(a.action, a.entity_id, a.user_id) for a in rows] == [
+        ("phone_com.webhook.call", "phc-audit-476", "phone_com_webhook"),
+    ]
+    s.close()
+
+
+def test_refused_audit_row_keeps_204_and_the_call_and_is_logged_by_name(
+    setup, unified_engine, monkeypatch, caplog,
+):
+    """GDXA-474/476: ``audit_logs`` refuses the row after the call has
+    committed. Phone.com must still get 204 (a 5xx retry-storms a delivery that
+    already landed), the PhoneComCall row must survive, and the loss must be
+    logged as ``audit_best_effort_failed`` rather than a bare traceback."""
+    monkeypatch.setattr(wr, "audit_best_effort", _audit_mod.audit_best_effort)
+    app, sm, _, _, secret = setup
+    _refuse_audit_inserts(unified_engine)
+    caplog.set_level(logging.ERROR)
+
+    r = TestClient(app).post(f"/api/webhooks/phone-com/t1/{secret}", json=_CALL)
+
+    assert r.status_code == 204
+    s = sm()
+    assert s.query(PhoneComCall).filter_by(phone_com_call_id="phc-audit-476").count() == 1
+    assert s.query(AuditLog).count() == 0
+    s.close()
+    failed = [rec.getMessage() for rec in caplog.records
+              if rec.getMessage().startswith("audit_best_effort_failed")]
+    assert len(failed) == 1
+    assert "phone_com.webhook.call" in failed[0]
+    assert "phc-audit-476" in failed[0]
+
+
+def test_failed_upsert_is_discarded_and_still_audited(setup, monkeypatch):
+    """An upsert that dies after staging a row must not have that half-written
+    row committed by the audit that follows (audit_best_effort commits), and
+    the delivery attempt itself must still reach the trail."""
+    monkeypatch.setattr(wr, "audit_best_effort", _audit_mod.audit_best_effort)
+
+    def _stage_then_fail(tenant_db, payload):
+        tenant_db.add(PhoneComCall(phone_com_call_id="phc-half-written", direction="in"))
+        raise RuntimeError("upsert died after staging")
+
+    monkeypatch.setattr(wr, "_upsert_call", _stage_then_fail)
+    app, sm, _, _, secret = setup
+
+    r = TestClient(app).post(f"/api/webhooks/phone-com/t1/{secret}", json=_CALL)
+
+    assert r.status_code == 204
+    s = sm()
+    assert s.query(PhoneComCall).filter_by(phone_com_call_id="phc-half-written").count() == 0
+    assert [a.action for a in s.query(AuditLog).all()] == ["phone_com.webhook.call"]
+    s.close()

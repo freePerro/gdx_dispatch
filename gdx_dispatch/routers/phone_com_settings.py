@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import audit_best_effort
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db, get_tenant_db
 from gdx_dispatch.core.tenant_settings import Tenant, TenantSettings
@@ -52,6 +52,30 @@ def _coerce_tenant_uuid(user: dict[str, Any]) -> UUID:
 
 def _coerce_user_id(user: dict[str, Any]) -> str:
     return str(user.get("user_id") or user.get("id") or user.get("sub") or "unknown")
+
+
+def _audit_settings(
+    control_db: Session,
+    tid: UUID,
+    user: dict[str, Any],
+    request: Request,
+    action: str,
+    details: dict[str, Any],
+) -> None:
+    """Audit a settings change that has ALREADY committed (token, webhook ids,
+    AppSettings all commit inside their helpers). A refused trail row is logged
+    by name and leaves ``control_db`` usable for the read-back that follows, so
+    it never turns a landed change into a 500 (GDXA-476)."""
+    audit_best_effort(
+        control_db,
+        action=action,
+        entity_type="tenant_settings",
+        entity_id=str(tid),
+        tenant_id=str(tid),
+        user_id=_coerce_user_id(user),
+        request=request,
+        details=details,
+    )
 
 
 def _require_admin(user: dict[str, Any]) -> dict[str, Any]:
@@ -417,40 +441,20 @@ def patch_phone_com_settings(
     if not result.get("ok"):
         # Audit the failed attempt — token exposure not possible since we
         # never log the value.
-        try:
-            log_audit_event_sync(
-                control_db,
-                tenant_id=str(tid),
-                user_id=_coerce_user_id(user),
-                action="phone_com.settings_patch_failed",
-                entity_type="tenant_settings",
-                entity_id=str(tid),
-                details={"error": result.get("error")},
-                request=request,
-            )
-            control_db.commit()
-        except Exception:
-            log.exception("phone_com_settings audit failed")
+        _audit_settings(
+            control_db, tid, user, request, "phone_com.settings_patch_failed",
+            {"error": result.get("error")},
+        )
         raise HTTPException(status_code=400, detail=result.get("error") or "validation failed")
 
-    try:
-        log_audit_event_sync(
-            control_db,
-            tenant_id=str(tid),
-            user_id=_coerce_user_id(user),
-            action="phone_com.settings_patched",
-            entity_type="tenant_settings",
-            entity_id=str(tid),
-            details={
-                "token_rotated": payload.token is not None,
-                "voip_id_set": payload.voip_id is not None,
-                "webhook_registered": result.get("webhook_status", {}).get("registered", False),
-            },
-            request=request,
-        )
-        control_db.commit()
-    except Exception:
-        log.exception("phone_com_settings audit failed")
+    _audit_settings(
+        control_db, tid, user, request, "phone_com.settings_patched",
+        {
+            "token_rotated": payload.token is not None,
+            "voip_id_set": payload.voip_id is not None,
+            "webhook_registered": result.get("webhook_status", {}).get("registered", False),
+        },
+    )
 
     state = _phone_com_settings_state(tid, control_db, tenant_db)
     return {**state, "test_result": result, "webhook_status": result.get("webhook_status")}
@@ -467,20 +471,10 @@ def delete_phone_com_token(
     tid = _coerce_tenant_uuid(user)
     deleted = _disconnect_phone_com_webhook(tid, control_db, tenant_db)
     _clear_phone_com_token(tid, control_db)
-    try:
-        log_audit_event_sync(
-            control_db,
-            tenant_id=str(tid),
-            user_id=_coerce_user_id(user),
-            action="phone_com.token_cleared",
-            entity_type="tenant_settings",
-            entity_id=str(tid),
-            details={"deleted_callback": deleted.get("deleted_callback")},
-            request=request,
-        )
-        control_db.commit()
-    except Exception:
-        log.exception("phone_com_settings audit failed")
+    _audit_settings(
+        control_db, tid, user, request, "phone_com.token_cleared",
+        {"deleted_callback": deleted.get("deleted_callback")},
+    )
     return {"cleared": True, "webhook_disconnect": deleted}
 
 
@@ -550,20 +544,10 @@ def post_oauth_exchange(
             settings.phone_com_webhook_callback_id = webhook.get("callback_id")
             settings.phone_com_webhook_listener_id = webhook.get("listener_id")
             control_db.commit()
-    try:
-        log_audit_event_sync(
-            control_db,
-            tenant_id=str(tid),
-            user_id=_coerce_user_id(user),
-            action="phone_com.oauth_exchanged",
-            entity_type="tenant_settings",
-            entity_id=str(tid),
-            details={"webhook_registered": webhook.get("registered", False)},
-            request=request,
-        )
-        control_db.commit()
-    except Exception:
-        log.exception("phone_com_settings audit failed")
+    _audit_settings(
+        control_db, tid, user, request, "phone_com.oauth_exchanged",
+        {"webhook_registered": webhook.get("registered", False)},
+    )
     return validation | {"webhook_status": webhook}
 
 

@@ -16,10 +16,11 @@ import respx
 from cryptography.fernet import Fernet
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.pool import StaticPool
 
-from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core import audit as _audit_mod
+from gdx_dispatch.core.audit import AuditLog, TenantBase
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db, get_tenant_db
 from gdx_dispatch.core.tenant_settings import Base as ControlBase
@@ -51,9 +52,8 @@ def fernet_env(monkeypatch):
 def _no_audit(monkeypatch):
     """sqlite test DB doesn't have the prod audit_logs guard schema."""
     monkeypatch.setattr(
-        "gdx_dispatch.routers.phone_com_settings.log_audit_event_sync",
-        lambda *a, **kw: None,
-        raising=False,
+        "gdx_dispatch.routers.phone_com_settings.audit_best_effort",
+        lambda *a, **kw: True,
     )
     monkeypatch.setattr(
         "gdx_dispatch.modules.phone_com.key_storage.log_audit_event_sync",
@@ -415,3 +415,105 @@ def test_build_webhook_url_refuses_without_public_base_url(monkeypatch):
         phone_com_settings._build_webhook_url("acme-co", "s3cr3t")
     assert exc_info.value.status_code == 500
     assert "GDX_PUBLIC_BASE_URL" in str(exc_info.value.detail)
+
+
+# ── a refused audit row (GDXA-476) ──────────────────────────────────────
+
+
+def _mock_good_phone_com() -> None:
+    respx.get(f"{BASE_URL}/accounts").mock(return_value=httpx.Response(200, json=_ACCT))
+    respx.get(f"{BASE_URL}/accounts/1000000/integrations/events/callbacks").mock(
+        return_value=httpx.Response(200, json={"items": [], "total": 0})
+    )
+    respx.post(f"{BASE_URL}/accounts/1000000/integrations/events/callbacks").mock(
+        return_value=httpx.Response(200, json={"id": 555, "config": {"url": "x"}})
+    )
+    respx.post(f"{BASE_URL}/accounts/1000000/integrations/events/listeners").mock(
+        return_value=httpx.Response(200, json={"id": 777, "callback_id": 555})
+    )
+
+
+def _with_audit_table(control_engine, *, refuse: bool) -> None:
+    TenantBase.metadata.tables["audit_logs"].create(control_engine, checkfirst=True)
+    if refuse:
+        with control_engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TRIGGER audit_logs_refuse_insert BEFORE INSERT ON audit_logs "
+                "BEGIN SELECT RAISE(ABORT, 'audit storage refuses this row'); END;"
+            ))
+
+
+@respx.mock
+def test_patch_writes_its_audit_row(
+    control_engine, tenant_engine, tenant_id_with_tenant_row, monkeypatch,
+):
+    """Control for the refusal test below."""
+    monkeypatch.setattr(phone_com_settings, "audit_best_effort", _audit_mod.audit_best_effort)
+    _with_audit_table(control_engine, refuse=False)
+    _mock_good_phone_com()
+    app = _make_app(control_engine, tenant_engine, tenant_id=tenant_id_with_tenant_row)
+    r = _client(app).patch(
+        "/api/settings/integrations/phone-com",
+        json={"token": "phc-good-token", "voip_id": 1000000},
+    )
+    assert r.status_code == 200, r.text
+    s = production_sessionmaker(control_engine)()
+    assert [a.action for a in s.query(AuditLog).all()] == ["phone_com.settings_patched"]
+    s.close()
+
+
+@respx.mock
+def test_patch_survives_a_refused_audit_row(
+    control_engine, tenant_engine, tenant_id_with_tenant_row, monkeypatch, caplog,
+):
+    """GDXA-476: a PATCH with no new token (token already stored) writes no
+    audit row of its own before the router's, so ``audit_best_effort`` is the
+    first thing the refusal hits. The webhook ids are already committed and the
+    handler reads state back through the same session. A bare
+    ``except: log.exception`` left that session deactivated by the failed
+    flush, so the read-back 500ed on a change that had landed."""
+    import logging
+
+    s = production_sessionmaker(control_engine)()
+    key_storage.set_token(s, tenant_id_with_tenant_row, "phc-good-token")
+    s.close()
+    # Every audit write is live from here: key_storage's own and the router's.
+    monkeypatch.setattr(key_storage, "log_audit_event_sync", _audit_mod.log_audit_event_sync)
+    monkeypatch.setattr(phone_com_settings, "audit_best_effort", _audit_mod.audit_best_effort)
+    _with_audit_table(control_engine, refuse=True)
+    _mock_good_phone_com()
+    caplog.set_level(logging.ERROR)
+    app = _make_app(control_engine, tenant_engine, tenant_id=tenant_id_with_tenant_row)
+    r = _client(app).patch(
+        "/api/settings/integrations/phone-com", json={"voip_id": 1000000},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["token_set"] is True
+    assert r.json()["webhook_status"]["callback_id"] == 555
+    assert any(
+        rec.getMessage().startswith("audit_best_effort_failed action=phone_com.settings_patched")
+        for rec in caplog.records
+    )
+
+
+@respx.mock
+def test_patch_with_a_new_token_is_refused_whole_when_its_audit_is(
+    control_engine, tenant_engine, tenant_id_with_tenant_row, monkeypatch,
+):
+    """The token write is NOT post-commit: ``key_storage.set_token`` stages its
+    audit row with the token and commits both, so a refused row refuses the
+    token too. That is the intended shape (an untraced credential change is
+    worse than a failed one), and it is why GDXA-476 left key_storage alone."""
+    monkeypatch.setattr(key_storage, "log_audit_event_sync", _audit_mod.log_audit_event_sync)
+    monkeypatch.setattr(phone_com_settings, "audit_best_effort", _audit_mod.audit_best_effort)
+    _with_audit_table(control_engine, refuse=True)
+    _mock_good_phone_com()
+    app = _make_app(control_engine, tenant_engine, tenant_id=tenant_id_with_tenant_row)
+    r = TestClient(app, raise_server_exceptions=False).patch(
+        "/api/settings/integrations/phone-com",
+        json={"token": "phc-good-token", "voip_id": 1000000},
+    )
+    assert r.status_code == 500
+    s = production_sessionmaker(control_engine)()
+    assert key_storage.get_token(s, tenant_id_with_tenant_row) is None
+    s.close()
