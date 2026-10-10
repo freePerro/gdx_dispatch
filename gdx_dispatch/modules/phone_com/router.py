@@ -1329,6 +1329,32 @@ def list_blocked_calls(
         ) from exc
 
 
+def _audit_blocked_call(
+    control_db: Session,
+    tid: UUID,
+    user: dict[str, Any],
+    request: Request,
+    verb: str,
+    entity_id: str,
+    details: dict[str, Any],
+) -> None:
+    """The block already exists (or is gone) at Phone.com; nothing local to
+    roll back, so a refused trail row is logged by name, never a 500
+    (GDXA-476)."""
+    from gdx_dispatch.core.audit import audit_best_effort
+
+    audit_best_effort(
+        control_db,
+        action=f"phone_com.blocked_call.{verb}",
+        entity_type="phone_com_blocked_call",
+        entity_id=entity_id,
+        tenant_id=str(tid),
+        user_id=str(_coerce_user_uuid(user) or ""),
+        request=request,
+        details=details,
+    )
+
+
 @router.post("/blocked-calls", status_code=status.HTTP_201_CREATED)
 def post_blocked_call(
     payload: _BlockedCallIn,
@@ -1350,22 +1376,11 @@ def post_blocked_call(
         raise HTTPException(
             status_code=exc.status_code or 502, detail=str(exc),
         ) from exc
-    from gdx_dispatch.core.audit import log_audit_event_sync
-    try:
-        log_audit_event_sync(
-            control_db,
-            tenant_id=str(tid),
-            user_id=str(_coerce_user_uuid(user) or ""),
-            action="phone_com.blocked_call.created",
-            entity_type="phone_com_blocked_call",
-            entity_id=str(out.get("id")),
-            details={"number": payload.number, "direction": payload.direction,
-                     "action": payload.action},
-            request=request,
-        )
-        control_db.commit()
-    except Exception:  # noqa: BLE001
-        log.exception("blocked_call audit failed")
+    _audit_blocked_call(
+        control_db, tid, user, request, "created", str(out.get("id")),
+        {"number": payload.number, "direction": payload.direction,
+         "action": payload.action},
+    )
     return out
 
 
@@ -1387,21 +1402,9 @@ def delete_blocked_call(
         raise HTTPException(
             status_code=exc.status_code or 502, detail=str(exc),
         ) from exc
-    from gdx_dispatch.core.audit import log_audit_event_sync
-    try:
-        log_audit_event_sync(
-            control_db,
-            tenant_id=str(tid),
-            user_id=str(_coerce_user_uuid(user) or ""),
-            action="phone_com.blocked_call.deleted",
-            entity_type="phone_com_blocked_call",
-            entity_id=str(blocked_id),
-            details={},
-            request=request,
-        )
-        control_db.commit()
-    except Exception:  # noqa: BLE001
-        log.exception("blocked_call audit failed")
+    _audit_blocked_call(
+        control_db, tid, user, request, "deleted", str(blocked_id), {},
+    )
 
 
 @router.get("/inbound-stats")
