@@ -2156,6 +2156,54 @@ def create_invoice(
     return resp
 
 
+@router.get("/ach-pending", response_model=None, dependencies=[Depends(require_permission("invoices.read_all"))])
+def list_ach_pending(
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Open invoices with a bank transfer moving right now (GDXA-393).
+
+    A bank debit takes up to four business days and nothing is recorded until
+    it settles: the invoice reads unpaid at full balance, the customer's pay
+    page says "pending", and the office saw nothing. Stripe is the register
+    (`core.payments._ach_in_flight`), so this asks it, the same question with
+    the same answer as the pay page, in ONE scan for every invoice at once.
+
+    Its own route, fetched by the Billing list and the invoice detail AFTER
+    they render: no Stripe timeout is configured, so a slow Stripe inside
+    `GET /api/invoices/{id}` would stall the whole page for a hint. Here it
+    can only delay the tag. Display-only and read-only; ``checked`` is False
+    when Stripe could not be asked, so "none pending" is never claimed then.
+    """
+    from gdx_dispatch.core.payments import ach_in_flight_by_invoice
+
+    scan = ach_in_flight_by_invoice()
+    if scan is None:
+        return {"checked": False, "pending": {}}
+    ids = []
+    for raw in scan:
+        try:
+            ids.append(UUID(raw))
+        except (ValueError, TypeError):
+            continue
+    pending: dict[str, dict[str, object]] = {}
+    if ids:
+        rows = db.scalars(
+            select(Invoice).where(Invoice.id.in_(ids), Invoice.deleted_at.is_(None))
+        ).all()
+        for inv in rows:
+            # A settled, void or unsent invoice has nothing to be pending on;
+            # an intent Stripe still holds for one is the M12 sweep's business.
+            if str(inv.status or "").lower() in ("paid", "void", "draft") or _to_float(inv.balance_due) <= 0:
+                continue
+            hit = scan.get(str(inv.id)) or {}
+            pending[str(inv.id)] = {
+                "stage": str(hit.get("stage") or "processing"),
+                "amount": round(int(hit.get("amount_cents") or 0) / 100.0, 2),
+            }
+    return {"checked": True, "pending": pending}
+
+
 @router.get("/{invoice_id}", response_model=None)
 def get_invoice(
     invoice_id: UUID,
@@ -2364,6 +2412,15 @@ _INVOICE_ACTIVITY_LABELS: dict[str, str] = {
     "invoice_dunning_pause": "Automatic reminders paused",
     "invoice_dunning_resume": "Automatic reminders resumed",
     "payment_receipt_sent": "Receipt sent",
+    "payment_receipt_auto_skipped": "Automatic receipt not sent — no customer email on file",
+    # GDXA-393: the bank-transfer lifecycle. None of these is a Payment row,
+    # so "Payment History is the record" never covered them; the office saw
+    # nothing for the up-to-four business days a debit is moving, nor when
+    # it bounced.
+    "ach_payment_processing": "Bank transfer started — pending (up to 4 business days)",
+    "ach_payment_awaiting_verification": "Bank transfer waiting on the customer's micro-deposit check",
+    "ach_payment_failed": "Bank transfer FAILED — the balance is still owed",
+    "stripe_partial_refund_received": "Partial refund made at Stripe — record it on the Payments page if not already recorded",
     "mobile_invoice_receipt_sent": "Receipt sent from mobile",
     "mobile_invoice_receipt_send_failed": "Receipt failed to send from mobile",
     "collection_updated": "Collections status updated",
@@ -2391,11 +2448,16 @@ _INVOICE_ACTIVITY_EXCLUDED: dict[str, str] = {
         a: "payment movement — Payment History is the record (online payments are audited on the payment row)"
         for a in (
             "payment_recorded", "payment_recorded_after_the_fact", "payment_voided", "payment_intent",
-            "refund_processed", "stripe_partial_refund_received", "stale_payment_intents_canceled",
-            "ach_in_flight_blocked_new_payment", "ach_payment_awaiting_verification",
-            "ach_payment_failed", "ach_payment_processing",
+            "refund_processed", "stale_payment_intents_canceled",
+            "ach_in_flight_blocked_new_payment",
         )
     },
+    # GDXA-393: an attempted automatic receipt is already on the trail as its
+    # outbound_emails row ("Receipt email sent to …" / "… not sent"), which
+    # carries the address and the provider's verdict. The audit row is the
+    # who-did-it record, not a second line on the timeline. (A receipt that
+    # was never attempted has no email row, so `_skipped` is shown.)
+    "payment_receipt_auto": "shown as its outbound_emails row",
 }
 
 
@@ -2868,6 +2930,39 @@ def _invoice_email_templates(tenant_id: str, *, receipt: bool) -> tuple[str, str
     )
 
 
+def _invoice_pdf_attachments(db: Session, invoice, cust) -> list[dict[str, object]] | None:
+    """The invoice PDF as an email attachment, or None (logged) when it
+    cannot be rendered or is too large to send inline. Never raises: a
+    missing attachment must not stop the email itself. Shared by /send and
+    the automatic payment receipt so both deliver the same document."""
+    try:
+        import base64 as _b64
+
+        from gdx_dispatch.core.pdf_generator import generate_invoice_pdf
+        from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
+        from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload, _template_config
+        pdf_bytes = generate_invoice_pdf(
+            invoice_data=_invoice_payload(invoice, cust, db),
+            tenant_branding=_branding_payload(db),
+            template_config=_template_config(db, "invoice"),
+        )
+        if len(pdf_bytes) > MAX_INLINE_ATTACHMENT_BYTES:
+            log.warning(
+                "invoice_send_pdf_too_large_to_attach invoice=%s bytes=%s",
+                invoice.id, len(pdf_bytes),
+            )
+            return None
+        _sfx = "-paid" if invoice.status == "paid" else ""
+        return [{
+            "name": f"invoice-{invoice.invoice_number or str(invoice.id)[:8]}{_sfx}.pdf",
+            "content_type": "application/pdf",
+            "content_base64": _b64.b64encode(pdf_bytes).decode("ascii"),
+        }]
+    except Exception:
+        log.exception("invoice_send_pdf_attach_failed")
+        return None
+
+
 def _prepare_invoice_email(
     db: Session,
     invoice,
@@ -3319,32 +3414,7 @@ def send_invoice(
             cust = prep["customer"]
             recipient = prep["recipient"]
             if cust is not None and recipient is not None and recipient.ok:
-                attachments: list[dict[str, object]] | None = None
-                try:
-                    import base64 as _b64
-
-                    from gdx_dispatch.core.pdf_generator import generate_invoice_pdf
-                    from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
-                    from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload, _template_config
-                    pdf_bytes = generate_invoice_pdf(
-                        invoice_data=_invoice_payload(invoice, cust, db),
-                        tenant_branding=_branding_payload(db),
-                        template_config=_template_config(db, "invoice"),
-                    )
-                    if len(pdf_bytes) > MAX_INLINE_ATTACHMENT_BYTES:
-                        log.warning(
-                            "invoice_send_pdf_too_large_to_attach invoice=%s bytes=%s",
-                            invoice.id, len(pdf_bytes),
-                        )
-                    else:
-                        _sfx = "-paid" if invoice.status == "paid" else ""
-                        attachments = [{
-                            "name": f"invoice-{invoice.invoice_number or str(invoice.id)[:8]}{_sfx}.pdf",
-                            "content_type": "application/pdf",
-                            "content_base64": _b64.b64encode(pdf_bytes).decode("ascii"),
-                        }]
-                except Exception:
-                    log.exception("invoice_send_pdf_attach_failed")
+                attachments = _invoice_pdf_attachments(db, invoice, cust)
                 email_sent, email_provider, email_skip_reason = send_transactional_email(
                     tenant_db=db,
                     tenant_id=tid,
@@ -5212,3 +5282,104 @@ def send_payment_receipt(
         "email_provider": payload.get("email_provider"),
         "email_skip_reason": payload.get("email_skip_reason"),
     }
+
+
+# Who the automatic receipt is from: a machine acting on a processor payment,
+# not a person and not the customer (who paid; they did not send anything).
+_AUTO_RECEIPT_ACTOR = "auto-receipt"
+# A redelivered webhook cannot reach here twice (`_mark_invoice_paid` returns
+# early on a known reference), but a /confirm and a webhook for two DIFFERENT
+# payments seconds apart can. One receipt per invoice per window is enough.
+_AUTO_RECEIPT_DEDUP_SECONDS = 600
+
+
+def send_automatic_payment_receipt(db: Session, invoice_id: str, *, reference: str = "") -> dict[str, object]:
+    """Email the customer their receipt after a processor payment (GDXA-393).
+
+    Called from the `billing_followup.send_payment_receipt` task, which
+    `core/payments._mark_invoice_paid` queues once per new Stripe payment.
+    The same paid-invoice receipt the office's Send Receipt delivers — the
+    tenant's receipt template, the "-paid" PDF — through the same
+    transactional layer, so every attempt lands in `outbound_emails` and on
+    the invoice's Activity as "Receipt email sent" or "... not sent".
+
+    Only a PAID invoice gets one: the receipt template thanks the customer
+    for paying in full, and a partial payment is not that. Returns a result
+    dict and never raises a skip — a receipt is a courtesy riding committed
+    money, and nothing here may disturb it.
+    """
+    from gdx_dispatch.core.transactional_email import (
+        _designated_sender_user_id,
+        recently_sent,
+        send_transactional_email,
+    )
+    from gdx_dispatch.routers.pdf import _invoice_settlement
+
+    try:
+        invoice = db.get(Invoice, UUID(str(invoice_id)))
+    except (ValueError, TypeError):
+        invoice = None
+    if invoice is None or invoice.deleted_at is not None:
+        return {"sent": False, "skip_reason": "invoice_not_found"}
+    if invoice.status != "paid":
+        return {"sent": False, "skip_reason": "invoice_not_paid"}
+    paid_to_date, _credits = _invoice_settlement(invoice, db)
+    if paid_to_date <= 0:
+        return {"sent": False, "skip_reason": "no_payment_recorded"}
+    tid = str(invoice.company_id) if invoice.company_id else None
+    if not tid or not invoice.customer_id:
+        return {"sent": False, "skip_reason": "invoice_has_no_customer"}
+    if recently_sent(
+        db, "invoice", str(invoice.id), kind="receipt",
+        within_seconds=_AUTO_RECEIPT_DEDUP_SECONDS,
+    ):
+        return {"sent": False, "skip_reason": "duplicate_send_suppressed"}
+
+    prep = _prepare_invoice_email(db, invoice, mint_token=False)
+    cust = prep["customer"]
+    recipient = prep["recipient"]
+    if cust is None or recipient is None or not recipient.ok:
+        # Nothing to send to. Said on the trail, so "did they get a receipt?"
+        # has an answer; no outbound_emails row exists for a send never tried.
+        sent, provider, skip_reason = False, None, "customer_has_no_email"
+        attempted = False
+    else:
+        attempted = True
+        sent, provider, skip_reason = send_transactional_email(
+            tenant_db=db,
+            tenant_id=tid,
+            # No person sent this, so it goes as the mailbox the office chose
+            # under Settings → Automation email → "Send as", as the planner
+            # digest and plugin mail do. `user_id=None` would skip Outlook
+            # for SMTP alone, and a tenant that mails through Outlook has no
+            # SMTP: every receipt would read "not sent" (audit, 2026-10-09).
+            user_id=_designated_sender_user_id(db),
+            to_email=recipient.email,
+            to_name=recipient.to_name,
+            recipient_source=recipient.source,
+            recipient_contact_id=recipient.contact_id,
+            subject=prep["subject"],
+            html_body=prep["html"],
+            attachments=_invoice_pdf_attachments(db, invoice, cust),
+            kind="receipt",
+            entity_type="invoice",
+            entity_id=str(invoice.id),
+            initiator_kind=_AUTO_RECEIPT_ACTOR,
+            initiator_ref=reference or None,
+        )
+    log_audit_event_sync(
+        db=db, tenant_id=None, user_id=_AUTO_RECEIPT_ACTOR,
+        action="payment_receipt_auto" if attempted else "payment_receipt_auto_skipped",
+        entity_type="invoice", entity_id=str(invoice.id),
+        details={
+            "to": recipient.email if (recipient is not None and recipient.ok) else None,
+            "total": _to_float(invoice.total),
+            "paid": paid_to_date,
+            "email_sent": bool(sent),
+            "skip_reason": skip_reason,
+            "reference": reference,
+            "automatic": True,
+        },
+    )
+    db.commit()
+    return {"sent": bool(sent), "provider": provider, "skip_reason": skip_reason}

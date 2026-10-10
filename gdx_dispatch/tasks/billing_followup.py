@@ -224,3 +224,56 @@ def billing_followup_tick() -> dict:
         raise
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Customer payment receipt (GDXA-393)
+# ---------------------------------------------------------------------------
+#
+# Lives in this module because the worker already imports it: a new task
+# module would also need `core/celery_app.py`'s include list, and a task the
+# worker has never imported is dropped as "unregistered" with no trace.
+#
+# Same deploy-window caveat as `tasks/stale_intent_sweep.py`: `update.sh`
+# health-gates the new app before it recreates the workers, so a payment in
+# that window queues this task at a worker running the previous image, which
+# drops it. That costs one receipt and no money, and it leaves no false
+# record — nothing claims a receipt went out until `outbound_emails` says so.
+
+
+@celery_app.task(name="billing_followup.send_payment_receipt")
+def send_payment_receipt_task(invoice_id: str, reference: str = "") -> dict:
+    from gdx_dispatch.routers.invoices import send_automatic_payment_receipt
+
+    db = SessionLocal()
+    try:
+        result = send_automatic_payment_receipt(db, invoice_id, reference=reference)
+        log.info("payment_receipt invoice=%s %s", invoice_id, result)
+        return result
+    finally:
+        db.close()
+
+
+def enqueue_payment_receipt(invoice_id: str, *, reference: str = "") -> bool:
+    """Queue the customer's receipt. Never raises — the payment is already
+    committed when this runs, and a dead broker must not 500 it.
+
+    Bounded for the reason `apply_async_bounded` documents: an unreachable
+    broker otherwise costs ~19s inside the webhook and the pay page's confirm.
+    """
+    try:
+        from gdx_dispatch.tasks.stale_intent_sweep import apply_async_bounded
+
+        apply_async_bounded(
+            send_payment_receipt_task,
+            args=[str(invoice_id)],
+            kwargs={"reference": reference},
+        )
+        return True
+    except Exception:  # noqa: BLE001
+        log.exception(
+            "payment_receipt_not_queued invoice=%s reference=%s — the customer gets "
+            "no receipt for this payment unless the office sends one",
+            invoice_id, reference,
+        )
+        return False
