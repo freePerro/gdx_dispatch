@@ -1,0 +1,12 @@
+# Plugin-host = the app's requirements + the Python half of Playwright.
+# Compiled to requirements-plugin-host.lock; see gdx_dispatch/tools/requirements_lock.py.
+-r requirements.txt
+
+# The Playwright base image (Dockerfile.plugin-host, v1.49.1-noble) ships the
+# browsers under /ms-playwright but NOT the Python package. Pinned to the base
+# image's browser build (chromium-1148): a different playwright would look for
+# a browser the image does not carry. Change this and the FROM tag together;
+# tests/test_requirements_lock.py fails when they differ.
+# playwright 1.49.1 requires greenlet==3.1.1 exactly, so this lock pins greenlet
+# lower than the app lock does.
+playwright==1.49.1

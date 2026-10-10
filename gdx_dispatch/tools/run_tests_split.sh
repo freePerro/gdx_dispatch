@@ -265,8 +265,13 @@ fi
 # packages agree with each other and never reads requirements.txt, so it
 # returns "No broken requirements found" / exit 0 with the defect present.
 #
+# Checked against the LOCK (GDXA-467): CI and the images install exactly its
+# pins, so an image that merely satisfies requirements.txt's ranges can still
+# run a set CI never tests. Every lock line is `==`, so any version difference
+# exits 1 here.
+#
 # SKIP_DEP_CHECK=1 bypasses it. Deliberately not silent when you do.
-REQ_FILE="gdx_dispatch/requirements.txt"
+REQ_FILE="gdx_dispatch/requirements.lock"
 if [ "${SKIP_DEP_CHECK:-0}" = "1" ]; then
   echo "⚠ dependency drift check SKIPPED (SKIP_DEP_CHECK=1)"
 elif [ -n "${PYBIN:-}" ] && [ -f "$REQ_FILE" ]; then
@@ -320,9 +325,9 @@ if [ "${IMAGE_AGE_CHECK:-1}" = "1" ] && [ -n "$IMAGE" ]; then
     vers="$(docker run --rm --entrypoint python "$IMAGE" -c \
       "import importlib.metadata as m; print(' '.join(f'{p} {m.version(p)}' for p in ('fastapi','pydantic','sqlalchemy','freezegun')))" 2>/dev/null || true)"
     echo "image $IMAGE built $(date -d "$created" '+%Y-%m-%d %H:%M') (${age_d}d old): ${vers:-versions unreadable}"
-    req_ts="$(git -C "$REPO_ROOT" log -1 --format=%ct -- gdx_dispatch/requirements.txt gdx_dispatch/docker/Dockerfile 2>/dev/null || true)"
+    req_ts="$(git -C "$REPO_ROOT" log -1 --format=%ct -- gdx_dispatch/requirements.txt gdx_dispatch/requirements.lock gdx_dispatch/docker/Dockerfile 2>/dev/null || true)"
     if [ -n "$req_ts" ] && [ "$img_ts" -lt "$req_ts" ]; then
-      echo "⚠ image is OLDER than the last requirements.txt/Dockerfile change on this branch"
+      echo "⚠ image is OLDER than the last requirements.txt/.lock/Dockerfile change on this branch"
       echo "  ($(date -d "@$req_ts" '+%Y-%m-%d %H:%M')). Failures may be the image, not your code. Rebuild:"
       echo "    docker compose -f gdx_dispatch/docker/docker-compose.yml build app"
     elif [ "$age_d" -ge "${IMAGE_MAX_AGE_DAYS:-7}" ]; then

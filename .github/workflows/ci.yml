@@ -90,12 +90,19 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
+          cache-dependency-path: gdx_dispatch/requirements.lock
 
       - name: Install dependencies
-        # requirements.txt pins pytest-split / pytest-asyncio (and pulls in
+        # From the LOCK, the set the images ship (GDXA-467): requirements.txt
+        # states ranges, and resolving them fresh here tested whatever PyPI
+        # held that minute. --no-deps: a package missing from the lock fails
+        # the run instead of being resolved silently; `pip check` fails an
+        # inconsistent set. The lock pins pytest-split / pytest-asyncio (and
         # pytest). It still pins pytest-xdist too, but CI no longer uses it —
         # the split matrix below replaces the old `-n auto` invocation.
-        run: pip install -r gdx_dispatch/requirements.txt
+        run: |
+          pip install --no-deps -r gdx_dispatch/requirements.lock
+          pip check
 
       - name: Run tests (pytest-split shard ${{ matrix.group }}/7)
         env:

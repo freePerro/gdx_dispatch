@@ -13,6 +13,7 @@ on:
     paths:
       - 'gdx_dispatch/**'
       - 'gdx_dispatch/requirements.txt'
+      - 'gdx_dispatch/requirements.lock'
       - '.github/workflows/**'
       - '!**/*.md'
   pull_request:
@@ -37,18 +38,19 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # 3.12, the interpreter the lock is resolved for and the images run.
+          python-version: "3.12"
           cache: "pip"
-          cache-dependency-path: gdx_dispatch/requirements.txt
+          cache-dependency-path: gdx_dispatch/requirements.lock
 
       - name: Install pip-audit
         run: pip install pip-audit
 
       - name: Install requirements (for pip-audit environment scan)
-        # Install deps so pip-audit can scan the actual installed packages.
+        # Install the LOCKED set, so the scan audits the versions the images
+        # ship (GDXA-467), not a fresh resolution of requirements.txt's ranges.
         run: |
-          pip install -r gdx_dispatch/requirements.txt --ignore-requires-python || \
-          pip install -r gdx_dispatch/requirements.txt --no-deps || true
+          pip install --no-deps -r gdx_dispatch/requirements.lock || true
 
       - name: Run pip-audit (report-only)
         # Supplementary scan. Dependabot is the authoritative dependency gate
