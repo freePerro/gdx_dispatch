@@ -12,8 +12,24 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import SessionLocal, tenant_context
+from gdx_dispatch.core.pay_periods import shop_day_of, shop_today, shop_tz_name_from_settings
 
 log = logging.getLogger(__name__)
+
+
+def _shop_invoice_date(invoice_date: date | datetime | None, db: Session | None) -> date:
+    """The invoice's day on the shop's calendar (GDXA-505): ``None`` is the
+    shop's today and a timestamp is converted to the shop's zone, not cut at
+    its UTC day. With no session the zone is the app's America/New_York
+    default (``pay_periods`` uses the same for a sessionless row) — still
+    closer to the shop than UTC."""
+    if isinstance(invoice_date, datetime):
+        tz_name = shop_tz_name_from_settings(db) if db is not None else "America/New_York"
+        return shop_day_of(invoice_date, tz_name)
+    if invoice_date is None:
+        tz_name = shop_tz_name_from_settings(db) if db is not None else "America/New_York"
+        return shop_today(tz_name)
+    return invoice_date
 
 
 @dataclass
@@ -27,20 +43,16 @@ class EffectiveTerms:
     interest_rate_monthly_percent: Decimal | None
     interest_grace_days: int
 
-    def due_date(self, invoice_date: date | datetime | None) -> date:
-        if invoice_date is None:
-            invoice_date = datetime.utcnow().date()
-        elif isinstance(invoice_date, datetime):
-            invoice_date = invoice_date.date()
+    def due_date(self, invoice_date: date | datetime | None, *, db: Session | None = None) -> date:
+        invoice_date = _shop_invoice_date(invoice_date, db)
         return invoice_date + timedelta(days=int(self.payment_terms_days))
 
-    def early_pay_deadline(self, invoice_date: date | datetime | None) -> date | None:
+    def early_pay_deadline(
+        self, invoice_date: date | datetime | None, *, db: Session | None = None
+    ) -> date | None:
         if not self.early_pay_discount_days or not self.early_pay_discount_percent:
             return None
-        if invoice_date is None:
-            invoice_date = datetime.utcnow().date()
-        elif isinstance(invoice_date, datetime):
-            invoice_date = invoice_date.date()
+        invoice_date = _shop_invoice_date(invoice_date, db)
         return invoice_date + timedelta(days=int(self.early_pay_discount_days))
 
 

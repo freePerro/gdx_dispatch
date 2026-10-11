@@ -11,7 +11,7 @@ total − credits − live payments inside the transaction.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -20,6 +20,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import AuditLog, TenantBase, ensure_audit_table
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Payment
 
 TENANT = "tenant-m32"
@@ -68,7 +69,7 @@ def _pay(db, inv, **kw):
     with patch("gdx_dispatch.routers.invoices.enqueue_stale_intent_sweep"):
         return record_payment(
             invoice_id=inv.id,
-            payload=PaymentCreateIn(method="check", date=date.today(), **kw),
+            payload=PaymentCreateIn(method="check", date=shop_today_from_settings(db), **kw),
             _=OFFICE, db=db,
         )
 

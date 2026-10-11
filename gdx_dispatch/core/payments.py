@@ -48,6 +48,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core import customer_page_preview
 from gdx_dispatch.core.customer_views import record_customer_view
 from gdx_dispatch.core.database import contained_read, get_db
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import AppSettings, Invoice, Payment
 
 logger = logging.getLogger(__name__)
@@ -1366,7 +1367,9 @@ def _mark_invoice_paid(
         invoice_id=invoice.id,
         amount=pay_amount,
         method=method,
-        payment_date=datetime.now(timezone.utc).date(),
+        # The shop's calendar day, not UTC's: a card settled after ~7pm
+        # Central is already tomorrow on the server clock (GDXA-505).
+        payment_date=shop_today_from_settings(db),
         reference=external_ref,
         surcharge_amount=(round(float(surcharge), 2) if surcharge and float(surcharge) > 0 else None),
     )
@@ -2623,7 +2626,9 @@ def _apply_payment_void_state(
         payment = db.get(Payment, payment_id)
         if payment is None:  # pragma: no cover — the row cannot vanish mid-webhook
             raise
-        today = datetime.now(timezone.utc).date()
+        # "The current open period" is the shop's, not UTC's: on the last
+        # evening of a month the UTC date is already next month (GDXA-505).
+        today = shop_today_from_settings(db)
         try:
             return attempt(today, post_to_ledger=True)
         except PeriodLockedError as second:
