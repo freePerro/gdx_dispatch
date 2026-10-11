@@ -30,12 +30,6 @@ Three deliberate exclusions:
   as "billed" would hide the job from every alert (silent false negative).
   A $0 invoice that was deliberately SENT does count (warranty work — the
   operator said "this is free", stop nagging).
-
-Known edge (documented, accepted): the display state's `live_invoices` still
-counts a $0 draft — the locked display model is untouched here. This note
-used to say such a job shows "Invoiced"; it shows "Paid" (a zero balance
-reads as settled — verified 2026-10-07). It still stays in Ready-for-Billing/
-alerts, and the API's derived `billing_status` says "unbilled".
 """
 from __future__ import annotations
 

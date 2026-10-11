@@ -1,4 +1,4 @@
-"""The Jinja onboarding wizard is retired (2026-09-24) — and `/api/onboarding` is not.
+"""The Jinja onboarding wizard is retired, and so is the module that held it.
 
 `core/onboarding.py` used to export a second router, `ui_router`, serving an
 HTML wizard at `GET /onboarding`, `GET /onboarding/{step}` and
@@ -10,49 +10,19 @@ GDXA-24, on the maintainer's ruling on GDXA-19; same shape as the
 `integrations.html` / `ui_router` removal recorded in
 `test_33_integrations.py::test_integrations_page_renders`.
 
-**The second half of this file is the reason it exists.** The deletion had a
-trap in it. `app.py` imported both routers inside ONE `try` with ONE shared
-`except`:
+GDXA-24 left the module's JSON half, `GET /api/onboarding`, mounted because its
+brief required it, and this file pinned that route. It had no caller anywhere:
+not `frontend/src`, not the mobile routers, not the MCP tools. It was a parallel
+implementation of onboarding over Redis/process memory with six steps of its
+own, so it could not describe the wizard the app really drives, which is
+`gdx_dispatch/routers/onboarding.py` (`/api/onboarding/state|step|complete|
+checklist`, DB-backed). GDXA-579 deleted the module, its mount and its tests,
+and turned the presence half of this file into the absence assertion below.
 
-    try:
-        from gdx_dispatch.core.onboarding import router as core_onboarding_router
-        from gdx_dispatch.core.onboarding import ui_router as onboarding_ui_router
-    except Exception:
-        ...
-        core_onboarding_router = APIRouter(tags=["onboarding"])
-
-Removing `ui_router` from the module while leaving that second import standing
-makes it raise `ImportError`, the shared `except` fires, and
-`core_onboarding_router` — the JSON router that IS mounted — is rebound to an
-empty `APIRouter`. `app.include_router(core_onboarding_router, prefix="/api")`
-then mounts nothing and `GET /api/onboarding` silently disappears. The app still
-boots and `/health` still passes; the only signal is one logged exception at
-startup. So it gets a test that can only be green when the route is really there,
-rather than one that proves the app imports.
-
-**What these presence tests do NOT claim.** They hold that the route stays
-mounted because GDXA-24's brief required exactly that. They are not a finding
-that the route is used: grep finds no caller of bare `GET /api/onboarding` in
-`frontend/src`, the mobile routers or the MCP tools. The onboarding surface the
-app really drives is `gdx_dispatch/routers/onboarding.py`
-(`/api/onboarding/state|step|complete|checklist`), which `OnboardingView.vue`
-calls. `core/onboarding.py` is a parallel implementation of the same idea over
-Redis/process memory with a different six steps. Whether it should survive at all
-is an open question for the maintainer — if the answer is no, delete this file's
-presence half with it rather than working around it.
-
-Nor do they claim the handler is *correct*: `get_onboarding_api` wraps its body
-in `except Exception` and returns HTTP 200 with `complete: 0` and
-`next_step: "company_info"`, so a Redis outage reads as "fresh install" rather
-than as an error. Pre-existing, and these tests cannot fail for it — they assert
-the route is mounted and whose handler it is, not what it returns under fault.
-
-Falsifier, stated so a future reader can check this guard can actually fail:
-rebind `core_onboarding_router` to `APIRouter()` in `app.py` and
-`test_api_onboarding_route_is_still_mounted` and
-`test_api_onboarding_is_served_by_the_live_handler` both go red. The route-table
-drift in `openapi_routes.txt` would also catch it, but it reads as "you changed
-the route list", not "you unmounted a live API".
+Falsifier, so a reader can check these guards can fail: restore
+`core/onboarding.py`, and `test_core_onboarding_module_is_gone` goes red;
+mount any router at `GET /api/onboarding` and
+`test_bare_api_onboarding_is_not_mounted` goes red.
 
 `templates/onboarding.html` itself is owned by documents-media and was deleted
 separately, under GDXA-25; `test_the_wizard_template_is_gone_from_the_tree`
@@ -63,11 +33,10 @@ assertion only stops the orphan coming back.
 """
 from __future__ import annotations
 
+import importlib.util
 import pathlib
 
 from gdx_dispatch.tests.conftest import iter_app_routes
-
-# ── The live surface must survive the deletion ────────────────────────────────
 
 
 def _routes() -> list[tuple[str, object]]:
@@ -76,55 +45,26 @@ def _routes() -> list[tuple[str, object]]:
     return list(iter_app_routes(create_app()))
 
 
-def test_api_onboarding_route_is_still_mounted():
-    """Trap 2: a shared `except` in app.py can empty the live router silently."""
+# ── The dead implementation must stay dead ───────────────────────────────────
+
+
+def test_core_onboarding_module_is_gone():
+    """The Redis-backed parallel onboarding, deleted under GDXA-579."""
+    root = pathlib.Path(__file__).resolve().parents[1]
+    assert not (root / "core" / "onboarding.py").exists(), (
+        "core/onboarding.py is back. routers/onboarding.py is the onboarding "
+        "API OnboardingView.vue drives; a second, Redis-backed model of the "
+        "same wizard cannot describe it."
+    )
+    assert importlib.util.find_spec("gdx_dispatch.core.onboarding") is None
+
+
+def test_bare_api_onboarding_is_not_mounted():
+    """`GET /api/onboarding` was served only by the deleted module."""
     paths = {path for path, _route in _routes()}
-    assert "/api/onboarding" in paths, (
-        "GET /api/onboarding is gone from the mounted route table. The likely "
-        "cause is the onboarding import block in app.py falling into its "
-        "`except` and rebinding core_onboarding_router to an empty APIRouter — "
-        "read the startup log for 'Failed to import router: "
-        "core_onboarding_router'."
-    )
-
-
-def test_api_onboarding_is_served_by_the_live_handler():
-    """Path presence alone could come from any router; pin the handler.
-
-    An empty fallback ``APIRouter`` has no endpoint at all, so this fails for
-    the same trap even if some other router later claims the same path.
-    """
-    matches = [route for path, route in _routes() if path == "/api/onboarding"]
-    assert matches, "no route object registered at /api/onboarding"
-    endpoints = {getattr(r, "endpoint", None).__name__ for r in matches if getattr(r, "endpoint", None)}
-    assert "get_onboarding_api" in endpoints, (
-        f"/api/onboarding is mounted but not by core.onboarding.get_onboarding_api: {endpoints}"
-    )
-
-
-def test_onboarding_state_functions_are_still_exported():
-    """The four functions `/api/onboarding` is built on, and the wizard is not."""
-    from gdx_dispatch.core import onboarding
-
-    for name in (
-        "get_onboarding_status",
-        "complete_step",
-        "get_next_step",
-        "is_onboarding_complete",
-    ):
-        assert callable(getattr(onboarding, name, None)), f"{name} is gone"
-
-
-# ── The dead wizard must stay dead ───────────────────────────────────────────
-
-
-def test_ui_router_is_gone_from_core_onboarding():
-    from gdx_dispatch.core import onboarding
-
-    assert not hasattr(onboarding, "ui_router"), (
-        "core.onboarding.ui_router is back. It was never mounted; if it is "
-        "wanted again it needs its own import block in app.py, not a second "
-        "import sharing core_onboarding_router's `except`."
+    assert "/api/onboarding" not in paths, (
+        "GET /api/onboarding is mounted again. It had no caller; the wizard's "
+        "onboarding API is routers/onboarding.py."
     )
 
 
@@ -151,7 +91,7 @@ def test_nothing_renders_the_jinja_onboarding_page():
     It looks for the *quoted* name, which is the shape a render call has to
     take (``templates.TemplateResponse(request, "onboarding.html", ...)``), not
     the bare substring — prose that merely names the retired page, including
-    the docstring in ``core/onboarding.py`` recording this deletion, is not a
+    the docstring of this file, is not a
     renderer. Known hole, same one the repo's other link guards carry: a
     template name handed over in a variable is invisible here. The route-table
     assertions above are what make the page unreachable either way.
@@ -187,19 +127,3 @@ def test_the_wizard_template_is_gone_from_the_tree():
         "assertion above), so it can only be dead markup — delete it rather "
         "than wiring it up; the Vue SPA's OnboardingView.vue owns this surface."
     )
-
-
-def test_wizard_form_validators_are_gone():
-    """The form-validation half of the wizard, which only the POST route called."""
-    from gdx_dispatch.core import onboarding
-
-    for name in (
-        "WizardFormData",
-        "WizardForm",
-        "_validate_step",
-        "_validate_company_info",
-        "_step_template_ctx",
-        "_wizard_form",
-        "templates",
-    ):
-        assert not hasattr(onboarding, name), f"wizard residue is back: {name}"
