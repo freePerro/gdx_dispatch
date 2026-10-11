@@ -7,7 +7,7 @@ doc does not state:** the enforcement contract is not applied everywhere —
 (61 as of 2026-09-27; read the file, not this number), and `routers/payments.py`
 has 5 mutation routes and 0 `require_permission` gates. Some are token-scoped by
 design; the baseline cannot tell you which. There is a second debt list,
-`.authz_unpermissioned_baseline` (370 lines), for mutations that authenticate a
+`.authz_unpermissioned_baseline`, for mutations that authenticate a
 caller but never ask whether they are allowed.
 
 
