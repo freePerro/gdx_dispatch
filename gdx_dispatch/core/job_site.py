@@ -21,6 +21,13 @@ drift from the office screen:
 3. Zero location rows: ``customer.address`` (fetched via the ORM so
    ``EncryptedString`` decrypts — never add a raw-SQL read here).
 
+A location row keeps its town in separate ``city``/``state``/``zip`` columns
+(QuickBooks sync fills them apart from the street). ``JobSite.address`` stays
+the STREET, because the fix-address endpoint compares streets
+(:func:`normalize_address`, :func:`find_or_create_customer_location`);
+``JobSite.full_address`` is what a person reads and what a map link carries
+(GDXA-502). :func:`compose_full_address` is the one way to build it.
+
 Batched: three bounded queries per call regardless of item count. List
 endpoints must call :func:`resolve_job_sites` once per page, never
 :func:`resolve_job_site` per row (the /today hot path is the reason this
@@ -67,6 +74,49 @@ class JobSite:
     # writer fix exactly the row the display came from without re-deriving
     # it (and re-tripping the dashed/undashed id trap).
     location_row_id: str | None = None
+    # The location row's town fields; None for the customer/none sources
+    # (customers.address is one free-text column with no separate town).
+    city: str | None = None
+    state: str | None = None
+    zip: str | None = None
+
+    @property
+    def full_address(self) -> str | None:
+        """Street, city, "ST zip" — for display and map/navigation links.
+
+        None whenever ``address`` is None: a town alone is not a site, and
+        a map pin on the town centre would send the tech to the wrong place.
+        """
+        return compose_full_address(self.address, self.city, self.state, self.zip)
+
+
+def compose_full_address(
+    street: str | None,
+    city: str | None = None,
+    state: str | None = None,
+    zip_code: str | None = None,
+) -> str | None:
+    """``"88 Pine Ridge Rd, Anytown, MN 55555"`` — blanks skipped.
+
+    Returns None when there is no street. A part the street already carries
+    after its first comma (legacy rows hold the whole address in ``address``
+    AND the split columns) is not repeated; the text before the first comma
+    never counts, so the city "Anoka" still follows "100 Anoka St".
+    """
+    street = (street or "").strip()
+    if not street:
+        return None
+    tail = f" {normalize_address(street.partition(',')[2])} "
+
+    def _new(part: str | None) -> str:
+        part = (part or "").strip()
+        if not part:
+            return ""
+        return "" if f" {normalize_address(part)} " in tail else part
+
+    town = _new(city)
+    region = " ".join(p for p in (_new(state), _new(zip_code)) if p)
+    return ", ".join(p for p in (street, town, region) if p)
 
 
 def normalize_address(value: str | None) -> str:
@@ -107,6 +157,13 @@ def _cs(value: Any) -> str | None:
         return str(value)
 
 
+def _town(row: dict[str, Any]) -> dict[str, str | None]:
+    return {
+        k: (str(row.get(k)).strip() or None) if row.get(k) is not None else None
+        for k in ("city", "state", "zip")
+    }
+
+
 def resolve_job_sites(
     db: Any,
     items: Iterable[tuple[Any, Any, Any]],
@@ -127,7 +184,7 @@ def resolve_job_sites(
     bound_rows: dict[str, dict[str, Any]] = {}
     if bound_ids:
         stmt = _text(
-            "SELECT id, label, address, access_notes, lat, lng "
+            "SELECT id, label, address, city, state, zip, access_notes, lat, lng "
             "FROM customer_locations "
             "WHERE id IN :ids AND deleted_at IS NULL"
         ).bindparams(bindparam("ids", expanding=True))
@@ -146,7 +203,8 @@ def resolve_job_sites(
     locs_by_customer: dict[str, list[dict[str, Any]]] = {}
     if fallback_customers:
         stmt = _text(
-            "SELECT id, customer_id, label, address, access_notes, is_primary "
+            "SELECT id, customer_id, label, address, city, state, zip, "
+            "access_notes, is_primary "
             "FROM customer_locations "
             "WHERE customer_id IN :cids AND deleted_at IS NULL "
             "ORDER BY created_at ASC"
@@ -207,6 +265,7 @@ def resolve_job_sites(
                 lat=lat,
                 lng=lng,
                 location_row_id=loc_id,
+                **_town(row),
             )
             continue
         locs = locs_by_customer.get(cust_id or "", [])
@@ -220,6 +279,7 @@ def resolve_job_sites(
                 access_notes=primary.get("access_notes") or None,
                 source="customer_location",
                 location_row_id=str(primary["id"]),
+                **_town(primary),
             )
             continue
         if cust_id:

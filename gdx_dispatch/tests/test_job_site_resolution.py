@@ -13,7 +13,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from gdx_dispatch.core.job_site import resolve_job_site, resolve_job_sites
+from gdx_dispatch.core.job_site import compose_full_address, resolve_job_site, resolve_job_sites
 from gdx_dispatch.models.tenant_models import Customer, CustomerLocation
 from gdx_dispatch.tests.conftest import make_fresh_db
 
@@ -195,3 +195,66 @@ def test_undashed_hex_customer_id_still_resolves(db):
     _location(db, c, address="9 Dock St", is_primary=True)
     site2 = resolve_job_site(db, "j2", None, c.id.hex)
     assert site2.address == "9 Dock St"
+
+
+# ── Town fields (GDXA-502) ───────────────────────────────────────────
+
+
+def _town(db, customer, **kw):
+    loc = _location(db, customer, **kw)
+    loc.city, loc.state, loc.zip = "Anytown", "MN", "55555"
+    db.commit()
+    return loc
+
+
+def test_bound_location_carries_its_town(db):
+    """The probe that found it: town/state/zip were on the row and dropped."""
+    c = _customer(db)
+    loc = _town(db, c, label="Home", address="88 Pine Ridge Rd")
+    site = resolve_job_site(db, "j1", loc.id, c.id)
+    assert (site.city, site.state, site.zip) == ("Anytown", "MN", "55555")
+    assert site.address == "88 Pine Ridge Rd"
+    assert site.full_address == "88 Pine Ridge Rd, Anytown, MN 55555"
+
+
+def test_primary_location_carries_its_town(db):
+    c = _customer(db)
+    _town(db, c, address="88 Pine Ridge Rd", is_primary=True)
+    site = resolve_job_site(db, "j1", None, c.id)
+    assert site.source == "customer_location"
+    assert site.full_address == "88 Pine Ridge Rd, Anytown, MN 55555"
+
+
+def test_town_without_a_street_is_still_missing(db):
+    """A town alone is not a site: no full_address to pin on the town centre."""
+    c = _customer(db)
+    loc = _town(db, c, label="Warehouse 3", address=None)
+    site = resolve_job_site(db, "j1", loc.id, c.id)
+    assert site.address_missing is True
+    assert site.full_address is None
+
+
+def test_customer_source_full_address_is_the_customer_address(db):
+    c = _customer(db, address="100 Billing Rd, Anytown, MN")
+    site = resolve_job_site(db, "j1", None, c.id)
+    assert site.full_address == "100 Billing Rd, Anytown, MN"
+
+
+@pytest.mark.parametrize(
+    ("parts", "want"),
+    [
+        (("88 Pine Ridge Rd", "Anytown", "MN", "55555"), "88 Pine Ridge Rd, Anytown, MN 55555"),
+        (("88 Pine Ridge Rd", "Anytown", None, None), "88 Pine Ridge Rd, Anytown"),
+        (("88 Pine Ridge Rd", " ", "", "55555"), "88 Pine Ridge Rd, 55555"),
+        (("88 Pine Ridge Rd", None, "MN", None), "88 Pine Ridge Rd, MN"),
+        # A legacy row holding the whole address AND the split columns.
+        (("88 Pine Ridge Rd, Anytown, MN 55555", "Anytown", "MN", "55555"),
+         "88 Pine Ridge Rd, Anytown, MN 55555"),
+        # The street's own words never count as the town already present.
+        (("100 Anoka St", "Anoka", "MN", None), "100 Anoka St, Anoka, MN"),
+        ((None, "Anytown", "MN", "55555"), None),
+        (("  ", "Anytown", None, None), None),
+    ],
+)
+def test_compose_full_address(parts, want):
+    assert compose_full_address(*parts) == want
