@@ -33,7 +33,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync
-from gdx_dispatch.modules.ledger.coa import LedgerConfigError, resolve_role_account
+from gdx_dispatch.modules.ledger.coa import LedgerConfigError, ensure_role_account
 from gdx_dispatch.modules.ledger.keys import (
     compute_seq,
     content_hash,
@@ -123,7 +123,10 @@ def _resolve_lines(
     resolved = []
     for line in lines:
         if line.role is not None:
-            account = resolve_role_account(session, company_id, line.role)
+            # Tops up a role a later release added to ALL_ROLES on an install
+            # whose CoA predates it, instead of raising inside whatever
+            # recorded the money (GDXA-572). Deactivated stays loud.
+            account = ensure_role_account(session, company_id, line.role)
             account_id = account.id
         else:
             account = session.get(GlAccount, line.account_id)
