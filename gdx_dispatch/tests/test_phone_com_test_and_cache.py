@@ -38,7 +38,6 @@ def _no_audit(monkeypatch):
     monkeypatch.setattr(
         "gdx_dispatch.modules.phone_com.key_storage.log_audit_event_sync",
         lambda *a, **kw: None,
-        raising=False,
     )
 
 
