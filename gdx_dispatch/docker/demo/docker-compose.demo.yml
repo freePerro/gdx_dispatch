@@ -1,0 +1,167 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# GDX Dispatch — PUBLIC DEMO stack (gdxdispatch.com)
+#
+# A fully ISOLATED second instance of the app for a public, shared-login demo.
+# It shares NOTHING with production (project `gdx`): its own database, its own
+# Redis, its own volumes, its own network. Nothing a demo visitor does can reach
+# real customer data.
+#
+# Deploy (from repo root on the VPS):
+#   docker compose -p gdx-demo --env-file gdx_dispatch/docker/demo/.env.demo \
+#     -f gdx_dispatch/docker/demo/docker-compose.demo.yml up -d
+#
+# Containers: gdx-demo-db-1, gdx-demo-redis-1, gdx-demo-app-1, gdx-demo-plugin-host-1
+# App is published on 127.0.0.1:8003 (prod owns 8002). nginx routes
+# gdxdispatch.com -> gdx-demo-app-1:8000 over the gdx-demo_default network.
+#
+# Design choices:
+#  * Standalone file (NOT layered on docker-compose.yml) — layering would inherit
+#    the production `external: true` db/uploads volumes and risk touching prod
+#    data. This file references only demo-scoped, managed volumes.
+#  * No Celery: a demo needs no background side-effects. The nightly reset
+#    handles state. plugin-host IS run, though — the core app proxies /api/plugins
+#    to it (PLUGIN_HOST_URL), so without it the nav 500s with a visible error.
+#  * db/redis volumes are MANAGED (not external) so the nightly reset can wipe &
+#    restore them deterministically. `down -v` is SAFE here (demo data only).
+#  * ALL outbound-integration credentials are intentionally OMITTED in .env.demo
+#    (Stripe / QuickBooks / SMTP / Phone.com / Microsoft-Outlook). The app gates
+#    each on a non-empty env var, so absence = no-op. See demo/README.md.
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-demo-env: &demo-env
+  DATABASE_URL: postgresql://gdx:${DB_PASSWORD:?set DB_PASSWORD in .env.demo}@db:5432/gdx
+  REDIS_URL: redis://redis:6379/0
+  SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env.demo}
+  # JWT signing — fresh demo keys, NEVER shared with prod.
+  RS_PRIVATE_KEY: ${RS_PRIVATE_KEY:-}
+  RS_PUBLIC_KEY: ${RS_PUBLIC_KEY:-}
+  JWT_SECRET: ${JWT_SECRET:-}
+  # Encryption — fresh demo keys.
+  FERNET_KEY: ${FERNET_KEY:-}
+  GDX_FERNET_KEY: ${GDX_FERNET_KEY:-}
+  MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-}
+  # GDX_ENV is set explicitly in .env.demo (see notes there re: boot gate).
+  GDX_ENV: ${GDX_ENV:-dev}
+  # Demo tenant identity (distinct from prod).
+  GDX_TENANT_ID: ${GDX_TENANT_ID:-}
+  GDX_DEFAULT_TENANT_ID: ${GDX_DEFAULT_TENANT_ID:-}
+  GDX_TENANT_SLUG: ${GDX_TENANT_SLUG:-demo}
+  GDX_TENANT_NAME: ${GDX_TENANT_NAME:-Demo Garage Doors}
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: gdx
+      POSTGRES_USER: gdx
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env.demo}
+    volumes:
+      - demo_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gdx -d gdx"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  app:
+    image: ghcr.io/freeperro/gdx_dispatch:${APP_VERSION:?set APP_VERSION in .env.demo}
+    pull_policy: always
+    environment:
+      <<: *demo-env
+      APP_VERSION: ${APP_VERSION:?set APP_VERSION in .env.demo}
+      ENVIRONMENT: demo
+      GDX_BASE_URL: ${GDX_BASE_URL:-https://gdxdispatch.com}
+      # Bootstrap a known admin on first boot; the seed script then clears
+      # must_change_password so the shared demo login works directly.
+      GDX_ADMIN_EMAIL: ${GDX_ADMIN_EMAIL:-demo@gdxdispatch.com}  # pii-ok: public demo login
+      # Plugin storefront catalog. Empty falls back to the built-in default.
+      GDX_PLUGIN_CATALOG_URL: ${GDX_PLUGIN_CATALOG_URL:-}
+      GDX_ADMIN_PASSWORD: ${GDX_ADMIN_PASSWORD:?set GDX_ADMIN_PASSWORD in .env.demo}
+      # ── Outbound integrations: intentionally UNSET (neutered). ──
+      # Listing them here as explicit empties documents the intent and prevents
+      # accidental inheritance from a host environment.
+      STRIPE_SECRET_KEY: ""
+      STRIPE_PUBLISHABLE_KEY: ""
+      STRIPE_WEBHOOK_SECRET: ""
+      QB_CLIENT_ID: ""
+      QB_CLIENT_SECRET: ""
+      QB_WEBHOOK_VERIFIER_TOKEN: ""
+      QB_ENVIRONMENT: "sandbox"
+      PLATFORM_SMTP_PASS: ""
+      GDX_MICROSOFT_SECRET_KEY: ""
+      POWER_APPS_CLIENT_ID: ""
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+      SENTRY_DSN: ""
+    ports:
+      - "127.0.0.1:8003:8000"
+    volumes:
+      - demo_uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      # 5s was not enough for a COLD probe: /health does a DB round-trip and the
+      # first one after a recreate measured 5.28s here on 2026-08-21.
+      timeout: 10s
+      retries: 5
+      # entrypoint.sh runs create_all + alembic upgrade head BEFORE uvicorn, so
+      # /health cannot answer until migrations finish. Without this the probe
+      # burned its retries during that window, the app was marked unhealthy while
+      # merely still migrating, and plugin-host (depends_on: service_healthy)
+      # refused to start -- every demo update needed a second `up -d`.
+      start_period: 180s
+    restart: unless-stopped
+
+  # Plugin host — the core app proxies /api/plugins here (PLUGIN_HOST_URL defaults
+  # to http://plugin-host:8000). Without it, the nav's plugin lookup 500s and the
+  # SPA surfaces a "server error". The demo registry is empty, so reconcile() is a
+  # no-op (no pip installs → no egress/hang). Service MUST be named `plugin-host`
+  # so the app resolves it on this network.
+  plugin-host:
+    image: ghcr.io/freeperro/gdx_dispatch-plugin-host:${APP_VERSION:?set APP_VERSION in .env.demo}
+    pull_policy: always
+    command: uvicorn gdx_dispatch.plugin_host.main:app --host 0.0.0.0 --port 8000
+    ipc: host
+    environment:
+      <<: *demo-env
+      GDX_SKIP_MIGRATIONS: "1"
+      GDX_SKIP_BOOTSTRAP: "1"
+      # plugin_api/discovery compares a plugin's `requires` against this; unset reads
+      # as version 0 and every version-pinned plugin is skipped with one log line.
+      # Same pin as app (core #763 made the tracked compose files do this).
+      APP_VERSION: ${APP_VERSION:?set APP_VERSION in .env.demo}
+    volumes:
+      - demo_plugins:/plugins
+    depends_on:
+      db:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/ready || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  # MANAGED (not external) — the nightly reset is allowed to wipe these.
+  demo_db_data:
+  demo_uploads:
+  demo_plugins:

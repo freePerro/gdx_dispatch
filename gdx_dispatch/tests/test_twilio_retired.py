@@ -65,7 +65,7 @@ def test_inbound_sms_model_and_table_are_gone():
 #: The package plus the repo-root helpers that import from it. Tests,
 #: migrations, the frontend tree and the git-ignored local demo stack are out.
 _SCAN_ROOTS = [PKG, REPO / "tools", REPO / "scripts", REPO / "conftest.py"]
-_SKIP = ("/tests/", "/migrations/", "/frontend/", "node_modules", "/docker/demo/")
+_SKIP = ("/tests/", "/migrations/", "/frontend/", "node_modules")
 
 
 def _source_files():
