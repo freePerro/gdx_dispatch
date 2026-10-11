@@ -34,12 +34,13 @@ def test_reads_this_repos_index_and_finds_known_tracked_files():
 def test_excludes_gitignored_paths():
     """The failure this whole change exists to remove.
 
-    `gdx_dispatch/docker/demo/` is gitignored (.gitignore) and present on a
-    maintainer's checkout. It must never appear, whether or not it exists on
-    the machine running this.
+    `plugins/gdx-plugin-chi-pricing/` is gitignored (.gitignore) and present on
+    a maintainer's checkout. It must never appear, whether or not it exists on
+    the machine running this. (Until 2026-10-11 the example was
+    `gdx_dispatch/docker/demo/`, which is now tracked — GDXA-528.)
     """
     tracked = read_tracked_files()
-    leaked = sorted(p for p in tracked if p.startswith("gdx_dispatch/docker/demo/"))
+    leaked = sorted(p for p in tracked if p.startswith("plugins/gdx-plugin-chi-pricing/"))
     assert not leaked, f"gitignored paths in the tracked set: {leaked}"
 
 

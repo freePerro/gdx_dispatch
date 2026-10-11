@@ -147,10 +147,9 @@ this worktree, through `gdx_dispatch/tools/run_tests_split.sh` with the
 docker `PYTEST`: it mounts the worktree's gitdir so the tracked-set guards
 pass here, and it takes a host-wide lock so it never runs beside another
 agent's matrix. If it prints that it is waiting, wait; do not copy the tree
-elsewhere to run a second one. Give it `LOG_DIR=<worktree root>/.matrix-logs` (ignored
-by git), never a scratch directory: the default `/tmp/gdx_split` is
-overwritten by whichever matrix holds the lock next, and scratch dies with the
-run. **Before any full matrix, run the same command with `--reuse-check`**
+elsewhere to run a second one. Its `LOG_DIR` defaults to `<worktree root>/.matrix-logs` (ignored
+by git); leave it there and never point it at a scratch directory, which
+dies with the run. **Before any full matrix, run the same command with `--reuse-check`**
 (same `LOG_DIR`, runs nothing): it reads the `result.txt` the last run left
 there, and exit 0 / `REUSE` means a full, un-narrowed PASS already covers
 these tracked files with this content on this docker image (committing does
