@@ -1215,6 +1215,8 @@ def update_job(
 
     now = datetime.now(UTC)
     updates["updated_at"] = now
+    # Before anything is staged: its first run per engine may commit.
+    ensure_audit_table(db)
 
     try:
         # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
@@ -1240,6 +1242,7 @@ def update_job(
         # "Complete". Cancelling is refused here too (GDXA-375): it belongs to
         # /cancel, which records the reason and cleans up after the job.
         requested_stage = updates.get("lifecycle_stage")
+        prior_stage, prior_status = job.lifecycle_stage, job.status
         stored_stage = (job.lifecycle_stage or "").lower()
         if requested_stage is not None:
             if requested_stage == stored_stage:
@@ -1352,25 +1355,27 @@ def update_job(
             )
             job = db.get(Job, job_uuid)
         # One transaction: the job, its visits and their audit rows commit
-        # together.
+        # together — the job_updated row too since GDXA-599 (it was a second
+        # commit after the change). The stage went in by raw SQL above, so
+        # the ORM object does not carry it yet; ls_value is the stage written.
         _apply_visits(db, job, visit_plan, current_user, "job_updated")
+        from gdx_dispatch.core.audit import audit_or_rollback
+
+        audit_or_rollback(
+            db, tenant_id=tenant_id, actor={"user_id": _user_id(current_user)},
+            action="job_updated", entity_type="job", entity_id=str(job.id),
+            details={
+                "fields": list({**updates, **({"lifecycle_stage": ls_value} if ls_value else {})}.keys()),
+                "from_stage": prior_stage, "to_stage": ls_value or prior_stage,
+                "from_status": prior_status, "to_status": job.status,
+            },
+            request=request,
+        )
         db.commit()
         # Re-read to get the final state including lifecycle_stage and the
         # primary recomputed by _set_job_assignments.
         db.refresh(job)
         result = _job_patch_result(job)
-        log_audit_event_sync(
-            db=db,
-            tenant_id=tenant_id,
-            user_id=_user_id(current_user),
-            action="job_updated",
-            entity_type="job",
-            entity_id=str(job.id),
-            details={"fields": list({**updates, **({"lifecycle_stage": ls_value} if ls_value else {})}.keys())},
-            ip_address=request.client.host if request.client else None,
-            request=request,
-        )
-        db.commit()
         log.info("job_updated", extra={"tenant_id": tenant_id, "job_id": job_id, "fields": list(updates.keys())})
         return jsonable_response(result)
     except SQLAlchemyError:
@@ -1537,6 +1542,8 @@ def start_job(
         return jsonable_response({"detail": denial[1]}, denial[0])
     now = datetime.now(UTC)
     flags = _load_workflow_flags(tenant_id)
+    # Before anything is staged: its first run per engine may commit.
+    ensure_audit_table(db)
     try:
         job = db.execute(
             select(Job).where(Job.id == uuid.UUID(job_id), Job.deleted_at.is_(None))
@@ -1545,9 +1552,10 @@ def start_job(
             return jsonable_response({"detail": "job not found"}, 404)
         # /reactivate is the only way out of cancelled: it clears the stamp and
         # restores the released part requests, which a start would not.
-        cancelled = _cancelled_refusal(job)
-        if cancelled is not None:
-            return cancelled
+        refusal = _cancelled_refusal(job) or _completed_refusal(job, starting=True)
+        if refusal is not None:
+            return refusal
+        prior = (job.lifecycle_stage, job.status)
 
         # Auto-assign the starter's TECHNICIAN id (it was the token's user id
         # until 2026-10-05 — a users.id in a technicians.id column). With no
@@ -1580,6 +1588,19 @@ def start_job(
             from gdx_dispatch.services.visit_sync import recompute_job_schedule
 
             recompute_job_schedule(db, job, _user_id(current_user) or None, "job_started")
+        # GDXA-599: audited BEFORE the commit, so the start and its trail
+        # commit together or not at all (it used to be a second commit).
+        from gdx_dispatch.core.audit import audit_or_rollback
+
+        audit_or_rollback(
+            db, tenant_id=tenant_id, actor={"user_id": _user_id(current_user)},
+            action="job_started", entity_type="job", entity_id=str(job.id),
+            details={
+                **_stage_move(*prior, job),
+                "flags": flags, "schedule_locked": flags["lock_schedule_on_start"],
+            },
+            request=request,
+        )
         db.commit()
 
         # Optional: post arrival event to customer timeline. Best-effort —
@@ -1612,13 +1633,6 @@ def start_job(
         if flags["sms_arrival_notify"]:
             log.info("workflow_sms_arrival_intent", extra={"tenant_id": tenant_id, "job_id": job_id})
 
-        log_audit_event_sync(
-            db=db, tenant_id=tenant_id, user_id=_user_id(current_user),
-            action="job_started", entity_type="job", entity_id=str(job.id),
-            details={"flags": flags, "schedule_locked": flags["lock_schedule_on_start"]},
-            ip_address=request.client.host if request.client else None, request=request,
-        )
-        db.commit()
         return jsonable_response({
             "ok": True,
             "id": str(job.id),
@@ -1678,6 +1692,36 @@ def _cancelled_refusal(job: Job) -> Any:
                   "reactivate it, or to enter your hours through labor.",
         "code": "job_cancelled",
     }, 409)
+
+
+def _completed_refusal(job: Job, *, starting: bool) -> Any:
+    """409 for /start or /complete on a job already completed (GDXA-599). A
+    start used to reopen it silently (stage back to in_progress, completed_at
+    left set, no reason, no audit of a reopen) and a second /complete
+    re-stamped completed_at, re-finished its visits and re-sent
+    job.completed. /uncomplete is the way back, with a reason; /closeout on a
+    completed job is a restatement and does not ask here."""
+    if (job.lifecycle_stage or "").lower() != "completed":
+        return None
+    if starting:
+        return jsonable_response({
+            "detail": "This job is already completed. Use Re-open on the job "
+                      "page to work it again, so the reason is recorded.",
+            "code": "job_completed",
+            "use": "reopen",
+        }, 409)
+    # Close-without-work's wording for the same refusal.
+    return jsonable_response(
+        {"detail": "This job is already completed.", "code": "job_completed"}, 409,
+    )
+
+
+def _stage_move(stage: Any, status: Any, job: Job) -> dict:
+    """The from/to pair a stage-changing audit row carries (GDXA-599)."""
+    return {
+        "from_stage": stage, "to_stage": job.lifecycle_stage,
+        "from_status": status, "to_status": job.status,
+    }
 
 
 def _tap_shop_day(tapped_at: datetime | None, now: datetime, tz: str) -> Any:
@@ -1773,9 +1817,24 @@ def complete_job(
         job = _locked_job(db, job_id)
         if not job:
             return jsonable_response({"detail": "job not found"}, 404)
-        refusal = _cancelled_refusal(job)
+        refusal = _cancelled_refusal(job) or _completed_refusal(job, starting=False)
         if refusal is not None:
             return refusal
+        # GDXA-599: /complete attests nothing — its `hours` is an unverified
+        # body float — so it may only re-finish a job whose closeout already
+        # attested the work (one re-opened with /uncomplete). A first finish
+        # goes through /closeout, or /close-without-work when there is
+        # nothing to attest. No shipped UI calls this route.
+        from gdx_dispatch.core.closeouts import get_current_closeout
+
+        if get_current_closeout(db, job.id) is None:
+            return jsonable_response({
+                "detail": "Finish a job with Close out (or Close without work "
+                          "when there is nothing to attest). This job has no "
+                          "closeout to complete it on.",
+                "code": "closeout_required",
+                "use": "closeout",
+            }, 409)
         refusal = _earlier_day_open_refusal(db, job, None, None, now=now)
         if refusal is not None:
             return refusal
@@ -1823,6 +1882,7 @@ def complete_job(
 
         if payload.notes:
             job.notes = (job.notes + "\n\n" if job.notes else "") + payload.notes.strip()
+        prior = (job.lifecycle_stage, job.status)
         _mark_job_completed(db, job, now, tenant_id, current_user)
         # Audited BEFORE the commit (plan §5.4a): this row bounds the
         # candidate timers after a re-open, so the completion and its trail
@@ -1833,6 +1893,7 @@ def complete_job(
             db, tenant_id=tenant_id, actor={"user_id": _user_id(current_user)},
             action="job_completed", entity_type="job", entity_id=str(job.id),
             details={
+                **_stage_move(*prior, job),
                 "hours": payload.hours,
                 "flags_evaluated": flags,
                 "no_parts_used": bool(payload.no_parts_used),
@@ -1903,7 +1964,7 @@ def close_job_without_work(
         if refusal is not None:
             return refusal
 
-        prior_stage = job.lifecycle_stage
+        prior_stage, prior_status = job.lifecycle_stage, job.status
         # A no-show after the tech tapped "I'm here" leaves an arrival timer
         # open, and closeout is otherwise the only thing that ends one. Close
         # them at zero minutes exactly as closeout does for unattested timers
@@ -1922,6 +1983,7 @@ def close_job_without_work(
             details={
                 "reason": cleaned,
                 "prior_stage": prior_stage,
+                **_stage_move(prior_stage, prior_status, job),
                 "timers_closed_at_zero": [str(t.id) for t in timers],
                 "requirements_skipped": [
                     k for k in ("require_parts_on_complete", "require_hours_on_complete",
@@ -2875,6 +2937,7 @@ def closeout_job(
         # 4) Flip the job to completed. Stamp signature for back-compat
         #    with the Phase 1 /complete reader path that checks job.signature_data.
         #    Its visits first (F1).
+        stage_before = (job.lifecycle_stage, job.status)
         _finish_visits(db, job, now, current_user)
         job.lifecycle_stage = "completed"
         job.status = "Completed"
@@ -3094,6 +3157,8 @@ def closeout_job(
             entity_id=str(job.id),
             details={
                 "closeout_id": str(closeout.id),
+                # GDXA-599: completed -> completed on a restatement.
+                **_stage_move(*stage_before, job),
                 "parts_count": len(part_lines),
                 "hours": float(payload.hours or 0),
                 "techs_on_site": int(payload.techs_on_site or 1),
@@ -5195,6 +5260,7 @@ def uncomplete_job(
         if plan.refusal is not None:
             return _visit_refused(plan.refusal)
         prior_completed_at = job.completed_at
+        prior = (job.lifecycle_stage, job.status)
         job.lifecycle_stage = "in_progress"
         job.status = "In Progress"
         job.completed_at = None
@@ -5205,6 +5271,7 @@ def uncomplete_job(
             action="job_uncompleted", entity_type="job", entity_id=str(job.id),
             details={
                 "reason": cleaned,
+                **_stage_move(*prior, job),
                 "prior_completed_at": prior_completed_at.isoformat() if prior_completed_at else None,
                 "new_scheduled_at": payload.scheduled_at.isoformat() if payload.scheduled_at else None,
             },
@@ -5257,6 +5324,7 @@ def reactivate_job(
         plan = _plan_reopen(db, job, payload, now)
         if plan.refusal is not None:
             return _visit_refused(plan.refusal)
+        prior = (job.lifecycle_stage, job.status)
         # Live first, so recompute sees a live job; the stage is picked below.
         job.lifecycle_stage = "service_call"
         if payload.assigned_to:
@@ -5310,6 +5378,7 @@ def reactivate_job(
             action="job_reactivated", entity_type="job", entity_id=str(job.id),
             details={
                 "reason": cleaned,
+                **_stage_move(*prior, job),
                 "new_scheduled_at": payload.scheduled_at.isoformat() if payload.scheduled_at else None,
                 "prior_scheduled_at": prior_scheduled_at.isoformat() if prior_scheduled_at else None,
                 "prior_cancel": prior_cancel,
@@ -5471,7 +5540,7 @@ def cancel_job(
         if plan.refusal is not None:
             return _visit_refused(plan.refusal)
 
-        prior_stage = job.lifecycle_stage
+        prior_stage, prior_status = job.lifecycle_stage, job.status
         prior_scheduled_at = job.scheduled_at
         job.lifecycle_stage = "cancelled"
         job.status = "Cancelled"
@@ -5488,6 +5557,7 @@ def cancel_job(
             details={
                 "reason": cleaned,
                 "prior_stage": prior_stage,
+                **_stage_move(prior_stage, prior_status, job),
                 "prior_scheduled_at": prior_scheduled_at.isoformat() if prior_scheduled_at else None,
                 "released_part_request_ids": released,
                 "stopped_timers": stopped,
