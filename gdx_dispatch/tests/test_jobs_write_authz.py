@@ -526,8 +526,12 @@ class TestAdmission:
 
     def test_the_assigned_technician_can_start(self, ctx):
         """A second route, so the admission result is not one handler's
-        accident."""
+        accident. /start refuses a completed job (GDXA-599), so open the
+        fixture's completed job first, through the ORM."""
         client, db, job, _dep, be, _ = ctx
+        job.lifecycle_stage = "scheduled"
+        job.completed_at = None
+        db.commit()
         be(ASSIGNED_USER, "technician")
         r = _call(client, "POST", f"/api/jobs/{job.id}/start", {})
         assert r.status_code == 200, r.text[:300]
@@ -536,6 +540,9 @@ class TestAdmission:
 
     def test_the_office_tier_can_start(self, ctx):
         client, db, job, _dep, be, _ = ctx
+        job.lifecycle_stage = "scheduled"
+        job.completed_at = None
+        db.commit()
         be(str(uuid4()), "dispatcher")
         r = _call(client, "POST", f"/api/jobs/{job.id}/start", {})
         assert r.status_code == 200, r.text[:300]

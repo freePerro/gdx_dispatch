@@ -36,10 +36,11 @@ from gdx_dispatch.core.tenant import TenantMiddleware
 # fallback; each one that fires is recorded in ROUTER_FALLBACKS and named by
 # /health. tests/test_app_router_wiring_fails_closed.py keeps the old pattern out.
 # Empty on purpose: no router is optional today. WeasyPrint looked like the
-# candidate, but routers/payments.py imports routers/portal.py, which imports
-# routers/pdf.py and so core/pdf_generator.py, so an image without WeasyPrint
-# loses payments too (checked 2026-10-07). An entry maps "<module>.<attr>" to
-# the empty router served in its place.
+# candidate, but routers/portal.py imports routers/pdf.py and so
+# core/pdf_generator.py, so an image without WeasyPrint loses the customer
+# portal too (checked 2026-10-07; the portal payments router that also rode
+# that chain was deleted 2026-10-11, GDXA-552). An entry maps
+# "<module>.<attr>" to the empty router served in its place.
 _OPTIONAL_ROUTERS: dict[str, APIRouter] = {}
 ROUTER_FALLBACKS: list[str] = []
 
@@ -94,8 +95,6 @@ technicians = _load_router("gdx_dispatch.routers", "technicians")
 stripe_webhook = _load_router("gdx_dispatch.routers", "stripe_webhook")
 
 audit_router = _load_router("gdx_dispatch.routers", "audit")
-
-payments_gdx_router = _load_router("gdx_dispatch.routers", "payments")
 
 expenses_router = _load_router("gdx_dispatch.routers", "expenses")
 
@@ -924,7 +923,6 @@ def create_app() -> FastAPI:
     app.include_router(technicians.router if hasattr(technicians, "router") else technicians)
     app.include_router(stripe_webhook.router if hasattr(stripe_webhook, "router") else stripe_webhook)
     app.include_router(audit_router.router if hasattr(audit_router, "router") else audit_router)
-    app.include_router(payments_gdx_router.router if hasattr(payments_gdx_router, "router") else payments_gdx_router)
     app.include_router(expenses_router.router if hasattr(expenses_router, "router") else expenses_router)
     app.include_router(customers_router.router if hasattr(customers_router, "router") else customers_router)
     app.include_router(

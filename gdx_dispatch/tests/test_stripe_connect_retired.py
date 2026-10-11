@@ -74,7 +74,10 @@ def test_no_destination_charge_helpers_remain():
 
 
 def test_the_real_payment_intent_route_still_exists():
-    assert "/api/payments/intent" in _paths()
+    """The pay page's mint. This pinned `/api/payments/intent` until
+    2026-10-11, which was a 501 stub in `routers/ui_compat.py` and never the
+    live path (GDXA-552 deleted it)."""
+    assert "/api/payments/create-intent" in _paths()
 
 
 def test_the_public_pay_page_still_exists():
@@ -83,7 +86,10 @@ def test_the_public_pay_page_still_exists():
 
 
 def test_ordinary_stripe_payment_helpers_still_import():
-    """`core/stripe_payments.py` is the live path and is NOT Connect."""
-    from gdx_dispatch.core.stripe_payments import create_payment_intent
+    """`core/payments.py` is the live path and is NOT Connect.
 
-    assert callable(create_payment_intent)
+    This imported `core/stripe_payments.py` until 2026-10-11; that module served
+    only the unreachable portal router and was deleted with it (GDXA-552)."""
+    from gdx_dispatch.core.payments import confirm_payment, create_intent
+
+    assert callable(create_intent) and callable(confirm_payment)
