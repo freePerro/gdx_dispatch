@@ -140,7 +140,6 @@ gdx_dispatch/core/log_redact.py                              platform-core
 gdx_dispatch/core/log_shipper.py                             platform-core
 gdx_dispatch/core/modules.py                                 platform-core
 gdx_dispatch/core/observability.py                           platform-core
-gdx_dispatch/core/onboarding.py                              platform-core
 gdx_dispatch/core/pagination.py                              platform-core
 gdx_dispatch/core/performance.py                             platform-core
 gdx_dispatch/core/permissions.py                             platform-core
@@ -290,6 +289,7 @@ gdx_dispatch/frontend/src/components/SendLaterPanel.vue      comms-email-phone
 gdx_dispatch/frontend/src/components/ScheduledTextsList.vue  comms-email-phone
 gdx_dispatch/core/invoice_invariants.py                      money-billing
 gdx_dispatch/core/invoice_paid.py                            money-billing
+gdx_dispatch/core/invoice_net_billed.py                      money-billing
 gdx_dispatch/core/invoice_tax.py                             money-billing
 gdx_dispatch/core/billing_lanes.py                           money-billing
 gdx_dispatch/core/billing_predicates.py                      money-billing

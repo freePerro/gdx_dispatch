@@ -34,7 +34,7 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_ungated_baseline"
 # prune that forgets to lower this number is red, once, with a one-line fix —
 # and gating a route never reddens it, because gating changes the SWEEP, not
 # the file.
-BASELINE_SIZE = 62
+BASELINE_SIZE = 61
 
 
 def _baseline() -> set[str]:
@@ -150,6 +150,8 @@ def test_baseline_does_not_silently_grow(
     # 61 → 62 (2026-10-04): GET /api/proposals/{token}/pdf — the estimate PDF
     # linked from the public approval page. Public by design, same Group-2
     # token model and the same lookup as GET /api/proposals/{token}; read-only.
+    # 62 → 61 (2026-10-11, GDXA-579): GET /api/onboarding deleted with
+    # core/onboarding.py, a parallel onboarding implementation nothing called.
     assert len(_baseline()) == BASELINE_SIZE, (
         f"{BASELINE_PATH.name} holds {len(_baseline())} entries, pinned at "
         f"{BASELINE_SIZE}.\n"
