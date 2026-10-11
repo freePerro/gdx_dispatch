@@ -1142,6 +1142,17 @@ class PaymentCreateIn(BaseModel):
         return v
 
 
+def _refuse_future_invoice_date(db: Session, invoice_date: date | None) -> None:
+    # Backdating an invoice is a real correction; forward-dating one books
+    # revenue and starts the due-date clock in a period that hasn't happened.
+    # Checked here, not in a field validator, because "today" is the SHOP's
+    # calendar day (#444, GDXA-506) and a validator has no session to read it.
+    if invoice_date is not None and invoice_date > shop_today_from_settings(db):
+        raise HTTPException(
+            status_code=422, detail="invoice date cannot be in the future"
+        )
+
+
 @router.get("/summary", response_model=None, dependencies=[Depends(require_permission("invoices.read_all"))])
 def billing_summary(
     request: Request,
@@ -1472,6 +1483,7 @@ def create_invoice(
     # against $712k of underlying invoices. Default to today — the SHOP's
     # today: the server clock is UTC, so date.today() dated every evening
     # invoice tomorrow (#444). The office create screen sends no date.
+    _refuse_future_invoice_date(db, payload.invoice_date)
     invoice_date_value = payload.invoice_date or shop_today_from_settings(db)
     # F-36 / 2026-04-29 — payment terms come from billing_terms resolver:
     #   customer.payment_terms_days → tenant.{class}_payment_terms_days
@@ -2786,6 +2798,11 @@ def patch_invoice(
             )
 
     updates = payload.model_dump(exclude_unset=True)
+    # Only a date being CHANGED is checked: the detail screen sends the stored
+    # invoice_date back on every header save, so checking an unchanged one
+    # would lock a draft already dated ahead out of a notes or line edit.
+    if "invoice_date" in updates and updates["invoice_date"] != invoice.invoice_date:
+        _refuse_future_invoice_date(db, updates["invoice_date"])
     # Apply tax_rate first so a same-payload tax_amount override (rare,
     # but supported for manual reconciliation) wins on the recalc step.
     if "tax_rate" in updates:

@@ -13,7 +13,6 @@ remove a line once added. This file exercises:
 """
 from __future__ import annotations
 
-from datetime import date
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -24,6 +23,7 @@ from sqlalchemy.pool import StaticPool
 
 import gdx_dispatch.models.tenant_models  # noqa: F401
 from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Job
 from gdx_dispatch.routers.invoices import (
     InvoiceCreateIn,
@@ -79,7 +79,7 @@ def _create_with_lines(db, *, tax_rate, lines):
         customer_id=job.customer_id,
         tax_rate=tax_rate,
         line_items=[InvoiceLineCreateIn(**ln) for ln in lines],
-        invoice_date=date.today(),
+        invoice_date=shop_today_from_settings(db),
     )
     return create_invoice(payload=payload, _=_user(), db=db)
 
@@ -172,7 +172,7 @@ def test_legacy_flat_tax_amount_path_unchanged(db):
             job_id=job.id,
             customer_id=job.customer_id,
             tax_amount=42.50,
-            invoice_date=date.today(),
+            invoice_date=shop_today_from_settings(db),
             line_items=[InvoiceLineCreateIn(description="X", quantity=1, unit_price=500.0)],
         ),
         _=_user(), db=db,
