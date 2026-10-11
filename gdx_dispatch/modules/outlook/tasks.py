@@ -43,7 +43,17 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import SessionLocal
-from gdx_dispatch.core.next_action import NextAction
+
+# tagger is bound as a module and read at call time, never ``from … import
+# name``: it imports ``gdx_dispatch.models``, which runs ``core.celery_app``,
+# which imports THIS module to register its tasks, so when tagger is imported
+# first it is still half-loaded here and a by-name import fails (GDXA-587).
+# vendor_bill_ingest and core.next_action are imported inside the one function
+# that uses each, for the same reason: when one of them (or one of the vendor
+# services vendor_bill_ingest imports by name) started the chain, it is still
+# half-loaded here. vendor_bill_ingest's light names come from the leaf
+# vendor_bill_rules. test_outlook_import_first_587 imports each first.
+from gdx_dispatch.modules.outlook import tagger as _tagger
 from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError
 from gdx_dispatch.modules.outlook.models import (
     OutlookAccount,
@@ -54,11 +64,9 @@ from gdx_dispatch.modules.outlook.models import (
     OutlookSettings,
     OutlookSubscription,
 )
-from gdx_dispatch.modules.outlook.tagger import tag_message
 from gdx_dispatch.modules.outlook.token_refresh import OutlookReconnectRequired, with_outlook_client
-from gdx_dispatch.modules.outlook.vendor_bill_ingest import (
+from gdx_dispatch.modules.outlook.vendor_bill_rules import (
     LLM_BROKEN,
-    ingest_message_attachments,
     is_candidate,
     new_totals,
     normalize_allowlist,
@@ -290,7 +298,7 @@ def _persist_messages(
         # Tagging MUST NOT break the upsert: a lookup failure logs + continues.
         if is_new:
             try:
-                tag_message(row, tdb, settings=tag_settings)
+                _tagger.tag_message(row, tdb, settings=tag_settings)
             except Exception:  # noqa: BLE001
                 log.exception("auto-tag failed for graph_id=%s (upsert kept)", graph_id)
 
@@ -521,6 +529,8 @@ def _ingest_vendor_bills(
     checkpointed anyway and counted in ``quarantined`` (loudly logged) so it
     can't starve every later run.
     """
+    from gdx_dispatch.modules.outlook import vendor_bill_ingest as _vendor_bill_ingest  # see the import block
+
     totals = new_totals()
     totals["skipped_no_budget"] = 0
     totals["skipped_already_ingested"] = 0
@@ -575,7 +585,7 @@ def _ingest_vendor_bills(
             had_full_budget = remaining is not None and remaining == max_downloads
             had_full_llm = llm_remaining is not None and llm_remaining == max_llm_extractions
             try:
-                r = ingest_message_attachments(
+                r = _vendor_bill_ingest.ingest_message_attachments(
                     idb, gc, m, allowlist,
                     max_downloads=remaining,
                     llm_client=llm_client,
@@ -828,7 +838,7 @@ def _retag_untagged(tdb: Session, *, batch: int = 200, max_rows: int = 20000) ->
             last_id = row.id
             scanned += 1
             try:
-                if tag_message(row, tdb, settings=tag_settings):
+                if _tagger.tag_message(row, tdb, settings=tag_settings):
                     tagged += 1
             except Exception:  # noqa: BLE001
                 log.exception("retag failed for id=%s (skipped)", row.id)
@@ -1415,6 +1425,8 @@ def _compute_sync_health(tdb: Session, now: datetime) -> dict:
 def _upsert_sync_health_action(tdb: Session, tenant_id: str, problems: list[str]) -> str:
     """One persistent NextAction, updated in place; clears itself when sync
     is healthy again. Same shape (and snooze contract) as billing_followup."""
+    from gdx_dispatch.core.next_action import NextAction  # see the import block
+
     existing = tdb.execute(
         select(NextAction).where(
             NextAction.tenant_id == tenant_id,
