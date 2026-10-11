@@ -1161,7 +1161,7 @@ def mobile_send_invoice(
 
     delivered = _send_invoice_email(db, invoice, tenant_id=tenant_id)
     if invoice.status == "draft":
-        transition_invoice_status(db, invoice, "sent")  # GL S5
+        transition_invoice_status(db, invoice, "sent", actor=user_id)  # GL S5
     if delivered:
         invoice.sent_at = datetime.now(UTC)
         invoice.sent_via = "email"
