@@ -545,3 +545,88 @@ def test_bank_transfer_lifecycle_is_on_the_activity_trail(client, db, invoice, m
     labels = [i["label"] for i in act["items"]]
     assert "Bank transfer started — pending (up to 4 business days)" in labels
     assert "Bank transfer FAILED — the balance is still owed" in labels
+
+
+# ── a refused trail row must not cost the office its alert (GDXA-516) ───────
+
+
+@pytest.fixture
+def audit_storage_refuses(db):
+    """Make the database itself refuse every `audit_logs` insert.
+
+    A trigger, not a patched Python function: the failure has to happen where a
+    real one would (a flush that the storage aborts), so the session is left in
+    exactly the state a real failure leaves it in.
+    """
+    from sqlalchemy import text
+
+    from gdx_dispatch.core.audit import ensure_audit_table
+
+    ensure_audit_table(db)
+    db.commit()
+    db.execute(text(
+        "CREATE TRIGGER audit_logs_refuse_insert BEFORE INSERT ON audit_logs "
+        "BEGIN SELECT RAISE(ABORT, 'audit storage refuses this row'); END;"
+    ))
+    db.commit()
+    yield
+    db.rollback()
+    db.execute(text("DROP TRIGGER IF EXISTS audit_logs_refuse_insert"))
+    db.commit()
+
+
+def _ach_audit_rows(db, invoice) -> list[str]:
+    from gdx_dispatch.core.audit import AuditLog
+
+    db.expire_all()
+    return [a.action for a in db.scalars(select(AuditLog).where(
+        AuditLog.entity_id == str(invoice.id), AuditLog.action.like("ach_payment_%")
+    )).all()]
+
+
+def test_bounced_bank_debit_rings_even_when_the_audit_row_is_refused(
+    client, db, invoice, audit_storage_refuses,
+):
+    """The `ach_payment_failed` trail row used to be written with a bare
+    try/commit. When the storage refused it the session was left needing a
+    rollback, the "was this already reversed?" read that decides the bell then
+    raised, and a bounced bank payment went unannounced."""
+    out = _intent_failed(client, invoice)  # asserts the webhook answered 200
+    assert out["status"] == "failed"
+    assert out["reversal"] == "no_payment_to_reverse"
+
+    assert _titles(db) == ["Bank payment failed"]
+    # The refusal really happened: the row is not there.
+    assert _ach_audit_rows(db, invoice) == []
+
+
+@pytest.mark.parametrize("etype, obj, verdict", [
+    ("payment_intent.processing", {"status": "processing"}, "ach_processing_noted"),
+    ("payment_intent.requires_action", {
+        "status": "requires_action",
+        "next_action": {
+            "type": "verify_with_microdeposits",
+            "verify_with_microdeposits": {"hosted_verification_url": "https://example.test/v"},
+        },
+    }, "ach_verification_noted"),
+])
+def test_note_only_ach_branches_leave_the_session_usable_when_the_row_is_refused(
+    client, db, invoice, audit_storage_refuses, etype, obj, verdict,
+):
+    """The two note-only branches had the same shape. A refused row left the
+    session needing a rollback, so the router's next write, the record that
+    this event was handled (GDXA-357), failed and was logged instead. A refused
+    trail row must leave the session working for whatever comes next."""
+    from gdx_dispatch.models.tenant_models import StripeWebhookEvent
+
+    out = _deliver(client, etype, {
+        "id": INTENT, "object": "payment_intent", "amount": CENTS,
+        "payment_method_types": ["us_bank_account"],
+        "metadata": {"invoice_id": str(invoice.id)}, **obj,
+    })
+    assert out["status"] == verdict
+    assert _ach_audit_rows(db, invoice) == []
+    recorded = db.scalars(
+        select(StripeWebhookEvent.result_status).where(StripeWebhookEvent.event_type == etype)
+    ).all()
+    assert recorded == [verdict]
