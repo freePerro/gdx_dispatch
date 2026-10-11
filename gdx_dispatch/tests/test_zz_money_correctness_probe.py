@@ -171,7 +171,7 @@ def test_m2_recording_the_same_reference_twice_yields_one_payment(db):
             record_payment(
                 invoice_id=_U(inv_id),
                 payload=PaymentCreateIn(
-                    amount=500.0, method="card", date=date.today(), reference="pi_dup_test"
+                    amount=500.0, method="card", date=shop_today_from_settings(db), reference="pi_dup_test"
                 ),
                 _=_user(),
                 db=db,
@@ -201,7 +201,7 @@ def test_m11_overpayment_is_detectable(db):
     inv = _create_invoice(db, lines=[{"description": "Door", "quantity": 1, "unit_price": 500.0}])
     record_payment(
         invoice_id=_U(inv["id"]),
-        payload=PaymentCreateIn(amount=600.0, method="cash", date=date.today()),
+        payload=PaymentCreateIn(amount=600.0, method="cash", date=shop_today_from_settings(db)),
         _=_user(),
         db=db,
     )
@@ -240,7 +240,7 @@ def test_m37_cannot_delete_a_draft_that_has_payments(db):
     inv = _create_invoice(db, lines=[{"description": "Door", "quantity": 1, "unit_price": 500.0}])
     record_payment(
         invoice_id=_U(inv["id"]),
-        payload=PaymentCreateIn(amount=200.0, method="check", date=date.today()),
+        payload=PaymentCreateIn(amount=200.0, method="check", date=shop_today_from_settings(db)),
         _=_user(),
         db=db,
     )
@@ -344,7 +344,7 @@ def test_m1_recalc_does_not_destroy_an_imported_invoice_total(db):
 
     record_payment(
         invoice_id=_U(str(inv.id)),
-        payload=PaymentCreateIn(amount=1471.84, method="check", date=date.today()),
+        payload=PaymentCreateIn(amount=1471.84, method="check", date=shop_today_from_settings(db)),
         _=_user(),
         db=db,
     )
@@ -380,7 +380,7 @@ def test_m1_recalc_does_not_zero_a_lineless_imported_invoice(db):
 
     record_payment(
         invoice_id=_U(str(inv.id)),
-        payload=PaymentCreateIn(amount=650.0, method="check", date=date.today()),
+        payload=PaymentCreateIn(amount=650.0, method="check", date=shop_today_from_settings(db)),
         _=_user(),
         db=db,
     )

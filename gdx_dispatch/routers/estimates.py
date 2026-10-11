@@ -3094,9 +3094,12 @@ def _compute_price_drift(estimate: Estimate, db: Session) -> list[dict]:
     says as much). Used to warn on reopen — 'people come back months later and
     the numbers are still good' is the hope; this proves it or flags it.
     """
-    import datetime as _dt
-
+    from gdx_dispatch.core.pay_periods import shop_today_from_settings
     from gdx_dispatch.models.labor_pricing import LaborPriceItem
+
+    # The shop's day, as install_labor_line reads it (GDXA-505): on the UTC
+    # day the two disagreed from ~7pm Central until midnight.
+    shop_today = shop_today_from_settings(db)
 
     def _is_retired(item: LaborPriceItem) -> bool:
         # SAME definition install_labor_line (billing_lanes) uses to refuse a
@@ -3106,7 +3109,7 @@ def _compute_price_drift(estimate: Estimate, db: Session) -> list[dict]:
         if item is None or not item.active:
             return True
         eff_to = getattr(item, "effective_to", None)
-        if eff_to is not None and eff_to < _dt.date.today():
+        if eff_to is not None and eff_to < shop_today:
             return True
         return _to_float(item.flat_price) <= 0
 

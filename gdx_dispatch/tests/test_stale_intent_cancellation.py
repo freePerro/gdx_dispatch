@@ -37,7 +37,7 @@ The fix has two halves.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -48,6 +48,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import AuditLog, TenantBase, ensure_audit_table
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.core.payments import (
     _create_usable_intent,
     _mark_invoice_paid,
@@ -320,7 +321,7 @@ def test_recording_an_office_payment_queues_the_sweep(db, invoice):
     with patch("gdx_dispatch.routers.invoices.enqueue_stale_intent_sweep") as sweep:
         record_payment(
             invoice_id=invoice.id,
-            payload=PaymentCreateIn(amount=50.0, method="check", date=date.today()),
+            payload=PaymentCreateIn(amount=50.0, method="check", date=shop_today_from_settings(db)),
             _=OFFICE, db=db,
         )
 
