@@ -23,9 +23,8 @@ Drag a card to move it. Drop on a different tech or a different time. The system
 
 ## Assigning a job
 
-- **From the board:** drag an unassigned job from the left sidebar onto a tech's column.
+- **From the board:** drag a job from **New Jobs to Schedule** (under the tech columns) onto a tech's column, or pick the tech in the card's **Assign to tech...** dropdown.
 - **From a customer page:** create a new job, set the tech directly.
-- **Bulk:** select multiple jobs, right-click, "Assign to..."
 
 ## Status updates
 
@@ -33,11 +32,11 @@ When a tech taps "On my way" or "Arrived" on their phone, the board updates inst
 
 ## "On the way" texts
 
-Set up in Settings → Customer comms. When a tech taps "On my way," the customer gets an automatic SMS with the tech's name and ETA. Reduces missed appointments by a third in shops that use it.
+When a tech taps **On my way** on their phone, the job shows as en route on the board. The app doesn't text the customer yet: the **Text customer "Tech is on the way"** switch under **Settings → Feature Settings → Job Workflow** doesn't send anything today, so call or text the customer yourself if they need a heads-up.
 
 ## Areas / zones
 
-If you dispatch by area (north of town, south of town), use **holding areas** to park jobs by region before assigning them to a specific tech. Click **+ Add area** at the top of the unassigned column to create one.
+If you dispatch by area (north of town, south of town), use **holding areas** to park jobs by region before assigning them to a specific tech. Use the **Holding Areas** section at the bottom of the board: **Set Up Holding Areas** on a board that has none yet, then **Add Area** for more.
 
 ## Filters
 
@@ -50,7 +49,7 @@ The filter bar at the top shows:
 
 ## Reassigning when a tech calls out
 
-Select all of that tech's jobs → right-click → "Reassign to..." → pick the replacement. The replacement tech sees the route on their phone within seconds; the customers get the courtesy SMS automatically if enabled.
+Drag each of that tech's jobs onto the replacement tech's column. The replacement tech sees the route on their phone within seconds. The app doesn't text the customers about the change.
 
 ## Related
 - [Jobs](#) — anatomy of a job record

@@ -18,13 +18,10 @@ You can also create a standalone invoice (no job behind it) from the Billing pag
 
 ## Sending
 
-Click **Send invoice**. The customer gets:
+Click **Send Invoice**. The customer gets an email with a PDF attached and, when online payment is set up, a payment link that opens a hosted checkout (Stripe-powered).
 
-- An email with a PDF attached
-- A payment link that opens a hosted checkout (Stripe-powered)
-- Optionally, an SMS with the same link
-
-You see when they viewed, paid, or didn't — the invoice status updates in real time.
+- **Text it too** — if the phone integration is on, **Text Invoice** sends the same link by SMS. It's a separate button.
+- **Did they open it?** The **Viewed** column on the Billing list shows when the customer last opened the invoice.
 
 ## Payment
 
@@ -33,7 +30,6 @@ Customers can pay by card, ACH, or cash/check (recorded manually). Once paid:
 - Status flips to **Paid**
 - Customer record shows the balance going to zero
 - Payment lands in your **Payments** page with the deposit details
-- QuickBooks sync (if connected) pulls the invoice and payment into QBO automatically
 
 ## Adjustments
 
@@ -41,7 +37,13 @@ You can edit a sent-but-unpaid invoice. Once paid, you'd issue a credit memo ins
 
 ## Reminders
 
-Unpaid invoices get automatic reminders on a schedule you set (Settings → Reminders). Default: 7 days, 14 days, 30 days. Each reminder is a fresh email + payment link.
+Reminder emails for overdue invoices are set up under **Billing → Reminders** (admins only). Nothing is sent until an admin switches on **Send reminder emails automatically** and saves.
+
+- **Before you save** — the page shows how many invoices would get an email right now, and the first few of them.
+- **Once on** — a daily run emails each overdue invoice as it reaches a step in the schedule.
+- **Schedule** — 7, 14 and 30 days after the due date by default; change it on the same page.
+- **What the customer gets** — the subject and body templates from that page, plus a **Pay Invoice Online** button when online payment is set up.
+- **One customer on a payment plan?** Open the invoice and click **Pause reminders**.
 
 ## Statements and balances
 
@@ -56,7 +58,15 @@ The statement is worked out fresh each time you open it, so a payment recorded t
 
 ## Refunds
 
-Issue a refund from the invoice page — partial or full. Card payments refund through Stripe automatically; cash/check needs manual handling.
+Record a refund under **Billing → Payments → + Record Payment / Refund**, with entry type **Refund**. Partial or full, it can't be more than what the customer has paid.
+
+Recording a refund doesn't move any money. For cash or check, hand the money back yourself and then record it here.
+
+For a card payment, refund it in your Stripe dashboard **first**:
+
+- **Full refund** — the payment is voided here on its own and the invoice balance re-opens. Don't record it here; that would count it twice.
+- **Partial refund** — then record it here; Stripe's notice alone doesn't reach your books.
+- **Partial, then the rest later** — the second Stripe refund voids the whole payment here, so the partial refund you recorded is counted twice. The invoice balance won't show it; tell whoever keeps your books.
 
 ## Related
 - [Jobs](#) — how a job becomes an invoice

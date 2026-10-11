@@ -13,11 +13,11 @@ Welcome. You're now the owner of your shop's GDX console. There's no rush — th
 
 ### 1. Company info (5 minutes)
 
-**Settings → Company.** Add your shop name (the public one — what customers see on invoices), logo, billing address, phone number, and business hours. The hours drive your booking availability later if you turn on customer self-scheduling.
+**Settings → Branding.** Add your company name (the public one — what customers see on invoices), logo, address, phone number and email. Then set your business hours under **Settings → Feature Settings → Shop hours (dispatch capacity)**; the dispatch board uses them to show each tech's daily capacity.
 
 ### 2. Invite one teammate (5 minutes)
 
-**Settings → Users → + Invite.** Pick the person who'll do dispatch or the office work — they'll log in alongside you and discover the flow with you. You'll both have your own logins; you can always invite the rest of the team this week.
+**Settings → Users → Invite User.** Pick the person who'll do dispatch or the office work — they'll log in alongside you and discover the flow with you. You'll both have your own logins; you can always invite the rest of the team this week.
 
 ### 3. Service catalog (10 minutes)
 
@@ -34,8 +34,8 @@ Use a real customer — maybe a friend, family, or your most loyal repeat. **+ N
 ## After the first hour
 
 In your second hour:
-- Import existing customers (Customers → Import → from QuickBooks or CSV)
-- Connect QuickBooks Online (Settings → Integrations) so invoices flow both ways
+- Bring in existing customers — ask whoever runs your install. Don't use the CSV step in Admin → Onboarding for this: that wizard's first step overwrites the Branding details you just entered.
+- Connect QuickBooks Online (Settings → Integrations) if you keep books there
 - Invite the rest of the team — each role sees a tour for their part of the app on first login
 
 ## Where things live
@@ -50,7 +50,7 @@ In your second hour:
 
 - The **?** button in the top bar opens this drawer with searchable articles.
 - The **Take the tour** link in the sidebar replays the role-aware welcome tour anytime.
-- For things in-app help can't fix, support is one form away from Settings → Support.
+- For things in-app help can't fix, the owner account has a **Report a Bug** button on every page.
 
 ## Related
 - [Users & teams](#)

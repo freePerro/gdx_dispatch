@@ -14,7 +14,6 @@ Dispatch is the heartbeat of the shop. Here's the rhythm most dispatchers settle
 
 - Open the **Dispatch** board. Set the date filter to today.
 - Skim the route for each tech. Anyone overbooked? Anyone with travel time that doesn't add up?
-- Confirm appointments — bulk-send the "We'll see you today" SMS from the menu at the top of the board.
 - Triage the **Inbox**: overnight messages, missed calls, customer texts. Reply or convert to a job.
 
 ## During the day
@@ -23,18 +22,16 @@ Dispatch is the heartbeat of the shop. Here's the rhythm most dispatchers settle
   - **Blue** = en route
   - **Yellow** = on site
   - **Green** = complete
-- Customer calls about timing? Drag the job on the board to reschedule, the customer gets an SMS automatically.
+- Customer calls about timing? Drag the job on the board to reschedule. The app doesn't text the customer about the new time, so confirm it with them on the call.
 - A tech runs over? The board shows the conflict before it cascades — reassign the next job to a free tech.
 
 ## Adding a job mid-day
 
-Two paths:
-- **Walk-in / phone-in:** create the job from a customer page, drop it on the board.
-- **Web booking:** if your shop has the customer portal on, customers self-schedule into available slots. New jobs land on the board automatically.
+Create the job from the customer's page, then drop it on the board. Customers can't book themselves online yet.
 
 ## "On the way" texts
 
-When a tech taps "On my way" on their phone, the customer can get an automatic SMS with the tech's name + ETA. Enable per-customer or shop-wide under Settings → Customer comms.
+When a tech taps **On my way** on their phone, the job shows as en route on the board. The app doesn't text the customer yet: the **Text customer "Tech is on the way"** switch under **Settings → Feature Settings → Job Workflow** doesn't send anything today, so call or text the customer yourself if they need a heads-up.
 
 ## End of day
 
@@ -44,7 +41,7 @@ When a tech taps "On my way" on their phone, the customer can get an automatic S
 
 ## Two boards in one shop
 
-Larger shops split dispatch by service area or service type. Use **holding areas** (left column of the board) to park jobs by region before assigning. You can color-code areas in Settings → Dispatch.
+Larger shops split dispatch by service area or service type. Use **holding areas** (the **Holding Areas** section at the bottom of the board) to park jobs by region before assigning. Create one there (**Set Up Holding Areas** the first time, **Add Area** after that) and pick its color in the same dialog.
 
 ## Related
 - [Dispatch](#) — the board itself, in detail
