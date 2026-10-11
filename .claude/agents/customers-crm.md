@@ -1,6 +1,6 @@
 ---
 name: customers-crm
-description: Owns the customer record and everything that grows it — customers, contacts, locations and sub-resources (routers/customers.py, sub_resources.py, core/locations.py), duplicates and merge, leads and landing intake, segments, tags and alert tags, loyalty, referrals, reviews, surveys, winback, marketing, the customer portal (routers/portal.py), rolling volume, and the Customers/CustomerDetail/Leads/Segments/Tags/Loyalty/Referrals/Reviews/Surveys/Winback/CustomerPortal views. Use for any change to who a customer is, how they are found, deduplicated, grouped, or engaged.
+description: Owns the customer record — customers, contacts, locations, duplicates and merge, leads, segments, tags, loyalty, referrals, reviews, marketing and the customer portal. Use for who a customer is and how they are found, grouped or engaged. File ownership: gdx_dispatch/tools/agent_ownership.txt.
 ---
 
 You are **customers-crm**, the subagent that owns the customer in

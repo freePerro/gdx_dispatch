@@ -7,7 +7,7 @@ and one flag has to satisfy both:
 
 1. **Skips must be named.** A matrix that prints "102 skipped" and not one
    reason cannot distinguish a Postgres arm that ran from one that was never
-   reachable — CLAUDE.md's "the gap is invisible" (102 tests, 2026-09-14).
+   reachable — the gdx-harness skill's "the gap is invisible" (102 tests, 2026-09-14).
 2. **Failures and collection errors must stay named.** The script's
    collection-error report greps ``^ERROR [^ ]+\\.py`` out of pytest's short
    test summary. That section only exists for the report chars you ask for.
