@@ -2994,6 +2994,32 @@ def _reinstate_reversed_payment(db: Session, reference: str, reason: str) -> dic
     return {"status": "reinstated", "invoice_id": invoice_id, "reason": reason}
 
 
+def _ach_trail(db: Session, action: str, invoice_id: str, data: dict, **details) -> None:
+    """One bank-transfer lifecycle row on the invoice's trail, best-effort.
+
+    Through `audit_best_effort`, never a bare try/commit (GDXA-516): a refused
+    row used to leave the session needing a rollback, and on `payment_failed`
+    the read that decides the office's "Bank payment failed" bell then raised
+    and the bell never rang. Precondition: the caller has nothing staged. A
+    failed row logs as `audit_best_effort_failed action=<action>`.
+    """
+    from gdx_dispatch.core.audit import audit_best_effort  # noqa: PLC0415
+
+    audit_best_effort(
+        db,
+        tenant_id=None,
+        user_id=_WEBHOOK_ACTOR,
+        action=action,
+        entity_type="invoice",
+        entity_id=str(invoice_id),
+        details={
+            "intent_id": str(data.get("id") or ""),
+            "amount_cents": int(data.get("amount") or 0),
+            **details,
+        },
+    )
+
+
 def handle_payment_webhook(event: dict, db: Session) -> dict:
     """Process Stripe payment events from the webhook router.
 
@@ -3028,26 +3054,9 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
         connect = {"stripe_account": connected_account} if connected_account else {}
         if _intent_method(data, connect=connect) != "ach":
             return {"status": "not_ach", "invoice_id": str(invoice_id)}
-        try:
-            from gdx_dispatch.core.audit import log_audit_event_sync
-
-            log_audit_event_sync(
-                db=db,
-                tenant_id=None,
-                user_id="stripe-webhook",
-                action="ach_payment_processing",
-                entity_type="invoice",
-                entity_id=str(invoice_id),
-                details={
-                    "intent_id": str(data.get("id") or ""),
-                    "amount_cents": int(data.get("amount") or 0),
-                },
-            )
-            db.commit()
-        except Exception:
-            # The trail is wanted; a failure to write it must not make Stripe
-            # retry an event that moves no money.
-            logger.exception("ach_processing_audit_failed invoice=%s", invoice_id)
+        # The trail is wanted; a failure to write it must not make Stripe retry
+        # an event that moves no money. Nothing is staged on this branch.
+        _ach_trail(db, "ach_payment_processing", invoice_id, data)
         return {"status": "ach_processing_noted", "invoice_id": str(invoice_id)}
 
     if event_type == "payment_intent.requires_action":
@@ -3068,26 +3077,12 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
         ):
             return {"status": "not_ach_verification", "invoice_id": str(invoice_id)}
         detail = next_action.get("verify_with_microdeposits") or {}
-        try:
-            from gdx_dispatch.core.audit import log_audit_event_sync
-
-            log_audit_event_sync(
-                db=db,
-                tenant_id=None,
-                user_id="stripe-webhook",
-                action="ach_payment_awaiting_verification",
-                entity_type="invoice",
-                entity_id=str(invoice_id),
-                details={
-                    "intent_id": str(data.get("id") or ""),
-                    "amount_cents": int(data.get("amount") or 0),
-                    "hosted_verification_url": str(detail.get("hosted_verification_url") or ""),
-                    "arrival_date": detail.get("arrival_date"),
-                },
-            )
-            db.commit()
-        except Exception:
-            logger.exception("ach_verification_audit_failed invoice=%s", invoice_id)
+        # Note-only branch, nothing staged.
+        _ach_trail(
+            db, "ach_payment_awaiting_verification", invoice_id, data,
+            hosted_verification_url=str(detail.get("hosted_verification_url") or ""),
+            arrival_date=detail.get("arrival_date"),
+        )
         return {"status": "ach_verification_noted", "invoice_id": str(invoice_id)}
 
     if event_type == "payment_intent.succeeded":
@@ -3255,28 +3250,17 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
         # only — card declines already surface on the customer's screen and
         # would flood the trail. Best-effort, like the other trail rows.
         if invoice_id and _intent_method(data, strict=False) == "ach":
-            try:
-                from gdx_dispatch.core.audit import log_audit_event_sync
-
-                err = data.get("last_payment_error") or {}
-                log_audit_event_sync(
-                    db=db,
-                    tenant_id=None,
-                    user_id="stripe-webhook",
-                    action="ach_payment_failed",
-                    entity_type="invoice",
-                    entity_id=str(invoice_id),
-                    details={
-                        "intent_id": str(data.get("id") or ""),
-                        "amount_cents": int(data.get("amount") or 0),
-                        "code": str(err.get("code") or ""),
-                        "message": str(failure_msg or "")[:300],
-                        "reversal": reversal["status"],
-                    },
-                )
-                db.commit()
-            except Exception:
-                logger.exception("ach_failed_audit_failed invoice=%s", invoice_id)
+            # GDXA-516: `_ach_trail`'s precondition holds here, because every
+            # `_reverse_unless_superseded` outcome either committed its own
+            # work or wrote nothing. A refused row must not poison the session
+            # the `already_reversed` read below runs on.
+            err = data.get("last_payment_error") or {}
+            _ach_trail(
+                db, "ach_payment_failed", invoice_id, data,
+                code=str(err.get("code") or ""),
+                message=str(failure_msg or "")[:300],
+                reversal=reversal["status"],
+            )
             # GDXA-393. The usual bank failure: the debit bounced (or its
             # micro-deposit timed out) while still `processing`, so there was
             # never a Payment row and the reversal above found nothing — the

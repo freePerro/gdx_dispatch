@@ -32,6 +32,7 @@ from datetime import date, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.modules.forecasting.models import (
     CADENCE_ANNUAL,
     CADENCE_BIWEEKLY,
@@ -204,7 +205,7 @@ def find_candidates(db: Session, *, today: date | None = None) -> list[StreamCan
 
     Pure-read. No DB writes. Callers (``upsert_streams``) apply the writes.
     """
-    today = today or date.today()
+    today = today or shop_today_from_settings(db)
     cutoff = today - timedelta(days=DETECTOR_WINDOW_MONTHS * 31)
     rows = (
         db.query(QBBankTransaction)
