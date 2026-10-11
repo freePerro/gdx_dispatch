@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.pay_periods import shop_today
 from gdx_dispatch.models.tenant_models import (
     Appointment,
     Customer,
@@ -43,8 +44,10 @@ def _now() -> datetime:
     # the day boundary (e.g. 22:50 UTC) made "+2h" appointments cross
     # midnight and silently drop, producing a time-of-day flake. The hour
     # value doesn't matter for the assertions — only that arithmetic
-    # within the test stays inside one UTC day.
-    today = datetime.now(UTC).date()
+    # within the test stays inside one UTC day. The date is the shop's
+    # (GDXA-511: GET /today with no tz is the shop's day; no AppSettings row
+    # here, so America/New_York), where 12:00 UTC is the morning.
+    today = shop_today("America/New_York")
     return datetime(today.year, today.month, today.day, 12, 0, tzinfo=UTC)
 
 
@@ -592,11 +595,18 @@ class TestLocalTimezone:
         assert with_tz["count"] == 1
 
         utc_view = client.get(
-            f"/api/mobile/today?date={local_date.isoformat()}"
+            f"/api/mobile/today?date={local_date.isoformat()}&tz=UTC"
         ).json()
         assert utc_view["count"] == 0
 
-    def test_invalid_tz_falls_back_to_utc(self, app_and_db, caplog):
+        # No tz is the shop's day (GDXA-511; America/New_York here, where
+        # 21:00 Chicago is 22:00 the same date), no longer UTC's.
+        shop_view = client.get(
+            f"/api/mobile/today?date={local_date.isoformat()}"
+        ).json()
+        assert shop_view["count"] == 1
+
+    def test_invalid_tz_falls_back_and_logs(self, app_and_db, caplog):
         client, db = app_and_db
         _seed_tech(db)
         c = _seed_customer(db)

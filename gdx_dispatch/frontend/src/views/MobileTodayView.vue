@@ -77,7 +77,7 @@ function localDayParams() {
   try {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
     if (tz) params.set('tz', tz)
-  } catch { /* very old WebView — backend falls back to UTC */ }
+  } catch { /* very old WebView — backend falls back to the shop's zone */ }
   return params
 }
 
@@ -244,7 +244,10 @@ async function saveReorder() {
   }
   reorderSaving.value = true
   try {
-    const result = await api.postQueued('/api/mobile/today/reorder', { appointment_ids: ids }, {
+    // The same device zone GET /today used, so both read the same day.
+    const tz = localDayParams().get('tz')
+    const body = tz ? { appointment_ids: ids, tz } : { appointment_ids: ids }
+    const result = await api.postQueued('/api/mobile/today/reorder', body, {
       actionType: 'today.reorder',
     })
     if (result?.queued) {

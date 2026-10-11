@@ -1282,7 +1282,8 @@ function normalizeJob(rawJob) {
     // normalizer wiped the field before the filter saw it.
     holding_area_id: rawJob.holding_area_id || null,
     scheduled_at: rawJob.scheduled_at || rawJob.scheduledAt || null,
-    address: rawJob.address || rawJob.service_address || [rawJob.city, rawJob.state].filter(Boolean).join(', '),
+    // site_full_address: /api/jobs' effective jobsite, street and town (GDXA-502).
+    address: rawJob.address || rawJob.site_full_address || rawJob.service_address || [rawJob.city, rawJob.state].filter(Boolean).join(', '),
     customer_name: rawJob.customer_name || (typeof rawJob.customer === 'object' ? rawJob.customer?.name : rawJob.customer) || '',
     job_type: rawJob.job_type || rawJob.type || 'Service',
     time_window: rawJob.time_window || rawJob.timeWindow || 'Anytime',

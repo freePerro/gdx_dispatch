@@ -1085,9 +1085,9 @@ async function load() {
   // range, not the one the user has already widened away from.
   deepLinkMiss.value = false;
   try {
-    // One day of slack on each end: the server buckets by UTC day, we mean shop
-    // days. entriesInRange applies the real boundary. Without the slack, an
-    // evening shift on the last day of the range never comes back at all.
+    // One day of slack on each end, from when the server bucketed by UTC day
+    // and an evening shift on the last day never came back. The server filters
+    // by shop day since GDXA-510; entriesInRange still applies the boundary.
     const params = new URLSearchParams({ all_technicians: 'true' });
     if (startDate.value) params.set('date_start', localDateString(addDays(startDate.value, -1)));
     if (endDate.value) params.set('date_end', localDateString(addDays(endDate.value, 1)));

@@ -15,14 +15,15 @@ the first assigned tech receives the credit. Jobs without
 ``scheduled_duration_hours`` are excluded (no estimate to beat) so the
 ratio stops being inflated by zero-baseline rows.
 
-Two windows: ``daily`` (today UTC) and ``weekly`` (current ISO week,
-Mon–Sun, UTC). Timezone-correct boundaries are a follow-up — v1 chooses
-the smaller-blast-radius path.
+Two windows: ``daily`` (the shop's today) and ``weekly`` (the shop's
+current ISO week, Mon–Sun). Both are the shop's calendar days
+(``AppSettings.timezone``) turned into UTC instants, so a job closed out at
+8pm Central counts toward that evening, not tomorrow (GDXA-510).
 """
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -35,6 +36,12 @@ from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
+from gdx_dispatch.core.pay_periods import (
+    resolve_zone,
+    shop_day_of,
+    shop_today,
+    shop_tz_name_from_settings,
+)
 
 log = logging.getLogger(__name__)
 
@@ -46,17 +53,27 @@ router = APIRouter(
 )
 
 
-def _today_window_utc() -> tuple[datetime, datetime]:
-    today = datetime.now(UTC).date()
-    start = datetime.combine(today, datetime.min.time(), tzinfo=UTC)
-    return start, start + timedelta(days=1)
+def _shop_days_window(first: date, days: int, tz_name: str) -> tuple[datetime, datetime]:
+    """``[first, first + days)`` in shop days, as UTC instants.
+
+    Each end is the shop's own midnight, so a DST change inside the window
+    moves the instant and not the day."""
+    zone = resolve_zone(tz_name)
+    start = datetime.combine(first, datetime.min.time(), tzinfo=zone)
+    end = datetime.combine(first + timedelta(days=days), datetime.min.time(), tzinfo=zone)
+    return start.astimezone(UTC), end.astimezone(UTC)
 
 
-def _iso_week_window_utc() -> tuple[datetime, datetime]:
-    today = datetime.now(UTC).date()
+def _today_window(db: Session, *, now: datetime | None = None) -> tuple[datetime, datetime]:
+    tz_name = shop_tz_name_from_settings(db)
+    return _shop_days_window(shop_today(tz_name, now=now), 1, tz_name)
+
+
+def _iso_week_window(db: Session, *, now: datetime | None = None) -> tuple[datetime, datetime]:
+    tz_name = shop_tz_name_from_settings(db)
+    today = shop_today(tz_name, now=now)
     monday = today - timedelta(days=today.weekday())  # Monday
-    start = datetime.combine(monday, datetime.min.time(), tzinfo=UTC)
-    return start, start + timedelta(days=7)
+    return _shop_days_window(monday, 7, tz_name)
 
 
 def _query_efficiency(
@@ -148,7 +165,6 @@ def _actual_hours_by_job(db: Session, jobs: list[dict[str, Any]]) -> dict[str, D
         day_row_entries,
         longest_day_row_minutes,
     )
-    from gdx_dispatch.core.pay_periods import shop_day_of, shop_tz_name_from_settings  # noqa: PLC0415
 
     entries = day_row_entries(db, [j["job_id"] for j in jobs])
     tz_name = shop_tz_name_from_settings(db) if entries else None
@@ -224,8 +240,8 @@ def tech_efficiency(
 ) -> JSONResponse:
     _ = request
     try:
-        d_start, d_end = _today_window_utc()
-        w_start, w_end = _iso_week_window_utc()
+        d_start, d_end = _today_window(db)
+        w_start, w_end = _iso_week_window(db)
         daily = _query_efficiency(db, d_start, d_end)
         weekly = _query_efficiency(db, w_start, w_end)
     except ProgrammingError:

@@ -12,11 +12,12 @@ route.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
 from datetime import date as _date
+from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import bindparam
 from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
@@ -24,6 +25,12 @@ from starlette.responses import JSONResponse
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.job_site import resolve_job_site
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.pay_periods import (
+    resolve_zone,
+    shop_day_of,
+    shop_today_from_settings,
+    shop_tz_name_from_settings,
+)
 from gdx_dispatch.core.pii import decrypt_if_ciphertext
 
 log = logging.getLogger(__name__)
@@ -60,15 +67,24 @@ def day_summary(
     if not user_id:
         return JSONResponse({"detail": "no user"}, 401)
 
-    target = _date.today()
+    # The day is the shop's calendar day, and so are its bounds (GDXA-511):
+    # the containers run on UTC, so a UTC midnight put every job finished
+    # after ~7pm in Minnesota on tomorrow's summary.
+    from gdx_dispatch.routers.mobile import (  # noqa: PLC0415
+        _local_day_window,
+        _window_utc_dates,
+    )
+
+    tz_name = shop_tz_name_from_settings(db)
+    shop_zone = resolve_zone(tz_name)
+    target = shop_today_from_settings(db)
     if date:
         try:
             target = _date.fromisoformat(date)
         except ValueError:
             return JSONResponse({"detail": "invalid date format; expected YYYY-MM-DD"}, 400)
 
-    day_start = datetime.combine(target, datetime.min.time(), tzinfo=UTC)
-    day_end = day_start + timedelta(days=1)
+    day_start, day_end = _local_day_window(target, shop_zone)
 
     # Jobs the user finished today (assigned_to OR job_assignment).
     jobs_done = db.execute(
@@ -210,14 +226,16 @@ def day_summary(
             pass
 
     # Tomorrow's first stop (peek-ahead — small affordance).
-    # DATE(...) = :tomorrow, not a datetime-range compare: SQLAlchemy binds
-    # tz-aware datetimes to SQLite as ISO-'T' strings while stored rows use
-    # a space separator, so `scheduled_at >= :start` never matched there —
-    # this window was dead on the test dialect (found 2026-08-18 writing the
-    # first tests this endpoint ever had). Same portable pattern as the
-    # mobile /today fallback query. PG semantics unchanged (session TZ=UTC).
-    tomorrow_date = (target + timedelta(days=1)).isoformat()
-    next_first = db.execute(
+    # DATE(...) IN (:utc_dates), not a datetime-range compare: SQLAlchemy
+    # binds tz-aware datetimes to SQLite as ISO-'T' strings while stored rows
+    # use a space separator, so `scheduled_at >= :start` never matched there
+    # (found 2026-08-18 writing the first tests this endpoint ever had). The
+    # SQL filter is coarse — every UTC date the shop's tomorrow touches — and
+    # the shop day is decided in Python (GDXA-511: DATE() alone is the UTC
+    # day, which put a 7pm Minnesota job on the wrong day). Same portable
+    # pattern as the mobile /today query.
+    tomorrow = target + timedelta(days=1)
+    tomorrow_rows = db.execute(
         _text(  # noqa: RAWENC1  # c.address decrypted via decrypt_if_ciphertext below
             """
             SELECT j.id, j.title, j.scheduled_at,
@@ -226,7 +244,7 @@ def day_summary(
             FROM jobs j
             LEFT JOIN customers c ON c.id = j.customer_id
             WHERE j.deleted_at IS NULL
-              AND DATE(j.scheduled_at) = :tomorrow
+              AND DATE(j.scheduled_at) IN :utc_dates
               -- Tomorrow's first stop is work to drive to: a cancelled (or
               -- already completed) job is not one. Cancel moves
               -- lifecycle_stage only and keeps scheduled_at (GDXA-208).
@@ -241,11 +259,19 @@ def day_summary(
                 )
               )
             ORDER BY j.scheduled_at ASC
-            LIMIT 1
             """
-        ),
-        {"uid": user_id, "tomorrow": tomorrow_date},
-    ).first()
+        ).bindparams(bindparam("utc_dates", expanding=True)),
+        {
+            "uid": user_id,
+            "utc_dates": [
+                d.isoformat()
+                for d in _window_utc_dates(*_local_day_window(tomorrow, shop_zone))
+            ],
+        },
+    ).all()
+    next_first = next(
+        (r for r in tomorrow_rows if shop_day_of(r[2], tz_name) == tomorrow), None
+    )
 
     # Effective jobsite for tomorrow's first stop — resolved once, outside
     # the response literal. site_address_missing must ride along or the
