@@ -23,6 +23,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import (
+    func,
     select,
 )
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -30,6 +31,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.invoice_net_billed import invoice_net_billed_sq
 from gdx_dispatch.core.modules import require_module, require_role
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -54,7 +56,7 @@ OVERHEAD_PERCENT = Decimal("8.00")  # applied to labor+parts
 # ---------------------------------------------------------------------------
 
 
-from gdx_dispatch.models.tenant_models import MarkupRule  # noqa: E402
+from gdx_dispatch.models.tenant_models import Invoice, MarkupRule  # noqa: E402
 from gdx_dispatch.routers.labor import _cost_rate_fallback  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -550,13 +552,16 @@ def _parts_for_job(db: Session, job_id: UUID) -> dict[str, Any]:
 
 def _invoiced_for_job(db: Session, job_id: UUID, tenant_id: str) -> Decimal:
     try:
-        from sqlalchemy import func as _func
-        from sqlalchemy import select as _sel
-
-        from gdx_dispatch.models.tenant_models import Invoice
+        # GDXA-594: a credit memo lowers balance_due, never Invoice.total, so
+        # billed is total net of credit memos; a void invoice billed nothing.
         row = db.execute(
-            _sel(_func.coalesce(_func.sum(Invoice.total), 0))
-            .where(Invoice.job_id == job_id, Invoice.company_id == tenant_id, Invoice.deleted_at.is_(None))
+            select(func.coalesce(func.sum(invoice_net_billed_sq()), 0))
+            .where(
+                Invoice.job_id == job_id,
+                Invoice.company_id == tenant_id,
+                Invoice.deleted_at.is_(None),
+                Invoice.status != "void",
+            )
         ).fetchone()
     except OperationalError:
         log.exception("invoices_query_failed job_id=%s", job_id)
@@ -855,13 +860,15 @@ def profitability_report(
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
     try:
-        from sqlalchemy import func as _func
-        from sqlalchemy import select as _sel
-
-        from gdx_dispatch.models.tenant_models import Invoice
+        # GDXA-594: net of credit memos, void excluded (see _invoiced_for_job).
         rows = db.execute(
-            _sel(Invoice.job_id, _func.coalesce(_func.sum(Invoice.total), 0).label("invoice_total"))
-            .where(Invoice.company_id == tenant_id, Invoice.deleted_at.is_(None), Invoice.created_at >= cutoff)
+            select(Invoice.job_id, func.coalesce(func.sum(invoice_net_billed_sq()), 0).label("invoice_total"))
+            .where(
+                Invoice.company_id == tenant_id,
+                Invoice.deleted_at.is_(None),
+                Invoice.status != "void",
+                Invoice.created_at >= cutoff,
+            )
             .group_by(Invoice.job_id)
         ).fetchall()
     except OperationalError:
