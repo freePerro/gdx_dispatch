@@ -303,6 +303,8 @@ def day_summary(
                 # point at the work, not the HQ. (The jobs_completed recap
                 # above deliberately stays customer-address: history.)
                 "site_address": next_site.address if next_site else None,
+                # Street + town (GDXA-503) — what the recap line shows.
+                "site_full_address": next_site.full_address if next_site else None,
                 "site_address_missing": bool(next_site.address_missing) if next_site else False,
             }
             if next_first else None

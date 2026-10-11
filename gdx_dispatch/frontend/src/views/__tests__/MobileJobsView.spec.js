@@ -170,6 +170,18 @@ describe('jobsite address on cards (PR 1, jobsite-address plan)', () => {
     expect(wrapper.text()).not.toContain('100 Billing Rd');
   });
 
+  it('shows the town with the street (GDXA-503)', async () => {
+    apiGet.mockResolvedValue({ jobs: [{
+      id: 'j1', title: 'Install', customer_name: 'Acme',
+      site_address: '88 Pine Ridge Rd',
+      site_full_address: '88 Pine Ridge Rd, Anytown, MN 55555',
+      site_address_missing: false,
+    }] });
+    const wrapper = mount(MobileJobsView, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.text()).toContain('88 Pine Ridge Rd, Anytown, MN 55555');
+  });
+
   it('bound site with NO address shows ask-dispatch, never the customer HQ (D2)', async () => {
     // Caught live in the 2026-08-18 throwaway walk: the mapping fell back to
     // customer_address when site_address was empty, showing the HQ for a

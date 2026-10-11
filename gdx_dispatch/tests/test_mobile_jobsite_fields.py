@@ -601,3 +601,157 @@ class TestFixJobSite:
         db.commit()
         r = self._patch(client, j, {"address": "9 Dock St"})
         assert r.status_code == 404
+
+
+# ── GDXA-503: the town rides along on every mobile surface ────────────
+
+
+class TestSiteCarriesTheTown:
+    """A location row keeps its town in city/state/zip (QuickBooks sync and
+    the CustomerDetail form fill them apart from the street). Every mobile
+    surface shows and map-links street + town; ``site_address`` stays the
+    street because the fix-site form edits it and the server compares it."""
+
+    FULL = "88 Pine Ridge Rd, Anytown, MN 55555"
+
+    def _town_location(self, db, customer):
+        loc = _location(db, customer, label="Home", address="88 Pine Ridge Rd")
+        loc.city, loc.state, loc.zip = "Anytown", "MN", "55555"
+        db.commit()
+        return loc
+
+    def _assert_town(self, payload):
+        assert payload["site_address"] == "88 Pine Ridge Rd"
+        assert payload["site_full_address"] == self.FULL
+        assert "Anytown" in payload["navigation_link"]
+        assert "MN+55555" in payload["navigation_link"]
+
+    def test_today_card_and_area_card(self, app_and_db):
+        client, db = app_and_db
+        c = _seed(db)
+        loc = self._town_location(db, c)
+        _job(db, c.id, location_id=loc.id)
+        area = _job(db, c.id, location_id=loc.id)
+        area.scheduled_at = None
+        area.lifecycle_stage = "scheduled"
+        db.commit()
+        r = client.get("/api/mobile/today").json()
+        self._assert_town(r["jobs"][0])
+        self._assert_town(r["area_jobs"][0])
+
+    def test_jobs_list(self, app_and_db):
+        client, db = app_and_db
+        c = _seed(db)
+        loc = self._town_location(db, c)
+        _job(db, c.id, location_id=loc.id)
+        self._assert_town(client.get("/api/mobile/jobs").json()["jobs"][0])
+
+    def test_job_detail(self, app_and_db):
+        client, db = app_and_db
+        c = _seed(db)
+        loc = self._town_location(db, c)
+        j = _job(db, c.id, location_id=loc.id)
+        self._assert_town(client.get(f"/api/mobile/job/{j.id.hex}").json()["job"])
+
+    def test_unbound_job_reads_the_primary_rows_town(self, app_and_db):
+        client, db = app_and_db
+        c = _seed(db)
+        loc = self._town_location(db, c)
+        loc.is_primary = True
+        db.commit()
+        _job(db, c.id)
+        self._assert_town(client.get("/api/mobile/today").json()["jobs"][0])
+
+    def test_customer_fallback_has_no_town_to_add(self, app_and_db):
+        client, db = app_and_db
+        c = _seed(db)
+        _job(db, c.id)
+        card = client.get("/api/mobile/today").json()["jobs"][0]
+        assert card["site_full_address"] == "100 Billing Rd"
+        assert "100+Billing+Rd" in card["navigation_link"]
+
+    def test_day_summary_next_stop(self, app_and_db):
+        _, db = app_and_db
+        c = _seed(db)
+        loc = self._town_location(db, c)
+        helper = TestDaySummaryNextStop()
+        helper._tomorrow_job(db, c, location_id=loc.id)
+        stop = helper._client(db).get(helper._summary_url()).json()["next_first_stop"]
+        assert stop["site_address"] == "88 Pine Ridge Rd"
+        assert stop["site_full_address"] == self.FULL
+
+    def test_drive_time_routes_to_street_and_town(self, app_and_db, monkeypatch):
+        import gdx_dispatch.core.drive_time as dt
+
+        seen = []
+
+        async def _capture(tenant_id, addresses, provider=None):
+            seen.extend(addresses)
+            return [None] * len(addresses)
+
+        monkeypatch.setattr(dt, "compute_drive_times", _capture)
+        client, db = app_and_db
+        c = _seed(db)
+        loc = self._town_location(db, c)
+        _job(db, c.id, location_id=loc.id)
+        assert client.get("/api/mobile/today").status_code == 200
+        assert seen == [self.FULL]
+
+    def _fix(self, client, job, address):
+        # The sheet prefills and edits the street; the stale guard sends it.
+        return client.patch(
+            f"/api/mobile/jobs/{job.id.hex}/site",
+            json={"address": address, "expected_address": "88 Pine Ridge Rd"},
+        )
+
+    def _row(self, db, loc):
+        db.expire_all()
+        return db.execute(text(
+            "SELECT address, city, state, zip, lat, local_edit_fields "
+            "FROM customer_locations WHERE id = :i"
+        ), {"i": loc.id}).first()
+
+    def test_untouched_street_save_keeps_the_town(self, app_and_db):
+        client, db = app_and_db
+        c = _seed(db)
+        loc = self._town_location(db, c)
+        loc.lat, loc.lng = 44.9, -93.1
+        db.commit()
+        j = _job(db, c.id, location_id=loc.id)
+        r = self._fix(client, j, "88 Pine Ridge Rd")
+        assert r.status_code == 200, r.text
+        self._assert_town(r.json())
+        row = self._row(db, loc)
+        # Street, town and geocode intact; the save claims no field from QB.
+        assert tuple(row[:4]) == ("88 Pine Ridge Rd", "Anytown", "MN", "55555")
+        assert row[4] is not None
+        assert not row[5]
+
+    def test_a_moved_street_drops_the_old_town(self, app_and_db):
+        """The old town belongs to the old street: a real move clears it rather
+        than pinning the new street to a town nobody confirmed."""
+        client, db = app_and_db
+        c = _seed(db)
+        loc = self._town_location(db, c)
+        j = _job(db, c.id, location_id=loc.id)
+        r = self._fix(client, j, "90 Pine Ridge Rd")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["site_full_address"] == "90 Pine Ridge Rd"
+        assert "Anytown" not in body["navigation_link"]
+        assert tuple(self._row(db, loc)[:4]) == ("90 Pine Ridge Rd", None, None, None)
+
+    def test_a_typed_town_is_stored_whole(self, app_and_db):
+        """A tech who types the town into the street field keeps it, shown once."""
+        client, db = app_and_db
+        c = _seed(db)
+        loc = self._town_location(db, c)
+        j = _job(db, c.id, location_id=loc.id)
+        typed = "90 Pine Ridge Rd, Anytown, MN 55555"
+        r = self._fix(client, j, typed)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["site_full_address"] == typed
+        assert "Anytown" in body["navigation_link"]
+        row = self._row(db, loc)
+        assert tuple(row[:4]) == (typed, None, None, None)

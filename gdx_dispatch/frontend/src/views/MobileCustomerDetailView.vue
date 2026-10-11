@@ -228,12 +228,13 @@
                   <span class="row-title">{{ loc.label || loc.address || 'Location' }}</span>
                   <Tag v-if="loc.is_primary" value="Primary" severity="success" />
                 </div>
-                <div v-if="loc.address && loc.address !== loc.label" class="row-meta muted">
-                  {{ loc.address }}
+                <!-- Street + town (GDXA-503); address is the street alone. -->
+                <div v-if="loc.address && (loc.full_address || loc.address) !== loc.label" class="row-meta muted">
+                  {{ loc.full_address || loc.address }}
                 </div>
                 <a
                   v-if="loc.address"
-                  :href="`https://maps.google.com/?q=${encodeURIComponent(loc.address)}`"
+                  :href="`https://maps.google.com/?q=${encodeURIComponent(loc.full_address || loc.address)}`"
                   target="_blank"
                   rel="noopener"
                   class="row-action"
