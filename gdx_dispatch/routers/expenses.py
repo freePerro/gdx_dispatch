@@ -20,7 +20,7 @@ from gdx_dispatch.core.expense_categories import (
 )
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pay_periods import shop_day_of, shop_today_from_settings, shop_tz_name_from_settings
-from gdx_dispatch.models.tenant_models import Expense, ExpenseLine, JobReceipt
+from gdx_dispatch.models.tenant_models import Expense, ExpenseLine, Job, JobReceipt
 from gdx_dispatch.modules.ledger.engine import PeriodLockedError
 from gdx_dispatch.modules.ledger.models import ExpenseReceipt
 from gdx_dispatch.modules.ledger.rules import (
@@ -214,6 +214,16 @@ def _annotate_gl_accounts(db: Session, rows: list[Expense], payloads: list[dict]
         log.exception("expense_gl_account_annotation_failed")
 
 
+def _require_live_job(db: Session, job_id: UUID | None) -> None:
+    """An expense may be costed only to a job that exists and is not
+    soft-deleted (invariant #2): a deleted job is gone to the office."""
+    if job_id is None:
+        return
+    job = db.get(Job, job_id)
+    if job is None or job.deleted_at is not None:
+        raise HTTPException(status_code=422, detail="job not found")
+
+
 @router.post("/expenses", response_model=None, status_code=201)
 def create_expense(
     payload: ExpenseCreate,
@@ -231,6 +241,7 @@ def create_expense(
             status_code=422,
             detail=f"category must be one of {_EXPENSE_CATEGORIES}",
         )
+    _require_live_job(db, payload.job_id)
     data = payload.model_dump()
     data["category"] = canonical
     # None → let the column default ('draft') apply; TitleCase → column case.
@@ -286,6 +297,10 @@ def update_expense(
     if not row:
         raise HTTPException(status_code=404, detail="Expense not found")
     updates = payload.model_dump(exclude_unset=True)
+    if updates.get("job_id") is not None and updates["job_id"] != row.job_id:
+        # Only a re-point is checked: the form resends the current job_id on
+        # every save, and an expense whose job was since deleted stays editable.
+        _require_live_job(db, updates["job_id"])
     if "category" in updates:
         canonical = canonicalize_expense_category(updates["category"])
         if canonical is None:
