@@ -19,6 +19,7 @@ from sqlalchemy.pool import StaticPool
 
 import gdx_dispatch.models.tenant_models  # noqa: F401
 from gdx_dispatch.core.audit import AuditLog, TenantBase
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Job
 from gdx_dispatch.routers.invoices import (
     InvoiceCreateIn,
@@ -70,7 +71,7 @@ def _draft(db) -> dict:
             job_id=job.id,
             customer_id=job.customer_id,
             line_items=[InvoiceLineCreateIn(description="Spring", quantity=1, unit_price=200.0)],
-            invoice_date=date.today(),
+            invoice_date=shop_today_from_settings(db),
         ),
         _=_user(),
         db=db,
