@@ -39,7 +39,7 @@ When work is done, the tech submits a **closeout sheet** that captures:
 - Customer signature
 - Notes for office or for next visit
 
-Your shop can set required fields (parts, hours, signature) under Settings → Workflow gates. Until those fields are filled, the job won't flip to Complete.
+Your shop chooses what a closeout must include under **Settings → Feature Settings → Job Workflow**: **Require parts list on Complete**, **Require labor hours on Complete**, **Require signature on Complete** and **Require invoice before Complete**. Until those are met, the job won't flip to Complete.
 
 ## From job to invoice
 
@@ -48,8 +48,7 @@ A completed job lands in the **Ready to Bill** queue on the dashboard. Open it, 
 ## Rescheduling and reassigning
 
 - **Drag** a job on the dispatch board to move it between techs or times.
-- **Right-click** on a job for quick actions: reschedule, reassign, duplicate, cancel.
-- Customer gets an automatic SMS confirmation when the time changes.
+- The app doesn't text the customer when the time changes; let them know yourself.
 
 ## Related
 - [Dispatch](#) — assigning and moving jobs in real time

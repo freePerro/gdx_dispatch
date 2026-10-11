@@ -17,7 +17,7 @@ The mobile view is built for one hand on a phone, on a truck, with the engine ru
 
 ## Heading to a job
 
-Tap **On my way** when you head out. The customer (if SMS is on) gets a "Your tech is on the way" message; dispatch sees your status flip.
+Tap **On my way** when you head out; dispatch sees your status flip. The app doesn't text the customer, so call them if they need a heads-up.
 
 If you need turn-by-turn, the address opens Apple Maps / Google Maps in one tap.
 
@@ -52,7 +52,7 @@ When the work is done, tap **Complete**. The closeout sheet captures:
 - **Parts used** — drawn from your truck inventory or added as snapshot
 - **Parts to order** — anything the job still needs; type the part name (no catalog match required) and it lands in the office's Parts to Order queue
 - **Return visit** — tick "This job needs a return visit" and say why. That creates an unscheduled job for dispatch with your reason on it — no note-and-tag workaround needed
-- **Hours on site** — auto-calculated from Arrived → Complete, editable
+- **Hours worked** — type the hours you actually worked; the app doesn't fill them in from the clock
 - **Customer signature** — fingertip on the screen
 - **Notes** — for the office or for next visit
 
