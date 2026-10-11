@@ -200,13 +200,15 @@ def _record_outbound(
     skip_reason: str | None,
 ) -> None:
     """Append-only audit row for this send attempt (locked requirement:
-    everything auditable). Rides the caller's session, so it lands when the
-    caller commits; if that session is unusable — mid-rollback, or None — a
-    fresh session on the same bind (or SessionLocal) records it anyway. A
-    logging failure must never block or fail the send itself.
+    everything auditable). On Postgres the row commits on a fresh session on
+    the same bind, so it survives whether or not the caller commits (GDXA-674).
+    On SQLite, or if that write fails, it rides the caller's session and lands
+    when the caller commits; if that session is unusable — mid-rollback, or
+    None — a fresh session on the same bind (or SessionLocal) records it
+    anyway. A logging failure must never block or fail the send itself.
 
-    The row is written inside a SAVEPOINT, as ``core/webhooks/emit.py`` stages
-    its delivery rows. A bare add + flush that failed here was swallowed and
+    On the caller's session the row is written inside a SAVEPOINT, as
+    ``core/webhooks/emit.py`` stages its delivery rows. A bare add + flush that failed here was swallowed and
     left the caller's session mid-failed-transaction after the email had gone
     out, so the caller's next write (``sent_at`` on the invoice, ``status`` on
     the estimate) raised: an error for a delivered email, and a retry the
@@ -246,6 +248,77 @@ def _record_outbound(
             skip_reason=skip_reason,
         )
 
+    def _write_on_own_session() -> None:
+        from sqlalchemy.orm import Session as _Session
+
+        if tenant_db is not None:
+            with _Session(bind=tenant_db.get_bind()) as audit_db:
+                audit_db.add(_row())
+                audit_db.commit()
+        else:
+            from gdx_dispatch.core.database import SessionLocal
+            with SessionLocal() as audit_db:
+                audit_db.add(_row())
+                audit_db.commit()
+
+    def _fail_the_caller_loudly() -> None:
+        # The caller's transaction was dead before this write — an earlier
+        # failure on it was swallowed — so Postgres refused the SAVEPOINT (or
+        # the `SELECT 1` probe).
+        # Swallowing that leaves the Session looking healthy, and psycopg2
+        # answers a COMMIT on an aborted transaction by rolling back without
+        # raising: the caller's work would vanish behind a normal response.
+        # Fail through the Session instead, as the bare flush this replaced
+        # did, so the caller's commit raises. On an aborted transaction this
+        # flush cannot succeed, so it never adds a second row.
+        try:
+            tenant_db.add(_row())
+            tenant_db.flush()
+        except Exception:
+            log.warning("outbound_email_caller_transaction_already_aborted tenant=%s", tenant_id)
+
+    dialect: str | None = None
+    try:
+        if tenant_db is not None:
+            dialect = tenant_db.get_bind().dialect.name
+    except Exception:
+        # Logging must never fail the send: the row is staged on the caller.
+        log.exception("outbound_email_bind_unreadable tenant=%s", tenant_id)
+    if dialect not in (None, "sqlite"):
+        # Every attempt commits on its own session (GDXA-674), as the
+        # OutboundEmail model has always said it does. Staged on the caller's
+        # session the row lived only if the caller committed, and two callers
+        # do not: `send_invoice` commits only `if email_sent:`, so a failed or
+        # skipped invoice send vanished from the Email Log at session close, and
+        # `tasks/planner_digest.py` never commits, so a DELIVERED digest did too
+        # (both measured on Postgres, where releasing a SAVEPOINT commits
+        # nothing). The email has gone or has not by now; no rollback of the
+        # caller's can change that, so the record of it must not share the
+        # caller's fate. Committing a sent row here also lets `recently_sent`
+        # see it at once rather than at the caller's commit.
+        # Not on SQLite, for the reason `core/audit.py` gives: an in-memory
+        # engine hands every session the SAME connection, so this commit would
+        # commit the caller's pending work too, and on a file database it waits
+        # on the caller's own write lock. There, as on a failure here, the row
+        # is staged on the caller below, as it was before.
+        try:
+            _write_on_own_session()
+        except Exception:
+            log.exception("outbound_email_own_session_write_failed tenant=%s", tenant_id)
+        else:
+            # The staged path below doubled as the alarm for a caller whose
+            # transaction was already dead; keep that alarm. `SELECT 1` is the
+            # probe: Postgres refuses it with 25P02 only on an aborted
+            # transaction. (An empty `begin_nested()` block is no probe — it
+            # emits no SAVEPOINT at all; measured.)
+            if dialect == "postgresql":
+                try:
+                    tenant_db.execute(select(1))
+                except Exception as exc:
+                    if _transaction_already_aborted(exc):
+                        _fail_the_caller_loudly()
+            return
+
     try:
         if tenant_db is not None:
             with tenant_db.begin_nested():
@@ -254,31 +327,9 @@ def _record_outbound(
     except Exception as exc:
         log.exception("outbound_email_audit_primary_write_failed tenant=%s", tenant_id)
         if tenant_db is not None and _transaction_already_aborted(exc):
-            # The caller's transaction was dead before this write — an earlier
-            # failure on it was swallowed — so Postgres refused the SAVEPOINT.
-            # Swallowing that leaves the Session looking healthy, and psycopg2
-            # answers a COMMIT on an aborted transaction by rolling back without
-            # raising: the caller's work would vanish behind a normal response.
-            # Fail through the Session instead, as the bare flush this replaced
-            # did, so the caller's commit raises. The row still lands below.
-            try:
-                tenant_db.add(_row())
-                tenant_db.flush()
-            except Exception:
-                log.warning("outbound_email_caller_transaction_already_aborted tenant=%s", tenant_id)
+            _fail_the_caller_loudly()
     try:
-        from sqlalchemy.orm import Session as _Session
-
-        if tenant_db is not None:
-            bind = tenant_db.get_bind()
-            with _Session(bind=bind) as audit_db:
-                audit_db.add(_row())
-                audit_db.commit()
-        else:
-            from gdx_dispatch.core.database import SessionLocal
-            with SessionLocal() as audit_db:
-                audit_db.add(_row())
-                audit_db.commit()
+        _write_on_own_session()
     except Exception:
         log.exception("outbound_email_audit_write_failed tenant=%s", tenant_id)
 
@@ -299,7 +350,8 @@ def recently_sent(
 
     Honest limit (adversarial audit round 2): this is check-then-act over
     COMMITTED rows — two requests in flight in the same instant both pass
-    (the audit row commits at request end). It reliably stops the sequential
+    (the audit row commits only once the provider has answered — on Postgres
+    straight after, since GDXA-674). It reliably stops the sequential
     re-click/retry class, which is the observed failure mode; a same-instant
     race needs a DB constraint this table can't express. Accepted."""
     try:
