@@ -120,6 +120,15 @@ describe("jobsite row", () => {
     expect(w.find('[data-testid="mjd-customer-address-secondary"]').exists()).toBe(false);
   });
 
+  it("shows the town with the street (GDXA-503)", async () => {
+    const w = await mountWith({
+      site_address: "88 Pine Ridge Rd",
+      site_full_address: "88 Pine Ridge Rd, Anytown, MN 55555",
+    });
+    expect(w.find('[data-testid="mobile-job-detail-address"]').text())
+      .toContain("88 Pine Ridge Rd, Anytown, MN 55555");
+  });
+
   it("renders site access notes when present", async () => {
     const w = await mountWith({
       site_address: "9 Dock St",
@@ -164,6 +173,47 @@ describe("fix-address sheet (PR 4)", () => {
       }),
       expect.objectContaining({ actionType: "job.site_fix" }),
     );
+  });
+
+  it("shows street + town but the fix sheet edits the street (GDXA-503)", async () => {
+    // The stale-replay guard and the new-site match both compare STREETS; a
+    // town suffix would 422 the one and mint a duplicate row in the other.
+    patchQueuedMock.mockResolvedValue({ ok: true });
+    const w = await mountWith({
+      site_address: "88 Pine Ridge Rd",
+      site_full_address: "88 Pine Ridge Rd, Anytown, MN 55555",
+      site_source: "location",
+    });
+    await w.find('[data-testid="mjd-fix-address"]').trigger("click");
+    const input = w.find('[data-testid="mjd-fix-address-input"]');
+    expect(input.element.value).toBe("88 Pine Ridge Rd");
+    await w.find('[data-testid="mjd-fix-address-save"]').trigger("click");
+    expect(patchQueuedMock).toHaveBeenCalledWith(
+      "/api/mobile/jobs/job-123/site",
+      expect.objectContaining({
+        address: "88 Pine Ridge Rd",
+        expected_address: "88 Pine Ridge Rd",
+      }),
+      expect.objectContaining({ actionType: "job.site_fix" }),
+    );
+  });
+
+  it("an offline move drops the old street's town from the display (GDXA-503)", async () => {
+    patchQueuedMock.mockResolvedValue({ ok: true, queued: true });
+    const w = await mountWith({
+      site_address: "88 Pine Ridge Rd",
+      site_full_address: "88 Pine Ridge Rd, Anytown, MN 55555",
+      site_source: "location",
+    });
+    await w.find('[data-testid="mjd-fix-address"]').trigger("click");
+    const input = w.find('[data-testid="mjd-fix-address-input"]');
+    input.element.value = "90 Pine Ridge Rd";
+    await input.trigger("input");
+    await w.find('[data-testid="mjd-fix-address-save"]').trigger("click");
+    await flushPromises();
+    const shown = w.find('[data-testid="mobile-job-detail-address"]').text();
+    expect(shown).toContain("90 Pine Ridge Rd");
+    expect(shown).not.toContain("Anytown");
   });
 
   it("hidden entirely on read-only grants", async () => {

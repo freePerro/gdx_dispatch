@@ -8,7 +8,7 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 from sqlalchemy import bindparam, func, or_, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -23,6 +23,7 @@ from gdx_dispatch.core.audit import (
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.cache import cached, invalidate_prefix, invalidate_prefix_sync
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.job_site import compose_full_address
 from gdx_dispatch.core.log_redact import redact_email
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.name_normalize import humanize_name
@@ -180,6 +181,13 @@ class CustomerLocationOut(BaseModel):
     access_notes: str | None = None
     is_primary: bool
     created_at: str | None = None
+
+    @computed_field
+    @property
+    def full_address(self) -> str | None:
+        # Street + town, what a person reads and a map link carries
+        # (GDXA-503); `address` stays the street the edit forms write.
+        return compose_full_address(self.address, self.city, self.state, self.zip)
 
 
 class CustomerLocationPatchIn(BaseModel):

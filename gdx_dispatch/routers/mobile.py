@@ -1187,6 +1187,9 @@ def _job_card(
     effective_address = site.address if site is not None else (
         customer.address if customer is not None else None
     )
+    # Street + town (GDXA-503): what the card shows and the map link carries.
+    # site_address stays the street — the fix-address compare reads it.
+    full_address = site.full_address if site is not None else effective_address
     return {
         "id": str(job.id),
         "appointment_id": str(appointment.id) if appointment is not None else None,
@@ -1206,8 +1209,9 @@ def _job_card(
         # stays in the nested customer for anything still reading it.
         "site_label": site.label if site is not None else None,
         "site_address": effective_address,
+        "site_full_address": full_address,
         "site_address_missing": bool(site.address_missing) if site is not None else False,
-        "navigation_link": _build_navigation_link(effective_address),
+        "navigation_link": _build_navigation_link(full_address),
         "location": location,
     }
 
@@ -1588,8 +1592,9 @@ async def get_mobile_today(
     # Effective SITE addresses, not customer HQ — otherwise the card text
     # says jobsite while the drive-time math routes to the billing address
     # (pre-code audit 2026-08-18 §3). site_address already carries the
-    # customer fallback for unbound jobs.
-    addresses = [c.get("site_address") or "" for c in cards]
+    # customer fallback for unbound jobs. Street + town (GDXA-503): a bare
+    # street is ambiguous to the router, the same as for the map link.
+    addresses = [c.get("site_full_address") or c.get("site_address") or "" for c in cards]
     legs = await compute_drive_times(tenant_id, addresses, provider=provider)
     # legs[i] is the time FROM addresses[i-1] TO addresses[i]; we want
     # each card to know its drive-time to the NEXT stop, so shift by one
@@ -1942,9 +1947,11 @@ def mobile_all_my_jobs(
                 t["name"] for t in _tags_by_customer.get(_cid(r.get("customer_id")), [])
             }),
             # Server-built so every surface navigates to the same place.
-            "navigation_link": _build_navigation_link(site.address if site else None),
+            # Street + town (GDXA-503); site_address stays the street.
+            "navigation_link": _build_navigation_link(site.full_address if site else None),
             "site_label": site.label if site else None,
             "site_address": (site.address if site else None) or "",
+            "site_full_address": (site.full_address if site else None) or "",
             "site_address_missing": bool(site.address_missing) if site else False,
             "scheduled_at": scheduled_iso,
             # Lead tech (jobs.assigned_to) — lets the company-wide list show
@@ -2102,12 +2109,15 @@ def get_mobile_job_detail(
     site = resolve_job_site(db, job.get("id"), job.get("location_id"), job.get("customer_id"))
     job["site_label"] = site.label
     job["site_address"] = site.address
+    # Street + town (GDXA-503): what the tech reads and navigates to.
+    # site_address stays the street — the fix-site form edits and compares it.
+    job["site_full_address"] = site.full_address
     job["site_address_missing"] = site.address_missing
     job["site_access_notes"] = site.access_notes
     job["site_source"] = site.source
     # Built server-side so both surfaces navigate identically — the client used
     # to hand-build a different Google Maps URL format from the sibling address.
-    job["navigation_link"] = _build_navigation_link(site.address)
+    job["navigation_link"] = _build_navigation_link(site.full_address)
     # Derived, never cached. `Job.billing_status` looks like the answer and is a
     # dead cache — no app code writes it past "unbilled" and older rows hold a
     # stale "invoiced", so every reader that trusted it
@@ -3635,8 +3645,9 @@ def update_mobile_job_site(
         "target": target,
         "site_label": fresh.label,
         "site_address": fresh.address,
+        "site_full_address": fresh.full_address,
         "site_address_missing": fresh.address_missing,
-        "navigation_link": _build_navigation_link(fresh.address),
+        "navigation_link": _build_navigation_link(fresh.full_address),
     })
 
 

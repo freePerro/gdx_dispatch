@@ -113,7 +113,7 @@ const customerName = computed(
   () => props.job.customer?.name || props.job.customer_name || '—',
 )
 const address = computed(
-  () => props.job.site_address || props.job.display_address || '',
+  () => props.job.site_full_address || props.job.site_address || props.job.display_address || '',
 )
 const techName = computed(() => props.job.assigned_tech_name || '')
 const subtitle = computed(() => props.job.title || '')
