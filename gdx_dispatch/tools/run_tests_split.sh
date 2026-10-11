@@ -348,7 +348,7 @@ fi
 #
 # `-ra` makes every shard NAME what it did not pass. Without it the matrix says
 # "102 skipped" and names not one of them, so a Postgres arm that never ran
-# looks exactly like a green one — the gap CLAUDE.md calls invisible. Measured
+# looks exactly like a green one — the gap the gdx-harness skill calls invisible. Measured
 # 2026-09-27 on test_pg_fixture_smoke.py + test_gdx_ai_readonly_role.py:
 # 9 skipped / 0 reason lines before, 9 skipped / 7 reason lines summing to 9
 # after, same runtime.

@@ -119,7 +119,8 @@ merged. The guard for this instrument is ``tests/test_swallowed_read_census.py``
 Machine output is keyed on ``file::qualname::method`` and never on a line
 number, because a line-keyed artifact reddens when a line is added above a
 finding (``.tenant_plane_redundant_filter_baseline``, a documented sharp edge in
-``CLAUDE.md``). Lines are printed for humans and carried inside each record.
+``.claude/rules/scanners-and-tests.md``). Lines are printed for humans and
+carried inside each record.
 
 EXIT CODES
     0 — scan completed (the default; a census is a measurement, not a gate)

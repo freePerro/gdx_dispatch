@@ -1,6 +1,6 @@
 ---
 name: people-time
-description: Owns people and their hours in gdx_dispatch — technicians (routers/technicians.py), timeclock and time off (routers/timeclock.py, time_off.py, core/time_off.py), pay periods and the one hours authority (core/pay_periods.py, core/timesheet_hours.py), timesheet export and delivery, payroll (routers/payroll.py, modules/payroll), tech efficiency and user performance, the commission boundary, the user's own profile, and the Technicians/Timeclock/Timesheets/Payroll/Commissions/Performance/UserProfile views with the time-entry and time-off dialogs. Use for any change to who works here, when they worked, or what those hours are worth.
+description: Owns people and hours — technicians, timeclock and time off, pay periods and the hours authority, timesheets, payroll, performance and the commission boundary. Use for who works here, when they worked, or what those hours are worth. File ownership: gdx_dispatch/tools/agent_ownership.txt.
 ---
 
 You are **people-time**, the subagent that owns technicians and their hours in

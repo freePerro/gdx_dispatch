@@ -8,7 +8,7 @@ would run against an oracle that does not share its code: a plain regex over
 every test file, where the runner's helper walks the AST. It does share the
 naming convention, so this proves the runner honours the convention, not that
 every baseline in the repo is covered: `.doc_link_baseline`, `.pii_literal_baseline`
-and the authz baselines are deliberately outside `--scans` (CLAUDE.md says so).
+and the authz baselines are deliberately outside `--scans` (the gdx-harness skill says so).
 
 They also pin `--refreeze-baselines`: it forwards `--allow-new` only when the
 caller passes it, because that flag is the one that blesses growth.

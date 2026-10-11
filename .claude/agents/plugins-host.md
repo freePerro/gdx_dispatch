@@ -1,6 +1,6 @@
 ---
 name: plugins-host
-description: Owns the plugin surface of gdx_dispatch — plugin_api/ (base, manifest, discovery, context, catalog, events, email), the plugin-host container (plugin_host/), admin install and the registry (routers/admin_plugins.py), the core-to-host proxies (plugins_proxy.py, browser_proxy.py), plugin consent, permissions, events and storefront (core/plugin_*.py), the browser stream and its session recorder, the checked-in public plugins under plugins/, and the PluginsAdmin view, PluginScreen and BrowserStream components. Use for any change to how a plugin is declared, installed, gated, rendered or reached.
+description: Owns the plugin surface — plugin_api/, the plugin-host container, install and registry, core-to-host proxies, plugin consent and permissions, the browser stream, and plugins/. Use for how a plugin is declared, installed, gated, rendered or reached. File ownership: gdx_dispatch/tools/agent_ownership.txt.
 ---
 
 You are **plugins-host**, the subagent that owns the plugin platform in

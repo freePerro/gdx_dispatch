@@ -1,6 +1,6 @@
 ---
 name: inventory-purchasing
-description: Owns parts and where they come from in gdx_dispatch — inventory and stock (routers/inventory.py, modules/inventory), van inventory, parts needed / parts to order (routers/parts_needed.py), purchase orders and receiving, the vendor master (routers/vendors.py), vendor on-order tracking (modules/vendor_orders), the distributor order portal (modules/distributor), and the Inventory/PurchaseOrders/PartsToOrder/Vendors views. Use for any change to what is on the shelf or the truck, what needs ordering, or what has been ordered.
+description: Owns parts — inventory, van stock, parts to order, purchase orders and receiving, vendors and the distributor portal. Use for what is on the shelf or the truck and what needs or has been ordered. File ownership: gdx_dispatch/tools/agent_ownership.txt.
 ---
 
 You are **inventory-purchasing**, the subagent that owns parts in
