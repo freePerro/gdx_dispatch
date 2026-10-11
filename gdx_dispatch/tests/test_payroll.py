@@ -421,3 +421,69 @@ class TestRevenueBasisRefusesRatherThanReportingZero:
                 )
         finally:
             db.close()
+
+
+def test_tech_revenue_nets_credit_memos_gdxa597(client: TestClient):
+    """GDXA-597: a credit memo lowers only ``balance_due``, never
+    ``Invoice.total``, so ``SUM(i.total)`` paid commission on money the shop
+    gave back. An invoice of 100 with a credit memo of 20 counts as 80.
+
+    The query still names ``j.assigned_tech_id``, a column no schema here has
+    (money audit M27, left for the commission plugin). This test adds it to its
+    own scratch SQLite so the revenue sum itself runs for real.
+    """
+    import secrets
+    import uuid
+    from datetime import datetime as _dt
+    from decimal import Decimal
+
+    from gdx_dispatch.models.tenant_models import Invoice, InvoiceAdjustment, Job
+    from gdx_dispatch.routers.payroll import _fetch_tech_revenue
+
+    tenant = "tenant-test"
+    db = sessionmaker(bind=client._engine)()  # type: ignore[attr-defined]
+    try:
+        db.execute(text("ALTER TABLE jobs ADD COLUMN assigned_tech_id TEXT"))
+        credited_job = Job(title="Credited", company_id=tenant)
+        plain_job = Job(title="Plain", company_id=tenant)
+        db.add_all([credited_job, plain_job])
+        db.flush()
+        invoices = []
+        for job, total in ((credited_job, "100.00"), (plain_job, "50.00")):
+            inv = Invoice(
+                id=uuid.uuid4(), job_id=job.id, customer_id=uuid.uuid4(),
+                invoice_number=f"INV-{uuid.uuid4().hex[:8].upper()}",
+                status="sent", subtotal=Decimal(total), tax_amount=Decimal("0.00"),
+                total=Decimal(total), balance_due=Decimal(total),
+                public_token=secrets.token_urlsafe(48)[:64], company_id=tenant,
+            )
+            db.add(inv)
+            invoices.append(inv)
+        db.flush()
+        db.add_all([
+            InvoiceAdjustment(
+                invoice_id=invoices[0].id, kind="credit_memo",
+                amount=Decimal("20.00"), company_id=tenant,
+            ),
+            # Settlement and refunds are not a reduction in what was billed.
+            InvoiceAdjustment(
+                invoice_id=invoices[1].id, kind="refund",
+                amount=Decimal("5.00"), company_id=tenant,
+            ),
+        ])
+        db.flush()
+        db.execute(
+            text(
+                "UPDATE jobs SET assigned_tech_id = :tid, status = 'completed', "
+                "completed_at = :at WHERE company_id = :tenant"
+            ),
+            {"tid": "tech-1", "at": _dt(2026, 9, 15, 12, 0), "tenant": tenant},
+        )
+        db.commit()
+
+        rows = _fetch_tech_revenue(
+            db, tenant_id=tenant, start=date(2026, 9, 1), end=date(2026, 9, 30)
+        )
+        assert rows == {"tech-1": (2, 130.0)}
+    finally:
+        db.close()
