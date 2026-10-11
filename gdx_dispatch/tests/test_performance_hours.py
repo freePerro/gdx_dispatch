@@ -259,19 +259,52 @@ def test_a_job_assigned_the_normal_way_counts_for_its_tech(db):
     march = datetime(2026, 3, 10, 15, 0, tzinfo=UTC)
     db.add_all([
         Job(title="via technician", company_id=_TENANT, assigned_to=tech_row.id,
-            status="Completed", created_at=march),
+            status="Completed", lifecycle_stage="completed", created_at=march),
         Job(title="legacy direct", company_id=_TENANT, assigned_to=tech,
-            status="Completed", created_at=march),
+            status="Completed", lifecycle_stage="completed", created_at=march),
         Job(title="deleted", company_id=_TENANT, assigned_to=tech_row.id,
-            status="Completed", created_at=march, deleted_at=march),
+            status="Completed", lifecycle_stage="completed", created_at=march, deleted_at=march),
         Job(title="open", company_id=_TENANT, assigned_to=tech_row.id,
-            status="Scheduled", created_at=march),
+            status="Scheduled", lifecycle_stage="scheduled", created_at=march),
     ])
     db.commit()
 
     row = _all(db)[tech]
     assert row["stats"]["jobs_completed"] == 2
     assert "jobs_completed" not in row["unavailable"]
+
+
+def test_completed_is_the_lifecycle_stage_not_the_status_spelling(db):
+    """GDXA-643: `jobs.status` holds 'Complete' and 'Completed' and is NULL on
+    imported rows; a status-string read drops an assigned NULL-status job,
+    undercounting the tech and skewing Avg Job. `lifecycle_stage` is the done
+    signal, as reports.py reads it."""
+    tech = _user(db, "Alex")
+    tech_row = Technician(company_id=_TENANT, user_id=tech, name="Alex")
+    db.add(tech_row)
+    db.flush()
+    march = datetime(2026, 3, 10, 15, 0, tzinfo=UTC)
+    imported = Job(title="imported", company_id=_TENANT, assigned_to=tech_row.id,
+                   status=None, lifecycle_stage="completed", created_at=march)
+    dispatch = Job(title="dispatch spelling", company_id=_TENANT, assigned_to=tech_row.id,
+                   status="Complete", lifecycle_stage="completed", created_at=march)
+    stale = Job(title="status says done, stage does not", company_id=_TENANT,
+                assigned_to=tech_row.id, status="Completed",
+                lifecycle_stage="in_progress", created_at=march)
+    db.add_all([imported, dispatch, stale])
+    db.flush()
+    # Distinct totals: the old read (drop `imported`, count `stale`) also
+    # counts 2 jobs, so only the money tells the two reads apart.
+    for n, (job, total) in enumerate([(imported, 100), (dispatch, 200), (stale, 400)]):
+        db.add(Invoice(invoice_number=f"INV-L{n}", public_token=uuid4().hex,
+                       customer_id=uuid4(), company_id=_TENANT, job_id=job.id,
+                       status="paid", total=total, created_at=march))
+    db.commit()
+
+    stats = _all(db)[tech]["stats"]
+    assert stats["jobs_completed"] == 2
+    assert stats["revenue"] == 300.0
+    assert stats["avg_job_value"] == 150.0
 
 
 def test_revenue_counts_only_invoices_that_finalize_billing(db):
@@ -287,9 +320,9 @@ def test_revenue_counts_only_invoices_that_finalize_billing(db):
     db.flush()
     march = datetime(2026, 3, 10, 15, 0, tzinfo=UTC)
     job = Job(title="door", company_id=_TENANT, assigned_to=tech_row.id,
-              status="Completed", created_at=march)
+              status="Completed", lifecycle_stage="completed", created_at=march)
     unfinished = Job(title="half done", company_id=_TENANT, assigned_to=tech_row.id,
-                     status="In Progress", created_at=march)
+                     status="In Progress", lifecycle_stage="in_progress", created_at=march)
     db.add_all([job, unfinished])
     db.flush()
     customer = uuid4()
@@ -332,7 +365,7 @@ def test_a_job_counts_in_the_month_it_was_finished_not_booked(db):
     booked = datetime(2026, 2, 25, 15, 0, tzinfo=UTC)
     finished = datetime(2026, 3, 3, 15, 0, tzinfo=UTC)
     job = Job(title="install", company_id=_TENANT, assigned_to=tech_row.id,
-              status="Completed", created_at=booked, completed_at=finished)
+              status="Completed", lifecycle_stage="completed", created_at=booked, completed_at=finished)
     db.add(job)
     db.flush()
     db.add(Invoice(invoice_number="INV-I", public_token=uuid4().hex, customer_id=uuid4(),
@@ -361,7 +394,7 @@ def test_month_end_evening_work_lands_in_the_same_month_as_its_hours(db):
     _shift(db, tech, "2026-03-31T23:00:00+00:00", 180)  # 18:00-21:00 CDT
     finished = datetime(2026, 4, 1, 1, 0, tzinfo=UTC)  # 20:00 CDT, 31 Mar
     db.add(Job(title="late call", company_id=_TENANT, assigned_to=tech_row.id,
-               status="Completed", created_at=finished, completed_at=finished))
+               status="Completed", lifecycle_stage="completed", created_at=finished, completed_at=finished))
     db.commit()
 
     march = _all(db, period="2026-03")[tech]["stats"]
