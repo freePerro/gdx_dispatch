@@ -41,8 +41,8 @@ import inspect
 # These two sets used to be one. Collapsing them meant the sweep could tell
 # you a route had *someone* behind it, but never whether that someone was
 # ALLOWED — `get_current_user` and `require_permission(...)` scored
-# identically. That is why `routers/payments.py` could carry mutation routes
-# with no permission gate and still show green.
+# identically. That is why `routers/payments.py` (deleted 2026-10-11) could
+# carry mutation routes with no permission gate and still show green.
 #
 # AUTHN answers "who are you"; AUTHZ answers "may you". A route needs both.
 # `ungated_routes()` still unions them, so the authentication ratchet and
