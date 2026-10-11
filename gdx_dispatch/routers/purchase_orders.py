@@ -21,6 +21,7 @@ from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync, resolve_au
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.door_specs import door_specs_for_job, receiving_view
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import InventoryItem
 from gdx_dispatch.modules.inventory.stock import apply_stock_delta
 from gdx_dispatch.routers.auth import get_current_user
@@ -41,7 +42,9 @@ class PurchaseOrder(TenantBase):
     vendor_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
     vendor_name: Mapped[str] = mapped_column(String(200), nullable=True)  # denormalized
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="draft")
-    order_date: Mapped[date] = mapped_column(Date, nullable=False, default=date.today)
+    # No column default: date.today is the container's UTC day. create_po
+    # always sets it from the shop calendar; a writer that forgets fails loud.
+    order_date: Mapped[date] = mapped_column(Date, nullable=False)
     expected_date: Mapped[date] = mapped_column(Date, nullable=True)
     received_date: Mapped[date] = mapped_column(Date, nullable=True)
     # The job this PO was ordered for (nullable — vendor-stock POs have none).
@@ -238,7 +241,8 @@ def create_po(
         # ordered, immune to later quote revisions.
         door_snapshot=_resolve_receiving(db, _job_uuid) if _job_uuid else None,
         status=payload.status if payload.status in PO_STATUSES else "draft",
-        order_date=payload.order_date or date.today(),
+        # The shop's calendar day, not the container's UTC one (GDXA-507).
+        order_date=payload.order_date or shop_today_from_settings(db),
         expected_date=payload.expected_date,
         notes=payload.notes,
         tax=Decimal(str(payload.tax)),
@@ -408,7 +412,7 @@ def receive_po(
         line.quantity_received = line.quantity_ordered
 
     po.status = "received"
-    po.received_date = date.today()
+    po.received_date = shop_today_from_settings(db)
     db.commit()
     db.refresh(po)
     _audit_db = locals().get('db')
