@@ -26,7 +26,6 @@ gdx_dispatch/core/denylist.py|X1|34402b2a3ac61d0f
 gdx_dispatch/core/denylist.py|X1|586ac8c43e2d2e2d
 gdx_dispatch/core/denylist.py|X1|efb437f07a3c4b09
 gdx_dispatch/core/invoice_tax.py|D1|299d50f3ca154285
-gdx_dispatch/core/job_taxonomy.py|X2|fd7350e0424bb011
 gdx_dispatch/core/mcp_invoke.py|X2|a03b51e7a5a2e559
 gdx_dispatch/core/mcp_invoke.py|X2|c5a8f243da3da3cb
 gdx_dispatch/core/mcp_tools/email_read.py|D1|1bc910624bd70f1a
@@ -78,5 +77,4 @@ gdx_dispatch/tools/comment_drift_scan.py|X1|9f9e66300b675931
 gdx_dispatch/tools/comment_drift_scan.py|X1|fe3a9d4e70d0c8e2
 gdx_dispatch/tools/drift_scanner.py|D1|11b1e06c876f4bfc
 gdx_dispatch/tools/drift_scanner.py|D1|4cddcac96aa42548
-gdx_dispatch/tools/duplicate_block_scan.py|X2|69db106c13689bee
 gdx_dispatch/tools/matrix_vs_main.py|X2|ecaf41c54e1ff7f4
