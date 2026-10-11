@@ -847,8 +847,9 @@ def test_reopen_flags_a_row_retired_by_effective_to(client: TestClient):
     NOT billable (install_labor_line refuses it) — reopen must flag it, not
     give a false 'prices still check out'."""
     import uuid as _uuid
-    from datetime import date, timedelta
+    from datetime import timedelta
 
+    from gdx_dispatch.core.pay_periods import shop_today_from_settings
     from gdx_dispatch.models.labor_pricing import LaborPriceItem
     from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 
@@ -858,7 +859,8 @@ def test_reopen_flags_a_row_retired_by_effective_to(client: TestClient):
         item = LaborPriceItem(
             id=_uuid.uuid4(), description="Spring replace", service_type="repair",
             flat_price=200, assumed_man_hours=1, active=True,
-            effective_to=date.today() - timedelta(days=1),  # retired yesterday
+            # retired yesterday, on the shop's calendar (GDXA-508)
+            effective_to=shop_today_from_settings(db) - timedelta(days=1),
         )
         db.add(item)
         db.add(EstimateLine(

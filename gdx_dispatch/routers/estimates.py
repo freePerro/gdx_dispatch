@@ -416,12 +416,16 @@ def _resolve_labor_matrix_row(db: Session, labor_price_item_id):
     _expired = False
     _eff_to = getattr(row, "effective_to", None) if row is not None else None
     if _eff_to is not None:
-        from datetime import date as _date
         from datetime import datetime as _dt
+
+        from gdx_dispatch.core.pay_periods import shop_today_from_settings
         _cmp = _eff_to.date() if isinstance(_eff_to, _dt) else _eff_to
         # Boundary matches billing_lanes/_is_retired ("SAME definition"):
         # a row expiring TODAY still prices; retired means strictly past.
-        _expired = _cmp < _date.today()
+        # "Today" is the shop's day: on the UTC clock a row stopped pricing at
+        # 6-7pm Central on its own last day (GDXA-508). billing_lanes' copy
+        # still reads UTC until GDXA-505 moves it.
+        _expired = _cmp < shop_today_from_settings(db)
     if row is None or getattr(row, "active", True) is False or _expired:
         raise HTTPException(
             status_code=404,
@@ -3094,8 +3098,7 @@ def _compute_price_drift(estimate: Estimate, db: Session) -> list[dict]:
     says as much). Used to warn on reopen — 'people come back months later and
     the numbers are still good' is the hope; this proves it or flags it.
     """
-    import datetime as _dt
-
+    from gdx_dispatch.core.pay_periods import shop_today_from_settings
     from gdx_dispatch.models.labor_pricing import LaborPriceItem
 
     def _is_retired(item: LaborPriceItem) -> bool:
@@ -3106,7 +3109,9 @@ def _compute_price_drift(estimate: Estimate, db: Session) -> list[dict]:
         if item is None or not item.active:
             return True
         eff_to = getattr(item, "effective_to", None)
-        if eff_to is not None and eff_to < _dt.date.today():
+        # Shop's day, not UTC's (GDXA-508); same boundary as the save path.
+        # billing_lanes' copy still reads UTC until GDXA-505 moves it.
+        if eff_to is not None and eff_to < shop_today_from_settings(db):
             return True
         return _to_float(item.flat_price) <= 0
 

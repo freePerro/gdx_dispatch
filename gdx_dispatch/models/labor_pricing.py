@@ -84,6 +84,8 @@ class LaborPriceItem(TenantBase):
     # Versioning — so old estimates' snapshots can be cross-referenced even
     # after the row is superseded. MVP behavior is edit-in-place; effective_*
     # exists for slice-8 reporting and for the supersede pattern later.
+    # The UTC default is a session-less fallback only: the one write path,
+    # labor_pricing_admin.create_item, always passes the shop's day (GDXA-508).
     effective_from: Mapped[date] = mapped_column(Date, nullable=False, default=date.today)
     effective_to: Mapped[date] = mapped_column(Date, nullable=True)
 

@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.labor_pricing import LaborPriceItem
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -202,7 +203,8 @@ def create_item(
         min_wall_clock_minutes=payload.min_wall_clock_minutes,
         notes=payload.notes,
         active=payload.active,
-        effective_from=payload.effective_from or date.today(),
+        # The shop's day, not the UTC clock's (GDXA-508).
+        effective_from=payload.effective_from or shop_today_from_settings(db),
         effective_to=payload.effective_to,
         sort_order=payload.sort_order,
     )
@@ -315,7 +317,7 @@ def archive_item(
 
     item.active = False
     if item.effective_to is None:
-        item.effective_to = date.today()
+        item.effective_to = shop_today_from_settings(db)  # shop day (GDXA-508)
 
     log_audit_event_sync(
         db=db,
