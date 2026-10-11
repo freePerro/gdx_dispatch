@@ -9,8 +9,9 @@ is deliberate and stays. It means any aggregate reading ``SUM(Invoice.total)``
 as billed, revenue or lifetime value overstates every credited invoice by the
 whole credit. The revenue reports were fixed first (``_credits_by_period``, PRs
 #402 and #446). This module is the shared form the remaining sites are meant
-to adopt. As of GDXA-592 the one caller is the Billing dashboard's
-``paid_this_month``; the other sites are listed on GDXA-590 for their owners.
+to adopt. Callers so far: the Billing dashboard's ``paid_this_month``
+(GDXA-592) and the phone's day summary ``revenue_invoiced`` (GDXA-598); the
+other sites are listed on GDXA-590 for their owners.
 
     net billed = Invoice.total − Σ invoice_adjustments.amount WHERE kind = 'credit_memo'
 
