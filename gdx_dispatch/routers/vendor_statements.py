@@ -8,7 +8,7 @@ Slice 1 endpoints:
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -21,6 +21,7 @@ from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.modules.vendor_orders.confirm import (
     OrderConfirmError,
@@ -355,7 +356,7 @@ async def list_vendor_accounts(
     that stayed open (by 15x on the first real dataset). Declared BEFORE
     ``/{statement_id}`` so the literal path isn't swallowed by the UUID route.
     """
-    today = datetime.now(timezone.utc).date()
+    today = shop_today_from_settings(db)
     return [
         VendorAccountOut(
             vendor_name=a.vendor_name,

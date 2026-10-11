@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import Warranty
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -59,6 +60,7 @@ def _parse_iso_date(value: Any, field_name: str) -> date:
 
 
 def _now() -> datetime:
+    # An instant for created_at/updated_at, not a business date: UTC on purpose.
     return datetime.now(timezone.utc)
 
 
@@ -108,7 +110,7 @@ def create_warranty(request: Request, payload: dict[str, Any] = Body(...), user:
 
 @router.get("/expiring")
 def expiring_warranties(_: dict[str, Any] = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
-    today = date.today()
+    today = shop_today_from_settings(db)
     cutoff = today + timedelta(days=30)
     rows = db.execute(
         select(Warranty).where(Warranty.deleted_at.is_(None), Warranty.status == "active",

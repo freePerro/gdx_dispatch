@@ -2335,7 +2335,9 @@ def test_pull_payments_falls_back_to_today_when_txndate_missing(db_session: Sess
     }])
     asyncio.run(sync.pull_payments("tenant-1", db_session, mock_qb))
     payment = db_session.execute(select(Payment)).scalar_one()
-    assert payment.payment_date == date.today()
+    # The shop's calendar day, not UTC's (GDXA-506).
+    from gdx_dispatch.core.pay_periods import shop_today_from_settings
+    assert payment.payment_date == shop_today_from_settings(db_session)
 
 
 def test_pull_payments_update_branch_actually_updates_amount_and_date(db_session: Session, qb_connection, mock_qb):

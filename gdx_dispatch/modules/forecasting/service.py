@@ -22,7 +22,7 @@ inflows add to ``expected_total``; outflows are reported as
 """
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -30,6 +30,7 @@ from dateutil.relativedelta import relativedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.pay_periods import shop_day_of, shop_today_from_settings, shop_tz_name_from_settings
 from gdx_dispatch.models.tenant_models import Invoice, Job
 from gdx_dispatch.modules.forecasting.models import (
     CADENCE_ANNUAL,
@@ -165,14 +166,22 @@ def _bucket_rate(settings: ForecastSettings, bucket: str) -> float:
     }[bucket]
 
 
-def _ar_reference_date(inv: Invoice) -> date:
+def _ar_reference_date(inv: Invoice, tz_name: str, today: date) -> date:
+    """The date an open invoice ages from. ``sent_at``/``created_at`` are UTC
+    instants, so they are read as the shop's calendar day (an invoice sent at
+    9pm Central is not a day older than one sent at 6pm). QB sync stamps
+    ``sent_at`` as the TxnDate at 00:00 UTC — a plain date, not an instant —
+    so an exact UTC midnight is read as the date it encodes."""
     if inv.due_date:
         return inv.due_date
     if inv.sent_at:
-        return inv.sent_at.date()
+        sent = inv.sent_at
+        if isinstance(sent, datetime) and sent.utcoffset() in (None, timedelta(0)) and sent.time() == time(0):
+            return sent.date()
+        return shop_day_of(sent, tz_name)
     if getattr(inv, "created_at", None):
-        return inv.created_at.date()
-    return date.today()
+        return shop_day_of(inv.created_at, tz_name)
+    return today
 
 
 def _open_ar_projection(db: Session, settings: ForecastSettings, today: date, window_days: int) -> dict[str, Any]:
@@ -209,8 +218,9 @@ def _open_ar_projection(db: Session, settings: ForecastSettings, today: date, wi
             "open_total": 0.0, "expected_total": 0.0, "invoice_count": 0,
             "rate_used": rate_used, "rate_source": rate_source,
         }
+    tz_name = shop_tz_name_from_settings(db)
     for inv in invoices:
-        ref = _ar_reference_date(inv)
+        ref = _ar_reference_date(inv, tz_name, today)
         age = (today - ref).days
         bucket = _ar_aging_bucket(max(0, age))
         amount = float(inv.balance_due or 0)
@@ -493,7 +503,7 @@ def revenue_projection(db: Session, window_days: int | None = None, today: date 
     if window_days is None:
         window_days = int(settings.default_window_days)
     if today is None:
-        today = date.today()
+        today = shop_today_from_settings(db)
 
     ar = _open_ar_projection(db, settings, today, window_days)
     scheduled = _scheduled_jobs_projection(db, settings, today, window_days)

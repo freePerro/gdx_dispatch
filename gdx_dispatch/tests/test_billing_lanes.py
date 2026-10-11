@@ -260,8 +260,9 @@ def _labor_invoice(db, job_id, *, status="draft", line_deleted=False, invoice_de
                   deleted_at=_dt.datetime.now(_dt.timezone.utc) if invoice_deleted else None)
     db.add(inv)
     db.flush()
-    db.add(InvoiceLine(invoice_id=inv.id, description="Labor", quantity=Decimal("2"),
-                       unit_price=Decimal("100"), line_total=Decimal("200"),
+    # A carrier at split rates: it holds the first-hour line (GDXA-489).
+    db.add(InvoiceLine(invoice_id=inv.id, description=FIRST_HOUR_DESCRIPTION, quantity=Decimal("1"),
+                       unit_price=Decimal("125"), line_total=Decimal("125"),
                        pricing_source=pricing_source, company_id="tenant-1",
                        deleted_at=_dt.datetime.now(_dt.timezone.utc) if line_deleted else None))
     db.commit()
@@ -270,7 +271,8 @@ def _labor_invoice(db, job_id, *, status="draft", line_deleted=False, invoice_de
 
 def test_first_hour_and_floor_only_once_per_job(db) -> None:
     """Rule 3: another live, non-void invoice on the job with a live attested
-    labor line has charged the first hour; this one bills hourly, no floor."""
+    first-hour line has charged the first hour; this one bills hourly, no
+    floor."""
     db.add(PricingSettings(service_call_first_hour_price=Decimal("125"),
                            service_call_hourly_rate=Decimal("100")))
     db.commit()

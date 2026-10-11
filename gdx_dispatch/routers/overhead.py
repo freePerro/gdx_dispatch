@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import OverheadObligation
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.services.overhead_projection import project
@@ -237,7 +238,7 @@ def list_obligations(
         stmt = stmt.where(OverheadObligation.active.is_(True))
     rows = list(db.execute(stmt.order_by(OverheadObligation.label)).scalars().all())
 
-    today = datetime.now(UTC).date()
+    today = shop_today_from_settings(db)
     summary = project(
         [r for r in rows if r.active],
         anchor_year=today.year,
@@ -262,7 +263,7 @@ def get_projection(
     """Forward month-by-month overhead projection from the current month."""
     tenant_id = _tenant_id(request)
     obligations = _active_obligations(db, tenant_id)
-    today = datetime.now(UTC).date()
+    today = shop_today_from_settings(db)
     result = project(
         obligations,
         anchor_year=today.year,
