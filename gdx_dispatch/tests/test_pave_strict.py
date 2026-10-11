@@ -478,7 +478,7 @@ def test_ai_role_password_env_refuses_before_the_drop(monkeypatch, caplog):
     code = _pave_one_up_to_the_preflight(monkeypatch)
     assert code == 1
     messages = "\n".join(r.message for r in caplog.records)
-    assert "TENANT_AI_READONLY_PASSWORD, TENANT_AI_WRITE_PASSWORD set" in messages
+    assert "TENANT_AI_READONLY_PASSWORD or TENANT_AI_WRITE_PASSWORD is set" in messages
     assert "NOTHING has been dropped" in messages
 
 

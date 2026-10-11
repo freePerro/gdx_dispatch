@@ -1214,15 +1214,17 @@ AI_ROLE_PASSWORD_ENV = ("TENANT_AI_READONLY_PASSWORD", "TENANT_AI_WRITE_PASSWORD
 
 
 def refuse_ai_role_bootstrap_env() -> None:
-    set_vars = [name for name in AI_ROLE_PASSWORD_ENV if os.environ.get(name)]
-    if not set_vars:
+    # The messages are literals: CodeQL taints anything derived from a
+    # *_PASSWORD variable, names included (py/clear-text-logging-sensitive-data).
+    if not any(os.environ.get(name) for name in AI_ROLE_PASSWORD_ENV):
         return
-    log.error("%s set, but pave has no AI-role bootstrap: the module it once imported "
-              "(gdx_dispatch.tools.sql.ai_roles_bootstrap) has never existed.", ", ".join(set_vars))
+    log.error("TENANT_AI_READONLY_PASSWORD or TENANT_AI_WRITE_PASSWORD is set, but pave has "
+              "no AI-role bootstrap: the module it once imported "
+              "(gdx_dispatch.tools.sql.ai_roles_bootstrap) has never existed.")
     log.error("Grants to existing roles such as gdx_ai_readonly are carried across the pave "
               "by step 4e; role passwords are cluster-level and a pave does not touch them.")
     log.error("Refusing to pave: NOTHING has been dropped. The database is untouched.")
-    log.error("Unset %s and re-run.", " and ".join(set_vars))
+    log.error("Unset TENANT_AI_READONLY_PASSWORD and TENANT_AI_WRITE_PASSWORD and re-run.")
     sys.exit(1)
 
 
