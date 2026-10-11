@@ -21,6 +21,7 @@ from starlette.responses import JSONResponse
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import SessionLocal, contained_read, get_db
 from gdx_dispatch.core.holding_areas import holding_area_id_by_name as _holding_area_id_by_name
+from gdx_dispatch.core.invoice_net_billed import invoice_net_billed_sq, net_billed_bulk
 from gdx_dispatch.core.invoice_paid import paid_amount_sq, paid_to_date_bulk
 from gdx_dispatch.core.job_access import can_read_job, job_write_denial
 from gdx_dispatch.core.job_display_state import derive_job_display_state
@@ -4345,6 +4346,10 @@ def get_job_financials(
     paid_total = 0.0         # all non-void payments incl. deposit money
     balance_open = 0.0       # what the customer still owes (issued, unpaid)
     rows: list[dict[str, Any]] = []
+    # GDXA-594: a credit memo lowers balance_due, never total, so what the
+    # work is billed at is total net of credit memos. The per-row "total"
+    # stays as issued.
+    _net_by_invoice = net_billed_bulk(db, [inv.id for inv in invoices])
     for inv in invoices:
         is_void = inv.status == "void"
         is_deposit = (inv.billing_type or "") == "deposit"
@@ -4360,7 +4365,7 @@ def get_job_financials(
                 deposit_total += float(inv.total or 0)
                 deposit_paid += paid
             else:
-                invoiced_total += float(inv.total or 0)
+                invoiced_total += float(_net_by_invoice.get(str(inv.id), inv.total or 0))
             if inv.status in ("sent", "overdue"):
                 balance_open += float(inv.balance_due or 0)
         rows.append({
@@ -4700,7 +4705,9 @@ def get_job_costing(
         # Revenue from invoices via ORM
         revenue = db.execute(
             select(
-                func.coalesce(func.sum(Invoice.total), 0).label("total_revenue"),
+                # GDXA-594: a credit memo lowers balance_due, never total, so
+                # revenue is total net of credit memos; void billed nothing.
+                func.coalesce(func.sum(invoice_net_billed_sq()), 0).label("total_revenue"),
                 # M35: was SUM(amount_paid) — a column nothing writes, so job
                 # profitability understated collections by the whole drift.
                 func.coalesce(func.sum(paid_amount_sq()), 0).label("total_paid"),
@@ -4708,6 +4715,7 @@ def get_job_costing(
                 Invoice.job_id == job_uuid,
                 Invoice.company_id == tenant_id,
                 Invoice.deleted_at.is_(None),
+                Invoice.status != "void",
             )
         ).mappings().first()
 
