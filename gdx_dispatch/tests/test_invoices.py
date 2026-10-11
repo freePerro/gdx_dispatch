@@ -1394,6 +1394,116 @@ def test_list_invoices_filters_overdue(tenant_db_session):
 
 
 # ----------------------------------------------------------------------------
+# GDXA-540 — whose invoice is it: the invoice's own customer, else the Job's.
+# Real Customer rows on purpose: `_seed_job` hangs a bare uuid off the job, and
+# a name lookup against a customer that does not exist proves nothing.
+# ----------------------------------------------------------------------------
+
+def _seed_customer(db, name: str):
+    from gdx_dispatch.models.tenant_models import Customer
+
+    cust = Customer(name=name, company_id="tenant-test")
+    db.add(cust)
+    db.commit()
+    db.refresh(cust)
+    return cust
+
+
+def _list_one(db, invoice_id: str) -> dict:
+    rows = list_invoices(request=_mock_request(), status=None, customer_id=None, _=_current_user(), db=db)
+    return next(r for r in rows if r["id"] == invoice_id)
+
+
+def test_list_and_detail_name_the_customer_of_a_job_less_invoice(tenant_db_session):
+    db = tenant_db_session
+    cust = _seed_customer(db, "Counter Sale Co")
+    inv = create_invoice(
+        payload=InvoiceCreateIn(
+            customer_id=cust.id,
+            line_items=[{"description": "Spring (counter)", "quantity": 1, "unit_price": 35.00}],
+        ),
+        _=_current_user(), db=db,
+    )
+    assert inv["job_id"] is None
+
+    listed = _list_one(db, inv["id"])
+    detail = get_invoice(UUID(inv["id"]), _=_current_user(), db=db)
+
+    for payload in (listed, detail):
+        assert payload["customer_id"] == str(cust.id)
+        assert payload["customer_name"] == "Counter Sale Co"
+        assert payload["customer_deleted"] is False
+
+
+def test_invoice_own_customer_wins_over_the_jobs(tenant_db_session):
+    db = tenant_db_session
+    job_cust = _seed_customer(db, "Job Owner")
+    own_cust = _seed_customer(db, "Invoice Owner")
+    job = _seed_job(db)
+    job.customer_id = job_cust.id
+    db.commit()
+    inv = create_invoice(
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job_cust.id), _=_current_user(), db=db,
+    )
+    row = db.get(Invoice, UUID(inv["id"]))
+    row.customer_id = own_cust.id
+    db.commit()
+
+    listed = _list_one(db, inv["id"])
+    detail = get_invoice(UUID(inv["id"]), _=_current_user(), db=db)
+
+    for payload in (listed, detail):
+        assert payload["customer_id"] == str(own_cust.id)
+        assert payload["customer_name"] == "Invoice Owner"
+
+
+def test_resolver_falls_back_to_the_jobs_customer_only_without_its_own(tenant_db_session):
+    """A pre-094 row with a NULL customer_id cannot be stored under the ORM's
+    NOT NULL, so the stand-ins carry only the two fields the resolver reads;
+    the Job and Customer reads are real."""
+    from types import SimpleNamespace
+
+    from gdx_dispatch.routers.invoices import _resolve_invoice_customers
+
+    db = tenant_db_session
+    job_cust = _seed_customer(db, "Via The Job")
+    own_cust = _seed_customer(db, "Its Own")
+    job = _seed_job(db)
+    job.customer_id = job_cust.id
+    db.commit()
+    orphan = SimpleNamespace(id=uuid4(), customer_id=None, job_id=job.id)
+    owned = SimpleNamespace(id=uuid4(), customer_id=own_cust.id, job_id=job.id)
+    dangling = SimpleNamespace(id=uuid4(), customer_id=uuid4(), job_id=job.id)
+
+    got = _resolve_invoice_customers(db, [orphan, owned, dangling])
+
+    assert got[str(orphan.id)] == (str(job_cust.id), "Via The Job", False)
+    assert got[str(owned.id)] == (str(own_cust.id), "Its Own", False)
+    # Its own customer is missing: no name, and never the Job's in its place.
+    assert str(dangling.id) not in got
+
+
+def test_list_flags_a_soft_deleted_customer_without_blanking_the_name(tenant_db_session):
+    from datetime import UTC, datetime
+
+    db = tenant_db_session
+    cust = _seed_customer(db, "Gone Away")
+    inv = create_invoice(
+        payload=InvoiceCreateIn(
+            customer_id=cust.id,
+            line_items=[{"description": "Spring", "quantity": 1, "unit_price": 35.00}],
+        ),
+        _=_current_user(), db=db,
+    )
+    cust.deleted_at = datetime.now(UTC)
+    db.commit()
+
+    listed = _list_one(db, inv["id"])
+    assert listed["customer_name"] == "Gone Away"
+    assert listed["customer_deleted"] is True
+
+
+# ----------------------------------------------------------------------------
 # S122 — from_part_ids: invoice POST marks JobPartNeeded.billed_invoice_id
 # ----------------------------------------------------------------------------
 

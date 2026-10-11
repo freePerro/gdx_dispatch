@@ -25,7 +25,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
-from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Job, JobPartNeeded, Payment
+from gdx_dispatch.models.tenant_models import Customer, Invoice, InvoiceLine, Job, JobPartNeeded, Payment
 from gdx_dispatch.modules.catalog_policy.service import CatalogPolicy
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.collections import aging_report
@@ -175,6 +175,77 @@ def test_aging_report_uses_balance_due(tenant_db_session):
     assert out["total_outstanding"] == 300.0
     by_label = {b["label"]: b for b in out["buckets"]}
     assert by_label["31-60 Days"]["invoices"][0]["amount_due"] == 300.0
+
+
+def _seed_customer(db, name: str) -> Customer:
+    customer = Customer(id=uuid4(), name=name, company_id="tenant-1")
+    db.add(customer)
+    db.commit()
+    return customer
+
+
+def _aging_names(out) -> dict[str, str | None]:
+    return {
+        row["invoice_number"]: row["customer_name"]
+        for bucket in out["buckets"]
+        for row in bucket["invoices"]
+    }
+
+
+def test_aging_report_names_the_invoices_own_customer(tenant_db_session):
+    """GDXA-543: `invoices` has no customer_name column, so the report's
+    `getattr(inv, "customer_name", None)` was None on every row. The name
+    now comes from the invoice's own customer."""
+    db = tenant_db_session
+    customer = _seed_customer(db, "Aging Own Customer")
+    inv = _seed_invoice(db, status="sent", balance=200.0, due_days_ago=12)
+    inv.customer_id = customer.id
+    db.commit()
+
+    names = _aging_names(aging_report(_=_current_user(), db=db))
+
+    assert names[inv.invoice_number] == "Aging Own Customer"
+
+
+def test_aging_report_falls_back_to_the_jobs_customer(tenant_db_session):
+    """An invoice whose own customer_id names no customer row falls back to
+    its Job's customer, the same fallback `get_invoice` uses. (Postgres's
+    foreign key makes a dangling id unreachable there; SQLite enforces none,
+    which is what lets this test reach the branch at all.) An
+    invoice whose own customer exists wins over its Job's, and one with no
+    reachable customer at all stays None rather than inventing a name."""
+    db = tenant_db_session
+    job_customer = _seed_customer(db, "Aging Job Customer")
+    own_customer = _seed_customer(db, "Aging Own Wins")
+    job = Job(
+        customer_id=job_customer.id,
+        title="Spring replacement",
+        description="t",
+        lifecycle_stage="completed",
+        dispatch_status="done",
+        billing_status="invoiced",
+        company_id="tenant-1",
+    )
+    db.add(job)
+    db.commit()
+
+    via_job = _seed_invoice(db, status="sent", balance=150.0, due_days_ago=40)  # dangling customer_id
+    via_job.job_id = job.id
+    own_wins = _seed_invoice(db, status="sent", balance=75.0, due_days_ago=5)
+    own_wins.customer_id = own_customer.id
+    own_wins.job_id = job.id
+    orphan = _seed_invoice(db, status="sent", balance=60.0, due_days_ago=70)  # customer_id points nowhere
+    db.commit()
+
+    out = aging_report(_=_current_user(), db=db)
+    names = _aging_names(out)
+
+    assert names[via_job.invoice_number] == "Aging Job Customer"
+    assert names[own_wins.invoice_number] == "Aging Own Wins"
+    assert names[orphan.invoice_number] is None
+    # The joins add no rows: each invoice is aged exactly once.
+    assert sum(b["count"] for b in out["buckets"]) == 3
+    assert out["total_outstanding"] == 285.0
 
 
 # --------------------------------------------------------------------------
