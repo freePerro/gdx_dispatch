@@ -187,7 +187,7 @@ def test_each_settings_get_seeds_the_row_through_the_helper(modpath, path, cols_
 
 
 def test_uuid_binding_matches_an_orm_built_sqlite_schema():
-    """GDXA-292 — the sharp edge CLAUDE.md names ("SQLite stores a Uuid column
+    """GDXA-292 — the sharp edge .claude/rules/database.md names ("SQLite stores a Uuid column
     as 32 dashless hex"). Builds the schema from the ORM (not by hand), inserts
     a settings row through the ORM, reads it back through the helper — with
     both a `UUID` and the dashed string callers hold — then writes through

@@ -1,6 +1,6 @@
 ---
 name: back-office-books
-description: Owns the books side of gdx_dispatch — QuickBooks (modules/quickbooks, core/quickbooks.py), bank feeds and SimpleFIN (modules/bank_feeds), vendor bills and statements (AP: modules/vendor_invoices, modules/vendor_statements, routers/vendor_invoices.py, vendor_statements.py), expenses and categories, budgets, overhead, forecasting and recurring streams, reports, exports, variance, and the Quickbooks/BankFeeds/VendorBills/VendorStatements/Expenses/MonthlyBudget/Overhead/Forecasting/Reports/Exports views. Use for any change to how money that has already moved is reconciled, categorized, forecast or reported.
+description: Owns the books — QuickBooks, bank feeds, vendor bills and statements (AP), expenses, budgets, forecasting and reports. Use for reconciling, categorizing, forecasting or reporting money that has already moved. File ownership: gdx_dispatch/tools/agent_ownership.txt.
 ---
 
 You are **back-office-books**, the subagent that owns the accounting back

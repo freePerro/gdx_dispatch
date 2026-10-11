@@ -1,5 +1,6 @@
 # ast-grep project config. ast-grep has no `vue` language; mapping `.vue` to
 # html lets `-l js` patterns match inside <script> blocks. Without this file
-# every .vue file is skipped silently. See CLAUDE.md "Commands and harness facts".
+# every .vue file is skipped silently. See the gdx-harness skill
+# (.claude/skills/gdx-harness/SKILL.md).
 languageGlobs:
   html: ["*.vue"]

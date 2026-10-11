@@ -70,7 +70,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 BASELINE_PATH = REPO_ROOT / ".doc_link_baseline"
 
-DOC_GLOBS = ("docs/**/*.md", "gdx_dispatch/docs/**/*.md", "*.md")
+# .claude/rules and .claude/skills hold text moved out of CLAUDE.md (2026-10-11);
+# it names files the same way CLAUDE.md does, so it is scanned the same way.
+DOC_GLOBS = (
+    "docs/**/*.md",
+    "gdx_dispatch/docs/**/*.md",
+    "*.md",
+    ".claude/rules/*.md",
+    ".claude/skills/**/*.md",
+)
 SELF_EXEMPT = {"gdx_dispatch/tools/doc_link_scan.py", "gdx_dispatch/tests/test_doc_link_scan.py"}
 
 REF = re.compile(r"`([A-Za-z0-9_./-]+\.(?:py|vue|js|ts|sh|json|txt|ini|yml|yaml|sql|md))`")

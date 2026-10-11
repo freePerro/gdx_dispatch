@@ -66,121 +66,37 @@ this — the budget governs sweeps, not repairs.
 - Backend tests run through the docker-app image — never against a real DB.
   Frontend unit tests are vitest; e2e runs against a throwaway container,
   which needs `-e GDX_E2E_BYPASS=1`.
-- ~15 known cross-file test flakes exist on main: they pass in isolation.
-  Re-run in isolation before blaming your branch.
-- Lint is a **ruff ratchet against a baseline**, not plain pass/fail — a
-  branch can be "clean" and still over the ratchet.
-- **CI (`ci.yml`) triggers on `pull_request` with base `main`, and on `push`
-  to `main`.** It does *not* run on a PR whose base is another feature branch —
-  which is why **mid-stack PRs still need the local matrix run and its results
-  posted before merge**. Note also the `push` trigger carries a paths filter
-  (`gdx_dispatch/**`, `gdx_dispatch/docker/**` — note the prefix: a *root*
-  `docker/` change matches nothing — `.github/workflows/**`, excluding
-  `**/*.md`)
-  while the `pull_request` trigger has none, so a docs-only PR runs the full
-  suite and a docs-only push to main does not. Verified against
-  `.github/workflows/ci.yml` 2026-09-01.
-- Main is merge-protected; `--admin` merge is the sanctioned path, but only
-  after enumerating every check's result by name.
-- **Run the matrix with `gdx_dispatch/tools/run_tests_split.sh` (N=7), and
-  never with `--network host`** — the host network breaks ~15 tests. The cost
-  of leaving it off is that the Postgres arm goes **silently SKIPped** (102
-  tests, measured 2026-09-14): a green local run has not exercised PG.
-  The runner and `ci.yml` both pass `-ra` (GDXA-128), so every shard names
-  its skips — read the categories, or the gap is invisible. On a bare `pytest`
-  use `-ra` too and never plain `-rs`: `-r` REPLACES pytest's `fE` default, so
-  `-rs` deletes the `FAILED`/`ERROR` summary lines.
-  CI runs the `DATABASE_URL` and `GDX_TEST_PG_*` Postgres tests, and under `CI`
-  an unreachable Postgres fails them rather than skipping (#440). It does
-  **not** run the 8 `TEST_DATABASE_URL` role tests or the
-  `GDX_TEST_CONTROL_DB_URL` integration tests — those still skip green there.
-- **After `git merge origin/main` and before the matrix, run
-  `gdx_dispatch/tools/run_tests_split.sh --scans`** (~30 s, one docker
-  process, gitdir mounted, `-ra`, non-zero on red, no wait for the matrix
-  lock). It runs the tests that pin `.tenant_plane_redundant_filter_baseline`
-  and `.duplicate_block_baseline` against the tree; those two line-keyed
-  baselines were the matrix red on at least eight agent issues (GDXA-408).
-  It does **not** cover the doc-link, PII, authz, route-shadow or OpenAPI
-  baselines: green `--scans` is not "baselines clear", and the matrix still
-  runs. The file list is derived by naming convention
-  (`gdx_dispatch/tools/baseline_scan_tests.py`; `--scans --list` prints it):
-  a test file named `*scan_refreeze*`, or one defining
-  `test_the_committed_baseline_is_what_the_tree_scans`, joins without an edit
-  here. On red,
-  `run_tests_split.sh --refreeze-baselines` re-freezes both baselines: it
-  admits shrinkage and line shifts and **refuses growth** (exit 2; the
-  refusing scan's baseline is untouched, the other is still re-frozen; a
-  scanner crash exits 1). It passes `--allow-new` only when you type it; do that only for a
-  clone or filter you have read and mean to keep. A hand-rolled
-  `docker run -v $PWD:/app` in a linked worktree cannot read the git index and
-  fails these tests with `TrackedFilesUnavailable`, which looks like a stale
-  baseline. Use the runner.
-- **`run_tests_split.sh` takes a host-wide lock** (`/tmp/gdx_matrix.lock`): a
-  second matrix waits and says so, because two at once are slower than two in
-  a row (2026-09-24: four at once put the 20-core box at load 28 with 1.8 GB
-  free). `MATRIX_LOCK=0` bypasses it. A docker `PYTEST` gets
-  `--tmpfs /tmp` injected (`TMPFS_TMP=0` opts out): the tests' file-backed
-  SQLite fsyncs on every commit, and with `/tmp` on the host disk shard 4 took
-  ~14 min against ~1 min on tmpfs (2026-10-05); the full matrix is ~6 min.
-  In a linked worktree the script also mounts the gitdir into a docker
-  `PYTEST`, so the tracked-set guards pass there instead of failing 14 tests
-  for want of the index.
-- **A failed matrix sorts its reds against main** (`tools/matrix_vs_main.py`):
-  NEW (probably yours), FLAKY ON MAIN, or ALREADY FAILING ON MAIN, from a baseline the
-  maintainer's host records once per `origin/main` commit (a user timer outside
-  this repo, ~/.cache/gdx_matrix_baseline). <!-- host paths, outside this repo; link-ok -->
-  It is a report: the exit code is unchanged. With no baseline on the host, the
-  reds say "unclassified", never "not yours"; against a baseline older than the
-  merge-base they say "WAS RED ON MAIN … NOT proven", since main may have fixed
-  the test since. A shard that dies without naming a test is never recorded as
-  green. NEW is not proof: the baseline is a single run, so a flaky test can
-  pass there and fail here. The script also prints the docker
-  image's age and key library versions, and warns when the image predates the
-  last `requirements.txt`/`requirements.lock`/Dockerfile change. CI and the
-  images install `gdx_dispatch/requirements.lock` (GDXA-467), and the
-  runner's dependency check fails an image that lacks any of its pins.
-- `pytest.ini` already carries `-q`; adding another makes output useless. To
-  read a CI failure use the `jobs/<id>/logs` API, not `gh run view --log`.
-- **A foreground `sleep` is blocked and a background Bash dies at 600s.** Long
-  runs go through `nohup`, watched by ONE `Monitor` or a single until-loop —
-  never a poll loop.
-- **A monitor's poll command is proven once in the foreground before it is
-  armed, and it never swallows its own failure** — emit the error as an event
-  and exit, so silence can only mean "still waiting". On 2026-09-23 a
-  `gh pr checks --json` loop written with `|| continue` sat silent for its
-  whole 30 minutes: the distro's gh 2.46.0 had no `--json` on `pr checks`
-  (added in gh 2.50.0). gh has come from GitHub's own apt repository
-  (`/etc/apt/sources.list.d/github-cli.list`) since 2026-09-23; plain
-  `gh pr checks` output carries the verdict in column 2 regardless.
-- The frontend lockfile can only be regenerated on **npm 11**: 10.8.2 (what
-  CI's `setup-node` 20 and `node:20-slim` ship) and 9.2.0 both crash in
-  arborist with `Cannot read properties of null (reading 'edgesOut')`. Prove
-  `npm ci` in `node:20-slim` before pushing a lockfile.
-- Mako 1.4.0 shadows `tools/`, producing an ImportError that only appears in
-  CI.
-- The local stack's `refresh.sh` does not rebuild the plugin-host; rebuild it <!-- ~/gdx-local/refresh.sh, outside this repo; link-ok -->
-  by hand or you are testing stale plugin code.
-- Compose `--env-file`: an empty `JWT_SECRET` crash-loops the container. The
-  `verifyplaywright` path passes `--env-file` rather than cloning the
-  environment, deliberately — cloning trips the credential guard.
 - Each gated commit needs its own dedicated `cd`; everywhere else use
   `git -C`. Check the current branch before every commit — an IDE or a
   parallel session can move it under you.
-- `ssh gdx-vps` reaches production over Tailscale. Real mobile verification
-  runs on the local Pixel 8 AVD, where `10.0.2.2` is the host.
-- **ast-grep is `~/.local/bin/ast-grep`** (pip `ast-grep-cli` 0.45.3, user <!-- user-site binary, outside this repo; link-ok -->
-  site). Invoke it as `ast-grep`, never `sg`: `/usr/bin/sg` is the Linux
-  group-switch command (a symlink to `newgrp`). The pip `sg` launcher was
-  deleted on purpose and a pip upgrade recreates it — delete it again if it
-  reappears; nothing checks for it. ast-grep has no `vue` language: `.vue`
-  files are reached only through the root `sgconfig.yml` mapping them to
-  `html`, after which `-l js` patterns match inside `<script>` blocks. Without
-  that file every `.vue` file is skipped silently (`--inspect summary` should
-  say `isProject=true`). The same file makes the repo an ast-grep project
-  with no rule directories, so a bare `ast-grep scan` at the root exits 0
-  having checked nothing — pass rules explicitly. A `severity: info` rule prints as `note[…]`, not
-  `info[…]`, so grepping for `info[` finds nothing — count findings with
-  `--json`.
+- **Playwright MCP autofills the production password.** Never open a prod
+  login page with it — inject a token instead; headed snapshots have written
+  that password to disk.
+- **A row-refusing drop can take prod down.** The guarded table-drop
+  migrations (088, 091, 092) count rows before any `DROP`, inside the
+  migration transaction, and raise on a non-empty table — a refusal mutates
+  nothing, so restoring the pre-update snapshot fixes nothing. The `app`
+  entrypoint runs `alembic upgrade head` under `set -e` before serving
+  `/health`, and `app` restarts `unless-stopped`, so a refusal crash-loops;
+  `update.sh` cannot tell that from a slow migration and, after its 10-minute
+  wait, says to keep waiting. Read `docker logs` for the refusal, then pin the
+  previous `APP_VERSION` or export-and-empty the table and restart. Recount on
+  prod **and** demo (which does not go through `update.sh`) immediately before
+  deploying one.
+- **Load the `gdx-harness` skill before running tests or the matrix, reading
+  CI, arming a monitor, merging or re-stacking a PR, or running Docker Compose
+  or `ssh gdx-vps`.** The matrix runs only through
+  `gdx_dispatch/tools/run_tests_split.sh`; the skill holds the rest of the
+  harness facts (runner flags and lock, `--scans`, CI triggers, the lint
+  ratchet, flakes, merge gotchas). Area sharp edges live in `.claude/rules/`
+  and load when a file in that area goes through the Read or Write tool or a
+  plain `cat`/`head` — not on pipes, `wc`, Bash edits (`sed -i`, heredocs,
+  scripts), the Grep tool or a directory-wide search. Before editing in an
+  area, Read a file there or open the rule directly: `frontend.md`,
+  `plugins.md`, `database.md`, `scanners-and-tests.md`, `written-record.md`.
+  The costliest: SQLite stores a `Uuid` as 32 dashless hex (raw `id = :dashed`
+  never matches); a mock or text-present test proves nothing about behaviour;
+  `pip install --target` leaves the old plugin code in place.
 
 ## Build pipeline (every non-trivial change)
 
@@ -247,64 +163,21 @@ Every state-changing action must answer: **who did it, what changed, when.**
 
 ## The written record
 
-Every doc is either **about the past** or **about the present**, and the two
-have opposite maintenance rules. A design doc, an ADR, an audit records what was
-decided and why; it stays true forever, because the past does not change. A
-guide, a runbook, an invariant registry, a "what's left" tracker describes the
-system as it is right now, and starts rotting the day it is written.
+The doc rules (status lines, date-stamp the past and fix or retire the
+present, rival plans) are in `.claude/rules/written-record.md` and load when
+you read a `.md` file. These three apply to code too:
 
-**Date-stamp the past. Fix or retire the present.** This is not a preference —
-it predicts where the defects are. The 2026-09-01 doc audit found ten live
-defects and **all ten came from present-tense docs**: guides, runbooks, an ADR
-whose status was left behind by its own build commit, and two root trackers.
-**Zero came from a completed design doc.** No doc in this repo has ever
-overclaimed; the record only ever undersells what exists.
-
-- **Every doc carries a status line in its header block — plans, guides,
-  runbooks and ADRs alike.** Line 3, or just below it when a `**Date:**` block
-  comes first. Vocabulary: `PLAN` · `PARTIALLY BUILT` · `MERGED #N` ·
-  `RELEASED vX.Y.Z` · `HISTORICAL`. It names what is *not* built when the
-  answer is "some of it". A doc with no status line is incomplete. Measured
-  2026-09-12 over tracked files: `docs/design/` is 70 of 70 and
-  `gdx_dispatch/docs/` is 41 of 41. Every doc complies today; the rule is what
-  keeps it that way.
-- **The status line ships with the code.** A PR that implements part of a plan
-  updates that plan's status in the same PR. ADR-016 was edited *inside its own
-  build commit* and still read "nothing built yet" while the feature sat in the
-  sidebar — that is the failure this rule exists to stop.
-- **Docs state; code proves.** Never cite a plan as evidence of current state —
-  not its status line, and especially not its "what already exists" table. Two
-  such tables in this repo were wrong, one of them on the day it was written.
-  Re-verify against code, a PR number, or a release tag before acting.
-- **Half-shipped is not shipped.** When a multi-part fix lands partially, the
-  record names which parts. "M4 fixed" for a fix that landed in one of two
-  files is worse than no note at all.
 - **A finding names an instance; the fix owns the class.** Audit findings are
   numbered by where someone happened to look. Fixing M13 means fixing every
   place that shape lives, or recording which instances you are leaving and why.
 - **A fix is done when its guard runs.** A test excluded from the default gate
   is not a regression net. Shipping the test and leaving it unrun is a silent
   no-op.
-- **Check for a rival plan first.** Before writing a plan, grep `docs/design/`
-  recursively (finished records live in `docs/design/archive/` since
-  2026-09-06) for others naming the same files. If one exists, cite it or mark it
-  superseded — in both docs. Two plans in this repo reached opposite decisions
-  about the same money path without ever referencing each other.
-- **Keep the past; retire the present.** A shipped plan stays — its rejected
-  alternatives and audit findings are the part code cannot recover, and
-  deleting one manufactures the dead references this repo audits for. A
-  present-tense doc whose subject no longer exists is the opposite case: it
-  carries no reasoning, only instructions for a system that isn't there. Give
-  it a `HISTORICAL` status line saying what it described and that the thing was
-  never built. Deletion is available for that class and that class only, and
-  only when the doc holds no decision anyone could still need.
-- **Open a plan with "what already exists (do not rebuild)."** The best doc in
-  the corpus established that half its ask needed no code at all.
 - **When something is to be deleted, delete it.** No tarball, no `archive/`
   copy, no "just in case" branch, no commented-out block. Every hedge becomes
   a second thing to maintain, to search, and to be misled by later — and the
   copy is always the one that goes stale unnoticed (Doug, 2026-09-12). This
-  does not override *Keep the past*: a shipped plan's reasoning still stays,
+  does not override *Keep the past* (in the doc rules): a shipped plan's reasoning still stays,
   because it is the record. A backup of something already decided dead is not
   a record, it is a hedge against a decision that has already been made.
 
@@ -328,89 +201,6 @@ buttons wired to stubs. Before calling anything done:
   clear next step — never a click that goes nowhere.
 - **Customer-facing surfaces get the phone test:** links clickable, pages
   readable on a small screen, no login walls where a token link should do.
-
-## Known sharp edges
-
-- jsdom applies **no media queries** — only a real browser proves layout.
-- `useDestructiveConfirm` really confirms in the app — issue #215 was fixed
-  2026-08-05 (`useConfirm()` now resolves during `setup()`). The fallback
-  still auto-accepts when no ConfirmationService is registered, which is
-  every vitest environment: unit tests never exercise the dialog, so a
-  destructive flow is only proven in a browser.
-- **A green ratchet proves nothing unless it can fail for your defect.**
-  Before citing a scanner or baseline as evidence, name the input that would
-  turn it red. `tests/authz_sweep.py` counts any authenticated route as gated,
-  so it can never fail for a missing permission check — `routers/payments.py`
-  carried 5 mutation routes, 0 permission gates, and a green sweep until
-  GDXA-552 deleted the router on 2026-10-11. (Routes that are public by design
-  and token-scoped, like the pay page's `/api/payments/*`, are listed in
-  `.authz_ungated_baseline`; read it before "fixing" one. The point is the
-  sweep cannot tell you which.)
-- **A row-refusing drop can take prod down.** The guarded table-drop
-  migrations (088, 091, 092) count rows before any `DROP`, inside the
-  migration transaction, and raise on a non-empty table — a refusal mutates
-  nothing, so restoring the pre-update snapshot fixes nothing. The `app`
-  entrypoint runs `alembic upgrade head` under `set -e` before serving
-  `/health`, and `app` restarts `unless-stopped`, so a refusal crash-loops;
-  `update.sh` cannot tell that from a slow migration and, after its 10-minute
-  wait, says to keep waiting. Read `docker logs` for the refusal, then pin the
-  previous `APP_VERSION` or export-and-empty the table and restart. Recount on
-  prod **and** demo (which does not go through `update.sh`) immediately before
-  deploying one.
-- There is no checked-in OpenAPI document; `/openapi.json` is served live. The
-  route table is pinned in `gdx_dispatch/openapi_routes.txt` (generated by
-  `python -m gdx_dispatch.tools.openapi_snapshot --write`, gated in the default
-  suite) — and `app.openapi()` collapses duplicate (method, path) registrations
-  and names the losing handler, so for exact handlers read the routers.
-- Plugin `type: list` screens must return a bare JSON array, never
-  `{items: [...]}`.
-- Plugin manifest handling: warn-and-strip unknown fields, never raise —
-  raising during manifest parse silently removes the plugin.
-- **SQLite stores a `Uuid` column as 32 dashless hex.** Raw SQL comparing
-  `id = :dashed_uuid` matches on Postgres and **never** on SQLite — and a
-  gate that cannot match looks exactly like a legitimate refusal.
-- **`create_all` tables diverge from the ORM**, so a schema sweep has to
-  search the *database*, not the models. For the same reason test fixtures
-  must build their schema from the ORM: hand-written DDL once hid a feature
-  that could not be inserted at all.
-- `.tenant_plane_redundant_filter_baseline` is **line-keyed** — deleting or
-  adding lines above a recorded finding shifts it and reddens the scan even
-  when nothing changed. Re-freeze with
-  `gdx_dispatch/tools/tenant_plane_redundant_filter_scan.py`.
-- **`# noqa:` is shared with the repo's own scanners** (`RAWENC1`, `T6`,
-  `X1`). ruff ignores a code it doesn't know, but it parses every `noqa`
-  comment and accepts only uppercase letters followed by digits. A code
-  outside that grammar gets `Invalid # noqa directive` and voids every ruff
-  code listed *after* it. So does `noqa:` prose in a plain comment, unless a
-  valid `noqa` comes before it on the line. The scanner code was `RAW_ENC`
-  until GDXA-302 (2026-10-06), and it warned on every site. Check with
-  `ruff check --no-cache`, because cached files re-emit no warnings.
-- CodeQL's `py/path-injection` recognizes only `realpath`/`normpath`/`abspath`
-  followed by `startswith`. `Path.resolve().is_relative_to()` and
-  `commonpath` are genuinely safe and still flagged.
-- **`pip install --target` does not replace an existing package directory.**
-  A plugin artifact upgrade leaves the OLD code in place while writing the NEW
-  dist-info, so `/ready` is green and stale-detection is fooled. Remove the
-  package dir and both dist-infos, then restart. The plugin tables also drift:
-  `schema_reconcile` auto-ALTERs them at boot.
-- **A mock proves which arguments were passed, never which value comes back** —
-  run at least one real invocation. And a test asserting that source text is
-  *present* proves nothing; asserting text is *absent* is fine.
-- **Playwright MCP autofills the production password.** Never open a prod
-  login page with it — inject a token instead; headed snapshots have written
-  that password to disk.
-- **A CONFLICTING PR runs no `pull_request` CI at all — silently.** GitHub
-  cannot build the merge ref, so no run is created: not queued, not failed,
-  nothing. A PR showing zero checks is DIRTY, not pending (cost a full CI
-  cycle on #757/#758, 2026-09-20). Check `gh pr view N --json mergeable`
-  before reading absent checks as anything.
-- **With squash-merges, a stacked PR always goes CONFLICTING the moment its
-  parent merges** if they touch the same files (the baselines guarantee they
-  do). Not a merge mistake — the child still carries the parent's pre-squash
-  commits. The fix is always the same two minutes: `git checkout -B <branch>
-  origin/main && git cherry-pick <child's own commit>` and force-push; do
-  NOT `git rebase origin/main`, which replays the whole pre-squash stack
-  into conflicts (2026-09-20, three rounds of #753–#758).
 
 ## Domain rules that shape code
 

@@ -642,7 +642,7 @@ def test_recorded_removals_unreadable_trail_means_nothing_is_removable():
 
 
 def test_the_newest_copy_is_what_a_recorded_removal_must_post_date(tmp_path, monkeypatch):
-    # prod shape from CLAUDE.md: a stale older dist-info lingering beside the
+    # prod shape from .claude/rules/plugins.md: a stale older dist-info lingering beside the
     # current one. Intent 20 days old, current copy 1 day old → kept; the
     # 90-day-old metadata dir must not make the deletion look newer.
     import os as _os

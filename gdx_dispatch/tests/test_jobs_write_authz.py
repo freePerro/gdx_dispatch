@@ -732,7 +732,7 @@ class TestAdmission:
 # any `require_permission(` in the decorator as gated, which certified
 # `delete_job` — gated on `jobs.write`, a key the builtin technician role
 # holds — as safe. That is exactly the "green ratchet that cannot fail for
-# your defect" CLAUDE.md warns about, written into the file whose whole
+# your defect" .claude/rules/scanners-and-tests.md warns about, written into the file whose whole
 # argument is that `authz_sweep.py` is blind. The rule now: a decorator
 # permission excuses a route only when the key is one NO field-tier role
 # holds, so holding it IS the office-tier assertion the class demands.

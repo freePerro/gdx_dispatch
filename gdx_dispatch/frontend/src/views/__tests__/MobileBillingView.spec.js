@@ -121,7 +121,8 @@ describe('MobileBillingView KPI strip', () => {
         return Promise.resolve([
           // Sent invoice — counts as outstanding
           {
-            id: 'i1', status: 'sent', balance_due: 200, total: 200,
+            id: 'i1', status: 'sent', effective_status: 'overdue',
+            balance_due: 200, total: 200,
             due_date: '2026-04-01', invoice_number: 'A-1',
           },
           // Draft — excluded from outstanding (S111 contract)
@@ -139,8 +140,8 @@ describe('MobileBillingView KPI strip', () => {
     // Read the KPI strip text only (the invoice list also renders draft
     // amounts, which would falsely fail a body-wide negative assertion).
     const stripText = w.find('[data-test="mb-kpis"]').text();
-    // Outstanding = 200 (drafts excluded). Overdue also = 200 (the sent
-    // invoice is past due_date 2026-04-01 ≪ today 2026-05-09).
+    // Outstanding = 200 (drafts excluded). Overdue also = 200 (the server
+    // marked the sent invoice overdue).
     expect(stripText).toContain('200.00');
     expect(stripText).not.toContain('9999');
   });
@@ -345,5 +346,69 @@ describe('MobileBillingView detail totals show credits (GDXA-625)', () => {
       id: 'inv-l', status: 'sent', total: 1000, amount_paid: 300, credit_total: 200,
     });
     expect(w.find('.total-grand').text()).toContain('500.00');
+  });
+});
+
+describe('MobileBillingView overdue is the server\'s verdict (GDXA-653)', () => {
+  const realTz = process.env.TZ;
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    apiGetMock.mockReset();
+    hasPermissionMock.mockReset();
+    // The technician path: no office summary, so the Overdue KPI is the
+    // client-side sum over the list — the fallback that must use the same rule.
+    hasPermissionMock.mockReturnValue(false);
+    permissionsLoadedRef.value = true;
+    process.env.TZ = 'America/Chicago';
+    // 8pm Central on Oct 11. `new Date('2026-10-12')` is UTC midnight, i.e.
+    // 7pm Central on Oct 11 — an hour EARLIER than now — so the old browser
+    // comparison called a bill due tomorrow overdue tonight.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-11T20:00:00-05:00'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    process.env.TZ = realTz;
+  });
+
+  function mountWith(invoices) {
+    apiGetMock.mockImplementation((url) => {
+      if (url === '/api/mobile/invoices/open') return Promise.resolve({ invoices });
+      return Promise.reject(new Error(`unexpected GET ${url}`));
+    });
+    return mount(MobileBillingView, { global: { stubs } });
+  }
+
+  it('an invoice due tomorrow is not overdue at 8pm Central tonight', async () => {
+    const w = mountWith([{
+      id: 'i1', invoice_number: 'INV-1', total: 300, balance_due: 300,
+      status: 'sent', effective_status: 'sent', due_date: '2026-10-12',
+    }]);
+    await flushPromises();
+
+    expect(w.findAll('.inv-card.overdue')).toHaveLength(0);
+    expect(w.find('.overdue-flag').exists()).toBe(false);
+    const overdueKpi = w.findAll('.kpi')[1];
+    expect(overdueKpi.classes()).not.toContain('alert');
+    expect(overdueKpi.text()).toContain('0.00');
+  });
+
+  it('flags and sums only what the server called overdue', async () => {
+    const w = mountWith([
+      {
+        id: 'i1', invoice_number: 'INV-1', total: 125, balance_due: 125,
+        status: 'sent', effective_status: 'overdue', due_date: '2026-10-01',
+      },
+      {
+        id: 'i2', invoice_number: 'INV-2', total: 300, balance_due: 300,
+        status: 'sent', effective_status: 'sent', due_date: '2026-10-12',
+      },
+    ]);
+    await flushPromises();
+
+    expect(w.findAll('.inv-card.overdue')).toHaveLength(1);
+    expect(w.findAll('.kpi')[1].text()).toContain('125.00');
   });
 });
