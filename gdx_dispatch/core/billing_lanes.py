@@ -387,9 +387,11 @@ def install_labor_line(db: Session, item_id: str) -> InstallLaborLine | None:
     # (LaborPriceItem documents supersede-by-effective_to). Audit round 2.
     eff_to = getattr(item, "effective_to", None)
     if eff_to is not None:
-        import datetime as _dt
+        from gdx_dispatch.core.pay_periods import shop_today_from_settings  # noqa: PLC0415
 
-        if eff_to < _dt.date.today():
+        # The shop's day: a row retired today stays billable until the
+        # shop's midnight, not UTC's (GDXA-505).
+        if eff_to < shop_today_from_settings(db):
             return None
     price = _money(item.flat_price or 0)
     if price <= 0:

@@ -1104,12 +1104,15 @@ class PaymentCreateIn(BaseModel):
     # arithmetic entirely.
     pay_remaining: bool = False
     method: str = Field(min_length=1, max_length=50)
-    # Defaulted to today so a caller without a date picker records the
+    # Omitted means today, so a caller without a date picker records the
     # payment instead of 422ing (the /billing dialog shipped without one
-    # and a real check payment bounced twice on 2026-07-06). Annotated via
-    # the module alias: pydantic rejects a field named `date` whose
-    # annotation is the bare `date` type once it carries a default.
-    date: _datetime.date = Field(default_factory=date.today)
+    # and a real check payment bounced twice on 2026-07-06). The handler
+    # resolves None to the SHOP's today: a model default has no session, and
+    # date.today() on the UTC server dated every evening payment tomorrow
+    # (GDXA-505). Annotated via the module alias: pydantic rejects a field
+    # named `date` whose annotation is the bare `date` type once it carries
+    # a default.
+    date: _datetime.date | None = None
     # GL S6: with ledger posting ON, an overpayment is rejected unless the
     # caller opts in — the excess then credits 2300 Customer Credits instead
     # of AR (spec §5.3). Flag off keeps today's permissive behavior.
@@ -1129,17 +1132,6 @@ class PaymentCreateIn(BaseModel):
             raise ValueError("amount is required unless pay_remaining is true")
         return self
 
-    @field_validator("date")
-    @classmethod
-    def _no_future_dates(cls, v: _datetime.date) -> _datetime.date:
-        # Backdating is the point (2026 QB-era corrections reach into 2025);
-        # forward-dating is not — a post-dated check isn't received cash.
-        # No slack needed: the client stamps the company-zone (America/
-        # Chicago) day, which is BEHIND UTC — it can never exceed the UTC
-        # day. Slack would only legalize genuine tomorrow-dating.
-        if v > datetime.now(UTC).date():
-            raise ValueError("payment date cannot be in the future")
-        return v
 
 
 def _refuse_future_invoice_date(db: Session, invoice_date: date | None) -> None:
@@ -1181,10 +1173,14 @@ def billing_summary(
     invoices.
     """
     # Overdue compares due DATES, written on the shop's calendar (#444): use
-    # the shop's today. "Paid this month" compares a UTC timestamp, so its
-    # month start stays on the UTC day, as before.
+    # the shop's today. "This month" is the shop's month too (GDXA-505): on
+    # the last evening of a month the UTC date is already the 1st, and the
+    # KPI emptied out five hours early. paid_at is still read by its UTC day
+    # (the cast below) because a backdated payment stores its day as a UTC
+    # midnight stamp; a card paid after ~7pm Central on a month's last day
+    # therefore still counts toward the next month.
     today = shop_today_from_settings(db)
-    month_start = datetime.now(UTC).date().replace(day=1)
+    month_start = today.replace(day=1)
     _amount = Invoice.total
     _balance = func.coalesce(Invoice.balance_due, _amount)
 
@@ -1519,7 +1515,7 @@ def create_invoice(
                 pricing_class=pricing_class,
                 customer_payment_terms_days=cust_terms,
             )
-            due_date = terms.due_date(invoice_date_value)
+            due_date = terms.due_date(invoice_date_value, db=db)
         except Exception:
             log.exception("billing_terms_resolve_failed_falling_back_to_net30")
             due_date = invoice_date_value + timedelta(days=30)
@@ -4034,6 +4030,17 @@ def record_payment(
     # payment door. Same class as the /send guard.
     if invoice.status == "void":
         raise HTTPException(status_code=409, detail="invoice is void — un-void it before recording a payment")
+    # Backdating is the point (2026 QB-era corrections reach into 2025);
+    # forward-dating is not — a post-dated check isn't received cash. Both
+    # the default and the bound are the shop's calendar day, not the UTC
+    # server's, which is already tomorrow after ~7pm Central (GDXA-505). The
+    # check lives here, not in a model validator, because it needs the
+    # shop's zone from the session.
+    shop_today = shop_today_from_settings(db)
+    if payload.date is None:
+        payload.date = shop_today
+    elif payload.date > shop_today:
+        raise HTTPException(status_code=422, detail="payment date cannot be in the future")
 
     # Deposit invoices (2026-07-23, implementation-audit catch): a deposit
     # superseded at final-invoice time (credit-memo'd remainder) reads as
@@ -4220,7 +4227,7 @@ def record_payment(
     # MAX(payment_date) instead would misfire on invoices settled by credit
     # memos (paid with zero payments) or backdate to an old partial.
     was_unpaid = invoice.paid_at is None
-    if payment.payment_date < datetime.now(UTC).date():
+    if payment.payment_date < shop_today:
         # QB phase-out sequencing breadcrumb: backfilling corrections while
         # the QB money pull can still run risks a webhook pull re-stamping
         # this very date. Warn, don't block — the pause is the office's
@@ -4240,7 +4247,7 @@ def record_payment(
         except Exception:
             log.exception("qb_pause_breadcrumb_check_failed")
     _recalculate_invoice(invoice, db)
-    if was_unpaid and invoice.paid_at is not None and payload.date < datetime.now(UTC).date():
+    if was_unpaid and invoice.paid_at is not None and payload.date < shop_today:
         # Backdated zeroing payment: paid_at follows the payment's day as a
         # date-only stamp (UTC midnight) — the same "day known, minute not"
         # convention QB sync writes and formatStampDate/isDateOnlyStamp
