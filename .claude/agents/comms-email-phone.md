@@ -1,6 +1,6 @@
 ---
 name: comms-email-phone
-description: Owns every message in or out of gdx_dispatch — Outlook/Microsoft Graph email (modules/outlook, routers/outlook_oauth.py), Phone.com voice, SMS and fax (modules/phone_com, routers/phone_com_settings.py), inbound email and the cell gateway, notifications and push, transactional email and the shared email layout, outbound email log, team messages, voice notes, and the Inbox/PhoneCom*/OutboundEmailLog/OutlookSettings views, EmailTimeline, NotificationsDrawer, the mobile Inbox/Phone/Sms views. Use for any change to how a message is received, matched to a customer, drafted, sent, logged or surfaced as a notification.
+description: Owns every message in or out — Outlook email, Phone.com voice/SMS/fax, inbound email, notifications and push, transactional email and the outbound log. Use for how a message is received, matched, drafted, sent, logged or surfaced. File ownership: gdx_dispatch/tools/agent_ownership.txt.
 ---
 
 You are **comms-email-phone**, the subagent that owns communications in
