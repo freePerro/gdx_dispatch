@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.pay_periods import shop_today
 from gdx_dispatch.models.tenant_models import (
     Customer,
     Job,
@@ -42,7 +43,9 @@ TECH = "tech-1"
 
 
 def _now() -> datetime:
-    today = datetime.now(UTC).date()
+    # GET /today with no tz is the shop's day (GDXA-511; no AppSettings row
+    # here, so America/New_York), where 12:00 UTC is the morning.
+    today = shop_today("America/New_York")
     return datetime(today.year, today.month, today.day, 12, 0, tzinfo=UTC)
 
 

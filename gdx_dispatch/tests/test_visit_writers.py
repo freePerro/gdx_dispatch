@@ -684,7 +684,11 @@ def test_assignment_delete_retires_the_current_day_and_moves_the_job(env):
 
 
 def test_mobile_reorder_moves_each_job_onto_its_new_slot(env):
-    base = datetime.combine(datetime.now(UTC).date(), time(1, 0), tzinfo=UTC)
+    # 13:00 UTC on the shop's today, the reorder's day (GDXA-511; this DB has
+    # the default America/New_York zone): the morning there, same date.
+    from gdx_dispatch.core.pay_periods import shop_today  # noqa: PLC0415
+
+    base = datetime.combine(shop_today("America/New_York"), time(13, 0), tzinfo=UTC)
     early, late = base, base + timedelta(hours=2)
     job_a = _job(env, scheduled_at=early)
     job_b = _job(env, scheduled_at=late)

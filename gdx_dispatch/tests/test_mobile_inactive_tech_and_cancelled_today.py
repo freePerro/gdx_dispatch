@@ -245,13 +245,16 @@ def test_cancelled_job_is_not_tomorrows_first_stop(db):
     # day-summary matches jobs.assigned_to against the user id.
     _seed(db, lifecycle="cancelled", scheduled_at=tomorrow, assigned_to=USER)
     client = _client(db, day_summary_router.router)
-    assert client.get("/api/mobile/day-summary").json()["next_first_stop"] is None
+    # Name the day: the default is the shop's today (GDXA-511), which is the
+    # previous UTC date for the shop's evening hours.
+    url = f"/api/mobile/day-summary?date={_noon_today().date().isoformat()}"
+    assert client.get(url).json()["next_first_stop"] is None
 
     live = Job(id=uuid4(), company_id=TENANT, title="Opener", description="d",
                scheduled_at=tomorrow + timedelta(hours=1), assigned_to=USER,
                dispatch_status="assigned", lifecycle_stage="scheduled")
     db.add(live)
     db.commit()
-    stop = client.get("/api/mobile/day-summary").json()["next_first_stop"]
+    stop = client.get(url).json()["next_first_stop"]
     assert stop["id"].replace("-", "") == live.id.hex
 

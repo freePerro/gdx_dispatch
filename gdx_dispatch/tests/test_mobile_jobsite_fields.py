@@ -19,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.pay_periods import shop_today
 from gdx_dispatch.models.tenant_models import (
     Appointment,
     Customer,
@@ -36,7 +37,9 @@ TECH = "tech-1"
 
 
 def _now() -> datetime:
-    today = datetime.now(UTC).date()
+    # The shop's date (GDXA-511: GET /today with no tz is the shop's day; no
+    # AppSettings row here, so America/New_York), where 12:00 UTC is morning.
+    today = shop_today("America/New_York")
     return datetime(today.year, today.month, today.day, 12, 0, tzinfo=UTC)
 
 
@@ -308,6 +311,11 @@ class TestDaySummaryNextStop:
 
         return TestClient(app)
 
+    def _summary_url(self):
+        # Name the day: the default is the shop's today (GDXA-511), which is
+        # the previous UTC date for the shop's evening hours.
+        return f"/api/mobile/day-summary?date={_now().date().isoformat()}"
+
     def _tomorrow_job(self, db, c, **kw):
         j = _job(db, c.id, **kw)
         j.scheduled_at = _now() + timedelta(days=1)
@@ -320,7 +328,7 @@ class TestDaySummaryNextStop:
         c = _seed(db)
         loc = _location(db, c, address="9 Dock St")
         self._tomorrow_job(db, c, location_id=loc.id)
-        r = self._client(db).get("/api/mobile/day-summary").json()
+        r = self._client(db).get(self._summary_url()).json()
         stop = r["next_first_stop"]
         assert stop["site_address"] == "9 Dock St"
         assert stop["site_address_missing"] is False
@@ -330,7 +338,7 @@ class TestDaySummaryNextStop:
         c = _seed(db)
         loc = _location(db, c, address=None)
         self._tomorrow_job(db, c, location_id=loc.id)
-        r = self._client(db).get("/api/mobile/day-summary").json()
+        r = self._client(db).get(self._summary_url()).json()
         stop = r["next_first_stop"]
         assert stop["site_address"] is None
         assert stop["site_address_missing"] is True
