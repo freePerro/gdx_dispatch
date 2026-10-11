@@ -166,7 +166,8 @@ def _iter_py_files(roots: Iterable[Path]) -> Iterable[Path]:
     """Tracked .py files under `roots` — a literal twin of the function in
     tenant_plane_redundant_filter_scan.py, and baseline-gated the same way, so
     it carries the same working-tree defect and the same fix. It yielded 607
-    files including the gitignored `gdx_dispatch/docker/demo/seed_demo.py`."""
+    files including the then-gitignored `gdx_dispatch/docker/demo/seed_demo.py`
+    (tracked since GDXA-528)."""
     tracked = tracked_or_none(REPO_ROOT)
     for root in roots:
         if not root.exists():

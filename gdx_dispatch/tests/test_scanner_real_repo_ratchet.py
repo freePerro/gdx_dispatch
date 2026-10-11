@@ -27,7 +27,7 @@ from gdx_dispatch.tools import silent_failure_scanner
 BASELINE_CEILING = {
     "drift_scanner": 326,
     "silent_failure_scanner": 94,
-    "comment_drift_scan": 76,
+    "comment_drift_scan": 74,
     "frontend_contract_scan": 4,
 }
 
