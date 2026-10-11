@@ -1065,52 +1065,45 @@ def _audit_money_event(
     signed webhook are different actors and a money event may not pretend
     otherwise.
 
-    Two things have to be true at once, and getting one of them broke the
-    other for a while (#661):
+    Two things have to be true at once (#661, GDXA-67):
 
-    1. **The row must land.** `payment_exceeds_receivable` never once did.
-       `ensure_audit_table` COMMITS (SQLite) or ROLLS BACK (Postgres missing
-       the bootstrap guard function) the first time it runs for an engine, and
-       `_log_audit_event_impl` calls it on the way in. Inside a SAVEPOINT that
-       commit closes the savepoint's transaction, so exiting the context
-       manager raised `InvalidRequestError` and the blanket `except` below
-       swallowed the row. `core/audit.py::audit_ready_db` documents exactly
-       this hazard and solves it for request handlers by running the
-       initialization as a dependency; the Stripe webhook and `/confirm` are
-       not request handlers with dependencies, so they have to do it here.
+    1. **The payment must survive a failed alert.** A refused trail row must
+       not take the money record with it, and must not 500 a webhook Stripe
+       would redeliver. Losing the alert is survivable; losing the payment is
+       the defect class this repo ranks highest.
+    2. **`_mark_invoice_paid` keeps its one commit.** Its two calls here run
+       with the payment staged, before the recalc and the ledger post, and the
+       payment, the recalc, the ledger entry and this row land together or not
+       at all.
 
-    2. **The payment must survive a failed alert.** `log_audit_event_sync`
-       ends in a flush; on Postgres a failed flush poisons the whole session,
-       so a bare try/except would leave the very next `db.commit()` — the one
-       saving the PAYMENT — unable to run. Losing the alert is survivable;
-       losing the money record is the defect class this repo ranks highest.
+    `core/audit.audit_best_effort_precommit` owns both: it stages the row in
+    a savepoint inside the caller's transaction, never commits and never
+    raises. This function used to hand-roll that savepoint and hoist
+    `ensure_audit_table` in front of it, on the claim that nothing of ours was
+    staged there to disturb; at both `_mark_invoice_paid` call sites the
+    payment was staged, so the first-use commit split that one commit in two.
+    Since GDXA-352 `ensure_audit_table` never commits open work, and the
+    helper is the one copy of the savepoint.
 
-    So: initialize the guard OUTSIDE the savepoint, where committing has
-    nothing of ours staged to disturb, then keep the savepoint around the
-    add+flush that actually needs containing.
-
-    ⚠ Still not proven on Postgres. What is proven on SQLite is that the row
-    lands and that a failing audit does not take the payment with it.
+    Proven on SQLite by `gdx_dispatch/tests/test_payments_audit_staged_work.py`:
+    with `audit_logs` refusing every INSERT the payment is still committed,
+    and with a later step of `_mark_invoice_paid` refused the payment and this
+    row are both absent, read back on a separate connection each time. Not
+    run against Postgres.
     """
-    try:
-        from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
+    from gdx_dispatch.core.audit import audit_best_effort_precommit
 
-        # Outside the savepoint on purpose — see (1) above. Idempotent: every
-        # call after the first for an engine is a no-op.
-        ensure_audit_table(db)
-
-        with db.begin_nested():
-            log_audit_event_sync(
-                db=db,
-                tenant_id=None,
-                user_id=source,
-                action=action,
-                entity_type="invoice",
-                entity_id=str(invoice.id),
-                details={**detail, "payment_id": str(getattr(payment, "id", "") or "")},
-            )
-    except Exception:
-        logger.exception(
+    landed = audit_best_effort_precommit(
+        db,
+        tenant_id=None,
+        user_id=source,
+        action=action,
+        entity_type="invoice",
+        entity_id=str(invoice.id),
+        details={**detail, "payment_id": str(getattr(payment, "id", "") or "")},
+    )
+    if not landed:
+        logger.error(
             "%s_audit_failed invoice=%s — %s and it is NOT in the audit trail; "
             "the ERROR log above is the only record.",
             action, invoice.id, consequence,
@@ -1146,22 +1139,26 @@ def _audit_recovered_payment(db: Session, *, invoice, payment, detail: dict) -> 
     Committed here, unlike the other two money events. Those are written inside
     ``_mark_invoice_paid``'s transaction and ride its commit; this one runs
     after that commit has already landed, so there is no later commit of the
-    caller's to join. Best-effort and never raising, like every alert in this
-    module: the money is already recorded, and losing the alert is survivable.
+    caller's to join, and ``audit_best_effort`` commits the row itself.
+    Best-effort and never raising, like every alert in this module: the money
+    is already recorded, and losing the alert is survivable.
     """
-    _audit_money_event(
-        db, invoice=invoice, payment=payment, source=_RECOVERED_SOURCE,
-        action="payment_recovered_from_stripe", detail=detail,
-        consequence="a payment nobody entered is on the invoice with nothing to explain it",
-    )
-    try:
-        db.commit()
-    except Exception:
-        with contextlib.suppress(Exception):
-            db.rollback()
-        logger.exception(
-            "payment_recovered_audit_commit_failed invoice=%s — the payment is committed; "
-            "only its trail row was lost.", getattr(invoice, "id", "?"),
+    from gdx_dispatch.core.audit import audit_best_effort
+
+    if not audit_best_effort(
+        db,
+        tenant_id=None,
+        user_id=_RECOVERED_SOURCE,
+        action="payment_recovered_from_stripe",
+        entity_type="invoice",
+        entity_id=str(invoice.id),
+        details={**detail, "payment_id": str(getattr(payment, "id", "") or "")},
+    ):
+        logger.error(
+            "payment_recovered_from_stripe_audit_failed invoice=%s — a payment nobody "
+            "entered is on the invoice with nothing to explain it, and it is NOT in "
+            "the audit trail; the ERROR log above is the only record.",
+            invoice.id,
         )
 
 
@@ -2706,6 +2703,7 @@ def _reverse_recorded_payment(
     # The locked-period ladder rolls back and re-reads, so take the row the
     # rest of this function reports on from the session, not from before.
     payment = db.get(Payment, payment_id) or payment
+    reopened = False
     if invoice is not None:
         _recalculate_invoice(invoice, db)
         # _recalculate_invoice only ever flips an invoice TO "paid"; there is
@@ -2718,9 +2716,13 @@ def _reverse_recorded_payment(
 
             transition_invoice_status(db, invoice, "sent", actor="stripe-webhook")
             invoice.paid_at = None
+            reopened = True
+    # What happened, not what usually happens: with a second live payment on
+    # the invoice (a split or an overpayment) voiding one leaves it owing
+    # nothing, and it correctly stays paid (GDXA-67).
     _audit_payment_reversal(
         db, payment, action="payment_reversed", reason=reason,
-        detail={"invoice_reopened": True},
+        detail={"invoice_reopened": reopened},
     )
     # GDXA-393: every webhook reversal funnels through here, so one bell
     # covers all of them — full refund, ACH return, failed charge, dispute.
@@ -2733,8 +2735,8 @@ def _reverse_recorded_payment(
     invoice_id = str(payment.invoice_id)
     db.commit()
     logger.warning(
-        "payment_reversed reference=%s invoice=%s reason=%s — invoice re-opened",
-        reference, invoice_id, reason,
+        "payment_reversed reference=%s invoice=%s reason=%s invoice_reopened=%s",
+        reference, invoice_id, reason, reopened,
     )
     _ring_office(db, alert)
     return {"status": "reversed", "invoice_id": invoice_id, "reason": reason}
@@ -2762,27 +2764,32 @@ def _audit_payment_reversal(
     than silently signing itself "stripe-webhook".
     Never raises — a failed trail must not 500 a webhook Stripe will retry,
     turning one lost audit row into a redelivery loop.
-    """
-    try:
-        from gdx_dispatch.core.audit import log_audit_event_sync
 
-        log_audit_event_sync(
-            db=db,
-            tenant_id=None,
-            user_id=actor,
-            action=action,
-            entity_type="payment",
-            entity_id=str(payment.id),
-            details={
-                "invoice_id": str(payment.invoice_id),
-                "amount": float(payment.amount or 0),
-                "reference": payment.reference,
-                "stripe_event": reason,
-                **detail,
-            },
-        )
-    except Exception:
-        logger.exception("%s_audit_failed reference=%s", action, payment.reference)
+    Every caller has the void or un-void staged and commits after this
+    returns, so the row goes through `audit_best_effort_precommit` (GDXA-67):
+    staged in a savepoint beside the money, durable with the caller's commit.
+    The bare try/except this replaced swallowed a refused flush and handed
+    back a deactivated session, so the caller's commit raised
+    `PendingRollbackError`: the webhook 500ed and the reversal was lost.
+    """
+    from gdx_dispatch.core.audit import audit_best_effort_precommit
+
+    if not audit_best_effort_precommit(
+        db,
+        tenant_id=None,
+        user_id=actor,
+        action=action,
+        entity_type="payment",
+        entity_id=str(payment.id),
+        details={
+            "invoice_id": str(payment.invoice_id),
+            "amount": float(payment.amount or 0),
+            "reference": payment.reference,
+            "stripe_event": reason,
+            **detail,
+        },
+    ):
+        logger.error("%s_audit_failed reference=%s", action, payment.reference)
 
 
 # ---------------------------------------------------------------------------
