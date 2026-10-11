@@ -532,13 +532,16 @@ async def smart_estimate(
     body = await request.json()
     job_type = body.get("job_type", "")
     try:
+        # GDXA-641: "completed" is lifecycle_stage, the done signal (GDXA-227).
+        # The status varchar holds both 'Complete' and 'Completed', and imported
+        # jobs have none, so keying on it undercounted similar jobs.
         row = db.execute(
             text(
                 """
                 SELECT AVG(CAST(total AS FLOAT)) AS avg_price, COUNT(*) AS cnt
                 FROM invoices
                 WHERE company_id = :tid AND deleted_at IS NULL
-                  AND job_id IN (SELECT id FROM jobs WHERE company_id = :tid AND job_type = :jt AND status IN ('Completed','completed'))
+                  AND job_id IN (SELECT id FROM jobs WHERE company_id = :tid AND job_type = :jt AND lifecycle_stage = 'completed')
                 """
             ),
             {"tid": tenant_id, "jt": job_type},
