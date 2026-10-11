@@ -85,3 +85,16 @@ def test_late_open_and_scheduled_unassigned_read_the_same_queued_hours(client): 
     assert late_rows[str(late.id)]["effective_duration_hours"] == 6.0
     lane = {UUID(i["id"]).hex: i for i in client.client.get("/api/dispatch/scheduled-unassigned").json()["items"]}
     assert (lane[lane_job.id.hex]["scheduled_duration_hours"], lane[lane_job.id.hex]["effective_duration_hours"]) == (6.0, 4.5)
+
+
+def test_scheduled_unassigned_omits_a_soft_deleted_job(client):  # noqa: F811
+    """GDXA-602: a deleted job keeps its scheduled_at and NULL tech, so
+    without a deleted_at filter it sat in the lane forever."""
+    kept = _job(client, scheduled_at=DAY3, assigned_to=None)
+    gone = _job(client, scheduled_at=DAY3, assigned_to=None)
+    gone.deleted_at = datetime.now(UTC)
+    client.db.commit()
+
+    lane = {UUID(i["id"]).hex for i in client.client.get("/api/dispatch/scheduled-unassigned").json()["items"]}
+    assert kept.id.hex in lane
+    assert gone.id.hex not in lane
