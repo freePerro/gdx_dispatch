@@ -57,6 +57,9 @@ pytest.ini                                                   platform-core
 ruff.toml                                                    platform-core
 pyproject.toml                                               platform-core
 sgconfig.yml                                                 platform-core
+# The operator's env template; its drift guard is
+# gdx_dispatch/tests/test_env_template_drift.py.
+.env.template                                                platform-core
 # The agent definitions themselves — the map's own owner list. Gated: the
 # directory is in COVERED_ROOTS, so an agent file with no rule here is red.
 .claude/agents/*                                             platform-core
