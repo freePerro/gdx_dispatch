@@ -79,6 +79,9 @@
         </template>
       </Card>
 
+      <!-- Sales-tax exemption (GDXA-624) — admin/owner only, gated inside. -->
+      <CustomerTaxExemptionCard :customer-id="customerId" />
+
       <!-- Tabs: Jobs, Locations, Notes -->
       <div class="detail-tabs">
         <Button
@@ -614,6 +617,7 @@ import JobStateChip from "../components/JobStateChip.vue";
 import PhoneInput from "../components/PhoneInput.vue";
 import EmailTimeline from "../components/EmailTimeline.vue";
 import CustomerStatementDialog from "../components/CustomerStatementDialog.vue";
+import CustomerTaxExemptionCard from "../components/CustomerTaxExemptionCard.vue";
 import ProgressSpinner from "primevue/progressspinner";
 import Tag from "primevue/tag";
 import Textarea from "primevue/textarea";

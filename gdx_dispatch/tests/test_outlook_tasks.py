@@ -764,7 +764,7 @@ def test_persist_tags_new_row():
     account = MagicMock()
     account.id = uuid4()
     account.upn = "me@x.com"
-    with patch("gdx_dispatch.modules.outlook.tasks.tag_message") as tag:
+    with patch("gdx_dispatch.modules.outlook.tagger.tag_message") as tag:
         _persist_messages(tdb, account, [
             {"id": "g1", "subject": "Re: estimate",
              "from": {"emailAddress": {"address": "alice@x.com"}}},
@@ -778,7 +778,7 @@ def test_persist_does_not_tag_existing_row():
     account = MagicMock()
     account.id = uuid4()
     account.upn = "me@x.com"
-    with patch("gdx_dispatch.modules.outlook.tasks.tag_message") as tag:
+    with patch("gdx_dispatch.modules.outlook.tagger.tag_message") as tag:
         _persist_messages(tdb, account, [{"id": "g1", "subject": "updated"}])
     tag.assert_not_called()
 
@@ -789,7 +789,7 @@ def test_persist_tag_failure_does_not_break_upsert():
     account = MagicMock()
     account.id = uuid4()
     account.upn = "me@x.com"
-    with patch("gdx_dispatch.modules.outlook.tasks.tag_message", side_effect=RuntimeError("boom")):
+    with patch("gdx_dispatch.modules.outlook.tagger.tag_message", side_effect=RuntimeError("boom")):
         n = _persist_messages(tdb, account, [
             {"id": "g1", "subject": "x", "from": {"emailAddress": {"address": "a@x.com"}}},
         ])
@@ -807,7 +807,7 @@ def test_retag_untagged_walks_and_commits():
     qm.all.side_effect = [[r1, r2], []]  # one batch, then drained
     tdb = MagicMock()
     tdb.query.return_value = qm
-    with patch("gdx_dispatch.modules.outlook.tasks.tag_message", side_effect=[True, False]) as tag:
+    with patch("gdx_dispatch.modules.outlook.tagger.tag_message", side_effect=[True, False]) as tag:
         out = _retag_untagged(tdb, batch=200)
     assert out == {"scanned": 2, "tagged": 1}
     assert tag.call_count == 2

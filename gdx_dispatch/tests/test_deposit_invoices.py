@@ -399,10 +399,10 @@ def test_failed_final_create_leaves_the_deposit_alone_on_a_fresh_engine(db, monk
 
     real = inv_router._recalculate_invoice
 
-    def final_recompute_fails(invoice, session):
+    def final_recompute_fails(invoice, session, actor=None):
         if (invoice.billing_type or "") != "deposit":
             raise RuntimeError("final recompute failed")
-        return real(invoice, session)
+        return real(invoice, session, actor=actor)
 
     monkeypatch.setattr(inv_router, "_recalculate_invoice", final_recompute_fails)
     with pytest.raises(RuntimeError):

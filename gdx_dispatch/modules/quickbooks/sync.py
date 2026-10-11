@@ -808,11 +808,11 @@ async def pull_customers(tenant_id: str, db: Session, qb: QBClient) -> dict[str,
     errors: list[dict[str, str]] = []
     seen_qb_ids: set[str] = set()
     try:
-        # ensure_audit_table COMMITS on first use per engine (audit.py:320).
-        # Every per-row write here runs inside a db.begin_nested() SAVEPOINT,
-        # and a commit from underneath closes that context manager — the first
-        # audited site write died with "Can't operate on closed transaction".
-        # Install the guard once, up front, where committing disturbs nothing.
+        # Until GDXA-352 (2026-10-06) ensure_audit_table COMMITTED on first use
+        # per engine; every per-row write here runs inside a db.begin_nested()
+        # SAVEPOINT, and that commit closed it — the first audited site write
+        # died with "Can't operate on closed transaction". It no longer touches
+        # open work (`core/audit.py`); the guard is still installed once, here.
         ensure_audit_table(db)
         rows = await qb.query("Customer")
 

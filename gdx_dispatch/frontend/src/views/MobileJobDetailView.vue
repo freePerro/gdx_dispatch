@@ -1474,8 +1474,9 @@ const canComplete = computed(() => {
 // a status-only guard would cheerfully offer to bill it again.
 //
 // `billed` is derived server-side from real invoices. Do NOT reach for
-// job.billing_status: it looks like the answer and is a dead column that only
-// ever says "unbilled" (core/billing_predicates.py).
+// job.billing_status: it looks like the answer and is a dead cache — no app
+// code writes it past "unbilled" and older rows hold a stale "invoiced"
+// (core/billing_predicates.py).
 // Requires an explicit false: if the server didn't say, we don't know, and
 // inviting a second invoice is the one mistake here that costs money.
 const canBill = computed(() => {
