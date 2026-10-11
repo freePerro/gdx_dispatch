@@ -102,7 +102,7 @@ Grouped by what the comment claimed:
   PAT can be minted. Rewrote to describe the actual, narrowed gap.
 - Four modules described GDX as a "multi-tenant SaaS platform"
   (`api/public_router.py`, `core/onboarding.py`, `routers/users.py`,
-  `core/stripe_payments.py`). The release is **single-tenant and self-hosted**
+  `core/stripe_payments.py`). The release is **single-tenant and self-hosted** <!-- deleted 2026-10-11, GDXA-552; link-ok -->
   (migration 001 baseline). `public_router.py` contradicted itself 85 lines later
   under a "SINGLE-TENANT INVARIANT" heading.
 
@@ -118,7 +118,7 @@ Worth recording, because these are load-bearing and now confirmed:
   `mcp_error_schema.py`.
 - `core/health_score.py` — all five signal windows and point caps <!-- file deleted 2026-09-03 with the SaaS-residue purge; link-ok -->
   (30+20+20+15+15 = 100) match the code.
-- `core/stripe_payments.py` `Raises:` blocks — these document *propagated* SDK
+- `core/stripe_payments.py` `Raises:` blocks — these document *propagated* SDK <!-- deleted 2026-10-11, GDXA-552; link-ok -->
   exceptions, which is correct even though nothing `raise`s locally.
 
 ## Non-comment bugs found along the way — all three RESOLVED

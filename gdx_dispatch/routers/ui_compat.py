@@ -420,17 +420,11 @@ def create_payment(
     return _record_payment(invoice_id=invoice.id, payload=body, _=user, db=db)
 
 
-@router.post("/api/payments/intent", response_model=None)
-def create_payment_intent(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    """Dead stub, now honest: it used to return an empty client_secret and
-    a null checkout_url, so the Billing "Pay" button always no-opped with a
-    success toast. Office pay links come from POST /api/invoices/{id}/pay-link."""
-    from fastapi import HTTPException
-
-    raise HTTPException(
-        status_code=501,
-        detail="not implemented — use POST /api/invoices/{invoice_id}/pay-link",
-    )
+# POST /api/payments/intent was removed 2026-10-11 (GDXA-552). It had been a
+# 501 since the Billing "Pay" button that called it was replaced, and nothing
+# called it after that. Office pay links come from
+# POST /api/invoices/{id}/pay-link; the customer pay page mints through
+# POST /api/payments/create-intent (core/payments.py).
 
 
 # ── Payroll summary (pay periods + stubs) ─────────────────────────────────

@@ -341,10 +341,11 @@ buttons wired to stubs. Before calling anything done:
   Before citing a scanner or baseline as evidence, name the input that would
   turn it red. `tests/authz_sweep.py` counts any authenticated route as gated,
   so it can never fail for a missing permission check — `routers/payments.py`
-  has 5 mutation routes, 0 permission gates, and a green sweep (it was 7 until
-  the 2026-09-10 orphan sweep deleted two; re-counted 2026-09-12). (Several of
-  those are public by design and token-scoped; see `.authz_ungated_baseline`
-  before "fixing" one. The point is the sweep cannot tell you which.)
+  carried 5 mutation routes, 0 permission gates, and a green sweep until
+  GDXA-552 deleted the router on 2026-10-11. (Routes that are public by design
+  and token-scoped, like the pay page's `/api/payments/*`, are listed in
+  `.authz_ungated_baseline`; read it before "fixing" one. The point is the
+  sweep cannot tell you which.)
 - **A row-refusing drop can take prod down.** The guarded table-drop
   migrations (088, 091, 092) count rows before any `DROP`, inside the
   migration transaction, and raise on a non-empty table — a refusal mutates
