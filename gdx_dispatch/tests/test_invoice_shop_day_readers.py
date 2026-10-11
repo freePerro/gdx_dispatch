@@ -19,7 +19,7 @@ Each assertion below holds on the shop day and fails on the UTC day.
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
@@ -122,10 +122,11 @@ def test_cash_risk_aging_agrees_with_collections_aging(db, invoices):
 
 
 def test_report_summary_overdue_count_uses_the_shop_day(db, invoices):
-    from gdx_dispatch.routers.reports import _summary_window
+    from gdx_dispatch.routers.reports import _shop_window, _summary_window
 
+    window = _shop_window(date(2026, 8, 1), date(2026, 9, 15), UTC)
     with freeze_time(EVENING_UTC):
-        out = _summary_window(db, "2026-08-01T00:00:00+00:00", "2026-09-14T23:59:59+00:00")
+        out = _summary_window(db, window)
 
     assert out["overdue_invoices"] == 1  # LATE only
 
@@ -175,8 +176,8 @@ def test_payment_plan_installment_due_today_is_pending(db, invoices):
 
 def test_dashboard_snapshot_today_is_the_shop_day(db, invoices):
     """The no-params dashboard window is the shop's date, and so is its overdue
-    cutoff. (Its job-timestamp counts use that date's UTC-midnight bounds — a
-    documented approximation, not asserted here.)"""
+    cutoff. (Its job-timestamp bounds are the shop's local midnights — GDXA-538,
+    asserted in test_reports_shop_day_window_gdxa538.py.)"""
     from gdx_dispatch.routers.reports import daily_snapshot
 
     with freeze_time(EVENING_UTC):
