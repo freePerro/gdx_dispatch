@@ -22,6 +22,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.core.payments import public_pay_url, stripe_configured
 from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Job, JobPartNeeded, Payment
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
@@ -177,7 +178,7 @@ def test_compat_create_payment_actually_persists(tenant_db_session):
     res = create_payment(
         payload=_PaymentCompatIn(
             invoice_id=inv["id"], amount=100.0, method="check",
-            date=date.today().isoformat(), processor_ref="chk 1042",
+            date=shop_today_from_settings(tenant_db_session).isoformat(), processor_ref="chk 1042",
         ),
         user=_current_user(),
         db=tenant_db_session,

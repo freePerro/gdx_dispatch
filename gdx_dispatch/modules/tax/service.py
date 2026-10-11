@@ -43,9 +43,15 @@ def is_customer_exempt(db: Session, customer_id: UUID | str | None) -> bool:
     ).scalar_one_or_none()
     if row is None:
         return False
-    # Honor exempt_from / exempt_until if set
-    from datetime import date as _date
-    today = _date.today()
+    # Honor exempt_from / exempt_until if set — against the shop's calendar
+    # day, not the UTC server's (GDXA-505): an exemption ending today lapsed
+    # at ~7pm Central. Read only when a bound is set, so an open-ended
+    # exemption costs no settings query.
+    if not (row.exempt_from or row.exempt_until):
+        return True
+    from gdx_dispatch.core.pay_periods import shop_today_from_settings  # noqa: PLC0415
+
+    today = shop_today_from_settings(db)
     if row.exempt_from and today < row.exempt_from:
         return False
     if row.exempt_until and today > row.exempt_until:

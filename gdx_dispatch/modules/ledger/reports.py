@@ -293,13 +293,14 @@ def _cash_events(session: Session, invoice):
     cash events — the S7 cap restricts them to the unpaid portion, which
     cash basis never recognized in the first place.
 
-    Two documented Phase 1 policies: (1) adjustment events are dated by
-    ``created_at`` in UTC — an evening local-time refund can land on the
-    next calendar day; this matches how P-rules date the SAME event on the
-    accrual ledger, so the two books never disagree with each other.
-    (2) ``credit_applied`` recognizes at application date, not the original
-    overpayment's receipt date. [JUDGMENT]"""
+    Two documented Phase 1 policies: (1) an adjustment event takes the date
+    the accrual ledger gives the SAME event (``rules._shop_effective_at``):
+    its posted entry's date when one is live, else the shop's calendar day of
+    ``created_at`` (GDXA-505) — so an evening refund lands in the same month
+    on both bases. (2) ``credit_applied`` recognizes at application date, not
+    the original overpayment's receipt date. [JUDGMENT]"""
     from gdx_dispatch.models.tenant_models import InvoiceAdjustment, Payment
+    from gdx_dispatch.modules.ledger.rules import _shop_effective_at
 
     events = []
     for payment in session.scalars(
@@ -318,9 +319,12 @@ def _cash_events(session: Session, invoice):
             InvoiceAdjustment.kind.in_(("refund", "credit_applied")),
         )
     ).all():
-        when = adjustment.created_at.date() if adjustment.created_at else None
-        if when is None:
+        if adjustment.created_at is None:
             continue
+        when = _shop_effective_at(
+            session, "adjustment", str(adjustment.id),
+            adjustment.kind, adjustment.created_at,
+        )
         sign = -1 if adjustment.kind == "refund" else 1
         events.append((when, sign * to_cents(_dec(adjustment.amount))))
     events.sort(key=lambda e: e[0])
