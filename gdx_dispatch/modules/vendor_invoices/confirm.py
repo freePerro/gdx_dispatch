@@ -27,6 +27,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import (
     Document,
     Expense,
@@ -413,7 +414,7 @@ def reverse_confirmed_line(db: Session, invoice: VendorInvoice, line: VendorInvo
                     # error propagates: the caller refuses the whole void.
                     reverse_entry(
                         db, live,
-                        effective_at=datetime.now(timezone.utc).date(),
+                        effective_at=shop_today_from_settings(db),
                         created_by=actor_id,
                     )
                 out["ledger_reversed"] = True
