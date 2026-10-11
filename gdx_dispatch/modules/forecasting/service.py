@@ -8,8 +8,8 @@ Inputs (per-tenant):
   - Scheduled jobs: lifecycle_stage in ('scheduled', 'estimate',
     'service_call'), scheduled_at within window. Estimated value = SUM of
     latest Estimate.total per job (joined). Multiplied by
-    `scheduled_realization_rate`. (The old billing_status filter was a dead
-    tautology — removed PR2-billing-capture, no output change.)
+    `scheduled_realization_rate`. (The old billing_status filter was removed
+    in PR2-billing-capture; see _scheduled_jobs_projection for why.)
   - Recurring (optional): qb_recurring_transactions where active=true
     and next_date in window, plus active RecurringStream rows projected
     forward; counted at face amount (no probability).
@@ -238,10 +238,14 @@ def _open_ar_projection(db: Session, settings: ForecastSettings, today: date, wi
 
 def _scheduled_jobs_projection(db: Session, settings: ForecastSettings, today: date, window_days: int) -> dict[str, Any]:
     window_end = today + timedelta(days=window_days)
-    # PR2-billing-capture: the billing_status clause was a dead tautology —
-    # the column is only ever written "unbilled", and every stage in this
-    # pre-completion window carries that default — so deleting it changes NO
-    # output (pinned by test). Subtracting already-invoiced deposit/up-front
+    # PR2-billing-capture: the billing_status clause was safe to delete. The
+    # column is a dead cache — no app code writes it past "unbilled" (the demo
+    # seed still writes paid/invoiced fixtures) — but older prod rows hold a
+    # stale "invoiced". Every live non-"unbilled" row seen on prod and demo
+    # (2026-10-11) is a `completed` job, and this window selects only
+    # scheduled/estimate/service_call jobs, so the clause excluded nothing.
+    # That is observed data, not a guard; the test pins only that the
+    # projection ignores the column. Do not restore it. Subtracting already-invoiced deposit/up-front
     # amounts from projected job revenue is a real improvement but a separate,
     # /audit-gated change (forecasting-accuracy standing rule).
     jobs_q = (
