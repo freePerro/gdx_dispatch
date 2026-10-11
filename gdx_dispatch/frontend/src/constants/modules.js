@@ -113,11 +113,17 @@ export const MODULE_CATEGORIES = [
     label: 'Invoicing',
     icon: 'pi pi-dollar',
     modules: [
-      { key: 'billing', label: 'Billing', icon: 'pi pi-dollar', to: '/billing', type: 'Invoices', permission: 'invoices.read_all', cluster: 'billing_hub', tabLabel: 'Invoices' },
-      { key: 'payments', label: 'Payments', icon: 'pi pi-credit-card', to: '/payments', type: 'Invoices', permission: 'payments.read', cluster: 'billing_hub', tabLabel: 'Payments' },
-      { key: 'collections', label: 'Collections', icon: 'pi pi-wallet', to: '/collections', type: 'Invoices', permission: 'invoices.read_all', cluster: 'billing_hub', tabLabel: 'Collections' },
-      { key: 'invoice_reminders', label: 'Invoice Reminders', icon: 'pi pi-bell', to: '/invoice-reminders', type: 'Invoices', permission: 'nav.admin', cluster: 'billing_hub', tabLabel: 'Reminders' },
-      { key: 'email_log', label: 'Email Log', icon: 'pi pi-envelope', to: '/email-log', type: 'Invoices', permission: 'nav.admin', cluster: 'billing_hub', tabLabel: 'Email Log' },
+      // `requires: 'invoices'` (GDXA-578): none of these keys is a backend
+      // module, so they stayed visible with Invoices switched off while every
+      // page 403'd — invoices, payments, collections and invoice_reminders
+      // routers all carry router-level require_module("invoices"). Email Log
+      // reads /api/outbound-emails, which is role-gated with no module, so it
+      // stays ungated.
+      { key: 'billing', requires: 'invoices', label: 'Billing', icon: 'pi pi-dollar', to: '/billing', type: 'Invoices', permission: 'invoices.read_all', cluster: 'billing_hub', tabLabel: 'Invoices' },
+      { key: 'payments', requires: 'invoices', label: 'Payments', icon: 'pi pi-credit-card', to: '/payments', type: 'Invoices', permission: 'payments.read', cluster: 'billing_hub', tabLabel: 'Payments' },
+      { key: 'collections', requires: 'invoices', label: 'Collections', icon: 'pi pi-wallet', to: '/collections', type: 'Invoices', permission: 'invoices.read_all', cluster: 'billing_hub', tabLabel: 'Collections' },
+      { key: 'invoice_reminders', requires: 'invoices', label: 'Invoice Reminders', icon: 'pi pi-bell', to: '/invoice-reminders', type: 'Invoices', permission: 'nav.admin', cluster: 'billing_hub', tabLabel: 'Reminders' },
+      { key: 'email_log',label: 'Email Log', icon: 'pi pi-envelope', to: '/email-log', type: 'Invoices', permission: 'nav.admin', cluster: 'billing_hub', tabLabel: 'Email Log' },
     ],
   },
   {

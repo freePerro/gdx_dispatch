@@ -186,6 +186,23 @@ def test_lines_are_ordered_oldest_money_first(tenant_db):
     ]
 
 
+def test_a_credit_sorts_in_the_bucket_it_was_printed_in(tenant_db):
+    """GDXA-586: a credit keeps its printed bucket, so a 120+ credit sorts
+    with the 120+ money, not after the current lines. It still stays out of
+    the aging totals and the open-line count, which only count money owed."""
+    _statement(tenant_db, date(2026, 9, 25), [
+        ("DEBT", 100, 100, "0-29", date(2026, 9, 1)),
+        ("CREDIT", -4000, -4000, "120+", date(2026, 3, 14)),
+    ])
+    tenant_db.commit()
+
+    account = build_vendor_accounts(tenant_db)[0]
+    assert [ln.invoice_no for ln in account.lines] == ["CREDIT", "DEBT"]
+    assert account.aging == {"0-29": Decimal("100")}
+    assert account.open_line_count == 1
+    assert account.open_balance == Decimal("-3900")
+
+
 def test_oldest_line_date_drives_days_open(tenant_db):
     _statement(tenant_db, date(2026, 7, 1), [
         ("A", 100, 100, "120+", date(2026, 1, 23)),
