@@ -5,7 +5,8 @@ Loads gdx_dispatch/tests/fixtures/structure.sql (pg_dump --schema-only of a fres
 TenantBase.metadata.create_all() — i.e. the ORM is truth) into a template
 database once per session. Each test that requests `pg_test_db` gets a
 fresh database cloned from that template via
-`CREATE DATABASE ... TEMPLATE gdx_test_template` (~50ms, fully isolated).
+`CREATE DATABASE ... TEMPLATE gdx_test_template_<pid>_<hex8>` (~50ms, fully
+isolated).
 
 Regenerate structure.sql via gdx_dispatch/tools/refresh_test_schema.sh whenever the
 ORM changes. GDX prod (post-pave) has the same shape as the ORM, so
@@ -25,6 +26,7 @@ skips on a laptop and FAILS under CI (see `_skip_unless_ci`, #440).
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import uuid
 from pathlib import Path
@@ -41,16 +43,33 @@ PG_USER = os.environ.get("GDX_TEST_PG_USER", "gdx")
 PG_PASSWORD = os.environ.get("GDX_TEST_PG_PASSWORD", "gdx")
 PG_ADMIN_DB = os.environ.get("GDX_TEST_PG_ADMIN_DB", "gdx")
 
-# Template name is per-pid so that under pytest-split each independent
-# pytest invocation gets its own template (no cross-process coordination
-# needed). Falls back to a single name in serial mode.
-TEMPLATE_DB = f"gdx_test_template_{os.getpid()}"
+TEMPLATE_PREFIX = "gdx_test_template_"
+
+
+def _template_name(pid: int) -> str:
+    """``gdx_test_template_<pid>_<hex8>`` — unique per pytest process.
+
+    The pid alone is not unique: every docker-app shard runs pytest as PID 1,
+    so shards sharing one Postgres all picked ``gdx_test_template_1`` and
+    dropped the template another shard was cloning (GDXA-660). The random
+    suffix makes the name unique across PID namespaces; the pid stays for
+    whoever is reading ``pg_database``. At most 45 bytes, so it also fits
+    ``application_name`` and is never truncated at Postgres's 63.
+    """
+    return f"{TEMPLATE_PREFIX}{pid}_{uuid.uuid4().hex[:8]}"
+
+
+# One template per pytest process, so each pytest-split shard has its own
+# and no cross-process coordination is needed beyond the owner connection.
+TEMPLATE_DB = _template_name(os.getpid())
 STRUCTURE_SQL = Path(__file__).parent / "structure.sql"
 
 
-def _admin_conn(dbname: str = PG_ADMIN_DB):
+def _admin_conn(dbname: str = PG_ADMIN_DB, application_name: str | None = None):
+    kwargs = {"application_name": application_name} if application_name else {}
     conn = psycopg2.connect(
-        host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASSWORD, dbname=dbname
+        host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASSWORD, dbname=dbname,
+        **kwargs,
     )
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
     return conn
@@ -101,54 +120,61 @@ def _create_db(name: str, template: str | None = None) -> None:
         conn.close()
 
 
+_TEMPLATE_NAME_RE = re.compile(rf"^{TEMPLATE_PREFIX}\d+_[0-9a-f]{{8}}$")
+
+
+def _hold_template_owner(name: str, dbname: str = PG_ADMIN_DB):
+    """Open the connection that marks ``name`` as owned; return it.
+
+    It carries the template name as its ``application_name`` and lives as long
+    as the session, so a crashed or killed pytest disowns its template with no
+    cleanup of its own. ``pg_stat_activity`` is server-wide, so the mark is
+    seen from any database: a sweeper with a different GDX_TEST_PG_ADMIN_DB
+    still sees it, which an advisory lock (per-database) would not.
+    """
+    return _admin_conn(dbname, application_name=name)
+
+
 def _drop_stale_templates() -> None:
-    """Drop any gdx_test_template_<pid> DBs whose PID no longer exists.
+    """Drop every gdx_test_template_<pid>_<hex8> DB that no session owns.
 
     Each pytest invocation (including each pytest-split shard) creates its
-    own per-pid template. Crashed runs leave them behind. Sweep them at
-    session start so they don't accumulate on developer laptops.
+    own template. Crashed runs leave them behind. Sweep them at session start
+    so they don't accumulate on developer laptops.
+
+    Liveness is the owner connection from ``_hold_template_owner``, asked of
+    the server, not ``/proc/<pid>``: shards run in their own PID namespaces,
+    so ``/proc/1`` always exists inside a container and a host pid is
+    invisible from one. Names in the old ``gdx_test_template_<pid>`` form are
+    left alone: an older checkout may still be running them, and it holds no
+    owner connection to ask.
     """
     conn = _admin_conn()
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT datname FROM pg_database WHERE datname LIKE 'gdx_test_template_%'"
+            "SELECT d.datname FROM pg_database d "
+            "WHERE d.datname LIKE 'gdx_test_template_%' AND NOT EXISTS ("
+            "  SELECT 1 FROM pg_stat_activity a WHERE a.application_name = d.datname)"
         )
-        names = [r[0] for r in cur.fetchall()]
+        names = [r[0] for r in cur.fetchall() if _TEMPLATE_NAME_RE.match(r[0])]
         cur.close()
     finally:
         conn.close()
 
     for name in names:
-        suffix = name.removeprefix("gdx_test_template_")
-        if not suffix.isdigit():
-            continue
-        pid = int(suffix)
-        # /proc/<pid> existence = process is alive. Don't touch live PIDs
-        # (could be a parallel split shard mid-run).
-        if Path(f"/proc/{pid}").exists():
+        if name == TEMPLATE_DB:
             continue
         # Multiple shards may race here. Swallow concurrent-drop errors —
         # whichever shard wins, the row goes away, which is the goal.
         try:
-            c = _admin_conn()
-            try:
-                cur = c.cursor()
-                cur.execute(
-                    "UPDATE pg_database SET datistemplate = false WHERE datname = %s",
-                    (name,),
-                )
-                cur.close()
-            finally:
-                c.close()
-            _drop_db(name)
+            _cleanup_template(name)
         except (
             psycopg2.errors.DeadlockDetected,
             psycopg2.errors.InternalError_,
             psycopg2.errors.UndefinedObject,
             psycopg2.errors.ObjectInUse,
         ):
-            # Another shard is dropping the same row, or it's already gone.
             continue
 
 
@@ -178,24 +204,20 @@ def pg_template_db(request) -> str:
             f"PostgreSQL not reachable at {PG_HOST}:{PG_PORT} "
             f"(set GDX_TEST_PG_* to run requires-pg tests): {exc}"
         )
+    # Own it before it exists, so no sweeper ever sees it unowned.
+    owner = _hold_template_owner(TEMPLATE_DB)
+
+    def _finalize() -> None:
+        try:
+            _cleanup_template(TEMPLATE_DB)
+        finally:
+            owner.close()
+
+    request.addfinalizer(_finalize)
     _drop_stale_templates()
-    request.addfinalizer(lambda: _cleanup_template(TEMPLATE_DB))
     if not STRUCTURE_SQL.exists():
         _skip_unless_ci(f"{STRUCTURE_SQL} not present — run gdx_dispatch/tools/refresh_test_schema.sh")
 
-    # Templates can't be dropped while flagged as templates — un-flag first.
-    conn = _admin_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE pg_database SET datistemplate = false WHERE datname = %s",
-            (TEMPLATE_DB,),
-        )
-        cur.close()
-    finally:
-        conn.close()
-
-    _drop_db(TEMPLATE_DB)
     _create_db(TEMPLATE_DB)
 
     env = {**os.environ, "PGPASSWORD": PG_PASSWORD}
