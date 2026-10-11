@@ -17,8 +17,9 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
+from fastapi import HTTPException
 
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine
 from gdx_dispatch.modules.ledger.service import ensure_gl_seed
 from gdx_dispatch.routers.invoices import (
@@ -96,7 +97,7 @@ def test_same_day_zeroing_payment_keeps_precise_timestamp(db):
     inv = _invoice(db)
 
     before = dt.datetime.now(UTC).replace(tzinfo=None)
-    _pay(db, inv, 1000.0, date=date.today())
+    _pay(db, inv, 1000.0, date=shop_today_from_settings(db))
     db.refresh(inv)
 
     assert inv.status == "paid"
@@ -122,7 +123,7 @@ def test_backdated_payment_on_paid_invoice_does_not_move_paid_at(db):
     """Only the payment that FLIPS the invoice carries paid_at. A later
     (over)payment — even backdated — must not rewrite history."""
     inv = _invoice(db)
-    _pay(db, inv, 1000.0, date=date.today())
+    _pay(db, inv, 1000.0, date=shop_today_from_settings(db))
     db.refresh(inv)
     original_paid_at = inv.paid_at
     assert original_paid_at is not None
@@ -161,12 +162,14 @@ def test_payment_date_accepts_today():
     assert payload.date == dt.datetime.now(UTC).date()
 
 
-def test_payment_date_rejects_tomorrow():
-    # No forward slack: the company zone (America/Chicago) is behind UTC,
-    # so a legitimate client stamp can never exceed the UTC day. Tomorrow
-    # is a post-dated check, not received cash.
-    with pytest.raises(ValidationError):
-        PaymentCreateIn(amount=10.0, method="check", date=dt.datetime.now(UTC).date() + timedelta(days=1))
+def test_payment_date_rejects_tomorrow(db):
+    # No forward slack: tomorrow ON THE SHOP'S CALENDAR is a post-dated
+    # check, not received cash. Checked in the handler, against the shop's
+    # day (GDXA-505); the old model validator compared the UTC day.
+    inv = _invoice(db)
+    with pytest.raises(HTTPException) as exc:
+        _pay(db, inv, 10.0, date=shop_today_from_settings(db) + timedelta(days=1))
+    assert exc.value.status_code == 422
 
 
 # ─── QB money-pull pause ────────────────────────────────────────────────
