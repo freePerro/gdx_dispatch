@@ -41,8 +41,8 @@ be a disaster, so the live path is proven too — by **invoking** it and by
 reading its **AST**, never by grepping its source for an event name. A
 substring search over `core/payments.py` is satisfied by a comment or a
 docstring: stripping all nine dispatch branches leaves six of nine such
-assertions green (measured 2026-09-27), which is the vacuity CLAUDE.md names as
-a sharp edge and which the 2026-08-04 money audit already caught once in this
+assertions green (measured 2026-09-27), which is the vacuity .claude/rules/scanners-and-tests.md
+names as a sharp edge and which the 2026-08-04 money audit already caught once in this
 repo — a guard "satisfied by the *import* line with the call deleted".
 """
 from __future__ import annotations
@@ -113,7 +113,7 @@ def _paths() -> set[str]:
 
 @pytest.fixture
 def db_session():
-    """In-memory tenant schema built from the ORM, per CLAUDE.md."""
+    """In-memory tenant schema built from the ORM, per .claude/rules/database.md."""
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )

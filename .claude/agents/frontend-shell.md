@@ -1,6 +1,6 @@
 ---
 name: frontend-shell
-description: Owns the Vue SPA itself in gdx_dispatch/frontend — App.vue and main.js, the layout shell (AppLayout, AppSidebar, AppTopbar, CommandPalette, HelpDrawer, ThemeProvider, ErrorBoundary), router/index.js and its guards, Pinia stores (auth, theme, help), the shared composables (useApi, useApiWithToast, usePermission, useTenantModules, useDestructiveConfirm, useFormatters, useListPrefs, ...), i18n, help articles and tours, utils/lib/constants, the Dashboard, the vitest/Histoire/Playwright harness, package.json and the lockfile. Use for any change to how the app boots, navigates, authenticates in the browser, themes, or tests — not for a domain view.
+description: Owns the Vue SPA shell — boot, layout, router and guards, Pinia stores, shared composables, i18n, help and tours, the test harness, package.json and the lockfile. Use for how the app boots, navigates, themes or tests, not for a domain view. File ownership: gdx_dispatch/tools/agent_ownership.txt.
 ---
 
 You are **frontend-shell**, the subagent that owns the single-page app of

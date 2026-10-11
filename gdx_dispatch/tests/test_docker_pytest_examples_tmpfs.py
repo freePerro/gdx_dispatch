@@ -20,7 +20,8 @@ Not examples, so not checked: a ``PYTEST=`` value handed to
 ``run_tests_split.sh`` (the script adds the flag), a ``#`` comment line, and
 an elided mention (``docker run ... -m pytest``) in prose.
 
-Scope is the present-tense surfaces: the agent files, CLAUDE.md, and
+Scope is the present-tense surfaces: the agent files, CLAUDE.md with the
+rules and skills split out of it (2026-10-11), and
 ``gdx_dispatch/docs/``. ``docs/design/`` is the record of what was decided and
 when; an archived audit's command line stays as it was run.
 """
@@ -33,6 +34,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SURFACES = (
     ".claude/agents/*.md",
+    ".claude/rules/*.md",
+    ".claude/skills/**/*.md",
     "CLAUDE.md",
     "gdx_dispatch/docs/**/*.md",
 )
