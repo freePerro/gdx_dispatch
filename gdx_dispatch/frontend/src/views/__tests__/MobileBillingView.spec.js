@@ -289,3 +289,61 @@ describe('MobileBillingView — Mark paid records a real payment (2026-07-21)', 
     }
   });
 });
+
+describe('MobileBillingView detail totals show credits (GDXA-625)', () => {
+  // GET /api/invoices/{id} emits credit_total because the balance is
+  // total - paid - credits. A totals block that shows Paid and Balance but
+  // not Credits reads "Total 1000 / Paid 300 / Balance 0" with $700 missing.
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    apiGetMock.mockReset();
+    hasPermissionMock.mockReset();
+    hasPermissionMock.mockReturnValue(true);
+    permissionsLoadedRef.value = true;
+    loadPermissionsMock.mockReset();
+    loadPermissionsMock.mockImplementation(async () => {});
+  });
+
+  async function openWith(detail) {
+    apiGetMock.mockImplementation((url) => {
+      if (url === `/api/invoices/${detail.id}`) return Promise.resolve(detail);
+      if (url === '/api/invoices') return Promise.resolve([{ ...detail }]);
+      return Promise.resolve({});
+    });
+    const w = mount(MobileBillingView, { global: { stubs } });
+    await flushPromises();
+    await w.vm.openDetail({ id: detail.id });
+    await flushPromises();
+    return w;
+  }
+
+  it('renders Total and a Credits row that reconciles to the balance', async () => {
+    const w = await openWith({
+      id: 'inv-c', status: 'partial', subtotal: 1000, tax_amount: 0,
+      total: 1000, amount_paid: 300, credit_total: 700, balance_due: 0,
+    });
+    expect(w.find('[data-test="mb-total"]').text()).toContain('1000.00');
+    const credits = w.find('[data-test="mb-credits"]');
+    expect(credits.exists()).toBe(true);
+    expect(credits.text()).toContain('Credits');
+    expect(credits.text()).toContain('700.00');
+    expect(w.find('.total-grand').text()).toContain('0.00');
+  });
+
+  it('renders no Credits row when the invoice has no credits', async () => {
+    const w = await openWith({
+      id: 'inv-n', status: 'sent', subtotal: 500, tax_amount: 0,
+      total: 500, amount_paid: 100, credit_total: 0, balance_due: 400,
+    });
+    expect(w.find('[data-test="mb-total"]').text()).toContain('500.00');
+    expect(w.find('[data-test="mb-credits"]').exists()).toBe(false);
+    expect(w.find('.total-grand').text()).toContain('400.00');
+  });
+
+  it('subtracts credits when the server sent no balance_due', async () => {
+    const w = await openWith({
+      id: 'inv-l', status: 'sent', total: 1000, amount_paid: 300, credit_total: 200,
+    });
+    expect(w.find('.total-grand').text()).toContain('500.00');
+  });
+});
