@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.pay_periods import resolve_zone, shop_today_from_settings, shop_tz_name_from_settings
 from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.models.tenant_models import Job, Technician, TimeEntry
 
@@ -431,14 +432,17 @@ def labor_summary(
     current_user: dict[str, Any] = Depends(_require_dispatch),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    now = datetime.now(UTC).date()
-    resolved_end = end_date or now
+    # The window is in shop days: "today" is the shop's, and each day runs
+    # shop midnight to shop midnight, so an evening shift is not filed under
+    # tomorrow's UTC date (GDXA-509). Bounds go to the query as UTC instants.
+    zone = resolve_zone(shop_tz_name_from_settings(db))
+    resolved_end = end_date or shop_today_from_settings(db)
     resolved_start = start_date or (resolved_end - timedelta(days=29))
     if resolved_start > resolved_end:
         raise HTTPException(status_code=422, detail="start_date must be on or before end_date")
 
-    start_dt = datetime.combine(resolved_start, time.min, tzinfo=UTC)
-    end_dt_exclusive = datetime.combine(resolved_end + timedelta(days=1), time.min, tzinfo=UTC)
+    start_dt = datetime.combine(resolved_start, time.min, tzinfo=zone).astimezone(UTC)
+    end_dt_exclusive = datetime.combine(resolved_end + timedelta(days=1), time.min, tzinfo=zone).astimezone(UTC)
 
     rows = (
         db.query(TimeEntry)
