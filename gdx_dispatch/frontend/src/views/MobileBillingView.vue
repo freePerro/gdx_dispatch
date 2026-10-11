@@ -343,11 +343,12 @@ function prettyStatus(s) {
 }
 
 
+// The server decides overdue (routers/invoices._effective_status: sent, due
+// before the SHOP's today, balance owing) and both lists carry it. Comparing
+// `new Date(due_date)` here read a date-only string as UTC midnight — 7pm
+// Central the evening before — and flagged bills a day early (GDXA-653).
 function isOverdue(inv) {
-  if (!inv?.due_date) return false
-  const s = String(inv.status || '').toLowerCase()
-  if (['paid', 'void', 'canceled', 'draft'].includes(s)) return false
-  return new Date(inv.due_date) < new Date()
+  return inv?.effective_status === 'overdue'
 }
 
 /**
