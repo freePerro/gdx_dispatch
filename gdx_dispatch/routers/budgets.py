@@ -11,7 +11,7 @@ Role model:
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 from uuid import uuid4
@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_permission
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import AppSettings, MonthlyBudget
 from gdx_dispatch.modules.forecasting.service import revenue_projection
 from gdx_dispatch.modules.quickbooks.oauth import get_qb_client
@@ -177,7 +178,7 @@ def _revenue_basis_for_month(db: Session, *, year: int, month: int) -> Decimal:
     "next 30 days from today" regardless of month, which made
     percent_of_revenue lies on every historical month. Fixed.
     """
-    today = date.today()
+    today = shop_today_from_settings(db)
     is_future = (year, month) > (today.year, today.month)
     is_current = (year, month) == (today.year, today.month)
 
@@ -762,7 +763,7 @@ def spending_trends(
     - ``account_type`` (back-compat) — exact single-type match, overrides
       account_kind when present.
     """
-    today = date.today()
+    today = shop_today_from_settings(db)
     # Inclusive window — current month back N. Inline because the trailing
     # helper used elsewhere is exclusive of the anchor month.
     window: list[tuple[int, int]] = []
@@ -904,7 +905,7 @@ def classify_accounts(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Propose line_type per expense account. Does NOT write — UI confirms."""
-    today = date.today()
+    today = shop_today_from_settings(db)
     months = []
     y, m = today.year, today.month
     for _ in range(lookback_months):

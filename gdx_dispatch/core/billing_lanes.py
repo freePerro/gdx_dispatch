@@ -21,11 +21,18 @@ multi-day jobs (D15, D16):
     final_day = roundup_to_half(hours_worked) × techs_on_site   (0 without one)
     day_rows  = Σ unbilled day-row minutes, rounded up to the half hour ONCE
     man_hours = final_day + day_rows
-    man_hours = max(1.0, man_hours)     # floor, only when the first hour applies
+    man_hours = max(1.0 - elsewhere, man_hours)   # floor, only when the first hour applies
 
     Round FIRST, floor SECOND: 0.25h → 0.5 → floor 1.0 → $100.
     The first-hour price and the floor apply once per JOB: not when another
-    live invoice on the job already carries a line from attested hours.
+    live invoice on the job already CARRIES them — an attested line priced
+    at anything but the hourly rate (the "first hour" line, or a pre-#926
+    single line), attested lines from before the rates last changed
+    summing to ≥ 1 h, or, at equal rates, attested hours summing to ≥ 1 h.
+    Hours on a sibling that does not carry it only shrink the floor, so the
+    job as a whole bills at least 1 h, never more (GDXA-489: a void makes
+    the next build take the first hour back; no sibling invoice is ever
+    re-priced).
 
 The line says what it bills: quantity = hours, unit price = the rate.
     rates equal, or first hour already charged → one "Service labor" line,
@@ -41,6 +48,7 @@ a bill; nothing may rewrite an attestation.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import math
 import uuid as _uuid
 from dataclasses import dataclass
@@ -57,6 +65,13 @@ def _money(v: float | Decimal) -> Decimal:
     # HALF_UP, as routers/invoices.py rounds: the default HALF_EVEN would bill
     # 2.5 × $33.33 = 83.325 as $83.32.
     return Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _utc(dt: _dt.datetime | None) -> _dt.datetime | None:
+    # SQLite hands back naive datetimes; every stored one is UTC.
+    if dt is None or dt.tzinfo is not None:
+        return dt
+    return dt.replace(tzinfo=_dt.timezone.utc)
 
 
 def _as_uuid(v: str) -> _uuid.UUID:
@@ -116,11 +131,32 @@ def _render_service_description(db: Session, _vars: dict) -> str:
     return desc
 
 
-def first_hour_charged_elsewhere(db: Session, job_id, *, invoice_id=None) -> bool:
-    """True when another live, non-void invoice on the job carries a live line
-    whose ``pricing_source`` is ``labor_attested`` — a line that came from
-    attested hours. Then the first-hour price and the 1 h floor were already
-    charged once on this job and must not be charged again.
+def first_hour_elsewhere(db: Session, job_id, *, invoice_id=None) -> tuple[bool, Decimal]:
+    """``(charged, hours)`` from the job's OTHER live, non-void invoices and
+    their live ``labor_attested`` lines (lines that came from attested hours).
+
+    ``charged``: the first hour was billed there and must not be again. A
+    line priced on today's rates says so by its text or its price: the
+    ``FIRST_HOUR_DESCRIPTION`` line, or any line NOT at exactly the hourly
+    rate (a pre-#926 single line with the premium folded in, migration 110;
+    a carrier whose text staff edited). At equal rates the floor is all the
+    first hour is, so ``hours`` >= 1 carries it.
+    An invoice created before ``pricing_settings`` last changed was priced
+    on rates we no longer know, so its price says nothing (a carrier built
+    at $100/$100 bills $100/hr; an hourly-only sibling built at $125/$100
+    bills $100, which is not $110 once the hourly rate moves). Those
+    invoices carry it when their hours SUM to >= 1 h, the floor every build
+    under the old rates kept for the job; a first hour split across two
+    short invoices by the shared floor is still one first hour. Any save
+    moves that stamp. A wrong call here costs an under-bill, never a second
+    premium.
+    Any other sibling whose lines all bill the hourly rate is hourly-only
+    and does not carry the first hour: it was priced beside a carrier that
+    may since have been voided, deleted or stripped (GDXA-489), and counting
+    it would lose the first-hour price for every later build too.
+
+    ``hours``: their attested quantity, which shrinks this invoice's floor
+    (when nothing carries) so the job bills at least 1 h and never more.
 
     ``invoice_id`` is the invoice asking; it is never "another" invoice.
     """
@@ -129,9 +165,9 @@ def first_hour_charged_elsewhere(db: Session, job_id, *, invoice_id=None) -> boo
     try:
         jid = _as_uuid(job_id)
     except (ValueError, AttributeError, TypeError):
-        return False
+        return False, Decimal(0)
     q = (
-        select(InvoiceLine.id)
+        select(InvoiceLine.description, InvoiceLine.quantity, InvoiceLine.unit_price)
         .join(Invoice, Invoice.id == InvoiceLine.invoice_id)
         .where(
             Invoice.job_id == jid,
@@ -143,7 +179,32 @@ def first_hour_charged_elsewhere(db: Session, job_id, *, invoice_id=None) -> boo
     )
     if invoice_id is not None:
         q = q.where(Invoice.id != _as_uuid(invoice_id))
-    return db.execute(q.limit(1)).first() is not None
+    rows = db.execute(q.add_columns(Invoice.created_at)).all()
+    if not rows:
+        return False, Decimal(0)
+    first, hourly = service_rates(db)
+    rates_since = _utc(db.execute(select(PricingSettings.updated_at).limit(1)).scalar())
+
+    hours = Decimal(0)
+    older_hours = Decimal(0)
+    carried = False
+    for desc, qty, unit, created in rows:
+        q_h = Decimal(str(qty or 0))
+        hours += q_h
+        if (desc or "") == FIRST_HOUR_DESCRIPTION:
+            carried = True
+        elif rates_since is not None and (created is None or _utc(created) < rates_since):
+            older_hours += q_h
+        elif _money(unit or 0) != hourly:
+            carried = True
+    carried = carried or older_hours >= 1 or (first == hourly and hours >= 1)
+    return carried, hours
+
+
+def first_hour_charged_elsewhere(db: Session, job_id, *, invoice_id=None) -> bool:
+    """True when another live invoice on the job carries the first hour; see
+    ``first_hour_elsewhere``."""
+    return first_hour_elsewhere(db, job_id, invoice_id=invoice_id)[0]
 
 
 def job_labor_lines(
@@ -197,9 +258,13 @@ def job_labor_lines(
         return []
 
     first, hourly = service_rates(db)
-    first_applies = not first_hour_charged_elsewhere(db, job.id, invoice_id=invoice_id)
+    charged, hours_elsewhere = first_hour_elsewhere(db, job.id, invoice_id=invoice_id)
+    first_applies = not charged
     if first_applies:
-        man = max(Decimal(1), man)
+        # Topped up to 1 h for the JOB: hours already billed on a sibling
+        # that does not carry the first hour count toward the floor (clamped:
+        # a negative attested line never lifts the floor past 1 h).
+        man = max(Decimal(1) - min(Decimal(1), max(Decimal(0), hours_elsewhere)), man)
     man = man.quantize(Decimal("0.01"))
 
     raw_man = (final_hours * techs + Decimal(minutes) / 60).quantize(Decimal("0.01"))
@@ -241,7 +306,7 @@ def job_labor_lines(
     # never reads hours or a first-hour price the line does not bill (D16).
     lines: list[dict] = []
     if not first_applies or first == hourly:
-        if first_applies and not day_rows:
+        if first_applies and not day_rows and not hours_elsewhere:
             desc = _render_service_description(db, {
                 "man_hours": float(man),
                 "hours": float(final_hours),
@@ -257,7 +322,8 @@ def job_labor_lines(
             desc = f"Service labor — {man:.2f} man-hours at ${hourly}/hr{over}"
         lines.append(_line(desc, man, hourly))
     else:
-        lines.append(_line(FIRST_HOUR_DESCRIPTION, Decimal("1.00"), first))
+        # Below 1 h only when a sibling holds the rest of the floor.
+        lines.append(_line(FIRST_HOUR_DESCRIPTION, min(Decimal("1.00"), man), first))
         rest = man - 1
         if rest > 0:
             lines.append(_line(

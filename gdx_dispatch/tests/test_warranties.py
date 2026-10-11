@@ -17,6 +17,8 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
+from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.warranties import (
     create_warranty,
@@ -62,6 +64,9 @@ def tenant_db_session():
             """
         )
     )
+    # The expiring read takes "today" from AppSettings.timezone (GDXA-509);
+    # with no row it falls back to the default zone.
+    AppSettings.__table__.create(bind=engine)
     db.commit()
 
     try:
@@ -211,24 +216,25 @@ def test_get_warranty_not_found(tenant_db_session):
 
 
 def test_expiring_warranties_returns_only_next_30_days(tenant_db_session):
+    today = shop_today_from_settings(tenant_db_session)
     soon_id = _seed_warranty(
         tenant_db_session,
-        end_date=date.today() + timedelta(days=10),
+        end_date=today + timedelta(days=10),
         status="active",
     )
     _seed_warranty(
         tenant_db_session,
-        end_date=date.today() + timedelta(days=45),
+        end_date=today + timedelta(days=45),
         status="active",
     )
     _seed_warranty(
         tenant_db_session,
-        end_date=date.today() - timedelta(days=1),
+        end_date=today - timedelta(days=1),
         status="active",
     )
     _seed_warranty(
         tenant_db_session,
-        end_date=date.today() + timedelta(days=15),
+        end_date=today + timedelta(days=15),
         status="voided",
     )
 
