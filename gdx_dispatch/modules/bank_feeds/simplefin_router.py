@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.modules.bank_feeds import service, simplefin_service
 from gdx_dispatch.modules.bank_feeds.models import (
     AUTH_DISCONNECTED,
@@ -522,7 +523,8 @@ def simplefin_balance_history(
     except ValueError:
         raise HTTPException(status_code=404, detail="Account not found") from None
     days = max(1, min(int(days), 730))
-    floor = date.today() - timedelta(days=days)
+    # snapshot_date is written on the shop calendar (simplefin_service).
+    floor = shop_today_from_settings(db) - timedelta(days=days)
     rows = db.execute(
         select(BankFeedBalanceSnapshot)
         .where(

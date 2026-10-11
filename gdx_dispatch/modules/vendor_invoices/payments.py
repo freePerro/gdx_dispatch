@@ -31,6 +31,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.modules.vendor_invoices.models import (
     STATUS_OPEN,
     STATUS_PAID,
@@ -233,7 +234,7 @@ def effective_expense_date(db: Session, invoice: VendorInvoice) -> date:
     settled = settled_date(db, invoice)
     if settled is not None:
         return settled
-    return invoice.invoice_date or datetime.now(timezone.utc).date()
+    return invoice.invoice_date or shop_today_from_settings(db)
 
 
 def sync_expense_dates(db: Session, invoice: VendorInvoice) -> int:
@@ -296,7 +297,7 @@ def sync_expense_dates(db: Session, invoice: VendorInvoice) -> int:
         try:
             reverse_entry(db, entry)
         except PeriodLockedError:
-            reverse_entry(db, entry, effective_at=datetime.now(timezone.utc).date())
+            reverse_entry(db, entry, effective_at=shop_today_from_settings(db))
 
     changed = 0
     cutover = None

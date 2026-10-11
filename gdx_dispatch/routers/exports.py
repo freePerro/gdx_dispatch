@@ -14,7 +14,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -28,6 +28,7 @@ from sqlalchemy.sql.elements import TextClause
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
+from gdx_dispatch.core.pay_periods import shop_day_of, shop_today_from_settings, shop_tz_name_from_settings
 from gdx_dispatch.core.pii import decrypt_if_ciphertext
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -81,13 +82,14 @@ def _parse_iso_date(value: str | None) -> date | None:
         ) from None
 
 
-def _filename(entity: str, tenant_id: str) -> str:
-    today = datetime.now(timezone.utc).date().isoformat()
+def _filename(entity: str, tenant_id: str, today: date) -> str:
     safe_tid = "".join(c for c in tenant_id if c.isalnum() or c in ("-", "_"))[:64] or "tenant"
-    return f"{entity}_{safe_tid}_{today}.csv"
+    return f"{entity}_{safe_tid}_{today.isoformat()}.csv"
 
 
-def _csv_response(entity: str, tenant_id: str, header: list[str], rows: list[list[Any]]) -> Response:
+def _csv_response(
+    db: Session, entity: str, tenant_id: str, header: list[str], rows: list[list[Any]]
+) -> Response:
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(header)
@@ -97,9 +99,44 @@ def _csv_response(entity: str, tenant_id: str, header: list[str], rows: list[lis
         content=buf.getvalue(),
         media_type="text/csv",
         headers={
-            "Content-Disposition": f'attachment; filename="{_filename(entity, tenant_id)}"'
+            "Content-Disposition": f'attachment; filename="{_filename(entity, tenant_id, shop_today_from_settings(db))}"'
         },
     )
+
+
+def _created_day_bounds(
+    sql: str, params: dict[str, Any], column: str, start: date | None, end: date | None
+) -> str:
+    """SQL prefilter for a created_at range, one day wider on each side.
+
+    ``created_at`` is a UTC instant, so ``DATE(created_at)`` is the UTC day:
+    an evening record in Central time lands on tomorrow. The SQL only narrows;
+    ``_on_shop_days`` then keeps the rows whose shop-calendar day is in range.
+    """
+    if start is not None:
+        sql += f" AND DATE({column}) >= :start"
+        params["start"] = (start - timedelta(days=1)).isoformat()
+    if end is not None:
+        sql += f" AND DATE({column}) <= :end"
+        params["end"] = (end + timedelta(days=1)).isoformat()
+    return sql
+
+
+def _on_shop_days(
+    db: Session, rows: list[tuple], start: date | None, end: date | None
+) -> list[tuple]:
+    """Rows (``created_at`` last) whose shop-calendar day is in [start, end]."""
+    if start is None and end is None:
+        return rows
+    tz_name = shop_tz_name_from_settings(db)
+    kept = []
+    for row in rows:
+        day = shop_day_of(row[-1], tz_name)
+        if day is None:
+            continue
+        if (start is None or day >= start) and (end is None or day <= end):
+            kept.append(row)
+    return kept
 
 
 def _safe_query(
@@ -281,14 +318,9 @@ def _fetch_jobs(
     if status:
         sql += " AND j.status = :status"
         params["status"] = status
-    if start is not None:
-        sql += " AND DATE(j.created_at) >= :start"
-        params["start"] = start.isoformat()
-    if end is not None:
-        sql += " AND DATE(j.created_at) <= :end"
-        params["end"] = end.isoformat()
+    sql = _created_day_bounds(sql, params, "j.created_at", start, end)
     sql += " ORDER BY j.created_at DESC"
-    rows = _safe_query(db, sql, params, "jobs")
+    rows = _on_shop_days(db, _safe_query(db, sql, params, "jobs"), start, end)
     return header, [list(r) for r in rows]
 
 
@@ -319,14 +351,9 @@ def _fetch_invoices(
     if status:
         sql += " AND i.status = :status"
         params["status"] = status
-    if start is not None:
-        sql += " AND DATE(i.created_at) >= :start"
-        params["start"] = start.isoformat()
-    if end is not None:
-        sql += " AND DATE(i.created_at) <= :end"
-        params["end"] = end.isoformat()
+    sql = _created_day_bounds(sql, params, "i.created_at", start, end)
     sql += " ORDER BY i.created_at DESC"
-    rows = _safe_query(db, sql, params, "invoices")
+    rows = _on_shop_days(db, _safe_query(db, sql, params, "invoices"), start, end)
     return header, [list(r) for r in rows]
 
 
@@ -371,14 +398,9 @@ def _fetch_payments(
          WHERE company_id = :tenant_id
     """
     params: dict[str, Any] = {"tenant_id": tenant_id}
-    if start is not None:
-        sql += " AND DATE(created_at) >= :start"
-        params["start"] = start.isoformat()
-    if end is not None:
-        sql += " AND DATE(created_at) <= :end"
-        params["end"] = end.isoformat()
+    sql = _created_day_bounds(sql, params, "created_at", start, end)
     sql += " ORDER BY created_at DESC"
-    rows = _safe_query(db, sql, params, "payments")
+    rows = _on_shop_days(db, _safe_query(db, sql, params, "payments"), start, end)
     return header, [list(r) for r in rows]
 
 
@@ -457,7 +479,7 @@ def export_customers(
         entity="customers", row_count=len(rows), request=request,
         selected=[str(i) for i in selected] if selected is not None else None,
     )
-    return _csv_response("customers", tenant_id, header, rows)
+    return _csv_response(db, "customers", tenant_id, header, rows)
 
 
 @router.get("/api/exports/jobs", response_model=None)
@@ -480,7 +502,7 @@ def export_jobs(
         db, tenant_id=tenant_id, user=user,
         entity="jobs", row_count=len(rows), request=request,
     )
-    return _csv_response("jobs", tenant_id, header, rows)
+    return _csv_response(db, "jobs", tenant_id, header, rows)
 
 
 @router.get("/api/exports/invoices", response_model=None)
@@ -503,7 +525,7 @@ def export_invoices(
         db, tenant_id=tenant_id, user=user,
         entity="invoices", row_count=len(rows), request=request,
     )
-    return _csv_response("invoices", tenant_id, header, rows)
+    return _csv_response(db, "invoices", tenant_id, header, rows)
 
 
 @router.get("/api/exports/estimates", response_model=None)
@@ -520,7 +542,7 @@ def export_estimates(
         db, tenant_id=tenant_id, user=user,
         entity="estimates", row_count=len(rows), request=request,
     )
-    return _csv_response("estimates", tenant_id, header, rows)
+    return _csv_response(db, "estimates", tenant_id, header, rows)
 
 
 @router.get("/api/exports/payments", response_model=None)
@@ -540,7 +562,7 @@ def export_payments(
         db, tenant_id=tenant_id, user=user,
         entity="payments", row_count=len(rows), request=request,
     )
-    return _csv_response("payments", tenant_id, header, rows)
+    return _csv_response(db, "payments", tenant_id, header, rows)
 
 
 @router.get("/api/exports/technicians", response_model=None)
@@ -556,7 +578,7 @@ def export_technicians(
         db, tenant_id=tenant_id, user=user,
         entity="technicians", row_count=len(rows), request=request,
     )
-    return _csv_response("technicians", tenant_id, header, rows)
+    return _csv_response(db, "technicians", tenant_id, header, rows)
 
 
 @router.get("/api/exports/leads", response_model=None)
@@ -573,7 +595,7 @@ def export_leads(
         db, tenant_id=tenant_id, user=user,
         entity="leads", row_count=len(rows), request=request,
     )
-    return _csv_response("leads", tenant_id, header, rows)
+    return _csv_response(db, "leads", tenant_id, header, rows)
 
 
 @router.get("/api/exports/all", response_model=None)

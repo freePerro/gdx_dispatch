@@ -1104,7 +1104,8 @@ def outstanding_aging(
     is nothing for a range to mean. (Zero frontend callers today; the endpoint
     is reachable but unrendered.)
     """
-    resolved_end = datetime.now(UTC).date()
+    # Due dates are on the shop's calendar (#444): age on the shop's today.
+    resolved_end = shop_today_from_settings(db)
 
     # M20 (money-audit-2026-08-04): three defects in one query.
     #
