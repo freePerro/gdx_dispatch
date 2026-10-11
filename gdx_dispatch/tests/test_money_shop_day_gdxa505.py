@@ -148,13 +148,36 @@ def test_payment_dated_the_shop_day_keeps_the_precise_paid_at(db):
 
 @freeze_time(EVENING_UTC)
 def test_paid_this_month_starts_on_the_shops_month(db):
-    """Reads the bound month start, not the KPI value: SQLite casts a stored
-    timestamp to DATE with numeric affinity (``2026``), so the KPI is 0 here
-    whatever the bound; production is Postgres."""
-    bound = []
+    """The KPI value, on the default gate (GDXA-656). The shop's month is
+    September, so it opens at 1 Sep 00:00 UTC: a payment backdated to 1 Sep
+    (a UTC-midnight stamp) and one paid just now both count; one backdated
+    to 31 Aug does not. The old CAST(paid_at AS DATE) read every stored
+    timestamp as the number 2026 on SQLite, so this was 0."""
+    now_paid = _sent_invoice(db, total="100.00")
+    _pay(db, now_paid, 100.0)
+    first_of_month = _sent_invoice(db, total="40.00")
+    _pay(db, first_of_month, 40.0, date=date(2026, 9, 1))
+    prior_month = _sent_invoice(db, total="7.00")
+    _pay(db, prior_month, 7.0, date=date(2026, 8, 31))
+    for inv in (now_paid, first_of_month, prior_month):
+        db.refresh(inv)
+        assert inv.status == "paid"
+    assert first_of_month.paid_at.replace(tzinfo=None) == datetime(2026, 9, 1)
+    assert prior_month.paid_at.replace(tzinfo=None) == datetime(2026, 8, 31)
+
+    out = billing_summary(SimpleNamespace(), _=USER, db=db)
+    assert out["paid_this_month"] == pytest.approx(140.0)
+
+
+@freeze_time(EVENING_UTC)
+def test_paid_this_month_bound_is_the_shop_months_utc_midnight(db):
+    """The bound is 1 Sep 00:00 UTC (the shop's month), never 1 Oct (the UTC
+    month), and it is a timestamp: no CAST to DATE reaches the SQL."""
+    bound, sql = [], []
 
     def _capture(conn, cursor, statement, parameters, context, executemany):
         if "paid_at" in statement and "sum(" in statement.lower():
+            sql.append(statement)
             bound.extend(str(p) for p in (parameters or ()))
 
     engine = db.get_bind()
@@ -163,8 +186,9 @@ def test_paid_this_month_starts_on_the_shops_month(db):
         billing_summary(SimpleNamespace(), _=USER, db=db)
     finally:
         event.remove(engine, "before_cursor_execute", _capture)
-    assert "2026-09-01" in bound
-    assert "2026-10-01" not in bound
+    assert any(p.startswith("2026-09-01 00:00:00") for p in bound), bound
+    assert not any(p.startswith("2026-10-01") for p in bound), bound
+    assert all("CAST(" not in s.upper() for s in sql)
 
 
 # ─── core/payments.py ───────────────────────────────────────────────────
