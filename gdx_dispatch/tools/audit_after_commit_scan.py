@@ -116,10 +116,6 @@ ALLOWED: dict[tuple[str, str], str] = {
         "audit_best_effort_precommit leaves it for its caller (GDXA-63), and is scanned "
         "as an audit writer in turn, so a caller of it that does not commit is flagged"
     ),
-    ("core/payments.py", "_audit_money_event"): (
-        "helper: both callers stage it inside _mark_invoice_paid, whose single "
-        "db.commit() lands the alert with the payment (#661)"
-    ),
     ("routers/timeclock.py", "_auto_close_stale_shift"): (
         "helper: its one caller, post_clock_in, commits the close and this row "
         "together on the next line — the atomicity is the point (GDXA-97). New "
