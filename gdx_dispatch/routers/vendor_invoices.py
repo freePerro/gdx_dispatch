@@ -26,6 +26,7 @@ from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
 from gdx_dispatch.core.upload_limits import assert_upload_within_limit
+from gdx_dispatch.models.tenant_models import Job
 from gdx_dispatch.modules.vendor_invoices.confirm import (
     ConfirmError,
     confirm_line,
@@ -415,6 +416,11 @@ async def patch_invoice(
     db: Session = Depends(get_db),
 ) -> InvoiceDetailOut:
     invoice = _load(db, invoice_id)
+    if payload.matched_job_id is not None:
+        # Refuse before any mutation below: a void runs ledger reversals.
+        _job = db.get(Job, payload.matched_job_id)
+        if _job is None or _job.deleted_at is not None:
+            raise HTTPException(status_code=422, detail="job not found")
     if payload.status is not None:
         if payload.status not in VALID_STATUSES:
             raise HTTPException(status_code=400, detail=f"status must be one of {sorted(VALID_STATUSES)}")

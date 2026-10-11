@@ -404,3 +404,63 @@ def test_display_state_carries_billing_status_independent_of_work_axis():
     assert st.stage == "paid" and st.as_dict()["billing_status"] == "paid"
     st = derive_job_display_state(lifecycle_stage="completed")
     assert st.stage == "ready_to_bill" and st.billing_status == "unbilled"
+
+
+# --- A $0 draft bills nothing, so it settles nothing (GDXA-607) -----------
+# The display state used to count it, read its zero balance as settled and
+# show an unbilled job as the won terminal "Paid", next to a billing_status
+# of "unbilled". Both now select invoices by invoice_bills_job.
+
+def test_zero_draft_only_falls_through_to_the_work_axis():
+    for lc, stage in (
+        ("scheduled", "scheduled"),
+        ("in_progress", "in_progress"),
+        ("completed", "ready_to_bill"),
+    ):
+        st = _s(lifecycle_stage=lc, invoices=[_inv("draft", 0, total=0)])
+        assert (st.stage, st.type, st.is_finished) == (stage, TYPE_OPEN, False), lc
+        assert st.billing_status == "unbilled", lc
+
+
+def test_zero_draft_without_total_reads_as_a_zero_draft():
+    st = _s(lifecycle_stage="completed", invoices=[_inv("draft", 0, total=None)])
+    assert st.stage == "ready_to_bill" and st.billing_status == "unbilled"
+
+
+def test_zero_sent_invoice_still_bills_and_reads_Paid():
+    # Warranty work: the office deliberately sent a $0 invoice.
+    st = _s(lifecycle_stage="completed", invoices=[_inv("sent", 0, total=0)])
+    assert (st.stage, st.type) == ("paid", TYPE_WON)
+    assert st.billing_status == "paid"
+
+
+def test_priced_draft_still_reads_Invoiced():
+    st = _s(lifecycle_stage="completed", invoices=[_inv("draft", 450, total=450)])
+    assert st.stage == "invoiced" and st.billing_status == "invoiced"
+
+
+def test_zero_draft_beside_an_unpaid_invoice_does_not_change_the_stage():
+    st = _s(
+        lifecycle_stage="completed",
+        invoices=[_inv("draft", 0, total=0), _inv("sent", 200, total=200)],
+    )
+    assert st.stage == "invoiced" and st.billing_status == "invoiced"
+
+
+def test_display_stage_and_billing_status_agree_on_every_money_shape():
+    shapes = [
+        [_inv("draft", 0, total=0)],
+        [_inv("draft", 0, total=None)],
+        [_inv("draft", 450, total=450)],
+        [_inv("sent", 0, total=0)],
+        [_inv("sent", 100)],
+        [_inv("sent", 60, 40)],
+        [_inv("overdue", 100)],
+        [_inv("paid", 0, 100)],
+        [_inv("void", 100)],
+        [_inv("paid", 0, 500, billing_type="deposit")],
+    ]
+    for invs in shapes:
+        st = _s(lifecycle_stage="completed", invoices=invs)
+        expected = {"ready_to_bill": "unbilled", "partially_paid": "partial_paid"}
+        assert expected.get(st.stage, st.stage) == st.billing_status, invs

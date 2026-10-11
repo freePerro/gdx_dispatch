@@ -18,7 +18,9 @@ _Marked 2026-09-01 by the doc audit._
    - Creates tenant record in control DB
    - Creates tenant database (`gdx_{slug}`)
    - Runs schema migrations
-   - Seeds demo data via `core/onboarding.py`
+   - Seeds demo data via `core/onboarding.py` (it never did: that module only
+     tracked wizard steps, and it was deleted 2026-10-11 under GDXA-579; demo
+     data is `POST /api/onboarding/demo-data` in `routers/onboarding.py`)
    - Grants default modules based on plan tier
 5. Welcome email sent to tenant admin
 

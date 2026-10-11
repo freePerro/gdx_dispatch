@@ -46,7 +46,7 @@ def job_variance(
         raise HTTPException(status_code=404, detail="Job not found") from None
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
     job_obj = db.execute(
-        select(Job).where(Job.id == _jid)
+        select(Job).where(Job.id == _jid).where(Job.deleted_at.is_(None))
     ).scalar_one_or_none()
     if not job_obj:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -149,7 +149,7 @@ def variance_summary(
                 FROM jobs j
                 LEFT JOIN van_inventory vi ON vi.company_id = j.company_id
                 LEFT JOIN van_inventory_log vil ON vil.van_inventory_id = vi.id AND vil.job_id = CAST(j.id AS text)
-                WHERE j.company_id = :tid {date_filter}
+                WHERE j.company_id = :tid AND j.deleted_at IS NULL {date_filter}
                 GROUP BY j.id, j.description, j.status, j.created_at
                 HAVING COALESCE(SUM(ABS(vil.quantity_change)), 0) > 0
                 ORDER BY actual_qty DESC

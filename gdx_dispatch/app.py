@@ -272,8 +272,6 @@ distributor_order_router = _load_router("gdx_dispatch.modules.distributor.order_
 
 jwks_router = _load_router("gdx_dispatch.core.jwks", "JWKSRouter")
 
-core_onboarding_router = _load_router("gdx_dispatch.core.onboarding", "router")
-
 admin_ops_read_router = _load_router("gdx_dispatch.routers.admin_ops", "read_router")
 admin_ops_router = _load_router("gdx_dispatch.routers.admin_ops", "router")
 
@@ -1071,7 +1069,6 @@ def create_app() -> FastAPI:
     app.include_router(webhook_monitor.router if hasattr(webhook_monitor, "router") else webhook_monitor)
     app.include_router(pwa_router)
     app.include_router(jwks_router)
-    app.include_router(core_onboarding_router, prefix="/api", tags=["onboarding"])
     app.include_router(admin_ops_router)
     app.include_router(admin_ops_read_router)
     app.include_router(admin_db_router)
