@@ -9,6 +9,7 @@
 #   PYTEST="docker run --rm --entrypoint python -e JWT_SECRET=<32+ bytes> \
 #     -v $PWD:/app -w /app docker-app -m pytest" gdx_dispatch/tools/run_tests_split.sh
 #   LOG_DIR=<dir> gdx_dispatch/tools/run_tests_split.sh --reuse-check   # run nothing
+#   LOG_DIR defaults to <repo root>/.matrix-logs (git-ignored, one per checkout).
 #
 # Every run ends by writing $LOG_DIR/result.txt: PASS or FAIL, the git tree id
 # of the tracked set when the shards started, the docker image id, any pytest
@@ -145,7 +146,10 @@ tree_fingerprint() {
 }
 
 N="${N:-7}"
-LOG_DIR="${LOG_DIR:-/tmp/gdx_split}"
+# Per-checkout by default (GDXA-532): a shared /tmp path let each run wipe the
+# previous run's shard logs and result.txt, and --reuse-check read whichever
+# checkout ran last. The stamp and the check share this one default.
+LOG_DIR="${LOG_DIR:-$REPO_ROOT/.matrix-logs}"
 # Keep the in-worktree log dir out of `git add -A` on branches cut before the
 # .gitignore line: the local exclude file is per-clone and never committed.
 excl="$(git -C "$REPO_ROOT" rev-parse --git-path info/exclude 2>/dev/null || true)"
