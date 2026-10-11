@@ -34,6 +34,7 @@ from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.billing_predicates import job_billed_exists
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import (
     Customer,
     Invoice,
@@ -146,7 +147,7 @@ def _record(db, invoice, **kw):
     payload = PaymentCreateIn(**{
         "amount": kw.pop("amount", 500.0),
         "method": kw.pop("method", "Check"),
-        "date": kw.pop("date", date.today()),
+        "date": kw.pop("date", shop_today_from_settings(db)),
         **kw,
     })
     return record_payment(invoice.id, payload, USER, db)
@@ -235,9 +236,12 @@ def test_backdated_payment_is_accepted(db):
 
 
 def test_forward_dated_payment_is_refused(db):
-    """A post-dated check is not received cash."""
-    with pytest.raises(Exception):
-        PaymentCreateIn(amount=100.0, method="Check", date=date.today() + timedelta(days=1))
+    """A post-dated check is not received cash. The bound is the shop's day,
+    checked in the handler, which has the session (GDXA-505)."""
+    dep = _deposit(db, _seed_estimate(db, _seed_customer(db)))
+    with pytest.raises(HTTPException) as exc:
+        _record(db, dep, amount=100.0, date=shop_today_from_settings(db) + timedelta(days=1))
+    assert exc.value.status_code == 422
 
 
 # ---------------------------------------------------------------------------

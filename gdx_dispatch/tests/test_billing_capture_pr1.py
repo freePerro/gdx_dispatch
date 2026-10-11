@@ -25,6 +25,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import Customer, Invoice, InvoiceLine, Job, JobPartNeeded, Payment
 from gdx_dispatch.modules.catalog_policy.service import CatalogPolicy
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
@@ -487,7 +488,7 @@ def test_record_payment_on_void_conflicts_and_writes_nothing(tenant_db_session):
     with pytest.raises(HTTPException) as exc_info:
         record_payment(
             inv.id,
-            payload=PaymentCreateIn(amount=450.0, method="check", date=date.today()),
+            payload=PaymentCreateIn(amount=450.0, method="check", date=shop_today_from_settings(db)),
             _=_current_user(),
             db=db,
         )

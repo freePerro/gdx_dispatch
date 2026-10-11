@@ -26,6 +26,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.pay_periods import shop_day_of, shop_today_from_settings, shop_tz_name_from_settings
 from gdx_dispatch.modules.ledger import service as ledger_service
 from gdx_dispatch.modules.ledger.coa import LedgerConfigError, ensure_role_account, resolve_role_account
 from gdx_dispatch.modules.ledger.engine import (
@@ -35,6 +36,7 @@ from gdx_dispatch.modules.ledger.engine import (
     post_for_event,
     reverse_entry,
 )
+from gdx_dispatch.modules.ledger.keys import _escape_like
 from gdx_dispatch.modules.ledger.models import (
     ENTRY_STATUS_POSTED,
     ROLE_AR,
@@ -204,6 +206,10 @@ def _effective_at(invoice) -> date:
     keys."""
     if getattr(invoice, "invoice_date", None):
         return invoice.invoice_date
+    # The two timestamp fallbacks below read the UTC day ON PURPOSE (GDXA-505
+    # reviewed and kept them): this date is part of every live issuance's key,
+    # so moving it to the shop's day would re-key an evening NULL-date invoice
+    # on its next touch — a reversal plus a repost on a different date.
     sent_at = getattr(invoice, "sent_at", None)
     if sent_at:
         return sent_at.date()
@@ -223,6 +229,36 @@ def _live_issuance_entry(session: Session, invoice) -> GlJournalEntry | None:
             GlJournalEntry.idempotency_key.like(f"invoice:{invoice.id}:{EVENT_ISSUED}:%"),
         )
     ).first()
+
+
+def _shop_effective_at(
+    session: Session, source_type: str, source_id: str, event: str, ts
+) -> date:
+    """The effective date for a posting dated by a timestamp (an adjustment's
+    ``created_at``, a payment's ``voided_at``): the shop's calendar day of
+    that instant, not its UTC day (GDXA-505). A credit memo written at 8pm
+    Central was dated tomorrow, and on a month's last evening into next month.
+
+    New postings only. The date joins the content hash (``post_for_event``),
+    so an event already live keeps the date it was posted with — otherwise a
+    replay (backfill, resettle) of an evening row posted under the old UTC
+    rule would mint a second key and post the money twice.
+    """
+    posted = session.scalars(
+        select(GlJournalEntry.effective_at).where(
+            GlJournalEntry.source_type == source_type,
+            GlJournalEntry.source_id == source_id,
+            GlJournalEntry.status == ENTRY_STATUS_POSTED,
+            GlJournalEntry.idempotency_key.like(
+                _escape_like(f"{source_type}:{source_id}:{event}:") + "%", escape="\\"
+            ),
+        )
+    ).first()
+    if posted is not None:
+        return posted
+    if ts is None:
+        return shop_today_from_settings(session)
+    return shop_day_of(ts, shop_tz_name_from_settings(session))
 
 
 def post_invoice_issuance(session: Session, invoice, old_status, new_status, actor) -> None:
@@ -469,7 +505,7 @@ def post_payment_received(session: Session, payment, invoice, actor: str | None 
             source_type="payment",
             source_id=str(payment.id),
             event=EVENT_PAYMENT,
-            effective_at=payment.payment_date or date.today(),
+            effective_at=payment.payment_date or shop_today_from_settings(session),
             lines=lines,
             created_by=actor,
         ),
@@ -708,7 +744,7 @@ def resettle_invoice_payments(
                 created_by=actor,
             )
 
-        natural = payment.payment_date or date.today()
+        natural = payment.payment_date or shop_today_from_settings(session)
         try:
             return post_for_event(session, _event(natural))
         except PeriodLockedError:
@@ -803,7 +839,10 @@ def post_credit_memo(session: Session, adjustment, invoice, actor: str | None = 
             source_type="adjustment",
             source_id=str(adjustment.id),
             event="credit_memo",
-            effective_at=adjustment.created_at.date() if adjustment.created_at else date.today(),
+            effective_at=_shop_effective_at(
+                session, "adjustment", str(adjustment.id),
+                "credit_memo", adjustment.created_at,
+            ),
             lines=(
                 PostingLine(
                     amount_cents=amount_cents,
@@ -933,7 +972,10 @@ def post_refund(session: Session, adjustment, invoice, actor: str | None = None)
             source_type="adjustment",
             source_id=str(adjustment.id),
             event="refund",
-            effective_at=adjustment.created_at.date() if adjustment.created_at else date.today(),
+            effective_at=_shop_effective_at(
+                session, "adjustment", str(adjustment.id),
+                "refund", adjustment.created_at,
+            ),
             lines=tuple(lines),
             created_by=actor,
         ),
@@ -955,7 +997,10 @@ def post_credit_application(session: Session, adjustment, invoice, actor: str | 
             source_type="adjustment",
             source_id=str(adjustment.id),
             event="credit_applied",
-            effective_at=adjustment.created_at.date() if adjustment.created_at else date.today(),
+            effective_at=_shop_effective_at(
+                session, "adjustment", str(adjustment.id),
+                "credit_applied", adjustment.created_at,
+            ),
             lines=(
                 PostingLine(
                     amount_cents=amount_cents,
@@ -1136,7 +1181,7 @@ def post_expense_recorded(session: Session, expense, actor: str | None = None):
             source_type="expense",
             source_id=str(expense.id),
             event=EVENT_EXPENSE,
-            effective_at=expense.date or date.today(),
+            effective_at=expense.date or shop_today_from_settings(session),
             lines=lines,
             created_by=actor,
         ),
@@ -1166,7 +1211,7 @@ def repost_expense(session: Session, expense, actor: str | None = None) -> None:
             source_type="expense",
             source_id=str(expense.id),
             event=EVENT_EXPENSE,
-            effective_at=expense.date or date.today(),
+            effective_at=expense.date or shop_today_from_settings(session),
             lines=lines,
             created_by=actor,
         ),
@@ -1190,6 +1235,10 @@ def _cutover_date(session: Session, company_id: str) -> date | None:
 
 
 def _created_date(row) -> date | None:
+    # The UTC day ON PURPOSE (GDXA-505 reviewed and kept it): cutover
+    # membership decided which rows the opening anchors already absorbed, and
+    # re-deciding a boundary-evening row on the shop's day would move money
+    # between the anchor and the live ledger on the next replay.
     ts = getattr(row, "created_at", None)
     if ts is None:
         return None
@@ -1209,6 +1258,7 @@ def _existed_at_cutover(row, cutover: date) -> bool:
 
 
 def _voided_before_cutover(payment, cutover: date) -> bool:
+    # UTC day on purpose, for the same reason as ``_created_date``.
     ts = payment.voided_at
     if ts is None:
         return False
@@ -1419,7 +1469,8 @@ def settle_opening_on_void(session: Session, invoice, actor: str | None = None) 
             source_type="invoice",
             source_id=str(invoice.id),
             event=EVENT_OPENING_VOID,
-            effective_at=date.today(),
+            # Existence-guarded above, so only a new posting reaches here.
+            effective_at=shop_today_from_settings(session),
             lines=(
                 PostingLine(
                     amount_cents=remaining,
@@ -1452,7 +1503,10 @@ def _post_opening_payment_void(session: Session, payment, invoice, actor: str | 
     amount_cents = to_cents(_dec(payment.amount))
     if amount_cents == 0:
         return
-    voided_on = payment.voided_at.date() if payment.voided_at else date.today()
+    voided_on = _shop_effective_at(
+        session, "payment", str(payment.id),
+        EVENT_OPENING_PAYMENT_VOID, payment.voided_at,
+    )
     post_for_event(
         session,
         PostingEvent(

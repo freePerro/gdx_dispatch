@@ -14,7 +14,7 @@ test_reports.py, not here.
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
@@ -25,6 +25,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.pay_periods import shop_today
+from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.modules.tax.models import TaxConfig, TaxExemption
 from gdx_dispatch.modules.tax.router import router as tax_router
 from gdx_dispatch.routers.auth import get_current_user
@@ -51,7 +53,10 @@ def make_client():
     )
     TaxConfig.__table__.create(bind=engine, checkfirst=True)
     TaxExemption.__table__.create(bind=engine, checkfirst=True)
-    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    # The exemption window is read against the shop's day, whose zone lives
+    # in app_settings (GDXA-505); no row means the America/New_York default.
+    AppSettings.__table__.create(bind=engine, checkfirst=True)
+    Session =sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
     def _override_db():
         db = Session()
@@ -217,7 +222,9 @@ def test_expired_exemption_does_not_zero_rate(make_client):
         "/api/tax/exemptions",
         json={
             "customer_id": customer_id,
-            "exempt_until": (date.today() - timedelta(days=1)).isoformat(),
+            # Yesterday on the shop's calendar: the UTC date.today() - 1 IS
+            # the shop's today for the hours between the two midnights.
+            "exempt_until": (shop_today("America/New_York") - timedelta(days=1)).isoformat(),
         },
     )
     assert created.status_code == 201

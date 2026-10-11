@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Job, JobPartNeeded, Payment
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
@@ -1114,7 +1115,7 @@ def test_record_payment_updates_status_paid_when_fully_paid(tenant_db_session):
 
     record_payment(
         invoice_id=UUID(inv["id"]),
-        payload=PaymentCreateIn(amount=120.0, method="card", date=date.today()),
+        payload=PaymentCreateIn(amount=120.0, method="card", date=shop_today_from_settings(tenant_db_session)),
         _=_current_user(),
         db=tenant_db_session,
     )
@@ -1133,8 +1134,10 @@ def test_record_payment_date_defaults_to_today():
     # 2026-07-06: the /billing dialog posted without `date` and a real
     # check payment 422'd twice. An omitted date must mean "today", not
     # a validation error.
+    # The model leaves it None; record_payment resolves it to the shop's
+    # today (GDXA-505, test_money_shop_day_gdxa505 pins that value).
     payload = PaymentCreateIn(amount=448.32, method="check")
-    assert payload.date == date.today()
+    assert payload.date is None
 
 
 def test_list_payments_for_invoice(tenant_db_session):
@@ -1150,7 +1153,7 @@ def test_list_payments_for_invoice(tenant_db_session):
     )
     record_payment(
         invoice_id=UUID(inv["id"]),
-        payload=PaymentCreateIn(amount=15.0, method="card", date=date.today()),
+        payload=PaymentCreateIn(amount=15.0, method="card", date=shop_today_from_settings(tenant_db_session)),
         _=_current_user(),
         db=tenant_db_session,
     )
