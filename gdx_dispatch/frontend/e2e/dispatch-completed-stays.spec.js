@@ -7,7 +7,8 @@
  * Sequence, in a real browser against the throwaway serving the new dist:
  *   1. create a job scheduled TODAY, assigned to a real technician
  *   2. board renders it in that tech's column          → screenshot
- *   3. POST /api/jobs/{id}/complete  (the real endpoint)
+ *   3. POST /api/jobs/{id}/close-without-work (a real finishing door; /complete
+ *      needs a closeout since GDXA-599)
  *   4. reload — the card is STILL THERE                → screenshot (light+dark)
  *   5. mobile viewport, still there                    → screenshot
  *   6. clean up: uncomplete + delete the seeded job
@@ -82,7 +83,9 @@ test('a completed job stays visible on the dispatch board', async ({ page, baseU
   await page.screenshot({ path: `${SHOTS}/dispatch-before-complete.png`, fullPage: false });
 
   // --- 2. Complete it through the real endpoint ----------------------------
-  const done = await api.post(`/api/jobs/${job.id}/complete`, { headers: auth, data: {} });
+  const done = await api.post(`/api/jobs/${job.id}/close-without-work`, {
+    headers: auth, data: { reason: 'e2e: completed job stays on the board' },
+  });
   expect(done.ok(), `complete failed: ${done.status()} ${await done.text()}`).toBeTruthy();
 
   // Confirm the server really flipped it — otherwise this proves nothing.
