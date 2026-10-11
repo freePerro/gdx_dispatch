@@ -23,37 +23,35 @@ Every person who logs into your shop has their own user account. Their role dete
 
 ## Inviting someone
 
-1. Go to **Settings → Users → + Invite**.
+1. Go to **Settings → Users → Invite User**.
 2. Enter their email and pick a role.
-3. They get an email with a one-time signup link.
-4. They set their own password the first time they sign in.
+3. Click **Send Invite**. No email goes out — copy the one-time link the app shows you and send it to them yourself.
+4. They open the link and set their own password.
 
-The invite link expires in 7 days. You can resend it from the user list.
+The link expires in 7 days and is shown only once. If they lose it, they can use **Forgot your password?** on the login page to get a reset email.
 
-## Deactivating
+## When someone leaves
 
-When someone leaves the company, **deactivate** them — don't delete. Deactivation:
+Go to **Admin → Users** and click **Lock Out** on their row — don't delete them. You give a reason, and locking out:
 
-- Revokes their active session immediately
-- Preserves their name on the jobs and invoices they touched (auditability)
-- Reassigns their open jobs to a person you pick
+- Signs them out everywhere and stops them signing in
+- Keeps their name on the jobs and invoices they touched (auditability)
 
-Reactivating later is one click if they come back.
+Their open jobs stay assigned to them, so move those to someone else on the dispatch board. If they come back, click **Unlock**.
 
 ## Passwords and security
 
-- Minimum 12 characters, mix of upper/lower/number recommended.
+- Minimum 8 characters; longer, with a mix of upper/lower/number, is better.
 - Users can reset their own password from the login page.
-- Owners and admins can force a password reset for any user from the user detail page.
-- Two-factor (MFA) is supported — enable per-user under Settings → Security.
+- Owners and admins can set a new password for any user with **Reset Password** on their row in **Admin → Users**.
 
 ## Permissions beyond role
 
-Some shops need finer control — e.g., a dispatcher who can see jobs but not customer payment info. Use the **Role permissions** page (Settings → Role permissions) to fine-tune what each role can see.
+Some shops need finer control — e.g., a dispatcher who can see jobs but not customer payment info. Use **Admin → Roles & Permissions** in the sidebar to fine-tune what each role can see.
 
 ## Service accounts (API)
 
-For integrations that need to call your data programmatically, use a **Personal Access Token** (PAT) instead of a user login. Settings → API tokens → + New. PATs can be scoped to read-only or specific endpoints.
+For integrations that need to call your data programmatically, use a scoped **API key** (sent as the `X-API-Key` header) instead of a user login. There's no screen for API keys yet. They are created through the API (`/api/developer/keys`), so ask whoever runs your install.
 
 ## Related
 - [Modules & permissions](#) — what each module unlocks
