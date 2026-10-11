@@ -12,7 +12,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -26,6 +26,11 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_module, require_permission
+from gdx_dispatch.core.pay_periods import (
+    shop_day_of,
+    shop_today_from_settings,
+    shop_tz_name_from_settings,
+)
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -85,10 +90,16 @@ def _parse_date(value: str | None, default: date) -> date:
         raise HTTPException(status_code=422, detail=f"Invalid date: {value!r} (expect YYYY-MM-DD)") from None
 
 
-def _default_range() -> tuple[date, date]:
-    today = datetime.now(timezone.utc).date()
-    start = today.replace(day=1)
-    return start, today
+def _resolve_range(db: Session, start: str | None, end: str | None) -> tuple[date, date]:
+    """The requested range, defaulting to month to date in the shop's
+    calendar: on the UTC clock a 10pm Central request on the last of the
+    month asked for next month (GDXA-510)."""
+    today = shop_today_from_settings(db)
+    s = _parse_date(start, today.replace(day=1))
+    e = _parse_date(end, today)
+    if e < s:
+        raise HTTPException(status_code=422, detail="end must be >= start")
+    return s, e
 
 
 def _serialize_rate(r: TechCommissionRate) -> dict[str, Any]:
@@ -258,10 +269,15 @@ def _fetch_tech_hours(
     # populated on prod gdx tenant); tech_id/technician_id/tech_name exist
     # on the table schema but are not populated. Aliasing user_id as tech_id
     # in the result keeps the external return shape compatible.
+    #
+    # The work day is the shop's, not UTC's: `DATE(clock_in)` filed an
+    # evening shift under tomorrow and, on the last day, out of the range
+    # (GDXA-510). The UTC dates below are a day wider each side as a
+    # prefilter; shop_day_of decides each row.
     sql = """
         SELECT user_id AS tech_id,
-               DATE(clock_in) AS work_day,
-               SUM(COALESCE(duration_minutes, 0)) / 60.0 AS hours
+               clock_in,
+               COALESCE(duration_minutes, 0) / 60.0 AS hours
           FROM time_entries
          WHERE company_id = :tenant_id
            AND DATE(clock_in) >= :start
@@ -271,13 +287,12 @@ def _fetch_tech_hours(
     """
     params: dict[str, Any] = {
         "tenant_id": tenant_id,
-        "start": start.isoformat(),
-        "end": end.isoformat(),
+        "start": (start - timedelta(days=1)).isoformat(),
+        "end": (end + timedelta(days=1)).isoformat(),
     }
     if tech_id:
         sql += " AND user_id = :tech_id"
         params["tech_id"] = tech_id
-    sql += " GROUP BY user_id, DATE(clock_in)"
 
     result: dict[str, dict[date, float]] = {}
     try:
@@ -300,25 +315,19 @@ def _fetch_tech_hours(
         log.exception("payroll_time_entries_query_failed")
         return result
 
+    tz_name = shop_tz_name_from_settings(db) if rows else None
     for row in rows:
         tid = str(row[0]) if row[0] is not None else ""
         if not tid:
             continue
-        day_raw = row[1]
-        if isinstance(day_raw, str):
-            try:
-                day = datetime.strptime(day_raw[:10], "%Y-%m-%d").date()
-            except ValueError:
-                log.exception("_fetch_tech_hours_failed")
-                continue
-        elif isinstance(day_raw, datetime):
-            day = day_raw.date()
-        elif isinstance(day_raw, date):
-            day = day_raw
-        else:
+        day = shop_day_of(row[1], tz_name)
+        if day is None:
+            log.warning("_fetch_tech_hours_unparseable_clock_in tech_id=%s", tid)
             continue
-        hours = float(row[2] or 0)
-        result.setdefault(tid, {})[day] = hours
+        if not start <= day <= end:
+            continue
+        by_day = result.setdefault(tid, {})
+        by_day[day] = by_day.get(day, 0.0) + float(row[2] or 0)
     return result
 
 
@@ -549,11 +558,7 @@ def payroll_summary(
     end: str | None = None,
 ) -> list[dict[str, Any]]:
     tenant_id = _tenant_id(request)
-    default_start, default_end = _default_range()
-    s = _parse_date(start, default_start)
-    e = _parse_date(end, default_end)
-    if e < s:
-        raise HTTPException(status_code=422, detail="end must be >= start")
+    s, e = _resolve_range(db, start, end)
     try:
         return _build_summary_rows(db, tenant_id=tenant_id, start=s, end=e)
     except RevenueBasisUnavailable as exc:
@@ -581,11 +586,7 @@ def payroll_tech_detail(
     end: str | None = None,
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
-    default_start, default_end = _default_range()
-    s = _parse_date(start, default_start)
-    e = _parse_date(end, default_end)
-    if e < s:
-        raise HTTPException(status_code=422, detail="end must be >= start")
+    s, e = _resolve_range(db, start, end)
 
     try:
         rows = _build_summary_rows(db, tenant_id=tenant_id, start=s, end=e, tech_id=tech_id)
@@ -715,11 +716,7 @@ def export_payroll_csv(
     end: str | None = None,
 ) -> Response:
     tenant_id = _tenant_id(request)
-    default_start, default_end = _default_range()
-    s = _parse_date(start, default_start)
-    e = _parse_date(end, default_end)
-    if e < s:
-        raise HTTPException(status_code=422, detail="end must be >= start")
+    s, e = _resolve_range(db, start, end)
 
     try:
         rows = _build_summary_rows(db, tenant_id=tenant_id, start=s, end=e)

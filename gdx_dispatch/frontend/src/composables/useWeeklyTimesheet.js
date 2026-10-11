@@ -195,9 +195,10 @@ export function useWeeklyTimesheet() {
     if (!weekStart.value) return;
     weekLoading.value = true;
     try {
-      // One day of slack each side: the server buckets by UTC day, we mean
-      // shop days; weekEntries applies the real boundary. include_breaks so
-      // the totals net lunches exactly like the office page.
+      // One day of slack each side, from when the server bucketed by UTC day;
+      // it filters by shop day since GDXA-510, and weekEntries still applies
+      // the real boundary. include_breaks so the totals net lunches exactly
+      // like the office page.
       const params = new URLSearchParams({ include_breaks: 'true' });
       params.set('date_start', localDateString(addDays(weekStart.value, -1)));
       params.set('date_end', localDateString(addDays(weekEnd.value, 1)));

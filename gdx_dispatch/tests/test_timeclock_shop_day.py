@@ -159,3 +159,31 @@ def test_breaks_are_netted_on_the_shop_day_they_started(seeded):
     _break(seeded, "2026-10-09T03:30:00+00:00", 5)
     seeded.commit()
     assert _status(seeded).today_hours == pytest.approx(2.0)  # 135 - 15 min
+
+
+def test_entries_range_is_in_shop_days_not_utc_days(seeded):
+    """GET /entries?date_start=date_end=SHOP_DAY returns the shop day's two
+    shifts. Under `date(clock_in_at)` it returned the 10:00 shift and LAST
+    night's 22:00 (UTC-dated the shop day), and dropped tonight's (GDXA-510)."""
+    rows = tc.list_time_entries(
+        request=_request(),
+        date_start=date(2026, 10, 9),
+        date_end=date(2026, 10, 9),
+        technician_id=None,
+        all_technicians=True,
+        include_breaks=False,
+        current_user=OFFICE,
+        db=seeded,
+    )
+    assert sorted(r.clock_in_at for r in rows) == [
+        "2026-10-09T15:00:00+00:00",
+        "2026-10-10T03:00:00+00:00",
+    ]
+
+
+def test_entries_with_no_range_still_returns_the_whole_history(seeded):
+    rows = tc.list_time_entries(
+        request=_request(), date_start=None, date_end=None, technician_id=None,
+        all_technicians=False, include_breaks=False, current_user=TECH, db=seeded,
+    )
+    assert len(rows) == 3

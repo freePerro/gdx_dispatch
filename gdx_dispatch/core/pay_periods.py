@@ -112,6 +112,9 @@ def _coerce_date(value: Any) -> date | None:
         return None
     # datetime subclasses date, so it must be tested FIRST — otherwise a
     # datetime returns itself and later date arithmetic mixes the two types.
+    # Its .date() stays: every caller hands a calendar day (the Date anchor
+    # column, a bare 'YYYY-MM-DD'), never an instant; instants go through
+    # shop_day_of.
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
