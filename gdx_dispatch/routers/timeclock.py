@@ -817,9 +817,15 @@ def list_time_entries(
         clauses = [
             TimeclockEntry.tenant_id == tenant_id,
             TimeclockEntry.deleted_at.is_(None),
-            func.date(TimeclockEntry.clock_in_at) >= start_iso,
-            func.date(TimeclockEntry.clock_in_at) <= end_iso,
         ]
+        # The range is in shop days, not UTC days: `date(clock_in_at)` filed a
+        # 7:30pm Central clock-in under tomorrow (GDXA-510, as GDXA-421 for
+        # /status). TEXT bounds prefilter; shop_day_of below decides.
+        tz_name = shop_tz_name_from_settings(db) if (date_start or date_end) else None
+        if date_start:
+            clauses.append(TimeclockEntry.clock_in_at >= shop_day_stamp_window(date_start)[0])
+        if date_end:
+            clauses.append(TimeclockEntry.clock_in_at < shop_day_stamp_window(date_end)[1])
         if tech_id:
             clauses.append(TimeclockEntry.technician_id == tech_id)
         stmt = select(TimeclockEntry).where(*clauses).order_by(TimeclockEntry.clock_in_at.desc())
@@ -838,6 +844,12 @@ def list_time_entries(
                 extra={"tenant_id": tenant_id, "cap": _TIMESHEET_ROW_CAP,
                        "date_start": start_iso, "date_end": end_iso},
             )
+        if tz_name:
+            entries = [
+                e for e in entries
+                if (day := shop_day_of(e.clock_in_at, tz_name)) is not None
+                and start_iso <= day.isoformat() <= end_iso
+            ]
         rows = [_entry_to_response(e) for e in entries]
         if (all_technicians or include_breaks) and rows:
             # Net break time onto each row. Office view always; the self path
