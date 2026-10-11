@@ -1328,7 +1328,7 @@ def _mark_invoice_paid(
     # back to remaining (legacy events without an amount).
     pay_amount = amount if amount else max(remaining, 0)
     if pay_amount <= 0:
-        _recalculate_invoice(invoice, db)  # nothing new to record; true-up status
+        _recalculate_invoice(invoice, db, actor=source)  # nothing new to record; true-up status
         db.commit()
         return
 
@@ -1423,8 +1423,10 @@ def _mark_invoice_paid(
                 ),
             },
         )
-    _recalculate_invoice(invoice, db)
-    post_payment_received(db, payment, invoice)
+    # `source` is the named system identity that recorded this money; the GL
+    # entries carry it as `created_by` (GDXA-615: these posted with NULL).
+    _recalculate_invoice(invoice, db, actor=source)
+    post_payment_received(db, payment, invoice, actor=source)
     if overpay > 0.009:
         # M12. A searchable, alertable record — not just a log line and a
         # banner someone has to be looking at the right invoice to see.
@@ -2705,7 +2707,7 @@ def _reverse_recorded_payment(
     payment = db.get(Payment, payment_id) or payment
     reopened = False
     if invoice is not None:
-        _recalculate_invoice(invoice, db)
+        _recalculate_invoice(invoice, db, actor=_WEBHOOK_ACTOR)
         # _recalculate_invoice only ever flips an invoice TO "paid"; there is
         # no reverse edge, so an invoice whose payment just got voided keeps
         # reading "paid" with a positive balance. Un-pay it explicitly, back
@@ -2967,7 +2969,7 @@ def _reinstate_reversed_payment(db: Session, reference: str, reason: str) -> dic
     )
     payment = db.get(Payment, payment_id) or payment
     if invoice is not None:
-        _recalculate_invoice(invoice, db)
+        _recalculate_invoice(invoice, db, actor=_WEBHOOK_ACTOR)
         # The invoice was paid when the customer paid it, not when a dispute
         # closed months later. `_recalculate_invoice` re-stamps `paid_at` on
         # the flip back to paid, which would move this invoice's revenue into

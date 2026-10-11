@@ -592,7 +592,11 @@ def _bump_invoice_version(invoice: Invoice) -> None:
     invoice.version = Invoice.version + 1
 
 
-def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
+def _recalculate_invoice(invoice: Invoice, db: Session, actor: str | None = None) -> None:
+    # ``actor`` is who caused this recalc — a user id, or a named system
+    # identity ("stripe-webhook"). The repost and the auto-flip to paid below
+    # can post GL entries, and those carry it as `created_by` (GDXA-615).
+    #
     # M1 (money audit 2026-08-04): a totals-locked invoice keeps its header
     # figures. QuickBooks-imported rows have a correct imported total and a
     # lossy line set — the importer wrote QBO SubTotalLine/DiscountLine rows as
@@ -683,7 +687,7 @@ def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
     # when content is unchanged — the idempotency key matches). Ledger
     # refusals surface as 409s with the reason, never bare 500s.
     try:
-        repost_invoice_issuance(db, invoice)
+        repost_invoice_issuance(db, invoice, actor=actor)
     except PeriodLockedError as exc:
         raise HTTPException(
             status_code=409,
@@ -694,7 +698,7 @@ def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
     if not is_void and _to_float(balance_due) <= 0 and _to_float(total_amount) > 0:
         # GL S5: the auto-flip routes through the chokepoint; a draft paid in
         # full posts P1 on this transition (before P3, which lands in S6).
-        transition_invoice_status(db, invoice, "paid")
+        transition_invoice_status(db, invoice, "paid", actor=actor)
         # #422: the chokepoint REFUSES to leave a void, so read back what
         # actually happened instead of assuming the flip took. Stamping
         # paid_at off the attempt would date a "payment" on an invoice that
@@ -2174,7 +2178,7 @@ def create_invoice(
     # invoices this writes the correct tax_amount; for legacy flat-tax
     # callers it's a no-op since tax_amount was set above.
     db.flush()
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(_))
     db.commit()
     db.refresh(invoice)
     log_audit_event_sync(
@@ -2823,7 +2827,7 @@ def patch_invoice(
         )
         invoice.attached_photo_ids = _json.dumps(ids) if ids else None
 
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(current_user))
     if payload.expected_version is not None:
         # A checked PATCH claims the invoice even when it changes no header
         # field: an edit screen sends it first and then writes lines, so a
@@ -3736,7 +3740,7 @@ def add_invoice_line(
     # the same transaction, or the whole add is refused.
     claimed_time_entries = _claim_labor_day_rows(db, invoice, payload.time_entry_ids)
 
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(current_user))
     _bump_invoice_version(invoice)
     db.commit()
     db.refresh(line)
@@ -3898,7 +3902,7 @@ def patch_invoice_line(
         line.line_total = _money(Decimal(str(line.quantity)) * Decimal(str(line.unit_price)))
     db.flush()
 
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(user))
     _bump_invoice_version(invoice)
     db.commit()
     db.refresh(line)
@@ -3973,7 +3977,7 @@ def delete_invoice_line(
             released_time_entries = release_day_rows(
                 db, invoice, actor=_actor_id(user), why="last_labor_line_deleted",
             )
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(user))
     _bump_invoice_version(invoice)
     db.commit()
     try:
@@ -4246,7 +4250,7 @@ def record_payment(
                 )
         except Exception:
             log.exception("qb_pause_breadcrumb_check_failed")
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(_))
     if was_unpaid and invoice.paid_at is not None and payload.date < shop_today:
         # Backdated zeroing payment: paid_at follows the payment's day as a
         # date-only stamp (UTC midnight) — the same "day known, minute not"
@@ -4374,7 +4378,7 @@ def void_payment(
             status_code=409,
             detail=f"payment is in a locked accounting period — {exc}",
         ) from exc
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(_))
     if invoice.status == "paid" and _to_float(invoice.balance_due) > 0:
         # the money that made it "paid" is gone — reopen it
         transition_invoice_status(db, invoice, "sent", actor=_actor_id(_))
@@ -4575,7 +4579,7 @@ def finalize_invoice(
         )
     if invoice.locked:
         return _serialize_invoice(invoice)
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(_))
     invoice.locked = True
     invoice.locked_at = datetime.now(UTC)
 
@@ -4824,7 +4828,7 @@ def issue_credit_memo(
         # the entry. Drafts are edited, not credited.
         raise HTTPException(status_code=409, detail="only issued invoices can be credited — edit the draft instead")
     credit_amount = _money(payload.amount)
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(_))
     if float(credit_amount) > _to_float(invoice.balance_due) + 0.005:
         raise HTTPException(
             status_code=422,
@@ -4848,7 +4852,7 @@ def issue_credit_memo(
     # belt: if the shrunken receivable changed any existing payment's
     # AR/2300 split, reverse+repost it (caps make this a no-op normally)
     resettle_invoice_payments(db, invoice, actor=_actor_id(_))
-    _recalculate_invoice(invoice, db)  # fully-credited invoices settle to paid
+    _recalculate_invoice(invoice, db, actor=_actor_id(_))  # fully-credited invoices settle to paid
     db.commit()
     # M12: a credit can settle the invoice just as a payment can, and the
     # audit's prescription says "a payment OR CREDIT". An intent left open on
@@ -4908,7 +4912,7 @@ def apply_customer_credit(
         raise HTTPException(status_code=422, detail="invoice has no customer")
 
     amount = _money(payload.amount)
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(_))
 
     # Spec §5.3: the one Phase-1 balance precondition — lock the customer's
     # credit rows so two concurrent applications can't double-spend (PG;
@@ -4943,7 +4947,7 @@ def apply_customer_credit(
     db.flush()
     post_credit_application(db, adjustment, invoice, actor=_actor_id(_))
     resettle_invoice_payments(db, invoice, actor=_actor_id(_))
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(_))
     db.commit()
     # M12. Money arrived by another route, so a PaymentIntent the customer
     # still has open on the pay page could collect a second time — it froze its
