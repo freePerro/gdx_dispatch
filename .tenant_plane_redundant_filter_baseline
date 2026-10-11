@@ -166,7 +166,7 @@
   "gdx_dispatch/routers/overhead.py:T6:OverheadObligation.company_id:233",
   "gdx_dispatch/routers/overhead.py:T6:OverheadObligation.company_id:314",
   "gdx_dispatch/routers/overhead.py:T6:OverheadObligation.company_id:370",
-  "gdx_dispatch/routers/payroll.py:T6:TechCommissionRate.company_id:221",
+  "gdx_dispatch/routers/payroll.py:T6:TechCommissionRate.company_id:222",
   "gdx_dispatch/routers/performance.py:T6:User.company_id:447",
   "gdx_dispatch/routers/performance.py:T6:User.company_id:507",
   "gdx_dispatch/routers/photos.py:T6:JobPhoto.company_id:218",
