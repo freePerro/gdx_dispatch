@@ -394,6 +394,45 @@ def test_send_invoice_marks_sent(session_factory):
         db.close()
 
 
+def test_send_invoice_gl_posting_names_the_tech(session_factory, monkeypatch):
+    """GDXA-616: the draft→sent flip on the mobile send posts the P1 issuance
+    entry when GL posting is on. It passed no actor, so the journal entry
+    named nobody (created_by NULL) — a money posting with no acting user."""
+    from sqlalchemy import select
+
+    from gdx_dispatch.models.tenant_models import Invoice as _Inv
+    from gdx_dispatch.modules.ledger.models import GlJournalEntry
+    from gdx_dispatch.modules.ledger.service import ensure_gl_seed
+
+    monkeypatch.delenv("GDX_ENV", raising=False)
+    seed = _seed(session_factory)
+    estimate_id = _build_and_accept(session_factory, seed)
+    db = session_factory()
+    try:
+        ensure_gl_seed(db, "tenant-a").ledger_posting_enabled = True
+        db.commit()
+        with patch("gdx_dispatch.routers.mobile_invoicing._send_invoice_email"):
+            inv = _as_json(mobile_invoicing.mobile_create_invoice(
+                job_id=seed["job_id"],
+                payload=mobile_invoicing.CreateInvoiceIn(estimate_id=estimate_id, send_email=False),
+                request=_request(), current_user=_TEST_USER, db=db,
+            ))
+            row = db.get(_Inv, UUID(inv["id"]))
+            row.verified_at = datetime.now(UTC)
+            row.verified_by_user_id = "office-user"
+            db.commit()
+            send = mobile_invoicing.mobile_send_invoice(
+                invoice_id=inv["id"], request=_request(), current_user=_TEST_USER, db=db,
+            )
+        assert send.status_code == 200
+        # A fresh database: every entry in it came from this send.
+        entries = db.scalars(select(GlJournalEntry)).all()
+        assert entries, "the mobile send posted no GL entry — the test proves nothing"
+        assert [e.created_by for e in entries] == [_TEST_USER["user_id"]] * len(entries)
+    finally:
+        db.close()
+
+
 def test_send_receipt_no_payment_404(session_factory):
     seed = _seed(session_factory)
     estimate_id = _build_and_accept(session_factory, seed)

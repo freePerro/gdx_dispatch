@@ -400,7 +400,6 @@ GET /api/notifications/templates
 GET /api/numbering/config
 GET /api/oauth/outlook/account
 GET /api/oauth/outlook/callback
-GET /api/onboarding
 GET /api/onboarding/checklist
 GET /api/onboarding/state
 GET /api/outbound-emails

@@ -265,8 +265,8 @@ def _reset_module_state():
 # tests in the same change.
 #
 # The other helpers defaulting to a real localhost:6379 — rate_limiter,
-# circuit_breaker, terminology, api_keys, onboarding, auth_revoke,
-# bank_feeds/oauth — are the same SHAPE and still carry the same latent
+# circuit_breaker, terminology, api_keys, auth_revoke, bank_feeds/oauth
+# — are the same SHAPE and still carry the same latent
 # cross-run exposure. Isolating them changes what those subsystems DO under
 # test, not just where their state lives, so each is separate work with its
 # own tests. Reported on GDXA-109 rather than bundled into a flake fix.
