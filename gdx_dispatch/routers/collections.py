@@ -154,7 +154,9 @@ def aging_report(
 
     Reads from invoices table. Returns totals per bucket + detail list.
     """
-    from gdx_dispatch.models.tenant_models import Invoice  # lazy import to avoid circular
+    from sqlalchemy.orm import aliased
+
+    from gdx_dispatch.models.tenant_models import Customer, Invoice, Job  # lazy import to avoid circular
 
     # Shop day, the calendar invoice due dates are written in (#444).
     today = shop_today_from_settings(db)
@@ -179,18 +181,37 @@ def aging_report(
         # receivable), not void, money still owed.
         # balance_due is NOT NULL by schema (tenant_models.py Invoice,
         # ORM-created table), so no NULL fallback is needed here.
-        stmt = select(Invoice).where(
-            Invoice.deleted_at.is_(None),
-            Invoice.status.notin_(("draft", "void")),
-            Invoice.balance_due > 0,
+        #
+        # The customer name (GDXA-543): `invoices` has no customer_name column,
+        # so the old `getattr(inv, "customer_name", None)` was None for every
+        # row. Resolved the way `routers/invoices.py::get_invoice` does — the
+        # invoice's own customer first, then the Job's customer when the own
+        # one cannot be named — joined here rather than one query per row. On
+        # Postgres the fallback is unreachable today (customer_id is NOT NULL
+        # since migration 094 and carries a foreign key to customers); it is
+        # kept so this report and the invoice page cannot name an invoice
+        # differently. A soft-deleted customer keeps its name, as on the
+        # invoice detail page.
+        own_customer = aliased(Customer)
+        job_customer = aliased(Customer)
+        stmt = (
+            select(Invoice, own_customer.name, job_customer.name)
+            .outerjoin(own_customer, own_customer.id == Invoice.customer_id)
+            .outerjoin(Job, Job.id == Invoice.job_id)
+            .outerjoin(job_customer, job_customer.id == Job.customer_id)
+            .where(
+                Invoice.deleted_at.is_(None),
+                Invoice.status.notin_(("draft", "void")),
+                Invoice.balance_due > 0,
+            )
         )
-        invoices = db.execute(stmt).scalars().all()
+        invoices = db.execute(stmt).all()
     except Exception:
         logging.getLogger(__name__).exception("aging_report caught exception")
         return {"buckets": list(buckets.values()), "total_outstanding": 0.0}
 
     total_outstanding = 0.0
-    for inv in invoices:
+    for inv, own_name, job_name in invoices:
         if not inv.due_date:
             continue
         days_overdue = (today - inv.due_date).days
@@ -210,7 +231,7 @@ def aging_report(
                 bucket["invoices"].append({
                     "id": str(inv.id),
                     "invoice_number": inv.invoice_number,
-                    "customer_name": getattr(inv, "customer_name", None),
+                    "customer_name": own_name or job_name or None,
                     "due_date": inv.due_date.isoformat(),
                     "days_overdue": days_overdue,
                     "amount_due": amount,
