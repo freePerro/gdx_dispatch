@@ -1,3 +1,9 @@
+{#- Nothing left to pay: paid, OR a zero balance on any non-void status (the
+    office recorded it, or a credit covered it, without the status moving).
+    `create-intent` refuses both with "This invoice has no balance due.", so a
+    Pay $0.00 form here is a dead end (GDXA-571). A void invoice is excluded:
+    it is not money the customer paid, and "already been paid" would be false. -#}
+{%- set settled = invoice.status == "paid" or (invoice.status != "void" and (invoice.balance_due or 0) <= 0) -%}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -360,7 +366,7 @@
       <span>Invoice #</span>
       <span>{{ invoice.invoice_number }}</span>
     </div>
-    {% if invoice.status == "paid" %}
+    {% if settled %}
     <div class="invoice-row" style="color:#15803d; font-weight:600; margin-top:0.5rem;">
       <span>Status</span>
       <span>Paid</span>
@@ -396,8 +402,8 @@
   </div>
   {% endif %}
 
-  {% if invoice.status == "paid" %}
-  <div class="alert success visible">This invoice has already been paid. Thank you!</div>
+  {% if settled %}
+  <div class="alert success visible" data-testid="pay-settled-banner">This invoice has already been paid. Thank you!</div>
   {% elif ach_processing %}
   <!-- M16: an ACH debit is in flight. Presenting a live payment form here is
        how a customer pays twice — the balance will not move until the bank
@@ -578,7 +584,7 @@
   // before it is charged, to size the fee or to refuse a US debit card.
   const CARD_TWO_STEP = {{ "true" if card_two_step else "false" }};
 
-  {% if invoice.status != "paid" and not ach_processing and not preview %}
+  {% if not settled and not ach_processing and not preview %}
 
   const stripe = Stripe(STRIPE_KEY);
   const elements = stripe.elements();
