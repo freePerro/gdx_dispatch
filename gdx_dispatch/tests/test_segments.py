@@ -20,7 +20,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.auth import get_current_user
-from gdx_dispatch.models.tenant_models import Segment
+from gdx_dispatch.models.tenant_models import InvoiceAdjustment, Segment
 from gdx_dispatch.routers import segments as segments_router
 from gdx_dispatch.routers.segments import (
     SegmentCreateIn,
@@ -82,12 +82,15 @@ def tenant_db_session():
                 id TEXT PRIMARY KEY,
                 job_id TEXT NOT NULL,
                 total NUMERIC NOT NULL,
+                status TEXT NOT NULL DEFAULT 'sent',
                 company_id TEXT,
                 deleted_at TEXT
             )
             """
         )
     )
+    # lifetime_value nets credit memos (GDXA-595), so the rollup reads this.
+    InvoiceAdjustment.__table__.create(setup_db.get_bind(), checkfirst=True)
     # `segments` is built from the ORM, NOT hand-written SQL. A hand-written
     # table here declared `deleted_at TEXT` (nullable) while the model said
     # NOT NULL and the real database — built by create_all — agreed with the
@@ -150,21 +153,43 @@ def _seed_job(Session, *, customer_id: str, days_ago: int) -> str:
     return jid
 
 
-def _seed_invoice(Session, *, job_id: str, total: float) -> str:
+def _seed_invoice(Session, *, job_id: str, total: float, status: str = "sent") -> str:
     iid = str(uuid.uuid4())
     db = Session()
     db.execute(
         text(
             """
-            INSERT INTO invoices (id, job_id, total, company_id, deleted_at)
-            VALUES (:id, :job_id, :total, 'tenant-test', NULL)
+            INSERT INTO invoices (id, job_id, total, status, company_id, deleted_at)
+            VALUES (:id, :job_id, :total, :status, 'tenant-test', NULL)
             """
         ),
-        {"id": iid, "job_id": job_id, "total": total},
+        {"id": iid, "job_id": job_id, "total": total, "status": status},
     )
     db.commit()
     db.close()
     return iid
+
+
+def _seed_adjustment(Session, *, invoice_id: str, kind: str, amount: float) -> None:
+    db = Session()
+    db.execute(
+        text(
+            """
+            INSERT INTO invoice_adjustments (id, invoice_id, kind, amount, tax_component,
+                                             created_at, company_id)
+            VALUES (:id, :invoice_id, :kind, :amount, 0, :created_at, 'tenant-test')
+            """
+        ),
+        {
+            "id": uuid.uuid4().hex,
+            "invoice_id": invoice_id,
+            "kind": kind,
+            "amount": amount,
+            "created_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    db.commit()
+    db.close()
 
 
 def test_all_segment_routes_require_auth_dependency():
@@ -576,6 +601,52 @@ async def test_greater_than_on_lifetime_value_selects_by_invoice_total(tenant_db
     db.close()
     assert [c["name"] for c in out.items] == ["Big Spender"]
     assert out.total == 1
+
+
+def _lifetime_by_name(Session) -> dict[str, float]:
+    db = Session()
+    try:
+        return {r["name"]: float(r["lifetime_value"]) for r in segments_router._customer_stats(db)}
+    finally:
+        db.close()
+
+
+def test_lifetime_value_nets_credit_memos_but_not_settlement(tenant_db_session):
+    """GDXA-595: a 100 invoice with a 20 credit memo is worth 80, not 100.
+
+    `credit_applied` and `refund` are settlement and cash, not a cut in what
+    was billed, so they leave lifetime value alone.
+    """
+    cust = _seed_customer(tenant_db_session, name="Credited", created_days_ago=30)
+    job = _seed_job(tenant_db_session, customer_id=cust, days_ago=10)
+    inv = _seed_invoice(tenant_db_session, job_id=job, total=100)
+    _seed_adjustment(tenant_db_session, invoice_id=inv, kind="credit_memo", amount=20)
+    _seed_adjustment(tenant_db_session, invoice_id=inv, kind="credit_applied", amount=30)
+    _seed_adjustment(tenant_db_session, invoice_id=inv, kind="refund", amount=5)
+
+    assert _lifetime_by_name(tenant_db_session)["Credited"] == 80.0
+
+
+def test_lifetime_value_skips_void_invoices(tenant_db_session):
+    cust = _seed_customer(tenant_db_session, name="Voided", created_days_ago=30)
+    job = _seed_job(tenant_db_session, customer_id=cust, days_ago=10)
+    _seed_invoice(tenant_db_session, job_id=job, total=250)
+    _seed_invoice(tenant_db_session, job_id=job, total=9000, status="void")
+
+    assert _lifetime_by_name(tenant_db_session)["Voided"] == 250.0
+
+
+async def test_a_credit_memo_can_drop_a_customer_out_of_high_value(tenant_db_session):
+    """The segment rule reads the netted figure: 5,100 billed less a 200 credit is under 5,000."""
+    cust = _seed_customer(tenant_db_session, name="Was Big", created_days_ago=100)
+    job = _seed_job(tenant_db_session, customer_id=cust, days_ago=50)
+    inv = _seed_invoice(tenant_db_session, job_id=job, total=5100)
+    _seed_adjustment(tenant_db_session, invoice_id=inv, kind="credit_memo", amount=200)
+
+    db = tenant_db_session()
+    out = await list_segment_customers(segment_id="high-value", _={}, db=db)
+    db.close()
+    assert out.total == 0, [c["name"] for c in out.items]
 
 
 async def test_less_than_and_equals_on_a_custom_segment(tenant_db_session):

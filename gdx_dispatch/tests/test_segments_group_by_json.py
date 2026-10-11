@@ -150,7 +150,13 @@ def pg_conn() -> Generator[Connection, None, None]:
         )
         c.exec_driver_sql(
             "CREATE TABLE invoices (id uuid PRIMARY KEY, job_id uuid,"
-            " total numeric, deleted_at timestamptz)"
+            " total numeric, status varchar NOT NULL DEFAULT 'sent',"
+            " deleted_at timestamptz)"
+        )
+        # lifetime_value nets credit memos (GDXA-595).
+        c.exec_driver_sql(
+            "CREATE TABLE invoice_adjustments (id uuid PRIMARY KEY, invoice_id uuid,"
+            " kind varchar, amount numeric)"
         )
         yield c
     with eng.begin() as c:
@@ -198,3 +204,27 @@ def test_a_customer_with_several_jobs_collapses_to_one_row(pg_conn):
         text(_customer_stats_sql(has_customer_type=True, has_metadata=True))
     ).mappings().all()
     assert len(rows) == 1, f"three jobs must not fan the customer out: {rows}"
+
+
+@_requires_pg
+def test_lifetime_value_nets_credit_memos_on_postgres(pg_conn):
+    """GDXA-595 on the production engine: 100 billed, 20 credited, a void 500 -> 80."""
+    ids = {
+        "cust": "33333333-3333-4333-8333-333333333333",
+        "job": "44444444-4444-4444-8444-444444444444",
+        "inv": "55555555-5555-4555-8555-555555555555",
+    }
+    for stmt in (
+        "INSERT INTO customers VALUES (:cust, 'C', 'c@example.test', '3', 'z',"
+        " 'Residential', '{}'::json, now(), NULL)",
+        "INSERT INTO jobs VALUES (:job, :cust, now(), NULL)",
+        "INSERT INTO invoices VALUES (:inv, :job, 100, 'sent', NULL)",
+        "INSERT INTO invoices VALUES (gen_random_uuid(), :job, 500, 'void', NULL)",
+        "INSERT INTO invoice_adjustments VALUES (gen_random_uuid(), :inv, 'credit_memo', 20)",
+        "INSERT INTO invoice_adjustments VALUES (gen_random_uuid(), :inv, 'credit_applied', 30)",
+    ):
+        pg_conn.execute(text(stmt), ids)
+    rows = pg_conn.execute(
+        text(_customer_stats_sql(has_customer_type=True, has_metadata=True))
+    ).mappings().all()
+    assert [float(r["lifetime_value"]) for r in rows] == [80.0]
