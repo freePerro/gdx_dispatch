@@ -71,5 +71,6 @@ No schema change, no migration, no existing rows touched. Existing `processing`/
 ## Sibling sweep
 
 Class: an ACH surface that cannot complete a payment, or a dead ACH endpoint.
-Searched: `gdx_dispatch/templates/*.html`, `core/payments.py`, `core/stripe_payments.py`, `routers/payments.py`, `routers/portal.py`, `frontend/src/**` (grep `us_bank_account|ach/|ACH`), `tests/`.
+Searched: `gdx_dispatch/templates/*.html`, `core/payments.py`, `core/stripe_payments.py`, `routers/payments.py`, `routers/portal.py`, `frontend/src/**` (grep `us_bank_account|ach/|ACH`), `tests/`. <!-- deleted 2026-10-11, GDXA-552; link-ok -->
 Instances: 3 found / 2 fixed (the pay page tab; `ach/setup`+`ach/charge`) / 1 deferred — the portal router's `POST /payments/ach/setup` (`routers/payments.py` → `stripe_payments.create_ach_verification`, legacy Token + `Customer.create_source`, no UI caller, no verify step). Deferred because the portal has no ACH UI at all and its card path is a separate design; recorded in `FOUND_NOT_FILED.md` 2026-09-16. <!-- untracked by design, see CLAUDE.md "One issue per session"; link-ok -->
+Closed 2026-10-11 (GDXA-552): the deferred portal `POST /payments/ach/setup` was deleted with the rest of `routers/payments.py` and `core/stripe_payments.py`. <!-- deleted 2026-10-11, GDXA-552; link-ok -->

@@ -276,13 +276,11 @@ gdx_dispatch/frontend/src/composables/useViewMode.js         frontend-shell
 ## ledger, tax, collections, reminders, customer statements, Stripe.
 ## ---------------------------------------------------------------------------
 gdx_dispatch/routers/invoices.py                             money-billing
-gdx_dispatch/routers/payments.py                             money-billing
 gdx_dispatch/routers/stripe_webhook.py                       money-billing
 gdx_dispatch/routers/collections.py                          money-billing
 gdx_dispatch/routers/invoice_reminders.py                    money-billing
 gdx_dispatch/routers/customer_statements.py                  money-billing
 gdx_dispatch/core/payments.py                                money-billing
-gdx_dispatch/core/stripe_payments.py                         money-billing
 gdx_dispatch/core/invoice_delivery.py                        money-billing
 gdx_dispatch/core/invoice_sms.py                             money-billing
 gdx_dispatch/core/estimate_sms.py                            estimates-pricing

@@ -683,7 +683,7 @@ resolution, server-derived amounts, ACH SetupIntent binding, webhook signature
 verification that fails closed, and a webhook that raises so Stripe retries. I
 verified each of those. The findings below are what it did not reach.
 
-The scope tell is in the tests: `test_payments_portal_authz.py` covers `charge_method`
+The scope tell is in the tests: `test_payments_portal_authz.py` covers `charge_method` <!-- deleted 2026-10-11, GDXA-552; link-ok -->
 ownership, amount and void — and nothing about currency, the `/intent` endpoint, or
 refunds.
 
