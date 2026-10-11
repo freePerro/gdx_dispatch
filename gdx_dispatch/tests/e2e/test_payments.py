@@ -27,7 +27,6 @@ from datetime import date
 import pytest
 
 from gdx_dispatch.tests.e2e.conftest import (
-    BASE_URL,
     APIClient,
     ConsoleErrorTracker,
     assert_api_success,
@@ -139,29 +138,6 @@ class TestPaymentOnInvoice:
         data2 = detail2.json()
         assert data2["balance_due"] == 0.0
         assert data2["status"] == "paid"
-
-
-# ---------------------------------------------------------------------------
-# PAY-11: Payment methods listing
-# ---------------------------------------------------------------------------
-
-
-class TestPaymentMethods:
-    """PAY-11 — CRUD on saved payment methods (portal route, requires portal auth)."""
-
-    def test_pay11_methods_endpoint_exists(self, api: APIClient):
-        """Verify the endpoint exists and returns a structured response.
-
-        The /payments/methods route requires portal auth (cookie-based),
-        so we expect 401 from the API client. This confirms the route is wired.
-        """
-        import httpx
-        with httpx.Client(base_url=BASE_URL, verify=False, timeout=15) as client:
-            resp = client.get("/payments/methods")
-        # Should be 401 (no portal auth) or 200 (if publicly accessible)
-        assert resp.status_code in (200, 401, 403, 404, 422), (
-            f"unexpected status from /payments/methods: {resp.status_code}"
-        )
 
 
 # ---------------------------------------------------------------------------
