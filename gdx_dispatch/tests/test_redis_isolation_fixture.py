@@ -15,8 +15,9 @@ silently restore the defect and every suite would stay green:
 * replacing the fake with a stub that never round-trips, which is how the
   cache path came to be untested in the first place.
 
-Each test names the input that turns it red, per CLAUDE.md: a green ratchet
-proves nothing unless it can fail for the defect it guards. Verified by
+Each test names the input that turns it red, per
+.claude/rules/scanners-and-tests.md: a green ratchet proves nothing unless it
+can fail for the defect it guards. Verified by
 mutation — deleting the fixture's single patch target reddens three of these
 plus ``test_list_customers_excludes_soft_deleted``, the original symptom.
 

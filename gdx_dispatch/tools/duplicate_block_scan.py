@@ -61,8 +61,8 @@ shrank, and refuses anything that grew.** So
 
 Without that refusal the guard would be theatre: the test goes red, the author
 runs `--baseline`, the new clone is blessed in silence, and we are back to a
-ratchet that cannot fail (CLAUDE.md: "A green ratchet proves nothing unless it
-can fail for your defect").
+ratchet that cannot fail (.claude/rules/scanners-and-tests.md: "A green
+ratchet proves nothing unless it can fail for your defect").
 
 The limit of the guard, stated rather than inferred
 ---------------------------------------------------

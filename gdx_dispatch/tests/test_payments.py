@@ -1574,7 +1574,7 @@ def test_the_overcharge_detail_survives_intact(db_session):
 def test_card_surcharge_rate_reads_the_settings_row_on_sqlite_too():
     """Every other test patches the lookup, so this one does not. It goes by
     ORM primary key: raw SQL on the dashed id matched on Postgres and never on
-    SQLite (the CLAUDE.md sharp edge; audit round 2 stored 0.029 and read 0),
+    SQLite (the .claude/rules/database.md edge; audit round 2 stored 0.029 and read 0),
     which no patched test could catch."""
     from gdx_dispatch.core.payments import card_surcharge_rate  # noqa: PLC0415
     from gdx_dispatch.core.tenant_settings import Base as ControlBase  # noqa: PLC0415
