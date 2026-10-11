@@ -28,7 +28,11 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.pay_periods import shop_day_of, shop_today_from_settings, shop_tz_name_from_settings
 from gdx_dispatch.modules.ledger import service as ledger_service
-from gdx_dispatch.modules.ledger.coa import LedgerConfigError, ensure_role_account, resolve_role_account
+from gdx_dispatch.modules.ledger.coa import (
+    LedgerConfigError,
+    ensure_role_account,
+    resolve_role_account_or_none,
+)
 from gdx_dispatch.modules.ledger.engine import (
     PeriodLockedError,
     PostingEvent,
@@ -1031,9 +1035,9 @@ def customer_credit_balance_cents(session: Session, company_id: str, customer_id
     customer out of credit they were genuinely owed). Company scoping rides
     the entry join. PG callers should have locked the credit rows (SELECT
     FOR UPDATE) before trusting this for a spend."""
-    from gdx_dispatch.modules.ledger.coa import resolve_role_account
-
-    credits_acct = resolve_role_account(session, company_id, ROLE_CUSTOMER_CREDITS)
+    credits_acct = resolve_role_account_or_none(session, company_id, ROLE_CUSTOMER_CREDITS)
+    if credits_acct is None:
+        return 0  # no 2300 has ever existed here, so nothing sits on one (GDXA-572)
     total = 0
     rows = session.execute(
         select(GlJournalLine.amount_cents)
@@ -1392,7 +1396,9 @@ def invoice_ar_balance_cents(session: Session, invoice) -> int:
     Correct-by-construction input for the void settlement below."""
     from gdx_dispatch.models.tenant_models import InvoiceAdjustment, Payment
 
-    ar_account = resolve_role_account(session, invoice.company_id, ROLE_AR)
+    ar_account = resolve_role_account_or_none(session, invoice.company_id, ROLE_AR)
+    if ar_account is None:
+        return 0  # no AR account has ever existed here, so no AR lines (GDXA-572)
     payment_ids = [
         str(pid)
         for pid in session.scalars(
