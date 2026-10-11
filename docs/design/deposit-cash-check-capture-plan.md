@@ -232,6 +232,12 @@ only ([invoices.py:54](gdx_dispatch/routers/invoices.py#L54)). This asymmetry is
 *why* techs can record money at all, and this plan depends on it. Note the
 contrast: a tech can **write** a payment but cannot **read** the invoice list
 (D3). Flagged as a decision, not fixed here.
+*RESOLVED by #689 (2026-09-09), noted 2026-10-11:* the route is now gated by
+`invoices.write` (`require_permission("invoices.write")` on `record_payment`
+in `gdx_dispatch/routers/invoices.py`). The dependency above is now
+conditional: the built-in technician role in `core/permissions.py` does NOT
+carry `invoices.write`; the comment at the gate says the live technician
+role does. A tech records money here only where their role holds that key.
 
 ---
 

@@ -283,9 +283,10 @@ def _add_invoice(db, job_id, customer_id, *, status: str, total: float, deleted:
 def test_job_detail_billed_flag_is_derived_from_invoices(session_factory):
     """`billed` must come from real invoices, never from Job.billing_status.
 
-    That column looks like the answer and is a dead cache — nothing has ever
-    written anything but "unbilled", so every reader that trusted it counted
-    paid jobs as unbilled (core/billing_predicates.py). The mobile job screen
+    That column looks like the answer and is a dead cache — no app code writes
+    it past "unbilled" and older rows hold a stale "invoiced",
+    so every reader that trusted it counted paid jobs as unbilled
+    (core/billing_predicates.py). The mobile job screen
     opens ANY job, including one invoiced months ago, and uses this flag to
     decide whether to offer "Bill / collect". Getting it wrong means inviting a
     second invoice on a paid job.
