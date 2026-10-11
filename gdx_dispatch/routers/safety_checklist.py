@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -173,11 +174,18 @@ def incomplete_checklists(
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """Jobs that are missing safety checklists or have incomplete ones."""
-    tid = _tid(request)
-
     try:
-        # Find completed jobs with no associated safety checklist (missing/incomplete).
-        # Uses outerjoin so jobs without any checklist (sc.id IS NULL) are included.
+        # GDXA-642: safety_checklists.job_id is a client-supplied varchar and
+        # jobs.id a Uuid, so a SQL join compared varchar = uuid (an error on
+        # Postgres) and dashed text against dashless hex (never equal on
+        # SQLite). Parse the ids here and exclude through the typed column.
+        checked: set[uuid.UUID] = set()
+        for raw in db.execute(
+            select(SafetyChecklist.job_id).where(SafetyChecklist.deleted_at.is_(None))
+        ).scalars():
+            with contextlib.suppress(ValueError, TypeError, AttributeError):
+                checked.add(uuid.UUID(str(raw)))
+
         rows = db.execute(
             select(
                 Job.id.label("job_id"),
@@ -185,17 +193,13 @@ def incomplete_checklists(
                 Job.description,
                 Job.status,
                 Job.created_at.label("job_created"),
-                SafetyChecklist.id.label("checklist_id"),
-                SafetyChecklist.completed,
-            )
-            .outerjoin(
-                SafetyChecklist,
-                (SafetyChecklist.job_id == Job.id) & (SafetyChecklist.company_id == tid),
             )
             .where(
                 Job.deleted_at.is_(None),
-                Job.status.in_(["Complete", "Completed", "done"]),
-                SafetyChecklist.id.is_(None),
+                # "completed" is lifecycle_stage, the done signal (GDXA-227).
+                # The status varchar missed NULL-status (imported) rows.
+                Job.lifecycle_stage == "completed",
+                Job.id.notin_(checked),
             )
             .order_by(Job.created_at.desc())
             .limit(100)
@@ -207,8 +211,8 @@ def incomplete_checklists(
                 "description": r.get("description") or r.get("title") or "",
                 "job_status": r["status"],
                 "job_created": str(r["job_created"]) if r["job_created"] else None,
-                "has_checklist": r["checklist_id"] is not None,
-                "checklist_completed": bool(r["completed"]) if r["completed"] is not None else False,
+                "has_checklist": False,
+                "checklist_completed": False,
             }
             for r in rows
         ]
