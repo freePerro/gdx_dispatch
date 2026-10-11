@@ -72,21 +72,14 @@ _QUEUE_MAX = 200
 _MSG_MAX = 2000
 _TRACEBACK_MAX = 8192
 _FP_MAX = 64  # server_errors.group_fingerprint is varchar(64)
-# The compose default for PLATFORM_SMTP_USER; a login as it can only fail.
-_PLACEHOLDER_DOMAIN = "@example.com"
 
 
 def _smtp_configured() -> bool:
-    # _send_platform_email returns quietly (a WARNING, no raise) when the
-    # password is unset, so "it did not raise" is not "it sent". Ask first,
-    # or an unsent email would spend the hour window and the daily cap. A
-    # placeholder user with a real password is a login that has to fail.
+    # Ask first, or an unsent email would spend the hour window and the
+    # daily cap (see platform_smtp_configured for why "no raise" isn't "sent").
     from gdx_dispatch.routers.auth import core as auth_core  # noqa: PLC0415
 
-    user = (auth_core.PLATFORM_SMTP_USER or "").strip().lower()
-    return bool(auth_core.PLATFORM_SMTP_PASS) and bool(user) and not user.endswith(
-        _PLACEHOLDER_DOMAIN
-    )
+    return auth_core.platform_smtp_configured()
 
 
 def _send_email(to_email: str, subject: str, html_body: str) -> None:
