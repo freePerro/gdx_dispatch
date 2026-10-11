@@ -322,7 +322,7 @@ def create_deposit_invoice(
         )
     )
     db.flush()
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=actor)
     # Issue through the chokepoint so P1 posts when the ledger flag is on.
     # sent_at deliberately NOT stamped — since PR #192 it means "an email
     # was actually delivered", and no email goes out here.
@@ -483,7 +483,7 @@ def apply_deposits_to_final(db: Session, invoice: Invoice, *, actor: str) -> dic
     superseded: list[str] = []
     voided: list[str] = []
     for dep in deposits:
-        _recalculate_invoice(dep, db)  # true-up before reading balance_due
+        _recalculate_invoice(dep, db, actor=actor)  # true-up before reading balance_due
         paid = _to_f(
             db.execute(
                 select(func.sum(Payment.amount)).where(
@@ -536,7 +536,7 @@ def apply_deposits_to_final(db: Session, invoice: Invoice, *, actor: str) -> dic
                 db.flush()
                 post_credit_memo(db, adj, dep, actor=actor)
                 resettle_invoice_payments(db, dep, actor=actor)
-                _recalculate_invoice(dep, db)
+                _recalculate_invoice(dep, db, actor=actor)
                 superseded.append(dep.invoice_number)
                 _audit_superseded_deposit(
                     db, dep, invoice, actor=actor, action="credit_memo_issued",
