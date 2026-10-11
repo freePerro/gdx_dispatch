@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission, require_role
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.core.quickbooks import QBAuthError, QBError
 from gdx_dispatch.modules.forecasting import cash_calendar as cash_calendar_service
 from gdx_dispatch.modules.forecasting import observed_recurring
@@ -502,7 +503,7 @@ def end_recurring_stream(
     if s.status in {STREAM_STATUS_PAID_OFF, STREAM_STATUS_CANCELLED, STREAM_STATUS_EXPIRED}:
         raise HTTPException(status_code=409, detail=f"Stream already ended ({s.status})")
     s.status = payload.reason  # reason maps directly to a terminal status enum
-    s.ended_at = payload.ended_at or _date.today()
+    s.ended_at = payload.ended_at or shop_today_from_settings(db)
     s.ended_reason = payload.reason
     log_audit_event_sync(
         db, tenant_id=tenant_id, user_id=resolve_audit_actor(current_user, request),

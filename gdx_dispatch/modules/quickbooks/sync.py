@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import SYSTEM_ACTOR, ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.core.name_normalize import humanize_name
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.core.quickbooks import QBConnection, QBEntityMap, QBVendor
 from gdx_dispatch.models.tenant_models import (
     CustomCatalog,
@@ -1170,7 +1171,8 @@ async def pull_invoices(tenant_id: str, db: Session, qb: QBClient) -> dict[str, 
                                 invoice.invoice_date, datetime.min.time(), tzinfo=UTC
                             )
                         if is_paid_now and not invoice.paid_at:
-                            stamp = invoice.invoice_date or datetime.now(UTC).date()
+                            # No TxnDate: the shop's calendar day, not UTC's.
+                            stamp = invoice.invoice_date or shop_today_from_settings(db)
                             invoice.paid_at = datetime.combine(
                                 stamp, datetime.min.time(), tzinfo=UTC
                             )
@@ -1210,7 +1212,7 @@ async def pull_invoices(tenant_id: str, db: Session, qb: QBClient) -> dict[str, 
                                 existing.invoice_date, datetime.min.time(), tzinfo=UTC
                             )
                         if balance <= 0 and not existing.paid_at:
-                            stamp = existing.invoice_date or datetime.now(UTC).date()
+                            stamp = existing.invoice_date or shop_today_from_settings(db)
                             existing.paid_at = datetime.combine(
                                 stamp, datetime.min.time(), tzinfo=UTC
                             )
@@ -1529,7 +1531,10 @@ async def pull_payments(tenant_id: str, db: Session, qb: QBClient) -> dict[str, 
                     # cash-flow / aging / commission report that bucketed by
                     # payment_date was wrong by months. Always source from QB.
                     qb_amount = Decimal(str(raw.get("TotalAmt") or 0))
-                    qb_payment_date = _parse_qb_date(raw.get("TxnDate"), field="TxnDate", qb_id=qb_id) or date.today()
+                    qb_payment_date = (
+                        _parse_qb_date(raw.get("TxnDate"), field="TxnDate", qb_id=qb_id)
+                        or shop_today_from_settings(db)
+                    )
 
                     payment_map = db.execute(
                         select(QBEntityMap).where(

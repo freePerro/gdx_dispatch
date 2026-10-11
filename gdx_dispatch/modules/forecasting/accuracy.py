@@ -26,6 +26,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.pay_periods import shop_today_from_settings, shop_tz_name_from_settings
 from gdx_dispatch.models.tenant_models import Invoice, Payment
 from gdx_dispatch.modules.forecasting import service as forecast_service
 from gdx_dispatch.modules.forecasting.models import (
@@ -60,7 +61,7 @@ def capture_snapshot(
     if window_days is None:
         window_days = int(settings.default_window_days)
     if today is None:
-        today = date.today()
+        today = shop_today_from_settings(db)
 
     invoices = _open_invoices(db)
     assumed_rates = {b: forecast_service._bucket_rate(settings, b) for b in AR_BUCKETS}
@@ -76,8 +77,9 @@ def capture_snapshot(
     db.add(snap)
     db.flush()  # assign snap.id for the child rows
 
+    tz_name = shop_tz_name_from_settings(db)
     for inv in invoices:
-        ref = forecast_service._ar_reference_date(inv)
+        ref = forecast_service._ar_reference_date(inv, tz_name, today)
         age = max(0, (today - ref).days)
         db.add(
             ForecastSnapshotInvoice(
@@ -152,7 +154,7 @@ def reconcile_snapshot(db: Session, snap: ForecastSnapshot) -> ForecastSnapshot:
 def reconcile_due_snapshots(db: Session, today: date | None = None) -> list[ForecastSnapshot]:
     """Reconcile every pending snapshot whose window has fully closed."""
     if today is None:
-        today = date.today()
+        today = shop_today_from_settings(db)
     due = db.execute(
         select(ForecastSnapshot).where(
             ForecastSnapshot.status == SNAPSHOT_STATUS_PENDING,
@@ -173,7 +175,7 @@ def prune_reconciled_snapshots(db: Session, today: date | None = None, retention
     is still owed a reconciliation (e.g. the task was down past its horizon).
     """
     if today is None:
-        today = date.today()
+        today = shop_today_from_settings(db)
     cutoff = today - timedelta(days=retention_days)
     stale = db.execute(
         select(ForecastSnapshot).where(

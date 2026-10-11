@@ -351,6 +351,8 @@ def sync_account_transactions(
         if account.backfill_started_at is None:
             account.backfill_started_at = now
             db.commit()
+        # Fetch horizon, deliberately UTC: SimpleFIN takes UTC instants, and the
+        # overlap below absorbs the day boundary. Not a business date.
         horizon_start = (now - timedelta(days=backfill_days)).date()
         resume_from = account.backfill_synced_through or horizon_start
         window_start = max(
@@ -466,6 +468,8 @@ def sync_documents(
         stats["skipped"] = True
         return stats
 
+    # Document fetch horizon, deliberately UTC: it bounds what we ask the
+    # provider for, it dates no record.
     today = _utcnow().date()
     floor = today - timedelta(days=backfill_days)
     doc_start = None

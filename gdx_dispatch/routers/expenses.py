@@ -19,6 +19,7 @@ from gdx_dispatch.core.expense_categories import (
     canonicalize_expense_category,
 )
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.pay_periods import shop_day_of, shop_today_from_settings, shop_tz_name_from_settings
 from gdx_dispatch.models.tenant_models import Expense, ExpenseLine, JobReceipt
 from gdx_dispatch.modules.ledger.engine import PeriodLockedError
 from gdx_dispatch.modules.ledger.models import ExpenseReceipt
@@ -621,7 +622,13 @@ def promote_job_receipt(
     expense = Expense(
         vendor=(receipt.vendor or "Field purchase")[:200],
         amount=float(receipt.amount),
-        date=(receipt.purchased_at.date() if receipt.purchased_at else date.today()),
+        # purchased_at is an instant; the expense is dated on the shop's
+        # calendar day it happened, not UTC's (an evening fuel stop is today).
+        date=(
+            shop_day_of(receipt.purchased_at, shop_tz_name_from_settings(db))
+            if receipt.purchased_at
+            else shop_today_from_settings(db)
+        ),
         category=promote_category,
         description=(receipt.notes or "")[:2000] or None,
         job_id=receipt.job_id,
