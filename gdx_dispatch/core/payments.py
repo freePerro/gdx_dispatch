@@ -13,9 +13,10 @@ POST /api/payments/create-intent   — create PaymentIntent for an invoice;
                                      ``method`` picks the rail ("card" | "ach")
 POST /api/payments/confirm         — confirm payment after Stripe.js completes
 
-Saved-payment-method management lives on the AUTHENTICATED portal router
-(``gdx_dispatch/routers/payments.py``, ``/payments/methods``). This module's
-unauthenticated duplicates were removed 2026-08-04.
+There is no saved-payment-method management. This module's unauthenticated
+duplicates were removed 2026-08-04, and the authenticated portal router they
+duplicated (``routers/payments.py``, ``/payments/*``) on 2026-10-11 (GDXA-552):
+every route on it 400'd for every caller and nothing called it.
 
 Public (no auth):
 GET  /pay/{invoice_token}          — serve the Stripe Elements payment form
@@ -100,9 +101,9 @@ templates = Jinja2Templates(directory=_TEMPLATES_DIR)
 # nullable for ONE release so a /pay tab opened before the deploy does not
 # 422 in the middle of a payment. They are never trusted for authorization:
 # the amount is always recomputed from the invoice, the PaymentIntent is
-# bound to the invoice through Stripe metadata, and the ACH method is bound
-# through its SetupIntent. Remove both fields (and _LEGACY_SHAPE_DEADLINE
-# below) in the release after this one.
+# bound to the invoice through Stripe metadata, and an ACH bank account is
+# bound to that same PaymentIntent by Stripe.js in the browser. Remove both
+# fields (and _LEGACY_SHAPE_DEADLINE below) in the release after this one.
 _LEGACY_SHAPE_DEADLINE = "2026-09-01"
 
 
@@ -2036,8 +2037,9 @@ def confirm_payment(
 # NOTE: ``GET /api/payments/methods`` and ``DELETE /api/payments/methods/{pm_id}``
 # were removed 2026-08-04. They were unauthenticated (leaking card brand/last4
 # and bank details for any Stripe customer id, and detaching any payment
-# method) and had no production caller — the payment-methods UI has always used
-# the portal router's authenticated ``/payments/methods``.
+# method) and had no production caller. The portal router's authenticated
+# ``/payments/methods`` that was named as their replacement could never answer
+# either, and was deleted 2026-10-11 (GDXA-552): there is no saved-method UI.
 
 
 # ---------------------------------------------------------------------------

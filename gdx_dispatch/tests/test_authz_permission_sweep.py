@@ -54,7 +54,9 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_unpermissioned_bas
 # the handler like reactivate; reason recorded in the baseline file.
 # 390 → 389 (2026-10-09): DELETE /api/customers/{customer_id} now demands
 # customers.write (GDXA-418).
-BASELINE_SIZE = 389
+# 389 → 383 (2026-10-11): the portal payments router's five mutation routes
+# and ui_compat's POST /api/payments/intent stub were deleted (GDXA-552).
+BASELINE_SIZE = 383
 
 
 def _baseline() -> set[str]:
