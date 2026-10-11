@@ -126,10 +126,11 @@ class MidwestParsedLine:
 
     @property
     def aging_bucket(self) -> str:
-        """Pick the bucket where the unpaid balance lives.
+        """Pick the bucket where the statement printed the balance.
 
-        Uses the largest non-zero aging value. If everything's zero, returns
-        'current'. If two buckets tie (rare), returns the older one.
+        Returns the oldest bucket holding a non-zero value, so a credit
+        (negative balance) keeps the column it was printed in rather than
+        falling through to 'current'. If everything's zero, returns 'current'.
         """
         buckets = [
             ("retainage", self.retainage),
@@ -140,7 +141,7 @@ class MidwestParsedLine:
             ("0-29", self.aging_0_29),
         ]
         for name, value in buckets:
-            if value > 0:
+            if value != 0:
                 return name
         return "current"
 

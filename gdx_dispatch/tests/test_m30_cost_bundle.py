@@ -67,6 +67,42 @@ def test_credit_pair_parses_signed_through_the_real_loop():
     assert raw_total == Decimal("-2900.98")
 
 
+def test_credit_keeps_the_aging_bucket_the_statement_printed():
+    """GDXA-586: a credit printed in the 120+ column (the shape of the
+    Sep 25 statement's -$4,000.00 line) was bucketed 'current' because the
+    picker only matched positive values."""
+    from gdx_dispatch.modules.vendor_statements.parsers.midwest import (
+        _parse_statement_lines,
+    )
+
+    a = ("20318061 REP 03/14/2026 -$4,000.00 -$4,000.00 $0.00 $0.00 "
+         "$0.00 $0.00 -$4,000.00 $0.00")
+    b = "20318061 PO-99 / 58 Credit memo"
+    parsed, _ = _parse_statement_lines([a, b])
+    assert parsed[0].balance == Decimal("-4000.00")
+    assert parsed[0].aging_120_plus == Decimal("-4000.00")
+    assert parsed[0].aging_bucket == "120+"
+
+
+def test_aging_bucket_signs_every_column_and_all_zero_is_current():
+    from gdx_dispatch.modules.vendor_statements.parsers.midwest import (
+        _parse_statement_lines,
+    )
+
+    columns = ["0-29", "30-59", "60-89", "90-119", "120+", "retainage"]
+    for i, name in enumerate(columns):
+        for sign in ("", "-"):
+            aging = ["$0.00"] * 6
+            aging[i] = f"{sign}$75.00"
+            a = f"1234567 REP 01/15/2026 {sign}$75.00 {sign}$75.00 " + " ".join(aging)
+            parsed, _ = _parse_statement_lines([a, "1234567 PO-1 / 58 desc"])
+            assert parsed[0].aging_bucket == name, (name, sign)
+
+    settled = "1234567 REP 01/15/2026 $75.00 $0.00 " + " ".join(["$0.00"] * 6)
+    parsed, _ = _parse_statement_lines([settled, "1234567 PO-1 / 58 desc"])
+    assert parsed[0].aging_bucket == "current"
+
+
 def test_normal_row_still_parses():
     row = ("7654321 REP 02/20/2026 $500.00 $500.00 $500.00 $0.00 "
            "$0.00 $0.00 $0.00 $0.00")
