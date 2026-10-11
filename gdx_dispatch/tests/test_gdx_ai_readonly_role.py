@@ -1,8 +1,9 @@
 """Sprint 1.x-S1 — verify the gdx_ai_readonly role on a paved Postgres tenant.
 
 Skips on SQLite. Requires TEST_DATABASE_URL to point at a paved tenant DB with
-the role already bootstrapped (run pave_tenant_db.py with
-TENANT_AI_READONLY_PASSWORD set first).
+the role already created and granted. Nothing in this tree creates it:
+pave_tenant_db.py carries an existing role's GRANTs across a pave, and refuses
+to run with TENANT_AI_READONLY_PASSWORD set (GDXA-531).
 
 Two ways to use:
   - Set TEST_DATABASE_URL to a URL whose user is gdx_ai_readonly. The test
