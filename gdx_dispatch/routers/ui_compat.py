@@ -26,12 +26,13 @@ dead copies, and the dead-duplicates removal of 2026-09-06 deleted the one shim
 that won (#571 — admin_ops serves that path now) and the communications pair
 (#459), and #653 deleted the `POST /api/jobs/{job_id}/line-items` copy —
 a `_ok_with_id()` fabricated success that would have written nothing had the
-include order ever changed. Today ui_compat collides on exactly **one** path
-and LOSES it: `POST /api/customers/bulk-tag` (sub_resources is included
-first). That one is #570's; the handler here for it never executes.
+include order ever changed. The last collision, `POST /api/customers/bulk-tag`
+(which ui_compat lost to sub_resources), went on 2026-09-12 when #462 / #570
+deleted the handler here (see "Customers bulk actions" below). Today ui_compat
+collides on **zero** paths; route_shadow_baseline.txt holds no entries.
 
-So one of this router's registrations never executes. Reading a handler
-here tells you nothing about what the browser receives — check
+Should a collision come back, reading a handler here tells you nothing about
+what the browser receives — check
 `gdx_dispatch/tools/route_shadow_scan.py` output first. That scanner was itself
 blind until 2026-08-24 (it walked `app.routes` flat and saw 10 of 1442 routes,
 reporting zero shadows against 43 real ones); it now recurses the lazy
@@ -457,7 +458,7 @@ def run_payroll_current(
 #
 # `POST /api/customers/bulk-tag` removed 2026-09-12 (#462 / #570). It raised a
 # 501 "not implemented", which was the HONEST answer — and it never ran. This
-# router is included at app.py:1584, behind sub_resources at :1579, so the copy
+# router is included in app.py after sub_resources, so the copy
 # that served was sub_resources', and that one returned
 # `{"ok": True, "tagged": len(ids)}` while writing nothing at all.
 #
