@@ -44,7 +44,7 @@ from gdx_dispatch.models.tenant_models import Customer, Invoice, Job, Technician
 from gdx_dispatch.modules.equipment.models import CustomerEquipment
 
 NOW = datetime.now(timezone.utc)
-ADMIN_EMAIL = os.getenv("GDX_ADMIN_EMAIL", "demo@gdxdispatch.com")
+ADMIN_EMAIL = os.getenv("GDX_ADMIN_EMAIL", "demo@gdxdispatch.com")  # pii-ok: public demo login
 # Shared demo password — same one the landing buttons use for every role.
 DEMO_PASSWORD = os.getenv("GDX_ADMIN_PASSWORD", "GdxDemo2026!")
 
@@ -52,8 +52,8 @@ DEMO_PASSWORD = os.getenv("GDX_ADMIN_PASSWORD", "GdxDemo2026!")
 # role strings per core/roles.py; werkzeug hash is accepted by /auth/login.
 #   (email, role, full_name, schedulable)
 ROLE_USERS = [
-    ("dispatch@gdxdispatch.com", "dispatcher", "Dana Dispatch", False),
-    ("tech@gdxdispatch.com", "technician", "Tyler Tech", True),
+    ("dispatch@gdxdispatch.com", "dispatcher", "Dana Dispatch", False),  # pii-ok: public demo login
+    ("tech@gdxdispatch.com", "technician", "Tyler Tech", True),  # pii-ok: public demo login
 ]
 
 # (name, email, phone, address, customer_type, pricing_class)

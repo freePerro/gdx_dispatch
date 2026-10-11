@@ -84,7 +84,7 @@ services:
       GDX_BASE_URL: ${GDX_BASE_URL:-https://gdxdispatch.com}
       # Bootstrap a known admin on first boot; the seed script then clears
       # must_change_password so the shared demo login works directly.
-      GDX_ADMIN_EMAIL: ${GDX_ADMIN_EMAIL:-demo@gdxdispatch.com}
+      GDX_ADMIN_EMAIL: ${GDX_ADMIN_EMAIL:-demo@gdxdispatch.com}  # pii-ok: public demo login
       # Plugin storefront catalog. Empty falls back to the built-in default.
       GDX_PLUGIN_CATALOG_URL: ${GDX_PLUGIN_CATALOG_URL:-}
       GDX_ADMIN_PASSWORD: ${GDX_ADMIN_PASSWORD:?set GDX_ADMIN_PASSWORD in .env.demo}
