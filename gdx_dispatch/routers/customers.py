@@ -2009,13 +2009,13 @@ def merge_customers(
     uid = _user_id(user)
     now = datetime.now(timezone.utc)
 
-    # ensure_audit_table COMMITS on first use per engine (audit.py:320) — or,
-    # on a Postgres without the guard function, ROLLS BACK. `audit_or_rollback`
-    # calls it lazily on the way in, which means it fires AFTER the FK sweep
-    # and soft-delete are staged: it would commit a half-done merge before the
-    # audit row exists, and the rollback below would roll back nothing.
-    # Every other audited handler in this file hoists it for exactly this
-    # reason; this one copied the pattern and left its prerequisite behind.
+    # Until GDXA-352 (2026-10-06) ensure_audit_table COMMITTED on first use per
+    # engine — or, on a Postgres without the guard function, ROLLED BACK — and
+    # `audit_or_rollback` calls it lazily, AFTER the FK sweep and soft-delete
+    # are staged: it committed a half-done merge before the audit row existed.
+    # It no longer touches open work (`core/audit.py`), and a route dependency
+    # has already opened the transaction by here, so the hoist is harmless now,
+    # not what keeps the merge atomic.
     ensure_audit_table(db)
 
     # Verify keep customer exists. CAST + both uuid spellings: Postgres renders
@@ -2192,11 +2192,11 @@ async def make_contact_primary(
     live primary per customer — enforced here, the single writer."""
     from gdx_dispatch.models.tenant_models import CustomerContact
 
-    # ensure_audit_table COMMITS on first use per engine (`audit.py:320`). Left
-    # to run lazily from inside log_audit_event_sync it would harden this
-    # handler's staged row before the audit row is written, and
-    # audit_or_rollback would have nothing left to roll back. Run it here, where
-    # committing has nothing to disturb; every later call is a no-op.
+    # Until GDXA-352 (2026-10-06) ensure_audit_table COMMITTED on first use per
+    # engine, so run lazily it hardened this handler's staged row before the
+    # audit row was written. It no longer touches open work (`core/audit.py`),
+    # and a route dependency has already opened the transaction by here, so
+    # the hoist is harmless now, not what keeps this handler atomic.
     ensure_audit_table(db)
     _assert_customer_exists(db, customer_id)
     target = db.execute(
@@ -2346,11 +2346,11 @@ async def create_customer_contact(
     """
     from gdx_dispatch.models.tenant_models import CustomerContact
 
-    # ensure_audit_table COMMITS on first use per engine (`audit.py:320`). Left
-    # to run lazily from inside log_audit_event_sync it would harden this
-    # handler's staged row before the audit row is written, and
-    # audit_or_rollback would have nothing left to roll back. Run it here, where
-    # committing has nothing to disturb; every later call is a no-op.
+    # Until GDXA-352 (2026-10-06) ensure_audit_table COMMITTED on first use per
+    # engine, so run lazily it hardened this handler's staged row before the
+    # audit row was written. It no longer touches open work (`core/audit.py`),
+    # and a route dependency has already opened the transaction by here, so
+    # the hoist is harmless now, not what keeps this handler atomic.
     ensure_audit_table(db)
     _assert_customer_exists(db, customer_id)
 
@@ -2420,11 +2420,11 @@ async def update_customer_contact(
     not a contact row. A typo'd contact email meant delete and re-add, which
     threw away the created_at and the audit thread with it.
     """
-    # ensure_audit_table COMMITS on first use per engine (`audit.py:320`). Left
-    # to run lazily from inside log_audit_event_sync it would harden this
-    # handler's staged row before the audit row is written, and
-    # audit_or_rollback would have nothing left to roll back. Run it here, where
-    # committing has nothing to disturb; every later call is a no-op.
+    # Until GDXA-352 (2026-10-06) ensure_audit_table COMMITTED on first use per
+    # engine, so run lazily it hardened this handler's staged row before the
+    # audit row was written. It no longer touches open work (`core/audit.py`),
+    # and a route dependency has already opened the transaction by here, so
+    # the hoist is harmless now, not what keeps this handler atomic.
     ensure_audit_table(db)
     _assert_customer_exists(db, customer_id)
     contact = _load_contact(db, customer_id, contact_id)
@@ -2506,11 +2506,11 @@ async def delete_customer_contact(
     """Soft-delete — invariant #2. The row carries `deleted_at`, so it stays
     for the audit trail; a person who left the account should stop appearing in
     recipient pickers, not vanish from the record of who was emailed."""
-    # ensure_audit_table COMMITS on first use per engine (`audit.py:320`). Left
-    # to run lazily from inside log_audit_event_sync it would harden this
-    # handler's staged row before the audit row is written, and
-    # audit_or_rollback would have nothing left to roll back. Run it here, where
-    # committing has nothing to disturb; every later call is a no-op.
+    # Until GDXA-352 (2026-10-06) ensure_audit_table COMMITTED on first use per
+    # engine, so run lazily it hardened this handler's staged row before the
+    # audit row was written. It no longer touches open work (`core/audit.py`),
+    # and a route dependency has already opened the transaction by here, so
+    # the hoist is harmless now, not what keeps this handler atomic.
     ensure_audit_table(db)
     _assert_customer_exists(db, customer_id)
     contact = _load_contact(db, customer_id, contact_id)

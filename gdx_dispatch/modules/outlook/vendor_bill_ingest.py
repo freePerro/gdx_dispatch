@@ -43,6 +43,18 @@ import anthropic
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError
+
+# Re-exported: these live in a leaf module so ``outlook.tasks`` can import them
+# while this one is still half-loaded (see vendor_bill_rules' docstring).
+from gdx_dispatch.modules.outlook.vendor_bill_rules import (  # noqa: F401
+    LLM_BROKEN,
+    is_candidate,
+    is_pdf_attachment,
+    new_totals,
+    normalize_allowlist,
+    sender_allowed,
+)
+from gdx_dispatch.modules.outlook.vendor_bill_rules import from_address as _from_address
 from gdx_dispatch.modules.vendor_invoices.parsers.midwest_invoice import MidwestInvoiceParseError
 from gdx_dispatch.modules.vendor_invoices.service import (
     LLMExtractionError,
@@ -64,84 +76,10 @@ from gdx_dispatch.modules.vendor_statements.service import ingest_midwest_statem
 
 log = logging.getLogger("gdx_dispatch.modules.outlook.vendor_bill_ingest")
 
-_FILE_ATTACHMENT = "#microsoft.graph.fileAttachment"
-
-# Sentinel for "the tenant HAS an LLM key but the client couldn't be built"
-# (Fernet rotation incident, SDK failure). Distinct from None (= no key = rung
-# deliberately off): a broken rung counts parser-rejected PDFs as retryable
-# ERRORS so their messages stay un-checkpointed until the incident is fixed —
-# never as unparseable, which would stamp them permanently skipped.
-LLM_BROKEN = object()
-
 # Anthropic status codes that mean THIS DOCUMENT is unprocessable (encrypted,
 # corrupt, >100 pages, oversized request) — deterministic, no point retrying.
 # Everything else (401/403 key incident, 429 throttle, 5xx) is retryable.
 _LLM_DETERMINISTIC_STATUS = frozenset({400, 404, 413, 422})
-
-
-def normalize_allowlist(allowlist: list[str] | None) -> list[str]:
-    return [str(a).strip().lower() for a in (allowlist or []) if str(a).strip()]
-
-
-def sender_allowed(from_address: str | None, allowlist: list[str]) -> bool:
-    """True if ``from_address`` matches an allowlist entry — either the full
-    address or its domain (an entry with no ``@`` is treated as a domain)."""
-    if not from_address:
-        return False
-    addr = from_address.strip().lower()
-    if not addr:
-        return False
-    domain = addr.split("@", 1)[1] if "@" in addr else ""
-    for entry in allowlist:
-        if entry == addr:
-            return True
-        if "@" not in entry and domain and (domain == entry or domain.endswith("." + entry)):
-            return True
-    return False
-
-
-def is_pdf_attachment(att: dict[str, Any]) -> bool:
-    if att.get("@odata.type") != _FILE_ATTACHMENT:
-        return False
-    ctype = (att.get("contentType") or "").lower()
-    name = (att.get("name") or "").lower()
-    return ctype == "application/pdf" or name.endswith(".pdf")
-
-
-def _from_address(message: dict[str, Any]) -> str | None:
-    return ((message.get("from") or {}).get("emailAddress") or {}).get("address")
-
-
-def is_candidate(message: dict[str, Any], allowlist: list[str]) -> bool:
-    """Cheap pre-filter (no Graph call): an allowlisted sender WITH attachments.
-    Used by the sync to collect candidates, which are then ingested in a
-    SEPARATE transaction — never inside the folder-sync transaction, because
-    ``upload_midwest_invoice`` owns flush/rollback/disk-I/O and would otherwise
-    reach through and discard the sync's un-committed message mirror while the
-    delta token still advances (silent gap)."""
-    if not allowlist or not message.get("hasAttachments"):
-        return False
-    return sender_allowed(_from_address(message), allowlist)
-
-
-def new_totals() -> dict[str, int]:
-    """The zero counters every ingest call/aggregate uses. ``capped`` counts
-    messages whose PDF set was cut short by ``max_downloads``; ``llm_capped``
-    counts messages with parser-unreadable PDFs left unprocessed because the
-    per-run LLM ceiling was reached. The ``statement*`` keys count rung 1b
-    (vendor statements of account) separately from bills — a statement is not
-    a payable and must never inflate the ``ingested`` count the office reads as
-    "new bills to review", and neither must an order confirmation, which is a
-    commitment rather than a debt. The ``*_unparseable`` keys are the ones to
-    watch: each means a document the supplier's own letterhead and title
-    identify as ours was dropped because the parser couldn't read it."""
-    return {
-        "ingested": 0, "duplicate": 0, "unparseable": 0, "errors": 0,
-        "downloads": 0, "capped": 0,
-        "llm_extractions": 0, "ingested_llm": 0, "llm_capped": 0,
-        "statements": 0, "statement_duplicate": 0, "statement_unparseable": 0,
-        "orders": 0, "order_duplicate": 0, "order_unparseable": 0,
-    }
 
 
 def ingest_message_attachments(

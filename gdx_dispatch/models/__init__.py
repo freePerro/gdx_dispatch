@@ -142,6 +142,15 @@ with suppress(ImportError):
     )
     from gdx_dispatch.modules.vendor_statements.models import VendorStatement, VendorStatementLine  # noqa: F401
 with suppress(ImportError):
+    # 2026-10-11 — these rode in only through outlook.tasks -> vendor_bill_ingest
+    # until GDXA-587 cut that chain; create_orm_tables() needs them before
+    # migration 078 updates vendor_invoices.
+    from gdx_dispatch.modules.vendor_invoices.models import (  # noqa: F401
+        VendorBillPayment,
+        VendorInvoice,
+        VendorInvoiceLine,
+    )
+with suppress(ImportError):
     from gdx_dispatch.modules.door_listings.models import DoorListing, DoorListingPhoto  # noqa: F401
 with suppress(ImportError):
     from gdx_dispatch.modules.quote_requests.models import QuoteRequest, QuoteRequestPhoto  # noqa: F401
