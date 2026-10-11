@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import random
-from datetime import datetime
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -10,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import SYSTEM_ACTOR, log_audit_event, utcnow
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.modules.inventory.models import Part
 from gdx_dispatch.modules.purchase_orders.models import InventoryPurchaseOrder as PurchaseOrder
 from gdx_dispatch.modules.purchase_orders.models import InventoryPurchaseOrderLine as PurchaseOrderLine
@@ -20,7 +20,7 @@ def _audit(db: Session, event_type: str, po_id: UUID, payload: dict, actor: str 
 
 
 def create_po(vendor_name: str, job_id: UUID | None, lines: list[dict], db: Session) -> PurchaseOrder:
-    po = PurchaseOrder(po_number=f"PO-{datetime.now().strftime('%Y%m%d')}-{random.randint(1000, 9999)}", vendor_name=vendor_name, job_id=job_id)
+    po = PurchaseOrder(po_number=f"PO-{shop_today_from_settings(db).strftime('%Y%m%d')}-{random.randint(1000, 9999)}", vendor_name=vendor_name, job_id=job_id)
     db.add(po); db.flush()  # noqa: E701,E702
     total = 0.0
     for line in lines:
