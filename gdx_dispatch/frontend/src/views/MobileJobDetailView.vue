@@ -1157,7 +1157,7 @@ const fixSourceLabel = computed(() => {
 })
 
 function openFixSite() {
-  fixSite.address = displaySiteAddress.value || ''
+  fixSite.address = fixSiteStreet.value || ''
   fixSite.applyTo = 'source'
   fixSiteOpen.value = true
 }
@@ -1174,7 +1174,7 @@ async function saveFixSite() {
         // What the tech was LOOKING AT — text AND target. A stale offline
         // replay must not clobber a newer fix, and equal text must not
         // route to a row the tech was never shown (server 422s on either).
-        expected_address: displaySiteAddress.value || null,
+        expected_address: fixSiteStreet.value || null,
         expected_source: job.value?.site_source || null,
       },
       { actionType: 'job.site_fix', resourceId: String(job.value.id) },
@@ -1185,6 +1185,11 @@ async function saveFixSite() {
       // stale server state — a screen that still says the old address reads
       // as "didn't take" and invites a second, self-conflicting queue entry
       // (post-code audit §5). Reconciles on the post-drain refresh.
+      // The town shown belongs to the old street (GDXA-503): keep it only
+      // when the street went back untouched.
+      if (fixSite.address.trim() !== (job.value.site_address || '').trim()) {
+        job.value.site_full_address = null
+      }
       job.value.site_address = fixSite.address.trim()
       toast.add({ severity: 'warn', summary: 'Saved offline', detail: 'Will apply when you have signal — the address shown is your pending fix.', life: 4000 })
     } else {
@@ -1433,6 +1438,17 @@ const navigationLink = computed(() => job.value?.navigation_link || null)
 // site_address nor site_address_missing — degrade to the customer address
 // there (the pre-field behavior) rather than blanking the row in a dead zone.
 const displaySiteAddress = computed(() => {
+  // Street + town (GDXA-503); site_address is the street alone.
+  if (job.value?.site_full_address) return job.value.site_full_address
+  if (job.value?.site_address) return job.value.site_address
+  if (job.value?.site_address_missing) return null
+  return customer.value?.address || null
+})
+// The fix sheet edits the STREET: the stale-replay guard compares it
+// (expected_address vs JobSite.address) and a new site matches existing rows
+// by street, so a town suffix would 422 the one and duplicate rows in the
+// other. The town columns are left alone by an unmoved save.
+const fixSiteStreet = computed(() => {
   if (job.value?.site_address) return job.value.site_address
   if (job.value?.site_address_missing) return null
   return customer.value?.address || null

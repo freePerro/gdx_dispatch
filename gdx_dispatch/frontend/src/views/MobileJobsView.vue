@@ -154,7 +154,7 @@ async function load() {
       // is only the fallback for payloads predating the field. A bound site
       // WITHOUT an address must show the ask-dispatch empty state, never the
       // customer HQ (D2 — caught live in the 2026-08-18 browser walk).
-      display_address: j.site_address
+      display_address: j.site_full_address || j.site_address
         || (j.site_address_missing ? '' : (j.customer_address || j.customer?.address || '')),
     }))
   } catch (err) {
