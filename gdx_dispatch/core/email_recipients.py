@@ -86,7 +86,8 @@ def resolve_recipient(
         # otherwise aborts the caller's transaction, so the fallthrough below
         # still returns the account address, the email still goes out, and then
         # the caller's status flip cannot be written. (Not the outbound_emails
-        # row — `_record_outbound` commits that on a separate Session.) Both
+        # row — on Postgres `_record_outbound` always commits that on a
+        # separate Session.) Both
         # reads are inside one block: they are alternatives, so the first one's
         # failure means the second is about to hit the same broken table.
         with contained_read(db):

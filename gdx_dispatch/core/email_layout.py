@@ -138,8 +138,9 @@ def email_branding(db: Session) -> dict[str, str]:
         # customer gets the unbranded email this handler promises AND the
         # caller's status flip is lost at commit. The degradation below is the
         # intended behaviour; the silent loss behind it was not. (The
-        # outbound_emails row is NOT the casualty — `_record_outbound` commits
-        # that on its own Session — so the cost is the business write.)
+        # outbound_emails row is NOT the casualty — on Postgres
+        # `_record_outbound` always commits that on its own Session — so the
+        # cost is the business write.)
         with contained_read(db):
             settings = db.query(AppSettings).first()
         if settings:
