@@ -339,3 +339,26 @@ def test_apply_under_existing_lock_keeps_the_global_audit_chain(world):
     assert {r.action for r in rows} >= {"gl_posted_into_locked_period", "gl_opening_applied"}
     assert all(len(r.row_hash or "") == 64 for r in rows)
     assert verify_audit_chain(db) is True
+
+
+def test_apply_records_a_seed_top_up_it_performed(world):
+    """GDXA-499: ``apply_opening`` runs ``ensure_gl_seed``; a top-up that
+    rewrote the payment-method map was committed under ``gl_opening_applied``
+    alone, which names nothing about the map."""
+    from gdx_dispatch.core.audit import AuditLog, audit_ready_db
+    from gdx_dispatch.modules.ledger.router import OpeningApplyIn, opening_apply
+    from gdx_dispatch.modules.ledger.service import get_gl_settings
+
+    db, _account = world
+    get_gl_settings(db, COMPANY).payment_method_role_map = {}
+    db.commit()
+
+    opening_apply(
+        OpeningApplyIn(expected_cutover=date(2026, 7, 1), expected_reversals=0),
+        user={"tenant_id": COMPANY, "sub": "doug"}, _perm=None, db=audit_ready_db(db),
+    )
+
+    rows = db.scalars(select(AuditLog).where(AuditLog.action == "gl_settings_reinitialized")).all()
+    assert len(rows) == 1
+    assert rows[0].user_id == "doug"
+    assert rows[0].details["fields"] == ["payment_method_role_map"]

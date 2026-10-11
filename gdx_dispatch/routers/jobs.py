@@ -24,7 +24,7 @@ from gdx_dispatch.core.holding_areas import holding_area_id_by_name as _holding_
 from gdx_dispatch.core.invoice_paid import paid_amount_sq, paid_to_date_bulk
 from gdx_dispatch.core.job_access import can_read_job, job_write_denial
 from gdx_dispatch.core.job_display_state import derive_job_display_state
-from gdx_dispatch.core.job_site import resolve_job_sites
+from gdx_dispatch.core.job_site import resolve_job_site, resolve_job_sites
 from gdx_dispatch.core.job_taxonomy import SERVICE_CALL, canonical_job_type
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.part_pricing import (
@@ -821,6 +821,9 @@ def list_jobs(
         _site = _sites.get(str(d.get("id")))
         d["site_label"] = _site.label if _site else None
         d["site_address"] = _site.address if _site else None
+        # Street + town (GDXA-502): what a person reads and a map link
+        # carries. site_address stays the street for the fix-address compare.
+        d["site_full_address"] = _site.full_address if _site else None
         d["site_address_missing"] = bool(_site.address_missing) if _site else False
         d["status_raw"] = d.get("status")
         d["lifecycle_stage_raw"] = d.get("lifecycle_stage")
@@ -4405,6 +4408,15 @@ def get_job(job_id: str, request: Request, current_user: Any = Depends(get_curre
         else:
             d["location_label"] = None
             d["location_address"] = None
+        # Effective jobsite, the same contract as the list's site_* fields
+        # (core/job_site.py). JobDetailView reads site_full_address so its
+        # address line and map link carry the town the location row holds
+        # in separate columns (GDXA-502).
+        _site = resolve_job_site(db, job.id, job.location_id, job.customer_id)
+        d["site_label"] = _site.label
+        d["site_address"] = _site.address
+        d["site_full_address"] = _site.full_address
+        d["site_address_missing"] = bool(_site.address_missing)
         # Canonical display state (Slice 4 Wave 0a) — same source of truth
         # as the list endpoint, computed from the RAW lifecycle_stage.
         d["display_state"] = _display_state_for_jobs(
