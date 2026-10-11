@@ -13,6 +13,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.invoice_net_billed import invoice_net_billed_sq, invoice_net_billed_sql
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pay_periods import (
     resolve_zone,
@@ -249,6 +250,11 @@ def _credits_total(db: Session, start_ts, end_ts) -> float:
             FROM invoice_adjustments a
             JOIN invoices i ON i.id = a.invoice_id
             WHERE a.kind = 'credit_memo'
+              -- GDXA-593: the same universe as _credits_by_period. A void
+              -- reverses the credit's GL entries but leaves its row, so a
+              -- voided invoice's credit would otherwise net against revenue
+              -- that no longer counts it (/summary, snapshot, funnel read -20).
+              AND i.status != 'void'
               AND i.deleted_at IS NULL
               AND a.created_at >= :start_ts
               AND a.created_at < :end_ts
@@ -447,6 +453,9 @@ def top_customers(
     user_supplied_range = bool(start_date or end_date)
     window = _resolve_date_range(db, start_date, end_date)
     start_dt, end_dt, end_date_resolved = window.start_ts, window.end_ts, window.end_date
+    # GDXA-593: a customer's revenue is each invoice net of its own credit
+    # memos (core/invoice_net_billed.py). The average stays the average
+    # invoice BILLED, as in revenue_by_period.
     sql = text(
         f"""
         SELECT
@@ -456,7 +465,7 @@ def top_customers(
             c.phone AS customer_phone,
             COUNT(DISTINCT i.id) AS invoice_count,
             COUNT(DISTINCT j.id) AS job_count,
-            COALESCE(SUM({_revenue_amount_sql("i")}), 0) AS total_revenue,
+            COALESCE(SUM({invoice_net_billed_sql("i")}), 0) AS total_revenue,
             COALESCE(AVG({_revenue_amount_sql("i")}), 0) AS avg_invoice,
             MAX(i.created_at) AS last_invoice_at
         FROM invoices i
@@ -820,7 +829,8 @@ def daily_snapshot(
     today = resolved_end
 
     # Revenue billed in the window. Same semantics as /summary —
-    # invoice_date with created_at fallback, billed-statuses only.
+    # invoice_date with created_at fallback, billed-statuses only, and credit
+    # memos netted on the day they were issued (GDXA-593; see the return).
     _amount = Invoice.total
     _rev_date = _revenue_date_expr()
     _start_d, _end_d = window.start_d, window.end_d
@@ -899,7 +909,7 @@ def daily_snapshot(
     ).mappings().first()
 
     return {
-        "today_revenue": float(today_revenue),
+        "today_revenue": float(today_revenue) - _credits_total(db, *_ledger_edges(window)),
         "jobs_completed_today": int(jobs_completed_today),
         "new_jobs_today": int(new_jobs_today),
         "assigned_jobs_today": int(assigned_jobs_today),
@@ -921,10 +931,11 @@ def job_profitability(
     window = _resolve_date_range(db, start_date, end_date)
     start_dt, end_dt = window.start_ts, window.end_ts
 
-    # Revenue per job via ORM — uses Invoice.total (canonical column); HAVING filters zero-revenue jobs
-    _inv_revenue = func.coalesce(
-        func.sum(Invoice.total), 0
-    ).label("revenue")
+    # Revenue per job via ORM; HAVING filters zero-revenue jobs. GDXA-593: each
+    # invoice counts net of its own credit memos (core/invoice_net_billed.py) —
+    # a credit memo lowers balance_due and never Invoice.total.
+    _inv_net = func.coalesce(func.sum(invoice_net_billed_sq()), 0)
+    _inv_revenue = _inv_net.label("revenue")
 
     rows = db.execute(
         select(
@@ -947,12 +958,8 @@ def job_profitability(
             Job.created_at < end_dt,
         )
         .group_by(Job.id, Job.title, Customer.name)
-        .having(
-            func.coalesce(func.sum(Invoice.total), 0) > 0
-        )
-        .order_by(
-            func.coalesce(func.sum(Invoice.total), 0).desc()
-        )
+        .having(_inv_net > 0)
+        .order_by(_inv_net.desc())
     ).mappings().all()
 
     return {
@@ -982,15 +989,16 @@ def technician_performance(
     # GDXA-538: "completed" is lifecycle_stage, the done signal (GDXA-227).
     # The legacy status varchar missed 'Completed' and NULL-status (imported)
     # rows. Revenue is one row per invoice under its job, so a job with two
-    # invoices sums both once each; jobs count DISTINCT.
+    # invoices sums both once each; jobs count DISTINCT. GDXA-593: each
+    # invoice counts net of its own credit memos.
     rows = db.execute(
         text(
-            """
+            f"""
             SELECT
                 t.id AS technician_id,
                 t.name AS technician_name,
                 COUNT(DISTINCT CASE WHEN j.lifecycle_stage = 'completed' THEN j.id END) AS jobs_completed,
-                COALESCE(SUM(ih.total), 0) AS revenue
+                COALESCE(SUM(CASE WHEN ih.id IS NOT NULL THEN {invoice_net_billed_sql("ih")} END), 0) AS revenue
             FROM technicians t
             LEFT JOIN jobs j
                 ON (CAST(j.assigned_to AS TEXT) = CAST(t.id AS TEXT) OR CAST(j.assigned_to AS TEXT) = CAST(t.user_id AS TEXT))
@@ -1006,7 +1014,7 @@ def technician_performance(
             GROUP BY t.id, t.name
             HAVING COUNT(DISTINCT j.id) > 0
             ORDER BY revenue DESC
-            """
+            """  # noqa: S608 — interpolation is the net-billed constant over a fixed alias; user input is bound
         ),
         {"start_dt": start_dt, "end_dt": end_dt},
     ).mappings().all()
@@ -1034,28 +1042,32 @@ def revenue_analytics(
     window = _resolve_date_range(db, start_date, end_date)
     start_dt, end_dt = window.start_ts, window.end_ts
 
-    # Revenue by date — text(); CAST(created_at AS DATE) is portable across SQLite + PostgreSQL
+    # Revenue by date — text(); CAST(created_at AS DATE) is portable across SQLite + PostgreSQL.
+    # GDXA-593: by_period and by_job_type ship in one payload and must share
+    # one revenue definition (M8), so both net each invoice's own credit memos
+    # at the invoice's billed date. /revenue-by-period instead dates a credit
+    # on the day it was issued, as the GL does; the two differ only when a
+    # credit is issued in a different window than its invoice.
     by_period = db.execute(
         text(
             f"""
             SELECT
-                {_revenue_date_sql()} AS period,
-                COALESCE(SUM({_revenue_amount_sql()}), 0) AS revenue
-            FROM invoices
-            WHERE {_revenue_where_sql()}
-              AND {_revenue_date_sql()} >= :start_d
-              AND {_revenue_date_sql()} < :end_d
-            GROUP BY {_revenue_date_sql()}
+                {_revenue_date_sql("i")} AS period,
+                COALESCE(SUM({invoice_net_billed_sql("i")}), 0) AS revenue
+            FROM invoices i
+            WHERE {_revenue_where_sql("i")}
+              AND {_revenue_date_sql("i")} >= :start_d
+              AND {_revenue_date_sql("i")} < :end_d
+            GROUP BY {_revenue_date_sql("i")}
             ORDER BY period
             """  # noqa: S608 — interpolation is constants only; user input is bound
         ),
         {"start_d": window.start_d, "end_d": window.end_d},
     ).mappings().all()
 
-    # Revenue by job type — ORM; uses Invoice.total (canonical) with fallback to total_amount
-    _rev = func.coalesce(
-        func.sum(Invoice.total), 0
-    ).label("revenue")
+    # Revenue by job type — ORM, each invoice net of its credit memos (GDXA-593)
+    _rev_net = func.coalesce(func.sum(invoice_net_billed_sq()), 0)
+    _rev = _rev_net.label("revenue")
     by_type = db.execute(
         select(
             func.coalesce(Job.job_type, "Unknown").label("job_type"),
@@ -1080,9 +1092,7 @@ def revenue_analytics(
             Job.created_at < end_dt,
         )
         .group_by(func.coalesce(Job.job_type, "Unknown"))
-        .order_by(
-            func.coalesce(func.sum(Invoice.total), 0).desc()
-        )
+        .order_by(_rev_net.desc())
     ).mappings().all()
 
     total_revenue = sum(float(r.get("revenue") or 0) for r in by_period)
@@ -1109,10 +1119,9 @@ def customer_ltv(
     window = _resolve_date_range(db, start_date, end_date)
     start_dt, end_dt = window.start_ts, window.end_ts
 
-    # Customer lifetime value — ORM
-    _ltv = func.coalesce(
-        func.sum(Invoice.total), 0
-    ).label("lifetime_value")
+    # Customer lifetime value — ORM, each invoice net of its credit memos (GDXA-593)
+    _ltv_net = func.coalesce(func.sum(invoice_net_billed_sq()), 0)
+    _ltv = _ltv_net.label("lifetime_value")
 
     rows = db.execute(
         select(
@@ -1138,9 +1147,7 @@ def customer_ltv(
         .where(Customer.deleted_at.is_(None))
         .group_by(Customer.id, Customer.name)
         .having(func.count(func.distinct(Job.id)) > 0)
-        .order_by(
-            func.coalesce(func.sum(Invoice.total), 0).desc()
-        )
+        .order_by(_ltv_net.desc())
     ).mappings().all()
 
     return {
@@ -1280,9 +1287,13 @@ def _sold_window(db: Session, start: datetime, end: datetime) -> dict:
 
 def _billed_window(db: Session, start_d: date, end_d: date) -> dict:
     """Sum invoice revenue (sent/paid/overdue) in [start_d, end_d) using
-    coalesce(invoice_date, created_at::date) — same anchor as /summary."""
+    coalesce(invoice_date, created_at::date) — same anchor as /summary, and
+    like /summary nets the credit memos issued in the window (GDXA-593)."""
     _amount = Invoice.total
     _rev_date = _revenue_date_expr()
+    credited = _credits_total(
+        db, _shop_midnight_utc(start_d, UTC).isoformat(), _shop_midnight_utc(end_d, UTC).isoformat()
+    )
     row = db.execute(
         select(
             func.coalesce(func.sum(_amount), 0).label("revenue"),
@@ -1295,7 +1306,7 @@ def _billed_window(db: Session, start_d: date, end_d: date) -> dict:
         )
     ).mappings().first() or {}
     return {
-        "revenue": float(row.get("revenue") or 0),
+        "revenue": float(row.get("revenue") or 0) - credited,
         "count": int(row.get("count") or 0),
     }
 
@@ -1826,7 +1837,9 @@ def export_report(
         # register, where a draft or void is a row you want to SEE.
         "invoices": f"SELECT id, invoice_number, status, {_revenue_amount_sql()} AS total, balance_due, due_date, {_revenue_date_sql()} AS invoice_date FROM invoices WHERE deleted_at IS NULL AND {_revenue_date_sql()} >= :start_d AND {_revenue_date_sql()} < :end_d",  # noqa: S608 — constants only; dates are bound
         "customers": "SELECT id, name, email, phone, created_at FROM customers WHERE deleted_at IS NULL AND created_at >= :start_dt AND created_at < :end_dt",
-        "revenue": f"SELECT {_revenue_date_sql()} as date, COUNT(*) as invoice_count, COALESCE(SUM({_revenue_amount_sql()}),0) as revenue FROM invoices WHERE {_revenue_where_sql()} AND {_revenue_date_sql()} >= :start_d AND {_revenue_date_sql()} < :end_d GROUP BY {_revenue_date_sql()} ORDER BY 1",  # noqa: S608 — constants only; dates are bound
+        # GDXA-593: the register above shows each invoice's total as issued;
+        # the revenue summary nets each invoice's own credit memos.
+        "revenue": f"SELECT {_revenue_date_sql()} as date, COUNT(*) as invoice_count, COALESCE(SUM({invoice_net_billed_sql("invoices")}),0) as revenue FROM invoices WHERE {_revenue_where_sql()} AND {_revenue_date_sql()} >= :start_d AND {_revenue_date_sql()} < :end_d GROUP BY {_revenue_date_sql()} ORDER BY 1",  # noqa: S608 — constants only; dates are bound
     }
 
     result = db.execute(text(queries[report_type]), params)
