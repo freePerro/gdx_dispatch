@@ -1163,8 +1163,9 @@ def billing_summary(
       Drafts excluded because they aren't yet receivables (S111 fix).
     - overdue: SUM(balance_due) for invoices past due_date with status
       not in (paid, void, draft).
-    - paid_this_month: SUM(total) of invoices paid in the current
-      calendar month (paid_at >= 1st of month).
+    - paid_this_month: SUM(total net of credit memos) of invoices paid in
+      the current calendar month (paid_at >= 1st of month). A $100 invoice
+      with a $20 credit memo closes on $80 and counts as $80 (GDXA-592).
     - ready_for_billing: count of completed jobs that have no invoice yet.
 
     Balance sums use COALESCE(balance_due, total) so legacy rows with a null
@@ -1202,8 +1203,9 @@ def billing_summary(
         )
     ) or 0)
 
+    from gdx_dispatch.core.invoice_net_billed import invoice_net_billed_sq
     paid_this_month = float(db.scalar(
-        select(func.coalesce(func.sum(_amount), 0)).where(
+        select(func.coalesce(func.sum(invoice_net_billed_sq()), 0)).where(
             Invoice.deleted_at.is_(None),
             Invoice.status == "paid",
             Invoice.paid_at.is_not(None),
