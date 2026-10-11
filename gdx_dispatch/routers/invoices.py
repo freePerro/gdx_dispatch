@@ -1181,11 +1181,15 @@ def billing_summary(
     # the shop's today. "This month" is the shop's month too (GDXA-505): on
     # the last evening of a month the UTC date is already the 1st, and the
     # KPI emptied out five hours early. paid_at is still read by its UTC day
-    # (the cast below) because a backdated payment stores its day as a UTC
-    # midnight stamp; a card paid after ~7pm Central on a month's last day
-    # therefore still counts toward the next month.
+    # (the UTC-midnight bound below) because a backdated payment stores its
+    # day as a UTC midnight stamp; a card paid after ~7pm Central on a
+    # month's last day therefore still counts toward the next month.
+    # GDXA-656: compare the timestamp itself, never CAST(paid_at AS DATE) —
+    # SQLite casts a stored timestamp to DATE as the number 2026, and
+    # Postgres casts a timestamptz on the session timezone, not UTC.
     today = shop_today_from_settings(db)
     month_start = today.replace(day=1)
+    month_start_utc = datetime.combine(month_start, _datetime.time.min, tzinfo=UTC)
     _amount = Invoice.total
     _balance = func.coalesce(Invoice.balance_due, _amount)
 
@@ -1213,7 +1217,7 @@ def billing_summary(
             Invoice.deleted_at.is_(None),
             Invoice.status == "paid",
             Invoice.paid_at.is_not(None),
-            func.cast(Invoice.paid_at, Invoice.due_date.type) >= month_start,
+            Invoice.paid_at >= month_start_utc,
         )
     ) or 0)
 
