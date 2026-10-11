@@ -514,3 +514,486 @@ def test_pave_refuses_an_object_kind_it_cannot_rebuild(migrated_pg_db, tmp_path)
     assert _table_names(url) == before_tables
     assert _counts(url) == before_counts
     assert "Dropping schema" not in output
+
+
+# --- GDXA-531 ---------------------------------------------------------------
+
+
+@pytest.fixture
+def bare_pg_db():
+    """An empty throwaway database, for the refusals that never reach a rebuild."""
+    try:
+        _admin_conn().close()
+    except psycopg2.OperationalError as exc:
+        _skip_unless_ci(f"PostgreSQL not reachable at {PG_HOST}:{PG_PORT}: {exc}")
+    name = f"gdx_pave_{uuid.uuid4().hex[:12]}"
+    _create_db(name)
+    try:
+        yield f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{name}"
+    finally:
+        _drop_db(name)
+
+
+def _pave(url: str, cwd: Path, **env: str) -> tuple[int, str]:
+    child = {k: v for k, v in _child_env(url, **env).items() if k != "PYTHONPATH"}
+    r = subprocess.run([sys.executable, str(PAVE_SCRIPT), "--yes", url],
+                       cwd=str(cwd), env=child, capture_output=True, text=True)
+    return r.returncode, f"{r.stdout}\n{r.stderr}"
+
+
+def test_an_extension_in_public_is_not_refused_as_its_own_members(bare_pg_db):
+    """`CREATE EXTENSION pg_trgm` puts 10 operators, 2 operator classes and 2
+    families in `public`. The unsupported-object list used to name every one
+    of them, so any database with the extension could never be paved — while
+    the replay already had the one statement that brings them all back."""
+    from sqlalchemy import create_engine
+
+    from gdx_dispatch.tools import pave_tenant_db
+
+    url = bare_pg_db
+    _exec(url, "CREATE EXTENSION pg_trgm SCHEMA public")
+    # The rig has to hold the member kinds the old list refused.
+    assert _sql(url, """
+        SELECT count(*) FROM pg_operator o
+         WHERE o.oprnamespace = 'public'::regnamespace
+    """)[0][0] > 0
+    engine = create_engine(url)
+    try:
+        assert pave_tenant_db.unsupported_objects(engine) == []
+        inventory = pave_tenant_db.schema_inventory(engine)
+        assert ("extension", "pg_trgm") in inventory
+        assert not [o for o in inventory if o[0] == "function" and "similarity" in o[1]]
+    finally:
+        engine.dispose()
+
+
+def _seed_unpaveable(url: str) -> None:
+    _exec(url, "CREATE TABLE keep_me (id int); INSERT INTO keep_me VALUES (1), (2)")
+
+
+def _untouched(url: str) -> bool:
+    return _sql(url, "SELECT count(*) FROM keep_me")[0][0] == 2
+
+
+@pytest.mark.parametrize("stamp", [None, "001_initial"])
+def test_a_database_behind_head_is_refused_with_nothing_dropped(bare_pg_db, tmp_path, stamp):
+    url = bare_pg_db
+    _seed_unpaveable(url)
+    if stamp:
+        _exec(url, "CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY);"  # noqa: S608 — stamp is a parametrize literal
+                   f"INSERT INTO alembic_version VALUES ('{stamp}')")
+    rc, output = _pave(url, tmp_path)
+    assert rc == 1, output[-4000:]
+    assert "this tree's head is" in output
+    assert "NOTHING has been dropped" in output
+    assert "Dropping schema" not in output
+    assert _untouched(url)
+
+
+@pytest.mark.parametrize("case", ["index_comment", "extension_member_acl", "defaults_for_role"])
+def test_state_the_rebuild_would_lose_is_refused_with_nothing_dropped(bare_pg_db, tmp_path, case):
+    """Each of these used to be lost after the DROP:
+    - a hand-made index is not rebuilt, so its COMMENT ON failed and sent the
+      operator to a full restore;
+    - CREATE EXTENSION puts back a member's original privileges, undoing a
+      REVOKE, and the pave passed;
+    - default privileges FOR ROLE another role never apply to the tables the
+      paving role creates."""
+    from gdx_dispatch.tools import pave_tenant_db
+
+    url = bare_pg_db
+    _seed_unpaveable(url)
+    # At head, so the stamp refusal that runs first lets it through to this one.
+    values = ", ".join(f"('{h}')" for h in sorted(pave_tenant_db.alembic_heads()))
+    _exec(url, "CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY);"  # noqa: S608 — revision ids from this tree
+               f"INSERT INTO alembic_version VALUES {values}")
+    other = f"gdx_pave_other_{uuid.uuid4().hex[:8]}"
+    setup, expected = {
+        "index_comment": ("CREATE INDEX ix_hand_made_keep_me ON keep_me (id);"
+                          "COMMENT ON INDEX ix_hand_made_keep_me IS 'hand'",
+                          "comment on index public.ix_hand_made_keep_me"),
+        "extension_member_acl": ("CREATE EXTENSION pg_trgm SCHEMA public;"
+                                 "REVOKE EXECUTE ON FUNCTION similarity(text, text) FROM PUBLIC",
+                                 "privileges on extension member function similarity(text,text) differ"),
+        "defaults_for_role": (f"CREATE ROLE {other} NOLOGIN;"
+                              f"ALTER DEFAULT PRIVILEGES FOR ROLE {other} IN SCHEMA public "
+                              "GRANT SELECT ON TABLES TO PUBLIC",
+                              f"default privileges FOR ROLE {other}"),
+    }[case]
+    try:
+        _exec(url, setup)
+        rc, output = _pave(url, tmp_path)
+        assert rc == 1, output[-4000:]
+        assert expected in output
+        assert "NOTHING has been dropped" in output
+        assert "Dropping schema" not in output
+        assert _untouched(url)
+    finally:
+        if case == "defaults_for_role":
+            _exec(url, f"DROP OWNED BY {other}; DROP ROLE {other}")
+
+
+@pytest.mark.parametrize("in_schema, flagged", [(True, True), (False, False)])
+def test_extension_members_are_flagged_only_when_recreating_them_differs(
+        bare_pg_db, in_schema, flagged):
+    """Default privileges in place at CREATE EXTENSION reach its members. A
+    schema's are dropped with it and step 3b re-creates the extension before
+    restoring them, so the members' grants would be reset; database-wide ones
+    survive the DROP and come back identical, so refusing those would only
+    make the database unpaveable."""
+    from sqlalchemy import create_engine
+
+    from gdx_dispatch.tools import pave_tenant_db
+
+    url = bare_pg_db
+    reader = f"gdx_pave_reader_{uuid.uuid4().hex[:8]}"
+    scope = "IN SCHEMA public " if in_schema else ""
+    try:
+        _exec(url, f"CREATE ROLE {reader} NOLOGIN;"
+                   f"ALTER DEFAULT PRIVILEGES {scope}GRANT EXECUTE ON FUNCTIONS TO {reader};"
+                   "CREATE EXTENSION pg_trgm SCHEMA public")
+        engine = create_engine(url)
+        try:
+            out = pave_tenant_db.privileges_pave_cannot_rebuild(
+                engine, {"default_acl": set()})
+        finally:
+            engine.dispose()
+        members = [line for line in out if "extension member function similarity(text,text)" in line]
+        assert bool(members) == flagged, out
+    finally:
+        _exec(url, f"DROP OWNED BY {reader}; DROP ROLE {reader}")
+
+
+def test_a_column_grant_on_an_extension_member_is_flagged(bare_pg_db):
+    """Re-creating the extension drops a column grant on its view, and the
+    member is not compared after the pave."""
+    from sqlalchemy import create_engine
+
+    from gdx_dispatch.tools import pave_tenant_db
+
+    url = bare_pg_db
+    reader = f"gdx_pave_reader_{uuid.uuid4().hex[:8]}"
+    try:
+        _exec(url, f"CREATE ROLE {reader} NOLOGIN;"
+                   "CREATE EXTENSION pg_stat_statements SCHEMA public;"
+                   f"GRANT SELECT (userid) ON public.pg_stat_statements TO {reader}")
+        engine = create_engine(url)
+        try:
+            out = pave_tenant_db.privileges_pave_cannot_rebuild(engine, {"default_acl": set()})
+        finally:
+            engine.dispose()
+        assert any("column userid of view pg_stat_statements" in line for line in out), out
+    finally:
+        _exec(url, f"DROP OWNED BY {reader}; DROP ROLE {reader}")
+
+
+def test_an_extension_comes_back_at_the_version_it_was(bare_pg_db):
+    """Without VERSION the replay installed default_version: an upgrade that
+    nothing reported, since members are not compared after the pave."""
+    from sqlalchemy import create_engine, text
+
+    from gdx_dispatch.tools import pave_tenant_db
+
+    url = bare_pg_db
+    _exec(url, "CREATE EXTENSION pg_stat_statements SCHEMA public VERSION '1.4'")
+    engine = create_engine(url)
+    try:
+        with engine.connect() as conn:
+            ddl = {(k, key): d for k, key, d in conn.execute(pave_tenant_db._CAPTURE_OBJECTS_SQL)}
+        _exec(url, "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+                   + ddl[("extension", "pg_stat_statements")])
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT extversion FROM pg_extension "
+                                     "WHERE extname = 'pg_stat_statements'")).scalar() == "1.4"
+    finally:
+        engine.dispose()
+
+
+def test_an_extension_this_server_cannot_reinstall_is_refused(bare_pg_db):
+    """A version left behind by a major upgrade: step 3b's CREATE ... VERSION
+    would fail after the DROP. The catalog row is edited to stand in for one."""
+    from sqlalchemy import create_engine
+
+    from gdx_dispatch.tools import pave_tenant_db
+
+    url = bare_pg_db
+    _exec(url, "CREATE EXTENSION pg_trgm SCHEMA public")
+    engine = create_engine(url)
+    try:
+        assert pave_tenant_db.extensions_pave_cannot_reinstall(engine) == []
+        _exec(url, "UPDATE pg_extension SET extversion = '0.9' WHERE extname = 'pg_trgm'")
+        assert [item.split(" (")[0] for item in
+                pave_tenant_db.extensions_pave_cannot_reinstall(engine)] == [
+            "extension pg_trgm at version 0.9"]
+    finally:
+        engine.dispose()
+
+
+def test_an_edited_extension_comment_is_refused(bare_pg_db):
+    """COMMENT ON EXTENSION is invisible to the comment capture, and step 3b's
+    CREATE EXTENSION would reset it: refused before the DROP instead."""
+    from sqlalchemy import create_engine
+
+    from gdx_dispatch.tools import pave_tenant_db
+
+    url = bare_pg_db
+    _exec(url, "CREATE EXTENSION pg_trgm SCHEMA public")
+    engine = create_engine(url)
+    try:
+        assert pave_tenant_db.extensions_pave_cannot_reinstall(engine) == []
+        _exec(url, "COMMENT ON EXTENSION pg_trgm IS 'mine'")
+        assert [item.split(" (")[0] for item in
+                pave_tenant_db.extensions_pave_cannot_reinstall(engine)] == [
+            "extension pg_trgm comment"]
+    finally:
+        engine.dispose()
+
+
+def test_the_late_exit_restore_gives_the_app_its_database_back(bare_pg_db, tmp_path):
+    """What every exit after the DROP tells the operator to run, run as
+    printed (`restore_steps`). The database is left as a late exit leaves it:
+    the schema re-created by the paving role with no ACL, where pg_dump writes
+    the public schema's ACL only as a diff from a default it no longer has,
+    and a rebuilt table already holding some of its rows, which the full
+    backup cannot reload over. Every row, a role that could read the table
+    before, and the schema's owner and comment must be back."""
+    from sqlalchemy import create_engine, text
+
+    from gdx_dispatch.tools import pave_tenant_db
+
+    if shutil.which("pg_dump") is None or shutil.which("psql") is None:
+        _skip_unless_ci("pg_dump/psql not on PATH — the restore shells out to both")
+    url = bare_pg_db
+    reader = f"gdx_pave_reader_{uuid.uuid4().hex[:8]}"
+    db_info = pave_tenant_db.parse_db_url(url)
+    full = tmp_path / "d_full.sql"
+    try:
+        _exec(url, "CREATE TABLE kept (id int PRIMARY KEY); INSERT INTO kept VALUES (1), (2);"
+                   "COMMENT ON SCHEMA public IS 'the shop'")
+        _exec(url, f"CREATE ROLE {reader} NOLOGIN; GRANT SELECT ON kept TO {reader}")
+        engine = create_engine(url)
+        try:
+            with engine.connect() as conn:
+                before = conn.execute(text(
+                    "SELECT pg_get_userbyid(nspowner), has_schema_privilege(:r, 'public', 'USAGE') "
+                    "FROM pg_namespace WHERE nspname = 'public'").bindparams(r=reader)).one()
+            assert before[1] is True, before
+            pre = pave_tenant_db.privilege_state(engine)
+        finally:
+            engine.dispose()
+        pave_tenant_db.dump_full(db_info, str(full))
+        schema = pave_tenant_db.schema_restore_path(str(full))
+        Path(schema).write_text(pave_tenant_db.schema_restore_sql(pre))
+        _exec(url, "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+                   "CREATE TABLE kept (id int PRIMARY KEY); INSERT INTO kept VALUES (1)")
+        steps = pave_tenant_db.restore_steps(db_info, str(full))
+        assert [s[-1] for s in steps[1:]] == [schema, str(full)]
+        for step in steps:
+            r = subprocess.run(step, env={**os.environ, "PGPASSWORD": db_info["password"]},
+                               capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr
+        engine = create_engine(url)
+        try:
+            with engine.connect() as conn:
+                after = conn.execute(text(
+                    "SELECT pg_get_userbyid(nspowner), has_schema_privilege(:r, 'public', 'USAGE'), "
+                    "has_table_privilege(:r, 'public.kept', 'SELECT'), "
+                    "obj_description('public'::regnamespace, 'pg_namespace'), "
+                    "(SELECT count(*) FROM public.kept) "
+                    "FROM pg_namespace WHERE nspname = 'public'").bindparams(r=reader)).one()
+        finally:
+            engine.dispose()
+        assert tuple(after) == (before[0], True, True, "the shop", 2)
+    finally:
+        _exec(url, f"DROP OWNED BY {reader}; DROP ROLE {reader}")
+
+
+def test_a_member_grant_and_its_revoke_is_not_flagged(bare_pg_db):
+    """GRANT then REVOKE leaves the ACL written out where it was NULL: the same
+    privileges, which refusing would make the database unpaveable for good."""
+    from sqlalchemy import create_engine
+
+    from gdx_dispatch.tools import pave_tenant_db
+
+    url = bare_pg_db
+    reader = f"gdx_pave_reader_{uuid.uuid4().hex[:8]}"
+    try:
+        _exec(url, f"CREATE ROLE {reader} NOLOGIN; CREATE EXTENSION pg_trgm SCHEMA public;"
+                   f"GRANT EXECUTE ON FUNCTION similarity(text, text) TO {reader};"
+                   f"REVOKE EXECUTE ON FUNCTION similarity(text, text) FROM {reader}")
+        assert _sql(url, "SELECT proacl IS NOT NULL FROM pg_proc "
+                         "WHERE oid = 'public.similarity(text,text)'::regprocedure")[0] == (True,)
+        engine = create_engine(url)
+        try:
+            assert pave_tenant_db.privileges_pave_cannot_rebuild(engine, {"default_acl": set()}) == []
+        finally:
+            engine.dispose()
+    finally:
+        _exec(url, f"DROP OWNED BY {reader}; DROP ROLE {reader}")
+
+
+def test_ai_role_passwords_are_refused_with_nothing_dropped(bare_pg_db, tmp_path):
+    url = bare_pg_db
+    _seed_unpaveable(url)
+    rc, output = _pave(url, tmp_path, TENANT_AI_READONLY_PASSWORD="r", TENANT_AI_WRITE_PASSWORD="w")
+    assert rc == 1, output[-4000:]
+    assert "ai_roles_bootstrap" in output and "NOTHING has been dropped" in output
+    assert "Dropping schema" not in output
+    assert _untouched(url)
+
+
+def test_pave_keeps_owners_grants_comments_and_extensions(migrated_pg_db, tmp_path):
+    """`DROP SCHEMA public CASCADE` takes the schema's owner, its ACL and its
+    comment, every GRANT and owner in it, and every COMMENT; the rebuild puts
+    back none of it and pave used to report success. Measured on 16.15: the
+    re-created schema is owned by the paving role and PUBLIC has no USAGE, so
+    a NOSUPERUSER runtime role could no longer see a single table.
+
+    Asserted with catalog queries written here, not with the tool's own
+    privilege_state(), so a capture that misses something cannot also be the
+    thing that says nothing was missed."""
+    url = migrated_pg_db
+    role = f"gdx_pave_r_{uuid.uuid4().hex[:8]}"
+    _exec(url, f"CREATE ROLE {role} NOLOGIN")
+    try:
+        _exec(url, f"""
+            CREATE EXTENSION pg_trgm SCHEMA public;
+            GRANT SELECT, INSERT ON TABLE users TO {role};
+            GRANT SELECT (sku) ON TABLE plug_fake_catalog TO {role} WITH GRANT OPTION;
+            ALTER TABLE plug_fake_aline OWNER TO {role};
+            REVOKE EXECUTE ON FUNCTION plug_fake_touch() FROM PUBLIC;
+            GRANT EXECUTE ON FUNCTION plug_fake_touch() TO {role};
+            GRANT USAGE ON SEQUENCE plug_fake_unowned_seq TO {role};
+            ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO {role};
+            ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO {role};
+            COMMENT ON TABLE plug_fake_catalog IS 'the plugin''s catalog \\ parts';
+            COMMENT ON COLUMN plug_fake_catalog.sku IS 'stock keeping unit';
+            COMMENT ON FUNCTION plug_fake_touch() IS 'touch';
+            COMMENT ON TRIGGER plug_fake_catalog_touch ON plug_fake_catalog IS 'trg';
+            COMMENT ON TABLE users IS 'staff accounts';
+            DROP TABLE vendor_statement_lines CASCADE;
+        """)  # noqa: S608 — role is generated above from a uuid
+
+        def state():
+            q = lambda s: _sql(url, s)[0]  # noqa: E731
+            # An ACL is a set: replay grants before ALTER OWNER, which reorders it.
+            return {
+                "schema": q("""SELECT pg_get_userbyid(nspowner),
+                                      (SELECT array_agg(a::text ORDER BY a::text)
+                                         FROM unnest(nspacl) a)::text,
+                                      obj_description(oid, 'pg_namespace')
+                                 FROM pg_namespace WHERE nspname = 'public'"""),
+                "aline_owner": q("""SELECT pg_get_userbyid(relowner) FROM pg_class
+                                     WHERE oid = 'public.plug_fake_aline'::regclass"""),
+                "privs": q(f"""SELECT
+                    has_table_privilege('{role}', 'public.users', 'INSERT'),
+                    has_table_privilege('{role}', 'public.users', 'UPDATE'),
+                    has_column_privilege('{role}', 'public.plug_fake_catalog', 'sku',
+                                         'SELECT WITH GRANT OPTION'),
+                    has_column_privilege('{role}', 'public.plug_fake_catalog', 'price', 'SELECT'),
+                    has_function_privilege('{role}', 'public.plug_fake_touch()', 'EXECUTE'),
+                    has_function_privilege('public', 'public.plug_fake_touch()', 'EXECUTE'),
+                    has_sequence_privilege('{role}', 'public.plug_fake_unowned_seq', 'USAGE')"""),
+                "defacl": q("""SELECT count(*) FROM pg_default_acl
+                                WHERE defaclnamespace = 'public'::regnamespace"""),
+                "comments": q("""SELECT
+                    obj_description('public.plug_fake_catalog'::regclass, 'pg_class'),
+                    col_description('public.plug_fake_catalog'::regclass, 2),
+                    obj_description('public.plug_fake_touch()'::regprocedure, 'pg_proc'),
+                    (SELECT obj_description(oid, 'pg_trigger') FROM pg_trigger
+                      WHERE tgname = 'plug_fake_catalog_touch'),
+                    obj_description('public.users'::regclass, 'pg_class')"""),
+                # Created before the default privileges, so its members hold
+                # none of them; a CREATE EXTENSION after them would.
+                "trgm": q("""SELECT count(*), bool_and(p.proacl IS NULL)
+                               FROM pg_extension e
+                               JOIN pg_depend d ON d.refobjid = e.oid AND d.deptype = 'e'
+                               JOIN pg_proc p ON d.classid = 'pg_proc'::regclass
+                                             AND p.oid = d.objid
+                              WHERE e.extname = 'pg_trgm'"""),
+            }
+
+        before = state()
+        # The rig must hold every thing the drop takes, or the test proves nothing.
+        assert before["schema"][0] == "pg_database_owner"
+        assert "=U/" in before["schema"][1]
+        assert before["schema"][2] == "standard public schema"
+        assert before["aline_owner"] == (role,)
+        assert before["privs"] == (True, False, True, False, True, False, True)
+        assert before["defacl"] == (2,)
+        assert before["comments"] == ("the plugin's catalog \\ parts", "stock keeping unit",
+                                      "touch", "trg", "staff accounts")
+        assert before["trgm"][0] > 0 and before["trgm"][1] is True
+
+        rc, output = _pave(url, tmp_path)
+        assert rc == 0, output[-6000:]
+        assert state() == before, output[-6000:]
+        _sql(url, "SELECT similarity('door', 'doors')")
+        assert "✅ PAVE COMPLETE" in output
+        assert "MISMATCH" not in output
+        assert "FAILED" not in output
+        # A table the old database lacked is created by the rebuild under the
+        # schema's default privileges, so they have to be back before it is.
+        assert _sql(url, f"SELECT has_table_privilege('{role}', "  # noqa: S608 — role is generated above
+                         "'public.vendor_statement_lines', 'SELECT')")[0] == (True,)
+        # And what one pave leaves, the next accepts and keeps.
+        rc, output = _pave(url, tmp_path)
+        assert rc == 0, output[-6000:]
+        assert state() == before, output[-6000:]
+    finally:
+        _exec(url, f"REASSIGN OWNED BY {role} TO CURRENT_USER; DROP OWNED BY {role}")
+        _exec(url, f"DROP ROLE {role}")
+
+
+@pytest.mark.parametrize("grant_options, schema_create, blocked", [
+    ("WITH INHERIT TRUE, SET TRUE", True, False),
+    # Passes pg_has_role(..., 'MEMBER') and still cannot ALTER ... OWNER TO.
+    ("WITH INHERIT FALSE, SET FALSE", True, True),
+    # ALTER ... OWNER TO also needs the new owner to hold CREATE on the schema.
+    ("WITH INHERIT TRUE, SET TRUE", False, True),
+])
+def test_a_non_superuser_paver_restores_owners_or_refuses_first(
+        bare_pg_db, grant_options, schema_create, blocked):
+    """Every other test paves as a superuser and so never reaches this check.
+
+    Where the preflight lets the pave through, the same non-superuser then
+    drops the schema, re-creates the one table by hand and runs the step-4e
+    replay. That proves the replay of owners and ACLs, not a whole pave:
+    create_all, alembic, the reload and the rest never run as this role here.
+    """
+    from sqlalchemy import create_engine, text
+
+    from gdx_dispatch.tools import pave_tenant_db
+
+    url = bare_pg_db
+    dbname = url.rsplit("/", 1)[1]
+    tag = uuid.uuid4().hex[:8]
+    owner, paver = f"gdx_pave_owner_{tag}", f"gdx_pave_paver_{tag}"
+    # The public schema is owned by pg_database_owner, which only the
+    # database's owner holds, so a paver has to own the database.
+    _exec(url, f"CREATE ROLE {owner} NOLOGIN; CREATE ROLE {paver} LOGIN PASSWORD 'x';"
+               f"ALTER DATABASE {dbname} OWNER TO {paver};"
+               f"GRANT CREATE ON SCHEMA public TO {owner};"
+               f"CREATE TABLE owned_elsewhere (id int); ALTER TABLE owned_elsewhere OWNER TO {owner};"
+               f"GRANT {owner} TO {paver} {grant_options}")  # noqa: S608 — names generated above
+    if not schema_create:
+        _exec(url, f"REVOKE CREATE ON SCHEMA public FROM {owner}")
+    engine = create_engine(url.replace(f"{PG_USER}:{PG_PASSWORD}@", f"{paver}:x@"))
+    try:
+        pre = pave_tenant_db.privilege_state(engine)
+        assert pre["owners"][("table", "owned_elsewhere")][1] == owner
+        assert pave_tenant_db.roles_pave_cannot_act_as(engine, pre) == ([owner] if blocked else [])
+        if blocked:
+            return
+        with engine.begin() as conn:
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
+            conn.execute(text("CREATE TABLE public.owned_elsewhere (id int)"))
+        assert pave_tenant_db.replay_privilege_state(engine, pre) == []
+        post = pave_tenant_db.privilege_state(engine)
+        assert pave_tenant_db.privilege_mismatches(pre, post) == []
+        assert post["owners"][("schema", "public")][1] == "pg_database_owner"
+    finally:
+        engine.dispose()
+        _exec(url, f"ALTER DATABASE {dbname} OWNER TO CURRENT_USER; DROP OWNED BY {owner};"
+                   f"DROP OWNED BY {paver}; DROP ROLE {paver}; DROP ROLE {owner}")
