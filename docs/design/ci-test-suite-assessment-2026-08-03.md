@@ -37,8 +37,8 @@ The suite's genuinely slow tests are network-retry paths: one
 12 tests accounting for 15% of the recorded total.
 
 ⚠ **A claim in this doc's own §3 was wrong**, and it would have destroyed
-coverage: *"`test_13_onboarding.py` (4 tests, fully subsumed by
-`test_24_onboarding.py`'s 33)"*. **None of its four test names appears in
+coverage: *"`test_13_onboarding.py` (4 tests, fully subsumed by <!-- both files deleted 2026-10-11 with core/onboarding.py (GDXA-579); link-ok -->
+`test_24_onboarding.py`'s 33)"*. **None of its four test names appears in <!-- deleted 2026-10-11 (GDXA-579); link-ok -->
 `test_24`** — `test_onboarding_returns_six_steps`,
 `test_onboarding_step_structure`, `test_onboarding_graceful_on_missing_tables`,
 `test_onboarding_percent_calculation`. It was NOT deleted. A second claim was
@@ -202,7 +202,7 @@ Also safe to delete (verified unreferenced):
   `norecursedirs` comment citing `adversarial_tests.py` / `adversarial_curate.py`, neither of which
   exists), `tests/load/` + the `load` marker + the `locust` dependency.
 - `tests/test_zz_probe_integration.py` — untracked, **0 bytes**, created Jul 31; leftover probe.
-- `test_13_onboarding.py` (4 tests, fully subsumed by `test_24_onboarding.py`'s 33),
+- `test_13_onboarding.py` (4 tests, fully subsumed by `test_24_onboarding.py`'s 33), <!-- both files deleted 2026-10-11 with core/onboarding.py (GDXA-579); link-ok -->
   `test_15_admin_api.py` (2 pure existence checks), the two markdown-length tests in <!-- file deleted 2026-09-03 with the SaaS-residue purge; link-ok -->
   `test_12_secrets_and_ha.py`, the two skipped `pass`-body stubs in `test_marketing.py:448,453`.
 - `tests/conftest.py:26-53,108-132` — the SS-12A debug heartbeat: four pytest hooks string-compare

@@ -1657,7 +1657,8 @@ def create_expense_from_line(
             job_id = UUID(str(body.job_id))
         except ValueError:
             raise HTTPException(status_code=422, detail="invalid job_id") from None
-        if db.get(Job, job_id) is None:
+        _job = db.get(Job, job_id)
+        if _job is None or _job.deleted_at is not None:
             raise HTTPException(status_code=422, detail="job not found")
 
     from decimal import Decimal as _D

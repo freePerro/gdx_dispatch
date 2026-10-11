@@ -175,8 +175,10 @@ def confirm_line(
         if eff_job is None:
             raise ConfirmError("job disposition requires a job_id (none matched)")
         eff_job = _as_uuid(eff_job)
-        # Validate the job exists so a bogus id is a 400, not a FK 500 on flush.
-        if db.get(Job, eff_job) is None:
+        # Validate the job exists so a bogus id is a 400, not a FK 500 on flush;
+        # a soft-deleted job is gone to the office, so it is refused the same.
+        _job = db.get(Job, eff_job)
+        if _job is None or _job.deleted_at is not None:
             raise ConfirmError(f"job {eff_job} not found")
 
         expense = Expense(

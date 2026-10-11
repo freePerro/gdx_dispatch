@@ -36,6 +36,7 @@ from gdx_dispatch.models.tenant_models import (
     Customer,
     Job,
     JobAssignment,
+    JobCloseout,
     Technician,
 )
 from gdx_dispatch.services.visit_sync import job_visit_fields
@@ -536,6 +537,14 @@ def _finish_seed(env):
 ])
 def test_finishing_closes_today_and_retires_later_days(env, path, body, action):
     job, today, later = _finish_seed(env)
+    if path == "complete":
+        # GDXA-599: /complete re-finishes a job on its closeout, as a
+        # closeout then /uncomplete leaves it.
+        env.db.add(JobCloseout(
+            id=uuid4(), job_id=job.id, hours_worked=1, techs_on_site=1,
+            closed_by_user_id=str(uuid4()), closed_at=_now(),
+        ))
+        env.db.commit()
     before = _audit_ids(env.db)
     r = env.client.post(f"/api/jobs/{job.id}/{path}", json=body)
     assert r.status_code in (200, 201), r.text
