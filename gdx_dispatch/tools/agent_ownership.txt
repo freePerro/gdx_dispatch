@@ -508,6 +508,7 @@ gdx_dispatch/frontend/src/views/SurveysView.vue              customers-crm
 gdx_dispatch/frontend/src/views/WinbackView.vue              customers-crm
 gdx_dispatch/frontend/src/views/CustomerPortalView.vue       customers-crm
 gdx_dispatch/frontend/src/components/CustomerFormDialog.vue  customers-crm
+gdx_dispatch/frontend/src/components/CustomerTaxExemptionCard.vue customers-crm
 gdx_dispatch/frontend/src/utils/customerMatch.js             customers-crm
 gdx_dispatch/frontend/src/constants/customerTypes.js         customers-crm
 
