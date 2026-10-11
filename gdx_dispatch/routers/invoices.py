@@ -3471,8 +3471,9 @@ def send_invoice(
         # only because `public_token` is minted above), and committing inside an
         # open SAVEPOINT closes the SessionTransaction.
         #
-        # Fixing it means containing the INNER swallow first, or refreshing
-        # `invoice` before serializing. Counted, not bodged.
+        # The fix is below this block: every path commits (or rolls back a
+        # dead transaction) and refreshes `invoice` before serializing
+        # (GDXA-673).
         from gdx_dispatch.core.transactional_email import recently_sent, send_transactional_email
         tid = str(invoice.company_id) if invoice.company_id else None
         _dup_kind = "receipt" if invoice.status == "paid" else "document"
@@ -3534,12 +3535,28 @@ def send_invoice(
     # overwrite the ORIGINAL invoice delivery date — the receipt attempt is
     # fully recorded in outbound_emails; sent_at keeps meaning "when the
     # invoice itself reached the customer".
-    if email_sent:
-        if not (invoice.status == "paid" and invoice.sent_at is not None):
+    def _stamp_delivery() -> None:
+        if email_sent and not (invoice.status == "paid" and invoice.sent_at is not None):
             invoice.sent_at = datetime.now(UTC)
             invoice.sent_via = "email"
+
+    # Every attempt commits, sent or not (GDXA-673): the send path may have
+    # staged its outbound_emails row (and the email.* domain event) on this
+    # session, and `get_db` only closes — a failed or skipped send that did not
+    # commit here never reached the Email Log. If the transaction is already
+    # dead (the swallowed PDF-attach failure GDXA-160 measured), the commit
+    # raises: roll back — the status flip and audit row committed above — and
+    # stamp a delivered email again on the clean transaction.
+    try:
+        _stamp_delivery()  # reads `invoice`: raises on a dead transaction too
         db.commit()
-        db.refresh(invoice)
+    except Exception:
+        log.exception("invoice_send_attempt_commit_failed invoice=%s", invoice_id)
+        db.rollback()
+        if email_sent:
+            _stamp_delivery()
+            db.commit()
+    db.refresh(invoice)
 
     payload = _serialize_invoice(invoice)
     payload["email_sent"] = email_sent
