@@ -5,12 +5,13 @@ from typing import Any
 
 from sqlalchemy import func, select
 
+from gdx_dispatch.core.invoice_net_billed import invoice_net_billed_sq
 from gdx_dispatch.core.mcp_registry import ToolDescriptor, register_tool
 from gdx_dispatch.models.tenant_models import Invoice
 
 DESCRIPTOR = ToolDescriptor(
     name="revenue.summary",
-    description="Sum paid invoice totals over a window (default last 30 days).",
+    description="Sum paid invoice totals, net of credit memos, over a window (default last 30 days).",
     blast_radius="green",
     sensitivity_class="internal",
     capabilities_required=[("read", "invoice")],
@@ -54,7 +55,9 @@ async def handler(
     # COALESCE keeps a no-rows result at 0 rather than None. An ORM select,
     # not a SQL string: Session.execute refuses a bare string, so the string
     # form only ever ran against the unit test's mock (GDXA-209).
-    stmt = select(func.coalesce(func.sum(Invoice.total), 0), func.count()).where(
+    # Net of credit memos (GDXA-596): a credit lowers balance_due, never
+    # total, so a credited invoice paid off reads "paid" at its full total.
+    stmt = select(func.coalesce(func.sum(invoice_net_billed_sq()), 0), func.count()).where(
         Invoice.status == "paid",
         Invoice.paid_at >= since_dt,
         Invoice.deleted_at.is_(None),
