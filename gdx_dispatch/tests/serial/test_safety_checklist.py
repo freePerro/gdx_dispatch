@@ -2,18 +2,20 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import Text, text
 from sqlalchemy.orm import sessionmaker
 
 from conftest import make_fresh_db
-from gdx_dispatch.models.tenant_models import SafetyChecklist
+from gdx_dispatch.models.tenant_models import Job, SafetyChecklist
 from gdx_dispatch.routers.safety_checklist import (
     ChecklistCompleteIn,
     complete_checklist,
     get_job_checklist,
     get_template,
+    incomplete_checklists,
 )
 
 
@@ -188,3 +190,79 @@ def test_complete_returns_correct_fields(ctx):
     assert "items" in result
     assert "completed" in result
     assert "created_at" in result
+
+
+def _incomplete_ids(req, user, db) -> set[str]:
+    return {r["job_id"] for r in incomplete_checklists(request=req, user=user, db=db)}
+
+
+def test_incomplete_lists_completed_jobs_by_lifecycle_stage_not_status(ctx):
+    """GDXA-642: the missing-checklist queue keyed on the status spelling, so a
+    completed job with NULL status (every imported job) never appeared, and a
+    'Complete' status on a job not completed did. lifecycle_stage decides."""
+    db, req, user, _ = ctx
+    tid = req.state.tenant["id"]
+    imported = Job(id=uuid4(), company_id=tid, title="imported", lifecycle_stage="completed", status=None)
+    spelled = Job(id=uuid4(), company_id=tid, title="closed out", lifecycle_stage="completed", status="Completed")
+    stale = Job(id=uuid4(), company_id=tid, title="reopened", lifecycle_stage="in_progress", status="Complete")
+    db.add_all([imported, spelled, stale])
+    db.commit()
+
+    listed = _incomplete_ids(req, user, db)
+
+    assert str(imported.id) in listed
+    assert str(spelled.id) in listed
+    assert str(stale.id) not in listed
+
+
+def test_incomplete_excludes_a_completed_job_that_has_a_checklist(ctx):
+    """GDXA-642: the old varchar-to-Uuid join never matched on SQLite (dashed
+    text against dashless hex), so a job with a checklist was still listed."""
+    db, req, user, _ = ctx
+    tid = req.state.tenant["id"]
+    covered = Job(id=uuid4(), company_id=tid, title="covered", lifecycle_stage="completed")
+    bare = Job(id=uuid4(), company_id=tid, title="bare", lifecycle_stage="completed")
+    db.add_all([covered, bare])
+    db.commit()
+    complete_checklist(
+        request=req,
+        payload=ChecklistCompleteIn(job_id=str(covered.id), items=[{"item": "x", "checked": True}]),
+        user=user,
+        db=db,
+    )
+
+    listed = _incomplete_ids(req, user, db)
+
+    assert str(covered.id) not in listed
+    assert str(bare.id) in listed
+
+
+def test_incomplete_runs_on_postgres(pg_test_session):
+    """GDXA-642: on Postgres the old join compared varchar = uuid and raised,
+    so the endpoint answered 500 for every request. Skips with no reachable
+    Postgres; fails under CI (#440)."""
+    db = pg_test_session
+    tid = "00000000-0000-4000-8000-0000000006a2"
+    covered, bare, open_job = uuid4(), uuid4(), uuid4()
+    # Raw insert: the PG fixture's structure.sql trails the ORM.
+    for jid, stage in ((covered, "completed"), (bare, "completed"), (open_job, "scheduled")):
+        db.execute(
+            text(
+                "INSERT INTO jobs (id, title, lifecycle_stage, dispatch_status, company_id, status) "
+                "VALUES (:id, 't', CAST(:stage AS job_lifecycle_stage), 'unassigned', :tid, NULL)"
+            ),
+            {"id": jid, "stage": stage, "tid": tid},
+        )
+    db.execute(
+        text(
+            "INSERT INTO safety_checklists (id, company_id, job_id, technician_id, items, completed) "
+            "VALUES (:id, :tid, :jid, 'tech-1', '[]', true)"
+        ),
+        {"id": str(uuid4()), "tid": tid, "jid": str(covered)},
+    )
+
+    listed = _incomplete_ids(DummyRequest(tid), {"sub": "tech-1"}, db)
+
+    assert str(bare) in listed
+    assert str(covered) not in listed
+    assert str(open_job) not in listed
