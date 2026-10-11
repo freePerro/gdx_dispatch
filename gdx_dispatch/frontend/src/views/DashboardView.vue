@@ -1081,11 +1081,13 @@ async function loadSummary() {
         return ts && new Date(ts) >= todayStart;
       }).length;
 
-      summary.value.overdue_invoices = invList.filter((i) => {
-        if (i.status === "paid") return false;
-        if (i.status === "overdue") return true;
-        return i.due_date && new Date(i.due_date) < now && i.status !== "paid";
-      }).length;
+      // The server decides overdue against the shop's today, sent invoices
+      // with a balance only (routers/invoices.py _effective_status). The
+      // browser must not: new Date("2026-10-12") is UTC midnight, 7pm Central
+      // the evening before, so a due-tomorrow invoice read overdue (GDXA-652).
+      summary.value.overdue_invoices = invList.filter(
+        (i) => i.effective_status === "overdue",
+      ).length;
 
       summary.value.revenue_total = invList
         .filter((i) => {

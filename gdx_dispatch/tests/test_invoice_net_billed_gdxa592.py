@@ -6,10 +6,9 @@ credit. The case each test pins is the one in the issue: an invoice of 100 with
 a credit memo of 20 counts as 80.
 
 The SQLite arm drives the real ``issue_credit_memo`` / ``record_payment`` /
-``apply_customer_credit`` paths. The Postgres arm is the only proof for the
-Billing dashboard's ``paid_this_month``: SQLite casts a stored timestamp to
-DATE as the number 2026, so that KPI is 0 there whatever the query sums (see
-``test_paid_this_month_starts_on_the_shops_month``).
+``apply_customer_credit`` paths, and since GDXA-656 dropped the
+CAST(paid_at AS DATE) that read as the number 2026 on SQLite, it also proves
+the Billing dashboard's ``paid_this_month``; the Postgres arm proves it there.
 """
 from __future__ import annotations
 
@@ -135,6 +134,8 @@ def test_paid_by_credit_memo_plus_payment_counts_what_was_billed(db):
     db.refresh(inv)
     assert inv.status == "paid"
     assert _sum_net(db, Invoice.status == "paid") == Decimal("80.00")
+    out = billing_summary(SimpleNamespace(), _=USER, db=db)
+    assert out["paid_this_month"] == pytest.approx(80.0)
 
 
 def test_applied_credit_is_settlement_and_does_not_net(db):
