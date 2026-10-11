@@ -519,8 +519,10 @@ def board_visits(
             **_board_row(job, customer_name, ds_map),
             "holding_area_id": job.holding_area_id,
             "job_has_crew": has_crew,
-            "address": site.address if site else None,
+            # address is what the card shows: street and town (GDXA-502).
+            "address": site.full_address if site else None,
             "site_address": site.address if site else None,
+            "site_full_address": site.full_address if site else None,
             "site_label": site.label if site else None,
             "day_count": len(days),
         }

@@ -1748,6 +1748,13 @@ const customerDisplayName = computed(
   () => customerDetail.value?.name || job.value?.customer_name || "",
 );
 const customerAddress = computed(() => {
+  // The server's effective jobsite (core/job_site.py) carries the town the
+  // location row keeps in separate city/state/zip columns; the chain below
+  // only knows the street (GDXA-502). It stays as the fallback for a job
+  // payload without the field.
+  if (job.value && job.value.site_full_address !== undefined) {
+    return job.value.site_full_address || null;
+  }
   if (pickedLocation.value) {
     // Explicit: only the picked location's address, never the customer
     // HQ fallback. NULL/empty surfaces as missing in the template.
