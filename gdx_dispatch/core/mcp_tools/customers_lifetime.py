@@ -5,12 +5,13 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 
+from gdx_dispatch.core.invoice_net_billed import invoice_net_billed_sq
 from gdx_dispatch.core.mcp_registry import ToolDescriptor, register_tool
 from gdx_dispatch.models.tenant_models import Invoice
 
 DESCRIPTOR = ToolDescriptor(
     name="customers.lifetime_analysis",
-    description="Lifetime revenue rollup for one customer: total paid, invoice count, first/last invoice dates.",
+    description="Lifetime revenue rollup for one customer: total paid (net of credit memos), invoice count, first/last invoice dates.",
     blast_radius="green",
     sensitivity_class="internal",
     capabilities_required=[("read", "customer"), ("read", "invoice")],
@@ -62,8 +63,10 @@ async def handler(principal: Any, db: Any, customer_id: str, **_) -> dict[str, A
         # Raised, not returned: invoke_tool maps a raise to execution_error,
         # but reports a returned {"ok": False} dict as a successful result.
         raise ValueError(f"customer_id is not a UUID: {customer_id!r}") from exc
+    # Net of credit memos (GDXA-596): a credit lowers balance_due, never
+    # total, so summing total counts the credit as money the customer paid.
     stmt = select(
-        func.coalesce(func.sum(Invoice.total), 0),
+        func.coalesce(func.sum(invoice_net_billed_sq()), 0),
         func.count(),
         func.min(Invoice.invoice_date),
         func.max(Invoice.invoice_date),
