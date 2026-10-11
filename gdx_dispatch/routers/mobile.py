@@ -1211,24 +1211,43 @@ def _job_card(
     }
 
 
-def _resolve_tzinfo(tz: str | None, user_id: str | None = None) -> ZoneInfo:
-    """IANA name → ZoneInfo, falling back to UTC on anything invalid.
+def _resolve_tzinfo(
+    tz: str | None, user_id: str | None = None, fallback: ZoneInfo | None = None,
+) -> ZoneInfo:
+    """IANA name → ZoneInfo, falling back to ``fallback`` (UTC when not
+    given) on anything invalid.
 
     The client sends its device zone (``Intl.DateTimeFormat().resolvedOptions()
-    .timeZone``); a bad/missing value must degrade to the pre-tz behaviour
-    (UTC day boundaries), never 500.
+    .timeZone``); a bad/missing value must degrade to the fallback's day
+    boundaries — the shop's zone on the route endpoints (GDXA-511) — never 500.
     """
+    fallback = fallback or ZoneInfo("UTC")
     if tz:
         try:
             return ZoneInfo(tz)
         except Exception:  # noqa: BLE001 — ZoneInfoNotFoundError, ValueError, OSError
-            # The tech's day boundaries silently become UTC's; leave a trace.
-            # Client-controlled: truncate, and %r keeps it one quoted line.
+            # The tech's day boundaries silently become the fallback's; leave
+            # a trace. Client-controlled: truncate, and %r keeps it one line.
             log.warning(
-                "mobile_client_timezone_invalid user_id=%s tz=%r — falling back to UTC",
-                user_id, tz[:64],
+                "mobile_client_timezone_invalid user_id=%s tz=%r — falling back to %s",
+                user_id, tz[:64], fallback.key,
             )
-    return ZoneInfo("UTC")
+    return fallback
+
+
+def _route_tzinfo(db: Session, tz: str | None, user_id: str | None) -> ZoneInfo:
+    """The zone whose calendar day is the tech's route: the device's, as sent
+    by the phone, else the shop's (GDXA-511; a missing tz used to mean UTC,
+    which moved the evening onto tomorrow). GET /today and the reorder must
+    agree on it, or the reorder refuses the route the tech is looking at."""
+    from gdx_dispatch.core.pay_periods import (  # noqa: PLC0415
+        resolve_zone,
+        shop_tz_name_from_settings,
+    )
+
+    return _resolve_tzinfo(
+        tz, user_id, fallback=resolve_zone(shop_tz_name_from_settings(db))
+    )
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -1257,11 +1276,39 @@ def _window_utc_dates(win_start: datetime, win_end: datetime) -> list[date_type]
     membership is refined in Python because comparing an aware bind param
     against SQLite's naive text storage is not reliable at the SQL layer.
     """
+    # Deliberately UTC dates: they match the stored UTC timestamps in SQL.
     last = (win_end - timedelta(microseconds=1)).date()
     dates = [win_start.date()]
     while dates[-1] < last:
         dates.append(dates[-1] + timedelta(days=1))
     return dates
+
+
+def _tech_appointments_in_window(
+    db: Session, tenant_id: str, technician_id: str,
+    win_start: datetime, win_end: datetime, *criteria: Any,
+) -> list[Appointment]:
+    """The tech's live appointments starting in [win_start, win_end), oldest
+    first: a coarse SQL date filter, the exact window refined in Python (see
+    ``_window_utc_dates``). ``criteria`` are extra SQL filters."""
+    return [
+        a
+        for a in (
+            db.query(Appointment)
+            .filter(
+                Appointment.company_id == tenant_id,
+                Appointment.tech_id == technician_id,
+                Appointment.deleted_at.is_(None),
+                func.date(Appointment.start_at).in_(
+                    _window_utc_dates(win_start, win_end)
+                ),
+                *criteria,
+            )
+            .order_by(Appointment.start_at.asc())
+            .all()
+        )
+        if a.start_at is not None and win_start <= _as_utc(a.start_at) < win_end
+    ]
 
 
 def _assignment_job_uuids(db: Session, technician_id: str) -> list[_UUID]:
@@ -1331,7 +1378,7 @@ async def get_mobile_today(
     # share the bottom nav and keep the empty day.
     _refuse_deactivated_technician(db, user_id, current_user)
     technician_id = _get_technician_id(db, tenant_id, user_id)
-    tzinfo = _resolve_tzinfo(tz, user_id)
+    tzinfo = _route_tzinfo(db, tz, user_id)
     target_date = date or datetime.now(tzinfo).date()
     empty = {
         "date": target_date.isoformat(),
@@ -1363,25 +1410,13 @@ async def get_mobile_today(
 
     # 1) Today's appointments for this tech (coarse SQL date filter, exact
     #    window refined in Python — see _window_utc_dates).
-    appts = [
-        a
-        for a in (
-            db.query(Appointment)
-            .filter(
-                Appointment.company_id == tenant_id,
-                Appointment.tech_id == technician_id,
-                Appointment.deleted_at.is_(None),
-                # A visit cancelled on its own (POST /api/appointments/{id}/
-                # cancel) keeps its date; it is off the route too. The job
-                # itself still surfaces below if it is dated today.
-                Appointment.status != "cancelled",
-                func.date(Appointment.start_at).in_(utc_dates),
-            )
-            .order_by(Appointment.start_at.asc())
-            .all()
-        )
-        if a.start_at is not None and win_start <= _as_utc(a.start_at) < win_end
-    ]
+    appts = _tech_appointments_in_window(
+        db, tenant_id, technician_id, win_start, win_end,
+        # A visit cancelled on its own (POST /api/appointments/{id}/
+        # cancel) keeps its date; it is off the route too. The job
+        # itself still surfaces below if it is dated today.
+        Appointment.status != "cancelled",
+    )
 
     # 2) Pull appointment jobs via ORM (mapper-routed; see _job_card docstring).
     job_ids = [a.job_id for a in appts if a.job_id is not None]
@@ -1576,6 +1611,9 @@ async def get_mobile_today(
 
 class _ReorderBody(BaseModel):
     appointment_ids: list[_UUID] = Field(default_factory=list, max_length=50)
+    # The device zone the phone sent to GET /today, so both read the same
+    # calendar day. No date: the reorder is always today's route.
+    tz: str | None = Field(default=None, max_length=64)
 
 
 @router.post("/today/reorder", response_model=None)
@@ -1628,17 +1666,17 @@ def reorder_mobile_today(
     if authority != "live":
         raise HTTPException(status_code=400, detail=f"unknown authority: {authority}")
 
-    target_date = datetime.now(UTC).date()
-    today_appts = (
-        db.query(Appointment)
-        .filter(
-            Appointment.company_id == tenant_id,
-            Appointment.tech_id == technician_id,
-            Appointment.deleted_at.is_(None),
-            func.date(Appointment.start_at) == target_date,
-        )
-        .order_by(Appointment.start_at.asc())
-        .all()
+    # Today is the route's calendar day — the zone GET /today used — not
+    # UTC's (GDXA-511): after ~7pm in Minnesota the UTC date is tomorrow, so
+    # the route the tech was looking at was refused as "not on today's
+    # route". Coarse SQL date filter, exact window refined in Python.
+    tzinfo = _route_tzinfo(db, payload.tz, user_id)
+    win_start, win_end = _local_day_window(datetime.now(tzinfo).date(), tzinfo)
+    today_appts = _tech_appointments_in_window(
+        db, tenant_id, technician_id, win_start, win_end,
+        # GET /today leaves a cancelled visit off the route, so the phone
+        # never sends it; demanding it refused every reorder that day.
+        Appointment.status != "cancelled",
     )
     by_id = {a.id: a for a in today_appts}
 

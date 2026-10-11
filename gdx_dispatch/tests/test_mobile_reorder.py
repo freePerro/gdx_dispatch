@@ -16,6 +16,7 @@ from sqlalchemy.orm import sessionmaker
 
 from gdx_dispatch.core.audit import AuditLog
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.pay_periods import shop_today
 from gdx_dispatch.models.tenant_models import Appointment, AppSettings, Customer, Job, Technician
 from gdx_dispatch.routers import mobile as mobile_router
 from gdx_dispatch.routers.auth import get_current_user
@@ -65,7 +66,10 @@ def app_and_db(monkeypatch):
 def _seed_route(db, n=3):
     """Create N appointments in 1-hour slots starting 9am, all on today."""
     db.add(Technician(id=TECH, company_id=TENANT, user_id=USER, active=True))
-    today = _now().replace(hour=9, minute=0, second=0, microsecond=0)
+    # 09:00 UTC on the shop's today (the reorder's day, GDXA-511; this DB
+    # has the default America/New_York zone): 04:00/05:00 local, same date.
+    shop_date = shop_today("America/New_York")
+    today = datetime(shop_date.year, shop_date.month, shop_date.day, 9, tzinfo=UTC)
     appts = []
     for i in range(n):
         c = Customer(

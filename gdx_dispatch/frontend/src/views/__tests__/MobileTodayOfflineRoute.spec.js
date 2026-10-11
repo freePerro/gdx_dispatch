@@ -206,3 +206,31 @@ describe("the route survives losing signal", () => {
     expect(keys.every((k) => k.length > "gdx_today_route_cache".length)).toBe(true);
   });
 });
+
+describe("the reorder reads the day GET /today read (GDXA-511)", () => {
+  it("sends the device zone the route was loaded with", async () => {
+    const job = (n) => ({
+      id: `job-${n}`, appointment_id: `appt-${n}`, title: `Stop ${n}`,
+      dispatch_status: "assigned", service_type: "Service Call",
+      customer: { id: `c${n}`, name: `Customer ${n}` }, site_address: `${n} Oak St`,
+      time_window: { start: null, end: null },
+    });
+    getMock.mockResolvedValue(route({ jobs: [job(1), job(2)] }));
+    const { default: View } = await import("../MobileTodayView.vue");
+    const w = mount(View, { global: { stubs, directives: { tooltip: {} } } });
+    await flushPromises();
+
+    await w.find('button[aria-label="Reorder"]').trigger("click");
+    const save = w.findAll("button").find((b) => b.text() === "Save order");
+    await save.trigger("click");
+    await flushPromises();
+
+    const getTz = new URLSearchParams(getMock.mock.calls[0][0].split("?")[1]).get("tz");
+    expect(getTz).toBeTruthy();
+    expect(postQueuedMock).toHaveBeenCalledWith(
+      "/api/mobile/today/reorder",
+      { appointment_ids: ["appt-1", "appt-2"], tz: getTz },
+      expect.anything(),
+    );
+  });
+});
