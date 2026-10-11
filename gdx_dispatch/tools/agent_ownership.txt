@@ -137,7 +137,6 @@ gdx_dispatch/core/log_redact.py                              platform-core
 gdx_dispatch/core/log_shipper.py                             platform-core
 gdx_dispatch/core/modules.py                                 platform-core
 gdx_dispatch/core/observability.py                           platform-core
-gdx_dispatch/core/onboarding.py                              platform-core
 gdx_dispatch/core/pagination.py                              platform-core
 gdx_dispatch/core/performance.py                             platform-core
 gdx_dispatch/core/permissions.py                             platform-core
