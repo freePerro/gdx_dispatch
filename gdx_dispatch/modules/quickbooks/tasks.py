@@ -505,6 +505,8 @@ def qb_sync_schedule_dispatcher() -> dict:
             due_full = last_full is None or (
                 datetime.now(timezone.utc) - last_full > timedelta(days=FULL_PULL_EVERY_DAYS)
             )
+            # Pull horizon, deliberately UTC: a 7-day window fetched with
+            # overlap, not a business date.
             window_start = "" if due_full else (
                 datetime.now(timezone.utc) - timedelta(days=SCHEDULED_PULL_WINDOW_DAYS)
             ).date().isoformat()
