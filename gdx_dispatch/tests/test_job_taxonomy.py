@@ -130,9 +130,13 @@ def test_writers_import_the_constants() -> None:
 
 
 def test_dropdowns_import_the_shared_list() -> None:
+    # CustomerDetailView once carried a job-type dropdown; it lost the control
+    # and kept an unused copy of the list (GDXA-665), so only the re-inline
+    # check still applies to it.
     for view in ("views/JobsView.vue", "views/CustomerDetailView.vue"):
         src = (REPO / "frontend/src" / view).read_text(encoding="utf-8")
-        assert "JOB_TYPE_OPTIONS" in src, f"{view} stopped importing the shared list"
+        if view == "views/JobsView.vue":
+            assert "JOB_TYPE_OPTIONS" in src, f"{view} stopped importing the shared list"
         assert not re.search(r"jobTypeOptions\s*=\s*\[\s*['\"]", src), (
             f"{view} re-inlined its own job-type list — that divergence is "
             "the original bug"
