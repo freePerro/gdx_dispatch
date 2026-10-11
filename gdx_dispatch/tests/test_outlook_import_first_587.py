@@ -81,3 +81,24 @@ def test_every_outlook_module_imports_first_in_a_fresh_interpreter():
     with ThreadPoolExecutor(max_workers=6) as pool:
         failures = [f for f in pool.map(_import_first, _modules()) if f]
     assert not failures, "\n\n".join(failures)
+
+
+def test_models_import_alone_registers_the_vendor_invoice_tables():
+    """The vendor-invoice tables used to reach the metadata only because
+    ``outlook.tasks`` imported ``vendor_bill_ingest`` at the top. Cutting that
+    chain dropped them from ``create_orm_tables()`` (``import gdx_dispatch.models``
+    then ``create_all``), and ``alembic upgrade head`` died at migration 078 on a
+    fresh Postgres. A fresh interpreter, since in-process the tables are always
+    already loaded by something else."""
+    probe = (
+        "import gdx_dispatch.models\n"
+        "from gdx_dispatch.core.audit import TenantBase\n"
+        "print(sorted(TenantBase.metadata.tables))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, timeout=180, cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+    )
+    assert out.returncode == 0, out.stderr[-1500:]
+    for table in ("vendor_invoices", "vendor_invoice_lines", "vendor_bill_payments"):
+        assert f"'{table}'" in out.stdout, f"{table} is not registered by `import gdx_dispatch.models`"
