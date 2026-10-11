@@ -322,3 +322,110 @@ def test_postgres_a_transaction_already_aborted_stays_loud(pg_engine, provider_a
     logged = _read(pg_engine, lambda s: s.execute(
         select(OutboundEmail).where(OutboundEmail.entity_id == entity)).scalars().all())
     assert len(logged) == 1  # the fallback session still recorded the send
+
+
+# ---------------------------------------------------------------------------
+# A FAILED send's row must not depend on the caller committing (GDXA-674).
+# `send_invoice` commits only when the email went out, so on Postgres every
+# failed or skipped invoice send left no row: the savepoint's RELEASE commits
+# nothing there, and `get_db` closes the session. (SQLite cannot show it —
+# pysqlite releases an outermost SAVEPOINT as a commit.)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def provider_refuses(monkeypatch):
+    import gdx_dispatch.core.transactional_email as te
+
+    monkeypatch.setattr(te, "_try_outlook_graph", lambda **_kw: (False, "outlook_send_failed"))
+    monkeypatch.setattr(te, "_try_smtp", lambda **_kw: (False, "smtp_send_failed"))
+
+
+def _logged(engine, entity):
+    return _read(engine, lambda s: [
+        (r.status, r.skip_reason) for r in s.execute(
+            select(OutboundEmail).where(OutboundEmail.entity_id == entity)).scalars()
+    ])
+
+
+def _send(db, entity):
+    from gdx_dispatch.core.transactional_email import send_transactional_email
+
+    return send_transactional_email(
+        tenant_db=db, tenant_id=COMPANY, user_id=USER["sub"],
+        to_email="someone@example.invalid", to_name="Someone",
+        subject="Invoice 1", html_body="<p>hi</p>", kind="document",
+        entity_type="invoice", entity_id=entity,
+    )
+
+
+def test_postgres_a_failed_send_is_logged_when_the_caller_never_commits(
+    pg_engine, provider_refuses
+):
+    """The `send_invoice` failure path: send, then close without a commit."""
+    entity = str(uuid4())
+    db = _pg_session(pg_engine)
+    try:
+        assert _send(db, entity) == (False, None, "smtp_send_failed")
+    finally:
+        db.close()  # what `get_db` does — no commit
+    assert _logged(pg_engine, entity) == [("failed", "smtp_send_failed")]
+
+
+def test_postgres_a_failed_send_is_logged_once_when_the_caller_does_commit(
+    pg_engine, provider_refuses
+):
+    """`send_estimate` commits on its failure branch: still exactly one row,
+    and the caller's own work rides its own commit, untouched."""
+    entity = str(uuid4())
+    db = _pg_session(pg_engine)
+    try:
+        _stage_caller_work(db, "the estimate's own write")
+        _send(db, entity)
+        db.commit()
+    finally:
+        db.close()
+    assert _logged(pg_engine, entity) == [("failed", "smtp_send_failed")]
+    assert _probe_labels(pg_engine) == ["the estimate's own write"]
+
+
+def test_postgres_a_failed_send_on_an_aborted_transaction_stays_loud(
+    pg_engine, provider_refuses
+):
+    """The failed row now commits on its own session, so it no longer passes
+    through the caller's dead transaction — the probe must keep the caller's
+    commit raising rather than let psycopg2 roll it back silently."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import SQLAlchemyError
+
+    entity = str(uuid4())
+    db = _pg_session(pg_engine)
+    try:
+        _stage_caller_work(db, "lost if the commit is silent")
+        with contextlib.suppress(SQLAlchemyError):
+            db.execute(text("SELECT * FROM no_such_table_statement_probe"))
+        _send(db, entity)
+        with pytest.raises(SQLAlchemyError):
+            db.commit()
+    finally:
+        db.close()
+    assert _probe_labels(pg_engine) == []
+    assert _logged(pg_engine, entity) == [("failed", "smtp_send_failed")]
+
+
+def test_postgres_a_delivered_send_is_logged_when_the_caller_never_commits(
+    pg_engine, provider_accepts
+):
+    """`tasks/planner_digest.py` never commits: pre-fix a DELIVERED digest left
+    no row. The mail is gone whatever the caller does next, so its record is
+    committed at once — and the caller's own work still waits for its commit."""
+    entity = str(uuid4())
+    db = _pg_session(pg_engine)
+    try:
+        _stage_caller_work(db, "rolled back by the caller")
+        assert _send(db, entity) == (True, "smtp", None)
+        assert _logged(pg_engine, entity) == [("sent", None)]
+        db.rollback()
+    finally:
+        db.close()
+    assert _logged(pg_engine, entity) == [("sent", None)]
+    assert _probe_labels(pg_engine) == []

@@ -38,8 +38,8 @@ def get_email_config(db: Session, tenant_id: str) -> dict[str, Any] | None:
         # failed SELECT has already aborted the caller's transaction, so the
         # invoice/estimate status flip that was supposed to accompany that send
         # dies at the caller's commit instead. (The outbound_emails row itself
-        # survives: `transactional_email._record_outbound` commits it on a
-        # separate Session. The business write is what is lost.)
+        # survives: on Postgres `transactional_email._record_outbound` always
+        # commits it on a separate Session. The business write is what is lost.)
         with contained_read(db):
             row = db.execute(
                 text("SELECT provider, smtp_host, smtp_port, username, password_enc, from_email, from_name, reply_to_email "
