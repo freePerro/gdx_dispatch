@@ -156,9 +156,6 @@ this — the budget governs sweeps, not repairs.
   CI's `setup-node` 20 and `node:20-slim` ship) and 9.2.0 both crash in
   arborist with `Cannot read properties of null (reading 'edgesOut')`. Prove
   `npm ci` in `node:20-slim` before pushing a lockfile.
-- The git-ignored local `docker/demo/` directory fails three scanner tests
-  locally that are green in CI. A fresh worktree does not have it — prefer one
-  for a clean read.
 - Mako 1.4.0 shadows `tools/`, producing an ImportError that only appears in
   CI.
 - The local stack's `refresh.sh` does not rebuild the plugin-host; rebuild it <!-- ~/gdx-local/refresh.sh, outside this repo; link-ok -->

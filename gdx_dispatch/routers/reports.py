@@ -4,6 +4,7 @@ import csv
 import io
 import logging
 from datetime import UTC, date, datetime, time, timedelta
+from typing import NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -13,7 +14,11 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.core.pay_periods import shop_today_from_settings
+from gdx_dispatch.core.pay_periods import (
+    resolve_zone,
+    shop_today_from_settings,
+    shop_tz_name_from_settings,
+)
 from gdx_dispatch.models.tenant_models import (
     Customer,
     Invoice,
@@ -42,18 +47,66 @@ def _parse_date(value: str | None, field_name: str) -> date | None:
         raise HTTPException(status_code=422, detail=f"{field_name} must be YYYY-MM-DD") from exc
 
 
-def _resolve_date_range(start_date: str | None, end_date: str | None) -> tuple[str, str, date]:
+class _Window(NamedTuple):
+    """One report window on the shop's calendar, in both shapes a query needs.
+
+    A DATE column (invoice_date, payment_date) compares against ``start_d`` /
+    ``end_d``. A TIMESTAMP column (created_at, completed_at, scheduled_at)
+    compares against ``start_ts`` / ``end_ts`` — the shop's local midnights,
+    as UTC. Never slice a date back out of ``start_ts``: east of UTC the local
+    midnight falls on the previous UTC date.
+    """
+
+    start_ts: str
+    end_ts: str  # exclusive
+    start_d: date
+    end_d: date  # exclusive
+    end_date: date  # inclusive last day
+
+
+def _shop_midnight_utc(day: date, tz) -> datetime:
+    return datetime.combine(day, time.min, tzinfo=tz).astimezone(UTC)
+
+
+def _shop_window(start_d: date, end_d: date, tz) -> _Window:
+    """[start_d, end_d) as shop-calendar days; ``end_d`` is exclusive."""
+    return _Window(
+        start_ts=_shop_midnight_utc(start_d, tz).isoformat(),
+        end_ts=_shop_midnight_utc(end_d, tz).isoformat(),
+        start_d=start_d,
+        end_d=end_d,
+        end_date=end_d - timedelta(days=1),
+    )
+
+
+def _ledger_edges(window: _Window) -> tuple[str, str]:
+    """The window's days at UTC midnights — for invoice_adjustments only.
+
+    The GL posts a credit or refund at ``adjustment.created_at.date()``, the
+    UTC day (modules/ledger/rules.py), and the per-period queries bucket it by
+    ``date_trunc`` on that UTC timestamp. Bounding those rows at the shop's
+    midnights instead would admit an evening credit on a month's last day into
+    that month's window while it buckets into the next month — a stray period
+    row, and a credit that moves between filed sales-tax periods. Until the
+    ledger dates adjustments by the shop's day, these queries stay on its edges.
+    """
+    return (
+        _shop_midnight_utc(window.start_d, UTC).isoformat(),
+        _shop_midnight_utc(window.end_d, UTC).isoformat(),
+    )
+
+
+def _resolve_date_range(db: Session, start_date: str | None, end_date: str | None) -> _Window:
+    # GDXA-538: the window is the shop's days, not UTC's. UTC-midnight bounds
+    # ran 7pm-7pm Central, so an evening job counted on tomorrow's report.
     start = _parse_date(start_date, "start_date")
     end = _parse_date(end_date, "end_date")
-    now = datetime.now(UTC)
-    resolved_end = end or now.date()
+    resolved_end = end or shop_today_from_settings(db)
     resolved_start = start or (resolved_end - timedelta(days=29))
     if resolved_start > resolved_end:
         raise HTTPException(status_code=422, detail="start_date must be on or before end_date")
-
-    start_dt = datetime.combine(resolved_start, time.min, tzinfo=UTC)
-    end_dt_exclusive = datetime.combine(resolved_end + timedelta(days=1), time.min, tzinfo=UTC)
-    return start_dt.isoformat(), end_dt_exclusive.isoformat(), resolved_end
+    tz = resolve_zone(shop_tz_name_from_settings(db))
+    return _shop_window(resolved_start, resolved_end + timedelta(days=1), tz)
 
 
 # Invoice statuses counted as "revenue billed" (excludes draft + void).
@@ -241,7 +294,7 @@ def _revenue_date_expr():
     return func.coalesce(Invoice.invoice_date, func.cast(Invoice.created_at, Invoice.invoice_date.type))
 
 
-def _summary_window(db: Session, start_dt: str, end_dt: str, today: date | None = None) -> dict:
+def _summary_window(db: Session, window: _Window, today: date | None = None) -> dict:
     # D99 follow-up (an earlier session): every other reports query coalesces
     # `total_amount` (nullable, almost never populated by any insert path)
     # back to `total` (NOT NULL, default 0). _summary_window was the lone
@@ -252,8 +305,8 @@ def _summary_window(db: Session, start_dt: str, end_dt: str, today: date | None 
     # not created_at (import-import semantics). Also: jobs.status is the
     # legacy varchar — null on QB-imported rows. Use lifecycle_stage.
     _amount = Invoice.total
-    _start_d = date.fromisoformat(start_dt[:10])
-    _end_d = date.fromisoformat(end_dt[:10])  # exclusive day
+    _start_d, _end_d = window.start_d, window.end_d  # end exclusive
+    start_dt, end_dt = window.start_ts, window.end_ts
     _rev_date = _revenue_date_expr()
     revenue_row = db.execute(
         select(
@@ -313,7 +366,7 @@ def _summary_window(db: Session, start_dt: str, end_dt: str, today: date | None 
         # Invoice.total, so a credited invoice kept counting at full value.
         # This also feeds DashboardView's "Revenue Billed" tile.
         "revenue_total": float((revenue_row or {}).get("revenue_total", 0) or 0)
-        - _credits_total(db, start_dt, end_dt),
+        - _credits_total(db, *_ledger_edges(window)),
         "avg_job_value": float((revenue_row or {}).get("avg_job_value", 0) or 0),
         "jobs_completed": int(jobs_completed),
         "open_jobs": int(open_jobs),
@@ -353,16 +406,14 @@ def reports_summary(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    start_dt, end_dt, end_resolved = _resolve_date_range(start_date, end_date)
+    window = _resolve_date_range(db, start_date, end_date)
     # Previous-window of equal length for trend deltas.
-    start_d = date.fromisoformat(start_dt[:10])
-    end_d = date.fromisoformat(end_dt[:10])
-    window_days = (end_d - start_d).days
-    prev_start_dt = datetime.combine(start_d - timedelta(days=window_days), time.min, tzinfo=UTC).isoformat()
-    prev_end_dt = start_dt
+    window_days = (window.end_d - window.start_d).days
+    tz = resolve_zone(shop_tz_name_from_settings(db))
+    prev = _shop_window(window.start_d - timedelta(days=window_days), window.start_d, tz)
 
-    cur = _summary_window(db, start_dt, end_dt)
-    prev = _summary_window(db, prev_start_dt, prev_end_dt)
+    cur = _summary_window(db, window)
+    prev = _summary_window(db, prev)
     return {
         **cur,
         "revenue_trend": _trend_pct(cur["revenue_total"], prev["revenue_total"]),
@@ -370,8 +421,8 @@ def reports_summary(
         "overdue_invoices_trend": _trend_pct(cur["overdue_invoices"], prev["overdue_invoices"]),
         "jobs_completed_trend": _trend_pct(cur["jobs_completed"], prev["jobs_completed"]),
         "range": {
-            "start_date": start_d.isoformat(),
-            "end_date": end_resolved.isoformat(),
+            "start_date": window.start_d.isoformat(),
+            "end_date": window.end_date.isoformat(),
         },
     }
 
@@ -394,7 +445,8 @@ def top_customers(
     ranges are honored as-is — no auto-widen.
     """
     user_supplied_range = bool(start_date or end_date)
-    start_dt, end_dt, end_date_resolved = _resolve_date_range(start_date, end_date)
+    window = _resolve_date_range(db, start_date, end_date)
+    start_dt, end_dt, end_date_resolved = window.start_ts, window.end_ts, window.end_date
     sql = text(
         f"""
         SELECT
@@ -420,17 +472,21 @@ def top_customers(
         """  # noqa: S608 — interpolation is constants + whitelisted alias (_alias_prefix); user input is bound
     )
     try:
-        rows = db.execute(sql, {"start_d": date.fromisoformat(start_dt[:10]), "end_d": date.fromisoformat(end_dt[:10]), "limit": limit}).mappings().all()
+        rows = db.execute(sql, {"start_d": window.start_d, "end_d": window.end_d, "limit": limit}).mappings().all()
         if not rows and not user_supplied_range:
-            # Widen to 90 days for the no-data default case.
-            wider_start = datetime.combine(
-                end_date_resolved - timedelta(days=89), time.min, tzinfo=UTC
-            ).isoformat()
+            # Widen to 90 days for the no-data default case. The query keys on
+            # a DATE, so it binds dates (it once bound :start_dt/:end_dt, names
+            # this SQL does not have).
+            wider = _shop_window(
+                end_date_resolved - timedelta(days=89),
+                window.end_d,
+                resolve_zone(shop_tz_name_from_settings(db)),
+            )
             rows = db.execute(
-                sql, {"start_dt": wider_start, "end_dt": end_dt, "limit": limit}
+                sql, {"start_d": wider.start_d, "end_d": wider.end_d, "limit": limit}
             ).mappings().all()
             if rows:
-                start_dt = wider_start
+                start_dt = wider.start_ts
     except Exception:
         log.exception("top_customers_failed")
         raise HTTPException(status_code=500, detail="Unable to compute top customers") from None
@@ -470,7 +526,8 @@ def revenue_by_period(
     Closes ReportsView.vue gap. Returns {items: [{period_start, revenue,
     invoice_count, avg_invoice}], period, range}.
     """
-    start_dt, end_dt, end_date_resolved = _resolve_date_range(start_date, end_date)
+    window = _resolve_date_range(db, start_date, end_date)
+    start_dt, end_dt, end_date_resolved = window.start_ts, window.end_ts, window.end_date
     # Postgres date_trunc supports day/week/month directly — pass the literal
     # through a whitelist check (done by FastAPI pattern validator on period).
     try:
@@ -492,8 +549,8 @@ def revenue_by_period(
             ),
             {
                 "period": period,
-                "start_d": date.fromisoformat(start_dt[:10]),
-                "end_d": date.fromisoformat(end_dt[:10]),
+                "start_d": window.start_d,
+                "end_d": window.end_d,
             },
         ).mappings().all()
     except Exception:
@@ -503,7 +560,7 @@ def revenue_by_period(
     # M19: net balance-reducing adjustments out of each period. Without this a
     # credited invoice keeps counting at full value, because a credit memo
     # reduces balance_due and never touches Invoice.total.
-    _credits = _credits_by_period(db, period, start_dt, end_dt)
+    _credits = _credits_by_period(db, period, *_ledger_edges(window))
     items = []
     for r in rows:
         key = _iso_or_none(r["period_start"])
@@ -651,7 +708,8 @@ def sales_tax_report(
     invoices exist (0 today). Gated on the §12 supersede model; reconcile
     there, not by patching this read path in isolation.
     """
-    start_dt, end_dt, end_resolved = _resolve_date_range(start_date, end_date)
+    window = _resolve_date_range(db, start_date, end_date)
+    start_dt, end_dt, end_resolved = window.start_ts, window.end_ts, window.end_date
     trunc = "quarter" if period == "quarter" else "month"
     try:
         rows = db.execute(
@@ -680,20 +738,22 @@ def sales_tax_report(
                   AND status IN ('sent', 'paid', 'overdue')
                   AND (billing_type IS NULL OR billing_type != 'deposit')
                   AND invoice_date IS NOT NULL
-                  AND invoice_date >= :start_dt
-                  AND invoice_date < :end_dt
+                  AND invoice_date >= :start_d
+                  AND invoice_date < :end_d
                 GROUP BY 1, 2
                 ORDER BY 1 ASC, 2 ASC
                 """
             ),
-            {"trunc": trunc, "start_dt": start_dt, "end_dt": end_dt},
+            {"trunc": trunc, "start_d": window.start_d, "end_d": window.end_d},
         ).mappings().all()
     except Exception:
         log.exception("sales_tax_report_failed")
         raise HTTPException(status_code=500, detail="Unable to compute the sales-tax report") from None
 
     # M18: the tax given back, per the CREDIT's own period (created_at) —
-    # a remitted month is never restated. Same window as the main query.
+    # a remitted month is never restated. Same days as the main query, at the
+    # ledger's UTC edges so each credit lands in the one period it buckets to.
+    adj_start, adj_end = _ledger_edges(window)
     try:
         adj_rows = db.execute(
             text(
@@ -721,7 +781,7 @@ def sales_tax_report(
                 GROUP BY 1
                 """
             ),
-            {"trunc": trunc, "start_dt": start_dt, "end_dt": end_dt},
+            {"trunc": trunc, "start_dt": adj_start, "end_dt": adj_end},
         ).mappings().all()
     except Exception:
         log.exception("sales_tax_adjustments_failed")
@@ -749,24 +809,21 @@ def daily_snapshot(
     # the QB import landed 165 jobs 14 days ago — all "today". Force a
     # single-day window when the caller doesn't specify.
     if not start_date and not end_date:
-        # The shop's today (#444). Exact for everything keyed on a DATE —
-        # today's revenue (invoice_date) and the overdue cutoff. The job
-        # TIMESTAMP counts below still use this date's UTC-midnight bounds
-        # (7pm-7pm Central), which is nearer the shop's day than the UTC date
-        # was (that window dropped every daytime job at 7pm); local-midnight
-        # bounds are deferred, not claimed.
+        # The shop's today (#444). DATE columns (invoice_date, the overdue
+        # cutoff) compare against the shop's date; the job TIMESTAMP counts
+        # below run from the shop's local midnight to the next (GDXA-538).
         today = shop_today_from_settings(db)
         start_date = today.isoformat()
         end_date = today.isoformat()
-    start_dt, end_dt, resolved_end = _resolve_date_range(start_date, end_date)
+    window = _resolve_date_range(db, start_date, end_date)
+    start_dt, end_dt, resolved_end = window.start_ts, window.end_ts, window.end_date
     today = resolved_end
 
     # Revenue billed in the window. Same semantics as /summary —
     # invoice_date with created_at fallback, billed-statuses only.
     _amount = Invoice.total
     _rev_date = _revenue_date_expr()
-    _start_d = date.fromisoformat(start_dt[:10])
-    _end_d = date.fromisoformat(end_dt[:10])
+    _start_d, _end_d = window.start_d, window.end_d
     today_revenue = db.scalar(
         select(func.coalesce(func.sum(_amount), 0)).where(
             Invoice.deleted_at.is_(None),
@@ -861,7 +918,8 @@ def job_profitability(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    start_dt, end_dt, _ = _resolve_date_range(start_date, end_date)
+    window = _resolve_date_range(db, start_date, end_date)
+    start_dt, end_dt = window.start_ts, window.end_ts
 
     # Revenue per job via ORM — uses Invoice.total (canonical column); HAVING filters zero-revenue jobs
     _inv_revenue = func.coalesce(
@@ -918,15 +976,20 @@ def technician_performance(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    start_dt, end_dt, _ = _resolve_date_range(start_date, end_date)
+    window = _resolve_date_range(db, start_date, end_date)
+    start_dt, end_dt = window.start_ts, window.end_ts
 
+    # GDXA-538: "completed" is lifecycle_stage, the done signal (GDXA-227).
+    # The legacy status varchar missed 'Completed' and NULL-status (imported)
+    # rows. Revenue is one row per invoice under its job, so a job with two
+    # invoices sums both once each; jobs count DISTINCT.
     rows = db.execute(
         text(
             """
             SELECT
                 t.id AS technician_id,
                 t.name AS technician_name,
-                COUNT(DISTINCT CASE WHEN j.status = 'Complete' THEN j.id END) AS jobs_completed,
+                COUNT(DISTINCT CASE WHEN j.lifecycle_stage = 'completed' THEN j.id END) AS jobs_completed,
                 COALESCE(SUM(ih.total), 0) AS revenue
             FROM technicians t
             LEFT JOIN jobs j
@@ -968,7 +1031,8 @@ def revenue_analytics(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    start_dt, end_dt, _ = _resolve_date_range(start_date, end_date)
+    window = _resolve_date_range(db, start_date, end_date)
+    start_dt, end_dt = window.start_ts, window.end_ts
 
     # Revenue by date — text(); CAST(created_at AS DATE) is portable across SQLite + PostgreSQL
     by_period = db.execute(
@@ -985,7 +1049,7 @@ def revenue_analytics(
             ORDER BY period
             """  # noqa: S608 — interpolation is constants only; user input is bound
         ),
-        {"start_d": date.fromisoformat(start_dt[:10]), "end_d": date.fromisoformat(end_dt[:10])},
+        {"start_d": window.start_d, "end_d": window.end_d},
     ).mappings().all()
 
     # Revenue by job type — ORM; uses Invoice.total (canonical) with fallback to total_amount
@@ -1007,8 +1071,8 @@ def revenue_analytics(
             & sa_and(*_revenue_orm_filters())
             # M8: window on the billed date, matching by_period in this same
             # payload (and _summary_window). created_at is the import run.
-            & (_revenue_date_expr() >= date.fromisoformat(start_dt[:10]))
-            & (_revenue_date_expr() < date.fromisoformat(end_dt[:10])),
+            & (_revenue_date_expr() >= window.start_d)
+            & (_revenue_date_expr() < window.end_d),
         )
         .where(
             Job.deleted_at.is_(None),
@@ -1042,7 +1106,8 @@ def customer_ltv(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    start_dt, end_dt, _ = _resolve_date_range(start_date, end_date)
+    window = _resolve_date_range(db, start_date, end_date)
+    start_dt, end_dt = window.start_ts, window.end_ts
 
     # Customer lifetime value — ORM
     _ltv = func.coalesce(
@@ -1243,19 +1308,21 @@ def sales_funnel(
     """Bookings KPIs across today / this-week / last 30 days plus close rate
     and outstanding-estimate aging."""
     now = datetime.now(UTC)
-    today = now.date()
-    today_start = datetime.combine(today, time.min, tzinfo=UTC)
-    tomorrow_start = today_start + timedelta(days=1)
-    # ISO week — Monday start.
-    week_start = datetime.combine(today - timedelta(days=today.weekday()), time.min, tzinfo=UTC)
-    last30_start = today_start - timedelta(days=29)
+    # GDXA-538: the shop's days, bounded at the shop's local midnights.
+    tz = resolve_zone(shop_tz_name_from_settings(db))
+    today = shop_today_from_settings(db, now=now)
+    week_start_d = today - timedelta(days=today.weekday())  # ISO week — Monday start.
+    today_start = _shop_midnight_utc(today, tz)
+    tomorrow_start = _shop_midnight_utc(today + timedelta(days=1), tz)
+    week_start = _shop_midnight_utc(week_start_d, tz)
+    last30_start = _shop_midnight_utc(today - timedelta(days=29), tz)
 
     sold_today = _sold_window(db, today_start, tomorrow_start)
     sold_week = _sold_window(db, week_start, tomorrow_start)
     sold_30d = _sold_window(db, last30_start, tomorrow_start)
 
     billed_today = _billed_window(db, today, today + timedelta(days=1))
-    billed_week = _billed_window(db, week_start.date(), today + timedelta(days=1))
+    billed_week = _billed_window(db, week_start_d, today + timedelta(days=1))
 
     # Close rate over last 30 days: accepted / (accepted+declined+expired)
     # filtered by sent_at — i.e., decisions on estimates that were actually
@@ -1352,9 +1419,11 @@ def operations_kpis(
     db: Session = Depends(get_db),
 ) -> dict:
     now = datetime.now(UTC)
-    today = now.date()
-    last30_start_dt = datetime.combine(today - timedelta(days=29), time.min, tzinfo=UTC)
-    tomorrow_start_dt = datetime.combine(today + timedelta(days=1), time.min, tzinfo=UTC)
+    # GDXA-538: the last 30 shop days, bounded at the shop's local midnights.
+    tz = resolve_zone(shop_tz_name_from_settings(db))
+    today = shop_today_from_settings(db, now=now)
+    last30_start_dt = _shop_midnight_utc(today - timedelta(days=29), tz)
+    tomorrow_start_dt = _shop_midnight_utc(today + timedelta(days=1), tz)
 
     _completed_at = func.coalesce(Job.completed_at, Job.created_at)
 
@@ -1480,14 +1549,17 @@ def cash_risk_kpis(
     db: Session = Depends(get_db),
 ) -> dict:
     now = datetime.now(UTC)
-    today = now.date()
-    last30_start_dt = datetime.combine(today - timedelta(days=29), time.min, tzinfo=UTC)
-    tomorrow_start_dt = datetime.combine(today + timedelta(days=1), time.min, tzinfo=UTC)
     # Aging counts days past a due DATE, and due dates are written on the
     # shop's calendar (#444) — age on the shop's today, as /collections/aging
-    # does, or the two disagree every evening. The timestamp windows above
-    # stay on UTC bounds: moving them would drop evening payments.
+    # does, or the two disagree every evening. GDXA-538: every window here is
+    # the shop's days too — DATE columns compare to `today`, TIMESTAMP columns
+    # to the shop's local midnights, so an evening payment or refund lands on
+    # the day it happened rather than tomorrow's UTC date.
     shop_today = shop_today_from_settings(db, now=now)
+    today = shop_today
+    tz = resolve_zone(shop_tz_name_from_settings(db))
+    last30_start_dt = _shop_midnight_utc(today - timedelta(days=29), tz)
+    tomorrow_start_dt = _shop_midnight_utc(today + timedelta(days=1), tz)
 
     # AR aging: anchor on due_date, exclude paid/draft/void, exclude
     # invoices not yet due. Mirror the canonical reports.py semantics
@@ -1577,8 +1649,8 @@ def cash_risk_kpis(
             Invoice.deleted_at.is_(None),
             Invoice.status.in_(["sent", "paid"]),
             Invoice.invoice_date.is_not(None),
-            Invoice.invoice_date >= last30_start_dt.date(),
-            Invoice.invoice_date < tomorrow_start_dt.date(),
+            Invoice.invoice_date >= today - timedelta(days=29),
+            Invoice.invoice_date < today + timedelta(days=1),
         )
     ).scalars().all()
     inv_total_sell = 0.0
@@ -1644,7 +1716,7 @@ def cash_risk_kpis(
             InvoiceAdjustment.created_at < tomorrow_start_dt,
         )
     ) or 0
-    today_start_dt = datetime.combine(today, time.min, tzinfo=UTC)
+    today_start_dt = _shop_midnight_utc(today, tz)
     collected_today_gross = db.scalar(
         select(func.coalesce(func.sum(Payment.amount), 0)).where(
             Payment.voided_at.is_(None),
@@ -1736,12 +1808,13 @@ def export_report(
     if report_type not in valid_report_types:
         raise HTTPException(status_code=400, detail="Invalid report type")
 
-    start_dt, end_dt, _ = _resolve_date_range(start_date, end_date)
+    window = _resolve_date_range(db, start_date, end_date)
+    start_dt, end_dt = window.start_ts, window.end_ts
     params = {
         "start_dt": start_dt,
         "end_dt": end_dt,
-        "start_d": date.fromisoformat(start_dt[:10]),
-        "end_d": date.fromisoformat(end_dt[:10]),
+        "start_d": window.start_d,
+        "end_d": window.end_d,
     }
 
     queries = {

@@ -34,6 +34,7 @@ from sqlalchemy.pool import StaticPool
 
 import gdx_dispatch.models.tenant_models  # noqa: F401
 from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import (
     Invoice,
     InvoiceLine,
@@ -116,7 +117,7 @@ def _create_invoice(db, *, tax_rate=None, lines):
         customer_id=job.customer_id,
         tax_rate=tax_rate,
         line_items=[InvoiceLineCreateIn(**ln) for ln in lines],
-        invoice_date=date.today(),
+        invoice_date=shop_today_from_settings(db),
     )
     return create_invoice(payload=payload, _=_user(), db=db)
 
@@ -444,7 +445,7 @@ def test_m7_estimate_discount_survives_conversion_and_recalc(db):
     inv = create_invoice(
         payload=InvoiceCreateIn(
             job_id=job.id, customer_id=job.customer_id, estimate_id=est.id,
-            invoice_date=date.today(),
+            invoice_date=shop_today_from_settings(db),
         ),
         _=_user(), db=db,
     )
@@ -475,7 +476,7 @@ def test_m24_labor_line_taxability_carries_to_the_invoice(db):
     inv = create_invoice(
         payload=InvoiceCreateIn(
             job_id=job.id, customer_id=job.customer_id, estimate_id=est.id,
-            tax_rate=0.0738, invoice_date=date.today(),
+            tax_rate=0.0738, invoice_date=shop_today_from_settings(db),
         ),
         _=_user(), db=db,
     )
