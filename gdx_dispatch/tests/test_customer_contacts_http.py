@@ -289,12 +289,13 @@ def test_a_failed_audit_leaves_no_contact_behind(env, monkeypatch):
     SECOND session on the same engine — a same-session read sees uncommitted
     work and reports success that no other connection can see.
 
-    The subtle part, and the reason this was broken after the first fix:
-    `ensure_audit_table` COMMITS on first use per engine (`audit.py:320`). Called
-    from inside the handler it hardens the handler's staged INSERT before the
-    audit row is written, so `audit_or_rollback` rolls back nothing. The
-    endpoints take `Depends(audit_ready_db)` so that initialization happens
-    before the handler stages anything.
+    The subtle part, and the reason this was broken after the first fix: until
+    GDXA-352 (2026-10-06) `ensure_audit_table` COMMITTED on first use per engine.
+    Called from inside the handler it hardened the handler's staged INSERT before
+    the audit row was written, so `audit_or_rollback` rolled back nothing. The
+    handlers in routers/customers.py call `ensure_audit_table(db)` themselves,
+    first thing (not the `audit_ready_db` dependency); since GDXA-352 it no
+    longer touches open work either way (`core/audit.py`).
     """
     import gdx_dispatch.core.audit as audit_mod
 
@@ -302,7 +303,7 @@ def test_a_failed_audit_leaves_no_contact_behind(env, monkeypatch):
 
     # Fail the audit the way it actually fails: AFTER ensure_audit_table has
     # run. Replacing _log_audit_event_impl wholesale also removes the
-    # ensure_audit_table call inside it — which is the thing that commits — so
+    # ensure_audit_table call inside it — the thing that used to commit — so
     # a naive patch makes the broken code look correct. Ask me how I know.
     def _boom(session, *a, **k):
         audit_mod.ensure_audit_table(session)
