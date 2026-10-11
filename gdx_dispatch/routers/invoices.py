@@ -288,6 +288,57 @@ def _decode_photo_ids(invoice: Invoice) -> list[str]:
         return []
 
 
+def _resolve_invoice_customers(
+    db: Session, invoices: list[Invoice]
+) -> dict[str, tuple[str, str, bool]]:
+    """Map invoice id -> (customer_id, customer_name, customer_deleted).
+
+    The one rule for "whose invoice is this", shared by the list and the
+    detail so they cannot drift (GDXA-540): the
+    invoice's OWN customer_id is authoritative; the Job's customer stands in
+    only when the invoice has none. Migration 094 made `customer_id` NOT NULL,
+    so that fallback is reachable only on a database 094 has not tightened;
+    it is kept so such a row still names someone rather than no one.
+    `invoices` has no customer_name column, so the
+    name always comes from here. Two batched reads, whatever the row count.
+    An invoice whose customer cannot be found is absent from the map; the
+    caller keeps the invoice's own customer_id and an empty name, so the pair
+    it renders never describes two different customers. Reads are
+    `contained_read`-wrapped and re-raise: the caller decides what a failure
+    costs.
+    """
+    from gdx_dispatch.models.tenant_models import Customer
+
+    cust_for_invoice: dict[str, _uuid.UUID] = {}
+    need_job: dict[_uuid.UUID, list[str]] = {}
+    for inv in invoices:
+        if inv.customer_id:
+            cust_for_invoice[str(inv.id)] = inv.customer_id
+        elif inv.job_id:
+            need_job.setdefault(inv.job_id, []).append(str(inv.id))
+    if need_job:
+        with contained_read(db):
+            job_rows = db.execute(
+                select(Job.id, Job.customer_id).where(Job.id.in_(list(need_job)))
+            ).all()
+        for job_uuid, job_cust in job_rows:
+            if job_cust:
+                for inv_id in need_job.get(job_uuid, []):
+                    cust_for_invoice[inv_id] = job_cust
+    if not cust_for_invoice:
+        return {}
+    with contained_read(db):
+        cust_rows = db.execute(
+            select(Customer.id, Customer.name, Customer.deleted_at).where(
+                Customer.id.in_(list(set(cust_for_invoice.values())))
+            )
+        ).all()
+    by_id = {r[0]: (str(r[0]), r[1] or "", r[2] is not None) for r in cust_rows}
+    return {
+        inv_id: by_id[cid] for inv_id, cid in cust_for_invoice.items() if cid in by_id
+    }
+
+
 def _serialize_invoice(
     invoice: Invoice,
     include_lines: bool = False,
@@ -309,7 +360,9 @@ def _serialize_invoice(
             if getattr(invoice, "source_estimate_id", None) else None
         ),
         "customer_id": str(invoice.customer_id) if getattr(invoice, 'customer_id', None) else None,
-        "customer_name": getattr(invoice, 'customer_name', None) or "",
+        # `invoices` has no customer_name column; routes that show a name
+        # fill it from `_resolve_invoice_customers`.
+        "customer_name": "",
         "invoice_number": invoice.invoice_number,
         "billing_type": invoice.billing_type,
         "sequence_number": invoice.sequence_number,
@@ -1260,36 +1313,22 @@ def list_invoices(
     rows = db.execute(query).scalars().all()
     items = [_serialize_invoice(row) for row in rows]
 
-    # Enrich customer names via Job → Customer lookup
-    job_ids = list({str(i["job_id"]) for i in items if i.get("job_id")})
-    if job_ids:
-        # Counted by GDXA-160 and deliberately left bare. Same swallowed-read
-        # shape as the wrapped sites, but this is a GET with nothing pending
-        # behind it and NO DB work after the `except` — the list is already
-        # materialised above — so an abort here costs nothing and surfaces
-        # nowhere. Counted rather than skipped, because the sweep rule counts
-        # instances, not consequences.
-        try:
-            job_rows = db.execute(
-                select(Job.id, Job.customer_id).where(Job.id.in_([_uuid.UUID(j) for j in job_ids]))
-            ).all()
-            job_cust_map = {str(r[0]): str(r[1]) for r in job_rows if r[1]}
-            cust_ids = list(set(job_cust_map.values()))
-            if cust_ids:
-                from gdx_dispatch.models.tenant_models import Customer
-                cust_rows = db.execute(
-                    select(Customer.id, Customer.name).where(Customer.id.in_([_uuid.UUID(c) for c in cust_ids]))
-                ).all()
-                cust_name_map = {str(r[0]): r[1] for r in cust_rows}
-                for item in items:
-                    jid = str(item.get("job_id", ""))
-                    cid = job_cust_map.get(jid)
-                    if cid:
-                        item["customer_id"] = cid
-                        item["customer_name"] = cust_name_map.get(cid, "")
-        except Exception:
-            logging.getLogger(__name__).exception("list_invoices caught exception")
-            pass  # graceful degradation — customer names just stay empty
+    # Enrich customer names: the invoice's own customer, else the Job's
+    # (GDXA-540 — this used to read only the Job, so every job-less invoice
+    # listed with a blank name, and a job's customer overwrote the invoice's
+    # own customer_id). A failure leaves the names empty; the reads are
+    # contained, so the view lookup below still runs.
+    for item in items:
+        item["customer_deleted"] = False
+    try:
+        resolved = _resolve_invoice_customers(db, rows)
+    except Exception:
+        logging.getLogger(__name__).exception("list_invoices customer enrichment failed")
+        resolved = {}
+    for item in items:
+        hit = resolved.get(item["id"])
+        if hit:
+            item["customer_id"], item["customer_name"], item["customer_deleted"] = hit
 
     if status is not None:
         items = [item for item in items if item["effective_status"] == status]
@@ -2287,13 +2326,10 @@ def get_invoice(
         )
     )
 
-    # 2026-04-29: enrich customer_name via Job → Customer fallback the same
-    # way the list endpoint does (lines 235–258). QB-imported invoices have
-    # NULL Invoice.customer_id, so the bare serializer returns "" and the
-    # frontend renders "Unknown" — even though the same invoice in the list
-    # view shows the real customer name (sourced via the Job).
+    # Enrich customer_name the same way the list endpoint does: the bare
+    # serializer has no name to give, and the frontend renders "Unknown" for
+    # a missing one.
     from gdx_dispatch.models.tenant_models import Customer
-    cn = payload.get("customer_name") or ""
     # Flagged, never blanked. A soft-deleted customer keeps its name in this
     # payload and is marked here instead: InvoiceDetailView.vue:65 guards its
     # customer link on customer_id ALONE and normalizes a missing name to
@@ -2301,61 +2337,35 @@ def get_invoice(
     # the dead link. `customer_deleted` is the half a UI withholds the LINK on
     # — GET /api/customers/{id} 404s on a deleted record.
     payload["customer_deleted"] = False
-    if not cn:
-        # SAVEPOINT-wrapped (GDXA-160). No pending work behind this one — it is
-        # a GET — so nothing is lost, but the handler keeps reading afterwards
-        # (the contact enrichment below, at the `select(Customer)` a few dozen
-        # lines on), and on Postgres THAT is what raised: a 500 on the invoice
-        # detail page, naming `customers`, for a failure this `except` says it
-        # already handled.
-        #
-        # Narrower than that sounds: the wraps contain a TRANSIENT failure only
-        # (a timeout, a lock, a cancelled statement). The `select(Customer)`
-        # below re-reads the same `customers` columns unwrapped, so a
-        # persistent fault there — a column missing mid-migration — fails again
-        # on its own and still 500s the page, now naming the right line. A wrap
-        # helps per call path, not per site; see `create_invoice`'s tax read.
-        try:
-            # The invoice's OWN customer first. `invoices` has no customer_name
-            # column — _serialize_invoice's getattr always yields "" — so before
-            # this, an invoice carrying a customer_id but NO job produced an id
-            # with no name at all, and every consumer rendered "Unknown"/"—" for
-            # a customer it could name. Measured 2026-09-24 on the local book:
-            # 43 of 415 invoices are in exactly that state.
-            if invoice.customer_id:
-                with contained_read(db):
-                    own = db.execute(
-                        select(Customer.name, Customer.deleted_at).where(
-                            Customer.id == invoice.customer_id
-                        )
-                    ).first()
-                if own and own[0]:
-                    payload["customer_name"] = own[0]
-                    payload["customer_deleted"] = own[1] is not None
-                    cn = own[0]
-            # Then the Job → Customer fallback (2026-04-29), for QB-imported
-            # invoices with a NULL Invoice.customer_id: the bare serializer
-            # returns "" even though the same invoice in the LIST view shows the
-            # real name, sourced via the Job. This branch sets the id too, so
-            # the pair it writes always describes one customer.
-            if not cn and invoice.job_id:
-                with contained_read(db):
-                    row = db.execute(
-                        select(Job.customer_id).where(Job.id == invoice.job_id)
-                    ).first()
-                if row and row[0]:
-                    with contained_read(db):
-                        cust = db.execute(
-                            select(Customer.id, Customer.name, Customer.deleted_at).where(
-                                Customer.id == row[0]
-                            )
-                        ).first()
-                    if cust and cust[1]:
-                        payload["customer_id"] = str(cust[0])
-                        payload["customer_name"] = cust[1]
-                        payload["customer_deleted"] = cust[2] is not None
-        except Exception:
-            logging.getLogger(__name__).exception("get_invoice customer enrichment failed")
+    # SAVEPOINT-wrapped (GDXA-160). No pending work behind this one — it is
+    # a GET — so nothing is lost, but the handler keeps reading afterwards
+    # (the contact enrichment below, at the `select(Customer)` a few dozen
+    # lines on), and on Postgres THAT is what raised: a 500 on the invoice
+    # detail page, naming `customers`, for a failure this `except` says it
+    # already handled.
+    #
+    # Narrower than that sounds: the wraps contain a TRANSIENT failure only
+    # (a timeout, a lock, a cancelled statement). The `select(Customer)`
+    # below re-reads the same `customers` columns unwrapped, so a
+    # persistent fault there — a column missing mid-migration — fails again
+    # on its own and still 500s the page, now naming the right line. A wrap
+    # helps per call path, not per site; see `create_invoice`'s tax read.
+    try:
+        # The invoice's OWN customer first, the Job's only when it has none
+        # — the rule `_resolve_invoice_customers` holds for the list too
+        # (GDXA-540). Before 2026-09-24 an invoice carrying a customer_id
+        # but NO job produced an id with no name at all (43 of 415 on the
+        # local book then). The Job branch sets the id too, so the pair
+        # always describes one customer.
+        hit = _resolve_invoice_customers(db, [invoice]).get(str(invoice.id))
+        if hit:
+            (
+                payload["customer_id"],
+                payload["customer_name"],
+                payload["customer_deleted"],
+            ) = hit
+    except Exception:
+        logging.getLogger(__name__).exception("get_invoice customer enrichment failed")
     # Surface customer contact on the invoice detail payload so the Bill-To
     # card can render without a second roundtrip. Encrypted columns
     # (Customer.address) require ORM access — _serialize_invoice has no db
