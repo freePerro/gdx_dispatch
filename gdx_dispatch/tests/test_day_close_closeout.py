@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -84,6 +85,14 @@ def closeout(db, job, hours, *, user=None, tapped_at=None):
 
 
 def complete(db, job, user=None):
+    # GDXA-599: /complete re-finishes a job on its closeout; seed one, as a
+    # closeout followed by /uncomplete leaves it.
+    if not closeouts(db, job):
+        db.add(JobCloseout(
+            id=uuid4(), job_id=job.id, hours_worked=1, techs_on_site=1,
+            closed_by_user_id=office_user()["user_id"], closed_at=datetime.now(UTC),
+        ))
+        db.commit()
     resp = complete_job(
         payload=JobCompletePayload(hours=1, no_parts_used=True), job_id=str(job.id),
         request=request(), current_user=user or office_user(), db=db,
