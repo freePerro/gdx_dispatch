@@ -594,7 +594,6 @@
 </template>
 
 <script setup>
-import { JOB_TYPE_OPTIONS } from "../constants/jobTypes";
 import { customerTypeOptionsFor, normalizeCustomerType } from "../constants/customerTypes";
 import { computed, ref, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -706,9 +705,6 @@ const tabs = ["Jobs", "Estimates", "Invoices", "Contacts", "Locations", "Notes",
 const customerId = computed(() => route.params.id);
 const customerEstimates = ref([]);
 const customerInvoices = ref([]);
-// Plan §9: shared vocabulary — this dropdown's divergent "Service" entry is
-// where the 12 mis-spelled prod rows came from.
-const jobTypeOptions = [...JOB_TYPE_OPTIONS];
 const portalStatus = ref(null);
 const showPortalDialog = ref(false);
 const portalForm = ref({ email: '' });
