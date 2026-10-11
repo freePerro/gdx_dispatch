@@ -250,7 +250,7 @@
       sessionStorage.setItem('gdx_access_token', data.access_token);
       sessionStorage.setItem('gdx_tenant_slug', TENANT_SLUG);
       if(data.user) sessionStorage.setItem('gdx_user', JSON.stringify(data.user));
-      window.location = go;
+      window.location = go === '/mobile' ? '/mobile' : '/dashboard';
     }catch(e){
       roleBtns.forEach(function(b){ b.disabled = false; });
       nameEl.textContent = orig;
