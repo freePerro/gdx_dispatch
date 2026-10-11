@@ -704,6 +704,32 @@ def _staged_work(db: Any) -> str:
     return " ".join(f"{name}={n}" for name, n in counts if n)
 
 
+def _audit_in_savepoint(
+    db: Any, *, action: str, entity_type: str, entity_id: str | None, tenant_id: str | None,
+    user_id: str | None, actor: Any, request: Any, details: dict[str, Any] | None,
+) -> None:
+    """The write both best-effort helpers share. Raises; the caller decides
+    what a refused row means and whether anything commits.
+
+    ``ensure_audit_table`` runs OUTSIDE the savepoint: it may commit an idle
+    SQLite session the first time it runs for an engine, and inside the
+    savepoint that commit would release the very savepoint meant to contain
+    the write (``audit_best_effort`` point 1).
+    """
+    ensure_audit_table(db)
+    with db.begin_nested():
+        log_audit_event_sync(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id if user_id is not None else _actor_id_of(actor),
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            details=details or {},
+            request=request,
+        )
+
+
 def audit_best_effort(
     db: Any,
     *,
@@ -739,8 +765,9 @@ def audit_best_effort(
     on SQLite 2026-09-25: an uncommitted row that a bare ``close()`` discards
     survives if this runs first. ``audit_ready_db`` does not rescue that case;
     it moves ``ensure_audit_table``'s first-use commit out of the way, not this
-    one. A caller that still has pending work wants ``audit_or_rollback``
-    before its commit, not this.
+    one. A caller that still has pending work wants ``audit_or_rollback`` or
+    ``audit_best_effort_precommit`` before its commit, not this — that
+    docstring has the table for choosing among the three.
 
     There is deliberately no ``commit=False`` variant. Whether the row is
     already durable when the ``with`` block ends is dialect- AND state-
@@ -799,24 +826,15 @@ def audit_best_effort(
         log.warning(
             "audit_best_effort_caller_has_pending_work action=%s entity_type=%s staged=%s "
             "— this helper COMMITS, so that pending work is about to be hardened. A caller "
-            "with staged work wants audit_or_rollback before its own commit instead.",
+            "with staged work wants audit_or_rollback or audit_best_effort_precommit "
+            "before its own commit instead.",
             action, entity_type, staged,
         )
     try:
-        # Outside the savepoint on purpose — see (1) above.
-        ensure_audit_table(db)
-
-        with db.begin_nested():
-            log_audit_event_sync(
-                db,
-                tenant_id=tenant_id,
-                user_id=user_id if user_id is not None else _actor_id_of(actor),
-                action=action,
-                entity_type=entity_type,
-                entity_id=entity_id,
-                details=details or {},
-                request=request,
-            )
+        _audit_in_savepoint(
+            db, action=action, entity_type=entity_type, entity_id=entity_id, tenant_id=tenant_id,
+            user_id=user_id, actor=actor, request=request, details=details,
+        )
         db.commit()
     except Exception:
         log.exception(
@@ -830,6 +848,113 @@ def audit_best_effort(
                 db.rollback()
             except Exception:
                 log.exception("audit_best_effort_rollback_failed action=%s", action)
+        return False
+    return True
+
+
+def audit_best_effort_precommit(
+    db: Any,
+    *,
+    action: str,
+    entity_type: str,
+    entity_id: str | None = None,
+    tenant_id: str | None = None,
+    user_id: str | None = None,
+    actor: Any = None,
+    request: Any = None,
+    details: dict[str, Any] | None = None,
+) -> bool:
+    """Record a mutation the caller has STAGED and WILL commit, and never take
+    that mutation down with a failed trail row. Returns True if the row is
+    staged beside it.
+
+    **Which of the three helpers.** Ask two questions about the caller at the
+    moment it audits:
+
+    =========================  ======================  =============================
+    the caller ...             an unaudited change is  use
+    =========================  ======================  =============================
+    has work staged, commits   worse than a failure    ``audit_or_rollback``
+    after                                              (raises 500, rolls it back)
+    has work staged, commits   better than a failure   ``audit_best_effort_precommit``
+    after                                              (this one)
+    has already committed, or  —                       ``audit_best_effort``
+    never wrote                                        (commits the row itself)
+    =========================  ======================  =============================
+
+    The first case is plugin installs and credentials. The second is a money
+    movement off a signed webhook — the intended first caller is
+    ``core/payments.py:_audit_payment_reversal``, which still hand-rolls a
+    ``try/except`` until GDXA-67 swaps it onto this helper: a 500 makes Stripe
+    redeliver an event whose effect is real, so the money must move even when
+    the trail cannot be written. The third is everything that commits and then
+    audits.
+
+    **Precondition: the caller still has work staged and WILL commit it.** This
+    helper never commits. The row is flushed inside a savepoint in the caller's
+    transaction and becomes durable with the caller's own ``db.commit()`` — the
+    trail and the money land together, or neither does. A caller that audits
+    here and then does not commit loses the row with its work, silently.
+    ``audit_best_effort`` cannot be used instead: it commits, which would make
+    the caller's staged work durable from inside a trail helper, before the
+    caller had decided to.
+
+    The precondition's "staged" half is load-bearing on SQLite only. With
+    nothing flushed, the pysqlite driver has sent no ``BEGIN``, so the
+    savepoint opens the transaction itself and its ``RELEASE`` commits the row
+    outright: a read-only caller that audits here and then rolls back keeps an
+    audit row for work that never happened. On Postgres the savepoint always
+    nests inside the caller's transaction. Both are pinned by tests.
+
+    **Calling it.** Same signature as ``audit_best_effort``. It never raises for
+    the trail: a refused row is logged at ERROR and reported as ``False``. It
+    first flushes your own pending work, outside its ``try``; an error in YOUR
+    data raises from that flush exactly as your own commit would have raised it,
+    rather than being logged as a lost audit row.
+
+    How it differs from ``audit_best_effort``, and why (GDXA-63):
+
+    1. No commit — the precondition above.
+    2. The write is still inside ``begin_nested()``. A failed flush deactivates
+       the session, and the caller's commit then raises
+       ``PendingRollbackError`` — the hand-rolled ``try/except`` it is meant to
+       replace does exactly that (the suite's control test reproduces it): the
+       webhook 500s and the staged reversal is lost.
+       The savepoint rolls back the audit INSERT alone; the caller's staged
+       rows are untouched and its commit succeeds.
+    3. No rollback, conditional or otherwise. ``audit_best_effort`` rolls back a
+       session the savepoint could not save, because that caller has nothing
+       pending to lose. This caller does: a rollback here would discard the
+       staged money movement, and the caller's next ``commit()`` would then
+       SUCCEED with nothing in it — a 200 for a reversal that never happened,
+       which Stripe would never redeliver. Leaving a dead session dead makes
+       that commit raise instead, which is the loud failure.
+
+    ``ensure_audit_table`` still runs outside the savepoint. Since GDXA-352 it
+    neither commits nor rolls back open work, so it is safe in front of staged
+    rows on both dialects.
+
+    Proven on SQLite and Postgres with a real ``BEFORE INSERT`` refusal on
+    ``audit_logs``: ``tests/test_audit_best_effort_precommit.py``.
+    """
+    log = logging.getLogger(__name__)
+    # Outside the ``try`` on purpose — a failure here is the caller's data, not
+    # a lost trail row. ``begin_nested`` would flush it anyway.
+    db.flush()
+    try:
+        _audit_in_savepoint(
+            db, action=action, entity_type=entity_type, entity_id=entity_id, tenant_id=tenant_id,
+            user_id=user_id, actor=actor, request=request, details=details,
+        )
+    # The ERROR below and the False are the report; never raising is the contract.
+    except Exception:  # noqa: BLE001  # noqa: silent-failure
+        log.exception(
+            "audit_best_effort_precommit_failed action=%s entity_type=%s entity_id=%s — "
+            "the caller's staged change will commit WITHOUT its audit row; this ERROR is "
+            "the only record of it.",
+            action, entity_type, entity_id,
+        )
+        # No rollback — see (3) above.
         return False
     return True
 

@@ -109,6 +109,13 @@ ALLOWED: dict[tuple[str, str], str] = {
         "the writer itself: it primes the guard (which can commit) and then builds "
         "the row; its caller's commit is what lands it"
     ),
+    ("core/audit.py", "_audit_in_savepoint"): (
+        "the write audit_best_effort and audit_best_effort_precommit share: the "
+        "'commit' before the row is ensure_audit_table's guard prime, which since "
+        "GDXA-352 never commits open work. audit_best_effort commits the row itself; "
+        "audit_best_effort_precommit leaves it for its caller (GDXA-63), and is scanned "
+        "as an audit writer in turn, so a caller of it that does not commit is flagged"
+    ),
     ("core/payments.py", "_audit_money_event"): (
         "helper: both callers stage it inside _mark_invoice_paid, whose single "
         "db.commit() lands the alert with the payment (#661)"
