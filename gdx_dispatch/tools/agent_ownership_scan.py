@@ -118,6 +118,9 @@ DOCUMENTED_ONLY_ROOT_RULES = frozenset(
         "pytest.ini",
         "ruff.toml",
         "sgconfig.yml",  # ast-grep's project config (vue -> html mapping)
+        # The operator env template; its contents are guarded by
+        # gdx_dispatch/tests/test_env_template_drift.py, its owner by nothing.
+        ".env.template",
         "pyproject.toml",
         # plugins-host's, and a doc rather than scanner state — gating a root
         # doc is a separate decision and not platform-core's to make. Found by
