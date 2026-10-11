@@ -447,8 +447,9 @@ def _job_is_billed(db: Session, job_id: Any) -> bool:
     """Has this job reached a real invoice?
 
     Derived from invoices via the ONE canonical predicate, never from
-    `Job.billing_status` — that column is a dead cache that only ever says
-    "unbilled", and every reader that trusted it counted paid jobs as unbilled
+    `Job.billing_status` — that column is a dead cache: no app code writes it
+    past "unbilled" and older rows hold a stale "invoiced", so
+    every reader that trusted it counted paid jobs as unbilled
     (core/billing_predicates.py).
 
     Deliberately NOT job_billing_resolved (055 audit catch): folding the
@@ -2108,9 +2109,9 @@ def get_mobile_job_detail(
     # to hand-build a different Google Maps URL format from the sibling address.
     job["navigation_link"] = _build_navigation_link(site.address)
     # Derived, never cached. `Job.billing_status` looks like the answer and is a
-    # dead column — nothing has ever written anything but "unbilled", so every
-    # reader that trusted it counted paid jobs as unbilled
-    # (core/billing_predicates.py). This screen opens ANY job, including one
+    # dead cache — no app code writes it past "unbilled" and older rows hold a
+    # stale "invoiced", so every reader that trusted it
+    # counted paid jobs as unbilled (core/billing_predicates.py). This screen opens ANY job, including one
     # invoiced months ago, so it needs the real answer to avoid offering to
     # re-bill it.
     job["billed"] = _job_is_billed(db, job.get("id"))
