@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.invoice_net_billed import invoice_net_billed_sq
 from gdx_dispatch.models.tenant_models import Invoice, Job
 from gdx_dispatch.modules.timeclock.models import TimeClock
 
@@ -19,7 +20,9 @@ def job_costing_report(start_date: date, end_date: date, db: Session) -> list[di
         select(
             Job.id,
             Job.title,
-            func.coalesce(func.sum(Invoice.total), 0).label("total_billed"),
+            # GDXA-593: net of each invoice's credit memos (a credit memo
+            # lowers balance_due, never Invoice.total).
+            func.coalesce(func.sum(invoice_net_billed_sq()), 0).label("total_billed"),
         )
         .outerjoin(Invoice, Invoice.job_id == Job.id)
         .where(
@@ -90,8 +93,11 @@ def revenue_report(start_date: date, end_date: date, db: Session) -> dict:
     start_dt = datetime(start_date.year, start_date.month, start_date.day, tzinfo=timezone.utc)
     end_dt = datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=timezone.utc)
 
+    # GDXA-593: a paid invoice settled partly by a credit memo collected its
+    # total less the credit, so sum net billed. The average stays the average
+    # invoice billed, as in routers/reports.py revenue_by_period.
     stmt = select(
-        func.coalesce(func.sum(Invoice.total), 0).label("total_paid"),
+        func.coalesce(func.sum(invoice_net_billed_sq()), 0).label("total_paid"),
         func.count(Invoice.id).label("invoice_count"),
         func.coalesce(func.avg(Invoice.total), 0).label("avg_invoice"),
     ).where(
