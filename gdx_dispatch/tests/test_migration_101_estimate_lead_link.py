@@ -40,7 +40,7 @@ def _cols(conn, table):
 
 def _seed(conn, as_text):
     """as_text renders a UUID the way the engine stores sa.Uuid: SQLite keeps
-    32 dashless hex (CLAUDE.md sharp edge), Postgres a native uuid."""
+    32 dashless hex (.claude/rules/database.md), Postgres a native uuid."""
     ins_lead = text(
         "INSERT INTO leads (id, estimate_id, deleted_at, created_at) "
         "VALUES (:id, :est, :deleted, '2026-09-01')"

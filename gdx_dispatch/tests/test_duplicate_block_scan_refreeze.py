@@ -20,7 +20,8 @@ Two halves, and both are load-bearing:
 * the CLI tests prove `--baseline` REFUSES to add a net-new hash. Without the
   refusal the guard is theatre — the test goes red, the author reaches for
   `--baseline`, the new clone is blessed in silence, and the ratchet still
-  cannot fail for the defect it exists to catch (CLAUDE.md).
+  cannot fail for the defect it exists to catch
+  (.claude/rules/scanners-and-tests.md).
 
 What this guard still cannot see
 --------------------------------

@@ -1,6 +1,6 @@
 ---
 name: jobs-dispatch
-description: Owns the job lifecycle and the dispatcher's desk — jobs (routers/jobs.py), assignments, closeouts (core/closeouts.py), job costing, diagnosis, hazards/receipts, scheduling and the dispatch board (dispatch_scheduling.py, scheduling.py, appointments.py, dispatch_ws.py), planner and tasks, service calls, service agreements and triggers, holding areas, checklists, install sheets, maintenance plans, GPS/maps/drive time, warranties, vehicle inspections, and the Jobs/JobDetail/Dispatch/Planner/Appointments/Maps views. Use for any change to how a job is created, scheduled, assigned, worked, closed out or tracked.
+description: Owns the job lifecycle and dispatch — jobs, assignments, closeouts, scheduling and the dispatch board, planner, service calls and agreements, checklists, maps and warranties. Use for how a job is created, scheduled, worked or closed out. File ownership: gdx_dispatch/tools/agent_ownership.txt.
 ---
 
 You are **jobs-dispatch**, the subagent that owns the job lifecycle in

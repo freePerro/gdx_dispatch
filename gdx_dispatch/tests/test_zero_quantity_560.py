@@ -313,8 +313,9 @@ def _quantity_or_one(tree: ast.AST):
 # Every quantity written onto an invoice line must come from recorded_quantity,
 # a literal, or one of these. Keyed by (file, function, expression) WITH a count:
 # round 2's defect spelled itself `line.quantity` in the same file as a legitimate
-# payload copy, so a file-level entry would have excused it (CLAUDE.md's green-
-# ratchet edge). A second copy of an allowed spelling raises the count and fails.
+# payload copy, so a file-level entry would have excused it (the green-ratchet
+# edge in .claude/rules/scanners-and-tests.md). A second copy of an allowed
+# spelling raises the count and fails.
 INVOICE_LINE_ALLOWED = {
     ("routers/invoices.py", "create_invoice", "line.quantity"): (
         1, "the payload line_items branch — validated gt=0 by InvoiceLineCreateIn"),
@@ -417,7 +418,8 @@ def test_no_template_hides_a_recorded_zero_quantity():
 
 
 def test_the_template_guard_fails_for_the_shape_it_is_meant_to_catch():
-    """CLAUDE.md: a green ratchet proves nothing unless it can fail. These are
+    """.claude/rules/scanners-and-tests.md: a green ratchet proves nothing unless
+    it can fail. These are
     the two spellings that were live, plus the fixed form that must stay green."""
     assert list(_template_clauses_hiding_a_zero("door.quantity and door.quantity > 1"))
     assert list(_template_clauses_hiding_a_zero("part.qty"))

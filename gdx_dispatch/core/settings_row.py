@@ -25,8 +25,8 @@ separate work.
 
 **The tenant id is bound typed, one spelling for every dialect.**
 `tenant_settings.tenant_id` is `Uuid`: a native `uuid` on Postgres, 32
-dashless hex on an ORM-built SQLite schema (CLAUDE.md, "SQLite stores a Uuid
-column as 32 dashless hex"). The seven copies this replaced, and
+dashless hex on an ORM-built SQLite schema (.claude/rules/database.md,
+"SQLite stores a Uuid column as 32 dashless hex"). The seven copies this replaced, and
 `core/settings_audit.py`, all bound `str(tenant_id)` — the dashed spelling —
 which Postgres casts and SQLite never matches, so on SQLite the read missed,
 the seed inserted a SECOND row and every settings page showed defaults
