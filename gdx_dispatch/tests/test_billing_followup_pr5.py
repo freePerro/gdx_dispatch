@@ -124,6 +124,17 @@ def _seed_job(db, stage: str = "in_progress", completed_days_ago: int | None = N
     return job
 
 
+def _with_closeout(db, job) -> Job:
+    """GDXA-599: /complete re-finishes a job on its closeout, so the gate
+    tests below give the job one, as a closeout then /uncomplete leaves it."""
+    db.add(JobCloseout(
+        id=uuid4(), job_id=job.id, hours_worked=1, techs_on_site=1,
+        closed_by_user_id="tech-1", closed_at=datetime.now(UTC),
+    ))
+    db.commit()
+    return job
+
+
 def _flags(monkeypatch, **overrides):
     flags = {**ALL_GATES_ON, **overrides}
     monkeypatch.setattr(
@@ -160,7 +171,7 @@ def test_closeout_silence_422s_but_attestation_passes(tenant_db_session, monkeyp
 def test_complete_attestation_passes_parts_gate(tenant_db_session, monkeypatch):
     _flags(monkeypatch)
     db = tenant_db_session
-    job = _seed_job(db)
+    job = _with_closeout(db, _seed_job(db))
 
     silent = complete_job(
         payload=JobCompletePayload(),
@@ -203,7 +214,7 @@ def test_require_invoice_gate_uses_billed_predicate(tenant_db_session, monkeypat
     canonical predicate from PR2 decides."""
     _flags(monkeypatch, require_parts_on_complete=False, require_invoice_on_complete=True)
     db = tenant_db_session
-    job = _seed_job(db)
+    job = _with_closeout(db, _seed_job(db))
 
     blocked = complete_job(
         payload=JobCompletePayload(),
@@ -383,7 +394,7 @@ def test_attestation_refused_when_checklist_has_rows(tenant_db_session, monkeypa
     on the job, 'no parts used' is a contradiction and still 422s."""
     _flags(monkeypatch)
     db = tenant_db_session
-    job = _seed_job(db)
+    job = _with_closeout(db, _seed_job(db))
     db.add(JobPartNeeded(
         id=str(uuid4()),
         company_id=TENANT,
