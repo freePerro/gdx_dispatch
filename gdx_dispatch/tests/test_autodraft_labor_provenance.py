@@ -244,6 +244,7 @@ class TestAutodraftWritesProvenance:
             AUTODRAFT_ORIGIN,
             is_untouched_autodraft,
         )
+        from gdx_dispatch.routers.mobile_invoicing import restate_invoice_header
 
         _item, closeout, invoice = _install_closeout(db)
         # The shared fixture leaves `origin` unset; a real autodraft carries
@@ -264,6 +265,8 @@ class TestAutodraftWritesProvenance:
         assert _labor_line(db, invoice).source == AUTODRAFT_LINE_SOURCE
 
         # The consequence, not just the column: the machine still owns it.
+        # The header restatement the autodraft caller does after the builder.
+        restate_invoice_header(invoice, _total)
         db.commit()
         assert is_untouched_autodraft(invoice, db) is True, (
             "the builder disowned its own install draft"
