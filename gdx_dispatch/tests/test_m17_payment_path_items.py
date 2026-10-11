@@ -4,13 +4,17 @@
   body, so a caller that sent neither got no double-charge protection at all: a
   double-click minted two distinct intents and two full-balance charges. The
   key now falls back to a server-derived shape like the public pay path.
+  (`charge_method` and its tests were deleted 2026-10-11, GDXA-552: the portal
+  router was unreachable — `CustomerUser` has no `stripe_customer_id` — and
+  nothing called it.)
 - **17.3** `/confirm`, `ach/charge` and the portal charge recorded
   ``pi.amount`` (what was ASKED) while the webhook records ``amount_received``
   (what MOVED). Identical under auto-capture — no mint site here sets
   ``capture_method="manual"`` — divergent the moment one does. All recording
   sites now agree on ``amount_received``. (`ach/charge` was deleted
-  2026-09-16 — ACH completes in the browser and the webhook records it — so
-  three sites remain: `/confirm`, the portal charge, the webhook.)
+  2026-09-16 — ACH completes in the browser and the webhook records it — and
+  the portal charge 2026-10-11, so two sites remain: `/confirm` and the
+  webhook.)
 - **17.4** `_next_invoice_number` races: the generator is consolidated and the
   office create path retries on IntegrityError, but the mobile and deposit
   creators flushed bare — the loser of a same-instant race 500'd. They retry
@@ -78,109 +82,6 @@ def _pi(pid, *, amount, amount_received=None, status="succeeded"):
     )
 
 
-# ── 17.2: the double-click has protection even from a client that asked for none
-
-
-def _charge(db, invoice, *, header_key=None, body_key=None):
-    from gdx_dispatch.routers.payments import ChargeRequest, charge_method
-
-    user = SimpleNamespace(id="cu-1", stripe_customer_id="cus_x")
-    with patch("gdx_dispatch.routers.payments._require_stripe_customer", return_value="cus_x"), \
-            patch("gdx_dispatch.routers.payments._require_own_unpaid_invoice", return_value=invoice), \
-            patch("gdx_dispatch.routers.payments.charge_saved_method") as charge:
-        charge.return_value = _pi("pi_m17", amount=30000, amount_received=30000)
-        charge_method(
-            "pm_abc",
-            ChargeRequest(amount_cents=1, metadata={"invoice_id": str(invoice.id)}, idempotency_key=body_key),
-            user=user,
-            idempotency_key=header_key,
-            db=db,
-        )
-    return charge
-
-
-def test_a_client_that_sends_no_key_still_gets_one(db, invoice):
-    """THE FIX. Neither header nor body key → the server derives one, so a
-    double-click collapses at Stripe instead of charging twice."""
-    with patch("gdx_dispatch.routers.payments._time") as t:
-        t.time.return_value = 3_000_000.0
-        charge = _charge(db, invoice)
-    key = charge.call_args[1]["idempotency_key"]
-    assert key == f"gdx-pi-{invoice.id}-portal-pm_abc-30000-b100000"
-
-
-def test_the_derived_key_is_stable_across_the_double_click(db, invoice):
-    """Both halves of a double-click race BEFORE either records, so both see
-    the same balance. Simulated with a non-succeeded intent (nothing records,
-    the balance holds) — a first draft of this test let call one record the
-    payment, drop the balance to zero, and then "proved" instability that no
-    real double-click exhibits."""
-    from gdx_dispatch.routers.payments import ChargeRequest, charge_method
-
-    keys = []
-    for tick in (3_000_000.0, 3_000_005.0):  # 5s apart — one double-click
-        user = SimpleNamespace(id="cu-1", stripe_customer_id="cus_x")
-        with patch("gdx_dispatch.routers.payments._require_stripe_customer", return_value="cus_x"), \
-                patch("gdx_dispatch.routers.payments._require_own_unpaid_invoice", return_value=invoice), \
-                patch("gdx_dispatch.routers.payments.charge_saved_method") as charge, \
-                patch("gdx_dispatch.routers.payments._time") as t:
-            t.time.return_value = tick
-            charge.return_value = _pi("pi_m17", amount=30000, status="processing")
-            charge_method("pm_abc", ChargeRequest(amount_cents=1, metadata={"invoice_id": str(invoice.id)}),
-                          user=user, idempotency_key=None, db=db)
-        keys.append(charge.call_args[1]["idempotency_key"])
-    assert keys[0] == keys[1], "an unstable key is no key at all"
-
-
-def test_a_deliberate_retry_lands_in_a_fresh_bucket(db, invoice):
-    """The bucket is the fix for `confirm=True` replay semantics (adversarial
-    review): a static key replays the FIRST response for 24h — a cached
-    decline at the customer who fixed their funds, or a stale SUCCESS after a
-    void restored the balance, recording a phantom payment with no money
-    moved. Minutes later must mean a fresh key and a real charge."""
-    from gdx_dispatch.routers.payments import ChargeRequest, charge_method
-
-    keys = []
-    for tick in (3_000_000.0, 3_000_120.0):  # two minutes apart
-        user = SimpleNamespace(id="cu-1", stripe_customer_id="cus_x")
-        with patch("gdx_dispatch.routers.payments._require_stripe_customer", return_value="cus_x"), \
-                patch("gdx_dispatch.routers.payments._require_own_unpaid_invoice", return_value=invoice), \
-                patch("gdx_dispatch.routers.payments.charge_saved_method") as charge, \
-                patch("gdx_dispatch.routers.payments._time") as t:
-            t.time.return_value = tick
-            charge.return_value = _pi("pi_m17", amount=30000, status="processing")
-            charge_method("pm_abc", ChargeRequest(amount_cents=1, metadata={"invoice_id": str(invoice.id)}),
-                          user=user, idempotency_key=None, db=db)
-        keys.append(charge.call_args[1]["idempotency_key"])
-    assert keys[0] != keys[1], (
-        "a static key would replay a cached decline — or a voided success — for 24h"
-    )
-
-
-def test_a_different_saved_card_is_not_collapsed(db, invoice):
-    """Charging a DIFFERENT method for the same balance is a legitimate second
-    attempt — Stripe 400s a reused key with different params, which would
-    wedge the customer out of switching cards."""
-    from gdx_dispatch.routers.payments import ChargeRequest, charge_method
-
-    keys = []
-    for pm in ("pm_abc", "pm_xyz"):
-        user = SimpleNamespace(id="cu-1", stripe_customer_id="cus_x")
-        with patch("gdx_dispatch.routers.payments._require_stripe_customer", return_value="cus_x"), \
-                patch("gdx_dispatch.routers.payments._require_own_unpaid_invoice", return_value=invoice), \
-                patch("gdx_dispatch.routers.payments.charge_saved_method") as charge:
-            charge.return_value = _pi("pi_m17", amount=30000, amount_received=30000)
-            charge_method(pm, ChargeRequest(amount_cents=1, metadata={"invoice_id": str(invoice.id)}),
-                          user=user, idempotency_key=None, db=db)
-        keys.append(charge.call_args[1]["idempotency_key"])
-    assert keys[0] != keys[1]
-
-
-def test_an_explicit_header_key_still_wins(db, invoice):
-    charge = _charge(db, invoice, header_key="caller-key-1")
-    assert charge.call_args[1]["idempotency_key"] == "caller-key-1"
-
-
 # ── 17.3: record what MOVED, not what was asked
 
 
@@ -229,13 +130,10 @@ def test_all_recording_sites_agree_on_amount_received():
     """The webhook always recorded `amount_received`; /confirm and the portal
     recorded `amount`. The books must not depend on which message arrives
     first. Source-shape check across the fixed sites — the behavioral proof
-    for /confirm is above. (ach/charge, the third fixed site, was deleted
-    2026-09-16.)"""
+    for /confirm is above. (ach/charge was deleted 2026-09-16, the portal
+    charge 2026-10-11.)"""
     core = pathlib.Path(
         __import__("gdx_dispatch.core.payments", fromlist=["__file__"]).__file__
-    ).read_text()
-    portal = pathlib.Path(
-        __import__("gdx_dispatch.routers.payments", fromlist=["__file__"]).__file__
     ).read_text()
     for fn in ("def confirm_payment(",):
         i = core.index(fn)
@@ -243,7 +141,6 @@ def test_all_recording_sites_agree_on_amount_received():
         assert 'getattr(pi, "amount_received", None) or pi.amount' in core[i:j], (
             f"{fn} records the ASK, not what moved"
         )
-    assert 'getattr(intent, "amount_received", None) or intent.amount' in portal
 
 
 # ── 17.4: the same-instant sibling loses gracefully, not with a 500

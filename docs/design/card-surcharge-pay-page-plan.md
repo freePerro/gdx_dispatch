@@ -56,8 +56,9 @@ Two nullable columns; existing rows read as no surcharge; downgrade drops both. 
 ## Sibling sweep
 
 Class: a card mint site that does not apply the surcharge consistently.
-Searched: `core/payments.py`, `routers/portal.py`, `routers/payments.py`, `core/stripe_payments.py`, `templates/*.html`, `frontend/src/**`.
+Searched: `core/payments.py`, `routers/portal.py`, `routers/payments.py`, `core/stripe_payments.py`, `templates/*.html`, `frontend/src/**`. <!-- deleted 2026-10-11, GDXA-552; link-ok -->
 Instances: 4 found / 2 fixed (the public pay page; the portal's orphan card route, deleted) / 2 deferred — `routers/payments.py::create_intent_route` (`POST /payments/intent`) and `routers/payments.py::charge_method`, the portal's saved-card mint and charge, both without a UI caller (in `FOUND_NOT_FILED.md` with the portal's orphan ACH route; if either ever gets a UI it must carry the fee). <!-- untracked by design, see CLAUDE.md "One issue per session"; link-ok -->
+Closed 2026-10-11 (GDXA-552): both deferred portal routes were deleted with the rest of `routers/payments.py` and `core/stripe_payments.py`. No card mint without the fee remains. <!-- deleted 2026-10-11, GDXA-552; link-ok -->
 Notice surfaces: the pay page (statutory) and the invoice email carry it; payment reminders, customer statements and the portal's Pay buttons send the same link without the sentence — deferred, the page they open carries it.
 
 ## For Doug before turning it on
