@@ -99,7 +99,6 @@ DELETE /api/vendors/{vendor_id}
 DELETE /api/warranties/{warranty_id}
 DELETE /api/webhooks/subscriptions/{sub_id}
 DELETE /api/workflows/{rule_id}
-DELETE /payments/methods/{method_id}
 DELETE /portal/resale-quotes/{quote_id}
 GET /.well-known/gdx-platform
 GET /.well-known/mcp-tools
@@ -646,7 +645,6 @@ GET /auth/sso/microsoft/callback
 GET /health
 GET /manifest.json
 GET /pay/{invoice_token}
-GET /payments/methods
 GET /portal/context
 GET /portal/dashboard
 GET /portal/documents
@@ -1086,7 +1084,6 @@ POST /api/parts/pricing/suggest-markup
 POST /api/payments
 POST /api/payments/confirm
 POST /api/payments/create-intent
-POST /api/payments/intent
 POST /api/payroll/commission-rates
 POST /api/payroll/entries
 POST /api/payroll/run-current-period
@@ -1243,10 +1240,6 @@ POST /auth/login
 POST /auth/logout
 POST /auth/refresh
 POST /auth/reset-password
-POST /payments/ach/setup
-POST /payments/intent
-POST /payments/methods/{method_id}/charge
-POST /payments/setup
 POST /portal/door-listings
 POST /portal/door-listings/{listing_id}/photos
 POST /portal/estimates/{estimate_id}/accept
