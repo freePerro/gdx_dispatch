@@ -130,8 +130,13 @@
           <div class="totals">
             <div class="total-row" v-if="detail.subtotal != null"><span>Subtotal</span><span>${{ fmtMoney(detail.subtotal) }}</span></div>
             <div class="total-row" v-if="detail.tax_amount != null"><span>Tax</span><span>${{ fmtMoney(detail.tax_amount) }}</span></div>
+            <div class="total-row" v-if="detail.total != null" data-test="mb-total"><span>Total</span><span>${{ fmtMoney(detail.total) }}</span></div>
             <div class="total-row" v-if="detail.amount_paid != null"><span>Paid</span><span>${{ fmtMoney(detail.amount_paid) }}</span></div>
-            <div class="total-row total-grand"><span>Balance</span><span>${{ fmtMoney(detail.balance_due ?? (Number(detail.total || 0) - Number(detail.amount_paid || 0))) }}</span></div>
+            <!-- Credits are the other term in the balance (total - paid -
+                 credits). Without this row a credited invoice reads
+                 "Total 1000 / Paid 300 / Balance 0" with $700 unexplained. -->
+            <div class="total-row" v-if="Number(detail.credit_total) > 0" data-test="mb-credits"><span>Credits</span><span>-${{ fmtMoney(detail.credit_total) }}</span></div>
+            <div class="total-row total-grand"><span>Balance</span><span>${{ fmtMoney(detailBalance) }}</span></div>
           </div>
 
           <!-- Was a "Mark paid" button that could only ever pay the FULL
@@ -316,7 +321,7 @@ const detailBalance = computed(() => {
   if (!d) return 0
   const explicit = Number(d.balance_due)
   if (Number.isFinite(explicit) && d.balance_due != null) return explicit
-  return Number(d.total || 0) - Number(d.amount_paid || 0)
+  return Number(d.total || 0) - Number(d.amount_paid || 0) - Number(d.credit_total || 0)
 })
 
 function fmtMoney(n) {
