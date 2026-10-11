@@ -3193,13 +3193,13 @@ def reassign_estimate_customer(
     reason, a real audit row, and — when the estimate was already emailed — a
     fresh public token.
     """
-    # ensure_audit_table COMMITS on first use per engine (core/audit.py). Left
-    # to run lazily from inside audit_or_rollback it would harden the
-    # customer_id write and the rotated token BEFORE the audit row exists —
-    # and audit_or_rollback would have nothing left to roll back, which is the
-    # entire promise this endpoint makes. Run it here, where committing has
-    # nothing to disturb. Same reasoning as routers/customers.py's
-    # create_customer_contact.
+    # Until GDXA-352 (2026-10-06) ensure_audit_table COMMITTED on first use per
+    # engine; run lazily from inside audit_or_rollback it hardened the
+    # customer_id write and the rotated token BEFORE the audit row existed, and
+    # audit_or_rollback had nothing left to roll back. It no longer touches open
+    # work (core/audit.py), and a route dependency has already opened the
+    # transaction by here, so the hoist is harmless now, not load-bearing. Same
+    # history as routers/customers.py's create_customer_contact.
     ensure_audit_table(db)
     estimate = _get_estimate_or_404(estimate_id, db)
 
