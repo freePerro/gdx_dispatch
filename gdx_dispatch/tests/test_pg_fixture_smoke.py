@@ -149,6 +149,100 @@ def test_the_real_template_fixture_fails_under_ci_when_postgres_is_unreachable(m
         pytest.fail("pg_template_db neither failed nor skipped with Postgres unreachable")
 
 
+# ---------------------------------------------------------------------------
+# Template name and liveness (GDXA-660). Every docker-app shard runs pytest as
+# PID 1, so a pid-only name collided across shards sharing one Postgres, and a
+# /proc/<pid> liveness check could never see across PID namespaces.
+# ---------------------------------------------------------------------------
+
+
+def test_two_processes_with_pid_1_get_different_template_names():
+    """Real imports in two real processes, each seeing itself as PID 1."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    probe = (
+        "import os; os.getpid = lambda: 1; "
+        "from gdx_dispatch.tests.fixtures import pg; print(pg.TEMPLATE_DB)"
+    )
+    names = [
+        subprocess.run(
+            [sys.executable, "-c", probe],
+            cwd=repo_root, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        for _ in range(2)
+    ]
+    assert all(n.startswith("gdx_test_template_1_") for n in names), names
+    assert all(pg._TEMPLATE_NAME_RE.match(n) for n in names), names
+    assert names[0] != names[1], names
+    # Postgres truncates identifiers past 63 bytes; a truncated name would
+    # make two shards meet again.
+    assert all(len(n) <= 63 for n in names), names
+
+
+def _db_exists(name: str) -> bool:
+    conn = pg._admin_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (name,))
+        found = cur.fetchone() is not None
+        cur.close()
+        return found
+    finally:
+        conn.close()
+
+
+def _flag_template(name: str) -> None:
+    conn = pg._admin_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE pg_database SET datistemplate = true WHERE datname = %s", (name,))
+        cur.close()
+    finally:
+        conn.close()
+
+
+def test_sweep_drops_unowned_templates_and_keeps_owned_ones(pg_template_db):
+    """Drives the real sweep against the real server: an unowned new-format
+    template goes, an owned one stays even when its owner sits in another
+    database, the session's own template stays, and an old-format name (an
+    older checkout's, which holds no owner connection) is untouched."""
+    import time
+
+    orphan = pg._template_name(1)
+    owned = pg._template_name(1)
+    # Old `<prefix><pid>` form, digits only, but random: a fixed name here
+    # collides between parallel shards, the very bug under test.
+    import uuid
+
+    legacy = f"{pg.TEMPLATE_PREFIX}9{uuid.uuid4().int % 10**9:09d}"
+    # Owned before it exists, as the fixture does, so a parallel shard's sweep
+    # can never catch it unowned. From the `postgres` database on purpose:
+    # liveness must be server-wide, not per admin database.
+    holder = pg._hold_template_owner(owned, dbname="postgres")
+    try:
+        for name in (orphan, owned, legacy):
+            pg._create_db(name)
+            _flag_template(name)
+        pg._drop_stale_templates()
+        # A parallel shard's sweep may be mid-drop on the orphan, in which
+        # case ours skipped it; that drop finishes on its own.
+        deadline = time.monotonic() + 15
+        while _db_exists(orphan) and time.monotonic() < deadline:
+            time.sleep(0.2)
+            pg._drop_stale_templates()
+        assert not _db_exists(orphan), "an unowned template survived the sweep"
+        assert _db_exists(owned), "the sweep dropped a template a live session owns"
+        assert _db_exists(pg_template_db), "the sweep dropped this session's own template"
+        assert _db_exists(legacy), "the sweep touched an old-format name it cannot judge"
+    finally:
+        holder.close()
+        for name in (orphan, owned, legacy):
+            pg._cleanup_template(name)
+
+
 def test_no_postgres_test_turns_an_unreachable_server_into_a_skip():
     """Class guard (#440): any test that meets an unreachable Postgres must go
     through `_skip_unless_ci`, never a bare `pytest.skip`, or CI reports the
