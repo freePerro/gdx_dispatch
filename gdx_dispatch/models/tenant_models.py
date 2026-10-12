@@ -2658,6 +2658,13 @@ class JobCloseout(Base):
     # destroyed). supersedes_id links a restatement to what it replaced.
     superseded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     supersedes_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    # Migration 118 (GDXA-798): the invoice that billed this closeout's
+    # final-day hours, as TimeEntry.billed_invoice_id does for a day row.
+    # NULL = not billed yet, and every closeout written before 118, so old
+    # rows keep the billing behaviour they had.
+    billed_invoice_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("invoices.id"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc, server_default=func.now(),
     )
