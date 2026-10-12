@@ -21,13 +21,22 @@ of them — it answered a hardcoded `{"plan": "pro", "status": "active",
 "seats": 5}`, SaaS-plan fiction in a single-tenant app. Removing them from
 ui_compat alone would have changed nothing, because these copies were the ones
 being served.
+
+2026-10-12 (GDXA-736). `POST /api/jobs/{job_id}/line-items`
+(`create_job_line_item`) was deleted. It took a raw dict, built an
+`InvoiceLine` from `invoice_id` and committed without loading the invoice: no
+existence check, no draft/locked refusal, no `_recalculate_invoice`, no
+`invoices.write` permission, and `job_id` was ignored. Nothing called it — the
+Job Costing "Add Item" dialog that once did was removed because the POST 400'd
+without `invoice_id`. The one way to add a line is
+`POST /api/invoices/{invoice_id}/lines` (`invoices.add_invoice_line`), which
+does all four. `GET /api/jobs/{job_id}/line-items` stays: Job Costing reads it.
 """
 from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -62,7 +71,8 @@ def customer_optout(customer_id: str, request: Request, user: dict = Depends(get
 class BulkTagIn(BaseModel):
     """Typed on purpose. The previous handler took a raw `dict`, which is how
     the sibling `create_job_line_item` ended up the one writer that could put a
-    0 on an invoice line (#560): a raw dict runs no validation at all."""
+    0 on an invoice line (#560): a raw dict runs no validation at all. That
+    sibling was deleted 2026-10-12 (GDXA-736); see the module docstring."""
 
     customer_ids: list[str] = Field(min_length=1, max_length=500)
     tag: str = Field(min_length=1, max_length=80)
@@ -230,84 +240,4 @@ def job_line_items(job_id: str, user: dict = Depends(get_current_user), db: Sess
     except Exception:
         log.exception("job_line_items_query_failed")
         return {"items": [], "total": 0}
-
-
-@router.post("/api/jobs/{job_id}/line-items", status_code=201)
-def create_job_line_item(job_id: str, request: Request, payload: dict, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
-    tenant_id = company_id()
-    user_id = user.get("sub") or user.get("user_id") or "system"
-    invoice_id = payload.get("invoice_id")
-    if not invoice_id:
-        raise HTTPException(400, "invoice_id required")
-    # UUID object for the column, string for the audit row and the response
-    # body. `InvoiceLine.id` is Uuid(as_uuid=True), whose bind processor is
-    # dialect-specific: Postgres has a native uuid type and takes a string,
-    # SQLite stores CHAR(32) and calls `value.hex`, raising AttributeError.
-    # The handler already coerces `invoice_id` below for the same reason; its
-    # own primary key was missed. Same shape as #631 in the since-retired
-    # routers/campaigns.py.
-    new_uuid = uuid4()
-    new_id = str(new_uuid)
-    # This handler takes a raw dict, so InvoiceLineCreateIn's `gt=0` never ran
-    # here: it was the one writer in the app that could put a 0 on an invoice
-    # line, and a 0 line is one the invoice API itself refuses (#560).
-    #
-    # Invoice-line quantity takes two decimals since migration 108 (hours on
-    # a labor line), so the rule here is InvoiceLineCreateIn's: more than 0,
-    # at most 9999, at most two decimal places. A third place is refused, not
-    # rounded — rounding would bill an amount nobody typed. `bool` is refused
-    # first because Decimal(str(True)) is not a number but True is an int.
-    _raw_qty = payload.get("quantity", 1)
-    _qty_error = "quantity must be a number above 0 with at most two decimal places"
-    if isinstance(_raw_qty, bool):
-        raise HTTPException(422, _qty_error)
-    try:
-        qty = Decimal(str(_raw_qty))
-    except (InvalidOperation, ValueError):
-        raise HTTPException(422, _qty_error) from None
-    # is_finite: json.loads accepts `Infinity` and `NaN`. The range check runs
-    # before quantize, which raises on a 400-digit integer.
-    if not qty.is_finite():
-        raise HTTPException(422, _qty_error)
-    if qty <= 0:
-        raise HTTPException(422, "quantity must be above 0 — a line with no quantity is not billed as 1")
-    if qty > 9999:
-        raise HTTPException(422, "quantity must be at most 9999")
-    if qty != qty.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP):
-        raise HTTPException(422, _qty_error)
-    price = float(payload.get("unit_price", 0))
-    line_total = (qty * Decimal(str(price))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    now = datetime.now(UTC)
-    ensure_audit_table(db)  # before staging: its first run on an engine commits
-    try:
-        from uuid import UUID as _UUID
-
-        from gdx_dispatch.models.tenant_models import InvoiceLine
-        try:
-            _inv_uuid = _UUID(invoice_id)
-        except (ValueError, AttributeError):
-            raise HTTPException(400, "invalid invoice_id") from None
-        line = InvoiceLine(
-            id=new_uuid,
-            company_id=tenant_id,
-            invoice_id=_inv_uuid,
-            description=payload.get("description", ""),
-            quantity=qty,
-            unit_price=price,
-            line_total=line_total,
-            sort_order=999,
-            created_at=now,
-        )
-        db.add(line)
-        # Same commit as the change (#700): get_db() closes without committing.
-        log_audit_event_sync(db, tenant_id=tenant_id, user_id=user_id, action="create_line_item", entity_type="invoice_line", entity_id=new_id, details={"job_id": job_id, "invoice_id": invoice_id}, request=request)
-        db.commit()
-    except HTTPException:
-        raise
-    except Exception:
-        log.exception("create_line_item_failed")
-        db.rollback()
-        raise HTTPException(500, "Failed to create line item") from None
-    return {"ok": True, "id": new_id}
-
 

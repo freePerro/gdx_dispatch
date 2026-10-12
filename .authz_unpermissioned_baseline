@@ -329,7 +329,6 @@ POST /api/jobs/{job_id}/dependencies
 POST /api/jobs/{job_id}/diagnosis
 POST /api/jobs/{job_id}/follow-up
 POST /api/jobs/{job_id}/hazards
-POST /api/jobs/{job_id}/line-items
 POST /api/jobs/{job_id}/notes
 POST /api/jobs/{job_id}/photos
 POST /api/jobs/{job_id}/reactivate
