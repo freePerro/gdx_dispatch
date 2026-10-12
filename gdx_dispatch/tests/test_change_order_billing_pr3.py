@@ -156,17 +156,22 @@ def test_stamp_gates_copy_and_second_invoice_409s(tenant_db_session):
     assert {bool(ln.taxable) for ln in lines} == {True, False}
 
     invoice_count_before = db.scalar(select(func.count(Invoice.id)))
+    # `force=True` is the office screen's "create another anyway" retry: it
+    # gets past the job-level guard, so the refusal here is the CO stamp's —
+    # and its code is what keeps the screen from offering that retry (GDXA-742).
     with pytest.raises(HTTPException) as exc_info:
         create_invoice(
             payload=InvoiceCreateIn(
                 job_id=job.id,
                 customer_id=job.customer_id,
                 from_change_order_ids=[co.id],
+                force=True,
             ),
             _=_current_user(),
             db=db,
         )
     assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "change_orders_not_billable"
     # The whole second create rolled back: no new invoice, no copied lines,
     # CO still owned by the FIRST invoice.
     assert db.scalar(select(func.count(Invoice.id))) == invoice_count_before
@@ -307,6 +312,8 @@ def test_already_billed_part_409s_instead_of_silent_double_bill(tenant_db_sessio
     assert str(part.billed_invoice_id) == first["id"]
 
     count_before = db.scalar(select(func.count(Invoice.id)))
+    # Forced, as the office screen's retry would be: past the job-level guard,
+    # so this is the part stamp refusing (GDXA-742).
     with pytest.raises(HTTPException) as exc_info:
         create_invoice(
             payload=InvoiceCreateIn(
@@ -314,11 +321,13 @@ def test_already_billed_part_409s_instead_of_silent_double_bill(tenant_db_sessio
                 customer_id=job.customer_id,
                 line_items=[{"description": "Torsion spring", "quantity": 1, "unit_price": 80.0}],
                 from_part_ids=[UUID(part.id)],
+                force=True,
             ),
             _=_current_user(),
             db=db,
         )
     assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "parts_not_billable"
     assert db.scalar(select(func.count(Invoice.id))) == count_before
 
 

@@ -435,7 +435,8 @@ def test_second_final_requires_force_and_deposit_not_applied_twice(db):
     with pytest.raises(HTTPException) as exc:
         _make_final(db, est, job)
     assert exc.value.status_code == 409
-    assert "already billed" in exc.value.detail
+    assert exc.value.detail["code"] == "already_billed"
+    assert "already billed" in exc.value.detail["message"]
 
     # Forced second final: allowed, but it must NOT subtract the same
     # deposit again — the prior netting line blocks re-application.
