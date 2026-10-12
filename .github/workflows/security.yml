@@ -3,7 +3,8 @@ name: Security Scan
 permissions:
   contents: read
 
-# Runs daily at 06:00 UTC and on every push to main / every PR targeting main.
+# Runs daily at 02:00 UTC, on every push to main / every PR targeting main,
+# and when post-merge-dispatch.yml finds main's HEAD unscanned.
 # Fails CI if CRITICAL vulnerabilities (CVSS >= 9.0) are found.
 # Also runs Bandit SAST for code-level security issues.
 
@@ -20,10 +21,15 @@ on:
     branches: [main, master]
   schedule:
     - cron: "0 2 * * *"   # 02:00 UTC daily
+  # Fired by post-merge-dispatch.yml: a merge made with GITHUB_TOKEN (every
+  # auto-merge) starts no push run above (GDXA-751).
+  workflow_dispatch:
 
+# Main runs are not cancelled by a newer one: each is the only scan of
+# what merged.
 concurrency:
   group: security-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   dependency-scan:

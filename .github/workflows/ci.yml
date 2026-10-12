@@ -14,14 +14,19 @@ on:
       - '!**/*.md'
   pull_request:
     branches: [main]
+  # Fired by post-merge-dispatch.yml: a merge made with GITHUB_TOKEN (every
+  # auto-merge) starts no push run above (GDXA-751).
+  workflow_dispatch:
 
 # Cancel superseded runs when a newer push lands on the same branch.
 # The autonomous Claude ↔ Codex loop pushes every few minutes; without
 # this, every push queues a full 10-min run even when obsolete before it
 # starts. Saved 100s of Actions-minutes after we hit the 3000 limit.
+# Main is exempt: a main run is the only test of what merged, so it
+# finishes and the next one waits.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # Live lint/syntax gate. Preserved from the retired fast-gate.yml so the

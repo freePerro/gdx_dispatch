@@ -2,9 +2,15 @@ name: Auto-merge
 
 # Turns on GitHub auto-merge (squash) for every non-draft PR into main.
 # The actual gate is the "Branch Safety" ruleset: GitHub only performs the
-# merge once all required status checks are green and the branch is up to
-# date. Drafts (where paperclip agent PRs start) are skipped, so marking a
-# PR "ready for review" is the human approval step.
+# merge once all required status checks are green. The ruleset does not
+# require the branch to be up to date (strict_required_status_checks_policy
+# is false, read 2026-10-12), so two PRs can merge with their combination
+# untested. Drafts (where paperclip agent PRs start) are skipped, so marking
+# a PR "ready for review" is the human approval step.
+#
+# The merge is made with GITHUB_TOKEN, so it starts no push-to-main
+# workflow run; post-merge-dispatch.yml runs ci.yml and security.yml on
+# main afterwards instead (GDXA-751).
 #
 # Same-repo PRs only: this repo is public, and a fork PR that passes CI must
 # never land on main without a human.
