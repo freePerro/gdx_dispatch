@@ -56,11 +56,12 @@ def db():
     engine.dispose()
 
 
-def _seed_job(db) -> Job:
+def _seed_job(db, *, job_type: str | None = None) -> Job:
     job = Job(
         customer_id=uuid4(),
         title="Install",
         description="",
+        job_type=job_type,
         lifecycle_stage="estimate",
         dispatch_status="unassigned",
         billing_status="unbilled",
@@ -227,6 +228,37 @@ def test_explicit_zero_rate_beats_configured_default(db):
     assert round(float(inv_row.subtotal), 2) == 3000.00
     assert round(float(inv_row.tax_amount), 2) == 0.00
     assert round(float(inv_row.total), 2) == 3000.00
+
+
+@pytest.mark.parametrize(
+    ("job_type", "expected_rate", "expected_tax"),
+    [
+        # Repair / service call: the tenant default taxes the part (control).
+        ("Service Call", 0.07375, 7.38),
+        # GDXA-793: an installation is never taxed — rate 0, not the default.
+        ("Installation", 0.0, 0.0),
+    ],
+)
+def test_create_without_rate_follows_the_job_lane(db, job_type, expected_rate, expected_tax):
+    from gdx_dispatch.modules.tax.models import TaxConfig
+
+    db.add(TaxConfig(name="Default", default_rate=Decimal("0.07375")))
+    db.commit()
+    job = _seed_job(db, job_type=job_type)
+    inv = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            invoice_date=shop_today_from_settings(db),
+            line_items=[
+                InvoiceLineCreateIn(description="Spring", quantity=1, unit_price=100.0, taxable=True),
+            ],
+        ),
+        _=_user(), db=db,
+    )
+    assert inv["tax_rate"] == pytest.approx(expected_rate)
+    assert round(inv["tax_amount"], 2) == expected_tax
+    assert round(inv["total"], 2) == round(100.0 + expected_tax, 2)
 
 
 def test_patch_zero_rate_zeroes_existing_tax(db):

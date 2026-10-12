@@ -624,11 +624,15 @@ async function resolveTaxRate() {
   const seq = ++taxResolveSeq;
   try {
     const cid = form.value.customer_id;
+    const jid = form.value.job_id;
     // Customer-aware: returns 0 for tax-exempt customers, else the tenant
-    // default. The field stays editable — this only seeds it.
-    const url = cid
-      ? `/api/tax/resolve?customer_id=${encodeURIComponent(cid)}`
-      : '/api/tax/resolve';
+    // default. Job-aware (GDXA-793): an installation job is never taxed, so
+    // it seeds 0. The field stays editable — this only seeds it.
+    const params = new URLSearchParams();
+    if (cid) params.set('customer_id', cid);
+    if (jid) params.set('job_id', jid);
+    const qs = params.toString();
+    const url = qs ? `/api/tax/resolve?${qs}` : '/api/tax/resolve';
     const r = await api.get(url, { suppressErrorToast: true });
     const rate = Number(r?.rate);
     if (seq === taxResolveSeq && Number.isFinite(rate) && rate >= 0) {
@@ -674,6 +678,8 @@ function onJobChange() {
   // Same reasoning for photos: they are job-scoped, and the loader clears the
   // previous job's picks.
   loadJobPhotos(form.value.job_id);
+  // The seeded rate depends on the job's lane: an installation seeds 0.
+  resolveTaxRate();
   // Sequence matters: estimate first (it wins the editor), closeout second
   // (fills only if the editor is still the empty starter row).
   prefillFromJobEstimate(form.value.job_id).then(() =>
@@ -1154,6 +1160,9 @@ onMounted(async () => {
     // never runs onJobChange, so the picker has to be filled here too — this
     // is THE path the office takes from Ready-for-Billing.
     await loadJobPhotos(qJobId);
+    // Same path, same gap: the mount-time seed above ran before job_id was
+    // set, so an installation would keep the tenant default.
+    await resolveTaxRate();
   }
   // §12 supplemental: BillingView's "Create supplemental" deep-link passes the
   // original invoice id (and number, for the banner). We record it as

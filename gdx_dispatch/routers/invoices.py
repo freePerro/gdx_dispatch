@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, resolve_audit_actor
+from gdx_dispatch.core.billing_lanes import lane_for_job
 from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.invoice_delivery import require_deliverable
 from gdx_dispatch.core.link_sms import SendLinkSmsIn as SendInvoiceSmsIn  # one composer model for every SMS route
@@ -1566,6 +1567,11 @@ def create_invoice(
         # estimate deliberately quoted at 0%, billing more than the customer
         # accepted.
         resolved_rate = Decimal(str(estimate.tax_rate))
+    elif job is not None and lane_for_job(job.job_type) == "install":
+        # An installation is a construction contract and is never taxed
+        # (GDXA-793): rate-mode at 0, the tenant default never read. The
+        # same rule as the closeout autodraft and `/api/tax/resolve`.
+        resolved_rate = Decimal("0")
     else:
         try:
             from gdx_dispatch.modules.tax.service import resolve_rate as _resolve_tax
