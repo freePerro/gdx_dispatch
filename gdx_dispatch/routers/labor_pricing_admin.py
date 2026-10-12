@@ -188,6 +188,8 @@ def create_item(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
+    from gdx_dispatch.core.pay_periods import shop_today_from_settings
+
     _validate_size_pair(payload.width_ft, payload.height_ft)
 
     item = LaborPriceItem(
@@ -202,7 +204,8 @@ def create_item(
         min_wall_clock_minutes=payload.min_wall_clock_minutes,
         notes=payload.notes,
         active=payload.active,
-        effective_from=payload.effective_from or date.today(),
+        # The shop's day, not the UTC clock's (GDXA-508).
+        effective_from=payload.effective_from or shop_today_from_settings(db),
         effective_to=payload.effective_to,
         sort_order=payload.sort_order,
     )
@@ -309,13 +312,15 @@ def archive_item(
     Hard delete is intentionally unavailable — historical EstimateLine
     snapshots reference these rows by FK in slice 4.
     """
+    from gdx_dispatch.core.pay_periods import shop_today_from_settings
+
     item = db.get(LaborPriceItem, item_id)
     if not item:
         raise HTTPException(status_code=404, detail="labor_price_item not found")
 
     item.active = False
     if item.effective_to is None:
-        item.effective_to = date.today()
+        item.effective_to = shop_today_from_settings(db)  # shop day (GDXA-508)
 
     log_audit_event_sync(
         db=db,

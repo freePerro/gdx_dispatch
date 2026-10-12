@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import date, datetime, time, timezone
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -64,6 +65,16 @@ def _clean_review_url(value: str | None) -> str | None:
     return value
 
 
+# A calendar year holds at most 8784 hours (leap year); the column is
+# Numeric(6, 2). Shared with the per-person override in routers/users.py.
+MAX_VACATION_ALLOWANCE_HOURS = Decimal("8784")
+
+
+def allowance_hours_out(value: Decimal | None) -> float | None:
+    """A stored allowance as JSON: hours as a number, or null when unset."""
+    return None if value is None else float(value)
+
+
 class SettingsPatchIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -119,6 +130,11 @@ class SettingsPatchIn(BaseModel):
         default=None, ge=MIN_MINUTES_PER_DAY, le=MAX_MINUTES_PER_DAY
     )
     time_off_counts_toward_overtime: bool | None = None
+    # Vacation allowance (GDXA-700): annual hours per calendar year; null
+    # clears it back to "not set".
+    vacation_allowance_hours: Decimal | None = Field(
+        default=None, ge=0, le=MAX_VACATION_ALLOWANCE_HOURS, decimal_places=2
+    )
 
     @field_validator("google_review_url")
     @classmethod
@@ -251,6 +267,9 @@ def _settings_dict(row: AppSettings) -> dict[str, Any]:
         "time_off_counts_toward_overtime": bool(
             getattr(row, "time_off_counts_toward_overtime", False)
         ),
+        "vacation_allowance_hours": allowance_hours_out(
+            getattr(row, "vacation_allowance_hours", None)
+        ),
     }
 
 
@@ -379,6 +398,15 @@ def patch_settings(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
         audit_updates["holiday_calendar"] = updates["holiday_calendar"]
+    if "vacation_allowance_hours" in updates:
+        # On a real change the prior value too, so the audit trail alone says
+        # what it changed from. The time-off card sends it on every save.
+        previous = allowance_hours_out(row.vacation_allowance_hours)
+        audit_updates["vacation_allowance_hours"] = allowance_hours_out(
+            updates["vacation_allowance_hours"]
+        )
+        if previous != audit_updates["vacation_allowance_hours"]:
+            audit_updates["vacation_allowance_hours_previous"] = previous
     for key in (
         "company_name", "address", "phone", "email", "logo", "timezone",
         "primary_color", "secondary_color", "google_review_url",
@@ -391,7 +419,7 @@ def patch_settings(
         "pay_period_pay_lag_days", "payroll_recipient_emails",
         "payroll_autosend_enabled", "payroll_autosend_hour",
         "holiday_calendar", "time_off_default_minutes",
-        "time_off_counts_toward_overtime",
+        "time_off_counts_toward_overtime", "vacation_allowance_hours",
     ):
         if key in updates:
             setattr(row, key, updates[key])

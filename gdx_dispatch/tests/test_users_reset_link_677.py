@@ -7,8 +7,10 @@ password nobody ever saw and logged "user_invite_email_queued" while sending
 nothing, so the invitee had no way in.
 
 These tests run the real users router and the real POST /auth/reset-password
-on a fresh Postgres database built from the ORM, with an in-process Redis. Only the SMTP transport
-(_send_platform_email) is replaced, by a recorder; the link it captured is
+on a fresh Postgres database built from the ORM, with an in-process Redis. No
+Outlook sender is designated, so delivery falls through GDXA-689's provider
+order to platform SMTP, whose transport (_send_platform_email) is replaced by
+a recorder; the link it captured is
 then USED, so a pass means the emailed link actually sets the password.
 """
 from __future__ import annotations
@@ -16,6 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+from contextlib import contextmanager
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import fakeredis
@@ -29,11 +34,11 @@ from werkzeug.security import check_password_hash
 from gdx_dispatch.core.audit import AuditLog, TenantBase
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.models.tenant_models import User
+from gdx_dispatch.models.tenant_models import AppSettings, OutboundEmail, User
 from gdx_dispatch.routers.auth import core as auth_core
 from gdx_dispatch.routers.auth import get_current_user
 
-TENANT = "tenant-677"
+TENANT = "67767767-7677-4677-8677-677677677677"
 NEW_PASSWORD = "Fresh-Passw0rd-677"
 
 
@@ -173,26 +178,67 @@ def test_send_reset_link_emails_a_link_that_resets_the_password(env, caplog):
     assert token[:8] not in json.dumps(sent_logs[0].__dict__, default=str)
 
 
+def test_send_reset_link_goes_through_the_designated_outlook_sender(env, monkeypatch):
+    """Prod's path: platform SMTP is the placeholder, the Settings → Automation
+    email "Send as" mailbox is connected. Only the Graph client is stubbed."""
+    import gdx_dispatch.core.database as database_mod
+    import gdx_dispatch.modules.outlook.token_refresh as tr
+    from gdx_dispatch.core import transactional_email as te
+
+    monkeypatch.setattr(auth_core, "PLATFORM_SMTP_USER", "info@example.com")
+    sender = uuid4()
+    with env["db"]() as db:
+        db.add(AppSettings(automation_sender_user_id=str(sender)))
+        db.commit()
+    calls: list[tuple] = []
+
+    @contextmanager
+    def fake_client(control_db, tenant_db, user_id, tenant_id):
+        assert user_id == sender
+        yield SimpleNamespace(_request=lambda method, path, json=None: calls.append((method, path, json)))
+
+    monkeypatch.setattr(tr, "with_outlook_client", fake_client)
+    monkeypatch.setattr(database_mod, "SessionLocal", MagicMock())
+    monkeypatch.setattr(te, "_try_smtp", lambda **kw: (False, "smtp_not_configured"))
+
+    r = env["client"].post(f"/api/users/{env['target_id']}/send-reset-link")
+    assert r.status_code == 200, r.text
+    assert env["sent"] == [], "platform SMTP is not tried once Outlook delivered"
+    [(method, path, body)] = calls
+    assert (method, path) == ("POST", "/me/sendMail")
+    assert body["saveToSentItems"] is False
+    token = _token_from(body["message"]["body"]["content"])
+
+    with env["db"]() as db:
+        [row] = db.execute(select(OutboundEmail)).scalars().all()
+        assert row.status == "sent" and row.kind == "password_reset"
+        assert token not in row.body_html and "[reset link redacted]" in row.body_html
+
+    r2 = env["client"].post("/auth/reset-password", json={"token": token, "new_password": NEW_PASSWORD})
+    assert r2.status_code == 200, r2.text
+
+
 def test_send_reset_link_with_placeholder_smtp_user_refuses_and_leaves_no_token(env, monkeypatch):
     # Prod's state at filing: password set, user at the @example.com default.
     monkeypatch.setattr(auth_core, "PLATFORM_SMTP_USER", "info@example.com")
 
     r = env["client"].post(f"/api/users/{env['target_id']}/send-reset-link")
     assert r.status_code == 503, r.text
-    assert "not configured" in r.json()["detail"]
+    assert "reason: no_email_provider_connected" in r.json()["detail"]
     assert env["sent"] == []
     assert _pw_reset_keys(env["redis"]) == []
     assert _audit(env["db"], "password_reset_link_sent") == [], "no audit row claiming a send"
 
 
-def test_send_reset_link_smtp_failure_is_a_502_and_revokes_the_token(env, monkeypatch):
+def test_send_reset_link_smtp_failure_is_a_503_and_revokes_the_token(env, monkeypatch):
     def _boom(*_a):
         raise OSError("535 authentication failed")
 
     monkeypatch.setattr(auth_core, "_send_platform_email", _boom)
 
     r = env["client"].post(f"/api/users/{env['target_id']}/send-reset-link")
-    assert r.status_code == 502, r.text
+    assert r.status_code == 503, r.text
+    assert "platform_smtp_failed" in r.json()["detail"]
     assert _pw_reset_keys(env["redis"]) == [], "a link nobody received must not stay live"
     assert _audit(env["db"], "password_reset_link_sent") == []
 
@@ -268,7 +314,7 @@ def test_invite_without_smtp_creates_the_user_and_says_no_email_went(env, monkey
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["invite_email_sent"] is False
-    assert "not configured" in body["invite_error"]
+    assert '"Send as" mailbox' in body["invite_error"]
     assert env["sent"] == []
     assert _pw_reset_keys(env["redis"]) == []
 

@@ -80,6 +80,8 @@ def _line(db, inv, **kw) -> InvoiceLine:
         **kw,
     )
     db.add(line)
+    # The header carries the line, or the totals invariant refuses the commit.
+    inv.subtotal = inv.total = inv.balance_due = (inv.total or 0) + 602
     db.commit()
     db.refresh(line)
     return line

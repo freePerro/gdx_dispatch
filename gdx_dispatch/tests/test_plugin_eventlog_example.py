@@ -26,15 +26,18 @@ if _PLUGIN_DIR not in sys.path:
 
 @pytest.fixture
 def eventlog(monkeypatch):
-    """Import the plugin and point its handler at an in-memory table."""
+    """Import the plugin and point plugin_api's session factory at an in-memory
+    table. Patching plugin_api (not the handler) proves the handler reaches the
+    database through the sanctioned plugin_session(), not core.database."""
     import gdx_plugin_eventlog
-    from gdx_plugin_eventlog import handler as handler_mod
     from gdx_plugin_eventlog.models import EventLogEntry
+
+    from gdx_dispatch.plugin_api import context as plugin_context
 
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     EventLogEntry.__table__.create(engine, checkfirst=True)
     TS = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-    monkeypatch.setattr(handler_mod, "SessionLocal", TS)
+    monkeypatch.setattr(plugin_context, "SessionLocal", TS)
     return gdx_plugin_eventlog, EventLogEntry, TS
 
 

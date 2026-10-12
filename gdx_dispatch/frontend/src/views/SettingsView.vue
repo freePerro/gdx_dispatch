@@ -1305,6 +1305,25 @@
                   <span class="muted">what a vacation day pays unless the request says less</span>
                 </div>
                 <div style="display:flex; align-items:center; gap:1rem; flex-wrap:wrap;">
+                  <label for="time-off-vacation-allowance" style="min-width:170px;">Vacation hours per year</label>
+                  <InputNumber
+                    v-model="timeOff.vacation_allowance_hours"
+                    inputId="time-off-vacation-allowance"
+                    :min="0"
+                    :max="8784"
+                    :minFractionDigits="0"
+                    :maxFractionDigits="2"
+                    placeholder="Not set"
+                    :inputStyle="{ width: '170px' }"
+                    data-testid="time-off-vacation-allowance"
+                  />
+                  <span class="muted" style="flex:1; min-width:16rem;" data-testid="time-off-vacation-allowance-hint">
+                    Each person's vacation allowance for the calendar year, unless their
+                    profile under Users sets their own. Blank = no allowance set. No accrual
+                    or carryover.
+                  </span>
+                </div>
+                <div style="display:flex; align-items:center; gap:1rem; flex-wrap:wrap;">
                   <label style="min-width:170px;">Counts toward overtime</label>
                   <ToggleSwitch v-model="timeOff.counts_toward_overtime" data-testid="time-off-counts-ot" />
                   <span class="muted" style="flex:1; min-width:16rem;">
@@ -2719,7 +2738,7 @@ async function savePayPeriod() {
 // MINUTES go on the wire (the server stores minutes — a half day is 240,
 // never 4.0). Posting needs the date to be on the SAVED calendar, so the
 // Post button is disabled on a row that has not been saved yet.
-const timeOff = reactive({ default_hours: 8, counts_toward_overtime: false, holidays: [] });
+const timeOff = reactive({ default_hours: 8, counts_toward_overtime: false, vacation_allowance_hours: null, holidays: [] });
 const timeOffSaving = ref(false);
 const holidayPosted = ref({});           // 'YYYY-MM-DD' → people already holding the day
 const savedHolidayDates = ref(new Set());
@@ -2731,6 +2750,8 @@ function applyTimeOff(s) {
   if (!s) return;
   timeOff.default_hours = Number(s.time_off_default_minutes || 480) / 60;
   timeOff.counts_toward_overtime = Boolean(s.time_off_counts_toward_overtime);
+  timeOff.vacation_allowance_hours =
+    s.vacation_allowance_hours == null ? null : Number(s.vacation_allowance_hours);
   timeOff.holidays = (Array.isArray(s.holiday_calendar) ? s.holiday_calendar : []).map((h) => ({
     key: `h${(holidayRowKey += 1)}`,
     date: h.date,
@@ -2820,6 +2841,9 @@ async function saveTimeOff() {
       {
         time_off_default_minutes: Math.round(Number(timeOff.default_hours) * 60),
         time_off_counts_toward_overtime: Boolean(timeOff.counts_toward_overtime),
+        // Hours, not minutes: an allowance is stated in hours. null = not set.
+        vacation_allowance_hours:
+          timeOff.vacation_allowance_hours == null ? null : Number(timeOff.vacation_allowance_hours),
         holiday_calendar: timeOff.holidays.map((h) => ({
           date: h.date,
           name: String(h.name).trim(),

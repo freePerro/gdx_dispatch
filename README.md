@@ -71,9 +71,15 @@ and root component at [`gdx_dispatch/frontend/src/App.vue`](gdx_dispatch/fronten
 
 ## Quick start (Docker)
 
-Requires Docker and Docker Compose.
+Requires Docker and Docker Compose. The compose file declares its database and
+uploads volumes `external` (so `docker compose down -v` can never delete them),
+which means Compose will not create them; create them once before the first
+`up`:
 
 ```bash
+docker volume create docker_db_data
+docker volume create docker_gdx_uploads
+
 cp .env.template .env
 # Fill in the [REQUIRED] values (database password, SECRET_KEY, …)
 

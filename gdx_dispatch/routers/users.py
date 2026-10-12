@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import time
+from decimal import Decimal
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -27,7 +28,8 @@ from gdx_dispatch.core.roles import is_role_admin_actor, normalize_role
 from gdx_dispatch.core.tenant_ctx import bind_tenant_context
 from gdx_dispatch.models.tenant_models import User
 from gdx_dispatch.routers.auth import get_current_user
-from gdx_dispatch.routers.auth.core import PlatformEmailUnavailable, send_password_reset_link
+from gdx_dispatch.routers.auth.core import PasswordResetEmailNotSent, send_password_reset_link
+from gdx_dispatch.routers.settings import MAX_VACATION_ALLOWANCE_HOURS, allowance_hours_out
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +76,11 @@ class UserPatchIn(BaseModel):
     # column, but the model never declared it, so a typed value was dropped
     # and the dialog toasted "saved". Null clears it.
     certifications: str | None = Field(default=None, max_length=2000)
+    # GDXA-700: this person's annual vacation allowance in hours, overriding
+    # the shop default. Explicit null clears it back to inherit.
+    vacation_allowance_hours: Decimal | None = Field(
+        default=None, ge=0, le=MAX_VACATION_ALLOWANCE_HOURS, decimal_places=2
+    )
 
 
 class SelfPatchIn(BaseModel):
@@ -170,6 +177,8 @@ def _serialize(u: User) -> dict[str, Any]:
         "shift_end": u.shift_end.isoformat(timespec="minutes") if u.shift_end else None,
         "workdays": int(u.workdays) if u.workdays is not None else None,
         "certifications": u.certifications or "",
+        # NULL = inherit AppSettings.vacation_allowance_hours.
+        "vacation_allowance_hours": allowance_hours_out(u.vacation_allowance_hours),
     }
 
 
@@ -359,9 +368,19 @@ def update_user(user_id: str, payload: UserPatchIn, request: Request, user: dict
         u.workdays = data["workdays"]
     if "certifications" in data:
         u.certifications = (data["certifications"] or "").strip() or None
+    details: dict[str, Any] = {"changed_fields": list(data.keys())}
+    if "vacation_allowance_hours" in data:
+        # An allowance decides what someone is owed, so the trail carries
+        # both values, not just the field name. The dialog sends it on every
+        # save; an unchanged value is not a change and leaves no entry.
+        before = allowance_hours_out(u.vacation_allowance_hours)
+        after = allowance_hours_out(data["vacation_allowance_hours"])
+        if before != after:
+            details["vacation_allowance_hours"] = {"from": before, "to": after}
+        u.vacation_allowance_hours = data["vacation_allowance_hours"]
     u.updated_at = utcnow()
     db.commit()
-    _audit(db, request=request, user=user, action="user_updated", entity_id=user_id, details={"changed_fields": list(data.keys())})
+    _audit(db, request=request, user=user, action="user_updated", entity_id=user_id, details=details)
     db.refresh(u)
     return _serialize(u)
 
@@ -654,11 +673,11 @@ def send_reset_link(user_id: str, request: Request, user: dict = Depends(get_cur
     # GDXA-677: this used to mint a token it stored nowhere, send nothing and
     # answer "queued". Now the link is real and emailed, or the caller hears why not.
     try:
-        send_password_reset_link(str(u.id), tid, u.email)
-    except PlatformEmailUnavailable as exc:
+        send_password_reset_link(db, u, tid)
+    except PasswordResetEmailNotSent as exc:
         raise HTTPException(
             status_code=503,
-            detail="Email or the public app URL is not configured on this server, so no reset link was sent. Use Reset Password to set one directly.",
+            detail=f"No reset link was sent. {exc} Use Reset Password to set one directly.",
         ) from exc
     except Exception as exc:
         log.exception("password_reset_link_send_failed", extra={"tenant_id": tid, "user_id": user_id, "email": redact_email(u.email)})
@@ -727,11 +746,11 @@ def invite_user(payload: InviteIn, request: Request, user: dict = Depends(get_cu
     # "queued" and send nothing. The user exists either way; say whether it went.
     invite_sent, invite_error = False, None
     try:
-        send_password_reset_link(str(u.id), tid, email, invite=True)
+        send_password_reset_link(db, u, tid, invite=True)
         invite_sent = True
-    except PlatformEmailUnavailable:
-        log.warning("user_invite_email_not_sent_smtp_unconfigured", extra={"tenant_id": tid, "invited_user_id": str(u.id)})
-        invite_error = "Email or the public app URL is not configured on this server."
+    except PasswordResetEmailNotSent as exc:
+        log.warning("user_invite_email_not_sent", extra={"tenant_id": tid, "invited_user_id": str(u.id)})
+        invite_error = str(exc)
     except Exception:
         log.exception("user_invite_email_failed", extra={"tenant_id": tid, "invited_user_id": str(u.id), "email": redact_email(email)})
         invite_error = "The invite email could not be sent."

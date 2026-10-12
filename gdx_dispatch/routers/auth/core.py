@@ -30,7 +30,8 @@ log = logging.getLogger(__name__)
 # Platform-level email (sent from CC, not tenant)
 PLATFORM_SMTP_HOST = os.getenv("PLATFORM_SMTP_HOST", "smtp.titan.email")
 PLATFORM_SMTP_PORT = int(os.getenv("PLATFORM_SMTP_PORT", "465"))
-PLATFORM_SMTP_USER = os.getenv("PLATFORM_SMTP_USER", "info@example.com")
+_PLATFORM_SMTP_USER_PLACEHOLDER = "info@example.com"
+PLATFORM_SMTP_USER = os.getenv("PLATFORM_SMTP_USER", _PLATFORM_SMTP_USER_PLACEHOLDER)
 PLATFORM_SMTP_PASS = os.getenv("PLATFORM_SMTP_PASS", "")
 PLATFORM_FROM_NAME = os.getenv("PLATFORM_FROM_NAME", "DispatchApp")
 
@@ -60,6 +61,70 @@ def _send_platform_email(to_email: str, subject: str, html_body: str) -> None:
         # The message was accepted; a dropped QUIT must not read as unsent.
         log.warning("platform_email_quit_failed to=%s", to_email, exc_info=True)
     log.info("platform_email_sent to=%s subject=%s", to_email, subject)
+
+
+_RESET_LINK_REDACTED = "[reset link redacted]"
+
+
+def platform_smtp_configured() -> bool:
+    """A password and a real account. PLATFORM_SMTP_USER defaults to the
+    placeholder here, and compose and .env.template pass the placeholder in
+    explicitly, so "is it set" is always yes; logging in as that account is
+    how resets failed silently on prod before GDXA-689. _send_platform_email
+    also returns quietly when the password is unset, so "it did not raise" is
+    not "it sent". Any @example.com account is a placeholder (RFC 2606)."""
+    user = (PLATFORM_SMTP_USER or "").strip().lower()
+    return bool(PLATFORM_SMTP_PASS) and bool(user) and not user.endswith("@example.com")
+
+
+def _send_password_reset_email(
+    db: Session, *, tenant_id: str, user: Any, subject: str, html_body: str,
+    audit_body_html: str,
+) -> tuple[bool, str | None, str | None]:
+    """Deliver a reset email. Returns (sent, provider, skip_reason).
+
+    1. Outlook as the Settings → Automation email "Send as" mailbox, as the
+       payment receipt does — no person sent this, and
+       ``designated_sender_fallback`` covers only a PERSON without a mailbox.
+       Kept out of that mailbox's Sent Items, and outbound_emails stores the
+       redacted body: the link is a credential for the account it names,
+       the owner's included.
+    2. Platform SMTP (PLATFORM_SMTP_*), for installs without Outlook.
+
+    Nothing logged by this function carries the address or the link.
+    """
+    from gdx_dispatch.core.tenant import company_id
+    from gdx_dispatch.core.transactional_email import (
+        _designated_sender_user_id,
+        send_transactional_email,
+    )
+
+    sent, provider, skip_reason = send_transactional_email(
+        tenant_db=db,
+        tenant_id=tenant_id or company_id(),
+        user_id=_designated_sender_user_id(db),
+        to_email=str(user.email),
+        to_name=str(user.full_name or user.name or ""),
+        subject=subject,
+        html_body=html_body,
+        audit_body_html=audit_body_html,
+        save_to_sent_items=False,
+        kind="password_reset",
+        initiator_kind="system",
+        entity_type="user",
+        entity_id=str(user.id),
+    )
+    if sent:
+        return sent, provider, None
+    if platform_smtp_configured():
+        try:
+            _send_platform_email(str(user.email), subject, html_body)
+            return True, "platform_smtp", None
+        except Exception:
+            log.exception("password_reset_platform_smtp_failed")
+            skip_reason = f"{skip_reason}+platform_smtp_failed"
+    log.warning("password_reset_email_not_sent reason=%s", skip_reason)
+    return False, None, skip_reason
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -665,20 +730,10 @@ class ResetPasswordBody(BaseModel):
 
 PASSWORD_RESET_TTL_SECONDS = 3600
 INVITE_RESET_TTL_SECONDS = 7 * 24 * 3600
-# The compose default for PLATFORM_SMTP_USER; a login as it can only fail.
-_PLACEHOLDER_SMTP_DOMAIN = "@example.com"
 
 
-class PlatformEmailUnavailable(RuntimeError):
-    """Platform SMTP is not configured, so no email can be sent."""
-
-
-def platform_smtp_configured() -> bool:
-    # _send_platform_email returns quietly (a WARNING, no raise) when the
-    # password is unset, so "it did not raise" is not "it sent". A placeholder
-    # user with a real password is a login that has to fail.
-    user = (PLATFORM_SMTP_USER or "").strip().lower()
-    return bool(PLATFORM_SMTP_PASS) and bool(user) and not user.endswith(_PLACEHOLDER_SMTP_DOMAIN)
+class PasswordResetEmailNotSent(RuntimeError):
+    """No reset email went out. str() is a sentence for the office."""
 
 
 def _password_reset_email_html(reset_link: str, *, invite: bool, expires_text: str) -> str:
@@ -730,44 +785,56 @@ def _reset_link(token: str) -> str | None:
     return f"{base}/reset-password?token={token}"
 
 
+def _revoke_reset_token(token: str) -> None:
+    try:
+        redis.delete(f"pw_reset:{token}")
+    except Exception:
+        log.exception("password_reset_token_revoke_failed")
+
+
 def send_password_reset_link(
-    user_id: str, tenant_id: str, to_email: str, *, invite: bool = False,
-) -> str:
+    db: Session, user: Any, tenant_id: str, *, invite: bool = False,
+) -> None:
     """Store a reset token where POST /auth/reset-password looks it up and
-    email the link. Returns the token.
+    email the link, through the same providers as forgot-password.
 
     For staff-initiated sends (Users → Send Reset Link, Add User → Send
     invite), where the caller must be told the truth. Raises
-    PlatformEmailUnavailable when SMTP is not configured; re-raises the
-    Redis or SMTP error otherwise. A token whose email did not go out is
-    deleted, so a failure never leaves a live credential behind.
+    PasswordResetEmailNotSent when no link can be built or no provider
+    delivered it; re-raises anything unexpected (Redis). A token whose email
+    did not go out is deleted, so a failure never leaves a live credential.
     """
     import secrets
 
-    if not platform_smtp_configured():
-        raise PlatformEmailUnavailable("platform email is not configured")
     token = secrets.token_urlsafe(32)
     link = _reset_link(token)
     if link is None:
-        raise PlatformEmailUnavailable("GDX_PUBLIC_BASE_URL is not a single http(s) URL")
+        raise PasswordResetEmailNotSent(
+            "The public app URL (GDX_PUBLIC_BASE_URL) is not set to a single real address on this server."
+        )
     ttl = INVITE_RESET_TTL_SECONDS if invite else PASSWORD_RESET_TTL_SECONDS
-    redis.setex(f"pw_reset:{token}", ttl, f"{user_id}|{tenant_id}")
+    redis.setex(f"pw_reset:{token}", ttl, f"{user.id}|{tenant_id}")
+    expires_text = "7 days" if invite else "1 hour"
     try:
-        _send_platform_email(
-            to_email,
-            "You're invited — DispatchApp" if invite else "Password Reset — DispatchApp",
-            _password_reset_email_html(
-                link, invite=invite,
-                expires_text="7 days" if invite else "1 hour",
+        sent, _provider, skip_reason = _send_password_reset_email(
+            db,
+            tenant_id=tenant_id,
+            user=user,
+            subject="You're invited — DispatchApp" if invite else "Password Reset — DispatchApp",
+            html_body=_password_reset_email_html(link, invite=invite, expires_text=expires_text),
+            audit_body_html=_password_reset_email_html(
+                _RESET_LINK_REDACTED, invite=invite, expires_text=expires_text,
             ),
         )
     except Exception:
-        try:
-            redis.delete(f"pw_reset:{token}")
-        except Exception:
-            log.exception("password_reset_token_revoke_failed")
+        _revoke_reset_token(token)
         raise
-    return token
+    if not sent:
+        _revoke_reset_token(token)
+        raise PasswordResetEmailNotSent(
+            "No email account could send it: connect the Settings → Automation email "
+            f'"Send as" mailbox, or configure platform email (reason: {skip_reason}).'
+        )
 
 
 @router.post("/forgot-password")
@@ -793,27 +860,42 @@ def forgot_password(body: ForgotPasswordBody, request: Request, db: Session = De
     row = {"id": str(_u.id), "email": _u.email} if _u else None
 
     if row:
+        email_sent, email_provider, skip_reason = False, None, "send_raised"
         token = secrets.token_urlsafe(32)
-        redis.setex(f"pw_reset:{token}", PASSWORD_RESET_TTL_SECONDS, f"{row['id']}|{tenant_id}")
+        reset_link = _reset_link(token)
 
-        try:
-            link = _reset_link(token)
-            if link is None:
-                raise RuntimeError("GDX_PUBLIC_BASE_URL is not a single http(s) URL")
-            _send_platform_email(
-                str(row["email"]),
-                "Password Reset — DispatchApp",
-                _password_reset_email_html(link, invite=False, expires_text="1 hour"),
-            )
-        except Exception:
-            log.exception("forgot_password_email_failed")
+        if reset_link is None:
+            # No token is stored for a link nobody can receive.
+            skip_reason = "public_url_unusable"
+            log.warning("password_reset_email_not_sent reason=%s", skip_reason)
+        else:
+            redis.setex(f"pw_reset:{token}", PASSWORD_RESET_TTL_SECONDS, f"{row['id']}|{tenant_id}")
+            try:
+                email_sent, email_provider, skip_reason = _send_password_reset_email(
+                    db,
+                    tenant_id=tenant_id,
+                    user=_u,
+                    subject="Password Reset — DispatchApp",
+                    html_body=_password_reset_email_html(reset_link, invite=False, expires_text="1 hour"),
+                    # outbound_emails keeps a copy of every body; this one must
+                    # not hold a live reset link.
+                    audit_body_html=_password_reset_email_html(
+                        _RESET_LINK_REDACTED, invite=False, expires_text="1 hour",
+                    ),
+                )
+            except Exception:
+                log.exception("forgot_password_email_failed")
 
         try:
             log_audit_event_sync(
                 db, tenant_id=tenant_id, user_id=str(row["id"]),
                 action="password_reset_requested", entity_type="auth",
                 entity_id=str(row["id"]),
-                details={"email": email, "token_prefix": token[:8]},
+                details={
+                    "email": email, "token_prefix": token[:8],
+                    "email_sent": email_sent, "provider": email_provider,
+                    "skip_reason": skip_reason,
+                },
                 request=request,
             )
             db.commit()

@@ -479,6 +479,7 @@ def test_live_logged_parts_reach_the_autodrafted_invoice(tenant_db_session, mobi
     mechanism.
     """
     from gdx_dispatch.core.closeout_billing import build_closeout_lines
+    from gdx_dispatch.routers.mobile_invoicing import restate_invoice_header
 
     db = tenant_db_session
     job = _seed_job(db)
@@ -506,6 +507,8 @@ def test_live_logged_parts_reach_the_autodrafted_invoice(tenant_db_session, mobi
         db, tenant_id=TENANT, invoice=invoice, closeout=closeout,
         job_type=None, job_id=str(job.id),
     )
+    # The header restatement every caller of the builder does.
+    restate_invoice_header(invoice, lines_total)
     db.commit()
 
     assert lines_added == 1, "the live-logged part never reached the invoice"
