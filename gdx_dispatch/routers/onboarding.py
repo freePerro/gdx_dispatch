@@ -31,6 +31,7 @@ from gdx_dispatch.models.tenant_models import (
     Job,
     OnboardingState,
 )
+from gdx_dispatch.modules.numbering import allocate_job_number
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -302,7 +303,7 @@ def load_demo_data(
     ]
 
     try:
-        customer_ids: list[UUID] = []
+        customers: list[tuple[UUID, str]] = []
         for c in demo_customers:
             cust = Customer(
                 name=c["name"],
@@ -312,10 +313,11 @@ def load_demo_data(
             )
             db.add(cust)
             db.flush()
-            customer_ids.append(cust.id)
+            customers.append((cust.id, cust.name))
             customers_count += 1
 
-        for cid in customer_ids:
+        jobs: list[tuple[Job, str]] = []
+        for cid, cname in customers:
             job = Job(
                 customer_id=cid,
                 title="DEMO - Garage door tune-up",
@@ -323,12 +325,13 @@ def load_demo_data(
                 company_id=tenant_id,
             )
             db.add(job)
+            jobs.append((job, cname))
             jobs_count += 1
 
         db.flush()
 
         inv = Invoice(
-            customer_id=customer_ids[0],
+            customer_id=customers[0][0],
             job_id=None,
             invoice_number=f"DEMO-{uuid4().hex[:8].upper()}",
             total=285.00,
@@ -337,6 +340,11 @@ def load_demo_data(
         )
         db.add(inv)
         invoices_count += 1
+        db.flush()
+        # Numbers come last: allocation commits the tenant counter in its own
+        # session, so a load that fails above must not reach it (GDXA-834).
+        for job, cname in jobs:
+            job.job_number = allocate_job_number(tenant_id, customer_name=cname)
         db.commit()
     except (OperationalError, ProgrammingError):
         log.exception("onboarding_demo_data_schema_missing tenant=%s", tenant_id)
