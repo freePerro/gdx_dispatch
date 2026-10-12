@@ -429,7 +429,7 @@ def test_queueing_does_not_retry_the_connection(invoice):
     with patch.object(mod.sweep_stale_intents, "apply_async") as send:
         mod.enqueue_stale_intent_sweep(invoice, why="payment_recorded", settled=True)
     assert send.call_args[1]["retry"] is False, (
-        "a broker hiccup must cost this call milliseconds, not seconds"
+        "kombu must not retry the broker connection inside a money path"
     )
 
 
