@@ -147,7 +147,16 @@ def _serialize(
         tax_rate = 0.0
         if db is not None:
             try:
-                from gdx_dispatch.modules.tax.service import resolve_rate
+                from gdx_dispatch.models.tenant_models import Job
+                from gdx_dispatch.modules.tax.service import resolve_rate_for_job
+                # The job lane decides first (GDXA-797, Doug 2026-10-12): a
+                # change order on an installation is part of a construction
+                # contract and is never taxed; on a repair or service call it
+                # takes the tenant default, and an exempt customer is 0 on
+                # both. Same helper as invoice create, so the CO total still
+                # equals the invoice total. A CO with no job is unlaned and
+                # falls through to `resolve_rate`, as before.
+                #
                 # GDXA-157: `resolve_rate` reads TaxConfig and the customer's
                 # exempt flag on this session and re-raises, so the degradation
                 # to rate 0 — and the aborted Postgres transaction behind it —
@@ -165,7 +174,21 @@ def _serialize(
                 # the defect silently, and 25P02 surfaces on an unrelated line
                 # naming an unrelated table.
                 with contained_read(db):
-                    tax_rate = float(resolve_rate(db, co.customer_id))
+                    job_row = (
+                        db.execute(
+                            select(Job.job_type, Job.customer_id).where(Job.id == co.job_id)
+                        ).one_or_none()
+                        if co.job_id
+                        else None
+                    )
+                    job_type = job_row.job_type if job_row else None
+                    # A tech's CO can be saved with no customer (the mobile
+                    # dialog sends `customer_id: null` before the customer
+                    # loads); the invoice checks exemption against the job's
+                    # customer, so fall back to it here or an exempt customer
+                    # signs a taxed total the invoice never bills.
+                    customer_id = co.customer_id or (job_row.customer_id if job_row else None)
+                    tax_rate = float(resolve_rate_for_job(db, customer_id, job_type))
             except Exception:
                 log.exception("change_order_tax_resolve_failed co=%s", co.id)
         taxable_subtotal = sum(
