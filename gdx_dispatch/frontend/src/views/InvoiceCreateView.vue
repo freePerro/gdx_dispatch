@@ -86,6 +86,7 @@
               v-model="form.invoice_date"
               dateFormat="yy-mm-dd"
               :showIcon="true"
+              placeholder="Defaults to today"
               class="w-full"
               data-testid="invoice-date"
             />
@@ -98,6 +99,7 @@
               v-model="form.due_date"
               dateFormat="yy-mm-dd"
               :showIcon="true"
+              placeholder="Defaults to the customer's payment terms"
               class="w-full"
               data-testid="invoice-due-date"
             />
@@ -829,9 +831,9 @@ function _prefillLaborLine(line) {
   };
 }
 
-// The server's two "these days' labor is already on a bill" refusals. Neither
-// is the job-level double-billing prompt, and forcing would not get past them.
-const LABOR_409_CODES = new Set(['labor_already_billed', 'labor_already_on_invoice']);
+// The job-level double-billing refusal: the one 409 `force` gets past, so the
+// only one that earns a "create another anyway?" prompt.
+const JOB_ALREADY_BILLED_CODE = 'already_billed';
 
 async function prefillFromJobCloseout(jobId) {
   closeoutSuggestion.value = null;
@@ -1071,11 +1073,11 @@ async function createInvoice() {
       // job completion, the backend 409s when the job already has a real
       // invoice. Confirm and re-submit with force — deliberate second
       // invoices (progress billing, re-bill) stay one click away.
-      // The labor 409s first: their text also says "already billed", and a
-      // forced retry would only 409 again. The outer catch toasts the
+      // Matched by code, never by text: the labor, parts and change-order
+      // 409s also say "already billed", `force` gets past none of them, and
+      // a forced retry would only 409 again. The outer catch toasts the
       // server's own message, which says what to do.
-      if (e.status === 409 && LABOR_409_CODES.has(e.code)) throw e;
-      if (e.status === 409 && /already billed/i.test(e.message || '')) {
+      if (e.status === 409 && e.code === JOB_ALREADY_BILLED_CODE) {
         if (!window.confirm(`${e.message}\n\nCreate another invoice for this job anyway?`)) {
           return;
         }

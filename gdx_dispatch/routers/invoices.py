@@ -1408,12 +1408,19 @@ def create_invoice(
 
         _existing = first_billing_real_invoice(db, payload.job_id)
         if _existing is not None:
+            # `already_billed` is the ONLY refusal `force` gets past, so it is
+            # the only code the office screen offers a forced retry on — the
+            # parts, change-order and labor refusals below also say "already
+            # billed" and would 409 again. Same code as the mobile path (M38).
             raise HTTPException(
                 status_code=409,
-                detail=(
-                    f"Job is already billed on {_existing.invoice_number}. "
-                    "Confirm to create another invoice."
-                ),
+                detail={
+                    "code": "already_billed",
+                    "message": (
+                        f"Job is already billed on {_existing.invoice_number}. "
+                        "Confirm to create another invoice."
+                    ),
+                },
             )
 
     estimate: Estimate | None = None
@@ -2023,11 +2030,14 @@ def create_invoice(
             db.rollback()
             raise HTTPException(
                 status_code=409,
-                detail=(
-                    "change order(s) not billable — already billed on another "
-                    "invoice, not approved, wrong job/customer, or deleted: "
-                    + ", ".join(sorted(labels))
-                ),
+                detail={
+                    "code": "change_orders_not_billable",
+                    "message": (
+                        "change order(s) not billable — already billed on another "
+                        "invoice, not approved, wrong job/customer, or deleted: "
+                        + ", ".join(sorted(labels))
+                    ),
+                },
             )
         _max_sort = db.execute(
             select(func.max(InvoiceLine.sort_order)).where(
@@ -2164,10 +2174,13 @@ def create_invoice(
             db.rollback()
             raise HTTPException(
                 status_code=409,
-                detail=(
-                    "part(s) not billable — already billed on another invoice "
-                    "or not on this job: " + ", ".join(sorted(missing_parts))
-                ),
+                detail={
+                    "code": "parts_not_billable",
+                    "message": (
+                        "part(s) not billable — already billed on another invoice "
+                        "or not on this job: " + ", ".join(sorted(missing_parts))
+                    ),
+                },
             )
 
     # Deposit netting (2026-07-23): a non-deposit invoice for a job (or

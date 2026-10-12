@@ -292,6 +292,11 @@ describe('InvoiceCreateView — labor lines', () => {
   it.each([
     ['labor_already_billed', "These days' labor is already billed on invoice INV-0004 — reload the labor suggestion."],
     ['labor_already_on_invoice', "This invoice already has these days' labor — remove one of the labor lines."],
+    ['parts_not_billable', 'part(s) not billable — already billed on another invoice or not on this job: p-1'],
+    ['change_orders_not_billable', 'change order(s) not billable — already billed on another invoice, not approved, wrong job/customer, or deleted: CO-1'],
+    // No code at all: the text says "already billed", and that must not be
+    // enough — the prompt is routed by code, never by message.
+    [undefined, 'Job is already billed on INV-0004.'],
   ])('a %s 409 is toasted, never offered as "create another anyway"', async (code, message) => {
     routeSuggestion({ has_closeout: true, closeout: {}, labor_lines: [HOURLY] });
     apiPost.mockRejectedValue(Object.assign(new Error(message), { status: 409, code }));
@@ -308,7 +313,7 @@ describe('InvoiceCreateView — labor lines', () => {
   it('the job-level "already billed" 409 still offers the forced retry', async () => {
     routeSuggestion({ has_closeout: true, closeout: {}, labor_lines: [HOURLY] });
     apiPost
-      .mockRejectedValueOnce(Object.assign(new Error('Job is already billed on INV-0004.'), { status: 409 }))
+      .mockRejectedValueOnce(Object.assign(new Error('Job is already billed on INV-0004.'), { status: 409, code: 'already_billed' }))
       .mockResolvedValueOnce({ id: 'inv-9', invoice_number: 'INV-0009' });
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     const { wrapper } = await mountIt();
