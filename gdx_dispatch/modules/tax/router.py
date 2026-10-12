@@ -22,7 +22,7 @@ from gdx_dispatch.core.audit import (
 )
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.modules.tax.models import TaxConfig, TaxExemption
-from gdx_dispatch.modules.tax.service import get_or_create_config, resolve_rate
+from gdx_dispatch.modules.tax.service import get_or_create_config, resolve_rate_for_job
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -315,8 +315,8 @@ def resolve_rate_endpoint(
     and is never taxed, so it answers 0 without reading the tenant default.
     An unknown or malformed id falls through to the customer answer."""
     _ = user
+    job_type = None
     if job_id:
-        from gdx_dispatch.core.billing_lanes import lane_for_job  # noqa: PLC0415
         from gdx_dispatch.models.tenant_models import Job  # noqa: PLC0415
 
         try:
@@ -324,12 +324,9 @@ def resolve_rate_endpoint(
         except ValueError:
             log.info("tax resolve: malformed job_id %r, using the customer rate", job_id)
             jid = None
-        job_type = None
         if jid is not None:
             job_type = db.execute(
                 select(Job.job_type).where(Job.id == jid, Job.deleted_at.is_(None))
             ).scalar_one_or_none()
-        if job_type is not None and lane_for_job(job_type) == "install":
-            return {"rate": 0.0, "rate_pct": 0.0}
-    rate = resolve_rate(db, customer_id)
+    rate = resolve_rate_for_job(db, customer_id, job_type)
     return {"rate": float(rate), "rate_pct": float(rate * 100)}
