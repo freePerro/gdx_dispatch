@@ -322,6 +322,7 @@ def resolve_rate_endpoint(
         try:
             jid = UUID(str(job_id))
         except ValueError:
+            log.info("tax resolve: malformed job_id %r, using the customer rate", job_id)
             jid = None
         job_type = None
         if jid is not None:
