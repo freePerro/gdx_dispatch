@@ -56,9 +56,9 @@ def db():
     engine.dispose()
 
 
-def _seed_job(db, *, job_type: str | None = None) -> Job:
+def _seed_job(db, *, job_type: str | None = None, customer_id: UUID | None = None) -> Job:
     job = Job(
-        customer_id=uuid4(),
+        customer_id=customer_id or uuid4(),
         title="Install",
         description="",
         job_type=job_type,
@@ -259,6 +259,68 @@ def test_create_without_rate_follows_the_job_lane(db, job_type, expected_rate, e
     assert inv["tax_rate"] == pytest.approx(expected_rate)
     assert round(inv["tax_amount"], 2) == expected_tax
     assert round(inv["total"], 2) == round(100.0 + expected_tax, 2)
+
+
+@pytest.mark.parametrize(
+    ("job_type", "exempt", "expected"),
+    [
+        ("Service Call", False, Decimal("0.07375")),
+        ("Repair", False, Decimal("0.07375")),
+        (None, False, Decimal("0.07375")),  # unlaned job / no job: tenant default
+        ("Installation", False, Decimal("0")),
+        # Exempt customers are never taxed, on any lane (Doug, 2026-10-12).
+        ("Service Call", True, Decimal("0")),
+        ("Installation", True, Decimal("0")),
+    ],
+)
+def test_resolve_rate_for_job_follows_lane_and_exemption(db, job_type, exempt, expected):
+    """GDXA-796: the shared job-lane tax helper. Installations are 0, repairs
+    and service calls get the tenant default, exempt customers are 0 on both."""
+    from gdx_dispatch.modules.tax.models import TaxConfig, TaxExemption
+    from gdx_dispatch.modules.tax.service import resolve_rate_for_job
+
+    customer_id = uuid4()
+    db.add(TaxConfig(name="Default", default_rate=Decimal("0.07375")))
+    if exempt:
+        db.add(TaxExemption(customer_id=customer_id, exempt=True, reason="non-profit"))
+    db.commit()
+    assert resolve_rate_for_job(db, customer_id, job_type) == expected
+
+
+@pytest.mark.parametrize(
+    ("job_type", "expected_rate"),
+    [
+        # Exempt on a service call: rate stays NULL (legacy flat path), no tax.
+        ("Service Call", None),
+        # Exempt on an installation: the lane answers first, rate-mode at 0.
+        ("Installation", 0.0),
+    ],
+)
+def test_create_without_rate_never_taxes_exempt_customer(db, job_type, expected_rate):
+    """GDXA-796: an exempt customer is never taxed on either lane."""
+    from gdx_dispatch.modules.tax.models import TaxConfig, TaxExemption
+
+    customer_id = uuid4()
+    db.add(TaxConfig(name="Default", default_rate=Decimal("0.07375")))
+    db.add(TaxExemption(customer_id=customer_id, exempt=True, reason="non-profit"))
+    db.commit()
+    job = _seed_job(db, job_type=job_type, customer_id=customer_id)
+    inv = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=customer_id,
+            invoice_date=shop_today_from_settings(db),
+            line_items=[
+                InvoiceLineCreateIn(description="Spring", quantity=1, unit_price=100.0, taxable=True),
+            ],
+        ),
+        _=_user(), db=db,
+    )
+    assert inv["tax_rate"] == expected_rate
+    assert round(inv["tax_amount"], 2) == 0.0
+    assert round(inv["total"], 2) == 100.0
+    row = db.get(Invoice, UUID(str(inv["id"])))
+    assert float(row.tax_amount or 0) == 0.0
 
 
 def test_patch_zero_rate_zeroes_existing_tax(db):
