@@ -32,6 +32,7 @@ from gdx_dispatch.routers.invoices import (
 )
 from gdx_dispatch.tests.conftest import make_fresh_db
 from gdx_dispatch.tests.test_labor_billed_through_a_point import (
+    DAY2,
     USER,
     _as_line,
     _closeout,
@@ -39,6 +40,7 @@ from gdx_dispatch.tests.test_labor_billed_through_a_point import (
     _job,
     _lines,
     _rates,
+    _row,
     _suggest,
 )
 
@@ -196,7 +198,7 @@ def test_a_carrier_from_before_a_rate_change_still_carries_it(db):
     # hourly-only sibling; it must not lose the first hour to that.
     _rates(db, "100", "100")
     job = _job(db)
-    co = _closeout(db, job, hours=3.0)
+    _closeout(db, job, hours=3.0)
     carrier = _rebill(db, job)
     [line] = _lines(db, carrier)
     assert Decimal(str(line.unit_price)) == Decimal("100")
@@ -204,7 +206,9 @@ def test_a_carrier_from_before_a_rate_change_still_carries_it(db):
     settings.service_call_first_hour_price = Decimal("125")
     db.commit()
     assert first_hour_elsewhere(db, job.id)[0]
-    co.hours_worked = 2.0
+    # Two more hours on a later day (the closeout is billed on the carrier,
+    # so its own hours are never offered again, GDXA-799).
+    _row(db, job, at=DAY2, minutes=120)
     db.commit()
     rebill = _rebill(db, job)
     assert [ln.description for ln in _lines(db, rebill)][0] != FIRST_HOUR_DESCRIPTION
