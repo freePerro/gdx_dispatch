@@ -10,17 +10,27 @@ the core TenantMiddleware (which doesn't run here). `require_module` checks the
 forwarded enabled-modules set — the grant decision is made in core and carried
 along, so plugin-host needs no DB round-trip just to gate.
 
+A DB session comes from here too: ``get_plugin_db`` as a route dependency,
+``plugin_session()`` as a context manager in request-free code (event handlers,
+schedule callables). A plugin imports nothing from gdx_dispatch outside
+plugin_api; ``tests/test_plugin_import_contract.py`` holds the checked-in
+plugins to that.
+
 Importing this pulls in FastAPI/SQLAlchemy — submodule, not re-exported from
 plugin_api/__init__ (kept stdlib-only for host-side discovery tests).
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+# Public through plugin_api on purpose: an installed private plugin binds to
+# plugin_api.context.SessionLocal, so the name is part of the contract. New code
+# uses plugin_session() or get_plugin_db.
 from gdx_dispatch.core.database import SessionLocal
 
 # Header names the core proxy sets. Centralized so proxy + context can't drift.
@@ -62,14 +72,30 @@ def get_plugin_context(request: Request) -> PluginContext:
     )
 
 
-def get_plugin_db() -> Generator[Session, None, None]:
-    """A DB session on the shared database. Plugins use this instead of importing
-    core.database, so the import surface they bind to stays inside plugin_api."""
+@contextmanager
+def plugin_session() -> Iterator[Session]:
+    """A DB session on the shared database for code that has no request — an
+    event handler or a schedule callable::
+
+        with plugin_session() as db:
+            db.add(row)
+            db.commit()
+
+    The session is closed on exit. Commit and rollback stay the caller's: an
+    uncommitted session is rolled back by close(). Plugins use this (or
+    ``get_plugin_db`` in a route) instead of importing core.database, so the
+    import surface they bind to stays inside plugin_api."""
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+
+def get_plugin_db() -> Generator[Session, None, None]:
+    """FastAPI dependency: the request-scoped form of ``plugin_session``."""
+    with plugin_session() as db:
+        yield db
 
 
 def require_module(module_key: str) -> Callable:
