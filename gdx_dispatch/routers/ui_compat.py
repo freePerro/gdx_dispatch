@@ -486,6 +486,9 @@ def run_payroll_current(
 # silent-write landmine one include-order change away from firing, against the
 # invariant that an action which fakes success without doing the work is a
 # defect of the highest class. Removed rather than left as dead code.
+# 2026-10-12 (GDXA-736): the sub_resources copy is gone too — it wrote invoice
+# lines with no draft/lock check, recalculation or invoices.write gate, and had
+# no caller. Lines are added at POST /api/invoices/{invoice_id}/lines.
 
 
 # ── Labor time entries (via /api/labor/jobs/...) ──────────────────────────

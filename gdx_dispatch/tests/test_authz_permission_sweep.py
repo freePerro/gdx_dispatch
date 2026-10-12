@@ -56,7 +56,9 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_unpermissioned_bas
 # customers.write (GDXA-418).
 # 389 → 383 (2026-10-11): the portal payments router's five mutation routes
 # and ui_compat's POST /api/payments/intent stub were deleted (GDXA-552).
-BASELINE_SIZE = 383
+# 383 → 382 (2026-10-12): POST /api/jobs/{job_id}/line-items was deleted
+# (GDXA-736); lines are added at POST /api/invoices/{id}/lines.
+BASELINE_SIZE = 382
 
 
 def _baseline() -> set[str]:

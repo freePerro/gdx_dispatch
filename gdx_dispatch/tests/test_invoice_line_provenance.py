@@ -83,7 +83,6 @@ _PENDING_CONVERSION = {
     Path("core/closeout_billing.py"): 2,
     Path("modules/deposits/service.py"): 2,
     Path("modules/quickbooks/sync.py"): 2,
-    Path("routers/sub_resources.py"): 1,
 }
 
 

@@ -42,6 +42,12 @@ REMOVED = [
     ("PATCH", "/api/jobs/{job_id}/parts/{part_id}"),
     ("DELETE", "/api/jobs/{job_id}/parts/{part_id}"),
     ("PATCH", "/api/jobs/{job_id}/costing"),
+    # The panel's old "Add Item" dialog POSTed here without the invoice_id the
+    # handler needed, so it 400'd and the dialog was removed. The handler
+    # itself was deleted 2026-10-12 (GDXA-736): it wrote an invoice line
+    # without loading the invoice — no draft/locked check, no recalculation,
+    # no invoices.write gate. Lines are added at POST /api/invoices/{id}/lines.
+    ("POST", "/api/jobs/{job_id}/line-items"),
 ]
 
 # What the panel legitimately reads, and where editing actually lives. If one of
@@ -101,33 +107,6 @@ def test_the_surface_the_panel_actually_uses_still_exists(
     assert (method, path) in registered, (
         f"{method} {path} is missing — the costing dialog reads from it, or its "
         "'edit parts on the job' link lands nowhere."
-    )
-
-
-def test_line_items_has_exactly_one_post_handler() -> None:
-    """The ui_compat copy returned a fabricated success and wrote nothing.
-
-    It never ran — sub_resources registers the same path first (app.py:1573 vs
-    :1578) — but a duplicate whose loser fakes a 201 is one include-order change
-    away from silently discarding every invoice line someone adds. `app.openapi()`
-    collapses duplicates and names the LOSING handler, so this counts
-    registrations directly instead.
-    """
-    from gdx_dispatch.app import app
-    from gdx_dispatch.tests.conftest import iter_app_routes
-
-    posts = [
-        route
-        for full_path, route in iter_app_routes(app)
-        if full_path == "/api/jobs/{job_id}/line-items"
-        and "POST" in (getattr(route, "methods", None) or ())
-    ]
-    assert len(posts) == 1, (
-        f"{len(posts)} handlers registered for POST /api/jobs/{{job_id}}/line-items; "
-        "a second one is a silent-write landmine"
-    )
-    assert getattr(posts[0], "endpoint", None).__module__.endswith("sub_resources"), (
-        "the surviving handler must be the one that writes an InvoiceLine, not a shim"
     )
 
 

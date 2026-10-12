@@ -21,7 +21,6 @@ import os
 import pathlib
 import re
 from decimal import Decimal
-from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -166,37 +165,6 @@ def test_create_invoice_discount_cap_reads_a_fractional_quantity(db):
             line_items=[InvoiceLineCreateIn(description="Labor", quantity=Decimal("2.5"), unit_price=100)],
         ), _=USER, db=db)
     assert exc.value.status_code == 422
-
-
-def _job_line_item(db, inv_id: UUID, quantity):
-    from gdx_dispatch.routers.sub_resources import create_job_line_item
-
-    request = SimpleNamespace(client=None, headers={}, url=SimpleNamespace(path="/x"), method="POST", state=SimpleNamespace())
-    return create_job_line_item(str(uuid4()), request,
-                                {"invoice_id": str(inv_id), "description": "Labor", "quantity": quantity, "unit_price": 33.33},
-                                user=USER, db=db)
-
-
-def test_the_raw_dict_line_item_endpoint_takes_two_decimals(db, monkeypatch):
-    # This endpoint adds the line without restating the invoice header, so the
-    # totals invariant refuses its commit once it checks line-only writes
-    # (GDXA-678). That is the guard working, reported on GDXA-679 for the
-    # route's owner; this test is about the quantity rule, so it runs in log mode.
-    monkeypatch.setenv("GDX_INVOICE_INVARIANT", "log")
-    inv_id = _draft(db)
-    _job_line_item(db, inv_id, 2.5)
-    line = _line(db, inv_id)
-    assert line.quantity == Decimal("2.5")
-    assert line.line_total == Decimal("83.33")
-
-
-@pytest.mark.parametrize("bad", [2.555, 0, -1, 10000, True, "abc", None, float("inf"), float("nan"), 10 ** 400])
-def test_the_raw_dict_line_item_endpoint_refuses_what_the_schema_refuses(db, bad):
-    inv_id = _draft(db)
-    with pytest.raises(HTTPException) as exc:
-        _job_line_item(db, inv_id, bad)
-    assert exc.value.status_code == 422
-    assert db.execute(select(InvoiceLine)).first() is None
 
 
 # ── what the customer reads ──────────────────────────────────────────────────
