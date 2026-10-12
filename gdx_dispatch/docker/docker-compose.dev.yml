@@ -6,7 +6,10 @@
 # Binds the gdx/ source tree into the app container and runs uvicorn with
 # --reload so backend edits reflect in ~1 second instead of a full rebuild.
 #
-# Usage (dev only, explicit opt-in):
+# Usage (dev only, explicit opt-in; on a fresh clone create the base file's
+# external volumes once first, or start the stack with dev-up.sh, which does):
+#   docker volume create docker_db_data
+#   docker volume create docker_gdx_uploads
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d app
 #   # edit gdx_dispatch/routers/*.py locally → container picks up on next request
 #
