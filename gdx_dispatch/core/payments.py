@@ -30,6 +30,7 @@ import contextlib
 import logging
 import os
 import uuid as _uuid
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from datetime import time as dt_time
 from decimal import Decimal
@@ -512,7 +513,8 @@ def _audit_abandoned_intent_cancel(
     db: Session, *, invoice_id: Any, intent_id: str, why: str, cancelled: Any
 ) -> None:
     """Record a pay-page cancel of an intent still holding a customer's bank
-    account. Never raises; called only after Stripe accepted the cancel.
+    account or, ``why="card-switch"``, another card (GDXA-790). Never raises;
+    called only after Stripe accepted the cancel.
 
     Invariant #1: cancelling a PaymentIntent is a state change on a money
     object. The settle-time sweep already records its cancels
@@ -524,8 +526,12 @@ def _audit_abandoned_intent_cancel(
     `audit_best_effort` rather than the precommit helper: `create_intent`
     never commits and `get_db` closes without committing, so a row staged for
     a later commit would be discarded. Nothing is staged on the session at
-    either call site (`_settle_unrecorded_intents` commits before returning),
-    which is that helper's precondition.
+    any call site (`_settle_unrecorded_intents` commits before returning),
+    which is that helper's precondition. That includes the card sweep, which
+    runs AFTER the mint through `_create_usable_intent`'s ``on_fresh``:
+    nothing is left staged between them (the bank sweep in between commits its
+    own rows). A write added there would be committed by this helper (it
+    warns, and the card-switch audit test fails).
     """
     from gdx_dispatch.core.audit import audit_best_effort
 
@@ -623,7 +629,10 @@ def _live_candidate(candidates: list | None, kwargs: dict, connect: dict) -> Any
     return None
 
 
-def _create_usable_intent(*, db: Session, candidates: list | None = None, **kwargs) -> Any:
+def _create_usable_intent(
+    *, db: Session, candidates: list | None = None, on_fresh: Callable[[], None] | None = None,
+    **kwargs,
+) -> Any:
     """`PaymentIntent.create`, then prove the intent handed back is live.
 
     Stripe's idempotency layer replays **"the resulting status code and body of
@@ -658,11 +667,16 @@ def _create_usable_intent(*, db: Session, candidates: list | None = None, **kwar
     already read), and otherwise mints under ``{key}-r{dead intent id}``, so
     the next press replays that same intent. If the sweep kills that one too,
     the chain walks on from it, cancelling an abandoned account on the way.
+
+    ``on_fresh`` runs when the key was never used: the first create minted a
+    live intent that is not in ``candidates``. A replay (the Pay step's
+    re-POST) or a re-mint after a dead replay never runs it (GDXA-790).
     """
     pi = stripe.PaymentIntent.create(**kwargs)
     pid = str(getattr(pi, "id", "") or "")
     if not pid:
         return pi
+    known = {str(_field(c, "id") or "") for c in candidates or []}
 
     # `retrieve` must look at the same account the object lives on — and in
     # the same API version, or a preview-only field (the surcharge probe)
@@ -676,6 +690,8 @@ def _create_usable_intent(*, db: Session, candidates: list | None = None, **kwar
         # have rather than failing a checkout over a verification step.
         return pi
     if verdict == "live":
+        if on_fresh is not None and pid not in known:
+            on_fresh()
         return live
 
     key = kwargs.pop("idempotency_key", "") or ""
@@ -1872,8 +1888,11 @@ def _settle_unrecorded_intents(
     return recorded
 
 
-def _cancel_abandoned_bank_accounts(invoice, intents: list, *, connect: dict, db: Session) -> None:
-    """Cancel every open bank intent on ``invoice`` still holding an account.
+def _cancel_abandoned_attachments(
+    invoice, intents: list, *, keep_card: str | None = None, connect: dict, db: Session,
+) -> None:
+    """Cancel every open bank intent on ``invoice`` still holding an account
+    or, given ``keep_card``, every open card intent holding another card.
 
     GDXA-781. `_create_usable_intent` cancels an abandoned intent only when the
     idempotency key REPLAYS it, and the ACH key always replays the first mint.
@@ -1885,40 +1904,71 @@ def _cancel_abandoned_bank_accounts(invoice, intents: list, *, connect: dict, db
     sweep.
 
     So the mint path cleans up from the register it already read, rather than
-    from the one intent the key happens to name. Swept before the mint: the
-    replayed intent is then cancelled here and `_create_usable_intent` sees it
-    dead and mints fresh, so nothing is cancelled twice.
+    from the one intent the key happens to name. Banks are swept before the
+    mint: the replayed intent is then cancelled here and `_create_usable_intent`
+    sees it dead and mints fresh, so nothing is cancelled twice. The ACH mint
+    names exactly ``["us_bank_account"]``, and create-intent never hands one
+    back with an account on it, so none of them can be the intent about to be
+    returned.
 
-    Bank intents only: the ACH mint names exactly ``["us_bank_account"]``, and
-    create-intent never hands one back with an account on it, so none of them
-    can be the intent about to be returned. Card intents are left alone on
-    purpose. The two-step card flow mints with the card attached, and its key
-    names that card; cancelling one (on a card switch, or an ACH press from a
-    second tab) makes that key replay a dead intent on every Pay click, and
-    `_create_usable_intent` then mints under a random suffix each time — a
-    page that never settles on one intent (2026-10-12 audit, GDXA-781).
-    Best-effort: a failed cancel only logs, as the replay cancel does; the
-    intent stays in the register and the next press tries again.
+    Cards (GDXA-790): the two-step card flow mints with the card attached and
+    keys on that card, so "Use a different card" mints beside the first card's
+    intent and left it open, card attached. GDXA-781 left cards out because a
+    cancelled card intent made its key replay a dead intent and mint under a
+    random suffix on every Pay click; GDXA-784 made that re-mint converge.
+    `create_intent` sweeps cards only from `_create_usable_intent`'s
+    ``on_fresh``: a press whose key had never been used, which the page's
+    step 1 always is (it creates a new PaymentMethod each submit). The Pay
+    step's re-POST replays its key and never sweeps, so two card tabs on one
+    invoice cannot cancel each other's intent on every click (2026-10-12 audit
+    of this change). The key is ours; whether Stripe still lists a card on a
+    declined or cancelled intent does not enter into it. An ACH press or a
+    one-step card press attaches no card and sweeps none
+    (`test_a_bank_press_from_another_tab_does_not_loop_the_card_page`).
+
+    ``requires_confirmation`` only: ``requires_action`` is a customer inside a
+    3D Secure check right now. The register was read at the start of the
+    request, so each intent is read again before it is cancelled and skipped
+    unless it still waits there. `_settle_unrecorded_intents` only records, it
+    never cancels; the settle-time sweep runs in Celery and can still race
+    this one, and Stripe then refuses the second cancel, which lands in the
+    log below. Best-effort: a failed read or cancel only logs, as the replay
+    cancel does; the intent stays in the register and the next press tries
+    again.
     """
     for pi in intents:
         pid = str(_field(pi, "id") or "")
-        types = list(_field(pi, "payment_method_types") or [])
-        if not pid or types != ["us_bank_account"] or not _field(pi, "payment_method"):
+        pm = _pm_id(pi)
+        if not pid or not pm or str(_field(pi, "status") or "") != "requires_confirmation":
             continue
-        if str(_field(pi, "status") or "") != "requires_confirmation":
+        bank = list(_field(pi, "payment_method_types") or []) == ["us_bank_account"]
+        if bank == (keep_card is not None) or pm == keep_card:
+            continue
+        what = "account" if bank else "card"
+        try:
+            now = stripe.PaymentIntent.retrieve(pid, **connect)
+        except Exception:
+            logger.exception("abandoned_%s_reread_failed intent=%s invoice=%s", what, pid, invoice.id)
+            continue
+        if str(_field(now, "status") or "") != "requires_confirmation":
+            logger.info(
+                "abandoned_%s_intent_moved intent=%s invoice=%s status=%s — left alone",
+                what, pid, invoice.id, _field(now, "status"),
+            )
             continue
         try:
             done = stripe.PaymentIntent.cancel(pid, cancellation_reason="abandoned", **connect)
         except Exception:
-            logger.exception("abandoned_account_cancel_failed intent=%s invoice=%s", pid, invoice.id)
+            logger.exception("abandoned_%s_cancel_failed intent=%s invoice=%s", what, pid, invoice.id)
             continue
         _audit_abandoned_intent_cancel(
-            db, invoice_id=invoice.id, intent_id=pid, why="remint-sweep", cancelled=done,
+            db, invoice_id=invoice.id, intent_id=pid,
+            why="remint-sweep" if bank else "card-switch", cancelled=done,
         )
         logger.warning(
-            "abandoned_account_intent_cancelled intent=%s invoice=%s — an open intent still held "
-            "a customer's account; cancelled before minting.",
-            pid, invoice.id,
+            "abandoned_%s_intent_cancelled intent=%s invoice=%s — an open intent still held "
+            "a customer's %s; cancelled on a new mint.",
+            what, pid, invoice.id, what,
         )
 
 
@@ -2060,7 +2110,12 @@ def create_intent(
         rail["amount_details"] = {"surcharge": {"enforce_validation": "enabled"}}
         rail["stripe_version"] = _SURCHARGE_API_VERSION
 
-    _cancel_abandoned_bank_accounts(invoice, intents, connect=_stripe_extra(tenant), db=db)
+    _cancel_abandoned_attachments(invoice, intents, connect=_stripe_extra(tenant), db=db)
+
+    def _sweep_other_cards() -> None:
+        _cancel_abandoned_attachments(
+            invoice, intents, keep_card=pm_id, connect=_stripe_extra(tenant), db=db,
+        )
 
     metadata = {"invoice_id": str(invoice.id), "tenant_id": str(tenant.get("id", ""))}
     try:
@@ -2068,6 +2123,8 @@ def create_intent(
             db=db,
             # GDXA-784: a dead replay reuses an intent already open here.
             candidates=intents,
+            # GDXA-790: a card switch (a key never used) cancels the other cards.
+            on_fresh=_sweep_other_cards if attached else None,
             amount=amount_cents,
             currency=CURRENCY,  # M4: never body.currency
             metadata=metadata,
