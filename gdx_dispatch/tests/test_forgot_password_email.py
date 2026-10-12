@@ -54,7 +54,7 @@ class _FakeRedis:
 @pytest.fixture()
 def env(tenant_db, monkeypatch):
     monkeypatch.setenv("GDX_TENANT_ID", TENANT)
-    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.example.com")
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.test")
     monkeypatch.setattr(auth_core, "PLATFORM_SMTP_USER", "info@example.com")
     monkeypatch.setattr(auth_core, "PLATFORM_SMTP_PASS", "")
     fake_redis = _FakeRedis()
@@ -159,7 +159,7 @@ def test_no_outlook_falls_back_to_platform_smtp_when_configured(env, monkeypatch
     _designate(env.db, None)
     calls = _graph(monkeypatch, connected=set())
     platform = _platform(monkeypatch)
-    monkeypatch.setattr(auth_core, "PLATFORM_SMTP_USER", "mailer@example.com")
+    monkeypatch.setattr(auth_core, "PLATFORM_SMTP_USER", "mailer@mailbox.test")
     monkeypatch.setattr(auth_core, "PLATFORM_SMTP_PASS", "secret")
 
     _post(env)
@@ -199,12 +199,34 @@ def test_designated_sender_whose_connection_is_dead_still_falls_back(env, monkey
     _designate(env.db, DESIGNATED)
     _graph(monkeypatch, connected=set())
     platform = _platform(monkeypatch)
-    monkeypatch.setattr(auth_core, "PLATFORM_SMTP_USER", "mailer@example.com")
+    monkeypatch.setattr(auth_core, "PLATFORM_SMTP_USER", "mailer@mailbox.test")
     monkeypatch.setattr(auth_core, "PLATFORM_SMTP_PASS", "secret")
 
     _post(env)
 
     assert len(platform) == 1
+
+
+@pytest.mark.parametrize("outlook", ["connected", "not_connected"])
+@pytest.mark.parametrize("base", ["", "https://gdx.example.com", "https://a.test,https://b.test"])
+def test_unusable_public_url_sends_nothing_and_stores_no_token(env, monkeypatch, caplog, base, outlook):
+    # A link built on these is dead in the inbox; a token stored for it is a
+    # live credential nobody received (GDXA-677). Outlook delivers first, so
+    # platform SMTP is only reached — and only guarded — when it is not
+    # connected; each param leaves one provider ready for the URL guard to stop.
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", base)
+    _designate(env.db, DESIGNATED)
+    calls = _graph(monkeypatch, connected={DESIGNATED} if outlook == "connected" else set())
+    platform = _platform(monkeypatch)
+    monkeypatch.setattr(auth_core, "PLATFORM_SMTP_USER", "mailer@mailbox.test")
+    monkeypatch.setattr(auth_core, "PLATFORM_SMTP_PASS", "secret")
+
+    with caplog.at_level(logging.WARNING, logger=auth_core.log.name):
+        _post(env)
+
+    assert calls == [] and platform == []
+    assert env.redis.reset_tokens() == []
+    assert "password_reset_email_not_sent reason=public_url_unusable" in caplog.text
 
 
 def test_unknown_email_sends_nothing_and_answers_the_same(env, monkeypatch):

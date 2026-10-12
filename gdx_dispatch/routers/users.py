@@ -28,6 +28,11 @@ from gdx_dispatch.core.roles import is_role_admin_actor, normalize_role
 from gdx_dispatch.core.tenant_ctx import bind_tenant_context
 from gdx_dispatch.models.tenant_models import User
 from gdx_dispatch.routers.auth import get_current_user
+from gdx_dispatch.routers.auth.core import (
+    PASSWORD_RESET_NOT_SENT_MESSAGES,
+    PasswordResetEmailNotSent,
+    send_password_reset_link,
+)
 from gdx_dispatch.routers.settings import MAX_VACATION_ALLOWANCE_HOURS, allowance_hours_out
 
 log = logging.getLogger(__name__)
@@ -669,10 +674,28 @@ def send_reset_link(user_id: str, request: Request, user: dict = Depends(get_cur
     u = _get_user_or_404(db, tid, user_id)
     if not u.email:
         raise HTTPException(status_code=400, detail="User has no email address on file")
-    reset_token = secrets.token_urlsafe(32)
-    log.info("password_reset_link_generated", extra={"tenant_id": tid, "user_id": user_id, "email": redact_email(u.email), "token_prefix": reset_token[:8]})
+    # GDXA-677: this used to mint a token it stored nowhere, send nothing and
+    # answer "queued". Now the link is real and emailed, or the caller hears why not.
+    try:
+        send_password_reset_link(db, u, tid)
+    except PasswordResetEmailNotSent as exc:
+        # auth.core logs the provider's skip reason; the caller gets a fixed
+        # sentence keyed by code, never exception text
+        # (CodeQL py/stack-trace-exposure).
+        why = PASSWORD_RESET_NOT_SENT_MESSAGES.get(exc.code, "No email account could send it.")
+        raise HTTPException(
+            status_code=503,
+            detail=f"No reset link was sent. {why} Use Reset Password to set one directly.",
+        ) from exc
+    except Exception as exc:
+        log.exception("password_reset_link_send_failed", extra={"tenant_id": tid, "user_id": user_id, "email": redact_email(u.email)})
+        raise HTTPException(
+            status_code=502,
+            detail="The reset link could not be created or sent. Use Reset Password to set one directly.",
+        ) from exc
+    log.info("password_reset_link_sent", extra={"tenant_id": tid, "user_id": user_id, "email": redact_email(u.email)})
     _audit(db, request=request, user=user, action="password_reset_link_sent", entity_id=user_id, details={"email": u.email, "initiated_by": _user_id(user)})
-    return {"ok": "reset_link_queued", "email": u.email}
+    return {"ok": "reset_link_sent", "email": u.email}
 
 
 @router.delete("/{user_id}", response_model=None, dependencies=[Depends(require_permission("users.write"))])
@@ -726,7 +749,19 @@ def invite_user(payload: InviteIn, request: Request, user: dict = Depends(get_cu
     db.commit()
     _sync_user_role_assignment(db, tid, str(u.id), payload.role)
     db.commit()
-    log.info("user_invite_email_queued", extra={"tenant_id": tid, "invited_user_id": str(u.id), "email": email, "invited_by": _user_id(user)})
-    _audit(db, request=request, user=user, action="user_invited", entity_id=str(u.id), details={"email": email, "role": payload.role, "invited_by": _user_id(user)})
+    # GDXA-677: the temp password above is never shown to anyone, so the
+    # emailed set-password link is the invitee's only way in. This used to log
+    # "queued" and send nothing. The user exists either way; say whether it went.
+    invite_sent, invite_error = False, None
+    try:
+        send_password_reset_link(db, u, tid, invite=True)
+        invite_sent = True
+    except PasswordResetEmailNotSent as exc:
+        log.warning("user_invite_email_not_sent code=%s", exc.code, extra={"tenant_id": tid, "invited_user_id": str(u.id)})
+        invite_error = PASSWORD_RESET_NOT_SENT_MESSAGES.get(exc.code, "The invite email could not be sent.")
+    except Exception:
+        log.exception("user_invite_email_failed", extra={"tenant_id": tid, "invited_user_id": str(u.id), "email": redact_email(email)})
+        invite_error = "The invite email could not be sent."
+    _audit(db, request=request, user=user, action="user_invited", entity_id=str(u.id), details={"email": email, "role": payload.role, "invited_by": _user_id(user), "invite_email_sent": invite_sent})
     db.refresh(u)
-    return _serialize(u)
+    return {**_serialize(u), "invite_email_sent": invite_sent, "invite_error": invite_error}

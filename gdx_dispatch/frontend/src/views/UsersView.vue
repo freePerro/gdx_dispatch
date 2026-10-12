@@ -938,9 +938,11 @@ async function toggleSchedulable(user) {
 
 async function sendResetLink(user) {
   try {
-    await api.post(`/api/users/${encodeURIComponent(user.id)}/send-reset-link`, {}, { successMessage: 'Reset link sent' });
-  } catch {
-    // useApiWithToast handles error display
+    await api.post(`/api/users/${encodeURIComponent(user.id)}/send-reset-link`, {}, { successMessage: 'Reset link sent', suppressErrorToast: true });
+  } catch (error) {
+    // The server says why no email went out (e.g. email not configured);
+    // the generic 5xx toast would say "try again", which cannot help.
+    toast.add({ severity: 'error', summary: 'Reset link not sent', detail: error?.message || 'Failed to send reset link.', life: 8000 });
   }
 }
 
@@ -971,7 +973,15 @@ async function submitCreate() {
     if (!createForm.value.send_invite) {
       payload.password = createForm.value.password;
     }
-    await api.post(endpoint, payload, { successMessage: 'User created' });
+    const result = await api.post(endpoint, payload, { successMessage: 'User created' });
+    if (createForm.value.send_invite && result?.invite_email_sent === false) {
+      toast.add({
+        severity: 'warn',
+        summary: 'Invite email not sent',
+        detail: `${result.invite_error || 'The invite email could not be sent.'} Use Reset Password to set their password.`,
+        life: 10000,
+      });
+    }
     showCreateDialog.value = false;
     await fetchUsers();
   } catch (error) {

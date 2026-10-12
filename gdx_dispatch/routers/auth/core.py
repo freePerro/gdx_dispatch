@@ -5,6 +5,7 @@ import os
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import jwt
@@ -54,19 +55,26 @@ def _send_platform_email(to_email: str, subject: str, html_body: str) -> None:
     s = smtplib.SMTP_SSL(PLATFORM_SMTP_HOST, PLATFORM_SMTP_PORT, timeout=15)
     s.login(PLATFORM_SMTP_USER, PLATFORM_SMTP_PASS)
     s.sendmail(PLATFORM_SMTP_USER, to_email, msg.as_string())
-    s.quit()
+    try:
+        s.quit()
+    except Exception:
+        # The message was accepted; a dropped QUIT must not read as unsent.
+        log.warning("platform_email_quit_failed to=%s", to_email, exc_info=True)
     log.info("platform_email_sent to=%s subject=%s", to_email, subject)
 
 
 _RESET_LINK_REDACTED = "[reset link redacted]"
 
 
-def _platform_smtp_configured() -> bool:
+def platform_smtp_configured() -> bool:
     """A password and a real account. PLATFORM_SMTP_USER defaults to the
     placeholder here, and compose and .env.template pass the placeholder in
     explicitly, so "is it set" is always yes; logging in as that account is
-    how resets failed silently on prod before GDXA-689."""
-    return bool(PLATFORM_SMTP_PASS) and PLATFORM_SMTP_USER not in ("", _PLATFORM_SMTP_USER_PLACEHOLDER)
+    how resets failed silently on prod before GDXA-689. _send_platform_email
+    also returns quietly when the password is unset, so "it did not raise" is
+    not "it sent". Any @example.com account is a placeholder (RFC 2606)."""
+    user = (PLATFORM_SMTP_USER or "").strip().lower()
+    return bool(PLATFORM_SMTP_PASS) and bool(user) and not user.endswith("@example.com")
 
 
 def _send_password_reset_email(
@@ -108,7 +116,7 @@ def _send_password_reset_email(
     )
     if sent:
         return sent, provider, None
-    if _platform_smtp_configured():
+    if platform_smtp_configured():
         try:
             _send_platform_email(str(user.email), subject, html_body)
             return True, "platform_smtp", None
@@ -719,6 +727,158 @@ class ResetPasswordBody(BaseModel):
     token: str = Field(min_length=10, max_length=100)
     new_password: str = Field(min_length=8, max_length=128)
 
+
+PASSWORD_RESET_TTL_SECONDS = 3600
+INVITE_RESET_TTL_SECONDS = 7 * 24 * 3600
+
+
+class PasswordResetEmailNotSent(RuntimeError):
+    """No reset email went out.
+
+    ``code`` says why, for the caller to map to its own fixed sentence
+    (PASSWORD_RESET_NOT_SENT_MESSAGES). str() and ``skip_reason`` carry the
+    provider detail and are for the server log only, never a response body.
+    """
+
+    def __init__(self, code: str, skip_reason: str | None = None) -> None:
+        self.code = code
+        self.skip_reason = skip_reason
+        super().__init__(f"{code} (reason: {skip_reason})" if skip_reason else code)
+
+
+PASSWORD_RESET_NOT_SENT_MESSAGES = {
+    "public_url_unusable": (
+        "The public app URL (GDX_PUBLIC_BASE_URL) is not set to a single real address on this server."
+    ),
+    "no_provider": (
+        'No email account could send it: connect the Settings → Automation email "Send as" '
+        "mailbox, or configure platform email."
+    ),
+    "outlook_reconnect": (
+        'The Settings → Automation email "Send as" mailbox needs to be reconnected.'
+    ),
+    "send_failed": (
+        "An email account is set up but sending failed; check Settings → Automation email "
+        "and platform email, then try again."
+    ),
+}
+
+# skip_reason tokens (send_transactional_email's codes, plus
+# "platform_smtp_failed" appended by _send_password_reset_email) that mean a
+# configured account tried and failed, as opposed to nothing being set up.
+_SEND_FAILED_REASONS = frozenset({
+    "outlook_send_failed", "smtp_send_failed", "smtp_exception", "send_failed",
+    "platform_smtp_failed",
+})
+
+
+def _password_reset_not_sent_code(skip_reason: str | None) -> str:
+    """Map a "+"-joined skip_reason to a PASSWORD_RESET_NOT_SENT_MESSAGES key."""
+    tokens = set((skip_reason or "").split("+"))
+    if "outlook_reconnect_required" in tokens:
+        return "outlook_reconnect"
+    if tokens & _SEND_FAILED_REASONS:
+        return "send_failed"
+    return "no_provider"
+
+
+def _password_reset_email_html(reset_link: str, *, invite: bool, expires_text: str) -> str:
+    # Shared shell (email overhaul): the old div body used rem units
+    # (unreliable in mail clients), anchor padding (no button in
+    # Outlook) and no background-color (dark-mode fragile). Platform-
+    # branded on purpose — this is an auth email, not tenant mail.
+    from gdx_dispatch.core.email_layout import cta_button, esc, render_email
+
+    if invite:
+        heading, intro, cta = (
+            "You&#39;re Invited",
+            "An account has been created for you. Click the button below to set your password:",
+            "Set Password",
+        )
+    else:
+        heading, intro, cta = (
+            "Reset Your Password",
+            "A password reset was requested for your account. Click the button below to set a new password:",
+            "Reset Password",
+        )
+    body = (
+        f'<h2 style="margin:0 0 16px;font-size:20px;color:#3b82f6;">{heading}</h2>'
+        f'<p style="margin:0 0 12px;">{intro}</p>'
+        + cta_button(reset_link, cta, "#3b82f6")
+        + f'<p style="margin:16px 0 8px;font-size:13px;color:#556270;">This link expires in '
+        f"{esc(expires_text)}. If you didn&#39;t expect this, ignore this email.</p>"
+        f'<p style="margin:0;font-size:12px;color:#556270;">Link: '
+        f'<a href="{esc(reset_link)}" style="color:#3b82f6;">{esc(reset_link)}</a></p>'
+    )
+    return render_email(
+        branding={"company_name": "DispatchApp", "accent": "#3b82f6"},
+        body_html=body,
+        title="Set Your Password" if invite else "Password Reset",
+        preheader="Set your DispatchApp password" if invite else "Reset your DispatchApp password",
+    )
+
+
+def _reset_link(token: str) -> str | None:
+    # An empty or comma-listed GDX_PUBLIC_BASE_URL would email a dead relative
+    # or mangled link, and an example.com host (.env.template's value) a dead
+    # absolute one. None means "no link can be built" — callers must not send.
+    base = os.environ.get("GDX_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if not base.startswith(("https://", "http://")) or "," in base:
+        return None
+    host = (urlparse(base).hostname or "").lower()
+    if not host or host == "example.com" or host.endswith(".example.com"):
+        return None
+    return f"{base}/reset-password?token={token}"
+
+
+def _revoke_reset_token(token: str) -> None:
+    try:
+        redis.delete(f"pw_reset:{token}")
+    except Exception:
+        log.exception("password_reset_token_revoke_failed")
+
+
+def send_password_reset_link(
+    db: Session, user: Any, tenant_id: str, *, invite: bool = False,
+) -> None:
+    """Store a reset token where POST /auth/reset-password looks it up and
+    email the link, through the same providers as forgot-password.
+
+    For staff-initiated sends (Users → Send Reset Link, Add User → Send
+    invite), where the caller must be told the truth. Raises
+    PasswordResetEmailNotSent when no link can be built or no provider
+    delivered it; re-raises anything unexpected (Redis). A token whose email
+    did not go out is deleted, so a failure never leaves a live credential.
+    """
+    import secrets
+
+    token = secrets.token_urlsafe(32)
+    link = _reset_link(token)
+    if link is None:
+        log.warning("password_reset_email_not_sent reason=public_url_unusable")
+        raise PasswordResetEmailNotSent("public_url_unusable")
+    ttl = INVITE_RESET_TTL_SECONDS if invite else PASSWORD_RESET_TTL_SECONDS
+    redis.setex(f"pw_reset:{token}", ttl, f"{user.id}|{tenant_id}")
+    expires_text = "7 days" if invite else "1 hour"
+    try:
+        sent, _provider, skip_reason = _send_password_reset_email(
+            db,
+            tenant_id=tenant_id,
+            user=user,
+            subject="You're invited — DispatchApp" if invite else "Password Reset — DispatchApp",
+            html_body=_password_reset_email_html(link, invite=invite, expires_text=expires_text),
+            audit_body_html=_password_reset_email_html(
+                _RESET_LINK_REDACTED, invite=invite, expires_text=expires_text,
+            ),
+        )
+    except Exception:
+        _revoke_reset_token(token)
+        raise
+    if not sent:
+        _revoke_reset_token(token)
+        raise PasswordResetEmailNotSent(_password_reset_not_sent_code(skip_reason), skip_reason)
+
+
 @router.post("/forgot-password")
 def forgot_password(body: ForgotPasswordBody, request: Request, db: Session = Depends(get_db)):
     """Send a password reset link. Always returns success to prevent email enumeration."""
@@ -744,47 +904,29 @@ def forgot_password(body: ForgotPasswordBody, request: Request, db: Session = De
     if row:
         email_sent, email_provider, skip_reason = False, None, "send_raised"
         token = secrets.token_urlsafe(32)
-        redis.setex(f"pw_reset:{token}", 3600, f"{row['id']}|{tenant_id}")
+        reset_link = _reset_link(token)
 
-        base = os.environ.get("GDX_PUBLIC_BASE_URL", "https://gdx.example.com").rstrip("/")
-        reset_link = f"{base}/reset-password?token={token}"
-
-        try:
-            # Shared shell (email overhaul): the old div body used rem units
-            # (unreliable in mail clients), anchor padding (no button in
-            # Outlook) and no background-color (dark-mode fragile). Platform-
-            # branded on purpose — this is an auth email, not tenant mail.
-            from gdx_dispatch.core.email_layout import cta_button, esc, render_email
-
-            def _reset_email(link: str) -> str:
-                return render_email(
-                    branding={"company_name": "DispatchApp", "accent": "#3b82f6"},
-                    body_html=(
-                        '<h2 style="margin:0 0 16px;font-size:20px;color:#3b82f6;">Reset Your Password</h2>'
-                        '<p style="margin:0 0 12px;">You requested a password reset. '
-                        "Click the button below to set a new password:</p>"
-                        + cta_button(link, "Reset Password", "#3b82f6")
-                        + '<p style="margin:16px 0 8px;font-size:13px;color:#556270;">This link expires in '
-                        "1 hour. If you didn&#39;t request this, ignore this email.</p>"
-                        f'<p style="margin:0;font-size:12px;color:#556270;">Link: '
-                        f'<a href="{esc(link)}" style="color:#3b82f6;">{esc(link)}</a></p>'
+        if reset_link is None:
+            # No token is stored for a link nobody can receive.
+            skip_reason = "public_url_unusable"
+            log.warning("password_reset_email_not_sent reason=%s", skip_reason)
+        else:
+            redis.setex(f"pw_reset:{token}", PASSWORD_RESET_TTL_SECONDS, f"{row['id']}|{tenant_id}")
+            try:
+                email_sent, email_provider, skip_reason = _send_password_reset_email(
+                    db,
+                    tenant_id=tenant_id,
+                    user=_u,
+                    subject="Password Reset — DispatchApp",
+                    html_body=_password_reset_email_html(reset_link, invite=False, expires_text="1 hour"),
+                    # outbound_emails keeps a copy of every body; this one must
+                    # not hold a live reset link.
+                    audit_body_html=_password_reset_email_html(
+                        _RESET_LINK_REDACTED, invite=False, expires_text="1 hour",
                     ),
-                    title="Password Reset",
-                    preheader="Reset your DispatchApp password",
                 )
-
-            email_sent, email_provider, skip_reason = _send_password_reset_email(
-                db,
-                tenant_id=tenant_id,
-                user=_u,
-                subject="Password Reset — DispatchApp",
-                html_body=_reset_email(reset_link),
-                # outbound_emails keeps a copy of every body; this one must
-                # not hold a live reset link.
-                audit_body_html=_reset_email(_RESET_LINK_REDACTED),
-            )
-        except Exception:
-            log.exception("forgot_password_email_failed")
+            except Exception:
+                log.exception("forgot_password_email_failed")
 
         try:
             log_audit_event_sync(
