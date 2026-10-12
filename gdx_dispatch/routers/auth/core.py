@@ -733,7 +733,53 @@ INVITE_RESET_TTL_SECONDS = 7 * 24 * 3600
 
 
 class PasswordResetEmailNotSent(RuntimeError):
-    """No reset email went out. str() is a sentence for the office."""
+    """No reset email went out.
+
+    ``code`` says why, for the caller to map to its own fixed sentence
+    (PASSWORD_RESET_NOT_SENT_MESSAGES). str() and ``skip_reason`` carry the
+    provider detail and are for the server log only, never a response body.
+    """
+
+    def __init__(self, code: str, skip_reason: str | None = None) -> None:
+        self.code = code
+        self.skip_reason = skip_reason
+        super().__init__(f"{code} (reason: {skip_reason})" if skip_reason else code)
+
+
+PASSWORD_RESET_NOT_SENT_MESSAGES = {
+    "public_url_unusable": (
+        "The public app URL (GDX_PUBLIC_BASE_URL) is not set to a single real address on this server."
+    ),
+    "no_provider": (
+        'No email account could send it: connect the Settings → Automation email "Send as" '
+        "mailbox, or configure platform email."
+    ),
+    "outlook_reconnect": (
+        'The Settings → Automation email "Send as" mailbox needs to be reconnected.'
+    ),
+    "send_failed": (
+        "An email account is set up but sending failed; check Settings → Automation email "
+        "and platform email, then try again."
+    ),
+}
+
+# skip_reason tokens (send_transactional_email's codes, plus
+# "platform_smtp_failed" appended by _send_password_reset_email) that mean a
+# configured account tried and failed, as opposed to nothing being set up.
+_SEND_FAILED_REASONS = frozenset({
+    "outlook_send_failed", "smtp_send_failed", "smtp_exception", "send_failed",
+    "platform_smtp_failed",
+})
+
+
+def _password_reset_not_sent_code(skip_reason: str | None) -> str:
+    """Map a "+"-joined skip_reason to a PASSWORD_RESET_NOT_SENT_MESSAGES key."""
+    tokens = set((skip_reason or "").split("+"))
+    if "outlook_reconnect_required" in tokens:
+        return "outlook_reconnect"
+    if tokens & _SEND_FAILED_REASONS:
+        return "send_failed"
+    return "no_provider"
 
 
 def _password_reset_email_html(reset_link: str, *, invite: bool, expires_text: str) -> str:
@@ -809,9 +855,8 @@ def send_password_reset_link(
     token = secrets.token_urlsafe(32)
     link = _reset_link(token)
     if link is None:
-        raise PasswordResetEmailNotSent(
-            "The public app URL (GDX_PUBLIC_BASE_URL) is not set to a single real address on this server."
-        )
+        log.warning("password_reset_email_not_sent reason=public_url_unusable")
+        raise PasswordResetEmailNotSent("public_url_unusable")
     ttl = INVITE_RESET_TTL_SECONDS if invite else PASSWORD_RESET_TTL_SECONDS
     redis.setex(f"pw_reset:{token}", ttl, f"{user.id}|{tenant_id}")
     expires_text = "7 days" if invite else "1 hour"
@@ -831,10 +876,7 @@ def send_password_reset_link(
         raise
     if not sent:
         _revoke_reset_token(token)
-        raise PasswordResetEmailNotSent(
-            "No email account could send it: connect the Settings → Automation email "
-            f'"Send as" mailbox, or configure platform email (reason: {skip_reason}).'
-        )
+        raise PasswordResetEmailNotSent(_password_reset_not_sent_code(skip_reason), skip_reason)
 
 
 @router.post("/forgot-password")

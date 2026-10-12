@@ -28,7 +28,11 @@ from gdx_dispatch.core.roles import is_role_admin_actor, normalize_role
 from gdx_dispatch.core.tenant_ctx import bind_tenant_context
 from gdx_dispatch.models.tenant_models import User
 from gdx_dispatch.routers.auth import get_current_user
-from gdx_dispatch.routers.auth.core import PasswordResetEmailNotSent, send_password_reset_link
+from gdx_dispatch.routers.auth.core import (
+    PASSWORD_RESET_NOT_SENT_MESSAGES,
+    PasswordResetEmailNotSent,
+    send_password_reset_link,
+)
 from gdx_dispatch.routers.settings import MAX_VACATION_ALLOWANCE_HOURS, allowance_hours_out
 
 log = logging.getLogger(__name__)
@@ -675,9 +679,13 @@ def send_reset_link(user_id: str, request: Request, user: dict = Depends(get_cur
     try:
         send_password_reset_link(db, u, tid)
     except PasswordResetEmailNotSent as exc:
+        # auth.core logs the provider's skip reason; the caller gets a fixed
+        # sentence keyed by code, never exception text
+        # (CodeQL py/stack-trace-exposure).
+        why = PASSWORD_RESET_NOT_SENT_MESSAGES.get(exc.code, "No email account could send it.")
         raise HTTPException(
             status_code=503,
-            detail=f"No reset link was sent. {exc} Use Reset Password to set one directly.",
+            detail=f"No reset link was sent. {why} Use Reset Password to set one directly.",
         ) from exc
     except Exception as exc:
         log.exception("password_reset_link_send_failed", extra={"tenant_id": tid, "user_id": user_id, "email": redact_email(u.email)})
@@ -749,8 +757,8 @@ def invite_user(payload: InviteIn, request: Request, user: dict = Depends(get_cu
         send_password_reset_link(db, u, tid, invite=True)
         invite_sent = True
     except PasswordResetEmailNotSent as exc:
-        log.warning("user_invite_email_not_sent", extra={"tenant_id": tid, "invited_user_id": str(u.id)})
-        invite_error = str(exc)
+        log.warning("user_invite_email_not_sent code=%s", exc.code, extra={"tenant_id": tid, "invited_user_id": str(u.id)})
+        invite_error = PASSWORD_RESET_NOT_SENT_MESSAGES.get(exc.code, "The invite email could not be sent.")
     except Exception:
         log.exception("user_invite_email_failed", extra={"tenant_id": tid, "invited_user_id": str(u.id), "email": redact_email(email)})
         invite_error = "The invite email could not be sent."

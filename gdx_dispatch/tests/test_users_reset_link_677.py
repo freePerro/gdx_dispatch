@@ -224,7 +224,9 @@ def test_send_reset_link_with_placeholder_smtp_user_refuses_and_leaves_no_token(
 
     r = env["client"].post(f"/api/users/{env['target_id']}/send-reset-link")
     assert r.status_code == 503, r.text
-    assert "reason: no_email_provider_connected" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert '"Send as" mailbox' in detail
+    assert "no_email_provider_connected" not in detail, "provider reason codes stay in the log"
     assert env["sent"] == []
     assert _pw_reset_keys(env["redis"]) == []
     assert _audit(env["db"], "password_reset_link_sent") == [], "no audit row claiming a send"
@@ -238,9 +240,43 @@ def test_send_reset_link_smtp_failure_is_a_503_and_revokes_the_token(env, monkey
 
     r = env["client"].post(f"/api/users/{env['target_id']}/send-reset-link")
     assert r.status_code == 503, r.text
-    assert "platform_smtp_failed" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert "set up but sending failed" in detail, "a broken credential is not missing setup"
+    assert "platform_smtp_failed" not in detail, "provider reason codes stay in the log"
     assert _pw_reset_keys(env["redis"]) == [], "a link nobody received must not stay live"
     assert _audit(env["db"], "password_reset_link_sent") == []
+
+
+@pytest.mark.parametrize(("skip_reason", "expected"), [
+    ("outlook_reconnect_required", "needs to be reconnected"),
+    ("outlook_send_failed", "set up but sending failed"),
+    ("smtp_send_failed", "set up but sending failed"),
+    ("smtp_exception", "set up but sending failed"),
+    ("no_email_provider_connected", '"Send as" mailbox, or configure platform email'),
+])
+def test_send_reset_link_names_the_failure_the_provider_reported(env, monkeypatch, skip_reason, expected):
+    # Prod sends through Outlook: an expired token must read as "reconnect",
+    # not as "connect" — Settings already shows that mailbox as connected.
+    from gdx_dispatch.core import transactional_email as te
+
+    monkeypatch.setattr(te, "send_transactional_email", lambda **kw: (False, None, skip_reason))
+    monkeypatch.setattr(auth_core, "PLATFORM_SMTP_PASS", "")
+
+    r = env["client"].post(f"/api/users/{env['target_id']}/send-reset-link")
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert expected in detail
+    assert skip_reason not in detail, "provider reason codes stay in the log"
+    assert _pw_reset_keys(env["redis"]) == []
+
+
+@pytest.mark.parametrize("skip_reason", [
+    "outlook_reconnect_required+platform_smtp_failed",
+    "no_email_provider_connected+platform_smtp_failed",
+])
+def test_password_reset_not_sent_code_reads_every_joined_reason(skip_reason):
+    expected = "outlook_reconnect" if skip_reason.startswith("outlook_reconnect") else "send_failed"
+    assert auth_core._password_reset_not_sent_code(skip_reason) == expected
 
 
 @pytest.mark.parametrize("base", [
@@ -315,6 +351,7 @@ def test_invite_without_smtp_creates_the_user_and_says_no_email_went(env, monkey
     body = r.json()
     assert body["invite_email_sent"] is False
     assert '"Send as" mailbox' in body["invite_error"]
+    assert "no_email_provider_connected" not in body["invite_error"], "provider reason codes stay in the log"
     assert env["sent"] == []
     assert _pw_reset_keys(env["redis"]) == []
 
