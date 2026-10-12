@@ -1111,7 +1111,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from "vue";
-import { lineAmount, recordedQuantity } from "../utils/quantity";
+import { lineAmount, MAX_LINE_QUANTITY, recordedQuantity } from "../utils/quantity";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
@@ -2391,9 +2391,10 @@ async function saveEdit() {
     return `“${d.length > 40 ? `${d.slice(0, 40)}…` : d}”`;
   };
   // The server's own bounds, from InvoiceLineCreateIn / InvoiceLinePatchIn
-  // (`routers/invoices.py`) — both schemas agree. LineItemEditor sets `:min`
-  // on quantity/cost/price but NO `:max`, and no `maxlength` on the
-  // description, so every one of these is reachable by typing. They used to
+  // (`routers/invoices.py`) — both schemas agree. LineItemEditor caps a typed
+  // quantity at MAX_LINE_QUANTITY (GDXA-733), but sets no `:max` on cost or
+  // price and no `maxlength` on the description, so those are reachable by
+  // typing, and a quantity can still arrive untyped (seeded lines). They used to
   // surface as a 422 raised from INSIDE the write loop: same class as the
   // quantity refusal above (a refusal the client could compute up front,
   // landing after earlier lines were committed), except a throw at least
@@ -2401,7 +2402,7 @@ async function saveEdit() {
   // it was dropped either way — an operator fixing the tax rate in the same
   // edit silently kept the wrong rate.
   const MAX_DESC = 500;
-  const MAX_QTY = 9999;
+  const MAX_QTY = MAX_LINE_QUANTITY;
   const MAX_MONEY = 999999.99;
   // Bound-check only what the operator actually CHANGED (and every new
   // line). A stored value already out of bounds — impossible to create

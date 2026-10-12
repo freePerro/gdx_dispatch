@@ -129,7 +129,7 @@
           </Column>
           <Column header="Qty" style="width:100px">
             <template #body="{ data }">
-              <InputNumber v-model="data.quantity_ordered" :min="1" class="w-full" />
+              <InputNumber v-model="data.quantity_ordered" :min="1" :max="1000000" class="w-full" />
             </template>
           </Column>
           <Column header="Unit Cost" style="width:130px">

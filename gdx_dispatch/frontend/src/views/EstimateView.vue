@@ -412,7 +412,7 @@
                   <InputText v-model="item.description" placeholder="Description"
                     class="col-desc" :data-testid="`est-line-desc-${idx}`" :disabled="estimateLocked" />
                   <span class="line-label">Qty</span>
-                  <InputNumber v-model="item.quantity" :min="1" :useGrouping="false"
+                  <InputNumber v-model="item.quantity" :min="1" :max="MAX_LINE_QUANTITY" :useGrouping="false"
                     class="col-qty" :data-testid="`est-line-qty-${idx}`" :disabled="estimateLocked"
                     @input="onQtyInput(item, $event)" />
                   <span class="line-label">Cost</span>
@@ -666,7 +666,7 @@
                     <div v-for="ln in tierForm[t].lines" :key="ln.id" class="tier-line-row">
                       <InputText v-model="ln.description" :disabled="tiersLocked" class="tl-desc"
                         :data-testid="`tier-line-desc-${t}`" />
-                      <InputNumber v-model="ln.quantity" :min="1" :disabled="tiersLocked" class="tl-qty"
+                      <InputNumber v-model="ln.quantity" :min="1" :max="MAX_TIER_LINE_QUANTITY" :disabled="tiersLocked" class="tl-qty"
                         :data-testid="`tier-line-qty-${t}`" />
                       <InputNumber v-model="ln.unit_price" mode="currency" currency="USD" locale="en-US"
                         :min="0" :disabled="tiersLocked" class="tl-price"
@@ -687,7 +687,7 @@
                     <div v-if="tierForm[t].id && !tiersLocked" class="tier-line-row">
                       <InputText v-model="tierNewLine[t].description" placeholder="Add item…" class="tl-desc"
                         :data-testid="`tier-line-new-desc-${t}`" />
-                      <InputNumber v-model="tierNewLine[t].quantity" :min="1" class="tl-qty"
+                      <InputNumber v-model="tierNewLine[t].quantity" :min="1" :max="MAX_TIER_LINE_QUANTITY" class="tl-qty"
                         :data-testid="`tier-line-new-qty-${t}`" />
                       <InputNumber v-model="tierNewLine[t].unit_price" mode="currency" currency="USD"
                         locale="en-US" :min="0" class="tl-price"
@@ -1234,6 +1234,7 @@
 <script setup>
 import { estimateStatusLabel, estimateStatusSeverity } from '../utils/statusSeverity';
 import { doorSizeLabel } from '../utils/doorSizeLabel';
+import { capQuantity, MAX_LINE_QUANTITY, MAX_TIER_LINE_QUANTITY } from '../utils/quantity';
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useToast } from "primevue/usetoast";
@@ -1581,9 +1582,10 @@ function markPriceOverride(item) {
 // PrimeVue InputNumber only commits v-model on blur/Enter; its `input` event
 // fires per keystroke with the parsed value. Assign it live so line totals,
 // the margin column, and the profit panel track WHILE the user types instead
-// of appearing frozen until focus leaves the field.
+// of appearing frozen until focus leaves the field. The keystroke value is
+// not yet held to `:max` (that happens on blur), so cap it here too.
 function onQtyInput(item, e) {
-  item.quantity = e.value;
+  item.quantity = capQuantity(e.value);
 }
 
 function onCostInput(item, e) {

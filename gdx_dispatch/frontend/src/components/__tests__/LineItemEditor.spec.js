@@ -17,6 +17,7 @@ vi.mock('../../composables/useApi', () => ({
 
 import LineItemEditor from '../LineItemEditor.vue';
 import { VALID_BUCKETS } from '../../composables/useLineCategories';
+import { MAX_LINE_QUANTITY } from '../../utils/quantity';
 
 const stubs = {
   Button: {
@@ -465,6 +466,39 @@ describe('LineItemEditor — tier-aware recompute (estimate parity)', () => {
     const last = wrapper.emitted('update:lines').slice(-1)[0][0];
     expect(last[0].quantity).toBe(5);
     expect(wrapper.find('[data-testid="line-total-0"]').text()).toBe('$500.00');
+  });
+
+  it('a typed 10000 is held to the server cap of 9999, not left to 422 on save', async () => {
+    const wrapper = mountEditor({
+      lines: [{ description: 'Door', quantity: 1, unit_price: 2 }],
+    });
+    const qtyStub = wrapper.findComponent('[data-testid="line-qty-0"]');
+    expect(qtyStub.vm.$attrs.max).toBe(MAX_LINE_QUANTITY);
+    expect(MAX_LINE_QUANTITY).toBe(9999);
+
+    await wrapper.find('[data-testid="line-qty-0"]').setValue('10000');
+    await flushPromises();
+    const last = wrapper.emitted('update:lines').slice(-1)[0][0];
+    expect(last[0].quantity).toBe(9999);
+    expect(wrapper.find('[data-testid="line-total-0"]').text()).toBe('$19998.00');
+
+    // The keystroke path alone (before blur) is capped too.
+    qtyStub.vm.$emit('input', { value: 12345 });
+    await flushPromises();
+    expect(wrapper.emitted('update:lines').slice(-1)[0][0][0].quantity).toBe(9999);
+  });
+
+  it('the cap leaves a cleared or zero quantity as typed (#560)', async () => {
+    const wrapper = mountEditor({
+      lines: [{ description: 'Door', quantity: 1, unit_price: 2 }],
+    });
+    const qtyStub = wrapper.findComponent('[data-testid="line-qty-0"]');
+    qtyStub.vm.$emit('input', { value: 0 });
+    await flushPromises();
+    expect(wrapper.emitted('update:lines').slice(-1)[0][0][0].quantity).toBe(0);
+    qtyStub.vm.$emit('input', { value: null });
+    await flushPromises();
+    expect(wrapper.emitted('update:lines').slice(-1)[0][0][0].quantity).toBe(null);
   });
 
   it('clearing the margin mid-edit defers the tier refill to blur (no rewrite under the cursor)', async () => {
