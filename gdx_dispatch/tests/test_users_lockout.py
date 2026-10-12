@@ -35,9 +35,10 @@ from gdx_dispatch.routers.users import (
 )
 
 TENANT_ID = "tenant-lock"
-ADMIN_ID = "admin-1"
-TARGET_ID = "target-1"
-OWNER_ID = "owner-1"
+# Real UUID strings: users._get_user_or_404 parses the path id (GDXA-723).
+ADMIN_ID = "00000000-0000-4000-8000-0000000000a1"
+TARGET_ID = "00000000-0000-4000-8000-0000000000b1"
+OWNER_ID = "00000000-0000-4000-8000-0000000000c1"
 
 
 def _fake_request() -> Request:

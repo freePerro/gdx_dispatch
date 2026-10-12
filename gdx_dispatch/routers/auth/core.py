@@ -6,7 +6,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from urllib.parse import urlparse
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -602,9 +602,16 @@ def refresh(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
     # session and the right response is 401.
     from gdx_dispatch.models.tenant_models import User as _RefreshUser
 
+    # users.id is a Uuid column: bind a UUID, not the str claim, or SQLite
+    # fails to bind it (GDXA-723). A sub that is not a UUID names no row.
+    try:
+        sub_uuid = UUID(sub)
+    except ValueError:
+        log.warning("refresh_sub_not_uuid: refresh token subject is not a user id")
+        sub_uuid = None
     user_row = db.execute(
-        select(_RefreshUser).where(_RefreshUser.id == sub)
-    ).scalar_one_or_none()
+        select(_RefreshUser).where(_RefreshUser.id == sub_uuid)
+    ).scalar_one_or_none() if sub_uuid is not None else None
     if user_row is None or user_row.deleted_at is not None or user_row.active is False:
         # Revoke the family — every sibling refresh token now 401s too.
         try:
@@ -963,7 +970,11 @@ def reset_password(body: ResetPasswordBody, request: Request, db: Session = Depe
     new_hash = generate_password_hash(body.new_password)
 
     from gdx_dispatch.models.tenant_models import User as _User
-    _u = db.execute(select(_User).where(_User.id == user_id)).scalars().first()
+    try:
+        _uid = UUID(user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="User not found.") from exc
+    _u = db.execute(select(_User).where(_User.id == _uid)).scalars().first()
     if not _u:
         raise HTTPException(status_code=400, detail="User not found.")
     _u.password_hash = new_hash
