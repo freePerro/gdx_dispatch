@@ -501,6 +501,7 @@
               <label for="est-tax-rate">Tax Rate</label>
               <InputNumber id="est-tax-rate" v-model="form.tax_rate" suffix="%" :min="0" :max="100"
                 :minFractionDigits="0" :maxFractionDigits="2" class="w-full"
+                :placeholder="taxRateUnknown ? 'Default unavailable' : undefined"
                 :disabled="estimateLocked" data-testid="estimate-tax-rate" />
             </div>
             <div class="form-field">
@@ -737,6 +738,16 @@
           <Divider />
           <div class="totals-and-profit">
             <div class="estimate-summary">
+              <!-- A failed /api/tax/config read used to show a NULL-rate estimate
+                   at 0% with no tax in the total, while the PDF and invoice
+                   charge the tenant default (GDXA-768). -->
+              <div v-if="showTaxConfigWarning" class="tax-config-warning" role="alert"
+                data-testid="estimate-tax-config-warning">
+                <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+                <span>Tax settings couldn't be loaded. The tax and total shown may differ from what is billed.</span>
+                <Button label="Retry" icon="pi pi-refresh" text size="small" :loading="taxConfigRetrying"
+                  @click="retryTaxConfig" data-testid="estimate-tax-config-retry" />
+              </div>
               <div class="summary-row">
                 <span>Subtotal</span>
                 <span class="summary-value" data-testid="estimate-subtotal">{{ currency(subtotal) }}</span>
@@ -749,7 +760,11 @@
                 <span class="muted">Labor (not taxed)</span>
                 <span class="summary-value muted" data-testid="estimate-labor-untaxed">{{ currency(laborSubtotal) }}</span>
               </div>
-              <div class="summary-row" v-if="form.tax_rate">
+              <div class="summary-row" v-if="taxRateUnknown">
+                <span>Tax (default rate unavailable)</span>
+                <span class="summary-value muted" data-testid="estimate-tax">—</span>
+              </div>
+              <div class="summary-row" v-else-if="form.tax_rate">
                 <span>
                   Tax ({{ form.tax_rate }}%)
                   <small v-if="!tenantTaxLabor && laborSubtotal > 0" class="muted">
@@ -761,7 +776,7 @@
               <Divider />
               <div class="summary-row total-row">
                 <span>Total</span>
-                <span class="summary-value total" data-testid="estimate-total">{{ currency(total) }}</span>
+                <span class="summary-value total" data-testid="estimate-total">{{ taxRateUnknown ? "—" : currency(total) }}</span>
               </div>
             </div>
             <EstimateProfitPanel :lines="profitPanelLines" />
@@ -1421,8 +1436,11 @@ const hideLinePricesChoice = computed({
 
 // Tenant-wide default tax rate (Settings → Tax). Used when an estimate has
 // no per-estimate tax_rate. Stored on the server as decimal (0.0825); we
-// surface as percent (8.25) in the form.
-const tenantDefaultTaxPct = ref(0);
+// surface as percent (8.25) in the form. null = not known: a failed fetch used
+// to leave 0 here, indistinguishable from a real 0% default, so a NULL-rate
+// estimate showed 0% and a total without the tax the server bills (GDXA-768).
+const tenantDefaultTaxPct = ref(null);
+const tenantTaxConfigFailed = ref(false);
 // Tenant-wide "tax labor lines?" toggle. Default false — most US states
 // don't tax service labor. Mirrors compute_estimate_totals server logic so
 // the on-screen total matches the PDF + saved invoice exactly.
@@ -1440,11 +1458,43 @@ async function loadPricingSettings() {
 }
 async function loadTenantTaxDefault() {
   try {
-    const cfg = await api.get("/api/tax/config");
+    const cfg = await api.get("/api/tax/config", { suppressErrorToast: true });
     // Round to 4 decimals to avoid 0.0738 * 100 = 7.380000000000001 artifacts.
     tenantDefaultTaxPct.value = Math.round((Number(cfg?.default_rate) || 0) * 1000000) / 10000;
     tenantTaxLabor.value = Boolean(cfg?.tax_labor);
-  } catch { /* default 0 — frontend still computes correctly */ }
+    tenantTaxConfigFailed.value = false;
+  } catch {
+    // Leave the default unknown; the summary warns and offers a retry.
+    tenantTaxConfigFailed.value = true;
+  }
+}
+const taxConfigRetrying = ref(false);
+async function retryTaxConfig() {
+  taxConfigRetrying.value = true;
+  try {
+    await loadTenantTaxDefault();
+    // A NULL-rate estimate tracks the default; show it now that it is known.
+    // The save path still sends null for it (taxRatePayload), so the fill is
+    // not an edit: keep an in-sync form in sync, or autosave writes a PATCH
+    // nobody asked for and bumps the version (GDXA-450).
+    if (tenantDefaultTaxPct.value != null && form.value.tax_rate == null) {
+      const wasSynced = _syncedFormSnapshot === _formSnapshot();
+      form.value.tax_rate = tenantDefaultTaxPct.value;
+      if (wasSynced) _syncedFormSnapshot = _formSnapshot();
+    }
+  } finally {
+    taxConfigRetrying.value = false;
+  }
+}
+// The tax_rate a save sends, as a decimal. Only a rate the user changed from
+// the tenant default is persisted; null keeps the estimate tracking it. With
+// the default unknown nothing can be compared, so a rate in the form is sent
+// as it stands and a blank stays null.
+function taxRatePayload() {
+  const raw = form.value.tax_rate;
+  if (tenantDefaultTaxPct.value == null) return raw == null ? null : (Number(raw) || 0) / 100;
+  const formPct = Number(raw) || 0;
+  return Math.abs(formPct - tenantDefaultTaxPct.value) > 0.001 ? formPct / 100 : null;
 }
 
 async function loadEstimateFeatures() {
@@ -2194,6 +2244,17 @@ const taxAmount = computed(() =>
 const total = computed(() =>
   Math.max(subtotal.value - toNum(form.value.discount), 0) + taxAmount.value
 );
+// The estimate tracks the tenant default and the default could not be read:
+// the tax, and so the total, are unknown here (GDXA-768).
+const taxRateUnknown = computed(() =>
+  form.value.tax_rate == null && tenantDefaultTaxPct.value == null
+);
+// Warn whenever the failed read can change what is shown: an unknown rate, or
+// a taxed estimate with labor lines, whose taxability is the tenant's call.
+const showTaxConfigWarning = computed(() =>
+  tenantTaxConfigFailed.value
+  && (taxRateUnknown.value || (toNum(form.value.tax_rate) > 0 && laborSubtotal.value > 0))
+);
 
 // Shape lines into the form EstimateProfitPanel expects:
 //   { id, description, quantity, unit_price, cost_snapshot, margin_pct_snapshot,
@@ -2784,8 +2845,6 @@ async function _createDraftFromForm() {
   _autosaveCreating = true;
   autosaveState.value = "creating";
   try {
-    const formPct = Number(form.value.tax_rate) || 0;
-    const persistTax = Math.abs(formPct - tenantDefaultTaxPct.value) > 0.001;
     // Minimal payload — just the binding to a customer. Lines, label,
     // notes etc come through the existing manual "Save Changes" path
     // (Slice 2 will switch those to incremental PATCH/POST/DELETE).
@@ -2794,7 +2853,7 @@ async function _createDraftFromForm() {
       label: form.value.label || null,
       jobsite_address: form.value.jobsite_address || null,
       notes: form.value.notes || null,
-      tax_rate: persistTax ? formPct / 100 : null,
+      tax_rate: taxRatePayload(),
       discount: Number(form.value.discount) > 0 ? Number(form.value.discount) : null,
       hide_line_prices: form.value.hide_line_prices ?? null,
       lead_id: leadIdFor(form.value.customer_id),
@@ -3078,8 +3137,6 @@ async function _flushNow() {
   try {
     if (_ownWriteInFlight) await _ownWriteInFlight;
     // 1. Header.
-    const formPct = Number(form.value.tax_rate) || 0;
-    const persistTax = Math.abs(formPct - tenantDefaultTaxPct.value) > 0.001;
     // Same Date→yy-mm-dd conversion createEstimate does — the DatePicker model
     // is a Date object. Local calendar parts: a picked Date can carry the
     // clock, so a UTC slice after ~7pm Central was a day late (#698). Blank
@@ -3093,7 +3150,7 @@ async function _flushNow() {
       jobsite_address: form.value.jobsite_address || null,
       description: form.value.description || null,
       notes: form.value.notes || null,
-      tax_rate: persistTax ? formPct / 100 : null,
+      tax_rate: taxRatePayload(),
       discount: Number(form.value.discount) > 0 ? Number(form.value.discount) : null,
       hide_line_prices: form.value.hide_line_prices ?? null,
     };
@@ -3240,10 +3297,6 @@ async function createEstimate() {
     const validUntil = form.value.valid_until instanceof Date
       ? localDateString(form.value.valid_until)
       : form.value.valid_until;
-    // Only persist a per-estimate tax_rate if the user changed it from the
-    // tenant default. Otherwise leave null so the estimate tracks tenant.
-    const formPct = Number(form.value.tax_rate) || 0;
-    const persistTax = Math.abs(formPct - tenantDefaultTaxPct.value) > 0.001;
     // M31+M33: the on-screen total sums every line; the payload must not
     // silently disagree. Refuse cleared quantities and negative prices with
     // the lines named, instead of dropping or substituting.
@@ -3274,7 +3327,7 @@ async function createEstimate() {
       jobsite_address: form.value.jobsite_address || null,
       valid_until: validUntil || null,
       notes: form.value.notes,
-      tax_rate: persistTax ? formPct / 100 : null,
+      tax_rate: taxRatePayload(),
       discount: Number(form.value.discount) > 0 ? Number(form.value.discount) : null,
       hide_line_prices: form.value.hide_line_prices ?? null,
       lead_id: leadIdFor(customerId),
@@ -4207,6 +4260,8 @@ onUnmounted(() => {
 .captured-hint { margin: 0 0 0.5rem; color: var(--p-text-color-secondary, #6b7280); }
 .captured-error { display: flex; align-items: center; gap: 0.5rem; color: var(--p-text-color, #1f2937); }
 .captured-error .pi { color: var(--color-warning-500, #d97706); }
+.tax-config-warning { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 0.75rem; }
+.tax-config-warning .pi { color: var(--color-warning-500, #d97706); }
 .lines-locked-note { display: flex; align-items: center; gap: 0.5rem; color: var(--p-text-color-secondary, #6b7280); font-size: 0.9rem; }
 .captured-folders { list-style: none; margin: 0; padding: 0; }
 .captured-folder {
