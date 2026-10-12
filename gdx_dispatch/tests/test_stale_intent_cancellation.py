@@ -804,7 +804,8 @@ def test_a_replayed_dead_intent_is_detected_by_asking_stripe(invoice, caplog):
     fresh = _pi("pi_fresh", "requires_payment_method", invoice.id)
 
     with patch("stripe.PaymentIntent.create", side_effect=[created_looks_fine, fresh]) as create, \
-            patch("stripe.PaymentIntent.retrieve", return_value=actually_dead), \
+            patch("stripe.PaymentIntent.retrieve",
+                  side_effect=lambda pid, **_: {"pi_dead": actually_dead, "pi_fresh": fresh}[pid]), \
             caplog.at_level("WARNING"):
         got = _create_usable_intent(
             amount=20000, currency="usd",
@@ -814,7 +815,8 @@ def test_a_replayed_dead_intent_is_detected_by_asking_stripe(invoice, caplog):
 
     assert got is fresh, "the customer was handed a pay page that cannot charge"
     assert create.call_count == 2
-    assert create.call_args[1]["idempotency_key"] != "gdx-pi-x-card-20000"
+    # GDXA-784: named after the dead intent, so the next press replays it.
+    assert create.call_args[1]["idempotency_key"] == "gdx-pi-x-card-20000-rpi_dead"
     assert "intent_idempotency_replayed_dead_intent" in caplog.text
 
 

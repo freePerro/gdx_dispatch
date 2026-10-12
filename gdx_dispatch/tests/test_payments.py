@@ -191,7 +191,8 @@ def test_a_replayed_intent_carrying_a_bank_account_is_cancelled_and_reminted(cli
     fresh = _pi("pi_fresh", status="requires_payment_method")
     fresh.payment_method = None
     with patch("stripe.PaymentIntent.create", side_effect=[old, fresh]) as create, \
-            patch("stripe.PaymentIntent.retrieve", return_value=old), \
+            patch("stripe.PaymentIntent.retrieve",
+                  side_effect=lambda pid, **_: {"pi_old": old, "pi_fresh": fresh}[pid]), \
             patch("stripe.PaymentIntent.cancel") as cancel:
         resp = client.post("/api/payments/create-intent", json={"invoice_token": TOKEN, "method": "ach"})
 
