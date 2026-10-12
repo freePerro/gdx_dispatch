@@ -168,14 +168,16 @@ def test_the_card_about_to_be_replayed_is_not_cancelled(db, invoice):
     assert fake.cancelled == []
 
 
-def test_switching_cards_leaves_the_card_intents_alone(db, invoice):
-    """Card intents are deliberately out of the sweep: see the next test."""
+def test_switching_cards_cancels_the_first_cards_intent(db, invoice):
+    """GDXA-790. "Use a different card" no longer leaves card A attached to
+    an open intent; GDXA-784's converging re-mint is what makes this safe."""
     with _stripe() as fake:
         a = _press(db, invoice, method="card", payment_method_id="pm_card_a")
         b = _press(db, invoice, method="card", payment_method_id="pm_card_b")
 
     assert b != a
-    assert fake.cancelled == []
+    assert fake.cancelled == [(a, "abandoned")]
+    assert fake.intents[b].status == "requires_confirmation"
 
 
 def test_a_bank_press_from_another_tab_does_not_loop_the_card_page(db, invoice):
