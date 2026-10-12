@@ -9,7 +9,7 @@ import secrets
 from datetime import time
 from decimal import Decimal
 from typing import Any, Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
@@ -187,8 +187,20 @@ def _serialize(u: User) -> dict[str, Any]:
 
 
 def _get_user_or_404(db: Session, tenant_id: str, user_id: str) -> User:
+    """Look up a live user by id; an id that is not a UUID names no row → 404.
+
+    ``users.id`` is a Uuid column: SQLite's bind calls ``.hex`` on the value,
+    so a str id raised StatementError there, and Postgres rejected a malformed
+    one with DataError — a 500 either way (GDXA-723). The path accepts any
+    UUID spelling (upper case, no dashes), so callers use ``str(u.id)``, not
+    the path string, for self-checks, session revokes and audit entity ids.
+    """
+    try:
+        uid = UUID(str(user_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="User not found") from None
     u = db.execute(
-        select(User).where(User.id == user_id, User.company_id == tenant_id, User.deleted_at.is_(None))
+        select(User).where(User.id == uid, User.company_id == tenant_id, User.deleted_at.is_(None))
     ).scalar_one_or_none()
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
@@ -353,6 +365,7 @@ def get_user(user_id: str, request: Request, _: dict = Depends(get_current_user)
 def update_user(user_id: str, payload: UserPatchIn, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     tid = _tenant_id(request)
     u = _get_user_or_404(db, tid, user_id)
+    user_id = str(u.id)
     data = payload.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(status_code=422, detail="No fields to update")
@@ -471,6 +484,7 @@ def _assert_not_last_owner(db: Session, tenant_id: str, target: User, *, action:
 def change_role(user_id: str, payload: RoleChangeIn, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     tid = _tenant_id(request)
     u = _get_user_or_404(db, tid, user_id)
+    user_id = str(u.id)
     if _user_id(user) == user_id:
         raise HTTPException(status_code=400, detail="Cannot change your own role")
     old_role = u.role or "user"
@@ -550,6 +564,7 @@ def lockout_user(user_id: str, payload: LockoutIn, request: Request, user: dict 
     _require_lockout_actor(user)
     tid = _tenant_id(request)
     u = _get_user_or_404(db, tid, user_id)
+    user_id = str(u.id)
     if _user_id(user) == user_id:
         raise HTTPException(status_code=400, detail="Cannot lock yourself out")
     if (u.role or "").lower() == "owner":
@@ -605,7 +620,7 @@ def unlock_user(user_id: str, request: Request, user: dict = Depends(get_current
     db.commit()
     _audit(
         db, request=request, user=user, action="user_unlocked",
-        entity_id=user_id,
+        entity_id=str(u.id),
         details={"unlocked_by": _user_id(user)},
     )
     return _serialize(u)
@@ -623,7 +638,7 @@ def get_lockout_info(user_id: str, request: Request, _: dict = Depends(get_curre
     `tenant_plane_redundant_filter_scan` rule).
     """
     tid = _tenant_id(request)
-    _get_user_or_404(db, tid, user_id)  # 404s if outside tenant
+    user_id = str(_get_user_or_404(db, tid, user_id).id)  # 404s if outside tenant
     row = db.execute(
         select(AuditLog)
         .where(
@@ -649,6 +664,7 @@ def get_lockout_info(user_id: str, request: Request, _: dict = Depends(get_curre
 def toggle_schedulable(user_id: str, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     tid = _tenant_id(request)
     u = _get_user_or_404(db, tid, user_id)
+    user_id = str(u.id)
     u.schedulable = not (u.schedulable if u.schedulable is not None else False)
     u.updated_at = utcnow()
     db.commit()
@@ -661,6 +677,7 @@ def toggle_schedulable(user_id: str, request: Request, user: dict = Depends(get_
 def reset_password(user_id: str, payload: PasswordResetIn, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, str]:
     tid = _tenant_id(request)
     u = _get_user_or_404(db, tid, user_id)
+    user_id = str(u.id)
     u.password_hash = generate_password_hash(payload.new_password)
     u.updated_at = utcnow()
     db.commit()
@@ -672,6 +689,7 @@ def reset_password(user_id: str, payload: PasswordResetIn, request: Request, use
 def send_reset_link(user_id: str, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, str]:
     tid = _tenant_id(request)
     u = _get_user_or_404(db, tid, user_id)
+    user_id = str(u.id)
     if not u.email:
         raise HTTPException(status_code=400, detail="User has no email address on file")
     # GDXA-677: this used to mint a token it stored nowhere, send nothing and
@@ -702,6 +720,7 @@ def send_reset_link(user_id: str, request: Request, user: dict = Depends(get_cur
 def delete_user(user_id: str, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     tid = _tenant_id(request)
     u = _get_user_or_404(db, tid, user_id)
+    user_id = str(u.id)
     if _user_id(user) == user_id:
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
     _assert_not_last_owner(db, tid, u, action="delete")

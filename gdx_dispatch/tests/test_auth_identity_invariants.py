@@ -159,12 +159,15 @@ class TestDeleteUserRevokes:
         revoke_mock.assert_called_once_with(target_id, reason="user_deleted")
 
 
+_U2_ID = "00000000-0000-4000-8000-0000000000d2"  # a UUID: the path id is parsed (GDXA-723)
+
+
 class TestChangeRoleRevokes:
     """change_role only revokes when the role actually changed."""
 
     def _u_admin(self):
         u = MagicMock()
-        u.id = "u-2"
+        u.id = _U2_ID
         u.role = "admin"
         u.deleted_at = None
         return u
@@ -179,14 +182,14 @@ class TestChangeRoleRevokes:
         with patch("gdx_dispatch.routers.users._sync_user_role_assignment"), \
              patch("gdx_dispatch.core.auth_revoke.revoke_user_sessions", return_value=1) as revoke_mock:
             change_role(
-                "u-2",
+                _U2_ID,
                 RoleChangeIn(role="dispatch"),
                 _fake_request("tenant-1"),
                 {"user_id": "admin-9", "tenant_id": "tenant-1", "role": "owner"},
                 db,
             )
 
-        revoke_mock.assert_called_once_with("u-2", reason="role_changed")
+        revoke_mock.assert_called_once_with(_U2_ID, reason="role_changed")
 
     def test_role_unchanged_does_not_revoke(self) -> None:
         from gdx_dispatch.routers.users import RoleChangeIn, change_role
@@ -198,7 +201,7 @@ class TestChangeRoleRevokes:
         with patch("gdx_dispatch.routers.users._sync_user_role_assignment"), \
              patch("gdx_dispatch.core.auth_revoke.revoke_user_sessions") as revoke_mock:
             change_role(
-                "u-2",
+                _U2_ID,
                 RoleChangeIn(role="admin"),
                 _fake_request("tenant-1"),
                 {"user_id": "admin-9", "tenant_id": "tenant-1", "role": "owner"},

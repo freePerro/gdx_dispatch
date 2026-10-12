@@ -7,8 +7,8 @@ password nobody ever saw and logged "user_invite_email_queued" while sending
 nothing, so the invitee had no way in.
 
 These tests run the real users router and the real POST /auth/reset-password
-on a fresh Postgres database built from the ORM, with an in-process Redis. No
-Outlook sender is designated, so delivery falls through GDXA-689's provider
+on a fresh SQLite and a fresh Postgres database, each built from the ORM,
+with an in-process Redis. No Outlook sender is designated, so delivery falls through GDXA-689's provider
 order to platform SMTP, whose transport (_send_platform_email) is replaced by
 a recorder; the link it captured is
 then USED, so a pass means the emailed link actually sets the password.
@@ -29,6 +29,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 from werkzeug.security import check_password_hash
 
 from gdx_dispatch.core.audit import AuditLog, TenantBase
@@ -42,15 +43,26 @@ TENANT = "67767767-7677-4677-8677-677677677677"
 NEW_PASSWORD = "Fresh-Passw0rd-677"
 
 
-@pytest.fixture()
-def orm_pg_engine():
-    """A fresh Postgres database built by create_all from the ORM.
+@pytest.fixture(params=["sqlite", "postgres"])
+def orm_engine(request):
+    """A fresh database built by create_all from the ORM, on both dialects.
 
-    Postgres, not SQLite: users._get_user_or_404 and /auth/reset-password bind
-    the path's str id against the Uuid column, which SQLite's Uuid bind
-    processor rejects ('str' has no .hex). Prod is Postgres. Not pg_test_engine
-    either: its structure.sql predates users.shift_start, so a User insert fails.
+    SQLite runs since GDXA-723: users._get_user_or_404 and /auth/reset-password
+    used to bind the str id against the Uuid column, which SQLite's bind
+    rejects ('str' has no .hex), so this suite was Postgres-only. Prod is
+    Postgres. Not pg_test_engine: its structure.sql predates users.shift_start,
+    so a User insert fails.
     """
+    if request.param == "sqlite":
+        engine = create_engine(
+            "sqlite://", future=True,
+            connect_args={"check_same_thread": False}, poolclass=StaticPool,
+        )
+        TenantBase.metadata.create_all(engine)
+        yield engine
+        engine.dispose()
+        return
+
     import psycopg2
 
     from gdx_dispatch.tests.fixtures import pg
@@ -74,10 +86,10 @@ def orm_pg_engine():
 
 
 @pytest.fixture()
-def env(monkeypatch, orm_pg_engine):
+def env(monkeypatch, orm_engine):
     from gdx_dispatch.routers import users as users_mod
 
-    SessionLocal = sessionmaker(bind=orm_pg_engine, autoflush=False, autocommit=False)
+    SessionLocal = sessionmaker(bind=orm_engine, autoflush=False, autocommit=False)
 
     admin_id = uuid4()
     target_id = uuid4()

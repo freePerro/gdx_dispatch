@@ -1457,7 +1457,7 @@ def test_refresh_with_un_denylisted_jti_still_works(monkeypatch):
     """Negative control: a refresh whose jti is NOT denylisted continues to
     work normally. Pins that the new gate only rejects truly-revoked jtis.
     """
-    sub = "u-happy-refresh"
+    sub = "00000000-0000-4000-8000-00000000e723"  # a real sub is str(users.id) (GDXA-723)
     jti = "happy-refresh-jti"
     token = _mint_refresh_token(sub=sub, jti=jti)
 

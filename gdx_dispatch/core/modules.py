@@ -4,7 +4,7 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
 from functools import lru_cache
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy import text
@@ -424,13 +424,19 @@ def _load_user_permissions(db: Session, request: Request, user: dict) -> set[str
     # 1. DB-truth role lookup FIRST — never trust the JWT `role` claim alone,
     # and we need it to pick the right assignment when a user has more than one.
     db_role: str = ""
-    if user_id:
+    # users.id is a Uuid column: bind a UUID, not the str subject, or SQLite
+    # raises and the JWT role wins by default (GDXA-723).
+    try:
+        uid = UUID(str(user_id)) if user_id else None
+    except ValueError:
+        uid = None  # not a UUID: no users row to read
+    if uid is not None:
         try:
             from sqlalchemy import select as _select
 
             from gdx_dispatch.models.tenant_models import User as _User
             db_role = (
-                db.execute(_select(_User.role).where(_User.id == user_id, _User.deleted_at.is_(None))).scalar_one_or_none()
+                db.execute(_select(_User.role).where(_User.id == uid, _User.deleted_at.is_(None))).scalar_one_or_none()
                 or ""
             )
         except SQLAlchemyError:
