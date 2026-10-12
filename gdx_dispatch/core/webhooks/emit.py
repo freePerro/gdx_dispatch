@@ -312,18 +312,31 @@ def _dispatch_pending(session: Session) -> None:
     in_transaction() is True for both and so cannot tell them apart).
 
     Only ever enqueues Celery tasks; never touches the DB on the just-committed
-    session."""
+    session. Every enqueue goes through ``enqueue_bounded``: this runs inside
+    the request that committed (``record_payment``, the Stripe webhook), and a
+    bare ``.delay()`` against a dead broker held that response ~19 s per staged
+    item (GDXA-825)."""
     if session.in_nested_transaction():
         return  # a savepoint was released; the business txn has not committed yet
+    if not (
+        session.info.get(_PENDING_KEY)
+        or session.info.get(_PLUGIN_PENDING_KEY)
+        or session.info.get(_WORKFLOW_PENDING_KEY)
+    ):
+        return
+    # Import here: this module is imported early (via choke points) and the
+    # task modules pull in the Celery app — avoid an import cycle at load.
+    # Attribute access, not a from-import of the function, so the test suite's
+    # broker_enqueue stub replaces it.
+    from gdx_dispatch.core import celery_app as _celery
+
     ids = session.info.pop(_PENDING_KEY, None)
     if ids:
-        # Import here: this module is imported early (via choke points) and the
-        # task module pulls in the Celery app — avoid an import cycle at load.
         from gdx_dispatch.core.webhooks.tasks import deliver_webhook_task
 
         for delivery_id in ids:
             try:
-                deliver_webhook_task.delay(delivery_id)
+                _celery.enqueue_bounded(deliver_webhook_task, args=[delivery_id])
             except Exception:
                 # Broker unreachable: the row is committed 'pending' with
                 # next_retry_at=NULL; the retry sweep rescues exactly those.
@@ -335,7 +348,7 @@ def _dispatch_pending(session: Session) -> None:
 
         for envelope in envelopes:
             try:
-                deliver_plugin_event_task.delay(envelope)
+                _celery.enqueue_bounded(deliver_plugin_event_task, args=[envelope])
             except Exception:
                 # Best-effort (no plugin retry ledger in v1); the event is simply
                 # not delivered to plugins if the broker is down.
@@ -347,7 +360,7 @@ def _dispatch_pending(session: Session) -> None:
 
         for job in workflow_jobs:
             try:
-                run_workflow_rules_task.delay(job)
+                _celery.enqueue_bounded(run_workflow_rules_task, args=[job])
             except Exception:
                 # Best-effort like the plugin sink: broker down = rules skipped
                 # for this event, loudly.
