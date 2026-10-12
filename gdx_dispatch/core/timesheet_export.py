@@ -16,8 +16,8 @@ and the email state the shop's setting on whether it counts toward overtime.
 The CSV carries no such column on purpose: it is an hours file, and the
 sentence belongs to the reader, not the spreadsheet.
 
-Each person's TOTAL row also carries their vacation balance for the calendar
-year — allowance, used and remaining hours through the period's last day, and
+Each person's TOTAL row (and, in the PDF, a line under their table) also
+carries their vacation balance for the calendar year — allowance, used and remaining hours through the period's last day, and
 the hours already booked after it — when the caller built the sheet
 `with_vacation`. That is a statement of hours
 booked against a number the office set, not a payout: nothing here pays out
@@ -251,6 +251,16 @@ def pdf_context(
         "time_off_statement": sheet.time_off_statement,
         "vacation_year": sheet.vacation_year,
         "vacation_unreadable": sheet.vacation_unreadable,
+        # The day the printed balance is taken through: the period's last day.
+        "vacation_as_of": sheet.period.end.strftime("%b %-d, %Y"),
+        # A period that crosses Jan 1 is balanced against its last day's year
+        # only (core/timesheet_hours._attach_vacation); the PDF says so rather
+        # than print December's vacation above a balance that left it out.
+        "vacation_prior_year": (
+            sheet.period.start.year
+            if sheet.vacation_year and sheet.period.start.year != sheet.vacation_year
+            else None
+        ),
         "people": sheet.people,
         "cards": cards,
         "flagged": flagged,

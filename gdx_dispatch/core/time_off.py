@@ -584,8 +584,7 @@ def vacation_balances(
 
     The single computation behind the read endpoint, the Timesheets card,
     the pay-period CSV and the PDF context (via
-    core/timesheet_hours.build_timesheet; the PDF template does not render
-    it yet).
+    core/timesheet_hours.build_timesheet).
     Database errors propagate."""
     ids = {str(t) for t in technician_ids if t}
     if not ids:
