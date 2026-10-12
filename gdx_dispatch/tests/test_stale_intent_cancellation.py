@@ -422,6 +422,7 @@ def test_queueing_never_waits_on_the_result_backend():
     assert sweep_stale_intents.ignore_result is True
 
 
+@pytest.mark.real_broker_enqueue
 def test_queueing_does_not_retry_the_connection(invoice):
     from gdx_dispatch.tasks import stale_intent_sweep as mod
 
@@ -445,6 +446,7 @@ def test_the_task_sweeps_the_invoice_it_was_given(db, invoice):
     assert sweep.call_args[1]["remaining_cents"] == 20000
 
 
+@pytest.mark.real_broker_enqueue
 def test_a_dead_broker_never_costs_the_payment(invoice):
     """The payment is already committed when this runs. A queue that cannot be
     reached must not surface as a failed payment."""
