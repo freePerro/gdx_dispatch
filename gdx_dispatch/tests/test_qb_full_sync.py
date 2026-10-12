@@ -340,6 +340,55 @@ def test_push_invoice_counter_sale_uses_invoice_customer(
         "counter-sale invoice pushed to QBO without CustomerRef"
 
 
+def test_push_invoice_fractional_qty_line_is_consistent(
+    db_session: Session, qb_connection, mock_qb
+):
+    """GDXA-730: 2.5 h x 33.33 = 83.325, which line_total rounds to 83.33.
+    The pushed Amount must stay the local total, and UnitPrice must be
+    omitted rather than sent as a triple QBO would see as inconsistent.
+    A line whose Qty x UnitPrice is exact keeps its UnitPrice.
+    """
+    from gdx_dispatch.modules.quickbooks import sync
+
+    customer = _seed_customer(db_session, "FracCust")
+    inv = Invoice(
+        customer_id=customer.id, job_id=None, invoice_number="INV-FRAC-1",
+        subtotal=153.33, tax_amount=0, total=153.33, balance_due=153.33,
+        status="sent", public_token="pub-frac-1", company_id="tenant-test",
+    )
+    db_session.add(inv)
+    db_session.flush()
+    db_session.add_all([
+        InvoiceLine(
+            invoice_id=inv.id, description="Labor 2.5 h", quantity=Decimal("2.5"),
+            unit_price=Decimal("33.33"), line_total=Decimal("83.33"),
+            sort_order=1, company_id="tenant-test",
+        ),
+        InvoiceLine(
+            invoice_id=inv.id, description="Spring", quantity=2,
+            unit_price=Decimal("35"), line_total=Decimal("70"),
+            sort_order=2, company_id="tenant-test",
+        ),
+    ])
+    db_session.commit()
+
+    mock_qb.create = AsyncMock(return_value={"Id": "QB-I-FRAC"})
+    asyncio.run(sync.push_invoice("tenant-1", str(inv.id), db_session, mock_qb))
+
+    lines = mock_qb.create.call_args[0][1]["Line"]
+    frac, whole = lines
+    assert frac["Amount"] == 83.33
+    assert frac["SalesItemLineDetail"] == {"Qty": 2.5}
+    assert whole["Amount"] == 70.0
+    assert whole["SalesItemLineDetail"] == {"Qty": 2.0, "UnitPrice": 35.0}
+    pushed_total = sum(Decimal(str(line["Amount"])) for line in lines)
+    assert pushed_total == Decimal(str(inv.total))
+    for line in lines:
+        d = line["SalesItemLineDetail"]
+        if "UnitPrice" in d:
+            assert Decimal(str(d["Qty"])) * Decimal(str(d["UnitPrice"])) == Decimal(str(line["Amount"]))
+
+
 def test_push_expense_creates_in_qb(db_session: Session, qb_connection, mock_qb):
     from uuid import uuid4 as _uuid4
 
