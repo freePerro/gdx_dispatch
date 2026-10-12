@@ -11,7 +11,7 @@ columns each endpoint reads, seeded via raw SQL helpers.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -19,12 +19,24 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.pay_periods import resolve_zone, shop_today_from_settings, shop_tz_name_from_settings
 from gdx_dispatch.routers import reports
 from gdx_dispatch.routers.auth import get_current_user
 
 
 def _iso(dt: datetime) -> str:
     return dt.astimezone(UTC).isoformat()
+
+
+def _shop_noon(db) -> datetime:
+    """Noon of the shop's today, as a UTC instant — the "now" these tests seed
+    from. The endpoints bucket by the shop's calendar day (GDXA-505), so
+    seeding from ``datetime.now(UTC)`` put "today" rows on the UTC day, which
+    from 00:00 to 05:00 UTC is the shop's tomorrow (GDXA-691). Noon also keeps
+    the instant's UTC date equal to the shop date, so the TEXT columns of this
+    hand-built schema still order correctly against the bound window edges."""
+    tz = resolve_zone(shop_tz_name_from_settings(db))
+    return datetime.combine(shop_today_from_settings(db), time(12), tzinfo=tz).astimezone(UTC)
 
 
 @pytest.fixture
@@ -257,7 +269,7 @@ def test_sales_funnel_with_accepted_estimate(kpi_db):
     from gdx_dispatch.core.modules import require_module
     app.dependency_overrides[require_module("reports_advanced")] = lambda: None
 
-    now = datetime.now(UTC)
+    now = _shop_noon(kpi_db)
     _seed_estimate(kpi_db, status="accepted", total=4500, accepted_at=now, sent_at=now - timedelta(days=2),
                    lines=[
                        {"category": "doors", "quantity": 2, "unit_price": 1500, "line_total": 3000,
@@ -288,7 +300,7 @@ def test_operations_first_time_fix(kpi_db):
     from gdx_dispatch.core.modules import require_module
     app.dependency_overrides[require_module("reports_advanced")] = lambda: None
 
-    now = datetime.now(UTC)
+    now = _shop_noon(kpi_db)
     # 3 completed jobs, 1 callback → first-time fix = 2/3
     for _ in range(2):
         _seed_job(kpi_db, lifecycle_stage="completed", completed_at=now - timedelta(days=1))
@@ -322,7 +334,7 @@ def test_cash_risk_aging_buckets(kpi_db):
     from gdx_dispatch.core.modules import require_module
     app.dependency_overrides[require_module("reports_advanced")] = lambda: None
 
-    today = datetime.now(UTC).date()
+    today = shop_today_from_settings(kpi_db)
     # 1 in current bucket (15d overdue), 1 in 31-60, 1 in 90+
     _seed_invoice(kpi_db, balance_due=500, due_date=today - timedelta(days=15), status="sent")
     _seed_invoice(kpi_db, balance_due=1000, due_date=today - timedelta(days=45), status="sent")
@@ -348,7 +360,7 @@ def test_cash_risk_gross_margin_and_warranty(kpi_db):
     from gdx_dispatch.core.modules import require_module
     app.dependency_overrides[require_module("reports_advanced")] = lambda: None
 
-    now = datetime.now(UTC)
+    now = _shop_noon(kpi_db)
     _seed_estimate(kpi_db, status="accepted", total=2000, accepted_at=now,
                    lines=[{"category": "doors", "quantity": 1, "unit_price": 2000, "line_total": 2000,
                             "cost_snapshot": 1200, "margin_pct_snapshot": 0.4}])
@@ -408,7 +420,7 @@ def test_operations_avg_job_duration_from_attested_closeouts(kpi_db):
     from gdx_dispatch.core.modules import require_module
     app.dependency_overrides[require_module("reports_advanced")] = lambda: None
 
-    now = datetime.now(UTC)
+    now = _shop_noon(kpi_db)
     _seed_closeout(kpi_db, hours=3.0, closed_at=now - timedelta(days=2))
     _seed_closeout(kpi_db, hours=1.5, closed_at=now - timedelta(days=5))
     # Superseded restatement + soft-deleted + out-of-window: all excluded.
@@ -466,7 +478,7 @@ def test_cash_risk_collected_window(kpi_db):
     from gdx_dispatch.core.modules import require_module
     app.dependency_overrides[require_module("reports_advanced")] = lambda: None
 
-    today = datetime.now(UTC).date()
+    today = shop_today_from_settings(kpi_db)
     _seed_payment(kpi_db, amount=400, payment_date=today)
     _seed_payment(kpi_db, amount=250, payment_date=today - timedelta(days=10))
     # Voided stays history — never counted.
@@ -497,8 +509,8 @@ def test_cash_risk_collected_nets_office_refunds(kpi_db):
     from gdx_dispatch.core.modules import require_module
     app.dependency_overrides[require_module("reports_advanced")] = lambda: None
 
-    now = datetime.now(UTC)
-    today = now.date()
+    now = _shop_noon(kpi_db)
+    today = shop_today_from_settings(kpi_db)
     _seed_payment(kpi_db, amount=3000, payment_date=today - timedelta(days=3))
     _seed_payment(kpi_db, amount=500, payment_date=today)
     _seed_refund(kpi_db, amount=2000, created_at=now - timedelta(days=1))
