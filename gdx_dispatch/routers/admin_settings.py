@@ -280,7 +280,7 @@ def unlock_user(
     uid = _user_uuid(user_id)
     try:
         # ORM update: users.id is a Uuid column, which SQLite stores dashless
-        # — a raw `id = :dashed` can never match there (CLAUDE.md sharp edge).
+        # — a raw `id = :dashed` can never match there (.claude/rules/database.md).
         result = db.execute(
             _update(User)
             .where(User.id == uid)  # tenant isolation is the connection (B1); no company_id filter

@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.invoice_net_billed import invoice_net_billed_sql
 from gdx_dispatch.core.job_site import resolve_job_site
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pay_periods import (
@@ -172,40 +173,21 @@ def day_summary(
             pass
         parts_requested = 0
 
-    # Invoices generated from this user's mobile actions today.
-    try:
-        invoices_count = int(db.execute(
-            _text(
-                """
-                SELECT COUNT(*) FROM invoices i
-                WHERE i.deleted_at IS NULL
-                  AND i.created_at >= :start AND i.created_at < :end
-                  AND CAST(i.job_id AS TEXT) IN (
-                    SELECT CAST(j.id AS TEXT) FROM jobs j WHERE j.assigned_to = :uid
-                    UNION
-                    SELECT CAST(ja.job_id AS TEXT) FROM job_assignments ja
-                    JOIN technicians t ON t.id = ja.tech_id
-                    WHERE CAST(t.user_id AS TEXT) = :uid
-                  )
-                """
-            ),
-            {"uid": user_id, "start": day_start, "end": day_end},
-        ).scalar() or 0)
-    except Exception:
-        log.exception("day_summary_invoices_unavailable user=%s", user_id)
-        try:
-            db.rollback()
-        except Exception:
-            pass
-        invoices_count = 0
-
+    # Invoices generated from this user's mobile actions today, and what they
+    # billed net of credit memos (GDXA-598): a credit memo lowers balance_due
+    # and leaves i.total as issued, so SUM(i.total) overstated a credited
+    # invoice. A voided invoice was never billed; void_invoice leaves
+    # deleted_at alone.
+    invoices_count = 0
     revenue_invoiced = 0.0
     try:
-        revenue_invoiced = float(db.execute(
+        row = db.execute(
+            # Only the helper's fixed-alias expression is spliced; values are bound.
             _text(
-                """
-                SELECT COALESCE(SUM(i.total), 0) FROM invoices i
-                WHERE i.deleted_at IS NULL
+                f"""
+                SELECT COUNT(*), COALESCE(SUM({invoice_net_billed_sql("i")}), 0)
+                FROM invoices i
+                WHERE i.deleted_at IS NULL AND i.status != 'void'
                   AND i.created_at >= :start AND i.created_at < :end
                   AND CAST(i.job_id AS TEXT) IN (
                     SELECT CAST(j.id AS TEXT) FROM jobs j WHERE j.assigned_to = :uid
@@ -214,12 +196,14 @@ def day_summary(
                     JOIN technicians t ON t.id = ja.tech_id
                     WHERE CAST(t.user_id AS TEXT) = :uid
                   )
-                """
+                """  # noqa: S608
             ),
             {"uid": user_id, "start": day_start, "end": day_end},
-        ).scalar() or 0)
+        ).one()
+        invoices_count = int(row[0] or 0)
+        revenue_invoiced = float(row[1] or 0)
     except Exception:
-        log.exception("day_summary_revenue_unavailable user=%s", user_id)
+        log.exception("day_summary_invoices_unavailable user=%s", user_id)
         try:
             db.rollback()
         except Exception:
@@ -319,6 +303,8 @@ def day_summary(
                 # point at the work, not the HQ. (The jobs_completed recap
                 # above deliberately stays customer-address: history.)
                 "site_address": next_site.address if next_site else None,
+                # Street + town (GDXA-503) — what the recap line shows.
+                "site_full_address": next_site.full_address if next_site else None,
                 "site_address_missing": bool(next_site.address_missing) if next_site else False,
             }
             if next_first else None

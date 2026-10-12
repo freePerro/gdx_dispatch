@@ -12,7 +12,7 @@ Two separate concepts share the "what can someone see" question:
 - **Modules** — which areas of the app are turned on for your *shop*
 - **Permissions** — which areas a *specific user* can see, given the modules that are on
 
-Both are set under Settings.
+Modules are set under **Settings → Modules**; permissions under **Admin → Roles & Permissions** in the sidebar.
 
 ## Modules (per shop)
 
@@ -46,16 +46,15 @@ Once a module is on, **role** decides who in the shop can use it. The defaults w
 - **Accounting** → invoices, payments, reports
 - **Viewer** → read-only
 
-You can fine-tune what each role sees under **Settings → Role permissions**. Useful when a dispatcher needs to see jobs but not customer payment info, or a salesperson needs read-only access to dispatch.
+You can fine-tune what each role sees under **Admin → Roles & Permissions**. Useful when a dispatcher needs to see jobs but not customer payment info, or a salesperson needs read-only access to dispatch.
 
 ## Shop-wide vs per-user
 
 | Concern | Where to change it |
 |---|---|
 | "Turn off Inventory for the whole shop" | Settings → Modules |
-| "Hide payments from this one dispatcher" | Settings → Role permissions |
-| "This tech shouldn't see other techs' jobs" | Settings → Role permissions (Technician → restrict to own jobs) |
-| "This person is leaving the company" | Settings → Users → Deactivate |
+| "Hide payments from dispatchers" | Admin → Roles & Permissions |
+| "This person is leaving the company" | Admin → Users → **Lock Out** |
 
 ## When a permission feels wrong
 

@@ -169,6 +169,14 @@ def _next_invoice_number(db: Session) -> str:
     return next_invoice_number(db)
 
 
+def _effective_status(inv: Invoice) -> str:
+    # Lazy: routers/invoices is the owner of the rule; importing it at module
+    # load would tie this router's import to that one's.
+    from gdx_dispatch.routers.invoices import _effective_status as effective_status
+
+    return effective_status(inv)
+
+
 def _serialize_invoice(inv: Invoice, *, include_lines: bool = False, db: Session | None = None) -> dict[str, Any]:
     out: dict[str, Any] = {
         "id": str(inv.id),
@@ -195,6 +203,10 @@ def _serialize_invoice(inv: Invoice, *, include_lines: bool = False, db: Session
             else {}
         ),
         "due_date": inv.due_date.isoformat() if inv.due_date else None,
+        # The server decides "overdue", against the shop's today (GDXA-653).
+        # A browser parsing a date-only due_date reads it as UTC midnight —
+        # 7pm Central the evening before — and flags a day early.
+        "effective_status": _effective_status(inv),
         "invoice_date": inv.invoice_date.isoformat() if inv.invoice_date else None,
         "sent_at": inv.sent_at.isoformat() if inv.sent_at else None,
         "verified_at": inv.verified_at.isoformat() if inv.verified_at else None,
@@ -1161,7 +1173,7 @@ def mobile_send_invoice(
 
     delivered = _send_invoice_email(db, invoice, tenant_id=tenant_id)
     if invoice.status == "draft":
-        transition_invoice_status(db, invoice, "sent")  # GL S5
+        transition_invoice_status(db, invoice, "sent", actor=user_id)  # GL S5
     if delivered:
         invoice.sent_at = datetime.now(UTC)
         invoice.sent_via = "email"
@@ -1398,6 +1410,19 @@ def mobile_open_invoices(
             user_id, len(out), _OPEN_INVOICE_CAP,
         )
         out = out[:_OPEN_INVOICE_CAP]
+    # "Overdue" is money-billing's rule (routers/invoices._effective_status),
+    # applied to the ORM row so it reads the shop's today and the same status
+    # and balance gates as /api/invoices (GDXA-653). The raw SQL above stays
+    # the scope; this only labels what it found,
+    # after the cap, so the IN-list is at most _OPEN_INVOICE_CAP ids.
+    if out:
+        by_id = {
+            str(inv.id): inv
+            for inv in db.query(Invoice).filter(Invoice.id.in_([_UUID(i["id"]) for i in out])).all()
+        }
+        for item in out:
+            inv = by_id.get(str(_UUID(item["id"])))
+            item["effective_status"] = _effective_status(inv) if inv is not None else item["status"]
     # `truncated` is in the BODY, not just the log: a capped list that looks
     # complete is how "I never saw that invoice" starts, and a server-side log
     # line is invisible to the person holding the phone.

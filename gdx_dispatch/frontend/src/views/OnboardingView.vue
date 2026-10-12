@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useApiWithToast as useApi } from '../composables/useApiWithToast'
 
@@ -11,7 +11,20 @@ const loading = ref(false)
 const error = ref('')
 
 const company = ref({ name: '', phone: '', address: '', timezone: 'America/Chicago' })
-const tech = ref({ name: '', email: '', phone: '' })
+const tech = ref({ name: '', email: '', phone: '', password: '' })
+// A technician row must point at a real login (POST /api/technicians answers
+// 400 "user_id is required"), so step 2 creates the user first. Both ids are
+// kept: a retry after a failed technician POST must not POST the email again
+// (409), and Back then Next must update the row it made, not add a second.
+// A different email on a return trip is a different person: start over.
+const techUserId = ref(null)
+const techId = ref(null)
+const techOwned = ref(false) // techId is a row this wizard made, not one it found
+const techLoginMade = ref(false) // techUserId is a login this wizard created
+const techEmail = ref('')
+const needsPassword = computed(
+  () => !techUserId.value || tech.value.email.trim().toLowerCase() !== techEmail.value,
+)
 const customerFile = ref(null)
 
 const timezones = [
@@ -36,8 +49,8 @@ async function nextStep() {
         address: company.value.address,
         timezone: company.value.timezone,
       })
-    } else if (step.value === 2 && tech.value.name) {
-      await api.post('/api/technicians', tech.value)
+    } else if (step.value === 2 && tech.value.name.trim()) {
+      await addTechnician()
     }
     step.value++
   } catch (e) {
@@ -45,6 +58,86 @@ async function nextStep() {
   } finally {
     loading.value = false
   }
+}
+
+async function addTechnician() {
+  const name = tech.value.name.trim()
+  const email = tech.value.email.trim()
+  if (!email) throw new Error('Email is required: it is the technician\'s login.')
+  if (techEmail.value && techEmail.value !== email.toLowerCase()) {
+    techUserId.value = null
+    techId.value = null
+    techOwned.value = false
+    techLoginMade.value = false
+  }
+  if (!techUserId.value) {
+    const login = await techLogin(name, email)
+    techUserId.value = login.id
+    techLoginMade.value = login.made
+    techEmail.value = email.toLowerCase()
+  }
+  // The login may already have its technician row: the wizard run before, the
+  // page reloaded after step 2, or a technician POST that committed but whose
+  // response was lost. Leave that row as it is — blank wizard fields must not
+  // erase what it holds — and add no twin. Looked up before every POST, so a
+  // failed lookup runs again on retry instead of falling through. A row found
+  // under a login this wizard created can only be the wizard's own.
+  if (!techId.value) {
+    techId.value = await technicianIdFor(techUserId.value)
+    techOwned.value = techLoginMade.value
+  }
+  const row = { name, email, phone: tech.value.phone.trim() }
+  if (techId.value) {
+    if (techOwned.value) await api.patch(`/api/technicians/${techId.value}`, row)
+    return
+  }
+  const created = await api.post('/api/technicians', {
+    user_id: techUserId.value,
+    name: row.name,
+    email: row.email,
+    phone: row.phone,
+  })
+  techId.value = created.id
+  techOwned.value = true
+}
+
+// The id of the login this technician signs in with. A one-person shop's owner
+// is its technician: their email already has a login (409), so the technician
+// is attached to that user instead of stalling the step.
+async function techLogin(name, email) {
+  const password = tech.value.password
+  if (password && password.length < 8) {
+    throw new Error('Password must be at least 8 characters.')
+  }
+  let taken = false
+  if (password) {
+    try {
+      const user = await api.post('/api/users', {
+        name, email, password, role: 'technician',
+      }, { suppressErrorToast: true })
+      return { id: user.id, made: true }
+    } catch (e) {
+      if (e?.status !== 409) throw e
+      taken = true
+    }
+  }
+  const existing = await findUserByEmail(email)
+  if (existing) return { id: existing.id, made: false }
+  if (taken) throw new Error('That email already has a login, but it was not found in the user list.')
+  throw new Error('Password must be at least 8 characters.')
+}
+
+async function technicianIdFor(userId) {
+  // include_verification: the list otherwise hides rows named "Technician".
+  const rows = await api.get('/api/technicians?include_verification=true')
+  const list = Array.isArray(rows) ? rows : rows?.items || []
+  return list.find((t) => String(t.user_id) === String(userId))?.id || null
+}
+
+async function findUserByEmail(email) {
+  const users = await api.get('/api/users?limit=500')
+  const want = email.toLowerCase()
+  return (Array.isArray(users) ? users : []).find((u) => (u.email || '').toLowerCase() === want)
 }
 
 async function finish() {
@@ -107,6 +200,11 @@ async function finish() {
         <div class="field"><label>Name</label><input v-model="tech.name" placeholder="John Smith" /></div>
         <div class="field"><label>Email</label><input v-model="tech.email" type="email" placeholder="john@company.com" /></div>
         <div class="field"><label>Phone</label><input v-model="tech.phone" type="tel" placeholder="(555) 987-6543" /></div>
+        <div v-if="needsPassword" class="field">
+          <label>Password</label>
+          <input v-model="tech.password" type="password" autocomplete="new-password" placeholder="At least 8 characters" />
+        </div>
+        <p class="hint">This also creates the technician's login, with the email and password above. If that email already has a login (yours, say), the technician is attached to it and the password is not used.</p>
         <div class="actions">
           <button @click="step--" class="btn-back">Back</button>
           <button @click="step++" class="btn-skip">Skip</button>

@@ -879,3 +879,22 @@ def test_reports_expose_merchant_from_continuation_lines(world):
     row = next(r for r in reports["unmatched_debits"] if r["id"] == str(line.id))
     assert row["description"] == "DBT CRD 1507 06/18/26 23045245"
     assert row["merchant"] == "DICK S STANDARD · PARKERS PRAIR MN C#0256"
+
+
+def test_create_expense_refuses_a_soft_deleted_job(world):
+    """GDXA-603: a bank debit cannot be costed to a job the office deleted."""
+    from datetime import datetime, timezone
+
+    from fastapi import HTTPException
+
+    from gdx_dispatch.models.tenant_models import Job
+
+    db, account = world
+    job = Job(title="deleted job", company_id=COMPANY,
+              deleted_at=datetime.now(timezone.utc))
+    db.add(job)
+    db.commit()
+    line = line_by_amount(db, -2500)
+    with pytest.raises(HTTPException) as exc:
+        create_expense_via_endpoint(db, account, line, job_id=str(job.id))
+    assert exc.value.status_code == 422

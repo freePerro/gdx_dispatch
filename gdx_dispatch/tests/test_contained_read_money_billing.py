@@ -29,9 +29,10 @@ So: the repo-wide count is pinned by AST in
 For the per-change number, read the diff.
 
 **Two wraps were written and then REMOVED under audit**, which is the most
-useful thing in this file: ``routers/payments.py::charge_method`` and
-``send_invoice``. Both are real instances; ``db.begin_nested()`` is the wrong
-tool for both, and for reasons that generalise —
+useful thing in this file: ``routers/payments.py::charge_method`` (the
+router has since been deleted, GDXA-552) and ``send_invoice``. Both are real
+instances; ``db.begin_nested()`` is the wrong tool for both, and for reasons
+that generalise —
 
 * a callee that ``commit()``s closes the SessionTransaction from inside the
   savepoint (``charge_method``: the wrap broke EVERY successful card charge,

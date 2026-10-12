@@ -79,6 +79,9 @@
         </template>
       </Card>
 
+      <!-- Sales-tax exemption (GDXA-624) — admin/owner only, gated inside. -->
+      <CustomerTaxExemptionCard :customer-id="customerId" />
+
       <!-- Tabs: Jobs, Locations, Notes -->
       <div class="detail-tabs">
         <Button
@@ -591,7 +594,6 @@
 </template>
 
 <script setup>
-import { JOB_TYPE_OPTIONS } from "../constants/jobTypes";
 import { customerTypeOptionsFor, normalizeCustomerType } from "../constants/customerTypes";
 import { computed, ref, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -614,6 +616,7 @@ import JobStateChip from "../components/JobStateChip.vue";
 import PhoneInput from "../components/PhoneInput.vue";
 import EmailTimeline from "../components/EmailTimeline.vue";
 import CustomerStatementDialog from "../components/CustomerStatementDialog.vue";
+import CustomerTaxExemptionCard from "../components/CustomerTaxExemptionCard.vue";
 import ProgressSpinner from "primevue/progressspinner";
 import Tag from "primevue/tag";
 import Textarea from "primevue/textarea";
@@ -702,9 +705,6 @@ const tabs = ["Jobs", "Estimates", "Invoices", "Contacts", "Locations", "Notes",
 const customerId = computed(() => route.params.id);
 const customerEstimates = ref([]);
 const customerInvoices = ref([]);
-// Plan §9: shared vocabulary — this dropdown's divergent "Service" entry is
-// where the 12 mis-spelled prod rows came from.
-const jobTypeOptions = [...JOB_TYPE_OPTIONS];
 const portalStatus = ref(null);
 const showPortalDialog = ref(false);
 const portalForm = ref({ email: '' });

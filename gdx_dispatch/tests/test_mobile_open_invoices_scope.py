@@ -282,3 +282,45 @@ def test_no_jobs_means_an_empty_list_not_an_error(db):
 def test_unauthenticated_caller_is_refused(db):
     resp = mobile_open_invoices(_Req(), {}, db)
     assert resp.status_code == 401
+
+
+def _by_number(resp):
+    import json
+
+    return {i["invoice_number"]: i for i in json.loads(resp.body)["invoices"]}
+
+
+def test_each_row_carries_the_servers_overdue_verdict(db):
+    """GDXA-653: the phone decided "overdue" from `new Date(due_date) <
+    new Date()`, and a date-only string parses as UTC midnight — 7pm Central
+    the evening before — so a bill flagged a day early. The row now carries
+    money-billing's own verdict (routers/invoices._effective_status: status
+    `sent`, due before the shop's today, balance owing) for the screen to read."""
+    from datetime import timedelta
+
+    cust = _customer(db)
+    job = _job(db, cust, "tech-mine")
+    late = _invoice(db, cust, job=job)
+    late.due_date = date.today() - timedelta(days=7)
+    later = _invoice(db, cust, job=job)
+    later.due_date = date.today() + timedelta(days=7)
+    db.commit()
+
+    rows = _by_number(mobile_open_invoices(_Req(), MINE, db))
+    assert rows[late.invoice_number]["effective_status"] == "overdue"
+    assert rows[later.invoice_number]["effective_status"] == "sent"
+
+
+def test_the_mobile_invoice_serializer_carries_the_same_verdict(db):
+    from datetime import timedelta
+
+    from gdx_dispatch.routers.mobile_invoicing import _serialize_invoice
+
+    cust = _customer(db)
+    inv = _invoice(db, cust, job=_job(db, cust, "tech-mine"))
+    inv.due_date = date.today() - timedelta(days=7)
+    db.commit()
+    assert _serialize_invoice(inv)["effective_status"] == "overdue"
+    inv.balance_due = Decimal("0")
+    db.commit()
+    assert _serialize_invoice(inv)["effective_status"] == "sent"

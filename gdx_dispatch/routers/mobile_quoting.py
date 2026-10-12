@@ -450,6 +450,9 @@ def build_quote(
             if _jrow is not None and _jrow[0] is not None:
                 _site = resolve_job_site(db, job_id, _jrow[0], _jrow[1])
                 if _site.source == "location":
+                    # The STREET, not full_address (GDXA-503): conversion's
+                    # _bind_estimate_jobsite compares this to location
+                    # streets, and a town suffix would mint a duplicate row.
                     quote_jobsite = _site.address
     except Exception:  # noqa: BLE001 — a seed miss must not block quoting
         log.exception("mobile_quote_jobsite_seed_failed job=%s", job_id)

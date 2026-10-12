@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import contained_read, get_db
+from gdx_dispatch.core.invoice_net_billed import invoice_net_billed_sql
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.pay_periods import (
     shop_day_of,
@@ -364,12 +365,13 @@ def _fetch_tech_revenue(
 ) -> dict[str, tuple[int, float]]:
     """Return {tech_id: (jobs_completed, revenue)} joined from jobs+invoices.
 
-    Graceful degrade if tables missing.
+    Revenue is each invoice's total net of its credit memos (GDXA-597): a
+    credit memo lowers only ``balance_due``, never ``Invoice.total``.
     """
-    sql = """
+    sql = f"""
         SELECT j.assigned_tech_id AS tech_id,
                COUNT(DISTINCT j.id) AS jobs_completed,
-               COALESCE(SUM(i.total), 0) AS revenue
+               COALESCE(SUM({invoice_net_billed_sql("i")}), 0) AS revenue
           FROM jobs j
           LEFT JOIN invoices i
                  ON i.job_id = j.id
@@ -379,7 +381,7 @@ def _fetch_tech_revenue(
            AND DATE(j.completed_at) >= :start
            AND DATE(j.completed_at) <= :end
            AND j.assigned_tech_id IS NOT NULL
-    """
+    """  # noqa: S608 — the splice is a fixed alias; values are bound params
     params: dict[str, Any] = {
         "tenant_id": tenant_id,
         "start": start.isoformat(),

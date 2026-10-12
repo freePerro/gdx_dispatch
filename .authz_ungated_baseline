@@ -50,7 +50,6 @@ GET /api/integrations/zapier/triggers
 GET /api/meta/deprecations
 GET /api/meta/versions
 GET /api/oauth/outlook/callback
-GET /api/onboarding
 GET /api/proposals/{token}
 # Same Group-2 model as the page above (2026-10-04): the estimate PDF the page
 # links. Same lookup (sent_at + deleted_at gated, uniform 404) or a live staff

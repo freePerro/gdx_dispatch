@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import audit_ready_db, log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.modules.ledger.coa import LedgerConfigError
 from gdx_dispatch.modules.ledger.models import (
     ACCOUNT_TYPES,
@@ -701,7 +702,7 @@ def report_trial_balance(
 
     company_id = _tenant_id(user)
     return reports.trial_balance(
-        db, company_id, as_of=_parse_date(as_of, "as_of", default=date.today())
+        db, company_id, as_of=_parse_date(as_of, "as_of", default=shop_today_from_settings(db))
     )
 
 
@@ -719,8 +720,11 @@ def report_pnl(
     if basis not in ("accrual", "cash"):
         raise HTTPException(status_code=422, detail="basis must be accrual or cash")
     company_id = _tenant_id(user)
-    start_d = _parse_date(start, "start", default=date.today().replace(day=1))
-    end_d = _parse_date(end, "end", default=date.today())
+    # The shop's month and day, not the UTC server's (GDXA-505): on the last
+    # evening of a month the UTC default was already next month's P&L.
+    today = shop_today_from_settings(db)
+    start_d = _parse_date(start, "start", default=today.replace(day=1))
+    end_d = _parse_date(end, "end", default=today)
     if end_d < start_d:
         raise HTTPException(status_code=422, detail="end is before start")
     if basis == "cash":
@@ -739,7 +743,7 @@ def report_balance_sheet(
 
     company_id = _tenant_id(user)
     return reports.balance_sheet(
-        db, company_id, as_of=_parse_date(as_of, "as_of", default=date.today())
+        db, company_id, as_of=_parse_date(as_of, "as_of", default=shop_today_from_settings(db))
     )
 
 

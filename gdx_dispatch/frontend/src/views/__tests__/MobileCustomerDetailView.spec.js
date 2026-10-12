@@ -140,6 +140,46 @@ describe('MobileCustomerDetailView', () => {
     expect(apiGet).not.toHaveBeenCalled();
   });
 
+  it('a location shows and navigates to street + town (GDXA-503)', async () => {
+    apiGet.mockImplementation((url) => {
+      if (url === '/api/customers/cust-123') return Promise.resolve(customerFixture);
+      if (url === '/api/customers/cust-123/locations') {
+        return Promise.resolve([{
+          id: 'loc-1', label: 'Home', address: '88 Pine Ridge Rd',
+          city: 'Anytown', state: 'MN', zip: '55555',
+          full_address: '88 Pine Ridge Rd, Anytown, MN 55555', is_primary: true,
+        }]);
+      }
+      return Promise.resolve([]);
+    });
+    const wrapper = mount(MobileCustomerDetailView, { global: { stubs } });
+    await flushPromises();
+    await wrapper.find('[data-test="mcd-tab-locations"]').trigger('click');
+    await flushPromises();
+    const row = wrapper.find('[data-test="mcd-location-row"]');
+    expect(row.text()).toContain('88 Pine Ridge Rd, Anytown, MN 55555');
+    expect(row.find('a').attributes('href')).toContain('Anytown%2C%20MN%2055555');
+  });
+
+  it('a location labelled with its street still shows the town (GDXA-503)', async () => {
+    apiGet.mockImplementation((url) => {
+      if (url === '/api/customers/cust-123') return Promise.resolve(customerFixture);
+      if (url === '/api/customers/cust-123/locations') {
+        return Promise.resolve([{
+          id: 'loc-1', label: '88 Pine Ridge Rd', address: '88 Pine Ridge Rd',
+          city: 'Anytown', state: 'MN', zip: '55555',
+          full_address: '88 Pine Ridge Rd, Anytown, MN 55555', is_primary: true,
+        }]);
+      }
+      return Promise.resolve([]);
+    });
+    const wrapper = mount(MobileCustomerDetailView, { global: { stubs } });
+    await flushPromises();
+    await wrapper.find('[data-test="mcd-tab-locations"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[data-test="mcd-location-row"]').text()).toContain('Anytown, MN 55555');
+  });
+
   it('tapping a job row opens the MOBILE job screen, not the desktop page', async () => {
     // 2026-08-28: a tech tapped his own job here and landed on /jobs/:id —
     // the desktop page, whose photo button never uploaded. Same destination

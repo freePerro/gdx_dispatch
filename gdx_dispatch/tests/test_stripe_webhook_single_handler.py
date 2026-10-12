@@ -41,8 +41,8 @@ be a disaster, so the live path is proven too — by **invoking** it and by
 reading its **AST**, never by grepping its source for an event name. A
 substring search over `core/payments.py` is satisfied by a comment or a
 docstring: stripping all nine dispatch branches leaves six of nine such
-assertions green (measured 2026-09-27), which is the vacuity CLAUDE.md names as
-a sharp edge and which the 2026-08-04 money audit already caught once in this
+assertions green (measured 2026-09-27), which is the vacuity .claude/rules/scanners-and-tests.md
+names as a sharp edge and which the 2026-08-04 money audit already caught once in this
 repo — a guard "satisfied by the *import* line with the call deleted".
 """
 from __future__ import annotations
@@ -113,7 +113,7 @@ def _paths() -> set[str]:
 
 @pytest.fixture
 def db_session():
-    """In-memory tenant schema built from the ORM, per CLAUDE.md."""
+    """In-memory tenant schema built from the ORM, per .claude/rules/database.md."""
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
@@ -127,26 +127,32 @@ def db_session():
 # --- absence: the second handler must stay gone
 
 
-def test_stripe_payments_exposes_no_webhook_handler():
-    from gdx_dispatch.core import stripe_payments
+def test_no_second_webhook_handler_or_server_side_attach():
+    """Neither deleted helper may come back, in any production file.
 
-    assert not hasattr(stripe_payments, "handle_webhook"), (
-        "core/stripe_payments.py::handle_webhook is back. It cannot record money "
-        "(no Session) — route Stripe events to core/payments.py::handle_payment_webhook."
-    )
-
-
-def test_stripe_payments_exposes_no_server_side_attach():
-    """`save_payment_method` had no caller either — the SetupIntent flow replaced it.
-
-    A saved card arrives by the customer confirming the SetupIntent from
-    `/payments/setup`, which is created with `customer=`; Stripe attaches the
-    PaymentMethod. A server-side `PaymentMethod.attach` helper is a second way
-    to do it that nothing asked for.
+    Until 2026-10-11 these were `hasattr` checks on `core/stripe_payments.py`.
+    That module served only the unreachable portal router and was deleted with
+    it (GDXA-552), so a check on it would now pass vacuously. This reads every
+    production file's AST for the two function names instead, and its source
+    for a server-side `PaymentMethod.attach` (`save_payment_method` made that
+    call; nothing asked for a second way to save a card).
     """
-    from gdx_dispatch.core import stripe_payments
-
-    assert not hasattr(stripe_payments, "save_payment_method")
+    offenders = []
+    for py in _production_sources():
+        text = py.read_text(encoding="utf-8", errors="ignore")
+        rel = str(py.relative_to(_PKG))
+        if "PaymentMethod.attach" in text:
+            offenders.append(f"{rel}: PaymentMethod.attach")
+        for node in ast.walk(ast.parse(text)):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in (
+                "handle_webhook",
+                "save_payment_method",
+            ):
+                offenders.append(f"{rel}: def {node.name}")
+    assert offenders == [], (
+        f"a second Stripe webhook handler or server-side attach is back: {offenders}. "
+        "Route Stripe events to core/payments.py::handle_payment_webhook."
+    )
 
 
 def test_only_one_signature_verifier_in_the_tree():
@@ -241,25 +247,3 @@ def test_the_live_handler_really_dispatches(db_session):
         {"type": "customer.created", "data": {"object": {"id": "cus_x"}}}, db_session
     )
     assert unhandled == {"status": "ignored"}, unhandled
-
-
-def test_the_surviving_stripe_helpers_still_import():
-    """What is left in `core/stripe_payments.py` must still load.
-
-    Only that `routers/payments.py` imports this module is asserted, and only as
-    a live import — NOT that each name appears in its source. That form is
-    satisfied by the import line with every call deleted, and it would also pin
-    `create_ach_verification` as a required survivor when the ACH pay-page plan
-    already records that path as a deferred no-UI-caller orphan (2026-09-16). A
-    guard must not fight a recorded deferral.
-    """
-    from gdx_dispatch.routers import payments as payments_router
-
-    for name in (
-        "create_payment_intent",
-        "create_setup_intent",
-        "list_payment_methods",
-        "charge_saved_method",
-        "create_ach_verification",
-    ):
-        assert callable(getattr(payments_router, name)), f"{name} vanished from the router"

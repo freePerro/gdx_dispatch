@@ -144,8 +144,8 @@ def _money_axis_stage(live_invoices: list[dict]) -> str:
 
     Paid when every one is settled; otherwise overdue, partially paid, or
     invoiced, in that precedence. Shared by the display state and the
-    billing status, so given the same invoices they reach the same stage.
-    They do not always get the same invoices: see derive_job_billing_status.
+    billing status, which select their invoices by the same predicate, so
+    they reach the same stage.
     """
     statuses = [str(i.get("status", "")).strip().lower() for i in live_invoices]
     if all(
@@ -171,12 +171,6 @@ def derive_job_billing_status(invoices: Iterable[dict] | None = None) -> str:
     deposit, not a $0 draft); otherwise the money-axis stage of those
     invoices. Unlike the display state this ignores the work axis, so a
     cancelled job that was paid still reads "paid" here.
-
-    Known divergence: the display state still counts a $0 draft, and with
-    a zero balance it reads as settled, so a job whose only invoice is a $0
-    draft shows stage "paid" next to billing_status "unbilled". The billed
-    answer follows the canonical predicate; the display state is unchanged
-    here (see the "Known edge" note in billing_predicates.py).
 
     Each invoice dict carries ``status``, ``balance_due``, ``amount_paid``,
     ``billing_type`` and ``total``; callers pass live (not soft-deleted)
@@ -223,9 +217,9 @@ def derive_job_display_state(
     work state with a badge rather than a false terminal "Paid".
 
     The returned state also carries ``billing_status``
-    (`derive_job_billing_status` over the same invoices). ``total`` only
-    matters there: a draft without it reads as a $0 draft, which does not
-    bill the job.
+    (`derive_job_billing_status` over the same invoices). Pass ``total``:
+    a draft without it reads as a $0 draft, which bills nothing, so it
+    neither drives the stage nor the billing status.
     """
     invoices = [i for i in (invoices or []) if i]
     state = _derive_flow_state(
@@ -252,11 +246,18 @@ def _derive_flow_state(
         i for i in inv_list
         if str(i.get("status", "")).strip().lower() not in _INVOICE_VOID
     ]
-    # Deposits leave the money axis; only billing-real invoices remain in
-    # live_invoices and drive Paid/Invoiced/Partially Paid/Overdue below.
+    # Only billing-real invoices drive Paid/Invoiced/Partially Paid/Overdue
+    # below, by the ONE canonical predicate derive_job_billing_status uses:
+    # deposits leave the money axis, and so does a $0 draft — its zero
+    # balance would otherwise read as settled and show an unbilled job "Paid"
+    # (GDXA-607). A $0 invoice past draft (warranty work) still bills.
+    from gdx_dispatch.core.billing_predicates import invoice_bills_job
+
     live_invoices = [
         i for i in live_all
-        if str(i.get("billing_type") or "").strip().lower() != "deposit"
+        if invoice_bills_job(
+            i.get("status"), i.get("total"), None, i.get("billing_type")
+        )
     ]
     deposit_paid = any(
         str(i.get("status", "")).strip().lower() == "paid"

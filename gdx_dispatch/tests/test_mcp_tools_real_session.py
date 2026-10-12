@@ -31,7 +31,7 @@ import gdx_dispatch.core.mcp_tools.revenue_summary  # noqa: F401
 import gdx_dispatch.core.mcp_tools.schedule_lookup  # noqa: F401
 import gdx_dispatch.core.mcp_tools.technicians_activity  # noqa: F401
 from gdx_dispatch.core.mcp_invoke import invoke_tool
-from gdx_dispatch.models.tenant_models import AppSettings, Invoice, Job
+from gdx_dispatch.models.tenant_models import AppSettings, Invoice, InvoiceAdjustment, Job
 
 COMPANY = "11111111-1111-4111-8111-111111111111"
 
@@ -51,6 +51,7 @@ def db():
     engine = create_engine("sqlite://")
     Job.__table__.create(engine)
     Invoice.__table__.create(engine)
+    InvoiceAdjustment.__table__.create(engine)
     AppSettings.__table__.create(engine)
     session = sessionmaker(bind=engine, autoflush=False)()
     try:
@@ -69,12 +70,20 @@ def _job(db, *, title: str, stage: str, at: datetime, tech: str = "tech-1", dele
     ))
 
 
-def _paid_invoice(db, *, customer_id: uuid.UUID, total: str, paid_at: datetime, on: date) -> None:
+def _paid_invoice(db, *, customer_id: uuid.UUID, total: str, paid_at: datetime, on: date) -> uuid.UUID:
+    inv_id = uuid.uuid4()
     db.execute(Invoice.__table__.insert().values(
-        id=uuid.uuid4(), invoice_number=f"T-{uuid.uuid4().hex[:8]}", public_token=uuid.uuid4().hex,
+        id=inv_id, invoice_number=f"T-{uuid.uuid4().hex[:8]}", public_token=uuid.uuid4().hex,
         company_id=COMPANY,
         customer_id=customer_id, status="paid", total=total,
         paid_at=paid_at, invoice_date=on,
+    ))
+    return inv_id
+
+
+def _adjust(db, inv_id: uuid.UUID, kind: str, amount: str) -> None:
+    db.execute(InvoiceAdjustment.__table__.insert().values(
+        id=uuid.uuid4(), invoice_id=inv_id, kind=kind, amount=amount, company_id=COMPANY,
     ))
 
 
@@ -129,6 +138,32 @@ async def test_customers_lifetime_runs_and_matches_dashed_uuid(db):
     lt = r.result["lifetime"]
     assert (lt["total_paid"], lt["invoice_count"]) == (350.0, 2)
     assert (lt["first_invoice_date"], lt["last_invoice_date"]) == ("2025-03-01", "2026-09-01")
+
+
+@pytest.mark.asyncio
+async def test_revenue_and_lifetime_net_credit_memos(db):
+    """GDXA-596: a 100 invoice with a 20 credit memo is 80 of revenue, not 100.
+
+    A credit memo lowers balance_due and leaves total as issued, so the
+    invoice goes "paid" once 80 is collected while SUM(total) still says 100.
+    ``credit_applied`` must NOT be subtracted: it is the invoice being paid
+    with customer credit, a settlement, not a reduction in what was billed.
+    """
+    cid = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    credited = _paid_invoice(db, customer_id=cid, total="100.00", paid_at=now, on=date(2026, 9, 1))
+    _adjust(db, credited, "credit_memo", "20.00")
+    settled = _paid_invoice(db, customer_id=cid, total="50.00", paid_at=now, on=date(2026, 9, 2))
+    _adjust(db, settled, "credit_applied", "20.00")
+    db.flush()
+
+    rev = await invoke_tool("revenue.summary", {}, principal=_P(), db=db)
+    lt = await invoke_tool("customers.lifetime_analysis", {"customer_id": str(cid)}, principal=_P(), db=db)
+
+    assert rev.ok is True, f"{rev.error_type}: {rev.error_body}"
+    assert (rev.result["revenue"]["total"], rev.result["revenue"]["invoice_count"]) == (130.0, 2)
+    assert lt.ok is True, f"{lt.error_type}: {lt.error_body}"
+    assert (lt.result["lifetime"]["total_paid"], lt.result["lifetime"]["invoice_count"]) == (130.0, 2)
 
 
 @pytest.mark.asyncio

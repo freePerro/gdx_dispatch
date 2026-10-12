@@ -13,9 +13,10 @@ POST /api/payments/create-intent   — create PaymentIntent for an invoice;
                                      ``method`` picks the rail ("card" | "ach")
 POST /api/payments/confirm         — confirm payment after Stripe.js completes
 
-Saved-payment-method management lives on the AUTHENTICATED portal router
-(``gdx_dispatch/routers/payments.py``, ``/payments/methods``). This module's
-unauthenticated duplicates were removed 2026-08-04.
+There is no saved-payment-method management. This module's unauthenticated
+duplicates were removed 2026-08-04, and the authenticated portal router they
+duplicated (``routers/payments.py``, ``/payments/*``) on 2026-10-11 (GDXA-552):
+every route on it 400'd for every caller and nothing called it.
 
 Public (no auth):
 GET  /pay/{invoice_token}          — serve the Stripe Elements payment form
@@ -48,6 +49,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core import customer_page_preview
 from gdx_dispatch.core.customer_views import record_customer_view
 from gdx_dispatch.core.database import contained_read, get_db
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import AppSettings, Invoice, Payment
 
 logger = logging.getLogger(__name__)
@@ -99,9 +101,9 @@ templates = Jinja2Templates(directory=_TEMPLATES_DIR)
 # nullable for ONE release so a /pay tab opened before the deploy does not
 # 422 in the middle of a payment. They are never trusted for authorization:
 # the amount is always recomputed from the invoice, the PaymentIntent is
-# bound to the invoice through Stripe metadata, and the ACH method is bound
-# through its SetupIntent. Remove both fields (and _LEGACY_SHAPE_DEADLINE
-# below) in the release after this one.
+# bound to the invoice through Stripe metadata, and an ACH bank account is
+# bound to that same PaymentIntent by Stripe.js in the browser. Remove both
+# fields (and _LEGACY_SHAPE_DEADLINE below) in the release after this one.
 _LEGACY_SHAPE_DEADLINE = "2026-09-01"
 
 
@@ -1327,7 +1329,7 @@ def _mark_invoice_paid(
     # back to remaining (legacy events without an amount).
     pay_amount = amount if amount else max(remaining, 0)
     if pay_amount <= 0:
-        _recalculate_invoice(invoice, db)  # nothing new to record; true-up status
+        _recalculate_invoice(invoice, db, actor=source)  # nothing new to record; true-up status
         db.commit()
         return
 
@@ -1363,7 +1365,9 @@ def _mark_invoice_paid(
         invoice_id=invoice.id,
         amount=pay_amount,
         method=method,
-        payment_date=datetime.now(timezone.utc).date(),
+        # The shop's calendar day, not UTC's: a card settled after ~7pm
+        # Central is already tomorrow on the server clock (GDXA-505).
+        payment_date=shop_today_from_settings(db),
         reference=external_ref,
         surcharge_amount=(round(float(surcharge), 2) if surcharge and float(surcharge) > 0 else None),
     )
@@ -1420,8 +1424,10 @@ def _mark_invoice_paid(
                 ),
             },
         )
-    _recalculate_invoice(invoice, db)
-    post_payment_received(db, payment, invoice)
+    # `source` is the named system identity that recorded this money; the GL
+    # entries carry it as `created_by` (GDXA-615: these posted with NULL).
+    _recalculate_invoice(invoice, db, actor=source)
+    post_payment_received(db, payment, invoice, actor=source)
     if overpay > 0.009:
         # M12. A searchable, alertable record — not just a log line and a
         # banner someone has to be looking at the right invoice to see.
@@ -2033,8 +2039,9 @@ def confirm_payment(
 # NOTE: ``GET /api/payments/methods`` and ``DELETE /api/payments/methods/{pm_id}``
 # were removed 2026-08-04. They were unauthenticated (leaking card brand/last4
 # and bank details for any Stripe customer id, and detaching any payment
-# method) and had no production caller — the payment-methods UI has always used
-# the portal router's authenticated ``/payments/methods``.
+# method) and had no production caller. The portal router's authenticated
+# ``/payments/methods`` that was named as their replacement could never answer
+# either, and was deleted 2026-10-11 (GDXA-552): there is no saved-method UI.
 
 
 # ---------------------------------------------------------------------------
@@ -2620,7 +2627,9 @@ def _apply_payment_void_state(
         payment = db.get(Payment, payment_id)
         if payment is None:  # pragma: no cover — the row cannot vanish mid-webhook
             raise
-        today = datetime.now(timezone.utc).date()
+        # "The current open period" is the shop's, not UTC's: on the last
+        # evening of a month the UTC date is already next month (GDXA-505).
+        today = shop_today_from_settings(db)
         try:
             return attempt(today, post_to_ledger=True)
         except PeriodLockedError as second:
@@ -2700,7 +2709,7 @@ def _reverse_recorded_payment(
     payment = db.get(Payment, payment_id) or payment
     reopened = False
     if invoice is not None:
-        _recalculate_invoice(invoice, db)
+        _recalculate_invoice(invoice, db, actor=_WEBHOOK_ACTOR)
         # _recalculate_invoice only ever flips an invoice TO "paid"; there is
         # no reverse edge, so an invoice whose payment just got voided keeps
         # reading "paid" with a positive balance. Un-pay it explicitly, back
@@ -2962,7 +2971,7 @@ def _reinstate_reversed_payment(db: Session, reference: str, reason: str) -> dic
     )
     payment = db.get(Payment, payment_id) or payment
     if invoice is not None:
-        _recalculate_invoice(invoice, db)
+        _recalculate_invoice(invoice, db, actor=_WEBHOOK_ACTOR)
         # The invoice was paid when the customer paid it, not when a dispute
         # closed months later. `_recalculate_invoice` re-stamps `paid_at` on
         # the flip back to paid, which would move this invoice's revenue into

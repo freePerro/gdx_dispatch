@@ -292,3 +292,54 @@ def test_list_expenses_status_filter(tenant_db):
     assert {r["vendor"] for r in drafts} == {"A"}
     everything = list_expenses(_={"sub": "t"}, db=tenant_db)
     assert len(everything) >= 2
+
+
+def test_an_expense_cannot_be_costed_to_a_soft_deleted_job(client):
+    """GDXA-603: create and patch refuse a deleted job; a live one is kept."""
+    from datetime import UTC, datetime
+
+    from gdx_dispatch.models.tenant_models import Job
+
+    tc, SessionLocal = client
+    db = SessionLocal()
+    live = Job(title="live job", company_id="tenant-test")
+    gone = Job(title="deleted job", company_id="tenant-test", deleted_at=datetime.now(UTC))
+    db.add_all([live, gone])
+    db.commit()
+    live_id, gone_id = str(live.id), str(gone.id)
+    db.close()
+
+    r = tc.post("/api/expenses", json={
+        "vendor": "Fuel Station", "amount": 10, "date": "2026-03-01",
+        "category": "Fuel", "job_id": gone_id,
+    })
+    assert r.status_code == 422, r.text
+
+    exp = _create_expense(tc, job_id=live_id)
+    assert exp["job_id"] == live_id
+    r = tc.patch(f"/api/expenses/{exp['id']}", json={"job_id": gone_id})
+    assert r.status_code == 422, r.text
+    assert tc.get(f"/api/expenses/{exp['id']}").json()["job_id"] == live_id
+
+
+def test_an_expense_on_a_since_deleted_job_stays_editable(client):
+    """The form resends the expense's current job_id on every save; a job
+    deleted after the expense was costed to it must not lock the expense."""
+    from datetime import UTC, datetime
+
+    from gdx_dispatch.models.tenant_models import Job
+
+    tc, SessionLocal = client
+    db = SessionLocal()
+    job = Job(title="job", company_id="tenant-test")
+    db.add(job)
+    db.commit()
+    job_id = str(job.id)
+    exp = _create_expense(tc, job_id=job_id)
+    job.deleted_at = datetime.now(UTC)
+    db.commit()
+    db.close()
+
+    r = tc.patch(f"/api/expenses/{exp['id']}", json={"amount": 12.5, "job_id": job_id})
+    assert r.status_code == 200, r.text
+    assert r.json()["amount"] == 12.5

@@ -428,7 +428,9 @@
 
 
         <!-- Tax Tab — 2026-04-29. Single-rate today. Future phases (jurisdiction
-             lookup, customer exemptions UI, provider plugins) layer in here. -->
+             lookup, provider plugins) layer in here. Customer exemptions are
+             edited on the customer's own page (CustomerTaxExemptionCard on
+             CustomerDetailView, GDXA-624), keyed by customer. -->
         <TabPanel value="tax">
           <Card>
             <template #title>Sales Tax</template>

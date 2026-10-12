@@ -423,8 +423,7 @@ def _resolve_labor_matrix_row(db: Session, labor_price_item_id):
         # Boundary matches billing_lanes/_is_retired ("SAME definition"):
         # a row expiring TODAY still prices; retired means strictly past.
         # "Today" is the shop's day: on the UTC clock a row stopped pricing at
-        # 6-7pm Central on its own last day (GDXA-508). billing_lanes' copy
-        # still reads UTC until GDXA-505 moves it.
+        # 6-7pm Central on its own last day (GDXA-508).
         _expired = _cmp < shop_today_from_settings(db)
     if row is None or getattr(row, "active", True) is False or _expired:
         raise HTTPException(
@@ -3101,6 +3100,10 @@ def _compute_price_drift(estimate: Estimate, db: Session) -> list[dict]:
     from gdx_dispatch.core.pay_periods import shop_today_from_settings
     from gdx_dispatch.models.labor_pricing import LaborPriceItem
 
+    # The shop's day, as install_labor_line reads it (GDXA-505): on the UTC
+    # day the two disagreed from ~7pm Central until midnight.
+    shop_today = shop_today_from_settings(db)
+
     def _is_retired(item: LaborPriceItem) -> bool:
         # SAME definition install_labor_line (billing_lanes) uses to refuse a
         # row: gone/inactive, OR retired by effective_to (stays active=True!),
@@ -3109,9 +3112,7 @@ def _compute_price_drift(estimate: Estimate, db: Session) -> list[dict]:
         if item is None or not item.active:
             return True
         eff_to = getattr(item, "effective_to", None)
-        # Shop's day, not UTC's (GDXA-508); same boundary as the save path.
-        # billing_lanes' copy still reads UTC until GDXA-505 moves it.
-        if eff_to is not None and eff_to < shop_today_from_settings(db):
+        if eff_to is not None and eff_to < shop_today:
             return True
         return _to_float(item.flat_price) <= 0
 
@@ -3195,13 +3196,13 @@ def reassign_estimate_customer(
     reason, a real audit row, and — when the estimate was already emailed — a
     fresh public token.
     """
-    # ensure_audit_table COMMITS on first use per engine (core/audit.py). Left
-    # to run lazily from inside audit_or_rollback it would harden the
-    # customer_id write and the rotated token BEFORE the audit row exists —
-    # and audit_or_rollback would have nothing left to roll back, which is the
-    # entire promise this endpoint makes. Run it here, where committing has
-    # nothing to disturb. Same reasoning as routers/customers.py's
-    # create_customer_contact.
+    # Until GDXA-352 (2026-10-06) ensure_audit_table COMMITTED on first use per
+    # engine; run lazily from inside audit_or_rollback it hardened the
+    # customer_id write and the rotated token BEFORE the audit row existed, and
+    # audit_or_rollback had nothing left to roll back. It no longer touches open
+    # work (core/audit.py), and a route dependency has already opened the
+    # transaction by here, so the hoist is harmless now, not load-bearing. Same
+    # history as routers/customers.py's create_customer_contact.
     ensure_audit_table(db)
     estimate = _get_estimate_or_404(estimate_id, db)
 

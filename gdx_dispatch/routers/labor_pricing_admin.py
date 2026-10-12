@@ -30,7 +30,6 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
-from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.labor_pricing import LaborPriceItem
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -189,6 +188,8 @@ def create_item(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
+    from gdx_dispatch.core.pay_periods import shop_today_from_settings
+
     _validate_size_pair(payload.width_ft, payload.height_ft)
 
     item = LaborPriceItem(
@@ -311,6 +312,8 @@ def archive_item(
     Hard delete is intentionally unavailable — historical EstimateLine
     snapshots reference these rows by FK in slice 4.
     """
+    from gdx_dispatch.core.pay_periods import shop_today_from_settings
+
     item = db.get(LaborPriceItem, item_id)
     if not item:
         raise HTTPException(status_code=404, detail="labor_price_item not found")

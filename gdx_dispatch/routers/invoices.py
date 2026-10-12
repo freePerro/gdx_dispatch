@@ -592,7 +592,11 @@ def _bump_invoice_version(invoice: Invoice) -> None:
     invoice.version = Invoice.version + 1
 
 
-def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
+def _recalculate_invoice(invoice: Invoice, db: Session, actor: str | None = None) -> None:
+    # ``actor`` is who caused this recalc — a user id, or a named system
+    # identity ("stripe-webhook"). The repost and the auto-flip to paid below
+    # can post GL entries, and those carry it as `created_by` (GDXA-615).
+    #
     # M1 (money audit 2026-08-04): a totals-locked invoice keeps its header
     # figures. QuickBooks-imported rows have a correct imported total and a
     # lossy line set — the importer wrote QBO SubTotalLine/DiscountLine rows as
@@ -683,7 +687,7 @@ def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
     # when content is unchanged — the idempotency key matches). Ledger
     # refusals surface as 409s with the reason, never bare 500s.
     try:
-        repost_invoice_issuance(db, invoice)
+        repost_invoice_issuance(db, invoice, actor=actor)
     except PeriodLockedError as exc:
         raise HTTPException(
             status_code=409,
@@ -694,7 +698,7 @@ def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
     if not is_void and _to_float(balance_due) <= 0 and _to_float(total_amount) > 0:
         # GL S5: the auto-flip routes through the chokepoint; a draft paid in
         # full posts P1 on this transition (before P3, which lands in S6).
-        transition_invoice_status(db, invoice, "paid")
+        transition_invoice_status(db, invoice, "paid", actor=actor)
         # #422: the chokepoint REFUSES to leave a void, so read back what
         # actually happened instead of assuming the flip took. Stamping
         # paid_at off the attempt would date a "payment" on an invoice that
@@ -1104,12 +1108,15 @@ class PaymentCreateIn(BaseModel):
     # arithmetic entirely.
     pay_remaining: bool = False
     method: str = Field(min_length=1, max_length=50)
-    # Defaulted to today so a caller without a date picker records the
+    # Omitted means today, so a caller without a date picker records the
     # payment instead of 422ing (the /billing dialog shipped without one
-    # and a real check payment bounced twice on 2026-07-06). Annotated via
-    # the module alias: pydantic rejects a field named `date` whose
-    # annotation is the bare `date` type once it carries a default.
-    date: _datetime.date = Field(default_factory=date.today)
+    # and a real check payment bounced twice on 2026-07-06). The handler
+    # resolves None to the SHOP's today: a model default has no session, and
+    # date.today() on the UTC server dated every evening payment tomorrow
+    # (GDXA-505). Annotated via the module alias: pydantic rejects a field
+    # named `date` whose annotation is the bare `date` type once it carries
+    # a default.
+    date: _datetime.date | None = None
     # GL S6: with ledger posting ON, an overpayment is rejected unless the
     # caller opts in — the excess then credits 2300 Customer Credits instead
     # of AR (spec §5.3). Flag off keeps today's permissive behavior.
@@ -1129,17 +1136,6 @@ class PaymentCreateIn(BaseModel):
             raise ValueError("amount is required unless pay_remaining is true")
         return self
 
-    @field_validator("date")
-    @classmethod
-    def _no_future_dates(cls, v: _datetime.date) -> _datetime.date:
-        # Backdating is the point (2026 QB-era corrections reach into 2025);
-        # forward-dating is not — a post-dated check isn't received cash.
-        # No slack needed: the client stamps the company-zone (America/
-        # Chicago) day, which is BEHIND UTC — it can never exceed the UTC
-        # day. Slack would only legalize genuine tomorrow-dating.
-        if v > datetime.now(UTC).date():
-            raise ValueError("payment date cannot be in the future")
-        return v
 
 
 def _refuse_future_invoice_date(db: Session, invoice_date: date | None) -> None:
@@ -1171,8 +1167,9 @@ def billing_summary(
       Drafts excluded because they aren't yet receivables (S111 fix).
     - overdue: SUM(balance_due) for invoices past due_date with status
       not in (paid, void, draft).
-    - paid_this_month: SUM(total) of invoices paid in the current
-      calendar month (paid_at >= 1st of month).
+    - paid_this_month: SUM(total net of credit memos) of invoices paid in
+      the current calendar month (paid_at >= 1st of month). A $100 invoice
+      with a $20 credit memo closes on $80 and counts as $80 (GDXA-592).
     - ready_for_billing: count of completed jobs that have no invoice yet.
 
     Balance sums use COALESCE(balance_due, total) so legacy rows with a null
@@ -1181,10 +1178,18 @@ def billing_summary(
     invoices.
     """
     # Overdue compares due DATES, written on the shop's calendar (#444): use
-    # the shop's today. "Paid this month" compares a UTC timestamp, so its
-    # month start stays on the UTC day, as before.
+    # the shop's today. "This month" is the shop's month too (GDXA-505): on
+    # the last evening of a month the UTC date is already the 1st, and the
+    # KPI emptied out five hours early. paid_at is still read by its UTC day
+    # (the UTC-midnight bound below) because a backdated payment stores its
+    # day as a UTC midnight stamp; a card paid after ~7pm Central on a
+    # month's last day therefore still counts toward the next month.
+    # GDXA-656: compare the timestamp itself, never CAST(paid_at AS DATE) —
+    # SQLite casts a stored timestamp to DATE as the number 2026, and
+    # Postgres casts a timestamptz on the session timezone, not UTC.
     today = shop_today_from_settings(db)
-    month_start = datetime.now(UTC).date().replace(day=1)
+    month_start = today.replace(day=1)
+    month_start_utc = datetime.combine(month_start, _datetime.time.min, tzinfo=UTC)
     _amount = Invoice.total
     _balance = func.coalesce(Invoice.balance_due, _amount)
 
@@ -1206,12 +1211,13 @@ def billing_summary(
         )
     ) or 0)
 
+    from gdx_dispatch.core.invoice_net_billed import invoice_net_billed_sq
     paid_this_month = float(db.scalar(
-        select(func.coalesce(func.sum(_amount), 0)).where(
+        select(func.coalesce(func.sum(invoice_net_billed_sq()), 0)).where(
             Invoice.deleted_at.is_(None),
             Invoice.status == "paid",
             Invoice.paid_at.is_not(None),
-            func.cast(Invoice.paid_at, Invoice.due_date.type) >= month_start,
+            Invoice.paid_at >= month_start_utc,
         )
     ) or 0)
 
@@ -1519,7 +1525,7 @@ def create_invoice(
                 pricing_class=pricing_class,
                 customer_payment_terms_days=cust_terms,
             )
-            due_date = terms.due_date(invoice_date_value)
+            due_date = terms.due_date(invoice_date_value, db=db)
         except Exception:
             log.exception("billing_terms_resolve_failed_falling_back_to_net30")
             due_date = invoice_date_value + timedelta(days=30)
@@ -2178,7 +2184,7 @@ def create_invoice(
     # invoices this writes the correct tax_amount; for legacy flat-tax
     # callers it's a no-op since tax_amount was set above.
     db.flush()
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(_))
     db.commit()
     db.refresh(invoice)
     log_audit_event_sync(
@@ -2827,7 +2833,7 @@ def patch_invoice(
         )
         invoice.attached_photo_ids = _json.dumps(ids) if ids else None
 
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(current_user))
     if payload.expected_version is not None:
         # A checked PATCH claims the invoice even when it changes no header
         # field: an edit screen sends it first and then writes lines, so a
@@ -3465,8 +3471,9 @@ def send_invoice(
         # only because `public_token` is minted above), and committing inside an
         # open SAVEPOINT closes the SessionTransaction.
         #
-        # Fixing it means containing the INNER swallow first, or refreshing
-        # `invoice` before serializing. Counted, not bodged.
+        # The fix is below this block: every path commits (or rolls back a
+        # dead transaction) and refreshes `invoice` before serializing
+        # (GDXA-673).
         from gdx_dispatch.core.transactional_email import recently_sent, send_transactional_email
         tid = str(invoice.company_id) if invoice.company_id else None
         _dup_kind = "receipt" if invoice.status == "paid" else "document"
@@ -3528,12 +3535,28 @@ def send_invoice(
     # overwrite the ORIGINAL invoice delivery date — the receipt attempt is
     # fully recorded in outbound_emails; sent_at keeps meaning "when the
     # invoice itself reached the customer".
-    if email_sent:
-        if not (invoice.status == "paid" and invoice.sent_at is not None):
+    def _stamp_delivery() -> None:
+        if email_sent and not (invoice.status == "paid" and invoice.sent_at is not None):
             invoice.sent_at = datetime.now(UTC)
             invoice.sent_via = "email"
+
+    # Every attempt commits, sent or not (GDXA-673): the send path may have
+    # staged its outbound_emails row (and the email.* domain event) on this
+    # session, and `get_db` only closes — a failed or skipped send that did not
+    # commit here never reached the Email Log. If the transaction is already
+    # dead (the swallowed PDF-attach failure GDXA-160 measured), the commit
+    # raises: roll back — the status flip and audit row committed above — and
+    # stamp a delivered email again on the clean transaction.
+    try:
+        _stamp_delivery()  # reads `invoice`: raises on a dead transaction too
         db.commit()
-        db.refresh(invoice)
+    except Exception:
+        log.exception("invoice_send_attempt_commit_failed invoice=%s", invoice_id)
+        db.rollback()
+        if email_sent:
+            _stamp_delivery()
+            db.commit()
+    db.refresh(invoice)
 
     payload = _serialize_invoice(invoice)
     payload["email_sent"] = email_sent
@@ -3740,7 +3763,7 @@ def add_invoice_line(
     # the same transaction, or the whole add is refused.
     claimed_time_entries = _claim_labor_day_rows(db, invoice, payload.time_entry_ids)
 
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(current_user))
     _bump_invoice_version(invoice)
     db.commit()
     db.refresh(line)
@@ -3902,7 +3925,7 @@ def patch_invoice_line(
         line.line_total = _money(Decimal(str(line.quantity)) * Decimal(str(line.unit_price)))
     db.flush()
 
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(user))
     _bump_invoice_version(invoice)
     db.commit()
     db.refresh(line)
@@ -3977,7 +4000,7 @@ def delete_invoice_line(
             released_time_entries = release_day_rows(
                 db, invoice, actor=_actor_id(user), why="last_labor_line_deleted",
             )
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(user))
     _bump_invoice_version(invoice)
     db.commit()
     try:
@@ -4034,6 +4057,17 @@ def record_payment(
     # payment door. Same class as the /send guard.
     if invoice.status == "void":
         raise HTTPException(status_code=409, detail="invoice is void — un-void it before recording a payment")
+    # Backdating is the point (2026 QB-era corrections reach into 2025);
+    # forward-dating is not — a post-dated check isn't received cash. Both
+    # the default and the bound are the shop's calendar day, not the UTC
+    # server's, which is already tomorrow after ~7pm Central (GDXA-505). The
+    # check lives here, not in a model validator, because it needs the
+    # shop's zone from the session.
+    shop_today = shop_today_from_settings(db)
+    if payload.date is None:
+        payload.date = shop_today
+    elif payload.date > shop_today:
+        raise HTTPException(status_code=422, detail="payment date cannot be in the future")
 
     # Deposit invoices (2026-07-23, implementation-audit catch): a deposit
     # superseded at final-invoice time (credit-memo'd remainder) reads as
@@ -4220,7 +4254,7 @@ def record_payment(
     # MAX(payment_date) instead would misfire on invoices settled by credit
     # memos (paid with zero payments) or backdate to an old partial.
     was_unpaid = invoice.paid_at is None
-    if payment.payment_date < datetime.now(UTC).date():
+    if payment.payment_date < shop_today:
         # QB phase-out sequencing breadcrumb: backfilling corrections while
         # the QB money pull can still run risks a webhook pull re-stamping
         # this very date. Warn, don't block — the pause is the office's
@@ -4239,8 +4273,8 @@ def record_payment(
                 )
         except Exception:
             log.exception("qb_pause_breadcrumb_check_failed")
-    _recalculate_invoice(invoice, db)
-    if was_unpaid and invoice.paid_at is not None and payload.date < datetime.now(UTC).date():
+    _recalculate_invoice(invoice, db, actor=_actor_id(_))
+    if was_unpaid and invoice.paid_at is not None and payload.date < shop_today:
         # Backdated zeroing payment: paid_at follows the payment's day as a
         # date-only stamp (UTC midnight) — the same "day known, minute not"
         # convention QB sync writes and formatStampDate/isDateOnlyStamp
@@ -4367,7 +4401,7 @@ def void_payment(
             status_code=409,
             detail=f"payment is in a locked accounting period — {exc}",
         ) from exc
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(_))
     if invoice.status == "paid" and _to_float(invoice.balance_due) > 0:
         # the money that made it "paid" is gone — reopen it
         transition_invoice_status(db, invoice, "sent", actor=_actor_id(_))
@@ -4568,7 +4602,7 @@ def finalize_invoice(
         )
     if invoice.locked:
         return _serialize_invoice(invoice)
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(_))
     invoice.locked = True
     invoice.locked_at = datetime.now(UTC)
 
@@ -4817,7 +4851,7 @@ def issue_credit_memo(
         # the entry. Drafts are edited, not credited.
         raise HTTPException(status_code=409, detail="only issued invoices can be credited — edit the draft instead")
     credit_amount = _money(payload.amount)
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(_))
     if float(credit_amount) > _to_float(invoice.balance_due) + 0.005:
         raise HTTPException(
             status_code=422,
@@ -4841,7 +4875,7 @@ def issue_credit_memo(
     # belt: if the shrunken receivable changed any existing payment's
     # AR/2300 split, reverse+repost it (caps make this a no-op normally)
     resettle_invoice_payments(db, invoice, actor=_actor_id(_))
-    _recalculate_invoice(invoice, db)  # fully-credited invoices settle to paid
+    _recalculate_invoice(invoice, db, actor=_actor_id(_))  # fully-credited invoices settle to paid
     db.commit()
     # M12: a credit can settle the invoice just as a payment can, and the
     # audit's prescription says "a payment OR CREDIT". An intent left open on
@@ -4901,7 +4935,7 @@ def apply_customer_credit(
         raise HTTPException(status_code=422, detail="invoice has no customer")
 
     amount = _money(payload.amount)
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(_))
 
     # Spec §5.3: the one Phase-1 balance precondition — lock the customer's
     # credit rows so two concurrent applications can't double-spend (PG;
@@ -4936,7 +4970,7 @@ def apply_customer_credit(
     db.flush()
     post_credit_application(db, adjustment, invoice, actor=_actor_id(_))
     resettle_invoice_payments(db, invoice, actor=_actor_id(_))
-    _recalculate_invoice(invoice, db)
+    _recalculate_invoice(invoice, db, actor=_actor_id(_))
     db.commit()
     # M12. Money arrived by another route, so a PaymentIntent the customer
     # still has open on the pay page could collect a second time — it froze its

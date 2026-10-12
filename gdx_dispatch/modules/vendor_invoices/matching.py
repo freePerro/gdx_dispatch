@@ -237,6 +237,7 @@ def suggest_job_matches(
                 select(Job)
                 .where(Job.customer_id == customer.id)
                 .where(Job.lifecycle_stage != "cancelled")
+                .where(Job.deleted_at.is_(None))
             ).scalars().all()
             jobs.sort(key=_job_sort_key, reverse=True)
             for job in jobs[:3]:
@@ -257,10 +258,19 @@ def suggest_job_matches(
         rows = db.execute(
             select(JobPartNeeded).where(JobPartNeeded.status.in_(("needed", "ordered")))
         ).scalars().all()
-        for row in rows:
-            if _similarity(vendor_name, row.supplier or "") >= 0.7 and row.job_id:
+        rows = [
+            r for r in rows
+            if r.job_id and _similarity(vendor_name, r.supplier or "") >= 0.7
+        ]
+        # A parts row outlives its job's soft-delete; never suggest that job.
+        # job_id is String(36) while jobs.id is a Uuid (dashless hex on
+        # SQLite), so resolve through the ORM instead of a raw-text join.
+        keyed = [(r, _canon_uuid(r.job_id)) for r in rows]
+        live = _live_job_ids(db, [c for _, c in keyed if c is not None])
+        for row, canon in keyed:
+            if canon in live:
                 cand = JobSuggestion(
-                    job_id=str(row.job_id),
+                    job_id=canon,
                     score=0.6,
                     reason=f"open parts order from '{row.supplier}'",
                 )
@@ -268,6 +278,29 @@ def suggest_job_matches(
 
     ranked = sorted(suggestions.values(), key=lambda s: s.score, reverse=True)
     return ranked[:limit]
+
+
+def _canon_uuid(raw) -> str | None:
+    """``raw`` as a lowercase dashed UUID string, or None when it is not one.
+    JobPartNeeded.job_id is free text: the parts-needed route stores the path
+    string as given, so it may be uppercase or dashless."""
+    try:
+        return str(UUID(str(raw)))
+    except ValueError:
+        log.warning("parts-needed row carries a non-UUID job_id %r; not suggested", raw)
+        return None
+
+
+def _live_job_ids(db: Session, canon_ids: list[str]) -> set[str]:
+    """The subset of ``canon_ids`` (dashed UUID strings) naming jobs that
+    exist and are not soft-deleted."""
+    ids = {UUID(c) for c in canon_ids}
+    if not ids:
+        return set()
+    found = db.execute(
+        select(Job.id).where(Job.id.in_(ids)).where(Job.deleted_at.is_(None))
+    ).scalars().all()
+    return {str(i) for i in found}
 
 
 def _job_sort_key(job: Job):

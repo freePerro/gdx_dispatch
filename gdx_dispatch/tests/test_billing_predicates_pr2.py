@@ -1,7 +1,8 @@
 """PR2-billing-capture (2026-07-07) — the canonical "billed" predicate.
 
-`Job.billing_status` is a dead cache (only ever written "unbilled"), so every
-reader that filtered on it was wrong. These tests pin:
+`Job.billing_status` is a dead cache (no app code writes it past "unbilled";
+older rows hold a stale "invoiced"), so every reader that
+filtered on it was wrong. These tests pin:
 
 1. The predicate matrix — void-only and $0-DRAFT-only invoices do NOT bill a
    job; a $0 SENT invoice (deliberate freebie) and any >$0 live invoice DO.
@@ -11,10 +12,10 @@ reader that filtered on it was wrong. These tests pin:
    ready_for_billing count agree on the same fixture set.
 4. invoice_now derives from invoices: no more nagging on paid jobs; a job
    whose only invoice was VOIDED alerts again.
-5. The stale-estimate next-action still fires after the dead billing_status
-   clause deletion (zero behavior change).
+5. The stale-estimate next-action still fires after the billing_status
+   clause deletion, whatever the column holds.
 6. The forecasting scheduled-jobs projection ignores billing_status entirely
-   (the deleted clause was a tautology; binary include semantics unchanged —
+   (whatever the column holds; binary include semantics unchanged —
    deposit-subtraction is a separate, /audit-gated follow-up).
 """
 from __future__ import annotations
@@ -253,8 +254,8 @@ def test_rfb_endpoint_and_summary_count_agree(tenant_db_session):
 
 
 def test_stale_estimate_action_survives_clause_deletion(tenant_db_session):
-    """The billing_status filter deleted from the stale-estimate rule was a
-    tautology — the rule must fire exactly as before."""
+    """The billing_status filter deleted from the stale-estimate rule excluded
+    no live row — the rule must fire exactly as before."""
     db = tenant_db_session
     job = _seed_job(db, stage="estimate", title="old estimate")
     job.created_at = datetime.now(UTC) - timedelta(hours=100)
@@ -265,7 +266,7 @@ def test_stale_estimate_action_survives_clause_deletion(tenant_db_session):
 
 
 def test_scheduled_projection_ignores_billing_status(tenant_db_session):
-    """The deleted forecasting clause was a tautology on real data. Pin the
+    """The deleted forecasting clause excluded no live row on real data. Pin the
     new invariant: the projection keys ONLY off stage/schedule/window —
     billing_status (any value) and existing invoices don't exclude a job.
     (Subtracting already-invoiced deposits is a separate, /audit-gated

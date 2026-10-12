@@ -24,6 +24,7 @@ Two contracts callers (S4+) must honor:
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import date
 from uuid import UUID
@@ -33,7 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync
-from gdx_dispatch.modules.ledger.coa import LedgerConfigError, resolve_role_account
+from gdx_dispatch.modules.ledger.coa import LedgerConfigError, ensure_role_account
 from gdx_dispatch.modules.ledger.keys import (
     compute_seq,
     content_hash,
@@ -49,6 +50,15 @@ from gdx_dispatch.modules.ledger.models import (
     GlJournalLine,
     GlPeriodLock,
 )
+
+logger = logging.getLogger(__name__)
+
+# Source types whose entries must name who caused them (GDXA-615): money the
+# customer owes or paid. A NULL `created_by` here is a caller that dropped the
+# acting user — prod carried 10 such entries (4 invoice, 6 payment). Logged,
+# not refused: refusing would abort the operational write that recorded the
+# money, which is worse than an entry with no name on it.
+_ACTOR_REQUIRED_SOURCES = frozenset({"invoice", "payment"})
 
 # Retries for the reversed-key-collision race (§5.6): recompute seq and try
 # again. Bounded — a livelock here means something is reversing entries as
@@ -123,7 +133,10 @@ def _resolve_lines(
     resolved = []
     for line in lines:
         if line.role is not None:
-            account = resolve_role_account(session, company_id, line.role)
+            # Tops up a role a later release added to ALL_ROLES on an install
+            # whose CoA predates it, instead of raising inside whatever
+            # recorded the money (GDXA-572). Deactivated stays loud.
+            account = ensure_role_account(session, company_id, line.role)
             account_id = account.id
         else:
             account = session.get(GlAccount, line.account_id)
@@ -217,6 +230,13 @@ def _insert_entry(
     created_by: str | None,
     resolved_lines: list[tuple[PostingLine, UUID]],
 ) -> GlJournalEntry:
+    if not created_by and source_type in _ACTOR_REQUIRED_SOURCES:
+        logger.warning(
+            "gl_posting_without_actor source_type=%s source_id=%s key=%s — "
+            "the caller passed no acting user; thread one in (a user id, or "
+            "a named system identity such as 'stripe-webhook')",
+            source_type, source_id, key,
+        )
     entry = GlJournalEntry(
         effective_at=effective_at,
         source_type=source_type,

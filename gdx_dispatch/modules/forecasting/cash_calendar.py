@@ -166,7 +166,15 @@ def _unbilled_value(db: Session, jobs: list[Job]) -> tuple[dict[Any, Decimal], s
     carries that money until the invoice is sent.
 
     Returns (remaining > 0 by job id, ids with no accepted estimate, ids with
-    something billed)."""
+    something billed).
+
+    Billed is the invoice total AS ISSUED, deliberately not net of credit
+    memos (GDXA-593). A credit memo is money forgiven, not money still to
+    bill: netting it would bring the credit back as expected income on the
+    job. balance_due is wrong too — the unpaid part of a sent invoice is
+    already its own row. A deposit superseded by its final invoice is the one
+    case where gross over-subtracts, and that understates income, which is
+    the safe side for a cash forecast."""
     if not jobs:
         return {}, set(), set()
     ids = [j.id for j in jobs]
@@ -267,6 +275,10 @@ def _finished_unbilled(db: Session, tz) -> list[dict[str, Any]]:
         return []
     ids = [j.id for j in jobs]
     accepted = _accepted_totals(db, ids)
+    # Deposits at their total as issued, not net of credit memos (GDXA-593,
+    # as in _unbilled_value). Whether a credited deposit's concession carries
+    # onto the final invoice is the office's call; gross gives the lower
+    # estimate, the safe side for a cash forecast.
     deposits: dict[Any, Decimal] = {}
     for jid, total in db.execute(
         select(Invoice.job_id, func.sum(Invoice.total))

@@ -277,10 +277,13 @@ def _build_user_stats(
     # Matching the user id alone counted 0 for every normally assigned job.
     # One spelling of "this person's completed jobs in the window", shared by
     # the job count and the revenue read so Avg Job divides like by like.
+    # "Completed" is `lifecycle_stage`, the done signal (GDXA-227, as
+    # reports.py reads it); the `status` varchar holds two spellings and is
+    # NULL on imported rows, which a status read drops (GDXA-643).
     completed_jobs = f"""
         j.company_id = :tid AND j.deleted_at IS NULL
           AND (j.assigned_to = :user_id OR t.user_id = :user_id)
-          AND j.status IN ('Complete', 'Completed', 'complete', 'completed')
+          AND j.lifecycle_stage = 'completed'
           {period_filter.replace('created_at', job_done_at)}
     """
     try:

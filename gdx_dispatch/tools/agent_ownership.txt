@@ -49,6 +49,10 @@ gdx_dispatch/models/tenant_models.py                         platform-core
 gdx_dispatch/models/__init__.py                              platform-core
 gdx_dispatch/tests/test_model_registration_48.py             platform-core
 gdx_dispatch/tests/test_models_hub_imports.py                platform-core
+# The Postgres test fixture every requires-pg test stands on: template DB,
+# per-test clones, the stale-template sweep (GDXA-660). Tests are not a covered
+# root, so this rule is not demanded by the gate, but it must keep matching.
+gdx_dispatch/tests/fixtures/pg.py                            platform-core
 .github/*                                                    platform-core
 scripts/*                                                    platform-core
 tools/*                                                      platform-core
@@ -57,6 +61,9 @@ pytest.ini                                                   platform-core
 ruff.toml                                                    platform-core
 pyproject.toml                                               platform-core
 sgconfig.yml                                                 platform-core
+# The operator's env template; its drift guard is
+# gdx_dispatch/tests/test_env_template_drift.py.
+.env.template                                                platform-core
 # The agent definitions themselves — the map's own owner list. Gated: the
 # directory is in COVERED_ROOTS, so an agent file with no rule here is red.
 .claude/agents/*                                             platform-core
@@ -137,7 +144,6 @@ gdx_dispatch/core/log_redact.py                              platform-core
 gdx_dispatch/core/log_shipper.py                             platform-core
 gdx_dispatch/core/modules.py                                 platform-core
 gdx_dispatch/core/observability.py                           platform-core
-gdx_dispatch/core/onboarding.py                              platform-core
 gdx_dispatch/core/pagination.py                              platform-core
 gdx_dispatch/core/performance.py                             platform-core
 gdx_dispatch/core/permissions.py                             platform-core
@@ -273,13 +279,11 @@ gdx_dispatch/frontend/src/composables/useViewMode.js         frontend-shell
 ## ledger, tax, collections, reminders, customer statements, Stripe.
 ## ---------------------------------------------------------------------------
 gdx_dispatch/routers/invoices.py                             money-billing
-gdx_dispatch/routers/payments.py                             money-billing
 gdx_dispatch/routers/stripe_webhook.py                       money-billing
 gdx_dispatch/routers/collections.py                          money-billing
 gdx_dispatch/routers/invoice_reminders.py                    money-billing
 gdx_dispatch/routers/customer_statements.py                  money-billing
 gdx_dispatch/core/payments.py                                money-billing
-gdx_dispatch/core/stripe_payments.py                         money-billing
 gdx_dispatch/core/invoice_delivery.py                        money-billing
 gdx_dispatch/core/invoice_sms.py                             money-billing
 gdx_dispatch/core/estimate_sms.py                            estimates-pricing
@@ -289,6 +293,7 @@ gdx_dispatch/frontend/src/components/SendLaterPanel.vue      comms-email-phone
 gdx_dispatch/frontend/src/components/ScheduledTextsList.vue  comms-email-phone
 gdx_dispatch/core/invoice_invariants.py                      money-billing
 gdx_dispatch/core/invoice_paid.py                            money-billing
+gdx_dispatch/core/invoice_net_billed.py                      money-billing
 gdx_dispatch/core/invoice_tax.py                             money-billing
 gdx_dispatch/core/billing_lanes.py                           money-billing
 gdx_dispatch/core/billing_predicates.py                      money-billing
@@ -507,6 +512,7 @@ gdx_dispatch/frontend/src/views/SurveysView.vue              customers-crm
 gdx_dispatch/frontend/src/views/WinbackView.vue              customers-crm
 gdx_dispatch/frontend/src/views/CustomerPortalView.vue       customers-crm
 gdx_dispatch/frontend/src/components/CustomerFormDialog.vue  customers-crm
+gdx_dispatch/frontend/src/components/CustomerTaxExemptionCard.vue customers-crm
 gdx_dispatch/frontend/src/utils/customerMatch.js             customers-crm
 gdx_dispatch/frontend/src/constants/customerTypes.js         customers-crm
 

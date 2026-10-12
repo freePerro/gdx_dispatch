@@ -4,8 +4,8 @@ forgotten day (B8)" and "The phone on day 2 (B3, B4, B7)").
 Every test drives the real route through a TestClient on a fresh SQLite
 schema built from the ORM. The routes are called with the job's 32-hex id:
 on SQLite the raw-SQL job read and the raw-SQL timer insert only line up with
-the ORM-written rows in that form (CLAUDE.md, "SQLite stores a Uuid column as
-32 dashless hex"), and the day-close module reads timers through the ORM.
+the ORM-written rows in that form (.claude/rules/database.md, "SQLite stores
+a Uuid column as 32 dashless hex"), and the day-close module reads timers through the ORM.
 """
 from __future__ import annotations
 

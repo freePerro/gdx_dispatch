@@ -199,10 +199,41 @@ def ensure_role_account(session: Session, company_id: str, role: str) -> GlAccou
     keys on role across active AND inactive rows, so a deliberately
     deactivated owner is never resurrected here — that case, and an
     ambiguous one, stay as loud as ``resolve_role_account`` makes them.
+
+    The engine resolves every role line through here (GDXA-572), so the
+    top-up is scoped to an install that already HAS a chart of accounts: an
+    unseeded company stays loud rather than having its whole starter CoA
+    materialized by whichever posting happened to come first. Flushes, never
+    commits — the caller's transaction owns the new row.
     """
     try:
         return resolve_role_account(session, company_id, role)
     except LedgerConfigError:
-        if role not in ALL_ROLES or seed_coa(session, company_id) == 0:
+        if role not in ALL_ROLES or not _has_any_account(session):
+            raise
+        if seed_coa(session, company_id) == 0:
             raise
         return resolve_role_account(session, company_id, role)
+
+
+def resolve_role_account_or_none(
+    session: Session, company_id: str, role: str
+) -> GlAccount | None:
+    """``resolve_role_account`` for a balance READ: ``None`` when no system
+    account has ever owned ``role`` (active or not), because an account that
+    does not exist carries no lines and its balance is zero. Reads must not
+    write, so this never tops up; the posting that follows does, through the
+    engine. A deactivated or ambiguous owner still raises — its lines exist
+    and a zero would be a lie (GDXA-572)."""
+    if role in ALL_ROLES and session.scalars(
+        select(GlAccount.id).where(
+            GlAccount.role == role, GlAccount.is_system.is_(True)
+        ).limit(1)
+    ).first() is None:
+        return None
+    return resolve_role_account(session, company_id, role)
+
+
+def _has_any_account(session: Session) -> bool:
+    # Single-tenant database: the connection is the scope, no company filter.
+    return session.scalars(select(GlAccount.id).limit(1)).first() is not None

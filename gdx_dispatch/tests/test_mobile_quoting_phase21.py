@@ -464,6 +464,50 @@ def test_quote_seeds_jobsite_from_bound_location(session_factory):
         db.close()
 
 
+def test_quote_jobsite_seed_stays_the_street_when_the_row_has_a_town(session_factory):
+    """GDXA-503: the seed is the STREET. Conversion's _bind_estimate_jobsite
+    compares jobsite_address to location streets; a town suffix would mint
+    a duplicate customer_locations row on accept."""
+    seed = _seed(session_factory)
+    db = session_factory()
+    try:
+        loc_id = str(uuid4())
+        db.execute(
+            text(
+                "INSERT INTO customer_locations "
+                "(id, company_id, customer_id, label, address, city, state, zip, is_primary) "
+                "VALUES (:id, 'tenant-a', :cid, 'Home', '88 Pine Ridge Rd', "
+                "'Anytown', 'MN', '55555', 0)"
+            ),
+            {"id": loc_id, "cid": seed["customer_id"]},
+        )
+        db.execute(
+            text("UPDATE jobs SET location_id = :lid WHERE id = :jid"),
+            {"lid": loc_id, "jid": seed["job_id"]},
+        )
+        db.commit()
+        resp = mobile_quoting.build_quote(
+            job_id=seed["job_id"],
+            payload=mobile_quoting.BuildQuoteIn(service="spring_replacement"),
+            request=_request(),
+            current_user=_TEST_USER,
+            db=db,
+        )
+        assert resp.status_code == 201, resp.body
+        body = _as_json(resp)
+        row = db.execute(
+            text("SELECT jobsite_address FROM estimates WHERE id = :eid"),
+            {"eid": body["id"].replace("-", "")},
+        ).first() or db.execute(
+            text("SELECT jobsite_address FROM estimates WHERE id = :eid"),
+            {"eid": body["id"]},
+        ).first()
+        assert row is not None
+        assert row[0] == "88 Pine Ridge Rd"
+    finally:
+        db.close()
+
+
 def test_quote_without_bound_location_leaves_jobsite_null(session_factory):
     seed = _seed(session_factory)
     db = session_factory()
