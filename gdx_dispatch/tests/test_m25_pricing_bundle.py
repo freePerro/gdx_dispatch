@@ -8,7 +8,7 @@ diverging from its lines (billing follows the lines).
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -17,6 +17,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase, ensure_audit_table
+from gdx_dispatch.core.pay_periods import shop_today_from_settings
 
 TENANT = "tenant-m25"
 OFFICE = {"user_id": "office-user", "email": "office@example.com", "role": "admin"}
@@ -79,9 +80,11 @@ def test_price_comparison_uses_margin_not_markup(monkeypatch):
 
 def _matrix_db():
     from gdx_dispatch.models.labor_pricing import LaborPriceItem
+    from gdx_dispatch.models.tenant_models import AppSettings
 
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     LaborPriceItem.__table__.create(engine)
+    AppSettings.__table__.create(engine)  # the shop's zone decides "today" (GDXA-508)
     return sessionmaker(bind=engine)(), LaborPriceItem
 
 
@@ -104,7 +107,7 @@ def test_effective_to_past_prices_nothing():
     db, LPI = _matrix_db()
     row = LPI(id=uuid.uuid4(), description="Superseded", service_type="install",
               flat_price=150, assumed_man_hours=2, active=True,
-              effective_to=date.today() - timedelta(days=1))
+              effective_to=shop_today_from_settings(db) - timedelta(days=1))
     db.add(row)
     db.commit()
     with pytest.raises(HTTPException):
@@ -241,7 +244,7 @@ def test_matrix_row_expiring_today_still_prices():
     db, LPI = _matrix_db()
     row = LPI(id=uuid.uuid4(), description="Last day", service_type="install",
               flat_price=150, assumed_man_hours=2, active=True,
-              effective_to=date.today())
+              effective_to=shop_today_from_settings(db))
     db.add(row)
     db.commit()
     assert _resolve_labor_matrix_row(db, row.id).id == row.id
