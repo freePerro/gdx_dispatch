@@ -19,6 +19,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.models.tenant_models import InvoiceAdjustment
 from gdx_dispatch.routers import segments as segments_router
 from gdx_dispatch.routers.marketing import ReferralCreateIn
 from gdx_dispatch.routers.segments import (
@@ -83,12 +84,15 @@ def db_sessionmaker():
                 id TEXT PRIMARY KEY,
                 job_id TEXT,
                 total NUMERIC,
+                status TEXT NOT NULL DEFAULT 'sent',
                 company_id TEXT,
                 deleted_at TEXT
             )
             """
         )
     )
+    # lifetime_value nets credit memos (GDXA-595), so the rollup reads this.
+    InvoiceAdjustment.__table__.create(db.get_bind(), checkfirst=True)
     db.execute(
         text(
             """

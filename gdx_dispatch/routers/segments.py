@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.invoice_net_billed import invoice_net_billed_sql
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import Segment
 
@@ -313,6 +314,12 @@ def _customer_stats_sql(has_customer_type: bool, has_metadata: bool) -> str:
 
     Keep json/jsonb columns out of GROUP BY. `jsonb` would work, but the fix is
     not to change the column type — it is to not group on a payload column.
+
+    **lifetime_value is billed net of credit memos, over non-void invoices**
+    (GDXA-595). A credit memo lowers `balance_due` and never `invoices.total`,
+    so `SUM(i.total)` counted a 100 invoice with a 20 credit as 100. The shared
+    `invoice_net_billed_sql` nets it to 80. A void invoice billed nothing and is
+    joined out with the deleted ones.
     """
     customer_type_select = (
         "c.customer_type AS customer_type," if has_customer_type else "NULL AS customer_type,"
@@ -329,7 +336,7 @@ def _customer_stats_sql(has_customer_type: bool, has_metadata: bool) -> str:
                 {metadata_select}
                 c.created_at,
                 MAX(j.created_at) AS last_job_date,
-                COALESCE(SUM(i.total), 0) AS lifetime_value
+                COALESCE(SUM({invoice_net_billed_sql("i")}), 0) AS lifetime_value
             FROM customers c
             LEFT JOIN jobs j
                 ON j.customer_id = c.id
@@ -337,6 +344,7 @@ def _customer_stats_sql(has_customer_type: bool, has_metadata: bool) -> str:
             LEFT JOIN invoices i
                ON i.job_id = j.id
                AND i.deleted_at IS NULL
+               AND i.status != 'void'
             WHERE c.deleted_at IS NULL
             GROUP BY c.id
             ORDER BY c.created_at DESC
