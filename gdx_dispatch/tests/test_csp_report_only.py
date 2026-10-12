@@ -88,10 +88,10 @@ def _directives(header: str) -> dict[str, list[str]]:
 def _inline_script_nonces(html: str) -> list[str | None]:
     """The nonce of every <script> without a src, None where it has none."""
     nonces = []
-    for attrs in re.findall(r"<script\b([^>]*)>", html):
-        if "src=" in attrs:
+    for attrs in re.findall(r"<script\b([^>]*)>", html, re.IGNORECASE):
+        if "src=" in attrs.lower():
             continue
-        m = re.search(r'nonce="([^"]*)"', attrs)
+        m = re.search(r'nonce="([^"]*)"', attrs, re.IGNORECASE)
         nonces.append(m.group(1) if m else None)
     return nonces
 
@@ -104,11 +104,11 @@ def test_the_pay_page_policy_allows_stripe_js(client, invoice):
     for origin in ("https://js.stripe.com", "https://*.js.stripe.com"):
         assert origin in d["script-src"]
         assert origin in d["frame-src"]
-    assert "https://hooks.stripe.com" in d["frame-src"]
-    assert "https://api.stripe.com" in d["connect-src"]
+    # Exact source-list membership, compared as sets of parsed tokens.
+    assert {"https://hooks.stripe.com", "blob:"} <= set(d["frame-src"])
+    assert {"https://api.stripe.com"} <= set(d["connect-src"])
     # What was there before stays.
-    assert "blob:" in d["frame-src"]
-    assert "https://static.cloudflareinsights.com" in d["script-src"]
+    assert {"https://static.cloudflareinsights.com"} <= set(d["script-src"])
 
 
 def test_every_inline_script_on_the_pay_page_carries_the_policy_nonce(client, invoice):
@@ -154,7 +154,7 @@ def test_the_spa_policy_allows_the_google_maps_loader(client):
     # MapsView.vue / MobileTodayView.vue inject maps.googleapis.com/maps/api/js.
     assert "https://*.googleapis.com" in d["script-src"]
     assert "https://*.gstatic.com" in d["img-src"]
-    assert "https://fonts.gstatic.com" in d["font-src"]
+    assert {"https://fonts.gstatic.com"} <= set(d["font-src"])
     assert "blob:" in d["worker-src"]
     assert "'unsafe-eval'" not in d["script-src"]
     assert "'unsafe-inline'" not in d["script-src"]
