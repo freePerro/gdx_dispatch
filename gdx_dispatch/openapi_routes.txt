@@ -953,6 +953,7 @@ POST /api/invoice-reminders/preview
 POST /api/invoice-reminders/settings
 POST /api/invoices
 POST /api/invoices/{invoice_id}/apply-credit
+POST /api/invoices/{invoice_id}/cancel-bank-verification
 POST /api/invoices/{invoice_id}/credit-memo
 POST /api/invoices/{invoice_id}/dunning-pause
 POST /api/invoices/{invoice_id}/email-preview
@@ -1084,6 +1085,7 @@ POST /api/parts/pricing/suggest-markup
 POST /api/payments
 POST /api/payments/confirm
 POST /api/payments/create-intent
+POST /api/payments/release-verifying
 POST /api/payroll/commission-rates
 POST /api/payroll/entries
 POST /api/payroll/run-current-period

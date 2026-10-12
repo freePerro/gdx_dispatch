@@ -117,6 +117,20 @@
               v-tooltip.bottom="achPendingTooltip"
               data-testid="invoice-ach-pending-tag"
             />
+            <!-- GDXA-792: the way out of the micro-deposit wait. Until this the
+                 only release was the Stripe Dashboard or a 10-day timeout. -->
+            <Button
+              v-if="achPending?.stage === 'verifying' && canProcessPayments"
+              label="Cancel bank verification"
+              icon="pi pi-times"
+              size="small"
+              text
+              severity="secondary"
+              :loading="releasingVerification"
+              style="margin-left: 0.25rem"
+              data-testid="invoice-cancel-bank-verification"
+              @click="cancelBankVerification"
+            />
             <p>Due: <strong>{{ formatDate(invoice.due_date) }}</strong></p>
             <p>Created: {{ formatDate(invoice.created_at) }}</p>
             <!-- formatStampDateTime: QB-backfilled stamps are UTC midnight
@@ -1504,6 +1518,8 @@ const invoice = ref({
 // invoices.write; this just stops offering a button that would 403.
 const { hasPermission } = usePermission();
 const canWriteInvoices = computed(() => hasPermission("invoices.write"));
+// GDXA-792: "Cancel bank verification" — the server gates it on the same key.
+const canProcessPayments = computed(() => hasPermission("payments.process"));
 // The server's unbilled-parts refusal, turned into a choice (follow-up 2).
 const showVerifyUnbilledDialog = ref(false);
 const verifyUnbilledParts = ref([]);
@@ -1554,9 +1570,45 @@ const achPendingTooltip = computed(() => {
   if (!p) return "";
   const amt = currency(p.amount);
   return p.stage === "verifying"
-    ? `The customer started a ${amt} bank payment and still has to confirm the micro-deposits Stripe sent them. Nothing is recorded until it settles; the pay page will not take a second payment meanwhile.`
-    : `A ${amt} bank payment is on its way (up to 4 business days). Nothing is recorded until it settles; the pay page will not take a second payment meanwhile.`;
+    ? `The customer started a ${amt} bank payment and still has to confirm the micro-deposits Stripe sent them. No money has moved, and the pay page will not take another payment until they confirm, Stripe gives up after 10 days, or the verification is cancelled. The customer can cancel it from the pay page ("Pay a different way instead")${canProcessPayments.value ? ', or use "Cancel bank verification" here' : "; someone with payment permission can cancel it here"}.`
+    : `A ${amt} bank payment is on its way (up to 4 business days). The money is already moving, so it cannot be cancelled here; it settles or fails on its own and is recorded then. The pay page will not take a second payment meanwhile.`;
 });
+
+// GDXA-792 — end the micro-deposit wait so the customer can pay another way.
+const releasingVerification = ref(false);
+async function cancelBankVerification() {
+  const p = achPending.value;
+  if (!p) return;
+  const ok = await confirmAsync({
+    message: `Cancel the customer's pending ${currency(p.amount)} bank payment? No money has moved yet. Their pay page will take a card or a different bank account again, and the old verification link stops working.`,
+    header: "Cancel bank verification",
+    acceptLabel: "Cancel verification",
+    rejectLabel: "Keep waiting",
+    acceptClass: "p-button-danger",
+  });
+  if (!ok) return;
+  releasingVerification.value = true;
+  try {
+    await api.post(
+      `/api/invoices/${route.params.id}/cancel-bank-verification`,
+      {},
+      { suppressErrorToast: true },
+    );
+    toast.add({
+      severity: "success",
+      summary: "Bank verification cancelled",
+      detail: "The customer can pay by card or another bank account now.",
+      life: 4000,
+    });
+  } catch (e) {
+    const detail = typeof e?.body?.detail === "string" ? e.body.detail : e?.message;
+    toast.add({ severity: "error", summary: "Not cancelled", detail: detail || "Try again.", life: 6000 });
+  } finally {
+    releasingVerification.value = false;
+    loadActivity(); // the "Bank verification cancelled" row
+    await loadAchPending();
+  }
+}
 
 // --- Computed ---
 const subtotal = computed(() =>

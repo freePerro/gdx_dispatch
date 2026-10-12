@@ -419,7 +419,13 @@
     {% if ach_processing.get("hosted_verification_url") and not preview %}
     <a href="{{ ach_processing.get("hosted_verification_url") }}" target="_blank" rel="noopener" style="display:block;margin-top:0.5rem;" data-testid="ach-verifying-link">Confirm the deposit</a>
     {% endif %}
+    {% if not preview %}
+    <!-- GDXA-792: the way out. Without it this page refused every payment
+         until Stripe's 10-day verification timeout. -->
+    <button type="button" class="btn-link" id="ach-release" data-testid="ach-release" style="margin-top:0.25rem;min-height:44px;">Pay a different way instead</button>
+    {% endif %}
   </div>
+  <div id="ach-release-error" class="alert error" role="alert" data-testid="ach-release-error"></div>
   {% else %}
   <div class="alert success visible" data-testid="ach-processing-banner">
     A bank transfer for this invoice is already processing. Bank transfers take
@@ -570,6 +576,34 @@
       btn.setAttribute("aria-selected", "true");
       document.getElementById("panel-" + btn.dataset.tab).classList.add("active");
     });
+  });
+</script>
+{% endif %}
+{% if ach_processing and ach_processing.get("stage") == "verifying" and not settled and not preview %}
+<script nonce="{{ csp_nonce }}">
+  // GDXA-792: cancel the pending micro-deposit check, then reload. The server
+  // re-reads Stripe, and with the wait gone the page renders both tabs again.
+  document.getElementById("ach-release").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    const errBox = document.getElementById("ach-release-error");
+    if (!window.confirm("Cancel the pending bank transfer? Your account has not been charged. You can then pay by card or with a different bank account.")) return;
+    btn.disabled = true;
+    errBox.classList.remove("visible");
+    try {
+      const resp = await fetch("/api/payments/release-verifying", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ invoice_token: "{{ invoice.public_token }}" }),
+      });
+      if (resp.ok) { window.location.reload(); return; }
+      const err = await resp.json().catch(() => ({}));
+      errBox.textContent = (typeof err.detail === "string" && err.detail) || "We couldn't cancel it right now. Please try again.";
+      errBox.classList.add("visible");
+    } catch (_) {
+      errBox.textContent = "We couldn't cancel it right now. Please try again.";
+      errBox.classList.add("visible");
+    }
+    btn.disabled = false;
   });
 </script>
 {% endif %}

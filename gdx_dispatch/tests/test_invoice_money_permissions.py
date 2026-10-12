@@ -45,6 +45,8 @@ EXPECTED: dict[str, str] = {
     "POST /api/invoices/{invoice_id}/payments": "invoices.write",
     "POST /api/invoices/{invoice_id}/payments/{payment_id}/void": "payments.process",
     "POST /api/invoices/{invoice_id}/apply-credit": "payments.process",
+    # GDXA-792: cancels a customer's pending bank payment at Stripe.
+    "POST /api/invoices/{invoice_id}/cancel-bank-verification": "payments.process",
 }
 
 def _required_keys_by_route() -> dict[str, set[str]]:
