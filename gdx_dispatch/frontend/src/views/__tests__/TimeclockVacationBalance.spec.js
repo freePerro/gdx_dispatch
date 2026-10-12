@@ -3,7 +3,9 @@
  *
  * Pins: the tech's own balance is read (no technician named, so the server
  * answers for me); left / used / still-ahead render; "no allowance set" is
- * words, not 0h left; a failed read says so.
+ * words, not 0h left; a failed read says so; a 403 (viewer: no vacation of
+ * their own) hides the line instead (GDXA-761); "still ahead" reads as part
+ * of "used", not added to it (GDXA-761).
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
@@ -71,13 +73,15 @@ const MINE = {
   scheduled_hours: 8, remaining_hours: 24, overdrawn: false,
 };
 
-function mockApi({ balance = MINE, fail = false } = {}) {
+function mockApi({ balance = MINE, fail = false, status = 503 } = {}) {
   apiGet.mockImplementation((url) => {
     if (url.startsWith('/api/timeclock/status')) return Promise.resolve({ clocked_in: false });
     if (url.startsWith('/api/me/tech-mobile-settings')) return Promise.resolve({ settings: {}, tenant_timezone: null });
     if (url.startsWith('/api/me/timezone')) return Promise.resolve({ tenant_timezone: null });
     if (url.startsWith('/api/timeclock/time-off/balances')) {
-      return fail ? Promise.reject(new Error('503')) : Promise.resolve({ year: 2026, balances: [balance] });
+      return fail
+        ? Promise.reject(Object.assign(new Error(String(status)), { status }))
+        : Promise.resolve({ year: 2026, balances: [balance] });
     }
     return Promise.resolve([]);
   });
@@ -102,7 +106,7 @@ describe('TimeclockView — my vacation balance', () => {
     const line = w.find('[data-testid="my-vacation-balance"]').text();
     expect(line).toContain('Vacation 2026');
     expect(line).toContain('16h used');
-    expect(line).toContain('8h still ahead');
+    expect(line).toContain('(8h of it still ahead)');
     expect(line).toContain('of 40h');
     expect(w.find('[data-testid="my-vacation-remaining"]').text()).toBe('24h left');
   });
@@ -117,6 +121,12 @@ describe('TimeclockView — my vacation balance', () => {
   it('says the read failed', async () => {
     const w = await mountView({ fail: true });
     expect(w.find('[data-testid="my-vacation-error"]').exists()).toBe(true);
+    expect(w.find('[data-testid="my-vacation-balance"]').exists()).toBe(false);
+  });
+
+  it('hides the line on a 403 rather than saying the read failed', async () => {
+    const w = await mountView({ fail: true, status: 403 });
+    expect(w.find('[data-testid="my-vacation-error"]').exists()).toBe(false);
     expect(w.find('[data-testid="my-vacation-balance"]').exists()).toBe(false);
   });
 });

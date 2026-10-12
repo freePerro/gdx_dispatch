@@ -5,7 +5,10 @@
  *  - the card asks for EVERYONE for the year the selected range ends in;
  *  - "no allowance set" is said in words, never as 0h left;
  *  - an overdrawn balance shows negative and in danger, not clamped to 0;
- *  - a failed read says so; it never renders as an empty crew.
+ *  - a failed read says so; it never renders as an empty crew;
+ *  - a 403 (a role granted scheduling.write but not dispatch/admin) hides the
+ *    card instead of reading as a fault to try again (GDXA-761);
+ *  - "still ahead" reads as part of "used", not added to it (GDXA-761).
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
@@ -82,12 +85,14 @@ const BALANCES = {
   ],
 };
 
-function mockApi({ balances = BALANCES, fail = false } = {}) {
+function mockApi({ balances = BALANCES, fail = false, status = 503 } = {}) {
   apiGet.mockImplementation((url) => {
     if (url.startsWith('/api/me/timezone')) return Promise.resolve({ tenant_timezone: 'America/Chicago' });
     if (url.startsWith('/api/timeclock/roster')) return Promise.resolve(ROSTER);
     if (url.startsWith('/api/timeclock/time-off/balances')) {
-      return fail ? Promise.reject(new Error('503')) : Promise.resolve(balances);
+      return fail
+        ? Promise.reject(Object.assign(new Error(String(status)), { status }))
+        : Promise.resolve(balances);
     }
     if (url.startsWith('/api/timeclock/time-off/options')) return Promise.resolve({});
     return Promise.resolve([]);
@@ -121,7 +126,7 @@ describe('TimesheetsView — vacation balances', () => {
     expect(card.text()).toContain('as of 2026-05-20');
     const dana = w.find('[data-testid="vacation-balance-u-a"]').text();
     expect(dana).toContain('24h used');
-    expect(dana).toContain('8h still ahead');
+    expect(dana).toContain('(8h of it still ahead)');
     expect(dana).toContain('of 80h');
     expect(w.find('[data-testid="vacation-remaining-u-a"]').text()).toBe('56h left');
   });
@@ -151,5 +156,11 @@ describe('TimesheetsView — vacation balances', () => {
     const w = await mountRange({ fail: true });
     expect(w.find('[data-testid="vacation-balances-error"]').exists()).toBe(true);
     expect(w.find('[data-testid="vacation-balance-u-a"]').exists()).toBe(false);
+  });
+
+  it('hides the card on a 403 rather than saying the read failed', async () => {
+    const w = await mountRange({ fail: true, status: 403 });
+    expect(w.find('[data-testid="vacation-balances"]').exists()).toBe(false);
+    expect(w.find('[data-testid="vacation-balances-error"]').exists()).toBe(false);
   });
 });

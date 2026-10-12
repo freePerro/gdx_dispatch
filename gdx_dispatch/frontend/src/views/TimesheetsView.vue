@@ -332,7 +332,7 @@
            ahead included, as of today. The CSV's TOTAL rows state a different
            cut on purpose: used and remaining through the period's last day,
            with the days booked after it in their own column. -->
-      <Card class="time-off-card" data-testid="vacation-balances">
+      <Card v-if="!vacation.forbidden" class="time-off-card" data-testid="vacation-balances">
         <template #title>
           <div class="time-off-head">
             <i class="pi pi-sun" aria-hidden="true" />
@@ -354,7 +354,7 @@
               <strong>{{ b.technician_name || 'Unknown' }}</strong>
               <span class="muted">
                 {{ formatHours(b.used_hours) }}h used<template v-if="b.scheduled_hours > 0">
-                  ({{ formatHours(b.scheduled_hours) }}h still ahead)</template>
+                  ({{ formatHours(b.scheduled_hours) }}h of it still ahead)</template>
               </span>
               <span v-if="b.allowance_hours == null" class="muted" data-testid="vacation-no-allowance">
                 · no allowance set
@@ -697,7 +697,10 @@ const holidays = ref([]);
 const timeOffOptions = ref(null);
 // Vacation balances for the year the selected range ends in. `error` is set
 // when the read failed, so the card says so instead of showing nobody.
-const vacation = ref({ data: null, error: false });
+// `forbidden` is a 403: everyone's balances are the dispatcher/admin tier's
+// (a tenant can grant scheduling.write to another role), so the card hides
+// rather than reading as a fault to try again.
+const vacation = ref({ data: null, error: false, forbidden: false });
 const vacationYear = computed(() => (endDate.value || new Date()).getFullYear());
 const holidayPostVisible = ref(false);
 const holidayToPost = ref(null);
@@ -1184,9 +1187,10 @@ async function loadVacationBalances() {
       { suppressErrorToast: true },
     );
     const ok = !!data && Array.isArray(data.balances);
-    vacation.value = { data: ok ? data : null, error: !ok };
-  } catch {
-    vacation.value = { data: null, error: true };
+    vacation.value = { data: ok ? data : null, error: !ok, forbidden: false };
+  } catch (err) {
+    const forbidden = err?.status === 403;
+    vacation.value = { data: null, error: !forbidden, forbidden };
   }
 }
 
