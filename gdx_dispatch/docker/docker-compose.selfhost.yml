@@ -1,8 +1,11 @@
 # Self-host overlay: run published images instead of building locally.
 #
 # Layer this ON TOP of docker-compose.yml so the big env blocks stay in one
-# place (no second copy to drift). It only swaps `build:` for a pulled image:
+# place (no second copy to drift). It only swaps `build:` for a pulled image.
+# The base file's db/uploads volumes are external, so create them once per host:
 #
+#   docker volume create docker_db_data
+#   docker volume create docker_gdx_uploads
 #   docker compose -p gdx --env-file ./.env \
 #     -f gdx_dispatch/docker/docker-compose.yml \
 #     -f gdx_dispatch/docker/docker-compose.selfhost.yml up -d
