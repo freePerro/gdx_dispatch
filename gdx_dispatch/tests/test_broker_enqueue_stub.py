@@ -56,3 +56,49 @@ def test_the_marker_hands_back_the_real_function(broker_enqueue):
     assert broker_enqueue is None
     assert stale_intent_sweep.apply_async_bounded.__module__ == stale_intent_sweep.__name__
     assert not hasattr(stale_intent_sweep.apply_async_bounded, "assert_called")
+
+
+# ── every caller, found by reading the source (GDXA-822) ───────────────────
+#
+# `apply_async_bounded` refuses a task without `ignore_result` (GDXA-819), but
+# the stub above means that refusal never fires in a test: a new caller with
+# a result-storing task would ship, then be refused in production and never
+# queue. test_enqueue_result_backend.py checks the two tasks it names; this
+# finds every caller.
+
+
+def test_every_bounded_task_ignores_its_result():
+    """Every task passed to `apply_async_bounded` declares
+    `ignore_result=True`, so none of them is refused at runtime."""
+    import ast
+    import importlib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    found: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        if "tests" in path.relative_to(root).parts:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            # Bare `apply_async_bounded(...)` or `mod.apply_async_bounded(...)`.
+            callee = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if callee != "apply_async_bounded":
+                continue
+            assert node.args and isinstance(node.args[0], ast.Name), (
+                f"{path}:{node.lineno}: pass the task by name so this guard can resolve it"
+            )
+            module = ".".join(("gdx_dispatch", *path.relative_to(root).with_suffix("").parts))
+            task = getattr(importlib.import_module(module), node.args[0].id)
+            assert task.ignore_result is True, (
+                f"{module}.{node.args[0].id} is queued through apply_async_bounded "
+                "without ignore_result=True"
+            )
+            found.append(task.name)
+
+    assert sorted(found) == [
+        "billing_followup.send_payment_receipt",
+        "payments.sweep_stale_intents",
+    ]

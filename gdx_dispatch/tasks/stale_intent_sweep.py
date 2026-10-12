@@ -222,22 +222,29 @@ def apply_async_bounded(task, *, args: list, kwargs: dict) -> None:
     """Queue ``task`` from inside a money path. Raises on a dead broker; the
     caller catches it, because only the caller knows what not-queued costs.
 
-    The timeouts are load-bearing, not style. Measured on this image:
-    `.delay()` against an unreachable broker takes ~19s, and `retry=False`
-    alone does not fix it — kombu retries the CONNECTION underneath. That
-    latency would land back in `record_payment` and the Stripe webhook,
-    which is the exact thing moving this work onto a task removes. A
-    bounded connection plus `retry=False` makes a broker outage cost
-    milliseconds here instead of seconds. Shared with the payment receipt
+    The timeouts are load-bearing, not style: `retry=False` alone does not
+    stop kombu retrying the CONNECTION underneath. Any stall here lands back
+    in `record_payment` and the Stripe webhook, which is the exact thing
+    moving this work onto a task removes.
+
+    Shared with the payment receipt
     (`tasks/billing_followup.enqueue_payment_receipt`, GDXA-393).
 
-    The bound covers the broker only. A task that stores its result also makes
-    `apply_async` subscribe to the result backend (Celery's `send_task` calls
-    `backend.on_task_call` unless `ignore_result`), and that path retries an
-    unreachable Redis for ~19s whatever the transport options say — the
-    receipt task did exactly that until GDXA-819. So a task that does not set
-    `ignore_result=True` is refused here, loudly, rather than queued slowly. A
-    raise, not an assert: `python -O` strips asserts.
+    The bound covers the broker only (2 s connect timeout, no retries). A
+    task that stores its result also makes `apply_async` subscribe to the
+    result backend (Celery's `send_task` calls `backend.on_task_call` unless
+    `ignore_result`), and that path retries an unreachable Redis for ~19s
+    whatever the transport options say — the receipt task did exactly that
+    until GDXA-819. So a task that does not set `ignore_result=True` is
+    refused here, loudly, rather than queued slowly. A raise, not an assert:
+    `python -O` strips asserts. Conftest stubs this function, so the refusal
+    never fires in a test; `test_every_bounded_task_ignores_its_result` finds
+    every caller instead.
+
+    Measured 2026-10-12 on the docker-app image: against a refused Redis port
+    a flagged task fails in ~0.05-0.07 s and the unflagged receipt took 19.09
+    s; against a black-holed host (nothing answers) the 2 s connect timeout
+    is the ceiling, 2.07 s. Not milliseconds in the worst case.
     """
     if not getattr(task, "ignore_result", False):
         raise TypeError(
