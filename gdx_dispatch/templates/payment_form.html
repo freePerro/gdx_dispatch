@@ -553,8 +553,9 @@
 
 </div><!-- .card -->
 
+{%- set csp_nonce = request.state.csp_nonce if request is defined else "" -%}
 {% if preview %}
-<script>
+<script nonce="{{ csp_nonce }}">
   // Staff preview: the payment script below never starts, but the tabs are
   // part of what the customer sees, so they still switch. Same behaviour as
   // the tab switching inside the payment script.
@@ -572,7 +573,7 @@
   });
 </script>
 {% endif %}
-<script>
+<script nonce="{{ csp_nonce }}">
   const STRIPE_KEY = "{{ stripe_publishable_key }}";
   // The token already addresses this page (/pay/<token>), so exposing it to
   // the page's own JS adds no new disclosure — and it is what authorizes the
