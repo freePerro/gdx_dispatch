@@ -1050,7 +1050,7 @@
     // carries an account: the replayed one is cancelled (or, once cancelled,
     // superseded) and a fresh intent is minted; the picker attaches the new
     // account to that. An intent from an earlier press that still carries
-    // its account is left for the M12 sweep — its secret never left this tab.
+    // its account is cancelled by the same create-intent call (GDXA-781).
     clearMessages();
     showAchStep("collect");
   });
