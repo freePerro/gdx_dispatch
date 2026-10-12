@@ -14,6 +14,7 @@ then USED, so a pass means the emailed link actually sets the password.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from uuid import UUID, uuid4
 
@@ -137,10 +138,11 @@ def _pw_reset_keys(r) -> list[str]:
     return [k for k in r.scan_iter("pw_reset:*")]
 
 
-def test_send_reset_link_emails_a_link_that_resets_the_password(env):
+def test_send_reset_link_emails_a_link_that_resets_the_password(env, caplog):
     client, sent = env["client"], env["sent"]
 
-    r = client.post(f"/api/users/{env['target_id']}/send-reset-link")
+    with caplog.at_level(logging.INFO, logger="gdx_dispatch.routers.users"):
+        r = client.post(f"/api/users/{env['target_id']}/send-reset-link")
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": "reset_link_sent", "email": "terry.tech@example.com"}
 
@@ -160,8 +162,15 @@ def test_send_reset_link_emails_a_link_that_resets_the_password(env):
 
     rows = _audit(env["db"], "password_reset_link_sent")
     assert len(rows) == 1
-    assert rows[0].details["token_prefix"] == token[:8]
-    assert token not in json.dumps(rows[0].details), "no live credential in the audit log"
+    assert rows[0].entity_id == env["target_id"]
+    assert "token_prefix" not in rows[0].details
+    assert token[:8] not in json.dumps(rows[0].details), "no part of the live credential in this audit row"
+
+    # CodeQL py/clear-text-logging-sensitive-data: no part of the token in the log line.
+    sent_logs = [rec for rec in caplog.records if rec.getMessage() == "password_reset_link_sent"]
+    assert len(sent_logs) == 1
+    assert not hasattr(sent_logs[0], "token_prefix")
+    assert token[:8] not in json.dumps(sent_logs[0].__dict__, default=str)
 
 
 def test_send_reset_link_with_placeholder_smtp_user_refuses_and_leaves_no_token(env, monkeypatch):

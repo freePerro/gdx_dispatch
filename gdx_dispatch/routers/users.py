@@ -654,7 +654,7 @@ def send_reset_link(user_id: str, request: Request, user: dict = Depends(get_cur
     # GDXA-677: this used to mint a token it stored nowhere, send nothing and
     # answer "queued". Now the link is real and emailed, or the caller hears why not.
     try:
-        reset_token = send_password_reset_link(str(u.id), tid, u.email)
+        send_password_reset_link(str(u.id), tid, u.email)
     except PlatformEmailUnavailable as exc:
         raise HTTPException(
             status_code=503,
@@ -666,8 +666,8 @@ def send_reset_link(user_id: str, request: Request, user: dict = Depends(get_cur
             status_code=502,
             detail="The reset link could not be created or sent. Use Reset Password to set one directly.",
         ) from exc
-    log.info("password_reset_link_sent", extra={"tenant_id": tid, "user_id": user_id, "email": redact_email(u.email), "token_prefix": reset_token[:8]})
-    _audit(db, request=request, user=user, action="password_reset_link_sent", entity_id=user_id, details={"email": u.email, "initiated_by": _user_id(user), "token_prefix": reset_token[:8]})
+    log.info("password_reset_link_sent", extra={"tenant_id": tid, "user_id": user_id, "email": redact_email(u.email)})
+    _audit(db, request=request, user=user, action="password_reset_link_sent", entity_id=user_id, details={"email": u.email, "initiated_by": _user_id(user)})
     return {"ok": "reset_link_sent", "email": u.email}
 
 
