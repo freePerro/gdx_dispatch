@@ -80,6 +80,7 @@ def test_a_zero_quantity_part_is_not_billed_and_stays_on_the_checklist(db):
     the office. No writer stores a 0 here today — every input requires >= 1 —
     so this pins the rule rather than reproducing a live row."""
     from gdx_dispatch.core.closeout_billing import build_closeout_lines
+    from gdx_dispatch.routers.mobile_invoicing import restate_invoice_header
 
     job = _job(db)
     invoice = Invoice(id=uuid4(), customer_id=job.customer_id, job_id=job.id, invoice_number="INV-560",
@@ -93,8 +94,11 @@ def test_a_zero_quantity_part_is_not_billed_and_stays_on_the_checklist(db):
                              quantity=qty, status="used", source="closeout", unit_price=Decimal("45.00")))
     db.commit()
 
-    build_closeout_lines(db, tenant_id="tenant-1", invoice=invoice, closeout=closeout, job_type=None,
-                         job_id=str(job.id))
+    _added, lines_total, _taxable = build_closeout_lines(
+        db, tenant_id="tenant-1", invoice=invoice, closeout=closeout, job_type=None,
+        job_id=str(job.id))
+    # The header restatement every caller of the builder does.
+    restate_invoice_header(invoice, lines_total)
     db.commit()
     lines = {ln.description: ln for ln in db.execute(
         select(InvoiceLine).where(InvoiceLine.invoice_id == invoice.id)).scalars()}

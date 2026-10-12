@@ -491,7 +491,7 @@ def _check_customer_facing_config() -> None:
     # subdomains" — a multi-tenant DNS feature this app never ships. Removed
     # 2026-09-03; they fired an ERROR on every boot for nothing.)
     required_at_startup = [
-        ("PLATFORM_SMTP_PASS", "auth emails (welcome / reset) will fail (Becky 2026-04-30 incident)"),
+        ("PLATFORM_SMTP_PASS", "ops alerts will fail; password resets go only through the Automation email Send-as Outlook mailbox (Becky 2026-04-30 incident)"),
     ]
     missing = [(name, why) for name, why in required_at_startup if not os.environ.get(name)]
     if missing:

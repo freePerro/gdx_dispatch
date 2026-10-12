@@ -64,6 +64,7 @@ def _try_outlook_graph(
     subject: str,
     html_body: str,
     attachments: list[dict[str, Any]] | None = None,
+    save_to_sent_items: bool = True,
 ) -> tuple[bool, str | None]:
     # One retry on the documented OutlookTransientRetry contract — a 401
     # mid-call after a successful refresh deserves exactly one re-issue.
@@ -93,8 +94,11 @@ def _try_outlook_graph(
     body = {
         "message": message,
         # Save to sent items so the rep can see it in their Outlook history
-        # and the customer's reply lands in the same thread.
-        "saveToSentItems": True,
+        # and the customer's reply lands in the same thread. A caller whose
+        # body carries a credential (a password-reset link) turns it off:
+        # the shared mailbox's Sent Items would hand the link to everyone
+        # who can open that mailbox.
+        "saveToSentItems": save_to_sent_items,
     }
 
     def _send_once() -> None:
@@ -429,6 +433,8 @@ def send_transactional_email(
     recipient_source: str | None = None,
     recipient_contact_id: str | None = None,
     designated_sender_fallback: bool = False,
+    save_to_sent_items: bool = True,
+    audit_body_html: str | None = None,
 ) -> tuple[bool, str | None, str | None]:
     """Send a transactional email. Returns (sent, provider, skip_reason).
 
@@ -445,6 +451,12 @@ def send_transactional_email(
       message instead of a generic error.
     - attachments: [{name, content_type, content_base64}] — delivered by
       whichever provider wins (Graph fileAttachment / SMTP MIME part).
+    - save_to_sent_items: False keeps an Outlook send out of the sending
+      mailbox's Sent Items. For bodies that carry a credential.
+    - audit_body_html: when set, outbound_emails.body_html stores THIS
+      instead of html_body — the caller's redacted copy, so a live token
+      in the delivered body is never written at rest. Subject, recipient
+      and status are recorded as usual.
     - initiator_* / entity_* / recipient_*: audit-trail context recorded in
       outbound_emails for EVERY attempt. initiator_ref defaults to user_id
       for 'user' sends.
@@ -474,7 +486,7 @@ def send_transactional_email(
             recipient_source=recipient_source,
             recipient_contact_id=recipient_contact_id,
             subject=subject,
-            html_body=html_body,
+            html_body=html_body if audit_body_html is None else audit_body_html,
             attachments=attachments,
             provider=provider,
             sent=sent,
@@ -524,16 +536,14 @@ def send_transactional_email(
     # 1. Outlook Graph as the calling user. Requires both ids; missing
     # either means we can't authenticate as a specific person.
     outlook_reason: str | None = None
+    # Everything but the mailbox, shared by rungs 1 and 1b.
+    graph_kw: dict[str, Any] = {
+        "tenant_db": tenant_db, "to_email": to_email, "subject": subject,
+        "html_body": html_body, "attachments": attachments,
+        "save_to_sent_items": save_to_sent_items,
+    }
     if tid is not None and uid is not None:
-        sent_ol, outlook_reason = _try_outlook_graph(
-            tenant_db=tenant_db,
-            tenant_id=tid,
-            user_id=uid,
-            to_email=to_email,
-            subject=subject,
-            html_body=html_body,
-            attachments=attachments,
-        )
+        sent_ol, outlook_reason = _try_outlook_graph(tenant_id=tid, user_id=uid, **graph_kw)
         if sent_ol:
             return _finish(True, "outlook_graph", None)
 
@@ -570,13 +580,7 @@ def send_transactional_email(
         designated = _to_uuid(_designated_sender_user_id(tenant_db))
         if designated is not None and designated != uid:
             sent_fb, fb_reason = _try_outlook_graph(
-                tenant_db=tenant_db,
-                tenant_id=tid,
-                user_id=designated,
-                to_email=to_email,
-                subject=subject,
-                html_body=html_body,
-                attachments=attachments,
+                tenant_id=tid, user_id=designated, **graph_kw,
             )
             if sent_fb:
                 log.info(

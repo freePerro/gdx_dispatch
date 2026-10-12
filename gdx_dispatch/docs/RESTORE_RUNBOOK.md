@@ -98,7 +98,15 @@ rm -f /tmp/restore.dump
 2. Restore `.env` from its own backup — it carries the encryption keys
    (`MASTER_ENCRYPTION_KEY`, `GDX_FERNET_KEY`); without them the restored
    PII columns are ciphertext. See `SECRETS_ROTATION_RUNBOOK.md`.
-3. `"${COMPOSE[@]}" up -d db` (the array from the section above), then restore as above into `gdx`.
+3. Create the base compose file's external volumes (Compose refuses to start
+   without them, and will not create them itself), then
+   `"${COMPOSE[@]}" up -d db` (the array from the section above), then restore
+   as above into `gdx`:
+
+   ```bash
+   docker volume create docker_db_data
+   docker volume create docker_gdx_uploads
+   ```
 4. `update.sh` to pull the pinned image and start everything.
 5. Point DNS at the new host. If the public origin (`GDX_PUBLIC_BASE_URL`)
    is unchanged, nothing else needs re-registering. If it changed: Outlook
