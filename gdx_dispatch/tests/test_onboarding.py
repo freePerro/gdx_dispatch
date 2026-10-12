@@ -187,6 +187,103 @@ def test_demo_data_does_not_crash(client: TestClient):
     assert "customers" in d2
 
 
+def _invoice_with_token(monkeypatch) -> None:
+    """The demo invoice is built without ``public_token`` (NOT NULL), so every
+    demo load rolls back as ``load_failed`` on main (found 2026-10-12, GDXA-834,
+    left for the maintainer to rule on). Supply one so the jobs are observable."""
+    from uuid import uuid4
+
+    import gdx_dispatch.routers.onboarding as onboarding
+    from gdx_dispatch.models.tenant_models import Invoice
+
+    monkeypatch.setattr(onboarding, "Invoice", lambda **kw: Invoice(public_token=uuid4().hex, **kw))
+
+
+def _demo_job_numbers(tc: TestClient) -> dict[str, str | None]:
+    with tc._engine.connect() as c:  # type: ignore[attr-defined]
+        rows = c.execute(
+            text(
+                "SELECT c.name, j.job_number FROM jobs j JOIN customers c ON c.id = j.customer_id "
+                "WHERE j.title = 'DEMO - Garage door tune-up'"
+            )
+        ).all()
+    return {name: number for name, number in rows}
+
+
+def test_demo_jobs_take_a_number_from_the_tenant_counter(client: TestClient, monkeypatch):
+    """GDXA-834: each demo job gets the next number from next_job_number, in
+    its own session committed before the job, with its customer's name. The
+    allocator is faked here because it locks with FOR UPDATE, which SQLite
+    rejects; its own behaviour is pinned in test_job_number_uniqueness."""
+    import gdx_dispatch.core.database as database
+    import gdx_dispatch.modules.numbering.service as numbering
+
+    calls: list[tuple[str, str | None]] = []
+    commits: list[bool] = []
+
+    class _Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def commit(self):
+            commits.append(True)
+
+    def fake_next(cdb, tenant_id, *, customer_name=None):
+        calls.append((tenant_id, customer_name))
+        return f"JOB-T-{len(calls):03d}"
+
+    _invoice_with_token(monkeypatch)
+    monkeypatch.setattr(database, "SessionLocal", _Session)
+    monkeypatch.setattr(numbering, "next_job_number", fake_next)
+
+    r = client.post("/api/onboarding/demo-data")
+    assert r.status_code == 200, r.text
+    assert r.json()["jobs"] == 3
+    assert [t for t, _ in calls] == ["tenant-test"] * 3
+    assert len(commits) == 3
+    assert _demo_job_numbers(client) == {
+        "DEMO - Acme Residential": "JOB-T-001",
+        "DEMO - Smith Family": "JOB-T-002",
+        "DEMO - Johnson Estates": "JOB-T-003",
+    }
+    assert [name for _, name in calls] == [
+        "DEMO - Acme Residential", "DEMO - Smith Family", "DEMO - Johnson Estates",
+    ]
+
+
+def test_a_demo_load_that_fails_takes_no_number(client: TestClient, monkeypatch):
+    """Unpatched, the demo invoice has no public_token and the load rolls
+    back. Allocation commits the counter in its own session, so it must not
+    have run: a failed load that took numbers would burn them for good."""
+    import gdx_dispatch.modules.numbering.service as numbering
+
+    calls: list[str] = []
+    monkeypatch.setattr(numbering, "next_job_number", lambda *a, **k: calls.append("x") or "JOB-X")
+
+    r = client.post("/api/onboarding/demo-data")
+    assert r.status_code == 200, r.text
+    assert r.json()["loaded"] is False
+    assert calls == []
+
+
+def test_a_numbering_failure_leaves_the_demo_job_unnumbered_not_unmade(client: TestClient, monkeypatch):
+    import gdx_dispatch.modules.numbering.service as numbering
+
+    def boom(*_a, **_k):
+        raise RuntimeError("counter unavailable")
+
+    _invoice_with_token(monkeypatch)
+    monkeypatch.setattr(numbering, "next_job_number", boom)
+    r = client.post("/api/onboarding/demo-data")
+    assert r.status_code == 200, r.text
+    assert r.json()["jobs"] == 3
+    numbers = _demo_job_numbers(client)
+    assert len(numbers) == 3 and set(numbers.values()) == {None}
+
+
 def test_tenant_scope():
     a = _make_client(tenant_id="tenant-a")
     b = _make_client(tenant_id="tenant-b")
