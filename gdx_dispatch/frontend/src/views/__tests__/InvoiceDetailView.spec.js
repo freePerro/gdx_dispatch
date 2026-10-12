@@ -1624,6 +1624,105 @@ describe('InvoiceDetailView — bank payment pending tag (GDXA-393)', () => {
   });
 });
 
+// GDXA-792: a micro-deposit wait locks the pay page for both rails, and the
+// only release used to be the Stripe dashboard.
+describe('InvoiceDetailView — Cancel bank verification (GDXA-792)', () => {
+  const BTN = '[data-testid="invoice-cancel-bank-verification"]';
+
+  function seed(permissions, role = 'accounting') {
+    const auth = useAuthStore();
+    // Non-admin role: an admin short-circuits hasPermission, so the hidden
+    // case would prove nothing.
+    auth.user = { id: 'u1', email: 'office@example.com', role };
+    auth.accessToken = 'test-token';
+    auth.permissions = new Set(permissions);
+    auth.permissionsLoaded = true;
+  }
+
+  function mockPending(pending) {
+    mockApi(buildInvoicePayload({ status: 'sent' }));
+    const base = apiGet.getMockImplementation();
+    apiGet.mockImplementation((url, opts) => {
+      if (url === '/api/invoices/ach-pending') return Promise.resolve({ checked: true, pending: pending() });
+      return base(url, opts);
+    });
+  }
+
+  it('offers the release to payments.process while the customer is verifying', async () => {
+    seed(['payments.process']);
+    mockPending(() => ({ 'inv-1': { stage: 'verifying', amount: 80.25 } }));
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.get(BTN).text()).toBe('Cancel bank verification');
+  });
+
+  it('hides it from a role without payments.process', async () => {
+    seed(['invoices.write'], 'technician');
+    mockPending(() => ({ 'inv-1': { stage: 'verifying', amount: 80.25 } }));
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="invoice-ach-pending-tag"]').exists()).toBe(true);
+    expect(wrapper.find(BTN).exists()).toBe(false);
+  });
+
+  it('offers nothing once the debit is processing — Stripe cannot cancel it', async () => {
+    seed(['payments.process']);
+    mockPending(() => ({ 'inv-1': { stage: 'processing', amount: 80.25 } }));
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="invoice-ach-pending-tag"]').exists()).toBe(true);
+    expect(wrapper.find(BTN).exists()).toBe(false);
+  });
+
+  it('a confirmed click cancels at the server and the tag goes away', async () => {
+    seed(['payments.process']);
+    let pending = { 'inv-1': { stage: 'verifying', amount: 80.25 } };
+    mockPending(() => pending);
+    confirmRequire.mockImplementation((opts) => opts.accept && opts.accept());
+    const wrapper = mountView();
+    await flushPromises();
+
+    apiPost.mockImplementationOnce(async () => { pending = {}; return { released: ['pi_1'] }; });
+    await wrapper.get(BTN).trigger('click');
+    await flushPromises();
+
+    expect(apiPost).toHaveBeenCalledWith(
+      '/api/invoices/inv-1/cancel-bank-verification', {}, { suppressErrorToast: true },
+    );
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'success' }));
+    expect(wrapper.find('[data-testid="invoice-ach-pending-tag"]').exists()).toBe(false);
+    // The Activity panel picks up the new "Bank verification cancelled" row.
+    const activityReads = apiGet.mock.calls.filter(([u]) => u === '/api/invoices/inv-1/activity').length;
+    expect(activityReads).toBeGreaterThanOrEqual(2);
+  });
+
+  it('a declined confirm sends nothing', async () => {
+    seed(['payments.process']);
+    mockPending(() => ({ 'inv-1': { stage: 'verifying', amount: 80.25 } }));
+    confirmRequire.mockImplementation((opts) => opts.reject && opts.reject());
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get(BTN).trigger('click');
+    await flushPromises();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it('a refusal shows the server\'s reason', async () => {
+    seed(['payments.process']);
+    mockPending(() => ({ 'inv-1': { stage: 'verifying', amount: 80.25 } }));
+    confirmRequire.mockImplementation((opts) => opts.accept && opts.accept());
+    const wrapper = mountView();
+    await flushPromises();
+    const err = Object.assign(new Error('409'), { status: 409, body: { detail: 'This bank transfer has already started' } });
+    apiPost.mockRejectedValueOnce(err);
+    await wrapper.get(BTN).trigger('click');
+    await flushPromises();
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({
+      severity: 'error', detail: 'This bank transfer has already started',
+    }));
+  });
+});
+
 
 describe('InvoiceDetailView — GDXA-449: a stale edit screen is refused, not saved', () => {
   // Two office users open the same draft. The second Save used to overwrite

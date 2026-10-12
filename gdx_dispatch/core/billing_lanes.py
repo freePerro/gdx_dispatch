@@ -235,12 +235,22 @@ def job_labor_lines(
     when it stands alone — ``time_entry_ids`` (list of str, possibly empty)
     and ``estimated_man_hours`` (Decimal, the raw attested man-hours).
     """
-    from gdx_dispatch.core.closeout_billing import unbilled_day_rows  # noqa: PLC0415
+    from gdx_dispatch.core.closeout_billing import (  # noqa: PLC0415
+        closeout_hours_holder,
+        unbilled_day_rows,
+    )
 
     if lane_for_job(getattr(job, "job_type", None)) != "service":
         return []
 
     final_hours = Decimal(str(getattr(closeout, "hours_worked", 0) or 0)) if closeout else Decimal(0)
+    # Another live invoice already bills the closeout's hours (GDXA-799):
+    # they are not this invoice's to offer. Its own stamp counts as unbilled
+    # for it, as its own day rows do.
+    if final_hours > 0:
+        holder = closeout_hours_holder(db, closeout)
+        if holder is not None and (invoice_id is None or holder != _as_uuid(invoice_id)):
+            final_hours = Decimal(0)
     techs = max(1, int(getattr(closeout, "techs_on_site", 1) or 1)) if closeout else 1
     final_man = (
         Decimal(str(roundup_to_half(final_hours))) * techs if final_hours > 0 else Decimal(0)

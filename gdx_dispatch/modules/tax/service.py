@@ -1,6 +1,8 @@
 """Tax resolution service.
 
-Single entry point: `resolve_rate(db, customer_id) -> Decimal`.
+Single entry point: `resolve_rate(db, customer_id) -> Decimal`. A caller
+billing a job uses `resolve_rate_for_job(db, customer_id, job_type)`, which
+adds the job-lane rule (installations are never taxed) in front of it.
 
 Today: returns 0 if customer is exempt, else returns TaxConfig.default_rate.
 Tomorrow: zip lookup against TaxJurisdiction, line-item category overrides,
@@ -76,3 +78,32 @@ def resolve_rate(db: Session, customer_id: UUID | str | None = None) -> Decimal:
     if cfg is None or cfg.default_rate is None:
         return _ZERO
     return Decimal(str(cfg.default_rate))
+
+
+def is_install_lane(job_type: str | None) -> bool:
+    """True when the job is an installation (§8 install lane): a construction
+    contract, never taxed (Doug, 2026-10-12, GDXA-793/796)."""
+    from gdx_dispatch.core.billing_lanes import lane_for_job  # noqa: PLC0415
+
+    return lane_for_job(job_type) == "install"
+
+
+def resolve_rate_for_job(
+    db: Session, customer_id: UUID | str | None, job_type: str | None
+) -> Decimal:
+    """The tax rate for a job's bill, with the job lane applied first.
+
+    Used by office invoice create and `/api/tax/resolve` (GDXA-796) and the
+    change order detail total (GDXA-797). Not yet by the closeout autodraft
+    (its own inline lane check) or estimate totals (no lane check): those are
+    separate issues.
+
+    - Install lane → 0, without reading the tenant default.
+    - Repair / service call / unlaned → `resolve_rate`: 0 for an exempt
+      customer, else the tenant default.
+
+    Like `resolve_rate`, this raises on a DB error; callers own containment.
+    """
+    if is_install_lane(job_type):
+        return _ZERO
+    return resolve_rate(db, customer_id)

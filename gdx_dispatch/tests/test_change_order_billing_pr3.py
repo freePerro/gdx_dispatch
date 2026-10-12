@@ -464,3 +464,117 @@ def test_billed_co_is_frozen_against_patch_and_delete(tenant_db_session):
     db.refresh(co)
     assert co.deleted_at is None
     assert co.billed_invoice_id is not None
+
+
+# ---------------------------------------------------------------------------
+# GDXA-797 (Doug 2026-10-12): the CO tax rate follows the job lane. An
+# installation is a construction contract, never taxed; a repair or service
+# call takes the tenant default; an exempt customer is 0 on every lane. The
+# CO detail resolves through the same helper as invoice create, so the total
+# the customer signs still equals the total the invoice bills.
+# ---------------------------------------------------------------------------
+
+
+def _seed_laned_co(db, job_type: str, *, exempt: bool = False) -> tuple[Job, ChangeOrder]:
+    job = _seed_job(db)
+    job.job_type = job_type
+    if exempt:
+        db.add(TaxExemption(customer_id=job.customer_id, exempt=True))
+    db.commit()
+    return job, _seed_co(db, job)
+
+
+def _co_detail(db, co: ChangeOrder) -> dict:
+    from gdx_dispatch.routers.change_orders import get_change_order
+
+    return get_change_order(co.id, _=_current_user(), db=db)
+
+
+@pytest.mark.parametrize(
+    ("job_type", "exempt", "rate", "tax"),
+    [
+        ("Installation", False, 0.0, 0.0),
+        ("Service Call", False, TAX_RATE, 24.0),
+        ("Repair", False, TAX_RATE, 24.0),
+        ("Installation", True, 0.0, 0.0),
+        ("Service Call", True, 0.0, 0.0),
+        ("Repair", True, 0.0, 0.0),
+    ],
+)
+def test_co_tax_follows_job_lane_and_equals_invoice(tenant_db_session, job_type, exempt, rate, tax):
+    db = tenant_db_session
+    job, co = _seed_laned_co(db, job_type, exempt=exempt)
+
+    view = _co_detail(db, co)
+    assert view["tax_rate"] == rate
+    assert view["tax_amount"] == tax
+    assert view["total"] == round(500.0 + tax, 2)
+
+    created = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            from_change_order_ids=[co.id],
+        ),
+        _=_current_user(),
+        db=db,
+    )
+    inv = db.get(Invoice, UUID(created["id"]))
+    assert float(inv.tax_amount or 0) == view["tax_amount"]
+    assert float(inv.total) == view["total"]
+
+
+def test_customerless_co_on_exempt_job_is_untaxed_like_its_invoice(tenant_db_session):
+    """A tech's CO saved with no customer still answers to the job's customer:
+    the invoice checks exemption against it, so the CO must too."""
+    db = tenant_db_session
+    job = _seed_job(db)
+    job.job_type = "Repair"
+    db.add(TaxExemption(customer_id=job.customer_id, exempt=True))
+    db.commit()
+    out = create_change_order(
+        payload=ChangeOrderIn(
+            job_id=str(job.id),
+            title="Saved before the customer loaded",
+            status="approved",
+            line_items=[{"description": "Opener unit", "quantity": 1, "unit_price": 300.0}],
+        ),
+        user=_current_user(),
+        db=db,
+    )
+    co = db.get(ChangeOrder, UUID(out["id"]))
+    assert co.customer_id is None
+
+    view = _co_detail(db, co)
+    assert view["tax_amount"] == 0.0
+
+    created = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            from_change_order_ids=[co.id],
+        ),
+        _=_current_user(),
+        db=db,
+    )
+    inv = db.get(Invoice, UUID(created["id"]))
+    assert float(inv.total) == view["total"]
+
+
+def test_co_without_job_keeps_the_tenant_default(tenant_db_session):
+    """No job → no lane → `resolve_rate`, unchanged from before GDXA-797."""
+    db = tenant_db_session
+    out = create_change_order(
+        payload=ChangeOrderIn(
+            customer_id=str(uuid4()),
+            title="Jobless",
+            status="approved",
+            line_items=[{"description": "Opener unit", "quantity": 1, "unit_price": 300.0}],
+        ),
+        user=_current_user(),
+        db=db,
+    )
+    co = db.get(ChangeOrder, UUID(out["id"]))
+    view = _co_detail(db, co)
+    assert view["tax_rate"] == TAX_RATE
+    assert view["tax_amount"] == 24.0

@@ -230,7 +230,20 @@ def apply_async_bounded(task, *, args: list, kwargs: dict) -> None:
     bounded connection plus `retry=False` makes a broker outage cost
     milliseconds here instead of seconds. Shared with the payment receipt
     (`tasks/billing_followup.enqueue_payment_receipt`, GDXA-393).
+
+    The bound covers the broker only. A task that stores its result also makes
+    `apply_async` subscribe to the result backend (Celery's `send_task` calls
+    `backend.on_task_call` unless `ignore_result`), and that path retries an
+    unreachable Redis for ~19s whatever the transport options say — the
+    receipt task did exactly that until GDXA-819. So a task that does not set
+    `ignore_result=True` is refused here, loudly, rather than queued slowly. A
+    raise, not an assert: `python -O` strips asserts.
     """
+    if not getattr(task, "ignore_result", False):
+        raise TypeError(
+            f"apply_async_bounded refuses {getattr(task, 'name', task)!r}: it does not set "
+            "ignore_result=True, so queueing it would wait on the result backend unbounded"
+        )
     with celery_app.connection_for_write(
         transport_options={
             "socket_connect_timeout": 2,

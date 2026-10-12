@@ -17,7 +17,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, resolve_audit_actor
-from gdx_dispatch.core.billing_lanes import lane_for_job
 from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.invoice_delivery import require_deliverable
 from gdx_dispatch.core.link_sms import SendLinkSmsIn as SendInvoiceSmsIn  # one composer model for every SMS route
@@ -775,30 +774,77 @@ def _claim_labor_day_rows(db: Session, invoice: Invoice, ids: list | None) -> in
         if h is not None and h != invoice.id
     ]
     if holders:
-        other = db.execute(
-            select(Invoice.invoice_number).where(Invoice.id == holders[0])
-        ).scalar_one_or_none()
-        db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "labor_already_billed",
-                "message": (
-                    f"These days' labor is already billed on invoice {other or 'another invoice'}"
-                    " — reload the labor suggestion."
-                ),
-            },
-        )
+        _refuse_labor_already_billed(db, holders[0], "These days' labor")
+    _refuse_labor_already_on_invoice(db, "these days' labor")
+
+
+def _refuse_labor_already_billed(db: Session, holder, what: str) -> None:
+    """Roll back and refuse labor another invoice already bills (409)."""
+    other = db.execute(
+        select(Invoice.invoice_number).where(Invoice.id == holder)
+    ).scalar_one_or_none() if holder is not None else None
+    db.rollback()
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "labor_already_billed",
+            "message": (
+                f"{what} is already billed on invoice {other or 'another invoice'}"
+                " — reload the labor suggestion."
+            ),
+        },
+    )
+
+
+def _refuse_labor_already_on_invoice(db: Session, what: str) -> None:
+    """Roll back and refuse a labor line this invoice already bills (409)."""
     db.rollback()
     raise HTTPException(
         status_code=409,
         detail={
             "code": "labor_already_on_invoice",
-            "message": (
-                "This invoice already has these days' labor — remove one of the labor lines."
-            ),
+            "message": f"This invoice already has {what} — remove one of the labor lines.",
         },
     )
+
+
+def _claim_labor_closeout(
+    db: Session, invoice: Invoice, ids: list | None, *, actor: str | None
+) -> bool:
+    """Claim the job's closeout final-day hours for a labor line built from
+    the billing suggestion (GDXA-799), in the caller's transaction.
+
+    A suggestion line is the one that sends ``time_entry_ids`` (``[]``
+    included); the suggestion put the closeout's hours on it exactly when no
+    other live invoice held them. So:
+
+    * free (or held by a deleted or void invoice) — stamped to this invoice;
+    * held by another live invoice — the suggestion left them out; no claim;
+    * claimed by another invoice between that read and the claim — rolled
+      back with 409 ``labor_already_billed``;
+    * held by THIS invoice — a second suggestion line bills them twice, so
+      the transaction is rolled back with 409 ``labor_already_on_invoice``.
+
+    Returns True when this call stamped them.
+    """
+    if ids is None or invoice.job_id is None:
+        return False
+    from gdx_dispatch.core.closeout_billing import claim_closeout_hours, closeout_hours_holder
+    from gdx_dispatch.core.closeouts import get_current_closeout
+
+    closeout = get_current_closeout(db, invoice.job_id)
+    if closeout is None or not Decimal(str(closeout.hours_worked or 0)) > 0:
+        return False
+    holder = closeout_hours_holder(db, closeout)
+    if holder == invoice.id:
+        _refuse_labor_already_on_invoice(db, "the closeout's labor")
+    if holder is not None:
+        return False
+    if not claim_closeout_hours(db, invoice, closeout, actor=actor):
+        # Another invoice claimed them since the read above: this line was
+        # built with them on it, so it would bill them twice.
+        _refuse_labor_already_billed(db, closeout_hours_holder(db, closeout), "The closeout's labor")
+    return True
 
 
 class InvoiceLineCreateIn(BaseModel):
@@ -1567,14 +1613,16 @@ def create_invoice(
         # estimate deliberately quoted at 0%, billing more than the customer
         # accepted.
         resolved_rate = Decimal(str(estimate.tax_rate))
-    elif job is not None and lane_for_job(job.job_type) == "install":
-        # An installation is a construction contract and is never taxed
-        # (GDXA-793): rate-mode at 0, the tenant default never read. The
-        # same rule as the closeout autodraft and `/api/tax/resolve`.
-        resolved_rate = Decimal("0")
     else:
+        # The job lane decides first (GDXA-793/796): an installation is a
+        # construction contract and is never taxed. `resolve_rate_for_job`
+        # answers 0 for it without reading the tenant default; a repair or
+        # service call gets `resolve_rate` (0 for an exempt customer, else
+        # the tenant default).
+        from gdx_dispatch.modules.tax.service import is_install_lane, resolve_rate_for_job
+
+        job_type = job.job_type if job is not None else None
         try:
-            from gdx_dispatch.modules.tax.service import resolve_rate as _resolve_tax
             # SAVEPOINT-wrapped (GDXA-160). A request-scoped session is not
             # normally "caller-owned", but this handler COMMITS at the end, so
             # the swallow below was losing the office's whole new invoice — the
@@ -1593,12 +1641,17 @@ def create_invoice(
             # per site; that path is only whole once the deferral is fixed in
             # `modules/proposals/totals.py`.
             with contained_read(db):
-                candidate = _resolve_tax(db, customer_id_value)
-            if candidate is not None and candidate > 0:
+                candidate = resolve_rate_for_job(db, customer_id_value, job_type)
+            # >0 → rate-mode. An installation's 0 is rate-mode too, so no later
+            # recalc can tax it; an exempt customer's 0 stays NULL (the legacy
+            # flat-tax_amount path, unchanged).
+            if candidate > 0 or is_install_lane(job_type):
                 resolved_rate = candidate
         except Exception:
             log.exception("invoice_create_tax_resolve_failed")
-            resolved_rate = None
+            # The lane check reads nothing, so an installation stays at 0
+            # even when the savepoint itself fails.
+            resolved_rate = Decimal("0") if is_install_lane(job_type) else None
     initial_tax = _money(payload.tax_amount)
     if resolved_rate is not None and resolved_rate > 0:
         # Rate-based: tax_amount is computed from the rate × taxable lines
@@ -1941,6 +1994,10 @@ def create_invoice(
             # Lines claim in order: the second line naming the same days gets
             # 0 rows and the whole create is refused (409).
             claimed_time_entries += _claim_labor_day_rows(db, invoice, line.time_entry_ids)
+            # The closeout's final-day hours ride the same line (GDXA-799).
+            _claim_labor_closeout(
+                db, invoice, line.time_entry_ids, actor=_actor_id(_),
+            )
 
     # D2 — materialize an operator-entered discount as the same negative line
     # the estimate-copy path mints above. `sort_order` follows the operator's
@@ -2306,6 +2363,45 @@ def list_ach_pending(
     return {"checked": True, "pending": pending}
 
 
+@router.post(
+    "/{invoice_id}/cancel-bank-verification",
+    response_model=None,
+    dependencies=[Depends(require_permission("payments.process"))],
+)
+def cancel_bank_verification(
+    invoice_id: UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Cancel the customer's pending micro-deposit check (GDXA-792).
+
+    While a bank payment waits on the customer to confirm Stripe's test
+    deposit, the pay page refuses every new payment, for up to 10 days. The
+    office's way out used to be the Stripe Dashboard. This cancels the
+    waiting PaymentIntent at Stripe (no money has moved) so the customer can
+    pay by card or another account, and records the acting user on the
+    invoice's trail. `payments.process`, the permission that voids a payment.
+    A debit already processing is refused with a 409 that says why.
+    """
+    from gdx_dispatch.core.payments import release_verifying_intents  # noqa: PLC0415
+
+    actor = _actor_id(user)
+    if actor == "system":
+        # A money mutation is never attributed to an anonymous identity.
+        raise HTTPException(status_code=401, detail="Could not identify the acting user")
+    invoice = _get_invoice_or_404(invoice_id, db)
+    released = release_verifying_intents(
+        invoice,
+        tenant=getattr(request.state, "tenant", {}) or {},
+        db=db,
+        actor=actor,
+        by="office",
+        request=request,
+    )
+    return {"released": released}
+
+
 @router.get("/{invoice_id}", response_model=None)
 def get_invoice(
     invoice_id: UUID,
@@ -2493,6 +2589,8 @@ _INVOICE_ACTIVITY_LABELS: dict[str, str] = {
     "ach_payment_processing": "Bank transfer started — pending (up to 4 business days)",
     "ach_payment_awaiting_verification": "Bank transfer waiting on the customer's micro-deposit check",
     "ach_payment_failed": "Bank transfer FAILED — the balance is still owed",
+    # GDXA-792: the customer or the office ended the micro-deposit wait.
+    "ach_verification_cancelled": "Bank verification cancelled — the invoice can be paid another way",
     "stripe_partial_refund_received": "Partial refund made at Stripe — record it on the Payments page if not already recorded",
     "mobile_invoice_receipt_sent": "Receipt sent from mobile",
     "mobile_invoice_receipt_send_failed": "Receipt failed to send from mobile",
@@ -3786,6 +3884,10 @@ def add_invoice_line(
     # The day rows this labor line bills (migration 110): claimed here, in
     # the same transaction, or the whole add is refused.
     claimed_time_entries = _claim_labor_day_rows(db, invoice, payload.time_entry_ids)
+    # The closeout's final-day hours ride the same line (GDXA-799).
+    _claim_labor_closeout(
+        db, invoice, payload.time_entry_ids, actor=_actor_id(current_user),
+    )
 
     _recalculate_invoice(invoice, db, actor=_actor_id(current_user))
     _bump_invoice_version(invoice)

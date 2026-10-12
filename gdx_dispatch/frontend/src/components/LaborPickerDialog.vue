@@ -30,7 +30,8 @@
                       labor_source ('matrix' | 'attested') plus, for matrix
                       rows, labor_price_item_id + estimated_man_hours, and
                       for the attested line that priced day rows, the
-                      `time_entry_ids` the save claims.
+                      `time_entry_ids` the save claims, and on the line that
+                      includes the closeout's hours, its `closeout_id`.
 -->
 <template>
   <Dialog
@@ -327,6 +328,12 @@ const attested = computed(() => {
       // Present on exactly one line of the set: the day rows it priced. An
       // empty list still marks a suggestion line, so it is kept as sent.
       timeEntryIds: Array.isArray(l.time_entry_ids) ? [...l.time_entry_ids] : undefined,
+      // The closeout whose final-day hours this line includes (GDXA-811). The
+      // server names it only on that line, and only while no other invoice
+      // holds them; sending it back lets the server claim exactly what was
+      // offered, not whatever is free when the save lands. Never derived from
+      // has_closeout — that would claim hours the line does not carry.
+      closeoutId: typeof l.closeout_id === 'string' && l.closeout_id ? l.closeout_id : undefined,
     })),
     hours: ls[0].man_hours ?? c?.closeout?.hours_worked ?? null,
     closedAt: (c?.closeout?.closed_at || '').slice(0, 10),
@@ -415,6 +422,7 @@ function addAttested() {
     // The server claims these day rows when the line is saved, so the same
     // days can never be billed twice.
     ...(l.timeEntryIds ? { time_entry_ids: l.timeEntryIds } : {}),
+    ...(l.closeoutId ? { closeout_id: l.closeoutId } : {}),
     // Baselines for the downgrade: re-pricing or re-counting attested hours
     // means an office number, not tech-signed evidence.
     _provenancePrice: l.unitPrice,
