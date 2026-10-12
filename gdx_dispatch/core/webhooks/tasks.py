@@ -35,7 +35,9 @@ def _tenant_session() -> Session:
 # No queue= kwarg: a decorator queue overrides task_routes entirely, and
 # "high"/"low" are pre-rename queue names no worker consumes (2026-07-07
 # audit). task_routes sends webhooks.* to priority:high.
-@celery_app.task
+# ignore_result: nothing reads it, and a kept result made every enqueue wait
+# ~19 s on the result store when Redis was down (GDXA-825).
+@celery_app.task(ignore_result=True)
 def deliver_webhook_task(delivery_id: str) -> None:
     with _tenant_session() as db:
         if db.get(WebhookDelivery, delivery_id):  # noqa: E701,E702

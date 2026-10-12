@@ -312,10 +312,16 @@ def _isolated_redis(monkeypatch):
 # outcome (as ConnectionError) and drops the wait. The production latency of
 # that result-store retry is not fixed here.
 #
+# The domain-event dispatch (webhooks, plugin events, workflow rules) queues
+# through ``core.celery_app.enqueue_bounded`` after the business commit — the
+# same money requests reach it — so the same mock stands in for both choke
+# points (GDXA-825). A test that stages a subscriber and commits sees its
+# enqueues on ``broker_enqueue`` and never touches a broker.
+#
 # Request ``broker_enqueue`` by name to inspect what was queued, or set its
-# ``side_effect = None`` to take the queued path. A test of
-# ``apply_async_bounded`` itself opts out with
-# ``@pytest.mark.real_broker_enqueue`` and must stub ``apply_async`` itself.
+# ``side_effect = None`` to take the queued path. A test of either helper
+# itself opts out with ``@pytest.mark.real_broker_enqueue`` and must stub
+# ``apply_async`` itself.
 
 
 @pytest.fixture(autouse=True, scope="function")
@@ -332,11 +338,13 @@ def broker_enqueue(request):
         return
     from unittest.mock import MagicMock
 
+    from gdx_dispatch.core import celery_app
     from gdx_dispatch.tasks import stale_intent_sweep
 
     dead = MagicMock(side_effect=ConnectionError("no broker in tests"))
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(stale_intent_sweep, "apply_async_bounded", dead)
+        mp.setattr(celery_app, "enqueue_bounded", dead)
         yield dead
 
 

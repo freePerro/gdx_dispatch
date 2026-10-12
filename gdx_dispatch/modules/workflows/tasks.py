@@ -22,7 +22,9 @@ from gdx_dispatch.core.database import SessionLocal
 log = logging.getLogger(__name__)
 
 
-@celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
+# ignore_result: nothing reads the return value back, and a kept result made
+# every enqueue wait ~19 s on the result store when Redis was down (GDXA-825).
+@celery_app.task(bind=True, max_retries=3, default_retry_delay=30, ignore_result=True)
 def run_workflow_rules_task(self, job: dict) -> int:
     """Run every active rule subscribed to this event. Returns rule count."""
     event_type = str(job.get("event_type") or "")
