@@ -148,6 +148,28 @@ async def test_invalidate_prefix_clears_the_whole_key_family():
     )
 
 
+async def test_a_tests_monkeypatch_undo_does_not_strip_the_fake(_isolated_redis, monkeypatch):
+    """GDXA-828. Red when: the fixture goes back to the shared ``monkeypatch``,
+    so a mid-test ``undo()`` reverts ``cache.get_redis_client`` to the real
+    localhost factory. With no Redis running, ``cached()`` then swallows the
+    connection error and the fetcher runs twice; with one running, the write
+    lands on a shared server. Either way the second call misses."""
+    monkeypatch.setenv("GDXA_828_PROBE", "1")
+    monkeypatch.undo()
+
+    assert cache.get_redis_client() is _isolated_redis
+
+    calls: list[int] = []
+
+    async def _fetch():
+        calls.append(1)
+        return {"ok": True}
+
+    await cache.cached("t-828", "undo:probe", ttl_seconds=30, fetcher=_fetch)
+    await cache.cached("t-828", "undo:probe", ttl_seconds=30, fetcher=_fetch)
+    assert len(calls) == 1, "after undo() the cache no longer round-trips through the fake"
+
+
 async def test_a_test_can_still_force_the_redis_down_degrade_path(monkeypatch):
     """The fixture must not take away a test's ability to exercise the
     outage path. Red when: the fixture patches something a test body cannot

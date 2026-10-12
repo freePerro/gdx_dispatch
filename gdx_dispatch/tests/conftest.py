@@ -280,8 +280,15 @@ def _reset_module_state():
 
 
 @pytest.fixture(autouse=True, scope="function")
-def _isolated_redis(monkeypatch):
-    """Point ``cached()`` at a per-test in-process Redis."""
+def _isolated_redis():
+    """Point ``cached()`` at a per-test in-process Redis.
+
+    Its own MonkeyPatch, as ``broker_enqueue`` below (GDXA-828): on the
+    shared ``monkeypatch`` fixture, a test calling ``monkeypatch.undo()``
+    mid-body would hand every later ``cached()`` call in that test the real
+    localhost Redis (~19 s where none runs, cross-test bleed where one does).
+    Yields the fake client.
+    """
     import fakeredis.aioredis
 
     from gdx_dispatch.core import cache
@@ -292,8 +299,9 @@ def _isolated_redis(monkeypatch):
     # Only cache.py's binding. NOT a cache_clear() on the real lru_cache:
     # that object is shared with the rate limiter (see above), and clearing
     # it hands the limiter a fresh, correctly loop-bound client.
-    monkeypatch.setattr(cache, "get_redis_client", lambda: client)
-    yield
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cache, "get_redis_client", lambda: client)
+        yield client
 
 
 # ---------------------------------------------------------------------------
