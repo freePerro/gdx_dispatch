@@ -34,7 +34,7 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_ungated_baseline"
 # prune that forgets to lower this number is red, once, with a one-line fix —
 # and gating a route never reddens it, because gating changes the SWEEP, not
 # the file.
-BASELINE_SIZE = 61
+BASELINE_SIZE = 62
 
 
 def _baseline() -> set[str]:
@@ -152,6 +152,10 @@ def test_baseline_does_not_silently_grow(
     # token model and the same lookup as GET /api/proposals/{token}; read-only.
     # 62 → 61 (2026-10-11, GDXA-579): GET /api/onboarding deleted with
     # core/onboarding.py, a parallel onboarding implementation nothing called.
+    # 61 → 62 (2026-10-12, GDXA-792): POST /api/payments/release-verifying —
+    # the pay page's "Pay a different way instead" during a micro-deposit
+    # check. Group 2, the same token lookup as create-intent; it can only
+    # cancel an unconfirmed bank verification on the token's own invoice.
     assert len(_baseline()) == BASELINE_SIZE, (
         f"{BASELINE_PATH.name} holds {len(_baseline())} entries, pinned at "
         f"{BASELINE_SIZE}.\n"

@@ -2306,6 +2306,45 @@ def list_ach_pending(
     return {"checked": True, "pending": pending}
 
 
+@router.post(
+    "/{invoice_id}/cancel-bank-verification",
+    response_model=None,
+    dependencies=[Depends(require_permission("payments.process"))],
+)
+def cancel_bank_verification(
+    invoice_id: UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Cancel the customer's pending micro-deposit check (GDXA-792).
+
+    While a bank payment waits on the customer to confirm Stripe's test
+    deposit, the pay page refuses every new payment, for up to 10 days. The
+    office's way out used to be the Stripe Dashboard. This cancels the
+    waiting PaymentIntent at Stripe (no money has moved) so the customer can
+    pay by card or another account, and records the acting user on the
+    invoice's trail. `payments.process`, the permission that voids a payment.
+    A debit already processing is refused with a 409 that says why.
+    """
+    from gdx_dispatch.core.payments import release_verifying_intents  # noqa: PLC0415
+
+    actor = _actor_id(user)
+    if actor == "system":
+        # A money mutation is never attributed to an anonymous identity.
+        raise HTTPException(status_code=401, detail="Could not identify the acting user")
+    invoice = _get_invoice_or_404(invoice_id, db)
+    released = release_verifying_intents(
+        invoice,
+        tenant=getattr(request.state, "tenant", {}) or {},
+        db=db,
+        actor=actor,
+        by="office",
+        request=request,
+    )
+    return {"released": released}
+
+
 @router.get("/{invoice_id}", response_model=None)
 def get_invoice(
     invoice_id: UUID,
@@ -2493,6 +2532,8 @@ _INVOICE_ACTIVITY_LABELS: dict[str, str] = {
     "ach_payment_processing": "Bank transfer started — pending (up to 4 business days)",
     "ach_payment_awaiting_verification": "Bank transfer waiting on the customer's micro-deposit check",
     "ach_payment_failed": "Bank transfer FAILED — the balance is still owed",
+    # GDXA-792: the customer or the office ended the micro-deposit wait.
+    "ach_verification_cancelled": "Bank verification cancelled — the invoice can be paid another way",
     "stripe_partial_refund_received": "Partial refund made at Stripe — record it on the Payments page if not already recorded",
     "mobile_invoice_receipt_sent": "Receipt sent from mobile",
     "mobile_invoice_receipt_send_failed": "Receipt failed to send from mobile",

@@ -138,6 +138,12 @@ class ConfirmPaymentRequest(BaseModel):
     invoice_id: str | None = None  # DEPRECATED — see NOTE ON SHAPE
 
 
+class ReleaseVerifyingRequest(BaseModel):
+    # Token only: a route added after the legacy ``invoice_id`` shape was
+    # deprecated has no old tab to keep working.
+    invoice_token: str
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1221,6 +1227,143 @@ def cancel_open_intents_for_invoice(
     return results
 
 
+def _is_verifying(pi: Any) -> bool:
+    """``pi`` waits on the customer's micro-deposit check (the `verifying` stage)."""
+    if str(_field(pi, "status") or "") != "requires_action":
+        return False
+    return str(_field(_field(pi, "next_action") or {}, "type") or "") == "verify_with_microdeposits"
+
+
+VERIFICATION_RELEASED_ACTION = "ach_verification_cancelled"
+
+PROCESSING_UNRELEASABLE_DETAIL = (
+    "This bank transfer has already started, so it can no longer be cancelled here. "
+    "It settles or fails within 4 business days; if it fails, the invoice can be paid again."
+)
+
+
+def release_verifying_intents(
+    invoice, *, tenant: dict | None = None, db: Session, actor: str, by: str,
+    request: Request | None = None,
+) -> list[str]:
+    """Cancel the micro-deposit wait holding ``invoice``'s pay page. Returns
+    the cancelled intent ids; raises HTTPException when it cannot release.
+
+    GDXA-792. `_refuse_if_ach_processing` refuses every new card or bank
+    payment while an intent sits in `requires_action` /
+    `verify_with_microdeposits`, and Stripe only lets that wait lapse after 10
+    days ("microdeposit verifications have a timeout of 10 days ... the
+    PaymentIntent reverts to requiring new payment method details",
+    <https://docs.stripe.com/payments/ach-direct-debit/accept-a-payment?payment-ui=direct-api>,
+    read 2026-10-12). Nothing in the app could end it sooner: the release was
+    the Stripe Dashboard. Both releases come here: the customer's "pay a
+    different way" (``by="customer"``) and the office's "Cancel bank
+    verification" (``by="office"``).
+
+    Stripe cancels from `requires_action`
+    (<https://docs.stripe.com/api/payment_intents/cancel>, read 2026-10-12).
+    No money has moved while the deposit is unconfirmed, so cancelling loses
+    the customer nothing but the wait. Each intent is read again just before
+    the cancel and left alone unless it still waits: a customer who confirmed
+    the deposit a moment ago has an intent in `processing`, and their debit is
+    then really moving.
+
+    `processing` is NOT released, and the refusal says so (409,
+    `PROCESSING_UNRELEASABLE_DETAIL`). Stripe cancels a processing ACH intent
+    only "in rare cases", and the debit is already authorized; its own end
+    (settle or fail, up to 4 business days, recorded by the webhook) is the
+    release. That is the class this fix checked: `processing` holds the pay
+    page too, but it lifts by itself and needs only a clear message.
+
+    Reads the register fail-CLOSED, unlike the mint gate: a scan that could
+    not read Stripe reports 502 rather than "nothing to release", which would
+    send the customer back to a page that still refuses them.
+
+    One audit row per accepted cancel, attributed to ``actor`` (the office
+    user, or the pay page for the customer). ``audit_best_effort`` because the
+    cancel at Stripe is already durable when the row is written; nothing is
+    staged on ``db`` by either caller.
+    """
+    connect = _stripe_extra(tenant or {})
+    try:
+        _init_stripe()
+        intents = _open_intents_for_invoice(invoice, connect=connect)
+    except Exception:
+        logger.exception("verification_release_scan_failed invoice=%s by=%s", invoice.id, by)
+        raise HTTPException(
+            status_code=502, detail="We couldn't reach the payment processor. Please try again."
+        ) from None
+
+    if any(str(_field(pi, "status") or "") == "processing" for pi in intents):
+        raise HTTPException(status_code=409, detail=PROCESSING_UNRELEASABLE_DETAIL)
+
+    from gdx_dispatch.core.audit import audit_best_effort  # noqa: PLC0415
+
+    released: list[str] = []
+    for pi in intents:
+        if not _is_verifying(pi):
+            continue
+        pid = str(_field(pi, "id") or "")
+        try:
+            now = stripe.PaymentIntent.retrieve(pid, **connect)
+        except Exception:
+            logger.exception("verification_release_reread_failed intent=%s invoice=%s", pid, invoice.id)
+            raise HTTPException(
+                status_code=502, detail="We couldn't reach the payment processor. Please try again."
+            ) from None
+        if str(_field(now, "status") or "") == "processing":
+            # Confirmed between the scan and now: the debit is moving.
+            raise HTTPException(status_code=409, detail=PROCESSING_UNRELEASABLE_DETAIL)
+        if not _is_verifying(now):
+            logger.info(
+                "verification_release_intent_moved intent=%s invoice=%s status=%s — left alone",
+                pid, invoice.id, _field(now, "status"),
+            )
+            continue
+        try:
+            done = stripe.PaymentIntent.cancel(pid, cancellation_reason="abandoned", **connect)
+        except Exception as exc:
+            logger.exception("verification_release_cancel_failed intent=%s invoice=%s", pid, invoice.id)
+            # Re-read once more: a refusal because it just started processing
+            # is the processing answer, not a failure to retry.
+            moved_on = ""
+            with contextlib.suppress(Exception):
+                moved_on = str(_field(stripe.PaymentIntent.retrieve(pid, **connect), "status") or "")
+            if moved_on == "processing":
+                raise HTTPException(status_code=409, detail=PROCESSING_UNRELEASABLE_DETAIL) from exc
+            raise HTTPException(
+                status_code=502, detail="The payment processor refused the cancellation. Please try again."
+            ) from None
+        released.append(pid)
+        landed = audit_best_effort(
+            db,
+            tenant_id=None,
+            user_id=actor,
+            # The customer release is unauthenticated: the caller's address is
+            # the only thing that tells the customer from a forwarded link.
+            request=request,
+            action=VERIFICATION_RELEASED_ACTION,
+            entity_type="invoice",
+            entity_id=str(invoice.id),
+            details={
+                "intent_id": pid,
+                "by": by,
+                "amount_cents": int(_field(pi, "amount") or 0),
+                "status": str(_field(done, "status") or ""),
+            },
+        )
+        if not landed:
+            logger.error(
+                "verification_release_audit_failed intent=%s invoice=%s — the cancel stands and "
+                "it is NOT in the audit trail; this ERROR is the only record.",
+                pid, invoice.id,
+            )
+        logger.warning(
+            "verification_released intent=%s invoice=%s by=%s actor=%s", pid, invoice.id, by, actor,
+        )
+    return released
+
+
 def _audit_money_event(
     db: Session, *, invoice, payment, source: str, action: str, detail: dict,
     consequence: str,
@@ -2207,6 +2350,38 @@ def create_intent(
         "payment_method_attached": attached,
         "method": method,
     }
+
+
+# ---------------------------------------------------------------------------
+# POST /api/payments/release-verifying
+# ---------------------------------------------------------------------------
+
+@router.post("/release-verifying")
+def release_verifying(
+    body: ReleaseVerifyingRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict:
+    """The customer gives up on the micro-deposit check to pay another way
+    (GDXA-792). The pay page's "Pay a different way instead" button posts here
+    and reloads; with the wait cancelled the page renders both tabs again.
+
+    Token-scoped like every route behind the pay page: the token is the
+    credential, and anyone holding it could already pay the invoice. What it
+    adds is the power to end a pending bank verification on THIS invoice,
+    which costs the payer nothing (no money moves until the deposit is
+    confirmed) and is on the invoice's audit trail. `_resolve_public_invoice`
+    gives the same 404 for an unknown token as for a draft, so it enumerates
+    nothing. Idempotent: no wait open returns ``released: []``.
+    """
+    invoice = _resolve_public_invoice(
+        db, invoice_token=body.invoice_token, invoice_id=None, op="release-verifying"
+    )
+    tenant: dict = getattr(request.state, "tenant", {}) or {}
+    released = release_verifying_intents(
+        invoice, tenant=tenant, db=db, actor="stripe-pay-page", by="customer", request=request,
+    )
+    return {"released": released}
 
 
 # ---------------------------------------------------------------------------
