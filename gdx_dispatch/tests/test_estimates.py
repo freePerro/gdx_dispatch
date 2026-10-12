@@ -856,11 +856,12 @@ def test_reopen_flags_a_row_retired_by_effective_to(client: TestClient):
     estimate = _create_estimate(client)
     db = next(client.app.dependency_overrides[get_db]())
     try:
+        # Yesterday on the shop's calendar, which reopen checks effective_to
+        # against — not the UTC date, a day ahead from 00:00 to 05:00 UTC.
         item = LaborPriceItem(
             id=_uuid.uuid4(), description="Spring replace", service_type="repair",
             flat_price=200, assumed_man_hours=1, active=True,
-            # retired yesterday, on the shop's calendar (GDXA-508)
-            effective_to=shop_today_from_settings(db) - timedelta(days=1),
+            effective_to=shop_today_from_settings(db) - timedelta(days=1),  # retired yesterday
         )
         db.add(item)
         db.add(EstimateLine(
