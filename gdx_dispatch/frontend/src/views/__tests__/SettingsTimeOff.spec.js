@@ -147,6 +147,7 @@ describe('Settings → Time off and holidays', () => {
     expect(body).toEqual({
       time_off_default_minutes: 480,
       time_off_counts_toward_overtime: true,
+      vacation_allowance_hours: null,
       holiday_calendar: [
         { date: '2026-11-26', name: 'Thanksgiving', minutes: 480 },
         { date: '2026-12-25', name: 'Christmas Day', minutes: 240 },
@@ -156,6 +157,25 @@ describe('Settings → Time off and holidays', () => {
     expect(opts).toEqual(expect.objectContaining({ successMessage: expect.any(String) }));
     // The new row is now saved → Post enabled.
     expect(w.find('[data-testid="holiday-post-2"]').attributes('disabled')).toBeUndefined();
+  });
+
+  it('vacation allowance: unset renders blank, a value saves in HOURS, blank clears to null', async () => {
+    mockGet({ ...SETTINGS, vacation_allowance_hours: null });
+    apiPatch.mockImplementation((url, body) => Promise.resolve({ ...SETTINGS, ...body }));
+    const w = await mountSettings();
+    expect(w.vm.timeOff.vacation_allowance_hours).toBe(null);
+
+    await w.find('[data-testid="time-off-vacation-allowance"]').setValue('80.5');
+    await w.find('[data-testid="time-off-save"]').trigger('click');
+    await flushPromises();
+    expect(apiPatch.mock.calls[0][1].vacation_allowance_hours).toBe(80.5);
+    expect(w.vm.timeOff.vacation_allowance_hours).toBe(80.5);
+
+    // PrimeVue InputNumber emits null when emptied.
+    w.vm.timeOff.vacation_allowance_hours = null;
+    await w.find('[data-testid="time-off-save"]').trigger('click');
+    await flushPromises();
+    expect(apiPatch.mock.calls[1][1].vacation_allowance_hours).toBe(null);
   });
 
   it('refuses to save a row with no date or name, at the row, without a request', async () => {

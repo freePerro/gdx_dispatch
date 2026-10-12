@@ -363,6 +363,23 @@
               </div>
             </div>
           </fieldset>
+          <div class="form-field">
+            <label for="edit-vacation-allowance">Vacation hours per year</label>
+            <InputNumber
+              v-model="editForm.vacation_allowance_hours"
+              inputId="edit-vacation-allowance"
+              :min="0"
+              :max="8784"
+              :minFractionDigits="0"
+              :maxFractionDigits="2"
+              placeholder="Shop default"
+              fluid
+              data-testid="users-edit-vacation-allowance"
+            />
+            <p class="form-hint">
+              Blank = the shop default from Settings → Time off and holidays. 0 = no vacation hours.
+            </p>
+          </div>
           <div v-if="editError" class="inline-error" data-testid="users-edit-error">
             {{ editError }}
           </div>
@@ -593,6 +610,7 @@ import { formatDateTime } from '../composables/useFormatters';
 import { useAuthStore } from '../stores/auth';
 import Button from 'primevue/button';
 import Dialog from 'primevue/dialog';
+import InputNumber from 'primevue/inputnumber';
 import InputText from 'primevue/inputtext';
 import ProgressSpinner from 'primevue/progressspinner';
 import Select from 'primevue/select';
@@ -737,7 +755,7 @@ function emptyEditForm() {
   // bitmask integer or null (null = inherit). Sprint dispatch-capacity.
   return {
     name: '', email: '', phone: '', route_start_address: '', certifications: '',
-    shift_start: '', shift_end: '', workdays: null,
+    shift_start: '', shift_end: '', workdays: null, vacation_allowance_hours: null,
   };
 }
 
@@ -975,6 +993,7 @@ function openEditDialog(user) {
     shift_start: user.shift_start || '',
     shift_end: user.shift_end || '',
     workdays: Number.isInteger(user.workdays) ? user.workdays : null,
+    vacation_allowance_hours: user.vacation_allowance_hours == null ? null : Number(user.vacation_allowance_hours),
   };
   editError.value = '';
   showEditDialog.value = true;
@@ -997,6 +1016,8 @@ async function submitEdit() {
       shift_start: editForm.value.shift_start ? editForm.value.shift_start : null,
       shift_end: editForm.value.shift_end ? editForm.value.shift_end : null,
       workdays: editForm.value.workdays,
+      // null = inherit the shop's vacation allowance.
+      vacation_allowance_hours: editForm.value.vacation_allowance_hours ?? null,
     };
     if (payload.shift_start && payload.shift_end && payload.shift_end <= payload.shift_start) {
       throw new Error('Shift end must be after shift start.');
