@@ -79,26 +79,33 @@ def platform_smtp_configured() -> bool:
 
 def _send_password_reset_email(
     db: Session, *, tenant_id: str, user: Any, subject: str, html_body: str,
-    audit_body_html: str,
+    audit_body_html: str, initiated_by: str | None = None,
 ) -> tuple[bool, str | None, str | None]:
     """Deliver a reset email. Returns (sent, provider, skip_reason).
 
     1. Outlook as the Settings → Automation email "Send as" mailbox, as the
-       payment receipt does — no person sent this, and
-       ``designated_sender_fallback`` covers only a PERSON without a mailbox.
-       Kept out of that mailbox's Sent Items, and outbound_emails stores the
-       redacted body: the link is a credential for the account it names,
-       the owner's included.
+       payment receipt does — the mailbox is the shop's, never the
+       initiator's, and ``designated_sender_fallback`` covers only a PERSON
+       without a mailbox. Kept out of that mailbox's Sent Items, and
+       outbound_emails stores the redacted body: the link is a credential for
+       the account it names, the owner's included.
     2. Platform SMTP (PLATFORM_SMTP_*), for installs without Outlook.
+
+    ``initiated_by``: the staff user who asked for it (Send Reset Link,
+    invite). outbound_emails and the email.* event then record
+    initiator_kind "user" with that id; None (forgot-password, where nobody
+    is signed in) records "system".
 
     Nothing logged by this function carries the address or the link.
     """
     from gdx_dispatch.core.tenant import company_id
     from gdx_dispatch.core.transactional_email import (
         _designated_sender_user_id,
+        _record_outbound,
         send_transactional_email,
     )
 
+    kind = "user" if initiated_by else "system"
     sent, provider, skip_reason = send_transactional_email(
         tenant_db=db,
         tenant_id=tenant_id or company_id(),
@@ -110,19 +117,34 @@ def _send_password_reset_email(
         audit_body_html=audit_body_html,
         save_to_sent_items=False,
         kind="password_reset",
-        initiator_kind="system",
+        initiator_kind=kind,
+        initiator_ref=initiated_by,
         entity_type="user",
         entity_id=str(user.id),
     )
     if sent:
         return sent, provider, None
     if platform_smtp_configured():
+        # Its own outbound_emails row: the one above records the transactional
+        # attempt as failed, so without this a delivered reset reads as failed.
+        record = {
+            "tenant_db": db, "tenant_id": str(tenant_id or company_id()),
+            "initiator_kind": kind, "initiator_ref": initiated_by,
+            "kind": "password_reset", "entity_type": "user", "entity_id": str(user.id),
+            "to_email": str(user.email), "to_name": str(user.full_name or user.name or ""),
+            "recipient_source": None, "recipient_contact_id": None,
+            "subject": subject, "html_body": audit_body_html, "attachments": None,
+            "provider": "platform_smtp",
+        }
         try:
             _send_platform_email(str(user.email), subject, html_body)
-            return True, "platform_smtp", None
         except Exception:
             log.exception("password_reset_platform_smtp_failed")
+            _record_outbound(**record, sent=False, skip_reason="platform_smtp_failed")
             skip_reason = f"{skip_reason}+platform_smtp_failed"
+        else:
+            _record_outbound(**record, sent=True, skip_reason=None)
+            return True, "platform_smtp", None
     log.warning("password_reset_email_not_sent reason=%s", skip_reason)
     return False, None, skip_reason
 
@@ -846,13 +868,15 @@ def _revoke_reset_token(token: str) -> None:
 
 
 def send_password_reset_link(
-    db: Session, user: Any, tenant_id: str, *, invite: bool = False,
+    db: Session, user: Any, tenant_id: str, *, initiated_by: str,
+    invite: bool = False,
 ) -> None:
     """Store a reset token where POST /auth/reset-password looks it up and
     email the link, through the same providers as forgot-password.
 
     For staff-initiated sends (Users → Send Reset Link, Add User → Send
-    invite), where the caller must be told the truth. Raises
+    invite), where the caller must be told the truth. ``initiated_by`` is
+    the acting staff user's id, recorded on the outbound_emails row. Raises
     PasswordResetEmailNotSent when no link can be built or no provider
     delivered it; re-raises anything unexpected (Redis). A token whose email
     did not go out is deleted, so a failure never leaves a live credential.
@@ -877,6 +901,7 @@ def send_password_reset_link(
             audit_body_html=_password_reset_email_html(
                 _RESET_LINK_REDACTED, invite=invite, expires_text=expires_text,
             ),
+            initiated_by=initiated_by,
         )
     except Exception:
         _revoke_reset_token(token)

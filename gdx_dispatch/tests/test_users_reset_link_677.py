@@ -134,7 +134,7 @@ def env(monkeypatch, orm_engine):
     client = TestClient(app, raise_server_exceptions=True)
     yield {
         "client": client, "db": SessionLocal, "redis": fake_redis, "sent": sent,
-        "target_id": str(target_id),
+        "target_id": str(target_id), "admin_id": str(admin_id),
     }
     app.dependency_overrides.clear()
 
@@ -224,6 +224,8 @@ def test_send_reset_link_goes_through_the_designated_outlook_sender(env, monkeyp
     with env["db"]() as db:
         [row] = db.execute(select(OutboundEmail)).scalars().all()
         assert row.status == "sent" and row.kind == "password_reset"
+        # Who asked for it, not the mailbox that carried it (the designated sender).
+        assert (row.initiator_kind, row.initiator_ref) == ("user", env["admin_id"])
         assert token not in row.body_html and "[reset link redacted]" in row.body_html
 
     r2 = env["client"].post("/auth/reset-password", json={"token": token, "new_password": NEW_PASSWORD})
@@ -242,6 +244,12 @@ def test_send_reset_link_with_placeholder_smtp_user_refuses_and_leaves_no_token(
     assert env["sent"] == []
     assert _pw_reset_keys(env["redis"]) == []
     assert _audit(env["db"], "password_reset_link_sent") == [], "no audit row claiming a send"
+    # The refusal raises before the users.py audit row, so this is the record
+    # of who tried.
+    with env["db"]() as db:
+        [row] = db.execute(select(OutboundEmail)).scalars().all()
+    assert row.status == "failed"
+    assert (row.initiator_kind, row.initiator_ref) == ("user", env["admin_id"])
 
 
 def test_send_reset_link_smtp_failure_is_a_503_and_revokes_the_token(env, monkeypatch):
@@ -257,6 +265,12 @@ def test_send_reset_link_smtp_failure_is_a_503_and_revokes_the_token(env, monkey
     assert "platform_smtp_failed" not in detail, "provider reason codes stay in the log"
     assert _pw_reset_keys(env["redis"]) == [], "a link nobody received must not stay live"
     assert _audit(env["db"], "password_reset_link_sent") == []
+    with env["db"]() as db:
+        rows = db.execute(select(OutboundEmail)).scalars().all()
+    assert sorted(((r.status, r.provider, r.skip_reason) for r in rows), key=lambda t: t[1] or "") == [
+        ("failed", None, "no_email_provider_connected"),
+        ("failed", "platform_smtp", "platform_smtp_failed"),
+    ]
 
 
 @pytest.mark.parametrize(("skip_reason", "expected"), [
@@ -351,6 +365,24 @@ def test_invite_emails_a_set_password_link_that_works(env):
 
     rows = _audit(env["db"], "user_invited")
     assert len(rows) == 1 and rows[0].details["invite_email_sent"] is True
+
+    # No Outlook here, so platform SMTP delivered it: that attempt is a sent
+    # row of its own, and both rows name the admin who sent the invite.
+    with env["db"]() as db:
+        out = db.execute(select(OutboundEmail)).scalars().all()
+    assert sorted((o.status, o.provider) for o in out) == [("failed", None), ("sent", "platform_smtp")]
+    assert {(o.initiator_kind, o.initiator_ref) for o in out} == {("user", env["admin_id"])}
+
+
+def test_forgot_password_is_recorded_as_a_system_send(env):
+    """Nobody is signed in on forgot-password, so no staff user is named."""
+    r = env["client"].post("/auth/forgot-password", json={"email": "terry.tech@example.com"})
+    assert r.status_code == 200, r.text
+    assert len(env["sent"]) == 1
+    with env["db"]() as db:
+        out = db.execute(select(OutboundEmail)).scalars().all()
+    assert sorted((o.status, o.provider) for o in out) == [("failed", None), ("sent", "platform_smtp")]
+    assert {(o.initiator_kind, o.initiator_ref) for o in out} == {("system", None)}
 
 
 def test_invite_without_smtp_creates_the_user_and_says_no_email_went(env, monkeypatch):

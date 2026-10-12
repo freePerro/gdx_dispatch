@@ -695,7 +695,7 @@ def send_reset_link(user_id: str, request: Request, user: dict = Depends(get_cur
     # GDXA-677: this used to mint a token it stored nowhere, send nothing and
     # answer "queued". Now the link is real and emailed, or the caller hears why not.
     try:
-        send_password_reset_link(db, u, tid)
+        send_password_reset_link(db, u, tid, initiated_by=_user_id(user))
     except PasswordResetEmailNotSent as exc:
         # auth.core logs the provider's skip reason; the caller gets a fixed
         # sentence keyed by code, never exception text
@@ -773,7 +773,7 @@ def invite_user(payload: InviteIn, request: Request, user: dict = Depends(get_cu
     # "queued" and send nothing. The user exists either way; say whether it went.
     invite_sent, invite_error = False, None
     try:
-        send_password_reset_link(db, u, tid, invite=True)
+        send_password_reset_link(db, u, tid, initiated_by=_user_id(user), invite=True)
         invite_sent = True
     except PasswordResetEmailNotSent as exc:
         log.warning("user_invite_email_not_sent code=%s", exc.code, extra={"tenant_id": tid, "invited_user_id": str(u.id)})
