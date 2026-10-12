@@ -150,8 +150,12 @@ def test_zero_total_invoice_posts_nothing(db):
     assert _entries(db) == []
 
 
-def test_rounding_residual_posts_to_6990(db):
+def test_rounding_residual_posts_to_6990(db, monkeypatch):
     _enable(db)
+    # The seed is a cent off, which the totals invariant refuses at commit in
+    # strict mode, so on prod a legacy cent-off row cannot reach this path
+    # (reported on GDXA-679). This pins the GL's own residual arithmetic.
+    monkeypatch.setenv("GDX_INVOICE_INVARIANT", "log")
     # total 100.00 but lines sum to 99.99 and no tax → 1-cent residual
     inv = _invoice(db, total="100.00", tax="0.00", lines=[("Widget", "99.99", None)])
     transition_invoice_status(db, inv, "sent")
@@ -333,12 +337,15 @@ def test_soft_deleted_lines_do_not_credit_revenue(db):
     assert "6990" not in by_code            # and nothing to absorb
 
 
-def test_unreconcilable_invoice_refuses_to_post(db):
+def test_unreconcilable_invoice_refuses_to_post(db, monkeypatch):
     """total ≠ lines + tax beyond rounding is a data bug, not 'rounding' —
     it must refuse loudly, never launder into 6990."""
     from gdx_dispatch.modules.ledger.rules import IssuanceCompositionError
 
     _enable(db)
+    # The totals invariant would refuse this seed at commit; the point here is
+    # the GL's own refusal of a row that got past it, so seed in log mode.
+    monkeypatch.setenv("GDX_INVOICE_INVARIANT", "log")
     inv = _invoice(db, total="100.00", tax="0.00", lines=[("Tiny", "5.00", None)])
     with pytest.raises(IssuanceCompositionError, match="doesn't reconcile"):
         transition_invoice_status(db, inv, "sent")

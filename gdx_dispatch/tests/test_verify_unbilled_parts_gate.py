@@ -34,7 +34,7 @@ from decimal import Decimal
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -130,6 +130,15 @@ def _line(db, inv: Invoice, description: str, part_id: str | None = None) -> Inv
         company_id=TENANT,
     )
     db.add(line)
+    # The header carries its lines, or the totals invariant refuses the commit.
+    db.flush()
+    lines_sum = sum(
+        (ln.line_total for ln in db.execute(
+            select(InvoiceLine).where(InvoiceLine.invoice_id == inv.id, InvoiceLine.deleted_at.is_(None))
+        ).scalars()),
+        Decimal("0"),
+    )
+    inv.subtotal = inv.total = inv.balance_due = lines_sum
     db.commit()
     return line
 
