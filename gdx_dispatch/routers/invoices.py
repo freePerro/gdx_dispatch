@@ -1540,7 +1540,7 @@ def create_invoice(
         subtotal_value = float(estimate.total or 0)
     elif payload.line_items:
         subtotal_value = sum(
-            float(_money(Decimal(str(line.unit_price)) * line.quantity)) for line in payload.line_items
+            float(_money(_money(line.unit_price) * line.quantity)) for line in payload.line_items
         )
     else:
         subtotal_value = 0.0
@@ -1895,7 +1895,10 @@ def create_invoice(
                     description=line.description,
                     quantity=line.quantity,
                     unit_price=_money(line.unit_price),
-                    line_total=_money(Decimal(str(line.unit_price)) * line.quantity),
+                    # From the stored (rounded) price, as the edit path does,
+                    # so line_total is always quantity × the unit_price on the
+                    # row: 3 × 0.005 is 3 × 0.01 = 0.03, never 0.02.
+                    line_total=_money(_money(line.unit_price) * line.quantity),
                     taxable=bool(line.taxable),
                     includes_labor=bool(getattr(line, "includes_labor", False)),
                     # S122-b — persist the new estimate-parity fields when set.
@@ -1947,7 +1950,7 @@ def create_invoice(
         # skipping the paid auto-flip so the row sat in AR forever. The client
         # showed $0.00 for the same input, so nothing on screen revealed it.
         _goods = sum(
-            (Decimal(str(li.unit_price)) * li.quantity for li in payload.line_items),
+            (_money(_money(li.unit_price) * li.quantity) for li in payload.line_items),
             Decimal("0"),
         )
         if _op_discount > _goods:
@@ -3682,15 +3685,17 @@ def add_invoice_line(
     max_sort = db.execute(select(func.max(InvoiceLine.sort_order)).where(InvoiceLine.invoice_id == invoice.id)).scalar_one_or_none()
     sort_order = int(max_sort or 0) + 1
     # Decimal × Decimal: quantity is a Decimal since migration 108, and
-    # Decimal × float raises TypeError.
-    line_total = _money(payload.quantity * Decimal(str(payload.unit_price)))
+    # Decimal × float raises TypeError. The total comes from the price as
+    # stored (rounded once), the same as the create and edit paths.
+    price = _money(payload.unit_price)
+    line_total = _money(payload.quantity * price)
 
     line = build_invoice_line(
         company_id=invoice.company_id,
         invoice_id=invoice.id,
         description=payload.description.strip(),
         quantity=payload.quantity,
-        unit_price=_money(payload.unit_price),
+        unit_price=price,
         line_total=line_total,
         taxable=bool(payload.taxable),
         # S122-b — estimate-parity fields.
