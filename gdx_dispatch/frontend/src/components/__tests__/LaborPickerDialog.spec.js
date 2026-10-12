@@ -350,6 +350,52 @@ describe('LaborPickerDialog — the day rows a line bills', () => {
     expect(lines[0].time_entry_ids).toEqual(['te-1', 'te-2']);
   });
 
+  // GDXA-811: the save claims the closeout's final-day hours only when the
+  // line names the closeout it was built from, so a stale suggestion cannot
+  // claim (or double-bill) hours someone else took in the meantime.
+  it('the line that includes the closeout hours carries its closeout_id; the other does not', async () => {
+    const w = mountPicker({
+      closeout: { ...CLOSEOUT, labor_lines: [FIRST, { ...HOURLY, closeout_id: 'co-1' }] },
+    });
+    await flushPromises();
+    await w.find('[data-testid="labor-add-attested"]').trigger('click');
+    const [first, hourly] = w.emitted('add')[0][0];
+    expect('closeout_id' in first).toBe(false);
+    expect(hourly.closeout_id).toBe('co-1');
+    expect(hourly.time_entry_ids).toEqual(['te-1', 'te-2']);
+  });
+
+  it('no closeout_id from the server means none on the line, even with a closeout on the job', async () => {
+    const w = mountPicker({ closeout: { ...CLOSEOUT, labor_lines: [FIRST, HOURLY] } });
+    await flushPromises();
+    await w.find('[data-testid="labor-add-attested"]').trigger('click');
+    for (const line of w.emitted('add')[0][0]) expect('closeout_id' in line).toBe(false);
+  });
+
+  it('an empty or non-string closeout_id is dropped, not sent', async () => {
+    for (const bad of ['', null, 42]) {
+      const w = mountPicker({ closeout: { ...CLOSEOUT, labor_lines: [{ ...HOURLY, closeout_id: bad }] } });
+      await flushPromises();
+      await w.find('[data-testid="labor-add-attested"]').trigger('click');
+      expect('closeout_id' in w.emitted('add')[0][0][0]).toBe(false);
+    }
+  });
+
+  it('the install-lane matrix suggestion never carries a closeout_id', async () => {
+    const w = mountPicker({
+      closeout: {
+        ...CLOSEOUT,
+        labor_lines: [{
+          description: '16x7 Install', quantity: 1, unit_price: 650, line_total: 650,
+          source: 'matrix', labor_price_item_id: 'lpi-1', man_hours: null, closeout_id: 'co-1',
+        }],
+      },
+    });
+    await flushPromises();
+    await w.find('[data-testid="labor-add-suggested-matrix"]').trigger('click');
+    expect('closeout_id' in w.emitted('add')[0][0][0]).toBe(false);
+  });
+
   it('no labor lines hides the attested lane', async () => {
     const w = mountPicker({ closeout: { has_closeout: true, closeout: {}, labor_lines: [] } });
     await flushPromises();

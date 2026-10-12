@@ -1582,6 +1582,28 @@ describe('LineItemEditor — an attested labor line and its day rows', () => {
     expect(last[1].description).toBe(ATTESTED.description);
   });
 
+  // GDXA-811: the closeout's hours are claimed once, by the line that named
+  // the closeout. A copy naming it too would bill them twice or refuse the save.
+  it('a duplicate carries no closeout_id; the original keeps it', async () => {
+    const wrapper = mountEditor({ lines: [{ ...ATTESTED, closeout_id: 'co-1' }] });
+    await wrapper.find('[data-testid="line-copy-0"]').trigger('click');
+    const last = lastLines(wrapper);
+    expect(last).toHaveLength(2);
+    expect(last[0].closeout_id).toBe('co-1');
+    expect(last[1]).not.toHaveProperty('closeout_id');
+    expect(last[1]).not.toHaveProperty('time_entry_ids');
+  });
+
+  it('a closeout_id from the labor picker reaches the emitted lines', async () => {
+    apiGet.mockResolvedValue([]);
+    const wrapper = mountEditor({ lines: [], showLabor: true });
+    wrapper.findComponent({ name: 'LaborPickerDialog' }).vm.$emit('add', [{ ...ATTESTED, closeout_id: 'co-1' }]);
+    await flushPromises();
+    const added = lastLines(wrapper).find((l) => l.description === ATTESTED.description);
+    expect(added.closeout_id).toBe('co-1');
+    expect(added.time_entry_ids).toEqual(['te-1', 'te-2']);
+  });
+
   it('changing the hours makes the line manual and keeps its ids', async () => {
     const wrapper = mountEditor({ lines: [{ ...ATTESTED }], fractionalQuantity: true });
     await wrapper.find('[data-testid="line-qty-0"]').setValue('3');

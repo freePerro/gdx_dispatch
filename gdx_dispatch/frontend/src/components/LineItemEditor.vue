@@ -536,9 +536,11 @@ function duplicateLineAt(idx) {
   // override line is still an override line.
   // `time_entry_ids` goes the way of `part_id`: the day rows a labor line
   // bills are claimed once, and a copy claiming them again would refuse the
-  // whole save. The copy is a hand-typed line.
+  // whole save. The copy is a hand-typed line. `closeout_id` likewise: the
+  // closeout's hours are claimed once, by the line the suggestion put them on.
   const {
-    id, _key, tempId, part_id, time_entry_ids, _priceOverridden, _autoMargin, ...rest
+    id, _key, tempId, part_id, time_entry_ids, closeout_id,
+    _priceOverridden, _autoMargin, ...rest
   } = src;
   localLines.value.splice(idx + 1, 0, { ...rest });
   emitLines();
