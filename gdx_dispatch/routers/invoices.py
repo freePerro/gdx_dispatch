@@ -717,7 +717,11 @@ def _hand_line_pricing_source(line: "InvoiceLineCreateIn") -> str:
     already have downgraded ``labor_source`` on an hours edit before the
     first save; ``labor_source='attested'`` is the other signal.
     """
-    if line.time_entry_ids is not None or line.labor_source == "attested":
+    if (
+        line.time_entry_ids is not None
+        or line.closeout_id is not None
+        or line.labor_source == "attested"
+    ):
         return "labor_attested"
     if line.margin_pct_override is not None:
         return "line_override"
@@ -808,38 +812,62 @@ def _refuse_labor_already_on_invoice(db: Session, what: str) -> None:
     )
 
 
+def _refuse_labor_suggestion_stale(db: Session) -> None:
+    """Roll back and refuse a labor line naming a closeout that is no longer
+    the job's current one with hours to bill (409)."""
+    db.rollback()
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "labor_suggestion_stale",
+            "message": (
+                "The job's closeout changed since this labor line was suggested"
+                " — reload the labor suggestion."
+            ),
+        },
+    )
+
+
 def _claim_labor_closeout(
-    db: Session, invoice: Invoice, ids: list | None, *, actor: str | None
+    db: Session, invoice: Invoice, closeout_id: UUID | None, *, actor: str | None
 ) -> bool:
-    """Claim the job's closeout final-day hours for a labor line built from
-    the billing suggestion (GDXA-799), in the caller's transaction.
+    """Claim the job's closeout final-day hours for the labor line that names
+    them (GDXA-799, GDXA-812), in the caller's transaction.
 
-    A suggestion line is the one that sends ``time_entry_ids`` (``[]``
-    included); the suggestion put the closeout's hours on it exactly when no
-    other live invoice held them. So:
+    The billing suggestion puts ``closeout_id`` on the one line whose quantity
+    includes the closeout's hours, and only when it offered them. The line
+    says what it bills; the server never infers it from who holds the stamp
+    at save time, which a stale suggestion read differently. So:
 
-    * free (or held by a deleted or void invoice) — stamped to this invoice;
-    * held by another live invoice — the suggestion left them out; no claim;
-    * claimed by another invoice between that read and the claim — rolled
-      back with 409 ``labor_already_billed``;
-    * held by THIS invoice — a second suggestion line bills them twice, so
-      the transaction is rolled back with 409 ``labor_already_on_invoice``.
+    * not named — the line does not bill the closeout's hours; never claimed;
+    * named, but not the job's current closeout with hours — rolled back with
+      409 ``labor_suggestion_stale``;
+    * named and held by another live invoice, before or during the claim —
+      rolled back with 409 ``labor_already_billed``;
+    * named and held by THIS invoice — a second line billing them, rolled
+      back with 409 ``labor_already_on_invoice``;
+    * named and free (or held by a deleted or void invoice) — stamped to this
+      invoice.
 
     Returns True when this call stamped them.
     """
-    if ids is None or invoice.job_id is None:
+    if closeout_id is None:
         return False
     from gdx_dispatch.core.closeout_billing import claim_closeout_hours, closeout_hours_holder
     from gdx_dispatch.core.closeouts import get_current_closeout
 
-    closeout = get_current_closeout(db, invoice.job_id)
-    if closeout is None or not Decimal(str(closeout.hours_worked or 0)) > 0:
-        return False
+    closeout = get_current_closeout(db, invoice.job_id) if invoice.job_id is not None else None
+    if (
+        closeout is None
+        or str(closeout.id) != str(closeout_id)
+        or not Decimal(str(closeout.hours_worked or 0)) > 0
+    ):
+        _refuse_labor_suggestion_stale(db)
     holder = closeout_hours_holder(db, closeout)
     if holder == invoice.id:
         _refuse_labor_already_on_invoice(db, "the closeout's labor")
     if holder is not None:
-        return False
+        _refuse_labor_already_billed(db, holder, "The closeout's labor")
     if not claim_closeout_hours(db, invoice, closeout, actor=actor):
         # Another invoice claimed them since the read above: this line was
         # built with them on it, so it would bill them twice.
@@ -888,6 +916,10 @@ class InvoiceLineCreateIn(BaseModel):
     # `None` (absent) and `[]` differ: `[]` still marks a line that came from
     # the suggestion, so it records `pricing_source='labor_attested'`.
     time_entry_ids: list[UUID] | None = Field(default=None, max_length=500)
+    # The closeout whose final-day hours this line bills (GDXA-812), as the
+    # billing suggestion named it. Named: claimed in the same transaction, or
+    # a 409. Absent: the line does not bill them and nothing is claimed.
+    closeout_id: UUID | None = None
 
     @model_validator(mode="after")
     def _labor_provenance_is_coherent(self) -> "InvoiceLineCreateIn":
@@ -1996,7 +2028,7 @@ def create_invoice(
             claimed_time_entries += _claim_labor_day_rows(db, invoice, line.time_entry_ids)
             # The closeout's final-day hours ride the same line (GDXA-799).
             _claim_labor_closeout(
-                db, invoice, line.time_entry_ids, actor=_actor_id(_),
+                db, invoice, line.closeout_id, actor=_actor_id(_),
             )
 
     # D2 — materialize an operator-entered discount as the same negative line
@@ -3886,7 +3918,7 @@ def add_invoice_line(
     claimed_time_entries = _claim_labor_day_rows(db, invoice, payload.time_entry_ids)
     # The closeout's final-day hours ride the same line (GDXA-799).
     _claim_labor_closeout(
-        db, invoice, payload.time_entry_ids, actor=_actor_id(current_user),
+        db, invoice, payload.closeout_id, actor=_actor_id(current_user),
     )
 
     _recalculate_invoice(invoice, db, actor=_actor_id(current_user))

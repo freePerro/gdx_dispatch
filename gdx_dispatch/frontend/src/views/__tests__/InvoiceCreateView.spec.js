@@ -247,6 +247,7 @@ describe('InvoiceCreateView — labor lines', () => {
   const HOURLY = {
     description: 'Service labor — 2.5 man-hours over 2 days', quantity: 1.5, unit_price: 100, line_total: 150,
     source: 'attested', labor_price_item_id: null, man_hours: 2.5, estimated_man_hours: 2.5, time_entry_ids: ['te-1', 'te-2'],
+    closeout_id: 'co-1',
   };
   const MATRIX = { description: '16x7 Sectional Install', quantity: 1, unit_price: 650, source: 'matrix', labor_price_item_id: 'lpi-1', man_hours: null };
 
@@ -283,8 +284,18 @@ describe('InvoiceCreateView — labor lines', () => {
     const [url, payload] = apiPost.mock.calls[0];
     expect(url).toBe('/api/invoices');
     expect(payload.line_items[0]).not.toHaveProperty('time_entry_ids');
+    expect(payload.line_items[0]).not.toHaveProperty('closeout_id');
     expect(payload.line_items[0]).toMatchObject({ description: 'Service labor — first hour', quantity: 1, unit_price: 125, labor_source: 'attested' });
-    expect(payload.line_items[1]).toMatchObject({ quantity: 1.5, unit_price: 100, labor_source: 'attested', time_entry_ids: ['te-1', 'te-2'] });
+    expect(payload.line_items[1]).toMatchObject({ quantity: 1.5, unit_price: 100, labor_source: 'attested', time_entry_ids: ['te-1', 'te-2'], closeout_id: 'co-1' });
+  });
+
+  it('a line the suggestion did not name a closeout on posts none (GDXA-812)', async () => {
+    const { closeout_id: _drop, ...daysOnly } = HOURLY;
+    routeSuggestion({ has_closeout: true, closeout: {}, labor_lines: [daysOnly] });
+    apiPost.mockResolvedValue({ id: 'inv-9', invoice_number: 'INV-0009' });
+    const { wrapper } = await mountIt();
+    await submit(wrapper);
+    expect(apiPost.mock.calls[0][1].line_items[0]).not.toHaveProperty('closeout_id');
   });
 
   it('an empty id list still posts: it marks a suggestion line', async () => {

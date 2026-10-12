@@ -1498,7 +1498,8 @@ describe('InvoiceDetailView — replacing a labor line deletes before it inserts
           { id: '${KEEP}', description: 'Spring', quantity: 1, unit_price: 100, taxable: true },
           { id: '${CLEARED}', description: '', quantity: 1, unit_price: 25, taxable: true },
           { description: 'Service labor — 3 man-hours over 2 days', quantity: 3, unit_price: 100, taxable: false,
-            category: 'Labor', labor_source: 'attested', estimated_man_hours: 3, time_entry_ids: ['te-1', 'te-2'] },
+            category: 'Labor', labor_source: 'attested', estimated_man_hours: 3, time_entry_ids: ['te-1', 'te-2'],
+            closeout_id: 'co-1' },
           { description: 'Copy of labor', quantity: 1, unit_price: 100, taxable: false, category: 'Labor' },
         ])">replace</button>
       </div>`,
@@ -1567,7 +1568,7 @@ describe('InvoiceDetailView — replacing a labor line deletes before it inserts
     expect(deleted.some((u) => u.includes(KEEP))).toBe(false);
   });
 
-  it('the inserted labor line carries its day-row ids; the hand-typed copy carries none', async () => {
+  it('the inserted labor line carries its day-row ids and closeout; the hand-typed copy carries neither', async () => {
     const wrapper = mountReplace();
     await flushPromises();
     await save(wrapper);
@@ -1576,8 +1577,10 @@ describe('InvoiceDetailView — replacing a labor line deletes before it inserts
       .map(([, b]) => b);
     expect(bodies[0]).toMatchObject({
       quantity: 3, unit_price: 100, labor_source: 'attested', time_entry_ids: ['te-1', 'te-2'],
+      closeout_id: 'co-1',
     });
     expect(bodies[1]).not.toHaveProperty('time_entry_ids');
+    expect(bodies[1]).not.toHaveProperty('closeout_id');
   });
 });
 

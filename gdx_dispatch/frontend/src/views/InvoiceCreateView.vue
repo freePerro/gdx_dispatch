@@ -820,6 +820,9 @@ function _prefillLaborLine(line) {
           // empty list is kept: it still marks a suggestion line.
           ...(Array.isArray(line.time_entry_ids)
             ? { time_entry_ids: [...line.time_entry_ids] } : {}),
+          // The closeout whose final-day hours this line includes. Only the
+          // suggestion names it; the server claims exactly what is named.
+          ...(line.closeout_id ? { closeout_id: line.closeout_id } : {}),
         }
       : {};
   return {
@@ -1031,6 +1034,9 @@ async function createInvoice() {
         // with the line. Forwarded whenever present, even edited to manual,
         // because those days are still what the line bills.
         if (Array.isArray(l.time_entry_ids)) out.time_entry_ids = [...l.time_entry_ids];
+        // The closeout whose final-day hours the line includes, claimed with
+        // it. Same rule: forwarded whenever the suggestion named it.
+        if (l.closeout_id) out.closeout_id = l.closeout_id;
         return out;
       });
 
