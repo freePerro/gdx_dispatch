@@ -470,8 +470,107 @@ def _surcharge_cents_recorded(intent: Any) -> int:
 
 _UNUSABLE_INTENT_STATUSES = frozenset({"canceled", "succeeded"})
 
+# The states a pay page can still finish an intent from. A reuse candidate must
+# be in one of them: `processing` and `requires_capture` already carry money.
+_REUSABLE_INTENT_STATUSES = frozenset({"requires_payment_method", "requires_confirmation", "requires_action"})
 
-def _create_usable_intent(**kwargs) -> Any:
+# How many dead intents in a row the re-mint chain walks before giving up on
+# convergence. Each hop is one sweep that killed the intent the previous hop
+# minted for the same amount inside Stripe's 24-hour key window.
+_REMINT_MAX_HOPS = 4
+
+
+def _pm_id(obj: Any) -> str | None:
+    """The PaymentMethod id on an intent, expanded or not."""
+    pm = _field(obj, "payment_method")
+    if pm is None or isinstance(pm, str):
+        return pm or None
+    return str(_field(pm, "id") or "") or None
+
+
+def _replay_verdict(pid: str, kwargs: dict, connect: dict) -> tuple[str, Any]:
+    """Ask Stripe what ``pid`` is now: ``live``, ``abandoned``, ``dead`` or
+    ``unverified`` (the retrieve failed), with the retrieved object."""
+    try:
+        live = stripe.PaymentIntent.retrieve(pid, **connect)
+    except Exception:
+        return "unverified", None
+    status = str(getattr(live, "status", "") or "")
+    # Only a REPLAY can be abandoned: an intent this very request created with
+    # a PaymentMethod attached on purpose (the surcharge flow) is live by
+    # construction, and its key names that PaymentMethod.
+    if status == "requires_confirmation" and _pm_id(live) and not kwargs.get("payment_method"):
+        return "abandoned", live
+    if status in _UNUSABLE_INTENT_STATUSES:
+        return "dead", live
+    return "live", live
+
+
+def _retire_replayed_intent(pid: str, verdict: str, live: Any, key: str, connect: dict) -> None:
+    if verdict == "abandoned":
+        # 2026-09-16 audit, round 3. A customer linked a bank account and
+        # walked away at the mandate step: the replayed intent still carries
+        # THEIR PaymentMethod, and its client_secret is enough for anyone else
+        # holding this invoice's token (a forwarded email) to call
+        # confirmUsBankAccountPayment and debit that account with the mandate
+        # recorded from the wrong person. Cancel it — nothing has been
+        # authorized, so nothing is lost — and mint fresh. This is also what
+        # "Use a different bank account" relies on.
+        try:
+            stripe.PaymentIntent.cancel(pid, cancellation_reason="abandoned", **connect)
+        except Exception:
+            logger.exception("abandoned_intent_cancel_failed intent=%s — minting fresh anyway", pid)
+        logger.warning(
+            "intent_replay_carried_a_bank_account intent=%s key=%s — cancelled and re-minting", pid, key,
+        )
+    else:
+        logger.warning(
+            "intent_idempotency_replayed_dead_intent intent=%s status=%s key=%s — minting a "
+            "fresh one so the customer does not get a pay page that cannot charge.",
+            pid, _field(live, "status"), key,
+        )
+
+
+def _live_candidate(candidates: list | None, kwargs: dict, connect: dict) -> Any:
+    """An intent already open on this invoice that this mint would duplicate.
+
+    GDXA-784. Same invoice, same amount owed (the card fee stamped in metadata
+    is not part of it), same rail, same PaymentMethod — or none on both sides,
+    so an intent holding someone's account is never handed to another press.
+    ``candidates`` is the register `create_intent` already read; the newest
+    match is confirmed with a retrieve, since the list may be a moment old.
+    """
+    want_pm = kwargs.get("payment_method") or None
+    want_ach = list(kwargs.get("payment_method_types") or []) == ["us_bank_account"]
+    want_invoice = str((kwargs.get("metadata") or {}).get("invoice_id") or "")
+    matches = []
+    for c in candidates or []:
+        if str(_field(c, "status") or "") not in _REUSABLE_INTENT_STATUSES:
+            continue
+        if str(_field(_field(c, "metadata") or {}, "invoice_id") or "") != want_invoice:
+            continue
+        fee = _surcharge_cents_recorded(c)
+        # A fee is only ever agreed on an intent with the card attached and
+        # sized; a press with no card attached is "never a fee", so an intent
+        # carrying one would charge more than that page shows.
+        if fee and not want_pm:
+            continue
+        if int(_field(c, "amount") or 0) - fee != int(kwargs.get("amount") or 0):
+            continue
+        if (list(_field(c, "payment_method_types") or []) == ["us_bank_account"]) != want_ach:
+            continue
+        if _pm_id(c) != want_pm:
+            continue
+        matches.append(c)
+    for c in sorted(matches, key=lambda c: int(_field(c, "created") or 0), reverse=True):
+        verdict, live = _replay_verdict(str(_field(c, "id") or ""), kwargs, connect)
+        if verdict == "live" and str(_field(live, "status") or "") in _REUSABLE_INTENT_STATUSES \
+                and _pm_id(live) == want_pm:
+            return live
+    return None
+
+
+def _create_usable_intent(*, candidates: list | None = None, **kwargs) -> Any:
     """`PaymentIntent.create`, then prove the intent handed back is live.
 
     Stripe's idempotency layer replays **"the resulting status code and body of
@@ -496,6 +595,16 @@ def _create_usable_intent(**kwargs) -> Any:
 
     The only way to know is to ask. One `retrieve` per mint, which is a GET
     against an object we just named.
+
+    GDXA-784. The re-mint must CONVERGE. It used to take a random
+    `-r<uuid>` key, which the next press could not name: after the sweep
+    cancelled a card intent, every Pay press replayed the dead one and minted
+    another ("The amount changed since you last looked", forever). Now a dead
+    replay first reuses a live intent already open on the invoice for the same
+    amount, rail and PaymentMethod (``candidates``, the register `create_intent`
+    already read), and otherwise mints under ``{key}-r{dead intent id}``, so
+    the next press replays that same intent. If the sweep kills that one too,
+    the chain walks on from it, cancelling an abandoned account on the way.
     """
     pi = stripe.PaymentIntent.create(**kwargs)
     pid = str(getattr(pi, "id", "") or "")
@@ -508,49 +617,40 @@ def _create_usable_intent(**kwargs) -> Any:
     connect = {"stripe_account": kwargs["stripe_account"]} if kwargs.get("stripe_account") else {}
     if kwargs.get("stripe_version"):
         connect["stripe_version"] = kwargs["stripe_version"]
-    try:
-        live = stripe.PaymentIntent.retrieve(pid, **connect)
-    except Exception:
+    verdict, live = _replay_verdict(pid, kwargs, connect)
+    if verdict == "unverified":
         # A create that worked and a retrieve that did not: hand back what we
         # have rather than failing a checkout over a verification step.
         logger.warning("intent_liveness_unverified intent=%s — returning the create response", pid)
         return pi
-
-    status = str(getattr(live, "status", "") or "")
-    # Only a REPLAY can be abandoned: an intent this very request created with
-    # a PaymentMethod attached on purpose (the surcharge flow) is live by
-    # construction, and its key names that PaymentMethod.
-    abandoned_with_account = (
-        status == "requires_confirmation"
-        and bool(_field(live, "payment_method"))
-        and not kwargs.get("payment_method")
-    )
-    if status not in _UNUSABLE_INTENT_STATUSES and not abandoned_with_account:
+    if verdict == "live":
         return live
 
     key = kwargs.pop("idempotency_key", "") or ""
-    if abandoned_with_account:
-        # 2026-09-16 audit, round 3. A customer linked a bank account and
-        # walked away at the mandate step: the replayed intent still carries
-        # THEIR PaymentMethod, and its client_secret is enough for anyone else
-        # holding this invoice's token (a forwarded email) to call
-        # confirmUsBankAccountPayment and debit that account with the mandate
-        # recorded from the wrong person. Cancel it — nothing has been
-        # authorized, so nothing is lost — and mint fresh. This is also what
-        # "Use a different bank account" relies on.
-        try:
-            stripe.PaymentIntent.cancel(pid, cancellation_reason="abandoned", **connect)
-        except Exception:
-            logger.exception("abandoned_intent_cancel_failed intent=%s — minting fresh anyway", pid)
-        logger.warning(
-            "intent_replay_carried_a_bank_account intent=%s key=%s — cancelled and re-minting", pid, key,
-        )
-    else:
-        logger.warning(
-            "intent_idempotency_replayed_dead_intent intent=%s status=%s key=%s — minting a "
-            "fresh one so the customer does not get a pay page that cannot charge.",
-            pid, status, key,
-        )
+    _retire_replayed_intent(pid, verdict, live, key, connect)
+    reused = _live_candidate(candidates, kwargs, connect)
+    if reused is not None:
+        logger.warning("intent_replay_reused_open_intent dead=%s reused=%s key=%s", pid, reused.id, key)
+        return reused
+
+    for _ in range(_REMINT_MAX_HOPS):
+        pi = stripe.PaymentIntent.create(**kwargs, idempotency_key=f"{key}-r{pid}")
+        nxt = str(getattr(pi, "id", "") or "")
+        if not nxt:
+            return pi
+        verdict, live = _replay_verdict(nxt, kwargs, connect)
+        if verdict == "unverified":
+            logger.warning("intent_liveness_unverified intent=%s — returning the create response", nxt)
+            return pi
+        if verdict == "live":
+            return live
+        _retire_replayed_intent(nxt, verdict, live, key, connect)
+        pid = nxt
+    logger.error(
+        "intent_remint_chain_exhausted key=%s last=%s hops=%d — %d intents for this amount died "
+        "inside the key window; minting under a one-off key, which the next press cannot replay.",
+        key, pid, _REMINT_MAX_HOPS, _REMINT_MAX_HOPS + 1,
+    )
     return stripe.PaymentIntent.create(**kwargs, idempotency_key=f"{key}-r{_uuid.uuid4().hex[:8]}")
 
 
@@ -1862,6 +1962,8 @@ def create_intent(
     metadata = {"invoice_id": str(invoice.id), "tenant_id": str(tenant.get("id", ""))}
     try:
         pi = _create_usable_intent(
+            # GDXA-784: a dead replay reuses an intent already open here.
+            candidates=intents,
             amount=amount_cents,
             currency=CURRENCY,  # M4: never body.currency
             metadata=metadata,

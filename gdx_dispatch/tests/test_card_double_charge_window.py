@@ -613,7 +613,7 @@ def test_no_recovery_writes_no_trail_row(db, invoice):
 
 def test_a_recovery_queues_the_stale_intent_sweep(db, invoice):
     """Money just landed, so any OTHER intent still open on this invoice can
-    collect again — including the `-r<uuid>` re-mints this window produces."""
+    collect again — including the `-r` re-mints this window produces."""
     with patch(
         "gdx_dispatch.tasks.stale_intent_sweep.enqueue_stale_intent_sweep"
     ) as sweep, _stripe([_pi("pi_settled", "succeeded", invoice.id)]), \
