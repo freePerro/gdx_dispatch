@@ -451,7 +451,8 @@ def mobile_create_invoice(
     # the seed used a hyphenated UUID string vs. a 32-char hex.
     job_row = db.execute(
         _text(
-            "SELECT customer_id, job_type FROM jobs WHERE id = :jid AND deleted_at IS NULL"
+            "SELECT customer_id, job_type, lifecycle_stage FROM jobs"
+            " WHERE id = :jid AND deleted_at IS NULL"
         ),
         {"jid": job_id},
     ).first()
@@ -459,6 +460,7 @@ def mobile_create_invoice(
         return _jr({"detail": "job not found"}, 404)
     job_customer_id = job_row[0]
     job_job_type = job_row[1]
+    job_completed = (job_row[2] or "").lower() == "completed"
 
     # M38 (money audit 2026-08-04): the desktop create path 409s when the job
     # already carries a billing-real invoice; this path had no guard, so a
@@ -514,6 +516,23 @@ def mobile_create_invoice(
             .order_by(Estimate.accepted_at.desc())
             .limit(1)
         ).scalar_one_or_none()
+
+    # GDXA-727: with no accepted estimate the lines come from the closeout,
+    # and /uncomplete reopens a job without superseding it. Billing a reopened
+    # job off that stale closeout also claimed its unbilled day rows, and the
+    # early invoice then made first_billing_real_invoice refuse the real final
+    # one (mobile has no override). The estimate lane stays open on purpose:
+    # an accepted price may be invoiced before the work is finished.
+    if estimate is None and not job_completed:
+        return _jr(
+            {
+                "detail": {
+                    "code": "job_not_completed",
+                    "message": "Close out the job before invoicing it.",
+                }
+            },
+            409,
+        )
 
     customer_id = None
     if job_customer_id is not None:

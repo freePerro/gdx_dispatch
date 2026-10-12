@@ -55,7 +55,10 @@ def _job_owned_by_tech(db):
     tech = Technician(id=uuid.uuid4().hex, name="M38 Tech", user_id=USER, company_id=TENANT)
     db.add(tech)
     job = Job(id=uuid.uuid4(), title="Opener install", customer_id=cust.id,
-              assigned_to=tech.id, company_id=TENANT)
+              assigned_to=tech.id, company_id=TENANT,
+              # Mobile bills a job off its closeout only once it is finished
+              # (GDXA-727).
+              lifecycle_stage="completed")
     db.add(job)
     db.commit()
     return job
