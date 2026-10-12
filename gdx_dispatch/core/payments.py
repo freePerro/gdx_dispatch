@@ -1721,6 +1721,53 @@ def _settle_unrecorded_intents(
     return recorded
 
 
+def _cancel_abandoned_bank_accounts(invoice, intents: list, *, connect: dict) -> None:
+    """Cancel every open bank intent on ``invoice`` still holding an account.
+
+    GDXA-781. `_create_usable_intent` cancels an abandoned intent only when the
+    idempotency key REPLAYS it, and the ACH key always replays the first mint.
+    "Use a different bank account" pressed twice: press 1 replays I0 (account
+    #1), cancels it and mints I1 under a fresh key; the customer links account
+    #2 to I1; press 2 replays I0 again — cancelled now, so the dead-replay
+    branch mints I2 — and I1 was never looked at. It sat in
+    `requires_confirmation` with account #2 attached until the settle-time
+    sweep.
+
+    So the mint path cleans up from the register it already read, rather than
+    from the one intent the key happens to name. Swept before the mint: the
+    replayed intent is then cancelled here and `_create_usable_intent` sees it
+    dead and mints fresh, so nothing is cancelled twice.
+
+    Bank intents only: the ACH mint names exactly ``["us_bank_account"]``, and
+    create-intent never hands one back with an account on it, so none of them
+    can be the intent about to be returned. Card intents are left alone on
+    purpose. The two-step card flow mints with the card attached, and its key
+    names that card; cancelling one (on a card switch, or an ACH press from a
+    second tab) makes that key replay a dead intent on every Pay click, and
+    `_create_usable_intent` then mints under a random suffix each time — a
+    page that never settles on one intent (2026-10-12 audit, GDXA-781).
+    Best-effort: a failed cancel only logs, as the replay cancel does; the
+    intent stays in the register and the next press tries again.
+    """
+    for pi in intents:
+        pid = str(_field(pi, "id") or "")
+        types = list(_field(pi, "payment_method_types") or [])
+        if not pid or types != ["us_bank_account"] or not _field(pi, "payment_method"):
+            continue
+        if str(_field(pi, "status") or "") != "requires_confirmation":
+            continue
+        try:
+            stripe.PaymentIntent.cancel(pid, cancellation_reason="abandoned", **connect)
+        except Exception:
+            logger.exception("abandoned_account_cancel_failed intent=%s invoice=%s", pid, invoice.id)
+            continue
+        logger.warning(
+            "abandoned_account_intent_cancelled intent=%s invoice=%s — an open intent still held "
+            "a customer's account; cancelled before minting.",
+            pid, invoice.id,
+        )
+
+
 # ---------------------------------------------------------------------------
 # POST /api/payments/create-intent
 # ---------------------------------------------------------------------------
@@ -1858,6 +1905,8 @@ def create_intent(
         rail["payment_method"] = pm_id
         rail["amount_details"] = {"surcharge": {"enforce_validation": "enabled"}}
         rail["stripe_version"] = _SURCHARGE_API_VERSION
+
+    _cancel_abandoned_bank_accounts(invoice, intents, connect=_stripe_extra(tenant))
 
     metadata = {"invoice_id": str(invoice.id), "tenant_id": str(tenant.get("id", ""))}
     try:
