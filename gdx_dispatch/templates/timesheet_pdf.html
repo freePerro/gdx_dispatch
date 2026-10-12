@@ -35,6 +35,8 @@
   td.num, th.num { text-align: right; }
   tr.flagged td { background: #fff6e5; }
   .flag-note { color: #6b4600; font-size: 8.5pt; }
+  .vacation { margin: 4pt 0 0; font-size: 9pt; color: #16181d; }
+  .vacation .over { color: #8a1f1f; font-weight: 700; }
   .foot { margin-top: 16pt; border-top: 1pt solid #c9cfd8; padding-top: 6pt; color: #55606e; font-size: 8.5pt; }
 </style>
 </head>
@@ -106,6 +108,35 @@
       {% endfor %}
     </tbody>
   </table>
+  {# The year's balance through the period's last day — the same cut as the
+     CSV TOTAL row (core/timesheet_export._vacation_cells), so vacation booked
+     later does not move it. The allowance is read as it stands when the sheet
+     is built, not as it stood then. "not set" is not zero hours. #}
+  {% if vacation_year %}
+  <p class="vacation">
+    <strong>Vacation {{ vacation_year }}</strong>
+    {% if vacation_unreadable or not card.vacation %}
+    &middot; balance unavailable
+    {% else %}{% set v = card.vacation %}
+    through {{ vacation_as_of }}:
+    {% if v.allowance_hours is none %}
+    allowance not set &middot; {{ '%.2f'|format(v.taken_hours) }} used
+    {% else %}
+    {{ '%.2f'|format(v.allowance_hours) }} allowance &middot; {{ '%.2f'|format(v.taken_hours) }} used &middot;
+    {% if v.remaining_at_as_of_hours < 0 %}<span class="over">{{ '%.2f'|format(-v.remaining_at_as_of_hours) }} over allowance</span>
+    {% else %}{{ '%.2f'|format(v.remaining_at_as_of_hours) }} remaining{% endif %}
+    {% endif %}
+    {% if v.scheduled_hours %} &middot; {{ '%.2f'|format(v.scheduled_hours) }} booked after this period{% endif %}
+    {# Same test as the Timesheets card's `overdrawn`: booked days count. #}
+    {% if v.overdrawn and v.remaining_at_as_of_hours is not none and v.remaining_at_as_of_hours >= 0 %}
+    &middot; <span class="over">over allowance once booked days are taken</span>
+    {% endif %}
+    {% endif %}
+    {% if vacation_prior_year %}
+    <br /><span class="flag-note">Vacation taken in {{ vacation_prior_year }} is not counted in this balance.</span>
+    {% endif %}
+  </p>
+  {% endif %}
 </div>
 {% else %}
 <p class="sub">Nobody clocked any time in this period.</p>
@@ -115,6 +146,9 @@
   Worked hours are clocked time less recorded breaks. Vacation and holiday
   rows are paid time off, listed apart from worked hours.{% if time_off_statement %} {{ time_off_statement }}{% endif %}
   This sheet reports hours only — no rates and no pay are calculated here.
+  {% if vacation_year %}Vacation balances are the calendar year's allowance less
+  vacation taken through the period's last day; holidays are not drawn from it,
+  and nothing here pays out or carries over unused hours.{% endif %}
 </div>
 
 </body>

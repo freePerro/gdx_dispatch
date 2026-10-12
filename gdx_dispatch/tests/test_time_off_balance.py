@@ -15,7 +15,10 @@ the failure it prevents:
 * the read endpoint: me by default; someone else or everyone is the office's;
   a viewer reads nothing; a failed read is a 503, not "0 used";
 * the CSV's TOTAL row carries the balance and the detail rows do not; a
-  failed balance read prints "unavailable" and the hours still go out.
+  failed balance read prints "unavailable" and the hours still go out;
+* the rendered PDF (GDXA-702) prints the same cut as the CSV under each
+  person, says "over allowance" rather than a negative, "not set" rather than
+  0.00, and "unavailable" rather than nothing.
 """
 from __future__ import annotations
 
@@ -370,6 +373,150 @@ def test_without_balances_the_columns_are_empty(tech):
         sheet = build_timesheet(db, tenant_id=TENANT, period=PERIOD, tz_name=TZ)
         assert sheet.vacation_year is None
         assert all(r["vacation_used_hours"] == "" for r in _rows(build_csv(sheet)))
+    finally:
+        db.close()
+
+
+# ── the PDF (GDXA-702) ───────────────────────────────────────────────────────
+
+
+def _pdf_text(sheet) -> str:
+    """The rendered PDF's own text: WeasyPrint for real, read back by pypdf.
+    Whitespace collapsed, since the layout decides where lines break."""
+    from pypdf import PdfReader
+
+    from gdx_dispatch.core.timesheet_export import build_pdf
+
+    pdf = build_pdf(sheet, branding={"company_name": "Shop"}, pay_date="2026-08-28", prepared_at="now")
+    text = " ".join(page.extract_text() for page in PdfReader(io.BytesIO(pdf)).pages)
+    return " ".join(text.split())
+
+
+def _person_block(text: str, name: str) -> str:
+    """One person's part of the page: from their name to whichever comes
+    first after it — another person's name or the footer. Order-agnostic."""
+    start = text.index(name)
+    ends = [i for m in ("Amber Rosa", "Michael T", "Worked hours are")
+            if m != name and (i := text.find(m, start + len(name))) != -1]
+    return text[start:min(ends)] if ends else text[start:]
+
+
+def test_the_pdf_prints_each_persons_balance_as_the_csv_does(tech):
+    db = _sheet_db(tech)
+    try:
+        sheet = build_timesheet(db, tenant_id=TENANT, period=PERIOD, tz_name=TZ,
+                                names={TECH: "Amber Rosa", OTHER: "Michael T"},
+                                with_vacation=True, settings=_settings(db))
+        text = _pdf_text(sheet)
+        amber = _person_block(text, "Amber Rosa")
+        # Same cut as the CSV TOTAL row: 40 - (Mar 2 + Aug 18) = 24; Sep 14 is
+        # booked after the period and is not drawn from this print.
+        assert "Vacation 2026 through Aug 23, 2026:" in amber
+        assert "40.00 allowance · 16.00 used · 24.00 remaining · 8.00 booked after this period" in amber
+        mike = _person_block(text, "Michael T")
+        assert "80.00 allowance · 0.00 used · 80.00 remaining" in mike
+        assert "booked after" not in mike, "nothing booked ahead prints nothing"
+        assert "nothing here pays out or carries over" in text
+
+        totals = {r["employee"]: r for r in _rows(build_csv(sheet)) if r["date"] == "TOTAL"}
+        a = totals["Amber Rosa"]
+        assert (f"{a['vacation_allowance_hours']} allowance · {a['vacation_used_hours']} used · "
+                f"{a['vacation_remaining_hours']} remaining") in amber, "the two files agree"
+    finally:
+        db.close()
+
+
+def test_the_pdf_says_over_allowance_not_a_negative_or_zero(tech):
+    db = _sheet_db(tech)
+    try:
+        db.get(User, UUID(TECH)).vacation_allowance_hours = Decimal("10")
+        db.commit()
+        sheet = build_timesheet(db, tenant_id=TENANT, period=PERIOD, tz_name=TZ,
+                                names={TECH: "Amber Rosa", OTHER: "Michael T"}, with_vacation=True, settings=_settings(db))
+        text = _pdf_text(sheet)
+        assert "10.00 allowance · 16.00 used · 6.00 over allowance" in text
+        assert "-6.00" not in text and "remaining" not in _person_block(text, "Amber Rosa")
+    finally:
+        db.close()
+
+
+def test_the_pdf_says_not_set_when_no_allowance_exists(tech):
+    db = _sheet_db(tech)
+    try:
+        _settings(db).vacation_allowance_hours = None
+        db.commit()
+        sheet = build_timesheet(db, tenant_id=TENANT, period=PERIOD, tz_name=TZ,
+                                names={TECH: "Amber Rosa", OTHER: "Michael T"}, with_vacation=True, settings=_settings(db))
+        mike = _person_block(_pdf_text(sheet), "Michael T")
+        assert "allowance not set · 0.00 used" in mike
+        assert "remaining" not in mike, "no allowance has no remainder — never 0.00"
+    finally:
+        db.close()
+
+
+def test_the_pdf_says_unavailable_when_the_read_failed_and_still_prints_hours(tech, monkeypatch):
+    db = _sheet_db(tech)
+    try:
+        def boom(*_a, **_k):
+            raise OperationalError("SELECT", {}, Exception("db gone"))
+
+        monkeypatch.setattr(time_off_rules, "vacation_balances", boom)
+        sheet = build_timesheet(db, tenant_id=TENANT, period=PERIOD, tz_name=TZ,
+                                names={TECH: "Amber Rosa", OTHER: "Michael T"}, with_vacation=True, settings=_settings(db))
+        amber = _person_block(_pdf_text(sheet), "Amber Rosa")
+        assert "Vacation 2026 · balance unavailable" in amber
+        assert "8.00 hours worked · 8.00 paid time off" in amber
+        assert "allowance" not in amber
+    finally:
+        db.close()
+
+
+def test_the_pdf_warns_when_booked_days_take_someone_over(tech):
+    """The Timesheets card counts booked days in `overdrawn`; the PDF's figure
+    is through the period's end. Both must say "over" for the same person."""
+    db = _sheet_db(tech)
+    try:
+        db.get(User, UUID(TECH)).vacation_allowance_hours = Decimal("20")
+        db.commit()
+        sheet = build_timesheet(db, tenant_id=TENANT, period=PERIOD, tz_name=TZ,
+                                names={TECH: "Amber Rosa", OTHER: "Michael T"},
+                                with_vacation=True, settings=_settings(db))
+        assert sheet.timecards and next(c for c in sheet.timecards if c.tech_id == TECH).vacation.overdrawn
+        amber = _person_block(_pdf_text(sheet), "Amber Rosa")
+        assert ("20.00 allowance · 16.00 used · 4.00 remaining · 8.00 booked after this period · "
+                "over allowance once booked days are taken") in amber
+        mike = _person_block(_pdf_text(sheet), "Michael T")
+        assert "over allowance" not in mike
+    finally:
+        db.close()
+
+
+def test_a_period_crossing_new_year_says_the_old_years_days_are_not_in_the_balance(tech):
+    db = tech.SessionLocal()
+    try:
+        _seed(db, tech_hours="40")
+        _entry(db, clock_in="2026-12-28T14:00:00+00:00")
+        db.commit()
+        period = PayPeriod(date(2026, 12, 21), date(2027, 1, 3))
+        sheet = build_timesheet(db, tenant_id=TENANT, period=period, tz_name=TZ,
+                                names={TECH: "Amber Rosa", OTHER: "Michael T"},
+                                with_vacation=True, settings=_settings(db))
+        amber = _person_block(_pdf_text(sheet), "Amber Rosa")
+        assert "Vacation 2027 through Jan 3, 2027: 40.00 allowance · 0.00 used" in amber
+        assert "Vacation taken in 2026 is not counted in this balance." in amber
+        inside = build_timesheet(db, tenant_id=TENANT, period=PERIOD, tz_name=TZ,
+                                 names={TECH: "Amber Rosa", OTHER: "Michael T"},
+                                 with_vacation=True, settings=_settings(db))
+        assert "is not counted in this balance" not in _pdf_text(inside)
+    finally:
+        db.close()
+
+
+def test_a_pdf_built_without_balances_prints_no_vacation_line(tech):
+    db = _sheet_db(tech)
+    try:
+        text = _pdf_text(build_timesheet(db, tenant_id=TENANT, period=PERIOD, tz_name=TZ))
+        assert "Vacation 2026" not in text and "allowance" not in text
     finally:
         db.close()
 
