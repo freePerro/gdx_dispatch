@@ -36,16 +36,6 @@ from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Payment
 COMPANY = "tenant-test"
 
 
-@pytest.fixture(autouse=True)
-def _no_broker(monkeypatch):
-    """The receipt and sweep enqueues spend ~19s finding no broker here. A
-    dead broker is what they would meet anyway; make it cost nothing."""
-    def dead(*a, **k):
-        raise ConnectionError("no broker in tests")
-
-    monkeypatch.setattr("gdx_dispatch.tasks.stale_intent_sweep.apply_async_bounded", dead)
-
-
 @pytest.fixture
 def dbfile(tmp_path):
     """A file-backed tenant DB: the session under test, plus a reader on a
