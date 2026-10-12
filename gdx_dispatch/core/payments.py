@@ -493,7 +493,9 @@ def _replay_verdict(pid: str, kwargs: dict, connect: dict) -> tuple[str, Any]:
     ``unverified`` (the retrieve failed), with the retrieved object."""
     try:
         live = stripe.PaymentIntent.retrieve(pid, **connect)
-    except Exception:
+    except Exception as exc:
+        # The mint hands back its create response; a reuse candidate is skipped.
+        logger.warning("intent_liveness_unverified intent=%s: %s", pid, exc)
         return "unverified", None
     status = str(getattr(live, "status", "") or "")
     # Only a REPLAY can be abandoned: an intent this very request created with
@@ -621,7 +623,6 @@ def _create_usable_intent(*, candidates: list | None = None, **kwargs) -> Any:
     if verdict == "unverified":
         # A create that worked and a retrieve that did not: hand back what we
         # have rather than failing a checkout over a verification step.
-        logger.warning("intent_liveness_unverified intent=%s — returning the create response", pid)
         return pi
     if verdict == "live":
         return live
@@ -640,7 +641,6 @@ def _create_usable_intent(*, candidates: list | None = None, **kwargs) -> Any:
             return pi
         verdict, live = _replay_verdict(nxt, kwargs, connect)
         if verdict == "unverified":
-            logger.warning("intent_liveness_unverified intent=%s — returning the create response", nxt)
             return pi
         if verdict == "live":
             return live
