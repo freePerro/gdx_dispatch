@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -385,26 +386,89 @@ from gdx_dispatch.core.circuit_breaker import (  # noqa: E402,F401 – side-effe
     stripe_circuit,
 )
 
+# The CSP covers the legitimate third-party resources the app actually loads:
+# - CloudFlare Insights beacon auto-injected on HTML responses by CF
+# - The email composers render the outgoing PDF in a blob: iframe
+#   (ComposerPdfPreview.vue) — without frame-src, framing falls back to
+#   default-src and the preview would break the day this is enforced
+# - The SPA's map views inject the Google Maps JS API (MapsView.vue,
+#   MobileTodayView.vue). Origins from Google's allowlist CSP
+#   (developers.google.com/maps/documentation/javascript/content-security-policy,
+#   last updated 2026-10-08), minus its script-src 'unsafe-inline' and
+#   'unsafe-eval': those would hold for every page of the SPA. Nothing collects
+#   violation reports (no report-uri), so whether Maps needs them shows only in
+#   a browser console on the map views; read it there before enforcing.
+# - The public pay page (/pay/<token>, payment_form.html) loads Stripe.js and
+#   runs its own inline scripts; see _STRIPE_JS_CSP.
+_CSP_BASE: dict[str, list[str]] = {
+    "default-src": ["'self'"],
+    "script-src": ["'self'", "https://static.cloudflareinsights.com"],
+    "style-src": ["'self'", "'unsafe-inline'"],
+    "img-src": ["'self'", "data:", "blob:"],
+    "font-src": ["'self'"],
+    "worker-src": ["'self'"],
+    "frame-src": ["'self'", "blob:"],
+    "connect-src": [
+        "'self'", "https://static.cloudflareinsights.com", "https://cloudflareinsights.com",
+    ],
+}
+
+_GOOGLE_MAPS_CSP: dict[str, list[str]] = {
+    "script-src": [
+        "https://*.googleapis.com", "https://*.gstatic.com", "https://*.google.com",
+        "https://*.ggpht.com", "https://*.googleusercontent.com", "blob:",
+    ],
+    "style-src": ["https://fonts.googleapis.com"],
+    "img-src": [
+        "https://*.googleapis.com", "https://*.gstatic.com", "https://*.google.com",
+        "https://*.googleusercontent.com",
+    ],
+    "font-src": ["https://fonts.gstatic.com"],
+    "worker-src": ["blob:"],
+    "frame-src": ["https://*.google.com"],
+    "connect-src": [
+        "https://*.googleapis.com", "https://*.google.com", "https://*.gstatic.com", "data:", "blob:",
+    ],
+}
+
+# Stripe.js directives from Stripe's integration security guide
+# (docs.stripe.com/security/guide#content-security-policy, read 2026-10-12):
+# *.js.stripe.com lets Stripe.js start frames on other origins, and
+# hooks.stripe.com is the 3D Secure frame. Only the pay page loads Stripe, so
+# only the pay page gets them. Its inline scripts carry a per-request nonce.
+_PAY_PAGE_PREFIX = "/pay/"
+_STRIPE_JS_CSP: dict[str, list[str]] = {
+    "script-src": ["https://js.stripe.com", "https://*.js.stripe.com"],
+    "frame-src": ["https://js.stripe.com", "https://*.js.stripe.com", "https://hooks.stripe.com"],
+    "connect-src": ["https://api.stripe.com"],
+}
+
+
+def _csp_header(*extras: dict[str, list[str]]) -> str:
+    directives = {name: list(sources) for name, sources in _CSP_BASE.items()}
+    for extra in extras:
+        for name, sources in extra.items():
+            directives[name].extend(s for s in sources if s not in directives[name])
+    return "; ".join(f"{name} {' '.join(sources)}" for name, sources in directives.items())
+
+
+_APP_CSP = _csp_header(_GOOGLE_MAPS_CSP)
+
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Any) -> Response:
+        pay_page = request.url.path.startswith(_PAY_PAGE_PREFIX)
+        if pay_page:
+            # payment_form.html reads it from request.state for its inline scripts.
+            request.state.csp_nonce = secrets.token_urlsafe(16)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        # CSP covers the legitimate third-party resources the app actually uses:
-        # - CloudFlare Insights beacon auto-injected on HTML responses by CF
-        # - The email composers render the outgoing PDF in a blob: iframe
-        #   (ComposerPdfPreview.vue) — without frame-src, framing falls back to
-        #   default-src and the preview would break the day this is enforced
         response.headers["Content-Security-Policy-Report-Only"] = (
-            "default-src 'self'; "
-            "script-src 'self' https://static.cloudflareinsights.com; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: blob:; "
-            "worker-src 'self'; "
-            "frame-src 'self' blob:; "
-            "connect-src 'self' https://static.cloudflareinsights.com https://cloudflareinsights.com"
+            _csp_header(_STRIPE_JS_CSP, {"script-src": [f"'nonce-{request.state.csp_nonce}'"]})
+            if pay_page
+            else _APP_CSP
         )
         return response
 
