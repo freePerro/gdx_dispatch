@@ -52,6 +52,19 @@ describe("tomorrow's first stop address", () => {
     expect(w.text()).not.toContain("100 Billing Rd");
   });
 
+  it("shows the town with the street (GDXA-503)", async () => {
+    getMock.mockResolvedValue(summaryPayload({
+      id: "j1", title: "Install", scheduled_at: null,
+      customer_name: "Acme", customer_address: "100 Billing Rd",
+      site_address: "88 Pine Ridge Rd",
+      site_full_address: "88 Pine Ridge Rd, Anytown, MN 55555",
+      site_address_missing: false,
+    }));
+    const w = mount(MobileSummaryView, { global: { stubs } });
+    await flushPromises();
+    expect(w.text()).toContain("88 Pine Ridge Rd, Anytown, MN 55555");
+  });
+
   it("bound site with NO address says ask-dispatch, never the HQ (D2)", async () => {
     getMock.mockResolvedValue(summaryPayload({
       id: "j1", title: "Install", scheduled_at: null,

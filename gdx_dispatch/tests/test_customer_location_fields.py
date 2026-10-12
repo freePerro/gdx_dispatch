@@ -120,6 +120,24 @@ def test_list_returns_the_saved_fields_the_dialog_reopens_with(client_and_db):
     )
 
 
+def test_list_carries_the_full_address_a_map_link_needs(client_and_db):
+    """GDXA-503: the phone's Locations tab navigates to street + town;
+    ``address`` stays the street the edit forms write."""
+    client, db = client_and_db
+    c = _customer(db)
+    client.post(f"/api/customers/{c.id}/locations", json=_dialog_payload())
+    client.post(
+        f"/api/customers/{c.id}/locations",
+        json=_dialog_payload(label="Shop", address="9 Dock St", city="", state="", zip=""),
+    )
+
+    by_label = {loc["label"]: loc for loc in client.get(f"/api/customers/{c.id}/locations").json()}
+
+    assert by_label["Lake house"]["address"] == "12 Shore Ln"
+    assert by_label["Lake house"]["full_address"] == "12 Shore Ln, Brainerd, MN 56401"
+    assert by_label["Shop"]["full_address"] == "9 Dock St"
+
+
 def test_edit_keeps_city_state_zip_and_access_notes(client_and_db):
     client, db = client_and_db
     c = _customer(db)

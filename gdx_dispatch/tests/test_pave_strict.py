@@ -259,9 +259,16 @@ def test_replay_fails_loudly_when_a_pass_makes_no_progress(caplog):
          patch.object(pave_tenant_db.subprocess, "run",
                       return_value=_completed(3, stderr="ERROR:  nope")), \
          pytest.raises(SystemExit) as exc:
-        pave_tenant_db.replay_table_schemas(DB_INFO, object(), captured)
+        pave_tenant_db.replay_table_schemas(DB_INFO, object(), captured,
+                                            full_backup_path="/tmp/d_full.sql")
     assert exc.value.code == 1
     assert any("made no progress" in r.message for r in caplog.records)
+    # It exits with the schema already dropped, so the way back is printed:
+    # empty the schema, then reload the backup.
+    lines = [r.getMessage().strip() for r in caplog.records]
+    drop = next(i for i, m in enumerate(lines) if m.startswith("psql") and "DROP SCHEMA public CASCADE" in m)
+    load = next(i for i, m in enumerate(lines) if m.startswith("psql") and m.endswith("-f /tmp/d_full.sql"))
+    assert drop < load
 
 
 def test_replay_skips_objects_the_rebuild_already_brought_back():
@@ -441,3 +448,146 @@ def test_verify_counts_names_a_vanished_table_as_a_table_not_as_lost_rows(caplog
 def test_verify_counts_passes_when_the_table_list_and_counts_match():
     counts = {"customers": 5, "server_errors": 139}
     assert pave_tenant_db.verify_counts(counts, dict(counts)) is True
+
+
+# --- GDXA-531: refusals that have to land before the DROP --------------------
+
+
+def _pave_one_up_to_the_preflight(monkeypatch, **patches):
+    """Run pave_one with everything before Step 0b stubbed and the DROP armed
+    to fail the test: a refusal that only lands after it is no refusal."""
+    def _no_drop(_engine):
+        raise AssertionError("DROP SCHEMA reached — the refusal came too late")
+
+    monkeypatch.setattr(pave_tenant_db, "create_engine", lambda url: _FakeEngine([]))
+    monkeypatch.setattr(pave_tenant_db, "get_row_counts", lambda engine: {"users": 1})
+    monkeypatch.setattr(pave_tenant_db, "get_matview_states", lambda engine: {})
+    monkeypatch.setattr(pave_tenant_db, "drop_and_recreate_schema", _no_drop)
+    for name, value in patches.items():
+        monkeypatch.setattr(pave_tenant_db, name, value)
+    with pytest.raises(SystemExit) as exc:
+        pave_tenant_db.pave_one("postgresql://u:p@h:5432/d", "test")
+    return exc.value.code
+
+
+def test_ai_role_password_env_refuses_before_the_drop(monkeypatch, caplog):
+    """Both variables set used to send step 4e — after the DROP — into an
+    import of gdx_dispatch.tools.sql.ai_roles_bootstrap, which never existed."""
+    monkeypatch.setenv("TENANT_AI_READONLY_PASSWORD", "x")
+    monkeypatch.setenv("TENANT_AI_WRITE_PASSWORD", "y")
+    code = _pave_one_up_to_the_preflight(monkeypatch)
+    assert code == 1
+    messages = "\n".join(r.message for r in caplog.records)
+    assert "TENANT_AI_READONLY_PASSWORD or TENANT_AI_WRITE_PASSWORD is set" in messages
+    assert "NOTHING has been dropped" in messages
+
+
+def test_the_ai_bootstrap_module_pave_used_to_import_does_not_exist():
+    """If it ever lands, the refusal above should be revisited, not kept."""
+    assert not (pave_tenant_db.PACKAGE_DIR / "tools" / "sql" / "ai_roles_bootstrap.py").exists()
+
+
+@pytest.mark.parametrize("stamp", [None, set(), {"001_initial"}])
+def test_a_database_not_at_head_is_refused_before_the_drop(monkeypatch, caplog, stamp):
+    """Rows reloaded under the head stamp skip every data migration between
+    their stamp and head, and step 4c resurrects a table a migration dropped."""
+    monkeypatch.delenv("TENANT_AI_READONLY_PASSWORD", raising=False)
+    monkeypatch.delenv("TENANT_AI_WRITE_PASSWORD", raising=False)
+    code = _pave_one_up_to_the_preflight(
+        monkeypatch, alembic_stamp=lambda engine: stamp)
+    assert code == 1
+    messages = "\n".join(r.message for r in caplog.records)
+    assert "this tree's head is" in messages
+    assert "NOTHING has been dropped" in messages
+
+
+def test_alembic_heads_is_what_the_alembic_cli_reports():
+    """The preflight's head is only right if it reads the same scripts the
+    post-DROP `alembic upgrade head` will run."""
+    import os as _os
+    import sys as _sys
+    # `alembic heads` never runs env.py, which is what puts the repo root on
+    # sys.path, and CI sets no PYTHONPATH: without this the migrations'
+    # `from gdx_dispatch...` imports fail there and nowhere else.
+    env = {**_os.environ, "PYTHONPATH": str(pave_tenant_db.PACKAGE_DIR.parent)}
+    r = subprocess.run([_sys.executable, "-m", "alembic", "-c", "alembic.ini", "heads"],
+                       cwd=str(pave_tenant_db.PACKAGE_DIR), env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    cli_heads = {line.split()[0] for line in r.stdout.splitlines() if "(head)" in line}
+    assert cli_heads and pave_tenant_db.alembic_heads() == cli_heads
+
+
+def _priv_state(**overrides):
+    state = {
+        "owners": {("schema", "public"): ("SCHEMA public", "pg_database_owner"),
+                   ("table", "users"): ("TABLE public.users", "gdx")},
+        "acl": {("schema", "public", "PUBLIC"): ("SCHEMA public", "", frozenset({("USAGE", False)})),
+                ("table", "users", "gdx_app"): ("TABLE public.users", "",
+                                                frozenset({("SELECT", False)}))},
+        "objects": {("schema", "public"), ("table", "users")},
+        "default_acl": set(),
+        "comments": {("schema", "public"): ("SCHEMA", "standard public schema")},
+    }
+    state.update(overrides)
+    return state
+
+
+def test_privilege_mismatches_is_empty_for_identical_state():
+    assert pave_tenant_db.privilege_mismatches(_priv_state(), _priv_state()) == []
+
+
+def test_privilege_mismatches_names_what_the_drop_took():
+    """The measured PostgreSQL 16 result of DROP/CREATE SCHEMA public: the
+    paving role owns it, PUBLIC has no USAGE and the comment is gone."""
+    post = _priv_state(
+        owners={("schema", "public"): ("SCHEMA public", "gdx"),
+                ("table", "users"): ("TABLE public.users", "gdx")},
+        acl={("schema", "public", "gdx"): ("SCHEMA public", "",
+                                            frozenset({("USAGE", False), ("CREATE", False)}))},
+        comments={},
+    )
+    out = pave_tenant_db.privilege_mismatches(_priv_state(), post)
+    joined = "\n".join(out)
+    assert "OWNER schema public: pg_database_owner before, gdx after" in joined
+    assert "PRIVILEGES schema public for PUBLIC: USAGE before, none after" in joined
+    assert "PRIVILEGES table users for gdx_app: SELECT before, none after" in joined
+    assert "PRIVILEGES schema public for gdx: none before" in joined
+    assert "COMMENT on schema public" in joined
+
+
+def test_privilege_mismatches_ignores_objects_the_rebuild_added():
+    post = _priv_state()
+    post["acl"] = {**post["acl"], ("table", "new_orm_table", "gdx"): (
+        "TABLE public.new_orm_table", "", frozenset({("SELECT", False)}))}
+    post["comments"] = {**post["comments"], ("table", "public.new_orm_table"): ("TABLE", "orm")}
+    assert pave_tenant_db.privilege_mismatches(_priv_state(), post) == []
+
+
+def test_a_comment_pave_has_no_statement_for_is_unreplayable():
+    state = _priv_state(comments={("policy", "p on public.t"): (None, "rls")})
+    assert pave_tenant_db.unreplayable_privilege_state(state) == ["comment on policy p on public.t"]
+
+
+def test_sql_literal_round_trips_quotes_and_backslashes():
+    assert pave_tenant_db._sql_literal("it's a \\ path") == "E'it''s a \\\\ path'"
+
+
+@pytest.mark.parametrize("type_, identity", [
+    ("index", "public.ix_hand_made"), ("table constraint", "ck_hand_made on public.t")])
+def test_a_comment_whose_object_the_rebuild_renames_is_unreplayable(type_, identity):
+    kw = "INDEX" if type_ == "index" else "CONSTRAINT"
+    state = _priv_state(comments={(type_, identity): (kw, "hand")})
+    out = pave_tenant_db.unreplayable_privilege_state(state)
+    assert len(out) == 1 and out[0].startswith(f"comment on {type_} {identity} ")
+
+
+@pytest.mark.parametrize("rows_are_back", [False, True])
+def test_the_restore_says_what_its_drop_throws_away(caplog, rows_are_back):
+    """After a mismatch the database works and may have taken writes since:
+    a restore that starts with DROP SCHEMA must say so before that line."""
+    caplog.set_level("INFO")
+    pave_tenant_db.log_restore(DB_INFO, "/tmp/d_full.sql", rows_are_back=rows_are_back)
+    lines = [r.getMessage() for r in caplog.records]
+    drop = next(i for i, m in enumerate(lines) if "DROP SCHEMA public CASCADE" in m)
+    warned = [i for i, m in enumerate(lines) if "DISCARDS EVERYTHING" in m]
+    assert (warned and warned[0] < drop) if rows_are_back else not warned
