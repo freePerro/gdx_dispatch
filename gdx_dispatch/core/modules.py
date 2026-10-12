@@ -67,6 +67,24 @@ LEGACY_MODULE_ALIASES = {
 
 MODULE_KEYS = list(dict.fromkeys(list(MODULES.keys()) + list(LEGACY_MODULE_ALIASES.keys())))
 
+# Keys (canonical or alias) that once lived in MODULES / LEGACY_MODULE_ALIASES
+# and were retired. A grant row for one of these gates nothing, is invisible in
+# Settings → Modules, cannot be removed from the UI (normalize_module_key raises),
+# and is still forwarded to plugin-host by enabled_module_keys(). So retiring a
+# key means: move it here AND ship a migration that deletes its
+# company_module_grants rows (088 for chrome_extension, 116 for the rest).
+# gdx_dispatch/tests/test_migration_116_retired_module_grants.py checks both,
+# for keys in its EVER_REGISTERED list; grant keys that never passed through
+# this registry are outside what it can see.
+RETIRED_MODULE_KEYS = frozenset({
+    "stripe_connect",      # #578, 2026-09-01
+    "chrome_extension",    # #626, 2026-09-06
+    "equipment_tracking",  # #735, 2026-09-14
+    "fleet",               # alias of equipment_tracking, #735
+    "campaigns",           # #739, 2026-09-14
+    "contractors",         # alias of jobs, dropped with the control plane 2026-08-03
+})
+
 RBAC_HIERARCHY = {"owner": 5, "admin": 4, "dispatcher": 3, "technician": 2, "viewer": 1}
 
 
