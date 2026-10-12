@@ -72,10 +72,11 @@ def _seed(SessionLocal) -> dict[str, str]:
                 """
                 INSERT INTO jobs (
                     id, company_id, customer_id, title, dispatch_status,
-                    assigned_to, scheduled_at, created_at, completed_at
+                    lifecycle_stage, assigned_to, scheduled_at, created_at,
+                    completed_at
                 ) VALUES (
                     :id, 'tenant-a', :customer_id, 'Garage Door Repair', 'done',
-                    'user-1', :now, :now, :now
+                    'completed', 'user-1', :now, :now, :now
                 )
                 """
             ),

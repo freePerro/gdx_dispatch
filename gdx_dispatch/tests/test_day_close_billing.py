@@ -506,6 +506,81 @@ def test_the_mobile_invoice_route_claims_the_day_rows_as_the_tech(db):
     assert audit.details["claimed_time_entries"] == 1
 
 
+def _mobile_invoice(db, job, user):
+    from starlette.requests import Request  # noqa: PLC0415
+
+    from gdx_dispatch.routers.mobile_invoicing import (  # noqa: PLC0415
+        CreateInvoiceIn,
+        mobile_create_invoice,
+    )
+
+    req = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+    req.state.tenant = {"id": TENANT}
+    req.state.tenant_id = TENANT
+    return mobile_create_invoice(
+        job_id=job.id.hex, payload=CreateInvoiceIn(send_email=False), request=req,
+        current_user={"user_id": user, "sub": user}, db=db,
+    )
+
+
+def _techs_job(db, user):
+    from gdx_dispatch.models.tenant_models import Technician  # noqa: PLC0415
+
+    job = _job(db)
+    tech = Technician(id=uuid4().hex, name="Tech", user_id=user, company_id=TENANT)
+    db.add(tech)
+    job.assigned_to = tech.id
+    return job
+
+
+def test_the_mobile_invoice_route_refuses_a_reopened_job_and_leaves_the_day_rows(db):
+    """GDXA-727: /uncomplete puts the job back in progress without superseding
+    its closeout. Billing then minted $450 off the stale closeout and claimed
+    the day rows, and the early invoice blocked the real final one (mobile has
+    no override). The route now refuses until the job is completed again."""
+    import json as _json  # noqa: PLC0415
+
+    user = "tech-user-reopened"
+    job = _techs_job(db, user)
+    row = _row(db, job, at=DAY1, minutes=180)
+    _closeout(db, job, hours=1)
+    job.lifecycle_stage = "in_progress"
+    db.commit()
+
+    resp = _mobile_invoice(db, job, user)
+    assert resp.status_code == 409, resp.body
+    assert _json.loads(resp.body)["detail"]["code"] == "job_not_completed"
+    db.expire_all()
+    assert db.execute(select(Invoice).where(Invoice.job_id == job.id)).first() is None
+    assert _holder(db, row) is None
+
+    # Re-finished, the same job bills the rows as before.
+    db.get(Job, job.id).lifecycle_stage = "completed"
+    db.commit()
+    resp = _mobile_invoice(db, job, user)
+    assert resp.status_code in (200, 201), resp.body
+    inv = db.get(Invoice, _holder(db, row))
+    assert Decimal(str(inv.total)) == Decimal("450.00")
+
+
+def test_the_mobile_invoice_route_still_bills_an_accepted_estimate_before_completion(db):
+    """The estimate lane is deliberately ungated: an accepted price may be
+    invoiced before the work is done, and it never reads the closeout."""
+    user = "tech-user-estimate-early"
+    job = _techs_job(db, user)
+    row = _row(db, job, at=DAY1, minutes=180)
+    _closeout(db, job, hours=1)
+    db.add(Estimate(id=uuid4(), job_id=job.id, customer_id=job.customer_id, status="accepted",
+                    estimate_number=f"EST-{uuid4().hex[:6]}", public_token=uuid4().hex,
+                    company_id=TENANT))
+    job.lifecycle_stage = "in_progress"
+    db.commit()
+
+    resp = _mobile_invoice(db, job, user)
+    assert resp.status_code in (200, 201), resp.body
+    assert _holder(db, row) is None
+
+
 def test_an_accepted_estimate_job_is_unchanged(db):
     job = _job(db)
     row = _row(db, job, at=DAY1, minutes=480)
