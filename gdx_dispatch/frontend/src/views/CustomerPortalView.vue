@@ -50,7 +50,10 @@
         <Message v-if="showSetPwPrompt" severity="info" :closable="true" class="mb-3" data-testid="set-pw-prompt" @close="showSetPwPrompt = false">
           Want faster sign-in next time? <a href="#" @click.prevent="openSetPassword">Set a password</a>.
         </Message>
-        <Tabs v-model:value="activeTab" data-testid="portal-tabs">
+        <!-- scrollable: a reseller has seven tabs, and without it the strip
+             clips everything past the fourth on a phone with no way to reach
+             it. Scrolling keeps each tab full-size and adds arrow buttons. -->
+        <Tabs v-model:value="activeTab" scrollable data-testid="portal-tabs">
           <TabList>
             <Tab value="estimates">Estimates</Tab>
             <Tab value="invoices">Invoices</Tab>
@@ -70,7 +73,7 @@
               <Card v-for="est in estimates" :key="est.id" class="portal-card clickable" data-testid="estimate-card" @click="openEstimate(est.id)">
                 <template #title>
                   <div class="card-title-row">
-                    <span>{{ est.label || est.estimate_number }}</span>
+                    <span data-testid="estimate-card-title">{{ estimateTitle(est) }}</span>
                     <Tag :value="est.status" :severity="statusSeverity(est.status)" />
                   </div>
                 </template>
@@ -213,7 +216,7 @@
 
         <Dialog
           v-model:visible="detailVisible"
-          :header="detail ? (detail.label || detail.estimate_number) : 'Estimate'"
+          :header="detail ? estimateTitle(detail) : 'Estimate'"
           :modal="true"
           :style="{ width: 'min(640px, 94vw)' }"
           data-testid="estimate-detail-dialog"
@@ -396,6 +399,9 @@
               <figcaption v-if="img.label" class="meta">{{ img.label }}</figcaption>
             </figure>
           </div>
+          <p v-else-if="jobPhotosError" class="meta" data-testid="job-photos-error">
+            {{ jobPhotosError }}
+          </p>
           <p v-else class="meta" data-testid="job-photos-empty">
             No photos are available for this job.
           </p>
@@ -453,10 +459,10 @@
             <span>New password</span>
             <Password v-model="newPassword" toggleMask inputClass="w-full" :feedback="true" data-testid="new-password" @keyup.enter="setPassword" />
           </label>
-          <p class="meta">At least 8 characters.</p>
+          <p class="meta">8 to 128 characters.</p>
           <template #footer>
             <Button label="Cancel" text @click="setPwVisible = false" />
-            <Button label="Save password" icon="pi pi-check" :loading="settingPw" :disabled="newPassword.length < 8" @click="setPassword" data-testid="save-password-btn" />
+            <Button label="Save password" icon="pi pi-check" :loading="settingPw" :disabled="newPassword.length < 8 || newPassword.length > 128" @click="setPassword" data-testid="save-password-btn" />
           </template>
         </Dialog>
       </div>
@@ -465,7 +471,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, onMounted, watch } from "vue";
+import { computed, reactive, ref, onBeforeUnmount, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import Button from "primevue/button";
@@ -549,6 +555,23 @@ const showSetPwPrompt = ref(false);
 // password and not a sent link, so it gets its own words — telling a
 // customer with the right password that it is wrong is what this replaced.
 const TOO_MANY_ATTEMPTS = "Too many sign-in attempts. Wait a minute, then try again.";
+// A 422 is the request's shape, not the server failing: a retry sends the same
+// thing back. Bounds are PortalLoginIn / PortalPasswordLoginIn in routers/portal.py.
+const BAD_EMAIL = "Check your email address: it must be 3 to 254 characters.";
+const BAD_EMAIL_OR_PASSWORD = "Check your email and password: the email must be 3 to 254 characters and the password at most 128.";
+
+// authedFetch puts the server's detail string on the error; prefer it to a
+// generic line ("accept the estimate before paying a deposit" says what to do).
+function serverMessage(e, fallback) {
+  return e?.message && !e.message.startsWith("request failed") ? e.message : fallback;
+}
+
+// The label is the customer's name for the job; the number is what the
+// office, the PDF and a check memo use, so it shows alongside the label.
+function estimateTitle(est) {
+  if (!est.label) return est.estimate_number;
+  return est.estimate_number ? `${est.label} · #${est.estimate_number}` : est.label;
+}
 
 function currency(v) { return formatMoney(Number(v) || 0); }
 function statusSeverity(s) {
@@ -677,6 +700,7 @@ async function requestNewLink() {
       body: JSON.stringify({ email: em }),
     });
     if (res.status === 429) { loginError.value = TOO_MANY_ATTEMPTS; return; }
+    if (res.status === 422) { loginError.value = BAD_EMAIL; return; }
     if (!res.ok) { loginError.value = "Could not send a sign-in link. Please try again."; return; }
     requestSent.value = true;
   } catch {
@@ -699,6 +723,7 @@ async function passwordLogin() {
     });
     if (res.status === 429) { loginError.value = TOO_MANY_ATTEMPTS; return; }
     if (res.status === 401) { loginError.value = "Invalid email or password."; return; }
+    if (res.status === 422) { loginError.value = BAD_EMAIL_OR_PASSWORD; return; }
     if (!res.ok) { loginError.value = "Could not sign in. Please try again."; return; }
     const body = await res.json();
     storeJwt(body.access_token || "", remember.value);
@@ -733,7 +758,8 @@ async function setPassword() {
     toast.add({ severity: "success", summary: "Password saved", detail: "You can now sign in with your email and password.", life: 4000 });
   } catch (e) {
     if (e?.auth) { error.value = "Your portal session has expired."; return; }
-    toast.add({ severity: "error", summary: "Error", detail: "Could not save password.", life: 4000 });
+    const detail = e?.status === 422 ? "Passwords must be 8 to 128 characters." : "Could not save password.";
+    toast.add({ severity: "error", summary: "Error", detail, life: 4000 });
   } finally {
     settingPw.value = false;
   }
@@ -835,7 +861,7 @@ async function startDepositPay(estimateId) {
   } catch (e) {
     if (payTab) payTab.close();
     if (e?.auth) { error.value = "Your portal session has expired."; return; }
-    toast.add({ severity: "error", summary: "Error", detail: "Could not start the deposit payment", life: 4000 });
+    toast.add({ severity: "error", summary: "Error", detail: serverMessage(e, "Could not start the deposit payment"), life: 4000 });
   } finally {
     actionBusy[estimateId] = false;
   }
@@ -875,10 +901,7 @@ async function estimateAction(id, action, successMsg) {
     try { invoices.value = await authedFetch("/portal/invoices"); } catch { /* tab refresh is best-effort */ }
   } catch (e) {
     if (e?.auth) { error.value = "Your portal session has expired."; return; }
-    const msg = e?.message && !e.message.startsWith("request failed")
-      ? e.message
-      : `Could not ${action} estimate`;
-    toast.add({ severity: "error", summary: "Error", detail: msg, life: 4000 });
+    toast.add({ severity: "error", summary: "Error", detail: serverMessage(e, `Could not ${action} estimate`), life: 4000 });
   } finally {
     actionBusy[id] = false;
   }
@@ -901,6 +924,8 @@ const jobPhotosVisible = ref(false);
 const jobPhotosLoading = ref(false);
 const jobPhotosTitle = ref("Job photos");
 const jobPhotoImages = ref([]);
+// A failed load is not "no photos": say so, so the customer knows to retry.
+const jobPhotosError = ref("");
 
 function clearJobPhotoImages() {
   jobPhotoImages.value.forEach((img) => URL.revokeObjectURL(img.src));
@@ -911,6 +936,7 @@ async function openJobPhotos(job) {
   jobPhotosVisible.value = true;
   jobPhotosLoading.value = true;
   jobPhotosTitle.value = job?.title ? `Photos — ${job.title}` : "Job photos";
+  jobPhotosError.value = "";
   clearJobPhotoImages();
   try {
     const rows = await authedFetch(`/portal/jobs/${job.id}/photos`);
@@ -928,8 +954,10 @@ async function openJobPhotos(job) {
       })
     );
     jobPhotoImages.value = loaded.filter(Boolean);
-  } catch {
+  } catch (e) {
     jobPhotoImages.value = [];
+    if (e?.auth) { jobPhotosVisible.value = false; error.value = "Your portal session has expired."; return; }
+    jobPhotosError.value = "Could not load the photos. Close this and try again.";
   } finally {
     jobPhotosLoading.value = false;
   }
@@ -968,7 +996,7 @@ async function openEstimate(id) {
   } catch (e) {
     detailVisible.value = false;
     if (e?.auth) { error.value = "Your portal session has expired."; return; }
-    toast.add({ severity: "error", summary: "Error", detail: "Could not load estimate", life: 4000 });
+    toast.add({ severity: "error", summary: "Error", detail: serverMessage(e, "Could not load estimate"), life: 4000 });
   } finally {
     detailLoading.value = false;
   }
@@ -982,7 +1010,7 @@ async function openInvoice(id) {
   } catch (e) {
     invoiceVisible.value = false;
     if (e?.auth) { error.value = "Your portal session has expired."; return; }
-    toast.add({ severity: "error", summary: "Error", detail: "Could not load invoice", life: 4000 });
+    toast.add({ severity: "error", summary: "Error", detail: serverMessage(e, "Could not load invoice"), life: 4000 });
   } finally {
     invoiceLoading.value = false;
   }
@@ -999,7 +1027,67 @@ async function actFromDetail(action, successMsg) {
 const acceptFromDetail = () => actFromDetail("accept", "Estimate accepted");
 const declineFromDetail = () => actFromDetail("decline", "Estimate declined");
 
-onMounted(init);
+// Paying opens the pay page in another tab; the customer comes back to a
+// portal that still says unpaid — in the list and in the dialog they paid
+// from. Re-read the lists, and the open detail, whenever the page is shown
+// again: a tab switch (visibilitychange), a separate window regaining focus,
+// or a restore from the back/forward cache (pageshow, persisted). Only when
+// signed in, one refresh at a time.
+// Each read stands alone: a failed jobs read must not throw away the invoices.
+let returnRefreshInFlight = false;
+async function refreshOnReturn() {
+  if (document.visibilityState !== "visible" || !jwt.value || loading.value || returnRefreshInFlight) return;
+  returnRefreshInFlight = true;
+  const openInvoiceId = invoiceVisible.value ? invoiceDetail.value?.id : null;
+  const openEstimateId = detailVisible.value ? detail.value?.id : null;
+  try {
+    const [ctx, est, inv, job, invDetail, estDetail] = await Promise.allSettled([
+      authedFetch("/portal/context"),
+      authedFetch("/portal/estimates"),
+      authedFetch("/portal/invoices"),
+      authedFetch("/portal/jobs"),
+      openInvoiceId ? authedFetch(`/portal/invoices/${openInvoiceId}`) : null,
+      openEstimateId ? authedFetch(`/portal/estimates/${openEstimateId}`) : null,
+    ]);
+    const all = [ctx, est, inv, job, invDetail, estDetail];
+    if (all.some((r) => r.status === "rejected" && r.reason?.auth)) {
+      error.value = "Your portal session has expired.";
+      return;
+    }
+    if (ctx.status === "fulfilled") {
+      if (ctx.value?.company) company.value = ctx.value.company;
+      if (ctx.value?.reseller) reseller.value = ctx.value.reseller;
+    }
+    if (est.status === "fulfilled") estimates.value = Array.isArray(est.value) ? est.value : [];
+    if (inv.status === "fulfilled") invoices.value = Array.isArray(inv.value) ? inv.value : [];
+    if (job.status === "fulfilled") jobs.value = Array.isArray(job.value) ? job.value : [];
+    // The same four reads as the first load: all good now clears its banner.
+    if ([ctx, est, inv, job].every((r) => r.status === "fulfilled")) error.value = null;
+    // Write a detail back only into the dialog it was read for: the customer
+    // may have closed it, or opened another, while the read was in flight.
+    if (openInvoiceId && invDetail.status === "fulfilled" && invoiceVisible.value && invoiceDetail.value?.id === openInvoiceId) {
+      invoiceDetail.value = invDetail.value;
+    }
+    if (openEstimateId && estDetail.status === "fulfilled" && detailVisible.value && detail.value?.id === openEstimateId) {
+      detail.value = estDetail.value;
+    }
+  } finally {
+    returnRefreshInFlight = false;
+  }
+}
+function refreshOnRestore(e) { if (e.persisted) refreshOnReturn(); }
+
+onMounted(() => {
+  document.addEventListener("visibilitychange", refreshOnReturn);
+  window.addEventListener("focus", refreshOnReturn);
+  window.addEventListener("pageshow", refreshOnRestore);
+  init();
+});
+onBeforeUnmount(() => {
+  document.removeEventListener("visibilitychange", refreshOnReturn);
+  window.removeEventListener("focus", refreshOnReturn);
+  window.removeEventListener("pageshow", refreshOnRestore);
+});
 </script>
 
 <style scoped>
@@ -1065,6 +1153,14 @@ onMounted(init);
   /* Icon-only on a phone; the aria-label keeps the name for screen readers. */
   .header-actions :deep(.p-button-label) { display: none; }
 }
+/* The scrollable tab strip's arrows sit over its ends. On a phone the next
+   arrow never hides at the far end (PrimeVue compares parseInt(scrollLeft),
+   fractional at a 2.625 pixel ratio, to the integer maximum), so it covered
+   the last tab ("Cont…"; Pixel 8, 2026-10-12). A trailing spacer lets the last
+   tab scroll clear of it (end padding on the overflowing row adds no scroll
+   width there); scroll-padding does the same for keyboard focus. */
+.portal-content :deep(.p-tablist-viewport) { scroll-padding-inline: 2.5rem; }
+.portal-content :deep(.p-tablist-tab-list)::after { content: ""; flex: 0 0 2.5rem; }
 .line-cat-heading { font-weight: 700; }
 /* No heading for the uncategorized group — the PDF gives it none. */
 .detail-lines :deep(.p-datatable-row-group-header:has(.line-cat-heading-empty)) { display: none; }

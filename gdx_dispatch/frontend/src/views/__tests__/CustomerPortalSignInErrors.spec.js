@@ -98,6 +98,16 @@ describe('password sign-in failures', () => {
     expect(wrapper.find('[data-testid="login-error"]').text()).toBe('Invalid email or password.');
   });
 
+  it('a 422 names the field bounds instead of "try again"', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => respond(422)));
+    const wrapper = await mountSignedOut();
+    await signIn(wrapper);
+    const err = wrapper.find('[data-testid="login-error"]').text();
+    expect(err).toContain('3 to 254 characters');
+    expect(err).toContain('at most 128');
+    expect(err).not.toContain('try again');
+  });
+
   it('a server error is not reported as a wrong password', async () => {
     vi.stubGlobal('fetch', vi.fn(() => respond(500)));
     const wrapper = await mountSignedOut();
@@ -121,6 +131,14 @@ describe('"Email me a sign-in link"', () => {
     await requestLink(wrapper);
     expect(wrapper.find('[data-testid="request-link-sent"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="login-error"]').text()).toContain('Too many sign-in attempts');
+  });
+
+  it('a 422 asks to check the email, with no sent note', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => respond(422)));
+    const wrapper = await mountSignedOut();
+    await requestLink(wrapper);
+    expect(wrapper.find('[data-testid="request-link-sent"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="login-error"]').text()).toBe('Check your email address: it must be 3 to 254 characters.');
   });
 
   it('any other failure shows an error and no sent note', async () => {
