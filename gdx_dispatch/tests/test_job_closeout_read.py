@@ -59,6 +59,10 @@ from gdx_dispatch.routers.jobs import (
 
 TENANT = "tenant-closeout-read"
 USER_ID = uuid4()
+# The office reader. A separate row, because users.role is what the
+# permission check reads (GDXA-723): reading as USER_ID would read as the
+# assigned technician, whatever role the JWT claims.
+ADMIN_ID = uuid4()
 
 
 _COST_KEYS = frozenset({"unit_cost", "line_total", "cost", "cost_total"})
@@ -138,6 +142,18 @@ def db():
             email="michael@example.test",
             full_name="Michael the Tech",
             company_id=TENANT,
+            # The permission check reads users.role, not the JWT claim
+            # (GDXA-723): left at its "user" default, the closeout is refused.
+            role="technician",
+        )
+    )
+    session.add(
+        User(
+            id=ADMIN_ID,
+            email="office@example.test",
+            full_name="Office Admin",
+            company_id=TENANT,
+            role="admin",
         )
     )
     session.commit()
@@ -196,8 +212,8 @@ def _read(db, job_id: str, *, role: str = "admin", user_id: str | None = None) -
         job_id=job_id,
         request=_request(),
         current_user={
-            "user_id": user_id or str(USER_ID),
-            "sub": user_id or str(USER_ID),
+            "user_id": user_id or str(ADMIN_ID),
+            "sub": user_id or str(ADMIN_ID),
             "tenant_id": TENANT,
             "role": role,
         },

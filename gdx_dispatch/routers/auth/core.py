@@ -603,10 +603,11 @@ def refresh(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
     from gdx_dispatch.models.tenant_models import User as _RefreshUser
 
     # users.id is a Uuid column: bind a UUID, not the str claim, or SQLite
-    # raises StatementError (GDXA-723). A sub that is not a UUID names no row.
+    # fails to bind it (GDXA-723). A sub that is not a UUID names no row.
     try:
         sub_uuid = UUID(sub)
     except ValueError:
+        log.warning("refresh_sub_not_uuid: refresh token subject is not a user id")
         sub_uuid = None
     user_row = db.execute(
         select(_RefreshUser).where(_RefreshUser.id == sub_uuid)

@@ -429,6 +429,7 @@ def _load_user_permissions(db: Session, request: Request, user: dict) -> set[str
     try:
         uid = UUID(str(user_id)) if user_id else None
     except ValueError:
+        logging.getLogger(__name__).warning("user_role_lookup_skipped: subject is not a UUID user=%s", user_id)
         uid = None  # not a UUID: no users row to read
     if uid is not None:
         try:

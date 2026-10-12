@@ -190,7 +190,7 @@ def _get_user_or_404(db: Session, tenant_id: str, user_id: str) -> User:
     """Look up a live user by id; an id that is not a UUID names no row → 404.
 
     ``users.id`` is a Uuid column: SQLite's bind calls ``.hex`` on the value,
-    so a str id raised StatementError there, and Postgres rejected a malformed
+    so binding a str id failed there, and Postgres rejected a malformed
     one with DataError — a 500 either way (GDXA-723). The path accepts any
     UUID spelling (upper case, no dashes), so callers use ``str(u.id)``, not
     the path string, for self-checks, session revokes and audit entity ids.
