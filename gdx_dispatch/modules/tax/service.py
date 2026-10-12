@@ -93,9 +93,10 @@ def resolve_rate_for_job(
 ) -> Decimal:
     """The tax rate for a job's bill, with the job lane applied first.
 
-    Used by office invoice create and `/api/tax/resolve` (GDXA-796). Not yet
-    by the closeout autodraft (its own inline lane check), change orders or
-    estimate totals (no lane check): those are separate issues.
+    Used by office invoice create and `/api/tax/resolve` (GDXA-796) and the
+    change order detail total (GDXA-797). Not yet by the closeout autodraft
+    (its own inline lane check) or estimate totals (no lane check): those are
+    separate issues.
 
     - Install lane → 0, without reading the tenant default.
     - Repair / service call / unlaned → `resolve_rate`: 0 for an exempt
