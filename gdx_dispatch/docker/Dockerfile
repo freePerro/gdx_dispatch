@@ -53,13 +53,14 @@ COPY gdx_dispatch/ ./gdx_dispatch/
 # Copy built frontend from stage 1
 COPY --from=frontend-builder /build/dist ./gdx_dispatch/frontend/dist
 
-# Non-root user. `/app/uploads` is pre-created here so the
-# `gdx_uploads` named volume inherits appuser ownership on first
-# mount (Docker adopts the image's target-path permissions when the
-# volume is empty). Without this pre-creation the volume initializes
-# as root:root and the app cannot write.
+# Non-root user. `/app/uploads` and `/app/recordings` are pre-created
+# here so the `gdx_uploads` / `gdx_recordings` named volumes inherit
+# appuser ownership on first mount (Docker adopts the image's
+# target-path permissions when the volume is empty). Without this
+# pre-creation the volume initializes as root:root and the app cannot
+# write.
 RUN useradd -m appuser \
-    && mkdir -p /app/uploads /plugins \
+    && mkdir -p /app/uploads /app/recordings /plugins \
     && chmod +x /app/gdx_dispatch/docker/entrypoint.sh \
     && chown -R appuser /app /plugins
 USER appuser

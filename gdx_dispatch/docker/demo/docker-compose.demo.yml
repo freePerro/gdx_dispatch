@@ -87,6 +87,9 @@ services:
       GDX_ADMIN_EMAIL: ${GDX_ADMIN_EMAIL:-demo@gdxdispatch.com}  # pii-ok: public demo login
       # Plugin storefront catalog. Empty falls back to the built-in default.
       GDX_PLUGIN_CATALOG_URL: ${GDX_PLUGIN_CATALOG_URL:-}
+      # No browser-stream session recording on the public demo: visitors'
+      # sessions are unscrubbed captures and there is no recordings volume.
+      GDX_SESSION_RECORDING: "0"
       GDX_ADMIN_PASSWORD: ${GDX_ADMIN_PASSWORD:?set GDX_ADMIN_PASSWORD in .env.demo}
       # ── Outbound integrations: intentionally UNSET (neutered). ──
       # Listing them here as explicit empties documents the intent and prevents
