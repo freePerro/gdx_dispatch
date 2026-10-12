@@ -336,7 +336,29 @@
            days appear in My Timesheet as paid days off. -->
       <Card class="timecard-card" data-testid="time-off-card">
         <template #content>
-          <TimeOffRequestPanel @changed="onEntrySaved" />
+          <!-- My vacation this year (core/time_off.vacation_balances): every
+               booked day counts, approved days still ahead included. -->
+          <p v-if="myVacation" class="vacation-line" data-testid="my-vacation-balance">
+            <i class="pi pi-sun" aria-hidden="true" />
+            <strong>Vacation {{ myVacation.year }}:</strong>
+            {{ hoursText(myVacation.used_hours) }}h used<template v-if="myVacation.scheduled_hours > 0">
+              ({{ hoursText(myVacation.scheduled_hours) }}h still ahead)</template>
+            <template v-if="myVacation.allowance_hours == null">
+              · no allowance set — ask the office
+            </template>
+            <template v-else>
+              of {{ hoursText(myVacation.allowance_hours) }}h ·
+              <Tag
+                :value="`${hoursText(myVacation.remaining_hours)}h left`"
+                :severity="myVacation.overdrawn ? 'danger' : 'success'"
+                data-testid="my-vacation-remaining"
+              />
+            </template>
+          </p>
+          <p v-else-if="myVacationError" class="vacation-line ts-muted" data-testid="my-vacation-error">
+            Your vacation balance could not be read right now.
+          </p>
+          <TimeOffRequestPanel @changed="onTimeOffChanged" />
         </template>
       </Card>
 
@@ -783,6 +805,29 @@ function openEntryCreate() {
   showEntryDialog.value = true;
 }
 
+// GET /api/timeclock/time-off/balances — omitted technician = me.
+const myVacation = ref(null);
+const myVacationError = ref(false);
+
+async function fetchMyVacation() {
+  try {
+    const data = await api.get('/api/timeclock/time-off/balances', { suppressErrorToast: true });
+    myVacation.value = data?.balances?.[0] || null;
+    myVacationError.value = !myVacation.value;
+  } catch {
+    myVacation.value = null;
+    myVacationError.value = true;
+  }
+}
+
+function hoursText(h) {
+  return Number(h || 0).toFixed(2).replace(/\.00$/, '');
+}
+
+async function onTimeOffChanged() {
+  await Promise.all([onEntrySaved(), fetchMyVacation()]);
+}
+
 async function onEntrySaved() {
   // A correction can move hours across today's list, the status card and the
   // week — refresh all three rather than guessing which one changed.
@@ -939,7 +984,7 @@ async function endBreak() {
 
 onMounted(() => {
   initGps();
-  Promise.all([fetchStatus(), fetchEntries(), fetchJobs(), loadRecentInspections(), loadFeatureSettings(), initWeek()]);
+  Promise.all([fetchStatus(), fetchEntries(), fetchJobs(), loadRecentInspections(), loadFeatureSettings(), initWeek(), fetchMyVacation()]);
 });
 
 onUnmounted(() => {
@@ -948,6 +993,14 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.vacation-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0 0 0.75rem;
+}
+
 .timeclock-view {
   display: flex;
   flex-direction: column;

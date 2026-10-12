@@ -327,6 +327,61 @@
         </template>
       </Card>
 
+      <!-- Vacation balances (core/time_off.vacation_balances): the year's
+           allowance against every vacation day booked, approved days still
+           ahead included, as of today. The CSV's TOTAL rows state a different
+           cut on purpose: used and remaining through the period's last day,
+           with the days booked after it in their own column. -->
+      <Card class="time-off-card" data-testid="vacation-balances">
+        <template #title>
+          <div class="time-off-head">
+            <i class="pi pi-sun" aria-hidden="true" />
+            <span class="time-off-title">Vacation {{ vacationYear }}</span>
+            <span v-if="vacation.data" class="muted vacation-asof">as of {{ vacation.data.as_of }}</span>
+          </div>
+        </template>
+        <template #content>
+          <p v-if="vacation.error" class="muted request-empty" data-testid="vacation-balances-error">
+            Vacation balances could not be read. Hours on this page are unaffected.
+          </p>
+          <template v-else-if="vacation.data">
+            <div
+              v-for="b in vacation.data.balances"
+              :key="b.technician_id"
+              class="request-row vacation-row"
+              :data-testid="`vacation-balance-${b.technician_id}`"
+            >
+              <strong>{{ b.technician_name || 'Unknown' }}</strong>
+              <span class="muted">
+                {{ formatHours(b.used_hours) }}h used<template v-if="b.scheduled_hours > 0">
+                  ({{ formatHours(b.scheduled_hours) }}h still ahead)</template>
+              </span>
+              <span v-if="b.allowance_hours == null" class="muted" data-testid="vacation-no-allowance">
+                · no allowance set
+              </span>
+              <template v-else>
+                <span class="muted">
+                  · of {{ formatHours(b.allowance_hours) }}h{{ b.allowance_source === 'person' ? ' (own)' : '' }}
+                </span>
+                <Tag
+                  :value="`${formatHours(b.remaining_hours)}h left`"
+                  :severity="b.overdrawn ? 'danger' : 'success'"
+                  :data-testid="`vacation-remaining-${b.technician_id}`"
+                />
+              </template>
+            </div>
+            <p
+              v-if="vacation.data.shop_allowance_hours == null"
+              class="muted request-note"
+              data-testid="vacation-shop-unset"
+            >
+              No shop-wide allowance is set. Set one in Settings → Feature Settings → Time off and holidays,
+              or per person in Users → Edit Profile.
+            </p>
+          </template>
+        </template>
+      </Card>
+
       <Card
         v-for="card in timecards"
         :key="card.technicianId"
@@ -640,6 +695,10 @@ const revoking = ref('');     // request id awaiting a second click
 const ruling = ref('');       // request id with a call in flight
 const holidays = ref([]);
 const timeOffOptions = ref(null);
+// Vacation balances for the year the selected range ends in. `error` is set
+// when the read failed, so the card says so instead of showing nobody.
+const vacation = ref({ data: null, error: false });
+const vacationYear = computed(() => (endDate.value || new Date()).getFullYear());
 const holidayPostVisible = ref(false);
 const holidayToPost = ref(null);
 
@@ -1102,6 +1161,7 @@ async function load() {
   loadSubmittedDays();
   loadTimeOffRequests();
   loadHolidays();
+  loadVacationBalances();
   consumeDeepLink();
 }
 
@@ -1115,6 +1175,23 @@ async function loadTimeOffRequests() {
   } catch {
     timeOffRequests.value = [];
   }
+}
+
+async function loadVacationBalances() {
+  try {
+    const data = await api.get(
+      `/api/timeclock/time-off/balances?all_technicians=true&year=${vacationYear.value}`,
+      { suppressErrorToast: true },
+    );
+    const ok = !!data && Array.isArray(data.balances);
+    vacation.value = { data: ok ? data : null, error: !ok };
+  } catch {
+    vacation.value = { data: null, error: true };
+  }
+}
+
+function formatHours(h) {
+  return Number(h || 0).toFixed(2).replace(/\.00$/, '');
 }
 
 async function loadHolidays() {
@@ -1557,6 +1634,19 @@ onMounted(async () => {
   align-items: center;
   gap: 0.6rem;
 }
+.vacation-asof {
+  font-size: 0.8rem;
+  font-weight: normal;
+}
+
+/* Doubled class: `.request-row` below is a column and would win on order. */
+.request-row.vacation-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
 .time-off-head i {
   color: var(--p-text-muted-color);
 }

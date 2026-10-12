@@ -219,6 +219,8 @@ def send_closed_period() -> dict:
                 tz_name=tz_name,
                 names=names,
                 time_off_counts_toward_overtime=pto_overtime,
+                with_vacation=True,
+                settings=settings,
             )
         except SQLAlchemyError:
             # The hours (or their breaks) could not be read, so there is

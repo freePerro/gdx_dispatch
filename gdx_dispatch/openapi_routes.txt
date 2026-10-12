@@ -591,6 +591,7 @@ GET /api/timeclock/report
 GET /api/timeclock/roster
 GET /api/timeclock/status
 GET /api/timeclock/submitted-days
+GET /api/timeclock/time-off/balances
 GET /api/timeclock/time-off/holidays
 GET /api/timeclock/time-off/options
 GET /api/timeclock/time-off/requests

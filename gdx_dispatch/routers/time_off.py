@@ -28,7 +28,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy import update as sa_update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -69,9 +69,11 @@ from gdx_dispatch.core.time_off import (
     person_schedule,
     posted_holiday_counts,
     user_names,
+    vacation_balances,
+    vacation_minutes_by_person,
     workdays_between,
 )
-from gdx_dispatch.models.tenant_models import AppSettings, TimeclockEntry, TimeOffRequest
+from gdx_dispatch.models.tenant_models import AppSettings, TimeclockEntry, TimeOffRequest, User
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -303,6 +305,66 @@ def time_off_options(
             getattr(settings, "time_off_counts_toward_overtime", False)
         ),
         "timezone": _tz(settings),
+    }
+
+
+# ── Vacation balance ─────────────────────────────────────────────────────────
+
+
+@router.get("/balances", response_model=None, dependencies=[Depends(_can_request)])
+def list_balances(
+    year: int | None = Query(default=None, ge=2000, le=2100),
+    technician_id: str | None = Query(default=None, max_length=36),
+    all_technicians: bool = Query(
+        default=False,
+        description="Office view: every active person plus anyone with vacation this year. Dispatch/admin only.",
+    ),
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Vacation allowance, used and remaining hours per person for a calendar
+    year (core/time_off.vacation_balances). Omitted = me; naming someone else
+    or asking for everyone is the office's. A read, so nothing is audited."""
+    me = _user_id(current_user)
+    others = all_technicians or (technician_id is not None and technician_id != me)
+    if others and not is_dispatch_manager(current_user):
+        raise HTTPException(status_code=403, detail="dispatcher or admin role required")
+    try:
+        with contained_read(db):
+            settings = db.query(AppSettings).first()
+        tz_name = _tz(settings)
+        today = shop_today(tz_name)
+        year = year or today.year
+        if all_technicians:
+            ids = {
+                str(uid) for uid in db.execute(
+                    select(User.id).where(
+                        User.deleted_at.is_(None),
+                        or_(User.active.is_(None), User.active.is_(True)),
+                    )
+                ).scalars().all()
+            }
+            ids |= set(vacation_minutes_by_person(db, year, tz_name, as_of=today))
+        else:
+            ids = {technician_id or me}
+        balances = vacation_balances(db, settings, ids, year=year, as_of=today)
+    except SQLAlchemyError:
+        # Not an empty or zero balance: "0 used" read from nothing would tell
+        # someone they have hours they have already spent.
+        log.exception("time_off_balances_failed")
+        raise HTTPException(
+            status_code=503, detail="Vacation balances could not be read; try again."
+        ) from None
+    names = user_names(db, set(balances))
+    rows = [{**b.as_dict(), "technician_name": names.get(tid)} for tid, b in balances.items()]
+    rows.sort(key=lambda r: ((r["technician_name"] or "~").lower(), r["technician_id"]))
+    shop_default = getattr(settings, "vacation_allowance_hours", None)
+    return {
+        "year": year,
+        "as_of": today.isoformat(),
+        "timezone": tz_name,
+        "shop_allowance_hours": None if shop_default is None else float(shop_default),
+        "balances": rows,
     }
 
 

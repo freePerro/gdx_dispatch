@@ -50,7 +50,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core import time_off as time_off_rules
 from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.core.pay_periods import PayPeriod, shop_day_of
-from gdx_dispatch.models.tenant_models import TimeclockBreak, TimeclockEntry
+from gdx_dispatch.models.tenant_models import AppSettings, TimeclockBreak, TimeclockEntry
 
 log = logging.getLogger(__name__)
 
@@ -141,6 +141,10 @@ class Timecard:
     tech_id: str
     name: str
     shifts: list[Shift] = field(default_factory=list)
+    #: The person's vacation balance for `PeriodTimesheet.vacation_year`, as
+    #: of the period's last day (core/time_off.vacation_balances). None when
+    #: the caller did not ask for balances or they could not be read.
+    vacation: time_off_rules.VacationBalance | None = None
 
     @property
     def worked_minutes(self) -> int:
@@ -192,6 +196,12 @@ class PeriodTimesheet:
     # The files STATE it beside the time-off hours; nothing here applies it,
     # because nothing here computes overtime.
     time_off_counts_toward_overtime: bool = False
+    #: The calendar year the per-card vacation balances cover (the year of
+    #: the period's last day), or None when balances were not requested.
+    vacation_year: int | None = None
+    #: True when balances were requested but the read failed. The files then
+    #: say "unavailable" rather than print a blank that reads as "no allowance".
+    vacation_unreadable: bool = False
 
     @property
     def worked_hours(self) -> float:
@@ -291,6 +301,8 @@ def build_timesheet(
     tech_id: str | None = None,
     now: datetime | None = None,
     time_off_counts_toward_overtime: bool = False,
+    with_vacation: bool = False,
+    settings: AppSettings | None = None,
 ) -> PeriodTimesheet:
     """Every shift worked in `period`, grouped by person, in shop time.
 
@@ -298,6 +310,12 @@ def build_timesheet(
     afterwards in shop time. `clock_in_at` is TEXT holding an ISO instant in
     UTC, so filtering it directly buckets by the UTC day and drops an
     evening shift out of the period it was actually worked.
+
+    ``with_vacation`` attaches each person's vacation balance for the year of
+    the period's last day, computed by core/time_off.vacation_balances from
+    ``settings`` (the shop's AppSettings row, for the default allowance and
+    the timezone). A failed balance read never stops the hours: it is
+    contained, logged, and stated on the sheet as ``vacation_unreadable``.
     """
     names = names or {}
     # A day of slack on each end, then the exact boundary re-applied in shop
@@ -371,12 +389,36 @@ def build_timesheet(
         )
 
     ordered = sorted(cards.values(), key=lambda c: (c.name.lower(), c.tech_id))
-    return PeriodTimesheet(
+    sheet = PeriodTimesheet(
         period=period,
         timezone=str(tz_name),
         timecards=ordered,
         time_off_counts_toward_overtime=bool(time_off_counts_toward_overtime),
     )
+    if with_vacation:
+        _attach_vacation(db, sheet, settings)
+    return sheet
+
+
+def _attach_vacation(db: Session, sheet: PeriodTimesheet, settings: AppSettings | None) -> None:
+    sheet.vacation_year = sheet.period.end.year
+    try:
+        # SAVEPOINT: the hours above are already read, and a failed balance
+        # read must not abort the transaction the caller audits or holds in.
+        with contained_read(db):
+            balances = time_off_rules.vacation_balances(
+                db,
+                settings,
+                {card.tech_id for card in sheet.timecards},
+                year=sheet.vacation_year,
+                as_of=sheet.period.end,
+            )
+    except SQLAlchemyError:
+        log.exception("timesheet_vacation_balance_failed")
+        sheet.vacation_unreadable = True
+        return
+    for card in sheet.timecards:
+        card.vacation = balances.get(card.tech_id)
 
 
 def _short_id(tech_id: str) -> str:
