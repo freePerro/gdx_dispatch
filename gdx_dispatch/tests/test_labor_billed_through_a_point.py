@@ -181,10 +181,10 @@ def test_the_suggestion_names_the_rows_and_the_create_claims_them(db):
     assert audit.details["claimed_time_entries"] == 2
     assert audit.user_id == ACTOR
 
-    # Reloaded afterwards, the suggestion offers no days a second time.
+    # Reloaded afterwards, the suggestion offers nothing a second time: not
+    # the days, and not the closeout's own hours either (GDXA-799).
     _code_, again = _suggest(db, job)
-    assert again["labor_lines"][0]["time_entry_ids"] == []
-    assert again["labor_lines"][0]["quantity"] == 2.0  # the closeout's hours only
+    assert again["labor_lines"] == []
 
 
 def test_the_zero_hour_final_day_and_close_without_work_still_offer_the_days(db):

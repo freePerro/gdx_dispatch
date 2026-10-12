@@ -173,36 +173,137 @@ def held_day_rows(db: Session, job_id, invoice_id) -> list[tuple]:
     return [(r[0], r[1], int(r[2])) for r in rows]
 
 
+# ---------------------------------------------------------------------------
+# The closeout's own final-day hours (GDXA-799, migration 118)
+# ---------------------------------------------------------------------------
+# A day row carries its billed marker; the closeout's `hours_worked` did not,
+# so every invoice built after the first re-offered them. The closeout is
+# stamped like a day row and released at the same points. Only a stamp naming
+# a live, non-void invoice holds: a deleted or void invoice bills nothing (and
+# a missing one bills nothing either), so a stamp one of them kept must not
+# strand the hours.
+
+def _live_invoice_ids():
+    return select(Invoice.id).where(
+        Invoice.deleted_at.is_(None),
+        or_(Invoice.status.is_(None), Invoice.status != "void"),
+    )
+
+
+def closeout_hours_holder(db: Session, closeout) -> _uuid.UUID | None:
+    """The live, non-void invoice that bills ``closeout``'s final-day hours,
+    or None. Read from the database, not the ORM attribute, so a claim made
+    with a Core UPDATE in this transaction is seen."""
+    cid = _job_uuid(getattr(closeout, "id", None)) if closeout is not None else None
+    if cid is None:
+        return None
+    return db.execute(
+        select(JobCloseout.billed_invoice_id).where(
+            JobCloseout.id == cid,
+            JobCloseout.billed_invoice_id.in_(_live_invoice_ids()),
+        )
+    ).scalar_one_or_none()
+
+
+def _stage_labor_audit(
+    db: Session, invoice, *, actor: str | None, action: str, details: dict, request=None
+) -> None:
+    """Stage the audit row for a labor claim or release on ``invoice``."""
+    from gdx_dispatch.core.audit import log_audit_event_sync  # noqa: PLC0415
+
+    log_audit_event_sync(
+        db=db,
+        tenant_id=getattr(invoice, "company_id", None),
+        user_id=actor,
+        action=action,
+        entity_type="invoice",
+        entity_id=str(invoice.id),
+        details={
+            "invoice_number": getattr(invoice, "invoice_number", None),
+            "job_id": str(invoice.job_id) if getattr(invoice, "job_id", None) else None,
+            **details,
+        },
+        request=request,
+    )
+
+
+def _release_stamps(db: Session, model, invoice) -> int:
+    """Clear ``model.billed_invoice_id`` wherever it names ``invoice``."""
+    return int(db.execute(
+        update(model)
+        .where(model.billed_invoice_id == invoice.id)
+        .values(billed_invoice_id=None)
+        .execution_options(synchronize_session=False)
+    ).rowcount or 0)
+
+
+def claim_closeout_hours(
+    db: Session, invoice, closeout, *, actor: str | None, request=None
+) -> bool:
+    """Stamp ``closeout``'s final-day hours as billed by ``invoice`` when no
+    live invoice holds them, and stage the audit row. True when this call
+    stamped them. A closeout attesting no hours has nothing to bill and is
+    never stamped. The caller commits."""
+    cid = _job_uuid(getattr(closeout, "id", None)) if closeout is not None else None
+    if cid is None or not Decimal(str(getattr(closeout, "hours_worked", 0) or 0)) > 0:
+        return False
+    # Take the row lock first. On Postgres the UPDATE below then runs on a
+    # fresh READ COMMITTED snapshot, in which a concurrent winner's invoice
+    # is live; without the lock its NOT IN read the old snapshot, found the
+    # winner's new invoice missing, and overwrote the stamp. SQLite
+    # serializes writers and ignores FOR UPDATE.
+    db.execute(select(JobCloseout.id).where(JobCloseout.id == cid).with_for_update())
+    stamped = int(db.execute(
+        update(JobCloseout)
+        .where(
+            JobCloseout.id == cid,
+            or_(
+                JobCloseout.billed_invoice_id.is_(None),
+                JobCloseout.billed_invoice_id.not_in(_live_invoice_ids()),
+            ),
+        )
+        .values(billed_invoice_id=invoice.id)
+        .execution_options(synchronize_session=False)
+    ).rowcount or 0)
+    if stamped:
+        _stage_labor_audit(
+            db, invoice, actor=actor, action="labor_closeout_claimed", request=request,
+            details={"closeout_id": str(cid), "hours_worked": str(closeout.hours_worked)},
+        )
+    return bool(stamped)
+
+
+def release_closeout_hours(
+    db: Session, invoice, *, actor: str | None, why: str, request=None
+) -> int:
+    """Give back the closeout hours ``invoice`` billed, and stage one audit
+    row (none when it held none). The caller commits."""
+    released = _release_stamps(db, JobCloseout, invoice)
+    if released:
+        _stage_labor_audit(
+            db, invoice, actor=actor, action="labor_closeout_released", request=request,
+            details={"released_closeouts": released, "why": why},
+        )
+    return released
+
+
 def release_day_rows(
     db: Session, invoice, *, actor: str | None, why: str, request=None
 ) -> int:
     """Give back every day row ``invoice`` billed, and stage one audit row
-    with the count (none when nothing was held). The caller commits."""
+    with the count (none when nothing was held). The caller commits.
+
+    The closeout hours it billed go back too, with their own audit row
+    (``release_closeout_hours``): every point that gives back an invoice's
+    labor calls this. The return is the day-row count only."""
     from gdx_dispatch.models.tenant_models import TimeEntry  # noqa: PLC0415
 
-    released = int(db.execute(
-        update(TimeEntry)
-        .where(TimeEntry.billed_invoice_id == invoice.id)
-        .values(billed_invoice_id=None)
-        .execution_options(synchronize_session=False)
-    ).rowcount or 0)
+    release_closeout_hours(db, invoice, actor=actor, why=why, request=request)
+    released = _release_stamps(db, TimeEntry, invoice)
     if released:
-        from gdx_dispatch.core.audit import log_audit_event_sync  # noqa: PLC0415
-
-        log_audit_event_sync(
-            db=db,
-            tenant_id=getattr(invoice, "company_id", None),
-            user_id=actor,
-            action="labor_day_rows_released",
-            entity_type="invoice",
-            entity_id=str(invoice.id),
-            details={
-                "invoice_number": getattr(invoice, "invoice_number", None),
-                "job_id": str(invoice.job_id) if getattr(invoice, "job_id", None) else None,
-                "released_time_entries": released,
-                "why": why,
-            },
-            request=request,
+        _stage_labor_audit(
+            db, invoice, actor=actor, action="labor_day_rows_released", request=request,
+            details={"released_time_entries": released, "why": why},
         )
     return released
 
@@ -487,6 +588,13 @@ def build_closeout_lines(
                 request=request,
             )
         stamped = held_day_rows(db, job_id, invoice.id)
+        # The closeout's final-day hours are claimed the same way (GDXA-799):
+        # held by a live sibling, they are left out of this invoice's labor.
+        claim_closeout_hours(
+            db, invoice, closeout,
+            actor=actor or getattr(closeout, "closed_by_user_id", None),
+            request=request,
+        )
         for labor in job_labor_lines(
             db,
             SimpleNamespace(id=_job_uuid(job_id), job_type=job_type),

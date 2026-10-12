@@ -348,8 +348,10 @@ def test_the_lines_follow_the_labor_taxable_flag(db, monkeypatch):
     assert taxable == Decimal("0")
 
     monkeypatch.setattr(totals, "_load_tax_labor_flag", lambda _db: True)
-    # A second invoice finds the rows already billed: only the closeout's
-    # hour, at the hourly rate, and every labor line follows the flag.
+    # A second invoice: the first row and the closeout are billed on the
+    # first (GDXA-799), so only a later day's hour, at the hourly rate, and
+    # every labor line follows the flag.
+    _row(db, job, at=DAY2, minutes=60)
     inv2 = _invoice(db, job)
     _added, total2, taxable2 = _build(db, job, co, inv2)
     assert all(ln.taxable is True for ln in _labor(_lines(db, inv2)))
