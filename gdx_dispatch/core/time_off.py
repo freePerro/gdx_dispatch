@@ -30,8 +30,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -169,16 +170,22 @@ def _load_user(db: Session, user_id: str) -> User | None:
     ).scalars().first()
 
 
-def user_names(db: Session, user_ids: set[str]) -> dict[str, str]:
-    """id → display name for the ids that resolve; the rest stay unnamed."""
-    from uuid import UUID
-
+def _parse_user_ids(raw_ids: set[str]) -> dict[UUID, str]:
+    """UUID → the text id the timeclock stores, for the ids that parse. A
+    `Uuid` column compares as UUID on both engines; raw text never matches
+    SQLite's dashless storage."""
     parsed: dict[UUID, str] = {}
-    for raw in user_ids:
+    for raw in raw_ids:
         try:
             parsed[UUID(str(raw))] = str(raw)
         except (ValueError, TypeError):
             continue
+    return parsed
+
+
+def user_names(db: Session, user_ids: set[str]) -> dict[str, str]:
+    """id → display name for the ids that resolve; the rest stay unnamed."""
+    parsed = _parse_user_ids(user_ids)
     if not parsed:
         return {}
     try:
@@ -427,3 +434,182 @@ def posted_holiday_counts(
         if day in wanted:
             seen.setdefault(day, set()).add(str(tech))
     return {day: len(people) for day, people in seen.items()}
+
+
+# ── Vacation allowance and balance ───────────────────────────────────────────
+#
+# The allowance is an annual grant in HOURS per calendar year (migration 115):
+# the person's `users.vacation_allowance_hours` when set, else the shop's
+# `app_settings.vacation_allowance_hours`, else none. No accrual, no carryover,
+# no payout — v1 compares hours booked against that one number.
+#
+# Used = every live, closed `vacation` entry whose SHOP day falls in the year,
+# summed in minutes. Holidays are not drawn from the allowance. An approved
+# request stages its entries up front, so days still ahead are already in
+# `used`; `scheduled` is the part of `used` after `as_of`, shown so a reader can
+# tell booked from taken. Remaining is not clamped at zero: an overdrawn
+# balance is a fact the office needs to see, not one to hide.
+
+VACATION_TYPE = "vacation"
+ALLOWANCE_PERSON = "person"
+ALLOWANCE_SHOP = "shop"
+
+
+def _hours(minutes: int) -> float:
+    return float((Decimal(int(minutes)) / 60).quantize(Decimal("0.01"), ROUND_HALF_UP))
+
+
+@dataclass(frozen=True)
+class VacationBalance:
+    technician_id: str
+    year: int
+    as_of: date
+    allowance_hours: Decimal | None
+    #: ``person`` (the user's override), ``shop`` (the default) or None.
+    allowance_source: str | None
+    used_minutes: int = 0
+    scheduled_minutes: int = 0
+
+    @property
+    def used_hours(self) -> float:
+        return _hours(self.used_minutes)
+
+    @property
+    def scheduled_hours(self) -> float:
+        return _hours(self.scheduled_minutes)
+
+    @property
+    def taken_hours(self) -> float:
+        return _hours(self.used_minutes - self.scheduled_minutes)
+
+    @property
+    def remaining_hours(self) -> float | None:
+        if self.allowance_hours is None:
+            return None
+        remaining = Decimal(self.allowance_hours) - Decimal(int(self.used_minutes)) / 60
+        return float(remaining.quantize(Decimal("0.01"), ROUND_HALF_UP))
+
+    @property
+    def remaining_at_as_of_hours(self) -> float | None:
+        """Allowance minus what was taken through ``as_of``: the balance a
+        past pay period's file can state and still state the same later."""
+        if self.allowance_hours is None:
+            return None
+        taken = Decimal(int(self.used_minutes - self.scheduled_minutes)) / 60
+        return float((Decimal(self.allowance_hours) - taken).quantize(Decimal("0.01"), ROUND_HALF_UP))
+
+    @property
+    def overdrawn(self) -> bool:
+        remaining = self.remaining_hours
+        return remaining is not None and remaining < 0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "technician_id": self.technician_id,
+            "year": self.year,
+            "as_of": self.as_of.isoformat(),
+            "allowance_hours": None if self.allowance_hours is None else float(self.allowance_hours),
+            "allowance_source": self.allowance_source,
+            "used_hours": self.used_hours,
+            "taken_hours": self.taken_hours,
+            "scheduled_hours": self.scheduled_hours,
+            "remaining_hours": self.remaining_hours,
+            "remaining_at_as_of_hours": self.remaining_at_as_of_hours,
+            "overdrawn": self.overdrawn,
+        }
+
+
+def vacation_minutes_by_person(
+    db: Session, year: int, tz_name: Any, *, as_of: date, technician_ids: set[str] | None = None
+) -> dict[str, tuple[int, int]]:
+    """technician_id → (used minutes, of which after ``as_of``) for ``year``.
+
+    The window is widened a day each side and the exact year decided in shop
+    time, because ``clock_in_at`` is UTC text. Raises on a database error: a
+    balance that silently reads zero used would tell someone they have hours
+    they have already spent.
+    """
+    lo = date(year - 1, 12, 31).isoformat()
+    hi = date(year + 1, 1, 2).isoformat()
+    stmt = select(
+        TimeclockEntry.technician_id, TimeclockEntry.clock_in_at, TimeclockEntry.minutes
+    ).where(
+        TimeclockEntry.deleted_at.is_(None),
+        TimeclockEntry.entry_type == VACATION_TYPE,
+        TimeclockEntry.clock_out_at.is_not(None),
+        TimeclockEntry.minutes.is_not(None),
+        TimeclockEntry.clock_in_at >= lo,
+        TimeclockEntry.clock_in_at < hi,
+    )
+    if technician_ids is not None:
+        if not technician_ids:
+            return {}
+        stmt = stmt.where(TimeclockEntry.technician_id.in_(sorted(technician_ids)))
+    out: dict[str, tuple[int, int]] = {}
+    for tech, clock_in, minutes in db.execute(stmt).all():
+        day = shop_day_of(clock_in, tz_name)
+        if day is None or day.year != year or not tech:
+            continue
+        paid = max(0, int(minutes))
+        used, ahead = out.get(str(tech), (0, 0))
+        out[str(tech)] = (used + paid, ahead + (paid if day > as_of else 0))
+    return out
+
+
+def allowance_overrides(db: Session, technician_ids: set[str]) -> dict[str, Decimal]:
+    """technician_id → the person's own allowance, for those who have one.
+
+    Soft-deleted users are read too: a departed person's hours are still on
+    the timesheet, and their balance should be stated the same way."""
+    parsed = _parse_user_ids(technician_ids)
+    if not parsed:
+        return {}
+    rows = db.execute(
+        select(User.id, User.vacation_allowance_hours).where(
+            User.id.in_(list(parsed)), User.vacation_allowance_hours.is_not(None)
+        )
+    ).all()
+    return {parsed.get(uid, str(uid)): Decimal(value) for uid, value in rows}
+
+
+def vacation_balances(
+    db: Session,
+    settings: AppSettings | None,
+    technician_ids: set[str],
+    *,
+    year: int,
+    as_of: date,
+) -> dict[str, VacationBalance]:
+    """One `VacationBalance` per id in ``technician_ids`` for ``year``.
+
+    The single computation behind the read endpoint, the Timesheets card,
+    the pay-period CSV and the PDF context (via
+    core/timesheet_hours.build_timesheet; the PDF template does not render
+    it yet).
+    Database errors propagate."""
+    ids = {str(t) for t in technician_ids if t}
+    if not ids:
+        return {}
+    tz_name = getattr(settings, "timezone", None) or "America/New_York"
+    shop_default = getattr(settings, "vacation_allowance_hours", None)
+    overrides = allowance_overrides(db, ids)
+    minutes = vacation_minutes_by_person(db, year, tz_name, as_of=as_of, technician_ids=ids)
+    out: dict[str, VacationBalance] = {}
+    for tid in ids:
+        if tid in overrides:
+            allowance, source = overrides[tid], ALLOWANCE_PERSON
+        elif shop_default is not None:
+            allowance, source = Decimal(shop_default), ALLOWANCE_SHOP
+        else:
+            allowance, source = None, None
+        used, ahead = minutes.get(tid, (0, 0))
+        out[tid] = VacationBalance(
+            technician_id=tid,
+            year=year,
+            as_of=as_of,
+            allowance_hours=allowance,
+            allowance_source=source,
+            used_minutes=used,
+            scheduled_minutes=ahead,
+        )
+    return out

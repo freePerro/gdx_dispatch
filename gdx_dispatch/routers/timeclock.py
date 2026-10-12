@@ -1180,6 +1180,8 @@ def _export_context(
             time_off_counts_toward_overtime=bool(
                 getattr(row, "time_off_counts_toward_overtime", False)
             ),
+            with_vacation=True,
+            settings=row,
         )
     except SQLAlchemyError:
         # Deliberately NOT an empty timesheet. A payroll file reporting zero
