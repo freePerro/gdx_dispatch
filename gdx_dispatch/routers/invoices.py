@@ -775,30 +775,77 @@ def _claim_labor_day_rows(db: Session, invoice: Invoice, ids: list | None) -> in
         if h is not None and h != invoice.id
     ]
     if holders:
-        other = db.execute(
-            select(Invoice.invoice_number).where(Invoice.id == holders[0])
-        ).scalar_one_or_none()
-        db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "labor_already_billed",
-                "message": (
-                    f"These days' labor is already billed on invoice {other or 'another invoice'}"
-                    " — reload the labor suggestion."
-                ),
-            },
-        )
+        _refuse_labor_already_billed(db, holders[0], "These days' labor")
+    _refuse_labor_already_on_invoice(db, "these days' labor")
+
+
+def _refuse_labor_already_billed(db: Session, holder, what: str) -> None:
+    """Roll back and refuse labor another invoice already bills (409)."""
+    other = db.execute(
+        select(Invoice.invoice_number).where(Invoice.id == holder)
+    ).scalar_one_or_none() if holder is not None else None
+    db.rollback()
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "labor_already_billed",
+            "message": (
+                f"{what} is already billed on invoice {other or 'another invoice'}"
+                " — reload the labor suggestion."
+            ),
+        },
+    )
+
+
+def _refuse_labor_already_on_invoice(db: Session, what: str) -> None:
+    """Roll back and refuse a labor line this invoice already bills (409)."""
     db.rollback()
     raise HTTPException(
         status_code=409,
         detail={
             "code": "labor_already_on_invoice",
-            "message": (
-                "This invoice already has these days' labor — remove one of the labor lines."
-            ),
+            "message": f"This invoice already has {what} — remove one of the labor lines.",
         },
     )
+
+
+def _claim_labor_closeout(
+    db: Session, invoice: Invoice, ids: list | None, *, actor: str | None
+) -> bool:
+    """Claim the job's closeout final-day hours for a labor line built from
+    the billing suggestion (GDXA-799), in the caller's transaction.
+
+    A suggestion line is the one that sends ``time_entry_ids`` (``[]``
+    included); the suggestion put the closeout's hours on it exactly when no
+    other live invoice held them. So:
+
+    * free (or held by a deleted or void invoice) — stamped to this invoice;
+    * held by another live invoice — the suggestion left them out; no claim;
+    * claimed by another invoice between that read and the claim — rolled
+      back with 409 ``labor_already_billed``;
+    * held by THIS invoice — a second suggestion line bills them twice, so
+      the transaction is rolled back with 409 ``labor_already_on_invoice``.
+
+    Returns True when this call stamped them.
+    """
+    if ids is None or invoice.job_id is None:
+        return False
+    from gdx_dispatch.core.closeout_billing import claim_closeout_hours, closeout_hours_holder
+    from gdx_dispatch.core.closeouts import get_current_closeout
+
+    closeout = get_current_closeout(db, invoice.job_id)
+    if closeout is None or not Decimal(str(closeout.hours_worked or 0)) > 0:
+        return False
+    holder = closeout_hours_holder(db, closeout)
+    if holder == invoice.id:
+        _refuse_labor_already_on_invoice(db, "the closeout's labor")
+    if holder is not None:
+        return False
+    if not claim_closeout_hours(db, invoice, closeout, actor=actor):
+        # Another invoice claimed them since the read above: this line was
+        # built with them on it, so it would bill them twice.
+        _refuse_labor_already_billed(db, closeout_hours_holder(db, closeout), "The closeout's labor")
+    return True
 
 
 class InvoiceLineCreateIn(BaseModel):
@@ -1941,6 +1988,10 @@ def create_invoice(
             # Lines claim in order: the second line naming the same days gets
             # 0 rows and the whole create is refused (409).
             claimed_time_entries += _claim_labor_day_rows(db, invoice, line.time_entry_ids)
+            # The closeout's final-day hours ride the same line (GDXA-799).
+            _claim_labor_closeout(
+                db, invoice, line.time_entry_ids, actor=_actor_id(_),
+            )
 
     # D2 — materialize an operator-entered discount as the same negative line
     # the estimate-copy path mints above. `sort_order` follows the operator's
@@ -3786,6 +3837,10 @@ def add_invoice_line(
     # The day rows this labor line bills (migration 110): claimed here, in
     # the same transaction, or the whole add is refused.
     claimed_time_entries = _claim_labor_day_rows(db, invoice, payload.time_entry_ids)
+    # The closeout's final-day hours ride the same line (GDXA-799).
+    _claim_labor_closeout(
+        db, invoice, payload.time_entry_ids, actor=_actor_id(current_user),
+    )
 
     _recalculate_invoice(invoice, db, actor=_actor_id(current_user))
     _bump_invoice_version(invoice)
