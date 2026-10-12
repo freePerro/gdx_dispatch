@@ -297,6 +297,50 @@ def _isolated_redis(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# No test reaches a real Celery broker from a money path (GDXA-791)
+# ---------------------------------------------------------------------------
+# A recorded payment queues the customer's receipt and the stale-intent sweep
+# (GDXA-393), both through ``tasks.stale_intent_sweep.apply_async_bounded`` —
+# the one place a money path talks to the broker. No test environment runs a
+# Redis (CI has only Postgres), so every paid-path test spent ~19 s on the
+# receipt enqueue: the broker connect is bounded and refused in ~0.06 s, but
+# ``send_payment_receipt_task`` does not set ``ignore_result`` and Celery
+# retries the RESULT STORE for ~19 s before raising RuntimeError (measured
+# 2026-10-12; the sweep task sets it and fails fast). 28 tests in
+# test_payments.py took 19-38 s each, 616 s for the file. Both callers catch
+# any exception, so the outcome was already "not queued"; the stub keeps that
+# outcome (as ConnectionError) and drops the wait. The production latency of
+# that result-store retry is not fixed here.
+#
+# Request ``broker_enqueue`` by name to inspect what was queued, or set its
+# ``side_effect = None`` to take the queued path. A test of
+# ``apply_async_bounded`` itself opts out with
+# ``@pytest.mark.real_broker_enqueue`` and must stub ``apply_async`` itself.
+
+
+@pytest.fixture(autouse=True, scope="function")
+def broker_enqueue(request):
+    """Replace the money paths' broker choke point with a dead broker that
+    answers instantly. Yields the mock, or None when the test opts out.
+
+    Its own MonkeyPatch, not the shared ``monkeypatch`` fixture: a test that
+    calls ``monkeypatch.undo()`` mid-body (test_stripe_webhook_redelivery's
+    retry test) would otherwise strip this too and stall on the real broker.
+    """
+    if request.node.get_closest_marker("real_broker_enqueue"):
+        yield None
+        return
+    from unittest.mock import MagicMock
+
+    from gdx_dispatch.tasks import stale_intent_sweep
+
+    dead = MagicMock(side_effect=ConnectionError("no broker in tests"))
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(stale_intent_sweep, "apply_async_bounded", dead)
+        yield dead
+
+
+# ---------------------------------------------------------------------------
 # Shop-midday clock: for tests whose fixtures are built from `now` while the
 # code under test compares SHOP days (GDXA-361)
 # ---------------------------------------------------------------------------
