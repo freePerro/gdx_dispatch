@@ -255,8 +255,11 @@ def test_day_row_minutes_round_once_not_per_row(db) -> None:
 
 def _labor_invoice(db, job_id, *, status="draft", line_deleted=False, invoice_deleted=False,
                    pricing_source="labor_attested"):
+    # The header carries its live line, or the totals invariant refuses the commit.
+    header = Decimal("0") if line_deleted else Decimal("125")
     inv = Invoice(job_id=job_id, customer_id=uuid4(), status=status, company_id="tenant-1",
                   invoice_number=f"INV-{uuid4().hex[:6]}", public_token=uuid4().hex,
+                  subtotal=header, total=header, balance_due=header,
                   deleted_at=_dt.datetime.now(_dt.timezone.utc) if invoice_deleted else None)
     db.add(inv)
     db.flush()
