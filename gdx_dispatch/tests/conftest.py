@@ -300,17 +300,20 @@ def _isolated_redis(monkeypatch):
 # No test reaches a real Celery broker from a money path (GDXA-791)
 # ---------------------------------------------------------------------------
 # A recorded payment queues the customer's receipt and the stale-intent sweep
-# (GDXA-393), both through ``tasks.stale_intent_sweep.apply_async_bounded`` —
-# the one place a money path talks to the broker. No test environment runs a
+# (GDXA-393), both through ``tasks.stale_intent_sweep.apply_async_bounded``.
+# (Not the only broker call after a payment: ``core/webhooks/emit.py``'s
+# after-commit ``.delay()`` calls are unbounded, GDXA-819.) No test environment runs a
 # Redis (CI has only Postgres), so every paid-path test spent ~19 s on the
 # receipt enqueue: the broker connect is bounded and refused in ~0.06 s, but
-# ``send_payment_receipt_task`` does not set ``ignore_result`` and Celery
-# retries the RESULT STORE for ~19 s before raising RuntimeError (measured
+# ``send_payment_receipt_task`` did not set ``ignore_result`` and Celery
+# retried the RESULT STORE for ~19 s before raising RuntimeError (measured
 # 2026-10-12; the sweep task sets it and fails fast). 28 tests in
 # test_payments.py took 19-38 s each, 616 s for the file. Both callers catch
 # any exception, so the outcome was already "not queued"; the stub keeps that
 # outcome (as ConnectionError) and drops the wait. The production latency of
-# that result-store retry is not fixed here.
+# that result-store retry was fixed by GDXA-819 (``ignore_result=True`` on the
+# receipt task, and ``apply_async_bounded`` refuses a task without it);
+# test_enqueue_result_backend.py runs the real enqueue against a refused Redis.
 #
 # Request ``broker_enqueue`` by name to inspect what was queued, or set its
 # ``side_effect = None`` to take the queued path. A test of

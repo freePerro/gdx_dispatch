@@ -241,7 +241,15 @@ def billing_followup_tick() -> dict:
 # record — nothing claims a receipt went out until `outbound_emails` says so.
 
 
-@celery_app.task(name="billing_followup.send_payment_receipt")
+@celery_app.task(
+    name="billing_followup.send_payment_receipt",
+    # Fire and forget, as `sweep_stale_intents` is: nothing reads this return
+    # value (it is logged below). Storing it made the enqueue subscribe to the
+    # result backend, which retried an unreachable Redis for ~19s inside
+    # `record_payment`, the pay page's confirm and the Stripe webhook
+    # (GDXA-819). `apply_async_bounded` now refuses a task without this.
+    ignore_result=True,
+)
 def send_payment_receipt_task(invoice_id: str, reference: str = "") -> dict:
     from gdx_dispatch.routers.invoices import send_automatic_payment_receipt
 
