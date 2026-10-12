@@ -337,12 +337,13 @@
       <Card class="timecard-card" data-testid="time-off-card">
         <template #content>
           <!-- My vacation this year (core/time_off.vacation_balances): every
-               booked day counts, approved days still ahead included. -->
+               booked day counts, approved days still ahead included, so the
+               "still ahead" hours are part of "used", never added to it. -->
           <p v-if="myVacation" class="vacation-line" data-testid="my-vacation-balance">
             <i class="pi pi-sun" aria-hidden="true" />
             <strong>Vacation {{ myVacation.year }}:</strong>
             {{ hoursText(myVacation.used_hours) }}h used<template v-if="myVacation.scheduled_hours > 0">
-              ({{ hoursText(myVacation.scheduled_hours) }}h still ahead)</template>
+              ({{ hoursText(myVacation.scheduled_hours) }}h of it still ahead)</template>
             <template v-if="myVacation.allowance_hours == null">
               · no allowance set — ask the office
             </template>
@@ -805,7 +806,9 @@ function openEntryCreate() {
   showEntryDialog.value = true;
 }
 
-// GET /api/timeclock/time-off/balances — omitted technician = me.
+// GET /api/timeclock/time-off/balances — omitted technician = me. A 403 is
+// the role holding no vacation of its own (viewer), not a failed read: the
+// line hides rather than telling them to try again.
 const myVacation = ref(null);
 const myVacationError = ref(false);
 
@@ -814,9 +817,9 @@ async function fetchMyVacation() {
     const data = await api.get('/api/timeclock/time-off/balances', { suppressErrorToast: true });
     myVacation.value = data?.balances?.[0] || null;
     myVacationError.value = !myVacation.value;
-  } catch {
+  } catch (err) {
     myVacation.value = null;
-    myVacationError.value = true;
+    myVacationError.value = err?.status !== 403;
   }
 }
 
