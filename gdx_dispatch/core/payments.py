@@ -508,7 +508,51 @@ def _replay_verdict(pid: str, kwargs: dict, connect: dict) -> tuple[str, Any]:
     return "live", live
 
 
-def _retire_replayed_intent(pid: str, verdict: str, live: Any, key: str, connect: dict) -> None:
+def _audit_abandoned_intent_cancel(
+    db: Session, *, invoice_id: Any, intent_id: str, why: str, cancelled: Any
+) -> None:
+    """Record a pay-page cancel of an intent still holding a customer's bank
+    account. Never raises; called only after Stripe accepted the cancel.
+
+    Invariant #1: cancelling a PaymentIntent is a state change on a money
+    object. The settle-time sweep already records its cancels
+    (`tasks/stale_intent_sweep._audit_sweep`); these two pay-page cancels
+    logged a WARNING and stopped, so "my bank link vanished" had nothing on
+    the invoice trail (GDXA-787). Attributed to the named surface, never an
+    anonymous identity: the actor is the public pay page, not a user.
+
+    `audit_best_effort` rather than the precommit helper: `create_intent`
+    never commits and `get_db` closes without committing, so a row staged for
+    a later commit would be discarded. Nothing is staged on the session at
+    either call site (`_settle_unrecorded_intents` commits before returning),
+    which is that helper's precondition.
+    """
+    from gdx_dispatch.core.audit import audit_best_effort
+
+    landed = audit_best_effort(
+        db,
+        tenant_id=None,
+        user_id="stripe-pay-page",
+        action="abandoned_account_intent_canceled",
+        entity_type="invoice",
+        entity_id=str(invoice_id) if invoice_id else None,
+        details={
+            "intent_id": intent_id,
+            "why": why,
+            "status": str(_field(cancelled, "status") or ""),
+        },
+    )
+    if not landed:
+        logger.error(
+            "abandoned_account_intent_canceled_audit_failed intent=%s invoice=%s — the cancel "
+            "stands and it is NOT in the audit trail; this ERROR is the only record.",
+            intent_id, invoice_id,
+        )
+
+
+def _retire_replayed_intent(
+    pid: str, verdict: str, live: Any, key: str, connect: dict, *, db: Session, kwargs: dict
+) -> None:
     if verdict == "abandoned":
         # 2026-09-16 audit, round 3. A customer linked a bank account and
         # walked away at the mandate step: the replayed intent still carries
@@ -519,9 +563,16 @@ def _retire_replayed_intent(pid: str, verdict: str, live: Any, key: str, connect
         # authorized, so nothing is lost — and mint fresh. This is also what
         # "Use a different bank account" relies on.
         try:
-            stripe.PaymentIntent.cancel(pid, cancellation_reason="abandoned", **connect)
+            done = stripe.PaymentIntent.cancel(pid, cancellation_reason="abandoned", **connect)
         except Exception:
             logger.exception("abandoned_intent_cancel_failed intent=%s — minting fresh anyway", pid)
+        else:
+            invoice_id = _field(kwargs.get("metadata") or {}, "invoice_id") or _field(
+                _field(live, "metadata") or {}, "invoice_id"
+            )
+            _audit_abandoned_intent_cancel(
+                db, invoice_id=invoice_id, intent_id=pid, why="replay", cancelled=done,
+            )
         logger.warning(
             "intent_replay_carried_a_bank_account intent=%s key=%s — cancelled and re-minting", pid, key,
         )
@@ -572,7 +623,7 @@ def _live_candidate(candidates: list | None, kwargs: dict, connect: dict) -> Any
     return None
 
 
-def _create_usable_intent(*, candidates: list | None = None, **kwargs) -> Any:
+def _create_usable_intent(*, db: Session, candidates: list | None = None, **kwargs) -> Any:
     """`PaymentIntent.create`, then prove the intent handed back is live.
 
     Stripe's idempotency layer replays **"the resulting status code and body of
@@ -628,7 +679,7 @@ def _create_usable_intent(*, candidates: list | None = None, **kwargs) -> Any:
         return live
 
     key = kwargs.pop("idempotency_key", "") or ""
-    _retire_replayed_intent(pid, verdict, live, key, connect)
+    _retire_replayed_intent(pid, verdict, live, key, connect, db=db, kwargs=kwargs)
     reused = _live_candidate(candidates, kwargs, connect)
     if reused is not None:
         logger.warning("intent_replay_reused_open_intent dead=%s reused=%s key=%s", pid, reused.id, key)
@@ -644,7 +695,7 @@ def _create_usable_intent(*, candidates: list | None = None, **kwargs) -> Any:
             return pi
         if verdict == "live":
             return live
-        _retire_replayed_intent(nxt, verdict, live, key, connect)
+        _retire_replayed_intent(nxt, verdict, live, key, connect, db=db, kwargs=kwargs)
         pid = nxt
     logger.error(
         "intent_remint_chain_exhausted key=%s last=%s hops=%d — %d intents for this amount died "
@@ -1821,7 +1872,7 @@ def _settle_unrecorded_intents(
     return recorded
 
 
-def _cancel_abandoned_bank_accounts(invoice, intents: list, *, connect: dict) -> None:
+def _cancel_abandoned_bank_accounts(invoice, intents: list, *, connect: dict, db: Session) -> None:
     """Cancel every open bank intent on ``invoice`` still holding an account.
 
     GDXA-781. `_create_usable_intent` cancels an abandoned intent only when the
@@ -1857,10 +1908,13 @@ def _cancel_abandoned_bank_accounts(invoice, intents: list, *, connect: dict) ->
         if str(_field(pi, "status") or "") != "requires_confirmation":
             continue
         try:
-            stripe.PaymentIntent.cancel(pid, cancellation_reason="abandoned", **connect)
+            done = stripe.PaymentIntent.cancel(pid, cancellation_reason="abandoned", **connect)
         except Exception:
             logger.exception("abandoned_account_cancel_failed intent=%s invoice=%s", pid, invoice.id)
             continue
+        _audit_abandoned_intent_cancel(
+            db, invoice_id=invoice.id, intent_id=pid, why="remint-sweep", cancelled=done,
+        )
         logger.warning(
             "abandoned_account_intent_cancelled intent=%s invoice=%s — an open intent still held "
             "a customer's account; cancelled before minting.",
@@ -2006,11 +2060,12 @@ def create_intent(
         rail["amount_details"] = {"surcharge": {"enforce_validation": "enabled"}}
         rail["stripe_version"] = _SURCHARGE_API_VERSION
 
-    _cancel_abandoned_bank_accounts(invoice, intents, connect=_stripe_extra(tenant))
+    _cancel_abandoned_bank_accounts(invoice, intents, connect=_stripe_extra(tenant), db=db)
 
     metadata = {"invoice_id": str(invoice.id), "tenant_id": str(tenant.get("id", ""))}
     try:
         pi = _create_usable_intent(
+            db=db,
             # GDXA-784: a dead replay reuses an intent already open here.
             candidates=intents,
             amount=amount_cents,
