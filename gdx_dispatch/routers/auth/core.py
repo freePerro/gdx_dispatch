@@ -29,7 +29,8 @@ log = logging.getLogger(__name__)
 # Platform-level email (sent from CC, not tenant)
 PLATFORM_SMTP_HOST = os.getenv("PLATFORM_SMTP_HOST", "smtp.titan.email")
 PLATFORM_SMTP_PORT = int(os.getenv("PLATFORM_SMTP_PORT", "465"))
-PLATFORM_SMTP_USER = os.getenv("PLATFORM_SMTP_USER", "info@example.com")
+_PLATFORM_SMTP_USER_PLACEHOLDER = "info@example.com"
+PLATFORM_SMTP_USER = os.getenv("PLATFORM_SMTP_USER", _PLATFORM_SMTP_USER_PLACEHOLDER)
 PLATFORM_SMTP_PASS = os.getenv("PLATFORM_SMTP_PASS", "")
 PLATFORM_FROM_NAME = os.getenv("PLATFORM_FROM_NAME", "DispatchApp")
 
@@ -55,6 +56,67 @@ def _send_platform_email(to_email: str, subject: str, html_body: str) -> None:
     s.sendmail(PLATFORM_SMTP_USER, to_email, msg.as_string())
     s.quit()
     log.info("platform_email_sent to=%s subject=%s", to_email, subject)
+
+
+_RESET_LINK_REDACTED = "[reset link redacted]"
+
+
+def _platform_smtp_configured() -> bool:
+    """A password and a real account. PLATFORM_SMTP_USER defaults to the
+    placeholder here, and compose and .env.template pass the placeholder in
+    explicitly, so "is it set" is always yes; logging in as that account is
+    how resets failed silently on prod before GDXA-689."""
+    return bool(PLATFORM_SMTP_PASS) and PLATFORM_SMTP_USER not in ("", _PLATFORM_SMTP_USER_PLACEHOLDER)
+
+
+def _send_password_reset_email(
+    db: Session, *, tenant_id: str, user: Any, subject: str, html_body: str,
+    audit_body_html: str,
+) -> tuple[bool, str | None, str | None]:
+    """Deliver a reset email. Returns (sent, provider, skip_reason).
+
+    1. Outlook as the Settings → Automation email "Send as" mailbox, as the
+       payment receipt does — no person sent this, and
+       ``designated_sender_fallback`` covers only a PERSON without a mailbox.
+       Kept out of that mailbox's Sent Items, and outbound_emails stores the
+       redacted body: the link is a credential for the account it names,
+       the owner's included.
+    2. Platform SMTP (PLATFORM_SMTP_*), for installs without Outlook.
+
+    Nothing logged by this function carries the address or the link.
+    """
+    from gdx_dispatch.core.tenant import company_id
+    from gdx_dispatch.core.transactional_email import (
+        _designated_sender_user_id,
+        send_transactional_email,
+    )
+
+    sent, provider, skip_reason = send_transactional_email(
+        tenant_db=db,
+        tenant_id=tenant_id or company_id(),
+        user_id=_designated_sender_user_id(db),
+        to_email=str(user.email),
+        to_name=str(user.full_name or user.name or ""),
+        subject=subject,
+        html_body=html_body,
+        audit_body_html=audit_body_html,
+        save_to_sent_items=False,
+        kind="password_reset",
+        initiator_kind="system",
+        entity_type="user",
+        entity_id=str(user.id),
+    )
+    if sent:
+        return sent, provider, None
+    if _platform_smtp_configured():
+        try:
+            _send_platform_email(str(user.email), subject, html_body)
+            return True, "platform_smtp", None
+        except Exception:
+            log.exception("password_reset_platform_smtp_failed")
+            skip_reason = f"{skip_reason}+platform_smtp_failed"
+    log.warning("password_reset_email_not_sent reason=%s", skip_reason)
+    return False, None, skip_reason
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -680,6 +742,7 @@ def forgot_password(body: ForgotPasswordBody, request: Request, db: Session = De
     row = {"id": str(_u.id), "email": _u.email} if _u else None
 
     if row:
+        email_sent, email_provider, skip_reason = False, None, "send_raised"
         token = secrets.token_urlsafe(32)
         redis.setex(f"pw_reset:{token}", 3600, f"{row['id']}|{tenant_id}")
 
@@ -693,25 +756,32 @@ def forgot_password(body: ForgotPasswordBody, request: Request, db: Session = De
             # branded on purpose — this is an auth email, not tenant mail.
             from gdx_dispatch.core.email_layout import cta_button, esc, render_email
 
-            _reset_body = (
-                '<h2 style="margin:0 0 16px;font-size:20px;color:#3b82f6;">Reset Your Password</h2>'
-                '<p style="margin:0 0 12px;">You requested a password reset. '
-                "Click the button below to set a new password:</p>"
-                + cta_button(reset_link, "Reset Password", "#3b82f6")
-                + '<p style="margin:16px 0 8px;font-size:13px;color:#556270;">This link expires in '
-                "1 hour. If you didn&#39;t request this, ignore this email.</p>"
-                f'<p style="margin:0;font-size:12px;color:#556270;">Link: '
-                f'<a href="{esc(reset_link)}" style="color:#3b82f6;">{esc(reset_link)}</a></p>'
-            )
-            _send_platform_email(
-                str(row["email"]),
-                "Password Reset — DispatchApp",
-                render_email(
+            def _reset_email(link: str) -> str:
+                return render_email(
                     branding={"company_name": "DispatchApp", "accent": "#3b82f6"},
-                    body_html=_reset_body,
+                    body_html=(
+                        '<h2 style="margin:0 0 16px;font-size:20px;color:#3b82f6;">Reset Your Password</h2>'
+                        '<p style="margin:0 0 12px;">You requested a password reset. '
+                        "Click the button below to set a new password:</p>"
+                        + cta_button(link, "Reset Password", "#3b82f6")
+                        + '<p style="margin:16px 0 8px;font-size:13px;color:#556270;">This link expires in '
+                        "1 hour. If you didn&#39;t request this, ignore this email.</p>"
+                        f'<p style="margin:0;font-size:12px;color:#556270;">Link: '
+                        f'<a href="{esc(link)}" style="color:#3b82f6;">{esc(link)}</a></p>'
+                    ),
                     title="Password Reset",
                     preheader="Reset your DispatchApp password",
-                ),
+                )
+
+            email_sent, email_provider, skip_reason = _send_password_reset_email(
+                db,
+                tenant_id=tenant_id,
+                user=_u,
+                subject="Password Reset — DispatchApp",
+                html_body=_reset_email(reset_link),
+                # outbound_emails keeps a copy of every body; this one must
+                # not hold a live reset link.
+                audit_body_html=_reset_email(_RESET_LINK_REDACTED),
             )
         except Exception:
             log.exception("forgot_password_email_failed")
@@ -721,7 +791,11 @@ def forgot_password(body: ForgotPasswordBody, request: Request, db: Session = De
                 db, tenant_id=tenant_id, user_id=str(row["id"]),
                 action="password_reset_requested", entity_type="auth",
                 entity_id=str(row["id"]),
-                details={"email": email, "token_prefix": token[:8]},
+                details={
+                    "email": email, "token_prefix": token[:8],
+                    "email_sent": email_sent, "provider": email_provider,
+                    "skip_reason": skip_reason,
+                },
                 request=request,
             )
             db.commit()
