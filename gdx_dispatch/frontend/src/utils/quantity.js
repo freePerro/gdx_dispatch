@@ -18,6 +18,25 @@ export function recordedQuantity(q) {
 }
 
 /**
+ * The most a priced line may carry: the server's `le=9999` on invoice,
+ * estimate and change-order lines (`routers/invoices.py`, `estimates.py`,
+ * `change_orders.py`). Without it on the input, 10000 types fine and only
+ * fails as a 422 on save. Proposal tier lines allow 10,000
+ * (`modules/proposals/router.py`).
+ */
+export const MAX_LINE_QUANTITY = 9999;
+export const MAX_TIER_LINE_QUANTITY = 10000;
+
+/**
+ * A typed quantity held to `max`. Only an over-the-cap number changes: a
+ * blank stays blank and a 0 stays 0 (#560), the server judges those.
+ */
+export function capQuantity(q, max = MAX_LINE_QUANTITY) {
+  if (q === null || q === undefined || q === '') return q;
+  return Number(q) > max ? max : q;
+}
+
+/**
  * quantity × unit price in dollars, rounded to the cent exactly as the server
  * rounds it (`_money(Decimal(quantity) * Decimal(unit_price))`, ROUND_HALF_UP).
  *

@@ -218,6 +218,7 @@
         <InputNumber
           v-model="item.quantity"
           :min="fractionalQuantity ? 0.01 : 1"
+          :max="MAX_LINE_QUANTITY"
           :maxFractionDigits="fractionalQuantity ? 2 : 0"
           :pt="fractionalQuantity ? DECIMAL_KEYPAD_PT : undefined"
           :useGrouping="false"
@@ -349,7 +350,7 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
-import { lineAmount, recordedQuantity } from '../utils/quantity';
+import { capQuantity, lineAmount, MAX_LINE_QUANTITY, recordedQuantity } from '../utils/quantity';
 import Button from 'primevue/button';
 import InputText from 'primevue/inputtext';
 import InputNumber from 'primevue/inputnumber';
@@ -860,12 +861,15 @@ function markPriceOverride(item) {
 // fires per keystroke with the parsed value. Assign it live so line totals,
 // the margin column, and the parent's tax/profit math track WHILE the user
 // types instead of appearing frozen until focus leaves the field.
+// That per-keystroke value is not yet held to `:max` (InputNumber clamps on
+// blur), so cap it here or a typed 10000 totals live and 422s on save.
 function onQtyInput(item, e) {
-  item.quantity = e.value;
+  item.quantity = capQuantity(e.value);
   markQtyOverride(item);
 }
 
 function onQtyCommit(item) {
+  item.quantity = capQuantity(item.quantity);
   markQtyOverride(item);
 }
 

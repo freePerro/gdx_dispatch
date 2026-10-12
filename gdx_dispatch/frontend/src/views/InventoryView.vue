@@ -62,7 +62,7 @@
           <div class="form-row-3">
             <div class="form-field">
               <label for="inv-qty">Quantity *</label>
-              <InputNumber id="inv-qty" v-model="form.quantity" :min="0" data-testid="inv-qty-input" />
+              <InputNumber id="inv-qty" v-model="form.quantity" :min="0" :max="10000000" data-testid="inv-qty-input" />
             </div>
             <div class="form-field">
               <label for="inv-reorder">Reorder Level</label>
