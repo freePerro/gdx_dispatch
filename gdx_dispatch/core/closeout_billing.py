@@ -332,7 +332,8 @@ def build_closeout_lines(
     Taxable flags (2026-08-08 audit): labor lines carry the tenant's
     tax-labor flag (same M24 rule the estimate→invoice copy applies — the
     old default-True meant a later office line-edit recalc would suddenly
-    tax labor); parts stay taxable. taxable_total feeds the caller's tax
+    tax labor); parts stay taxable. Install lane (GDXA-793): nothing is
+    taxable and taxable_total is 0. taxable_total feeds the caller's tax
     computation so an autodraft with a resolved rate taxes parts exactly
     like an office-created invoice would.
 
@@ -391,6 +392,13 @@ def build_closeout_lines(
     lines_total = Decimal("0")
     taxable_total = Decimal("0")
     lane = lane_for_job(job_type)
+    # An installation is a construction contract and is never taxed (Doug,
+    # 2026-10-12, GDXA-793): no line on an install-lane draft is taxable, so
+    # a later office line edit cannot start taxing it either. Repairs and
+    # service calls keep taxable parts.
+    parts_taxable = lane != "install"
+    if not parts_taxable:
+        labor_taxable = False
     if lane == "install" and getattr(closeout, "labor_matrix_item_id", None):
         # Install lane: flat price from the picked matrix row. If the row is
         # gone/inactive/$0, _install is None → labor stays unpriced (office
@@ -570,7 +578,7 @@ def build_closeout_lines(
             quantity=qty,
             unit_price=unit,
             line_total=_money(float(unit) * qty),
-            taxable=True,
+            taxable=parts_taxable,
             category="Parts",
             # Stamp the source row (2026-08-19). The office pull has always set
             # this so deleting a line releases the part (D-S122-line-removal-
@@ -583,7 +591,8 @@ def build_closeout_lines(
             company_id=str(tenant_id),
         ))
         lines_total += _money(float(unit) * qty)
-        taxable_total += _money(float(unit) * qty)
+        if parts_taxable:
+            taxable_total += _money(float(unit) * qty)
         lines_added += 1
         sort += 1
     return lines_added, lines_total, taxable_total
@@ -816,6 +825,33 @@ def autodraft_invoice_for_closeout(
     # structurally untaxable through every later office edit. Resolve the
     # same customer-aware rate the office create path uses; labor stays
     # untaxed via the line flags unless the tenant taxes labor.
+    #
+    # Install lane (GDXA-793): an installation is a construction contract and
+    # is never taxed, so it gets rate 0 — rate-mode at zero, which no later
+    # recalc can turn into tax — and the tenant default is never read. This
+    # resolved 7.38% on every install draft before.
+    from gdx_dispatch.core.billing_lanes import lane_for_job  # noqa: PLC0415
+
+    rate: Decimal | None = (
+        Decimal("0")
+        if lane_for_job(job.job_type) == "install"
+        else _resolve_service_rate(db, inv, job)
+    )
+    inv.tax_rate = rate
+
+    if lines_total > 0:
+        tax = _money(taxable_total * rate) if rate else _money(0)
+        inv.subtotal = _money(lines_total)
+        inv.tax_amount = tax
+        inv.total = _money(lines_total + tax)
+        inv.balance_due = inv.total
+    return inv
+
+
+def _resolve_service_rate(db: Session, inv: Invoice, job: Job) -> Decimal | None:
+    """The customer-aware rate for a repair/service draft: 0 → None for an
+    exempt customer (``resolve_rate`` answers 0), the tenant default
+    otherwise, None when the read fails."""
     rate: Decimal | None = None
     try:
         from gdx_dispatch.modules.tax.service import resolve_rate  # noqa: PLC0415
@@ -847,12 +883,4 @@ def autodraft_invoice_for_closeout(
     except Exception:  # noqa: BLE001 — tax resolution must never block a closeout
         log.exception("autodraft_tax_resolve_failed job=%s", job.id)
         rate = None
-    inv.tax_rate = rate
-
-    if lines_total > 0:
-        tax = _money(taxable_total * rate) if rate else _money(0)
-        inv.subtotal = _money(lines_total)
-        inv.tax_amount = tax
-        inv.total = _money(lines_total + tax)
-        inv.balance_due = inv.total
-    return inv
+    return rate

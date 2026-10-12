@@ -204,8 +204,11 @@ buttons wired to stubs. Before calling anything done:
 
 ## Domain rules that shape code
 
-- Garage-door work in Minnesota is a construction contract: **never charge
-  the customer sales tax.**
+- **Sales tax follows the job** (Doug, 2026-10-12): parts on repair and
+  service-call jobs are taxed at the tenant default rate; installations
+  (converted estimates, install-lane jobs) are a construction contract and
+  are not taxed; tax-exempt customers are never taxed, on any job. Labor is
+  untaxed unless `tax_labor` is set.
 - Billed labor comes from **attested hours only** — elapsed clock time is
   not evidence and code may not invent hours.
 - Taxonomy: a service call is a repair; a converted estimate is an

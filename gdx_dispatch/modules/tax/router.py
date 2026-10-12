@@ -303,12 +303,32 @@ def delete_exemption(
 @router.get("/resolve")
 def resolve_rate_endpoint(
     customer_id: str | None = None,
+    job_id: str | None = None,
     user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Diagnostic endpoint — given a customer_id (optional) returns the
     tax rate that would be applied. Used by the invoice-create flow and
-    by the Settings → Tax UI to preview the effect of an exemption."""
+    by the Settings → Tax UI to preview the effect of an exemption.
+
+    ``job_id`` (GDXA-793): an install-lane job is a construction contract
+    and is never taxed, so it answers 0 without reading the tenant default.
+    An unknown or malformed id falls through to the customer answer."""
     _ = user
+    if job_id:
+        from gdx_dispatch.core.billing_lanes import lane_for_job  # noqa: PLC0415
+        from gdx_dispatch.models.tenant_models import Job  # noqa: PLC0415
+
+        try:
+            jid = UUID(str(job_id))
+        except ValueError:
+            jid = None
+        job_type = None
+        if jid is not None:
+            job_type = db.execute(
+                select(Job.job_type).where(Job.id == jid, Job.deleted_at.is_(None))
+            ).scalar_one_or_none()
+        if job_type is not None and lane_for_job(job_type) == "install":
+            return {"rate": 0.0, "rate_pct": 0.0}
     rate = resolve_rate(db, customer_id)
     return {"rate": float(rate), "rate_pct": float(rate * 100)}

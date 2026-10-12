@@ -26,7 +26,7 @@ from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.pay_periods import shop_today
-from gdx_dispatch.models.tenant_models import AppSettings
+from gdx_dispatch.models.tenant_models import AppSettings, Job
 from gdx_dispatch.modules.tax.models import TaxConfig, TaxExemption
 from gdx_dispatch.modules.tax.router import router as tax_router
 from gdx_dispatch.routers.auth import get_current_user
@@ -56,6 +56,8 @@ def make_client():
     # The exemption window is read against the shop's day, whose zone lives
     # in app_settings (GDXA-505); no row means the America/New_York default.
     AppSettings.__table__.create(bind=engine, checkfirst=True)
+    # `/api/tax/resolve?job_id=` reads the job's lane (GDXA-793).
+    Job.__table__.create(bind=engine, checkfirst=True)
     Session =sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
     def _override_db():
@@ -77,6 +79,7 @@ def make_client():
         clients.append(tc)
         return tc
 
+    _make.session = Session
     yield _make
 
     for tc in clients:
@@ -231,3 +234,38 @@ def test_expired_exemption_does_not_zero_rate(make_client):
 
     resp = admin.get("/api/tax/resolve", params={"customer_id": customer_id})
     assert resp.json()["rate"] == pytest.approx(0.0738)
+
+
+def test_resolve_with_job_follows_the_lane(make_client):
+    """GDXA-793: the office create form seeds its rate from here, so the
+    answer has to know the job. An installation answers 0 without reading
+    the default; a service call answers the default; an unknown or malformed
+    job id falls through to the customer answer."""
+    admin = make_client(_ADMIN)
+    admin.patch("/api/tax/config", json={"default_rate": 0.0738})
+    db = make_client.session()
+    try:
+        install = Job(
+            customer_id=uuid4(), title="Install", description="", job_type="Installation",
+            lifecycle_stage="scheduled", dispatch_status="unassigned",
+            billing_status="unbilled", company_id="tenant-test",
+        )
+        service = Job(
+            customer_id=uuid4(), title="Repair", description="", job_type="Service Call",
+            lifecycle_stage="scheduled", dispatch_status="unassigned",
+            billing_status="unbilled", company_id="tenant-test",
+        )
+        db.add_all([install, service])
+        db.commit()
+        install_id, service_id = str(install.id), str(service.id)
+    finally:
+        db.close()
+
+    assert admin.get("/api/tax/resolve", params={"job_id": install_id}).json()["rate"] == 0.0
+    assert admin.get(
+        "/api/tax/resolve", params={"job_id": service_id}
+    ).json()["rate"] == pytest.approx(0.0738)
+    for jid in (str(uuid4()), "not-a-uuid"):
+        resp = admin.get("/api/tax/resolve", params={"job_id": jid})
+        assert resp.status_code == 200
+        assert resp.json()["rate"] == pytest.approx(0.0738)
