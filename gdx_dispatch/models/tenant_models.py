@@ -203,6 +203,10 @@ class AppSettings(Base):
     time_off_counts_toward_overtime: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # Vacation allowance (GDXA-700, migration 115): the shop's annual grant
+    # per calendar year, in hours. NULL = not set — no number is assumed.
+    # `User.vacation_allowance_hours` overrides it per person.
+    vacation_allowance_hours: Mapped[Decimal | None] = mapped_column(Numeric(6, 2), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
@@ -3141,6 +3145,9 @@ class User(Base):
     shift_start: Mapped[time | None] = mapped_column(Time, nullable=True)
     shift_end: Mapped[time | None] = mapped_column(Time, nullable=True)
     workdays: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    # Vacation allowance override (GDXA-700, migration 115), hours per
+    # calendar year. NULL = inherit AppSettings.vacation_allowance_hours.
+    vacation_allowance_hours: Mapped[Decimal | None] = mapped_column(Numeric(6, 2), nullable=True)
 
 
 class PayrollEntry(Base):

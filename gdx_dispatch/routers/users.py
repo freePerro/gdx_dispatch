@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import time
+from decimal import Decimal
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -27,6 +28,7 @@ from gdx_dispatch.core.roles import is_role_admin_actor, normalize_role
 from gdx_dispatch.core.tenant_ctx import bind_tenant_context
 from gdx_dispatch.models.tenant_models import User
 from gdx_dispatch.routers.auth import get_current_user
+from gdx_dispatch.routers.settings import MAX_VACATION_ALLOWANCE_HOURS, allowance_hours_out
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +75,11 @@ class UserPatchIn(BaseModel):
     # column, but the model never declared it, so a typed value was dropped
     # and the dialog toasted "saved". Null clears it.
     certifications: str | None = Field(default=None, max_length=2000)
+    # GDXA-700: this person's annual vacation allowance in hours, overriding
+    # the shop default. Explicit null clears it back to inherit.
+    vacation_allowance_hours: Decimal | None = Field(
+        default=None, ge=0, le=MAX_VACATION_ALLOWANCE_HOURS, decimal_places=2
+    )
 
 
 class SelfPatchIn(BaseModel):
@@ -169,6 +176,8 @@ def _serialize(u: User) -> dict[str, Any]:
         "shift_end": u.shift_end.isoformat(timespec="minutes") if u.shift_end else None,
         "workdays": int(u.workdays) if u.workdays is not None else None,
         "certifications": u.certifications or "",
+        # NULL = inherit AppSettings.vacation_allowance_hours.
+        "vacation_allowance_hours": allowance_hours_out(u.vacation_allowance_hours),
     }
 
 
@@ -358,9 +367,19 @@ def update_user(user_id: str, payload: UserPatchIn, request: Request, user: dict
         u.workdays = data["workdays"]
     if "certifications" in data:
         u.certifications = (data["certifications"] or "").strip() or None
+    details: dict[str, Any] = {"changed_fields": list(data.keys())}
+    if "vacation_allowance_hours" in data:
+        # An allowance decides what someone is owed, so the trail carries
+        # both values, not just the field name. The dialog sends it on every
+        # save; an unchanged value is not a change and leaves no entry.
+        before = allowance_hours_out(u.vacation_allowance_hours)
+        after = allowance_hours_out(data["vacation_allowance_hours"])
+        if before != after:
+            details["vacation_allowance_hours"] = {"from": before, "to": after}
+        u.vacation_allowance_hours = data["vacation_allowance_hours"]
     u.updated_at = utcnow()
     db.commit()
-    _audit(db, request=request, user=user, action="user_updated", entity_id=user_id, details={"changed_fields": list(data.keys())})
+    _audit(db, request=request, user=user, action="user_updated", entity_id=user_id, details=details)
     db.refresh(u)
     return _serialize(u)
 
