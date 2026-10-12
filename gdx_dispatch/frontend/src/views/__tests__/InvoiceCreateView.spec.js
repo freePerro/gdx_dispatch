@@ -174,6 +174,35 @@ describe('InvoiceCreateView — tax rate', () => {
 
     expect(apiPost.mock.calls[0][1].tax_rate).toBe(0);
   });
+
+  it('seeds 0 for an installation job on the deep link and POSTs tax_rate 0 (GDXA-793)', async () => {
+    routeQuery.value = { job_id: 'job-2' };  // derives customer cust-2, not exempt
+    apiGet.mockImplementation((url) => {
+      if (url.startsWith('/api/customers')) return Promise.resolve(CUSTOMERS);
+      if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
+      // The server answers 0 only when it is told the job: job-2 is an
+      // installation. Asked about the customer alone it says 7.38%.
+      if (url.startsWith('/api/tax/resolve') && url.includes('job_id=job-2')) {
+        return Promise.resolve({ rate: 0, rate_pct: 0 });
+      }
+      if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0.0738, rate_pct: 7.38 });
+      return Promise.resolve([]);
+    });
+    apiPost.mockResolvedValue({ id: 'inv-4', invoice_number: 'INV-0004' });
+
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="invoice-tax-rate"]').element.value).toBe('0');
+    const resolveUrls = apiGet.mock.calls.map(([u]) => u).filter((u) => u.startsWith('/api/tax/resolve'));
+    expect(resolveUrls.at(-1)).toBe('/api/tax/resolve?customer_id=cust-2&job_id=job-2');
+
+    await wrapper.find('[data-testid="le-set-line"]').trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-testid="invoice-create-submit"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPost.mock.calls[0][1].tax_rate).toBe(0);
+  });
 });
 
 describe('InvoiceCreateView — query prefill', () => {

@@ -534,7 +534,7 @@ def test_no_connected_account_means_the_platform_account(invoice):
 # ── the mint sites keep their end of the bargain ───────────────────────────
 
 
-def test_a_minted_intent_carries_the_invoice_binding(invoice):
+def test_a_minted_intent_carries_the_invoice_binding(db, invoice):
     """The whole design rests on this: `list` can only find an intent by
     `metadata.invoice_id`. A mint site that stops stamping it becomes
     invisible to the sweep — silently, and only for that one path.
@@ -543,6 +543,7 @@ def test_a_minted_intent_carries_the_invoice_binding(invoice):
 
     with patch("stripe.PaymentIntent.create", return_value=_pi("pi_new", "requires_payment_method", invoice.id)) as create:
         _create_usable_intent(
+            db=db,
             amount=20000, currency="usd",
             metadata={"invoice_id": str(invoice.id)},
             idempotency_key="k",
@@ -551,13 +552,14 @@ def test_a_minted_intent_carries_the_invoice_binding(invoice):
 
 
 
-def test_a_healthy_intent_is_not_re_minted(invoice):
+def test_a_healthy_intent_is_not_re_minted(db, invoice):
     """The counterfactual: if this failed we would double-mint every payment."""
     from gdx_dispatch.core.payments import _create_usable_intent
 
     with patch("stripe.PaymentIntent.create",
                return_value=_pi("pi_ok", "requires_payment_method", invoice.id)) as create:
         _create_usable_intent(
+            db=db,
             amount=20000, currency="usd", metadata={}, idempotency_key="k"
         )
     assert create.call_count == 1
@@ -793,7 +795,7 @@ def test_a_transport_failure_is_still_reported_as_open(invoice, caplog):
 # ── the replay guard, rebuilt so it can actually fire ───────────────────────
 
 
-def test_a_replayed_dead_intent_is_detected_by_asking_stripe(invoice, caplog):
+def test_a_replayed_dead_intent_is_detected_by_asking_stripe(db, invoice, caplog):
     """Stripe's idempotency layer replays "the resulting status code and body of
     the first request" (docs.stripe.com/api/idempotent_requests, read
     2026-08-24) — the body as it was at CREATION. So a replayed create reports
@@ -810,6 +812,7 @@ def test_a_replayed_dead_intent_is_detected_by_asking_stripe(invoice, caplog):
                   side_effect=lambda pid, **_: {"pi_dead": actually_dead, "pi_fresh": fresh}[pid]), \
             caplog.at_level("WARNING"):
         got = _create_usable_intent(
+            db=db,
             amount=20000, currency="usd",
             metadata={"invoice_id": str(invoice.id)},
             idempotency_key="gdx-pi-x-card-20000",
@@ -822,26 +825,28 @@ def test_a_replayed_dead_intent_is_detected_by_asking_stripe(invoice, caplog):
     assert "intent_idempotency_replayed_dead_intent" in caplog.text
 
 
-def test_a_live_intent_is_returned_without_a_second_mint(invoice):
+def test_a_live_intent_is_returned_without_a_second_mint(db, invoice):
     """The counterfactual: if this failed we would double-mint every payment."""
     made = _pi("pi_ok", "requires_payment_method", invoice.id)
     live = _pi("pi_ok", "requires_payment_method", invoice.id)
     with patch("stripe.PaymentIntent.create", return_value=made) as create, \
             patch("stripe.PaymentIntent.retrieve", return_value=live):
         got = _create_usable_intent(
+            db=db,
             amount=20000, currency="usd", metadata={}, idempotency_key="k"
         )
     assert create.call_count == 1
     assert got is live, "the fresher object is the one to hand back"
 
 
-def test_a_failed_liveness_check_does_not_break_the_checkout(invoice):
+def test_a_failed_liveness_check_does_not_break_the_checkout(db, invoice):
     """A create that worked and a retrieve that did not must not fail a
     customer's checkout over a verification step."""
     made = _pi("pi_ok", "requires_payment_method", invoice.id)
     with patch("stripe.PaymentIntent.create", return_value=made), \
             patch("stripe.PaymentIntent.retrieve", side_effect=RuntimeError("timeout")):
         got = _create_usable_intent(
+            db=db,
             amount=20000, currency="usd", metadata={}, idempotency_key="k"
         )
     assert got is made

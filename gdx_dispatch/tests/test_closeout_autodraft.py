@@ -562,6 +562,67 @@ def test_autodraft_taxes_parts_not_labor_with_resolved_rate(db) -> None:
     assert _serialize_invoice(inv)["origin"] == "closeout_autodraft"
 
 
+def test_install_autodraft_never_taxes_parts(db) -> None:
+    """GDXA-793: an installation is a construction contract and is never
+    taxed. Same 7.375% tenant default as the service control above; the
+    install draft gets rate 0, its part line is not taxable, and tax is 0.
+    Before the fix the draft resolved the tenant default and taxed the part."""
+    db.add(TaxConfig(default_rate=Decimal("0.07375")))
+    db.commit()
+
+    job = _seed_job(db, job_type="Installation")
+    part = _seed_part(db, sell=100.00)
+    resp = _closeout(
+        db, job,
+        hours=1.0,
+        no_parts_used=False,
+        parts=[CloseoutPart(part_id=str(part.id), sku=part.sku, name=part.name, qty=1, unit_cost=50.0)],
+    )
+    body = _body(resp)
+    assert body["autodraft_invoice_id"] is not None
+    inv = db.get(Invoice, UUID(body["autodraft_invoice_id"]))
+    assert inv.tax_rate is not None and float(inv.tax_rate) == 0.0
+    assert float(inv.tax_amount) == 0.0
+    assert float(inv.total) == pytest.approx(100.00)
+    lines = _lines(db, inv)
+    # No picked matrix row, so install labor stays unpriced: the part is the
+    # only line, and nothing on the draft is taxable.
+    assert [ln.category for ln in lines] == ["Parts"]
+    assert all(ln.taxable is False for ln in lines)
+
+
+def test_exempt_customer_service_autodraft_is_never_taxed(db) -> None:
+    """Doug 2026-10-12 (GDXA-766): a tax-exempt customer is never taxed, on
+    any job. Service lane, same 7.375% default as the control, $100 part —
+    `resolve_rate` answers 0 for the exempt customer and the draft carries
+    no tax."""
+    from gdx_dispatch.modules.tax.models import TaxExemption
+
+    TaxExemption.__table__.create(bind=db.get_bind(), checkfirst=True)
+    db.add(TaxConfig(default_rate=Decimal("0.07375")))
+    customer_id = uuid4()
+    db.add(TaxExemption(customer_id=customer_id, exempt=True, reason="non-profit"))
+    db.commit()
+
+    job = _seed_job(db, customer_id=customer_id)
+    part = _seed_part(db, sell=100.00)
+    resp = _closeout(
+        db, job,
+        hours=1.0,  # service lane → $100 labor
+        no_parts_used=False,
+        parts=[CloseoutPart(part_id=str(part.id), sku=part.sku, name=part.name, qty=1, unit_cost=50.0)],
+    )
+    inv = db.get(Invoice, UUID(_body(resp)["autodraft_invoice_id"]))
+    assert inv.tax_rate is None or float(inv.tax_rate) == 0.0
+    assert float(inv.tax_amount) == 0.0
+    assert float(inv.total) == pytest.approx(200.00)
+    by_cat = {ln.category: ln for ln in _lines(db, inv)}
+    assert by_cat["Labor"].taxable is False
+    # The part stays taxable on a service job; the customer, not the line,
+    # is what is exempt.
+    assert by_cat["Parts"].taxable is True
+
+
 def test_closeout_billing_suggestion_prices_labor_and_carries_notes(db) -> None:
     """The office create-invoice screen prefills from this endpoint (Doug
     2026-08-07: 'click invoice — it does not show hours or notes from the

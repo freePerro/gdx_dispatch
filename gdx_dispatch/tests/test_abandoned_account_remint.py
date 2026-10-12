@@ -26,8 +26,10 @@ from uuid import uuid4
 
 import pytest
 import stripe
+from sqlalchemy import text
 
-from gdx_dispatch.core.payments import CreateIntentRequest, create_intent
+from gdx_dispatch.core.audit import AuditLog, ensure_audit_table
+from gdx_dispatch.core.payments import CreateIntentRequest, _create_usable_intent, create_intent
 from gdx_dispatch.models.tenant_models import Customer, Invoice, InvoiceLine
 
 COMPANY = "22222222-2222-2222-2222-222222222222"
@@ -166,14 +168,16 @@ def test_the_card_about_to_be_replayed_is_not_cancelled(db, invoice):
     assert fake.cancelled == []
 
 
-def test_switching_cards_leaves_the_card_intents_alone(db, invoice):
-    """Card intents are deliberately out of the sweep: see the next test."""
+def test_switching_cards_cancels_the_first_cards_intent(db, invoice):
+    """GDXA-790. "Use a different card" no longer leaves card A attached to
+    an open intent; GDXA-784's converging re-mint is what makes this safe."""
     with _stripe() as fake:
         a = _press(db, invoice, method="card", payment_method_id="pm_card_a")
         b = _press(db, invoice, method="card", payment_method_id="pm_card_b")
 
     assert b != a
-    assert fake.cancelled == []
+    assert fake.cancelled == [(a, "abandoned")]
+    assert fake.intents[b].status == "requires_confirmation"
 
 
 def test_a_bank_press_from_another_tab_does_not_loop_the_card_page(db, invoice):
@@ -208,6 +212,8 @@ def test_a_failed_cancel_still_lets_the_customer_pay(db, invoice):
         fake.link_account(i1, "pm_bank_2")
         fake.fail_cancel.add(i1)
         i2 = _press(db, invoice)
+        # Only a cancel Stripe accepted is recorded: I0 yes, the refused I1 not yet.
+        assert [r.details["intent_id"] for r in _cancel_rows(db)] == [i0]
 
         assert i2 not in (i0, i1)
         assert fake.intents[i2].status == "requires_payment_method"
@@ -218,3 +224,123 @@ def test_a_failed_cancel_still_lets_the_customer_pay(db, invoice):
         _press(db, invoice)
 
     assert fake.intents[i1].status == "canceled"
+
+
+# ── GDXA-787: a pay-page cancel leaves a row on the invoice trail ───────────
+
+
+def _cancel_rows(db):
+    """Read back what is COMMITTED: the rollback discards anything merely staged."""
+    db.rollback()
+    return (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "abandoned_account_intent_canceled")
+        .order_by(AuditLog.created_at)
+        .all()
+    )
+
+
+def test_the_remint_sweep_records_each_cancel_on_the_invoice(db, invoice, caplog):
+    """Invariant #1. Before GDXA-787 these cancels logged a WARNING and nothing
+    else, so "my bank link vanished" had no trail to read."""
+    with _stripe() as fake, caplog.at_level("WARNING"):
+        i0 = _press(db, invoice)
+        fake.link_account(i0, "pm_bank_1")
+        i1 = _press(db, invoice)
+        fake.link_account(i1, "pm_bank_2")
+        _press(db, invoice)
+
+    # `audit_best_effort` commits: nothing of create_intent's may be staged then.
+    assert "audit_best_effort_caller_has_pending_work" not in caplog.text
+    rows = _cancel_rows(db)
+    assert [r.details["intent_id"] for r in rows] == [i0, i1]
+    for row in rows:
+        assert row.user_id == "stripe-pay-page", "a money-object change with no named actor"
+        assert row.entity_type == "invoice"
+        assert str(row.entity_id) == str(invoice.id)
+        assert row.details["why"] == "remint-sweep"
+        assert row.details["status"] == "canceled"
+
+
+def test_no_cancel_no_row(db, invoice):
+    """CONTROL. A reload that cancels nothing writes nothing."""
+    with _stripe() as fake:
+        _press(db, invoice)
+        _press(db, invoice)
+    assert fake.cancelled == []
+    assert _cancel_rows(db) == []
+
+
+def test_the_replay_cancel_records_its_own_row(db, invoice):
+    """The other cancel site: the key replays an intent that still holds an
+    account the remint sweep did not see (here, `_create_usable_intent` called
+    on its own, as when the register read came back short)."""
+    kw = dict(
+        amount=20000, currency="usd", metadata={"invoice_id": str(invoice.id)},
+        payment_method_types=["us_bank_account"], idempotency_key="gdx-pi-replay-ach",
+    )
+    with _stripe() as fake:
+        first = _create_usable_intent(db=db, **kw)
+        fake.link_account(first.id, "pm_bank_1")
+        fresh = _create_usable_intent(db=db, **kw)
+
+    assert fresh.id != first.id
+    assert fake.cancelled == [(first.id, "abandoned")]
+    rows = _cancel_rows(db)
+    assert len(rows) == 1
+    assert rows[0].user_id == "stripe-pay-page"
+    assert str(rows[0].entity_id) == str(invoice.id)
+    assert rows[0].details == {"intent_id": first.id, "why": "replay", "status": "canceled"}
+
+
+def test_a_cancel_on_a_re_mint_hop_records_its_own_row(db, invoice):
+    """GDXA-784's chain. The first replay is dead (no cancel, no row); its
+    `{key}-r{dead}` hop replays an intent that still holds an account, and
+    that cancel is recorded like the first-replay one."""
+    kw = dict(
+        amount=20000, currency="usd", metadata={"invoice_id": str(invoice.id)},
+        payment_method_types=["us_bank_account"], idempotency_key="gdx-pi-hop-ach",
+    )
+    with _stripe() as fake:
+        i0 = _create_usable_intent(db=db, **kw)
+        fake.intents[i0.id].status = "canceled"  # the settle-time sweep
+        i1 = _create_usable_intent(db=db, **kw)
+        fake.link_account(i1.id, "pm_bank_1")
+        i2 = _create_usable_intent(db=db, **kw)
+
+    assert len({i0.id, i1.id, i2.id}) == 3
+    assert fake.cancelled == [(i1.id, "abandoned")]
+    rows = _cancel_rows(db)
+    assert len(rows) == 1
+    assert rows[0].user_id == "stripe-pay-page"
+    assert str(rows[0].entity_id) == str(invoice.id)
+    assert rows[0].details == {"intent_id": i1.id, "why": "replay", "status": "canceled"}
+
+
+def test_a_refused_audit_row_does_not_stop_the_cancel_or_the_mint(db, invoice, caplog):
+    """Best-effort: losing the trail row is survivable, losing the customer's
+    checkout is not. The storage layer refuses every audit INSERT; both
+    cancels still happen and the customer still gets a live intent."""
+    ensure_audit_table(db)
+    db.execute(text(
+        "CREATE TRIGGER audit_logs_refuse_insert BEFORE INSERT ON audit_logs "
+        "BEGIN SELECT RAISE(ABORT, 'audit storage refuses this row'); END;"
+    ))
+    db.commit()
+    kw = dict(
+        amount=20000, currency="usd", metadata={"invoice_id": str(invoice.id)},
+        payment_method_types=["us_bank_account"], idempotency_key="gdx-pi-refused-ach",
+    )
+    with _stripe() as fake, caplog.at_level("ERROR"):
+        i0 = _press(db, invoice)
+        fake.link_account(i0, "pm_bank_1")
+        i1 = _press(db, invoice)
+        first = _create_usable_intent(db=db, **kw)
+        fake.link_account(first.id, "pm_bank_2")
+        fresh = _create_usable_intent(db=db, **kw)
+
+    assert fake.cancelled == [(i0, "abandoned"), (first.id, "abandoned")]
+    assert fake.intents[i1].status == "requires_payment_method"
+    assert fake.intents[fresh.id].status == "requires_payment_method"
+    assert caplog.text.count("abandoned_account_intent_canceled_audit_failed") == 2
+    assert _cancel_rows(db) == []
