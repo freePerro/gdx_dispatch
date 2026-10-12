@@ -17,7 +17,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, resolve_audit_actor
-from gdx_dispatch.core.billing_lanes import lane_for_job
 from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.invoice_delivery import require_deliverable
 from gdx_dispatch.core.link_sms import SendLinkSmsIn as SendInvoiceSmsIn  # one composer model for every SMS route
@@ -1614,14 +1613,16 @@ def create_invoice(
         # estimate deliberately quoted at 0%, billing more than the customer
         # accepted.
         resolved_rate = Decimal(str(estimate.tax_rate))
-    elif job is not None and lane_for_job(job.job_type) == "install":
-        # An installation is a construction contract and is never taxed
-        # (GDXA-793): rate-mode at 0, the tenant default never read. The
-        # same rule as the closeout autodraft and `/api/tax/resolve`.
-        resolved_rate = Decimal("0")
     else:
+        # The job lane decides first (GDXA-793/796): an installation is a
+        # construction contract and is never taxed. `resolve_rate_for_job`
+        # answers 0 for it without reading the tenant default; a repair or
+        # service call gets `resolve_rate` (0 for an exempt customer, else
+        # the tenant default).
+        from gdx_dispatch.modules.tax.service import is_install_lane, resolve_rate_for_job
+
+        job_type = job.job_type if job is not None else None
         try:
-            from gdx_dispatch.modules.tax.service import resolve_rate as _resolve_tax
             # SAVEPOINT-wrapped (GDXA-160). A request-scoped session is not
             # normally "caller-owned", but this handler COMMITS at the end, so
             # the swallow below was losing the office's whole new invoice — the
@@ -1640,12 +1641,17 @@ def create_invoice(
             # per site; that path is only whole once the deferral is fixed in
             # `modules/proposals/totals.py`.
             with contained_read(db):
-                candidate = _resolve_tax(db, customer_id_value)
-            if candidate is not None and candidate > 0:
+                candidate = resolve_rate_for_job(db, customer_id_value, job_type)
+            # >0 → rate-mode. An installation's 0 is rate-mode too, so no later
+            # recalc can tax it; an exempt customer's 0 stays NULL (the legacy
+            # flat-tax_amount path, unchanged).
+            if candidate > 0 or is_install_lane(job_type):
                 resolved_rate = candidate
         except Exception:
             log.exception("invoice_create_tax_resolve_failed")
-            resolved_rate = None
+            # The lane check reads nothing, so an installation stays at 0
+            # even when the savepoint itself fails.
+            resolved_rate = Decimal("0") if is_install_lane(job_type) else None
     initial_tax = _money(payload.tax_amount)
     if resolved_rate is not None and resolved_rate > 0:
         # Rate-based: tax_amount is computed from the rate × taxable lines
