@@ -1696,6 +1696,33 @@ async def push_customer(tenant_id: str, customer_id: str, db: Session, qb: QBCli
     return {"customer_id": customer_id, "qb_customer_id": qb_customer_id}
 
 
+def _qb_sales_line(line: InvoiceLine) -> dict[str, Any]:
+    """Build one QBO SalesItemLineDetail line from a local invoice line.
+
+    Amount is always the local line_total: our books are authoritative.
+    Since migration 108 quantity carries two decimals, so Qty x UnitPrice
+    can land on a third decimal that line_total rounded (2.5 x 33.33 =
+    83.325, stored as 83.33 or 83.32 depending on the rounding mode of the
+    path that wrote it); a hand-typed total can differ too. QBO checks
+    Amount against Qty x UnitPrice (error 6070) and its rounding tolerance
+    is undocumented, so unless the product equals Amount exactly UnitPrice
+    is omitted (it is optional; Amount is required) rather than sending an
+    inconsistent triple.
+    """
+    amount = Decimal(str(line.line_total))
+    qty = Decimal(str(line.quantity))
+    unit_price = Decimal(str(line.unit_price))
+    detail: dict[str, Any] = {"Qty": float(qty)}
+    if qty * unit_price == amount:
+        detail["UnitPrice"] = float(unit_price)
+    return {
+        "Amount": float(amount),
+        "DetailType": "SalesItemLineDetail",
+        "Description": line.description,
+        "SalesItemLineDetail": detail,
+    }
+
+
 async def push_invoice(tenant_id: str, invoice_id: str, db: Session, qb: QBClient) -> dict[str, str]:
     """Push a local invoice to QuickBooks.
 
@@ -1742,18 +1769,7 @@ async def push_invoice(tenant_id: str, invoice_id: str, db: Session, qb: QBClien
     lines = db.execute(
         select(InvoiceLine).where(InvoiceLine.invoice_id == invoice.id).order_by(InvoiceLine.sort_order.asc())
     ).scalars().all()
-    qb_lines = [
-        {
-            "Amount": float(line.line_total),
-            "DetailType": "SalesItemLineDetail",
-            "Description": line.description,
-            "SalesItemLineDetail": {
-                "Qty": float(line.quantity),
-                "UnitPrice": float(line.unit_price),
-            },
-        }
-        for line in lines
-    ]
+    qb_lines = [_qb_sales_line(line) for line in lines]
 
     payload: dict[str, Any] = {"DocNumber": invoice.invoice_number, "Line": qb_lines}
     if customer_ref is not None:
