@@ -1,0 +1,59 @@
+name: Post-merge dispatch
+
+# auto-merge.yml enables auto-merge with GITHUB_TOKEN, so GitHub records the
+# merge as github-actions[bot]. Events caused by GITHUB_TOKEN start no
+# workflow runs, except workflow_dispatch and repository_dispatch
+# (docs.github.com, "Triggering a workflow from a workflow", read
+# 2026-10-12). So a bot merge gets no push-to-main run of ci.yml or
+# security.yml. Between 2026-10-07 and 2026-10-12 main got only CodeQL
+# (GDXA-751).
+#
+# A `pull_request: closed` trigger cannot fix this: the bot's merge closes
+# the PR under the same token, so that event is suppressed too. Instead this
+# job polls main and dispatches the two workflows for HEAD when HEAD has no
+# push or dispatch run of them. It covers main's HEAD at each tick, which
+# includes every merge before it; it does not test each intermediate merge
+# commit on its own. A merge made by a person still gets its push run, and
+# this job then sees that run and does nothing.
+
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: post-merge-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write   # list runs and fire workflow_dispatch
+      contents: read   # read main's HEAD commit
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Dispatch ci.yml and security.yml for main's HEAD if it has no run
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+          echo "main HEAD: $head"
+          for wf in ci.yml security.yml; do
+            # A cancelled run does not count: the newer pending run in the
+            # same concurrency group replaced it, or someone stopped it.
+            n=$(gh api "repos/$GH_REPO/actions/workflows/$wf/runs?branch=main&head_sha=$head&per_page=100" \
+                  --jq '[.workflow_runs[]
+                         | select(.event == "push" or .event == "workflow_dispatch")
+                         | select(.conclusion != "cancelled")] | length')
+            if [ "$n" -gt 0 ]; then
+              echo "$wf: $n run(s) already on $head; nothing to do"
+            else
+              echo "$wf: no run on $head; dispatching on main"
+              gh workflow run "$wf" --ref main
+            fi
+          done
