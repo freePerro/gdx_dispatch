@@ -175,6 +175,8 @@ onboarding_router = _load_router("gdx_dispatch.routers", "onboarding")
 
 tours_router = _load_router("gdx_dispatch.routers", "tours")
 
+release_notes_router = _load_router("gdx_dispatch.routers", "release_notes")
+
 ux_telemetry_router = _load_router("gdx_dispatch.routers", "ux_telemetry")
 
 service_agreements_router = _load_router("gdx_dispatch.routers", "service_agreements")
@@ -1028,6 +1030,7 @@ def create_app() -> FastAPI:
     app.include_router(job_costing_router.router if hasattr(job_costing_router, "router") else job_costing_router)
     app.include_router(onboarding_router.router if hasattr(onboarding_router, "router") else onboarding_router)
     app.include_router(tours_router.router if hasattr(tours_router, "router") else tours_router)
+    app.include_router(release_notes_router.router if hasattr(release_notes_router, "router") else release_notes_router)
     app.include_router(ux_telemetry_router.router if hasattr(ux_telemetry_router, "router") else ux_telemetry_router)
     app.include_router(service_agreements_router.router if hasattr(service_agreements_router, "router") else service_agreements_router)
     app.include_router(winback_router.router if hasattr(winback_router, "router") else winback_router)

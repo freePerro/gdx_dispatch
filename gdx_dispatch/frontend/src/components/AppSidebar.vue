@@ -253,14 +253,26 @@
       <span v-if="!collapsed">Take the tour</span>
     </button>
 
-    <div
+    <!-- The version is the way into What's new (release notes, older
+         releases too). The dot marks a newer release for settings.read
+         holders, from /api/admin/update-check. -->
+    <router-link
+      to="/release-notes"
       class="sidebar-build-stamp"
-      :title="`build ${buildSha} · built ${buildTime}`"
+      :title="stampTitle"
+      :aria-label="`What's new — ${versionLabel}`"
       data-testid="sidebar-build-stamp"
+      @click="handleItemClick"
     >
-      <span v-if="!collapsed">{{ versionLabel }}</span>
+      <span v-if="!collapsed">{{ versionLabel }} · What's new</span>
       <span v-else>{{ versionLabelShort }}</span>
-    </div>
+      <span
+        v-if="updateInfo && updateInfo.update_available"
+        class="update-dot"
+        data-testid="sidebar-update-dot"
+        aria-hidden="true"
+      />
+    </router-link>
   </aside>
 </template>
 
@@ -272,6 +284,7 @@ import Button from 'primevue/button';
 import PanelMenu from 'primevue/panelmenu';
 import { useThemeStore } from '../stores/theme';
 import { useAuthStore } from '../stores/auth';
+import { useUpdateCheck } from '../composables/useReleaseNotes';
 import { useSmsUnreadStore } from '../stores/smsUnread';
 import { useEmailUnreadStore } from '../stores/emailUnread';
 import { useToast } from 'primevue/usetoast';
@@ -536,7 +549,15 @@ const versionLabelShort = computed(() =>
   releaseVersion.value && releaseVersion.value !== 'dev'
     ? `v${releaseVersion.value}` : buildSha);
 
+const { updateInfo, loadUpdateCheck } = useUpdateCheck(auth);
+const stampTitle = computed(() => {
+  const update = updateInfo.value?.update_available
+    ? `v${updateInfo.value.latest} is available · ` : '';
+  return `${update}What's new · build ${buildSha} · built ${buildTime}`;
+});
+
 onMounted(async () => {
+  loadUpdateCheck();
   try {
     const r = await fetch('/pwa/version');
     if (r.ok) releaseVersion.value = (await r.json())?.version || '';
@@ -940,6 +961,25 @@ onMounted(async () => {
   text-align: center;
   border-top: 1px solid var(--p-content-border-color);
   user-select: text;
+}
+.sidebar-build-stamp {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  text-decoration: none;
+}
+.sidebar-build-stamp:hover,
+.sidebar-build-stamp:focus-visible {
+  opacity: 1;
+  color: var(--text-primary);
+}
+.update-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--p-primary-color);
+  flex: none;
 }
 .app-sidebar.collapsed .sidebar-build-stamp {
   font-size: 0.6rem;

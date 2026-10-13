@@ -53,6 +53,13 @@ COPY gdx_dispatch/ ./gdx_dispatch/
 # Copy built frontend from stage 1
 COPY --from=frontend-builder /build/dist ./gdx_dispatch/frontend/dist
 
+# The release this image is. The Release workflow passes the tag's version;
+# local and CI builds leave it empty. core/app_version.py reads it when
+# APP_VERSION is `latest` or unset, so an install tracking :latest still
+# knows which release it is running (the What's new banner keys on it).
+ARG GDX_IMAGE_VERSION=""
+ENV GDX_IMAGE_VERSION=${GDX_IMAGE_VERSION}
+
 # Non-root user. `/app/uploads` and `/app/recordings` are pre-created
 # here so the `gdx_uploads` / `gdx_recordings` named volumes inherit
 # appuser ownership on first mount (Docker adopts the image's

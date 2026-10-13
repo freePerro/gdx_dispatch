@@ -8,6 +8,8 @@ from pathlib import Path
 from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse
 
+from gdx_dispatch.core.app_version import display_version
+
 PWARouter = APIRouter(tags=["pwa"])
 
 # Canonical PWA assets ship with the Vite build (frontend/public/ → dist/).
@@ -22,7 +24,7 @@ _MANIFEST_DIST_PATH = Path(__file__).parent.parent / "frontend" / "dist" / "mani
 async def pwa_version() -> JSONResponse:
     return JSONResponse(
         content={
-            "version": os.getenv("APP_VERSION", "dev"),
+            "version": display_version(),
             "build_time": os.getenv("BUILD_TIME", "unknown"),
         }
     )

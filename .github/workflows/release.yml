@@ -2,8 +2,10 @@ name: Release
 
 # Cut a release by pushing a semver tag:  git tag v1.2.0 && git push origin v1.2.0
 # This builds the image, smoke-tests it, pushes it to GHCR as <version> + latest,
-# and creates a GitHub Release. The image tag is what a self-hoster pins via
-# APP_VERSION (docker-compose.selfhost.yml), and the Release is what
+# and creates a GitHub Release. The tag needs gdx_dispatch/release_notes/<tag>.md
+# on main first; the "Release notes present" step refuses without it. The
+# image tag is what a self-hoster pins via APP_VERSION
+# (docker-compose.selfhost.yml), and the Release is what
 # /api/admin/update-check compares against.
 #
 # Intentionally does NOT gate on the CI `test` job — releases point at an
@@ -38,7 +40,25 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
+      # Full history + tags: the release-notes step below computes each
+      # release's change list from the commits between release tags.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # Fail before building anything when the tag has no release notes. The
+      # notes file (gdx_dispatch/release_notes/vX.Y.Z.md) must be merged to
+      # main BEFORE the tag is pushed — /GDXrelease drafts it with
+      # `python -m gdx_dispatch.tools.release_notes draft X.Y.Z`. On a failure
+      # here nothing was published: delete the tag, merge the notes, re-tag.
+      - name: Release notes present
+        run: python3 -m gdx_dispatch.tools.release_notes check "${{ github.ref_name }}"
+
+      # Per-release change lists for the in-app What's new history, computed
+      # from git and baked into the image (git-ignored, never committed).
+      - name: Release notes change lists
+        run: python3 -m gdx_dispatch.tools.release_notes changes --write
 
       - uses: docker/setup-buildx-action@v3
 
@@ -65,7 +85,9 @@ jobs:
         with:
           context: .
           file: gdx_dispatch/docker/Dockerfile
-          build-args: GIT_SHA_SHORT=${{ github.sha }}
+          build-args: |
+            GIT_SHA_SHORT=${{ github.sha }}
+            GDX_IMAGE_VERSION=${{ steps.meta.outputs.version }}
           load: true
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
@@ -99,7 +121,9 @@ jobs:
         with:
           context: .
           file: gdx_dispatch/docker/Dockerfile
-          build-args: GIT_SHA_SHORT=${{ github.sha }}
+          build-args: |
+            GIT_SHA_SHORT=${{ github.sha }}
+            GDX_IMAGE_VERSION=${{ steps.meta.outputs.version }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -159,6 +183,12 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # The written notes (title, highlights, warnings) lead the body; the
+        # generated PR list follows. gh: "Additional release notes can be
+        # prepended to automatically generated notes by using the --notes flag".
         run: |
+          body="$(python3 -m gdx_dispatch.tools.release_notes body "${{ github.ref_name }}")"
+          title="$(python3 -m gdx_dispatch.tools.release_notes body --title "${{ github.ref_name }}")"
           gh release create "${{ github.ref_name }}" --generate-notes --verify-tag \
+            --title "$title" --notes "$body" \
             gdx_dispatch/docker/docker-compose.customer.yml

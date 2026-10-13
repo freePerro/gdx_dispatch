@@ -506,6 +506,8 @@ GET /api/quote-requests/by-lead/{lead_id}
 GET /api/quote-requests/{request_id}/photos/{photo_id}
 GET /api/referrals
 GET /api/referrals/stats
+GET /api/release-notes
+GET /api/release-notes/{version}
 GET /api/reports/cash-risk
 GET /api/reports/customer-ltv
 GET /api/reports/daily-snapshot

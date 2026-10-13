@@ -5,7 +5,6 @@ import csv
 import io
 import json
 import logging
-import os
 import re
 from datetime import UTC, datetime
 from uuid import UUID as _UUID
@@ -674,7 +673,10 @@ def _ver_tuple(v: str) -> tuple[int, ...]:
 
 @read_router.get("/update-check")
 async def update_check(_: dict = Depends(require_permission("settings.read"))) -> dict:
-    """Compare the running release (APP_VERSION) against the latest GitHub release.
+    """Compare the running release against the latest GitHub release.
+
+    The running release is ``APP_VERSION`` when pinned, else the version the
+    Release workflow baked into the image (``core/app_version.py``).
 
     Self-hosted boxes use this to know an update exists; they apply it with
     docker/update.sh. update_available is only true when both versions parse to
@@ -682,7 +684,9 @@ async def update_check(_: dict = Depends(require_permission("settings.read"))) -
     """
     import httpx
 
-    current = os.getenv("APP_VERSION", "dev")
+    from gdx_dispatch.core.app_version import display_version
+
+    current = display_version()
     out: dict = {
         "current": current,
         "latest": None,

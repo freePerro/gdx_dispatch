@@ -109,6 +109,7 @@ gdx_dispatch/routers/session_policy.py                       platform-core
 gdx_dispatch/routers/settings.py                             platform-core
 gdx_dispatch/routers/support.py                              platform-core
 gdx_dispatch/routers/tours.py                                platform-core
+gdx_dispatch/routers/release_notes.py                        platform-core
 gdx_dispatch/routers/ui_compat.py                            platform-core
 gdx_dispatch/routers/users.py                                platform-core
 gdx_dispatch/routers/ux_telemetry.py                         platform-core
@@ -178,6 +179,9 @@ gdx_dispatch/core/webhook_delivery.py                        platform-core
 gdx_dispatch/core/webhook_logger.py                          platform-core
 gdx_dispatch/core/websocket.py                               platform-core
 gdx_dispatch/core/well_known_manifest.py                     platform-core
+gdx_dispatch/core/app_version.py                             platform-core
+gdx_dispatch/release_notes/*                                 platform-core
+gdx_dispatch/services/release_notes.py                       platform-core
 
 gdx_dispatch/modules/error_sink/*                            platform-core
 gdx_dispatch/modules/numbering/*                             platform-core
@@ -243,10 +247,12 @@ gdx_dispatch/frontend/src/plugins/*                          frontend-shell
 gdx_dispatch/frontend/src/views/_ViewTemplate.vue            frontend-shell
 gdx_dispatch/frontend/src/views/DashboardView.vue            frontend-shell
 gdx_dispatch/frontend/src/views/DashboardView.story.vue      frontend-shell
+gdx_dispatch/frontend/src/views/ReleaseNotesView.vue         frontend-shell
 gdx_dispatch/frontend/src/components/AppLayout.vue           frontend-shell
 gdx_dispatch/frontend/src/components/AppSidebar.vue          frontend-shell
 gdx_dispatch/frontend/src/components/AppTopbar.vue           frontend-shell
 gdx_dispatch/frontend/src/components/AppTopbar.story.vue     frontend-shell
+gdx_dispatch/frontend/src/components/WhatsNewBanner.vue      frontend-shell
 gdx_dispatch/frontend/src/components/AuthedImage.vue         frontend-shell
 gdx_dispatch/frontend/src/components/BugReportButton.vue     frontend-shell
 gdx_dispatch/frontend/src/components/KeyedRouterView.vue     frontend-shell
@@ -277,6 +283,7 @@ gdx_dispatch/frontend/src/composables/useTableExport.js      frontend-shell
 gdx_dispatch/frontend/src/composables/useTenantModules.js    frontend-shell
 gdx_dispatch/frontend/src/composables/useTenantTimezone.js   frontend-shell
 gdx_dispatch/frontend/src/composables/useTour.js             frontend-shell
+gdx_dispatch/frontend/src/composables/useReleaseNotes.js     frontend-shell
 gdx_dispatch/frontend/src/composables/useViewMode.js         frontend-shell
 
 ## ---------------------------------------------------------------------------
