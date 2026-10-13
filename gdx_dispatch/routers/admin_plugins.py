@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import audit_or_rollback, audit_ready_db, resolve_audit_actor
 from gdx_dispatch.core.plugin_consent import (
+    PluginCatalogUnavailable,
     consent_drift,
     consent_pin,
     consented_permissions,
@@ -381,8 +382,13 @@ def plugin_permissions(
     db: Session = Depends(audit_ready_db),
 ) -> dict:
     """The elevated permissions a plugin declares, each with its risk text and
-    whether an owner has already consented (ADR-014). Drives the consent dialog."""
-    declared = fetch_permissions(key)
+    whether an owner has already consented (ADR-014). Drives the consent dialog.
+    503 when plugin-host does not answer: an empty list would tell the owner
+    the plugin asks for nothing (GDXA-860)."""
+    try:
+        declared = fetch_permissions(key)
+    except PluginCatalogUnavailable as exc:
+        raise HTTPException(status_code=503, detail="plugin-host did not answer") from exc
     granted = consented_permissions(db, key)
     return {
         "key": key,
@@ -416,10 +422,11 @@ def consent_plugin(
     One catalog snapshot serves the whole grant: the drift check, the pin
     check, the permissions granted and the surface recorded all read it, so
     a second fetch cannot approve a surface the check never saw (GDXA-462)."""
-    catalog = fetch_catalog()
-    if not catalog:
+    try:
+        catalog = fetch_catalog()
+    except PluginCatalogUnavailable as exc:
         raise HTTPException(status_code=503,
-                            detail="plugin-host did not answer; nothing was granted")
+                            detail="plugin-host did not answer; nothing was granted") from exc
     entry = next((p for p in catalog if p.get("key") == key), None)
     declared = list((entry or {}).get("permissions") or [])
     drifted = entry is not None and any(d["key"] == key for d in consent_drift(db, catalog))
@@ -505,8 +512,10 @@ def plugin_consent_drift(
     Read-only on purpose: a page load or a prefetch must not close alarm
     rows. Drift that ends without re-consent (uninstall, rollback) re-arms
     the alarm when the next drift is signalled (``_signal_consent_drift``)."""
-    catalog = fetch_catalog()
-    if not catalog:
+    try:
+        catalog = fetch_catalog()
+    except PluginCatalogUnavailable as exc:
+        log.warning("consent_drift_catalog_unreachable err=%s", exc)
         return {"catalog_reachable": False, "drifted": []}
     return {"catalog_reachable": True, "drifted": consent_drift(db, catalog)}
 

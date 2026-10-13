@@ -25,7 +25,7 @@ from gdx_dispatch.tools import silent_failure_scanner
 # a count in the same change that fixes a finding; a raised count means
 # someone re-froze over a new finding, and review sees it here.
 BASELINE_CEILING = {
-    "drift_scanner": 325,
+    "drift_scanner": 324,
     "silent_failure_scanner": 94,
     "comment_drift_scan": 73,
     "frontend_contract_scan": 4,

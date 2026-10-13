@@ -431,10 +431,13 @@ def test_pg_ensure_consent_table_does_not_hand_on_a_poisoned_session(pg_test_eng
     db.close()
 
     # ...and the real caller does not degrade silently either: record_consent's
-    # own INSERT raises on its own merits, naming the actual problem.
+    # own INSERT raises on its own merits, naming the actual problem. The
+    # entry is passed as the consent route passes it: without one,
+    # record_consent asks plugin-host, which is unreachable here and raises
+    # PluginCatalogUnavailable before the INSERT is ever tried (GDXA-860).
     db = Session()
     with pytest.raises(Exception) as exc:
-        record_consent(db, "p1", ["events"], by="owner")
+        record_consent(db, "p1", ["events"], by="owner", entry={"key": "p1"})
     assert "permissions" in str(exc.value), f"not the real cause: {exc.value}"
     with suppress(Exception):
         db.rollback()

@@ -119,9 +119,24 @@ def test_banner_and_dispatcher_agree_on_who_is_drifted(db, catalog):
     assert [d["key"] for d in ap.plugin_consent_drift(None, OWNER, db)["drifted"]] == ["hooks"]
 
 
-def test_unreachable_plugin_host_is_not_reported_as_no_drift(db, catalog):
-    catalog.clear()
+def test_unreachable_plugin_host_is_not_reported_as_no_drift(db, monkeypatch):
+    """Reachable-but-empty and unreachable used to be one answer (GDXA-860).
+    The real fetch runs against a closed port for the unreachable half."""
+    monkeypatch.setattr(ap, "fetch_catalog", lambda: [])
+    assert ap.plugin_consent_drift(None, OWNER, db) == {"catalog_reachable": True, "drifted": []}
+
+    monkeypatch.setattr(ap, "fetch_catalog", pc.fetch_catalog)
+    monkeypatch.setenv("PLUGIN_HOST_URL", "http://127.0.0.1:9")
     assert ap.plugin_consent_drift(None, OWNER, db) == {"catalog_reachable": False, "drifted": []}
+
+
+def test_permissions_dialog_503s_rather_than_listing_nothing(db, monkeypatch):
+    """GDXA-860: the consent dialog read an unreachable plugin-host as "this
+    plugin asks for no permissions"."""
+    monkeypatch.setenv("PLUGIN_HOST_URL", "http://127.0.0.1:9")
+    with pytest.raises(ap.HTTPException) as e:
+        ap.plugin_permissions("hooks", OWNER, db)
+    assert e.value.status_code == 503
 
 
 def test_reconsent_clears_the_banner_resolves_the_alarm_and_rearms_it(db, catalog):
@@ -317,7 +332,10 @@ def test_a_grant_reads_one_catalog_snapshot(db, catalog, monkeypatch):
     second fetch records the drifted surface (eighth audit, 1)."""
     _consent(db, catalog, _entry("hooks", ["events"], events=["a.b"]))
     catalog[:] = [_entry("hooks", ["events"], events=["a.b", "evil.e"])]
-    monkeypatch.setattr(ap, "fetch_catalog", lambda: [])  # pc.fetch_catalog still answers
+    def _unreachable():
+        raise pc.PluginCatalogUnavailable("connection refused")
+
+    monkeypatch.setattr(ap, "fetch_catalog", _unreachable)  # pc.fetch_catalog still answers
 
     with pytest.raises(ap.HTTPException) as e:
         ap.consent_plugin("hooks", request=None, user=OWNER, db=db)
@@ -367,7 +385,9 @@ def test_an_error_object_from_plugin_host_is_not_a_catalog(monkeypatch):
             return {"detail": "nope"}
 
     monkeypatch.setattr(pc.httpx, "get", lambda *a, **k: _Resp())
-    assert pc.fetch_catalog() == []
+    # Not [] either: an error object is an unanswered catalog (GDXA-860).
+    with pytest.raises(pc.PluginCatalogUnavailable):
+        pc.fetch_catalog()
 
 
 def test_drift_route_is_owner_only():

@@ -341,6 +341,37 @@ def test_event_recipients_enumerates_and_detects_drift():
         assert recips == [] and drifted == ["n8n"]
 
 
+def test_unreachable_catalog_retries_the_event_instead_of_dropping_it(monkeypatch):
+    """GDXA-860: plugin-host down at dispatch time read as "no recipient
+    loaded", so the task returned 0 and the event was gone. The real catalog
+    fetch runs here against a closed port. ``retry`` is patched: called
+    directly, Celery's own re-raises the cause, which a bare crash also does,
+    so only the call proves the event was handed back for another attempt."""
+    from celery.exceptions import Retry
+
+    import gdx_dispatch.core.plugin_consent as pc
+    import gdx_dispatch.core.plugin_events as pe
+
+    db = _consent_session()
+    with patch.object(pc, "fetch_catalog", return_value=[
+            {"key": "n8n", "permissions": ["events"], "events": ["invoice.*"],
+             "schedules": [], "services": []}]):
+        pc.record_consent(db, "n8n", ["events"], by="owner")
+    monkeypatch.setenv("PLUGIN_HOST_URL", "http://127.0.0.1:9")
+    # An event no consent matches never reaches the catalog, so it is not
+    # retried just because plugin-host is down.
+    assert pc.event_recipients(db, "job.created") == ([], [])
+    with pytest.raises(pc.PluginCatalogUnavailable):
+        pc.event_recipients(db, "invoice.paid")
+
+    monkeypatch.setattr(pe, "SessionLocal", lambda: db)
+    with (patch.object(pe.deliver_plugin_event_task, "retry", side_effect=Retry()) as retry,
+          pytest.raises(Retry)):
+        pe.deliver_plugin_event_task({"event": "invoice.paid"})
+    assert retry.call_count == 1
+    assert isinstance(retry.call_args.kwargs["exc"], pc.PluginCatalogUnavailable)
+
+
 def test_any_event_consent_gate():
     import gdx_dispatch.core.plugin_consent as pc
 

@@ -175,21 +175,36 @@ def ensure_consent_table(db: Session) -> None:
     db.commit()
 
 
+class PluginCatalogUnavailable(Exception):
+    """plugin-host did not answer with a catalog: unreachable, non-2xx, or a
+    body that is not a list. Not the same statement as an empty catalog."""
+
+
 def fetch_catalog() -> list[dict]:
-    """The live plugin catalog from plugin-host (key/permissions/events/…)."""
+    """The live plugin catalog from plugin-host (key/permissions/events/…).
+
+    Raises ``PluginCatalogUnavailable`` when plugin-host cannot answer. It used
+    to return [] on any error, and every reader then said something false: the
+    browser gate answered 403 "does not declare the browser permission" while
+    plugin-host was down, and event dispatch dropped the event as "no plugin
+    loaded" instead of retrying (GDXA-860). Each caller now decides what
+    unreachable means for it."""
     try:
         r = httpx.get(f"{_plugin_host_url()}/api/plugins", timeout=5.0)
         r.raise_for_status()
         body = r.json()
-        # An error object is not a catalog: list() of a dict is its keys,
-        # which every reader would then crash on with .get().
-        return [p for p in body if isinstance(p, dict)] if isinstance(body, list) else []
-    except Exception:
-        return []
+    except Exception as exc:
+        raise PluginCatalogUnavailable(str(exc) or type(exc).__name__) from exc
+    # An error object is not a catalog: list() of a dict is its keys, which
+    # every reader would then crash on with .get().
+    if not isinstance(body, list):
+        raise PluginCatalogUnavailable("plugin-host catalog is not a list")
+    return [p for p in body if isinstance(p, dict)]
 
 
 def fetch_permissions(key: str) -> list[str]:
-    """The permissions a plugin currently declares (from the plugin-host catalog)."""
+    """The permissions a plugin currently declares (from the plugin-host catalog).
+    Raises ``PluginCatalogUnavailable`` rather than answer "none"."""
     for p in fetch_catalog():
         if p.get("key") == key:
             return list(p.get("permissions") or [])
@@ -395,6 +410,13 @@ def event_recipients(db: Session, event_name: str) -> tuple[list[str], list[str]
     drifted    — plugin keys that WOULD match but whose live fingerprint differs
       from the consented one (plugin changed its declared surface). Dispatch
       fail-closes for these; the caller raises a loud owner signal.
+
+    Raises ``PluginCatalogUnavailable`` when a consented subscription matches
+    the event but plugin-host cannot list what is loaded: the caller retries,
+    rather than reading every recipient as "not loaded" and dropping the
+    event. The retry is bounded by the task's budget (3 × 30 s); there is no
+    plugin retry ledger, so a longer outage still loses the event, and the
+    only trace is Celery's task-failure line in the worker log.
     """
     ensure_consent_table(db)
     rows = db.execute(
@@ -404,11 +426,7 @@ def event_recipients(db: Session, event_name: str) -> tuple[list[str], list[str]
             "WHERE declared_events IS NOT NULL AND declared_events NOT IN ('', '[]')"
         )
     ).all()
-    if not rows:
-        return [], []
-    catalog = fetch_catalog()
-    recipients: list[str] = []
-    drifted: list[str] = []
+    candidates: list[tuple[str, str | None]] = []
     for key, ev_json, stored_fp, perms in rows:
         # Defense-in-depth: the owner must have consented the 'events' permission,
         # not merely have a non-empty event list. (Manifest validation couples
@@ -419,8 +437,16 @@ def event_recipients(db: Session, event_name: str) -> tuple[list[str], list[str]
             patterns = json.loads(ev_json) if ev_json else []
         except (json.JSONDecodeError, TypeError):
             continue
-        if not event_matches(event_name, patterns):
-            continue
+        if event_matches(event_name, patterns):
+            candidates.append((key, stored_fp))
+    # Fetch only once something matched, so an event nobody subscribed to is
+    # never retried just because plugin-host is down.
+    if not candidates:
+        return [], []
+    catalog = fetch_catalog()
+    recipients: list[str] = []
+    drifted: list[str] = []
+    for key, stored_fp in candidates:
         entry = _live_entry(key, catalog)
         if entry is None:
             continue  # plugin not currently loaded — nothing to deliver to

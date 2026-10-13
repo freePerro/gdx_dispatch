@@ -32,6 +32,7 @@ from sqlalchemy import select
 from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import SessionLocal
 from gdx_dispatch.core.plugin_consent import (
+    PluginCatalogUnavailable,
     _plugin_host_url,
     event_recipients,
     internal_auth_headers,
@@ -85,9 +86,20 @@ def _signal_consent_drift(db, drifted: list[str], event_name: str) -> None:
             if now - _last_rearm_check < _REARM_INTERVAL_S:
                 return
             _last_rearm_check = now
-            from gdx_dispatch.core.plugin_consent import fetch_catalog, resolve_drift_signals
+            from gdx_dispatch.core.plugin_consent import (
+                PluginCatalogUnavailable,
+                fetch_catalog,
+                resolve_drift_signals,
+            )
 
-            closed = resolve_drift_signals(db, fetch_catalog())
+            try:
+                catalog = fetch_catalog()
+            except PluginCatalogUnavailable as exc:
+                # cannot prove any drift ended; the pending row stays
+                log.warning("plugin_consent_drift: catalog unreachable, re-arm "
+                            "check skipped: %s", exc)
+                return
+            closed = resolve_drift_signals(db, catalog)
             if closed:
                 log.warning("plugin_consent_drift: closed ended alarm rows %s "
                             "(system, on new drift of %s)", closed, drifted)
@@ -124,7 +136,13 @@ def deliver_plugin_event_task(self, envelope: dict) -> int:
     if not event_name:
         return 0
     with SessionLocal() as db:
-        recipients, drifted = event_recipients(db, event_name)
+        try:
+            recipients, drifted = event_recipients(db, event_name)
+        except PluginCatalogUnavailable as exc:
+            # Same as an unreachable POST below: retry. Reading this as "no
+            # recipient loaded" returned 0 and dropped the event (GDXA-860).
+            log.warning("plugin_event_catalog_unreachable event=%s (retrying)", event_name)
+            raise self.retry(exc=exc) from exc
         if drifted:
             _signal_consent_drift(db, drifted, event_name)
         if not recipients:
