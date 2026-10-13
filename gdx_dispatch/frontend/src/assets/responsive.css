@@ -34,9 +34,15 @@
      matching the house pattern in AppLayout/AppSidebar/QuickCaptureSheet.
      NOTE: no viewport unit responds to the software keyboard — a Save button
      under the keyboard is handled separately, by the --keyboard-inset block
-     further down this file (lib/keyboardInset.js). */
-  .p-dialog { width: 100vw !important; max-width: 100vw; height: 100vh; margin: 0; border-radius: 0; }
-  .p-dialog { height: 100svh; }
+     further down this file (lib/keyboardInset.js).
+     max-height needs the same full-viewport value, and !important: PrimeVue
+     ships `.p-dialog { max-height: 90% }` in a <style> it injects at runtime,
+     after this file, so at equal specificity it wins and caps the "fullscreen"
+     dialog at 90% — the Save/Cancel row of a form without a #footer slot is
+     then cut off at the dialog edge (GDXA-871). !important also beats a call
+     site's inline maxHeight (DocumentsView's 90vh), which is the same bug. */
+  .p-dialog { width: 100vw !important; max-width: 100vw; height: 100vh; max-height: 100vh !important; margin: 0; border-radius: 0; }
+  .p-dialog { height: 100svh; max-height: 100svh !important; }
 
   .p-toast .p-toast-message { width: 100%; }
 }

@@ -202,6 +202,14 @@ describe('mobile viewport units and input zoom', () => {
     expect(css).toMatch(/\.p-dialog\s*\{\s*height:\s*100svh/);
   });
 
+  // GDXA-873: PrimeVue's `.p-dialog { max-height: 90% }` is injected at runtime,
+  // after this file, so without !important it caps the fullscreen dialog at 90%.
+  it('lifts PrimeVue\'s 90% max-height on the fullscreen dialog', () => {
+    const phoneBlock = css.slice(css.indexOf('@media (max-width: 767px)'), css.indexOf('/* Font readability'));
+    expect(phoneBlock).toMatch(/\.p-dialog\s*\{[^}]*max-height:\s*100vh\s*!important/);
+    expect(phoneBlock).toMatch(/\.p-dialog\s*\{\s*height:\s*100svh;\s*max-height:\s*100svh\s*!important/);
+  });
+
   it('does not use dvh for the dialog (it resizes mid-typing)', () => {
     expect(css).not.toMatch(/\.p-dialog\s*\{[^}]*100dvh/);
   });
