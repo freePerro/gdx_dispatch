@@ -39,6 +39,18 @@ def _build_test_app() -> FastAPI:
     async def integrity():
         raise IntegrityError("insert", {}, Exception("duplicate key"))
 
+    @app.get("/throttled")
+    async def throttled():
+        raise HTTPException(status_code=429, detail="slow down", headers={"Retry-After": "7"})
+
+    @app.get("/unauthenticated")
+    async def unauthenticated():
+        raise HTTPException(status_code=401, detail="no token", headers={"WWW-Authenticate": "Bearer"})
+
+    @app.get("/plain-http")
+    async def plain_http():
+        raise HTTPException(status_code=404, detail="nope")
+
     return app
 
 
@@ -150,3 +162,33 @@ async def test_value_error_returns_400_with_message():
     body = response.json()
     assert body["detail"] == "bad value"
     assert body["error_type"] == "ValueError"
+
+
+def test_app_routes_http_exception_to_global_handler():
+    """The header tests below drive global_exception_handler directly; this
+    pins that it is the handler create_app() uses for HTTPException."""
+    assert create_app().exception_handlers[HTTPException] is global_exception_handler
+
+
+@pytest.mark.anyio
+async def test_http_exception_keeps_retry_after():
+    response = await _get(_build_test_app(), "/throttled")
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "7"
+    assert response.json()["detail"] == "slow down"
+
+
+@pytest.mark.anyio
+async def test_http_exception_keeps_www_authenticate():
+    response = await _get(_build_test_app(), "/unauthenticated")
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+    assert response.json()["detail"] == "no token"
+
+
+@pytest.mark.anyio
+async def test_plain_http_exception_adds_no_header():
+    response = await _get(_build_test_app(), "/plain-http")
+    assert response.status_code == 404
+    assert set(response.headers) == {"content-length", "content-type", "x-request-id"}
+    assert response.json()["detail"] == "nope"
