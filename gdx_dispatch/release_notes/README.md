@@ -1,6 +1,6 @@
 # Release notes — the in-app "What's new" history
 
-Status: MERGED #PR — the What's new page, its banner, and the release gate
+Status: MERGED #1090 — the What's new page, its banner, and the release gate
 
 Every file here named `vX.Y.Z.md` is one release's notes. They ship inside
 the image and are what users read on the **What's new** page

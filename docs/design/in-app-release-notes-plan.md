@@ -1,6 +1,6 @@
 # In-app release notes — what's new, and every version before it
 
-Status: MERGED #PR — all five items built; the shape changed in places, see "As built" below
+Status: MERGED #1090 — all five items built; the shape changed in places, see "As built" below
 Date: 2026-10-12
 
 ## Ask (Doug, 2026-10-12)
