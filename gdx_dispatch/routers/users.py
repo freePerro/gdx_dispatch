@@ -697,6 +697,10 @@ def send_reset_link(user_id: str, request: Request, user: dict = Depends(get_cur
     try:
         send_password_reset_link(db, u, tid, initiated_by=_user_id(user))
     except PasswordResetEmailNotSent as exc:
+        # The failed attempts' outbound_emails rows ride this session on
+        # SQLite (Postgres commits them on their own); without this commit the
+        # 503 discards the only record of who tried.
+        db.commit()
         # auth.core logs the provider's skip reason; the caller gets a fixed
         # sentence keyed by code, never exception text
         # (CodeQL py/stack-trace-exposure).
