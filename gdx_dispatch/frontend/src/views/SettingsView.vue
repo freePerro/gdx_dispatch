@@ -498,6 +498,24 @@
         <!-- Estimates Tab — 2026-04-30. Per-tenant feature toggles for the
              estimate editor. -->
         <TabPanel value="estimates">
+          <!-- GDXA-853: /admin/feature-settings/tech-mobile is the only UI for
+               the tech-mobile feature settings and had no in-app link — URL-only.
+               Same settings.write gate as its route. -->
+          <Card v-if="hasPermission('settings.write')" data-testid="tech-mobile-settings-card" style="margin-bottom:1rem">
+            <template #title>Tech mobile</template>
+            <template #content>
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:0.75rem; flex-wrap:wrap;">
+                <div class="muted">
+                  What technicians see and can do in the mobile app: today's route,
+                  arrival and on-site steps, parts, quoting, offline, GPS and time.
+                </div>
+                <RouterLink to="/admin/feature-settings/tech-mobile" data-testid="tech-mobile-settings-link">
+                  <i class="pi pi-mobile" aria-hidden="true"></i> Open tech mobile settings
+                </RouterLink>
+              </div>
+            </template>
+          </Card>
+
           <Card data-testid="security-card" style="margin-bottom:1rem">
             <template #title>Security</template>
             <template #content>
@@ -1684,7 +1702,9 @@ import Toolbar from "primevue/toolbar";
 import Password from "primevue/password";
 import { useToast } from "primevue/usetoast";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
+import { usePermission } from "../composables/usePermission";
 const { confirmAsync } = useDestructiveConfirm();
+const { hasPermission } = usePermission();
 
 const api = useApi();
 
