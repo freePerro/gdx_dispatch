@@ -321,8 +321,6 @@ UNNUMBERED_ALLOWLIST: dict[str, int] = {
     "routers/estimates.py": 1,
     # platform-core: onboarding sample job (sibling of GDXA-833).
     "routers/onboarding.py": 1,
-    # Demo seed data, not a user-facing create path.
-    "docker/demo/seed_demo.py": 3,
 }
 
 
