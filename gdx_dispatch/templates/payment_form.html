@@ -717,7 +717,7 @@
   // Matched by sentence, because that is all the browser gets: the 409s below
   // raise a plain-string `detail`. A structured `detail: {code: ...}` WOULD
   // survive `core/error_handler.py` intact (it serializes `exc.detail`
-  // verbatim; only `exc.headers` is dropped) and the repo already does exactly
+  // verbatim, and forwards `exc.headers`) and the repo already does exactly
   // that next door — `routers/invoices.py::DUPLICATE_PAYMENT_CODE` and the
   // `nothing_remaining` 409 — so that is the durable fix. It belongs in
   // `core/payments.py`, which money-billing owns, not here. Until then

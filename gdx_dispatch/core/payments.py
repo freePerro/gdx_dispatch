@@ -1871,11 +1871,9 @@ def _split_surcharge(intent: Any, received_cents: int, *, connect: dict | None =
 _RECOVERED_SOURCE = "stripe-recovered"
 
 # The exact sentence the pay page shows when a retry turns out to be money we
-# had already collected. `core/error_handler.py`'s HTTPException handler
-# rebuilds the response from `exc.detail` alone and DROPS `exc.headers`, so a
-# structured discriminator cannot survive the trip — the status and this string
-# are the whole contract, and `test_card_double_charge_window.py` pins it so
-# the pay page can match on it.
+# had already collected. The status and this string are the whole contract,
+# and `test_card_double_charge_window.py` pins it so the pay page can match
+# on it.
 ALREADY_RECORDED_DETAIL = (
     "Your payment already went through — we just hadn't finished recording it. "
     "This invoice is paid in full; you don't need to pay again."

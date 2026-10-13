@@ -35,8 +35,7 @@ What these lock:
     must keep passing, or a partial payment wedges the balance);
   - the office gets a trail row, because nobody entered this payment;
   - the 409 sentence the pay page shows survives the app's HTTPException
-    handler — that handler rebuilds the response from `exc.detail` alone and
-    DROPS `exc.headers`, so the status and the string are the whole contract.
+    handler — the status and the string are the whole contract.
 
 Deliberate failure directions asserted below: both fail-open legs, and the
 unreadable-rail skip (which leaves the money for the webhook rather than
@@ -629,9 +628,8 @@ def test_a_recovery_queues_the_stale_intent_sweep(db, invoice):
 
 def test_the_pay_page_is_told_it_already_paid(db, invoice):
     """Through the real HTTP surface, with the app's own HTTPException handler
-    registered (app.py:1236). That handler rebuilds the response from
-    `exc.detail` alone and drops `exc.headers`, so this status and this exact
-    sentence are the only discriminator the browser gets."""
+    registered (`create_app()` in app.py). This status and this exact sentence
+    are the only discriminator the browser gets."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 

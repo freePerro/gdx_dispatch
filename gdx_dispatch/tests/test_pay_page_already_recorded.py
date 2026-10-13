@@ -51,7 +51,7 @@ genuine decline, a 402, and a 409 carrying an out-of-set sentence all still
 red.
 
 The durable fix is a structured `detail`: `core/error_handler.py` serializes
-`exc.detail` verbatim (only `exc.headers` is dropped), and the repo already
+`exc.detail` verbatim (and forwards `exc.headers`), and the repo already
 ships `detail={"code": ...}` on this surface — `routers/invoices.py`'s
 `DUPLICATE_PAYMENT_CODE` and its `nothing_remaining` 409. That change belongs
 in `core/payments.py`, which money-billing owns.

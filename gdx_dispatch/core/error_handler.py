@@ -36,9 +36,12 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
         # (OperationalError → 503) and remain logged.
         if exc.status_code >= 500 and exc.status_code != 503:
             _sink(request, exc, exc.status_code, request_id)
+        # Forward exc.headers: this handler replaces FastAPI's default, which
+        # does, and a raise carrying Retry-After or WWW-Authenticate means it.
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": exc.detail, "request_id": request_id},
+            headers=getattr(exc, "headers", None),
         )
 
     exc_name = type(exc).__name__
