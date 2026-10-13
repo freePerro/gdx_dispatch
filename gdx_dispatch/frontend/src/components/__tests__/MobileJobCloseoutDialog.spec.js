@@ -114,7 +114,11 @@ async function setInput(wrapper, testid, value) {
 
 // §11: submit is a two-tap contract (review strip + dwell). This helper
 // performs the full confirmed submit for tests that aren't ABOUT the strip.
+// GDXA-831: hours start blank and a blank refuses, so a test that never typed
+// hours attests 1 here; the hours pins below type their own.
 async function confirmedSubmit(wrapper) {
+  const hoursEl = wrapper.find('[data-testid="mjco-hours"]');
+  if (hoursEl.exists() && hoursEl.element.value === '') await setInput(wrapper, 'mjco-hours', '1');
   await wrapper.find('[data-testid="mjco-submit"]').trigger('click');
   await flushPromises();
   const realNow = Date.now;
@@ -150,6 +154,7 @@ describe('MobileJobCloseoutDialog', () => {
     const wrapper = mountDialog();
     await flushPromises();
     await setInput(wrapper, 'mjco-notes', 'Done.');
+    await setInput(wrapper, 'mjco-hours', '1');
 
     expect(wrapper.find('[data-testid="mjco-submit"]').attributes('disabled')).toBeUndefined();
   });
@@ -207,6 +212,83 @@ describe('MobileJobCloseoutDialog', () => {
     expect(successToast[0].detail).toContain('Ready for Billing');
     // Emits closed-out so caller can refresh.
     expect(wrapper.emitted('closed-out')?.length).toBe(1);
+  });
+
+  // ── Hours are attested, never defaulted (GDXA-831) ─────────────────
+  // The closeout restates the tech's running job timer at the submitted hours.
+  // The field used to start at 0, so a tech who skipped it closed their timer
+  // at 0 h — unbilled and unpaid — whenever the tenant's require-hours gate
+  // was off.
+
+  it('hours start blank, and a blank refuses submit even with other content', async () => {
+    const wrapper = mountDialog();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="mjco-hours"]').element.value).toBe('');
+    await setInput(wrapper, 'mjco-notes', 'Done.');
+    expect(wrapper.find('[data-testid="mjco-submit"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.find('[data-testid="mjco-hours-required"]').exists()).toBe(true);
+    await wrapper.find('[data-testid="mjco-submit"]').trigger('click');
+    await flushPromises();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it('a typed then cleared hours field refuses again', async () => {
+    const wrapper = mountDialog();
+    await flushPromises();
+    await setInput(wrapper, 'mjco-notes', 'Done.');
+    await setInput(wrapper, 'mjco-hours', '2');
+    expect(wrapper.find('[data-testid="mjco-submit"]').attributes('disabled')).toBeUndefined();
+    expect(wrapper.find('[data-testid="mjco-hours-required"]').exists()).toBe(false);
+    await setInput(wrapper, 'mjco-hours', '');
+    expect(wrapper.find('[data-testid="mjco-submit"]').attributes('disabled')).toBeDefined();
+  });
+
+  it('out-of-range hours refuse instead of being sent for the server to 422', async () => {
+    const wrapper = mountDialog();
+    await flushPromises();
+    await setInput(wrapper, 'mjco-notes', 'Done.');
+    await setInput(wrapper, 'mjco-hours', '120');
+    expect(wrapper.find('[data-testid="mjco-submit"]').attributes('disabled')).toBeDefined();
+    await setInput(wrapper, 'mjco-hours', '-1');
+    expect(wrapper.find('[data-testid="mjco-submit"]').attributes('disabled')).toBeDefined();
+  });
+
+  it('a typed 0 is an attestation: it submits 0 and the review strip says what 0 h means', async () => {
+    apiPost.mockResolvedValue({ ok: true, closeout_id: 'co-0' });
+    const wrapper = mountDialog();
+    await flushPromises();
+    await setInput(wrapper, 'mjco-notes', 'Customer cancelled at the door.');
+    await setInput(wrapper, 'mjco-hours', '0');
+    await wrapper.find('[data-testid="mjco-submit"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[data-testid="mjco-confirm-zero-hours"]').text()).toContain('nothing is billed or paid');
+    const realNow = Date.now;
+    vi.spyOn(Date, 'now').mockImplementation(() => realNow() + 2000);
+    await wrapper.find('[data-testid="mjco-submit"]').trigger('click');
+    await flushPromises();
+    vi.mocked(Date.now).mockRestore();
+    expect(apiPost.mock.calls[0][1].hours).toBe(0);
+  });
+
+  it('non-zero hours show no 0 h warning', async () => {
+    const wrapper = mountDialog();
+    await flushPromises();
+    await setInput(wrapper, 'mjco-hours', '1.25');
+    await wrapper.find('[data-testid="mjco-submit"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[data-testid="mjco-confirm-strip"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mjco-confirm-zero-hours"]').exists()).toBe(false);
+  });
+
+  it('reopening the sheet clears typed hours back to blank', async () => {
+    const wrapper = mountDialog();
+    await flushPromises();
+    await setInput(wrapper, 'mjco-hours', '3');
+    await wrapper.setProps({ visible: false });
+    await wrapper.setProps({ visible: true });
+    await flushPromises();
+    await answerYes(wrapper);
+    expect(wrapper.find('[data-testid="mjco-hours"]').element.value).toBe('');
   });
 
   it('shows missing-fields toast on 422 with err.body.missing[]', async () => {
@@ -369,6 +451,7 @@ describe('MobileJobCloseoutDialog', () => {
     expect(wrapper.find('[data-testid="mjco-submit"]').attributes('disabled')).toBeDefined();
 
     await setInput(wrapper, 'mjco-return-reason', 'Spring on backorder');
+    await setInput(wrapper, 'mjco-hours', '0.5');
     expect(wrapper.find('[data-testid="mjco-submit"]').attributes('disabled')).toBeUndefined();
   });
 
@@ -597,6 +680,7 @@ describe('MobileJobCloseoutDialog', () => {
       const wrapper = mountDialog();
       await flushPromises();
       await setInput(wrapper, 'mjco-notes', 'Done.');
+      await setInput(wrapper, 'mjco-hours', '1');
       expect(wrapper.find('[data-testid="mjco-submit"]').attributes('disabled')).toBeUndefined();
       await pick(wrapper, [file()]);
       await flushPromises();
