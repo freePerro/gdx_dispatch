@@ -62,7 +62,7 @@ def _job(job_type: str = SERVICE):
 
 
 def _closeout(hours: float, techs: int = 1):
-    return SimpleNamespace(hours_worked=hours, techs_on_site=techs, closed_at=None)
+    return SimpleNamespace(id=uuid4(), hours_worked=hours, techs_on_site=techs, closed_at=None)
 
 
 def _total(lines) -> Decimal:

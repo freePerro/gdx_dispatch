@@ -25,10 +25,12 @@ Two further rules live here, both learned the hard way (2026-08-11 audit):
 """
 from __future__ import annotations
 
+import logging
 import os
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
@@ -40,6 +42,8 @@ from gdx_dispatch.core.plugin_permissions import (
 )
 from gdx_dispatch.plugin_api.context import H_MODULES, H_ROLE, H_TENANT, H_USER
 from gdx_dispatch.routers.auth import get_current_user
+
+log = logging.getLogger(__name__)
 
 
 def _stable_operation_id(route) -> str:
@@ -63,6 +67,37 @@ _DROP = {"host", "content-length", "connection", "transfer-encoding", "te", "upg
 
 def _plugin_host_url() -> str:
     return os.getenv("PLUGIN_HOST_URL", "http://plugin-host:8000").rstrip("/")
+
+
+# Seconds a caller should wait before retrying. plugin-host restarts
+# `unless-stopped` and is usually back within this.
+PLUGIN_HOST_RETRY_AFTER = "5"
+
+
+# The transport errors that prove the request never reached plugin-host: it is
+# down or cycling, and retrying is safe. NOT every transport error httpx raises: a
+# ReadTimeout or RemoteProtocolError means plugin-host may already have run the
+# request, and UnsupportedProtocol is a misconfigured PLUGIN_HOST_URL. Those
+# stay uncaught 500s, recorded in server_errors with their traceback.
+PLUGIN_HOST_UNREACHABLE = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+
+
+def plugin_host_unavailable(exc: Exception, method: str, path: str) -> HTTPException:
+    """The answer for "plugin-host is not there" (GDXA-857).
+
+    A refused or timed-out connection is an expected outage while plugin-host
+    restarts, not a server fault. Left uncaught it became a 500 that
+    core/error_handler.py records in server_errors; 503 is excluded there.
+    Never an empty catalog instead: an empty list reads as "no plugins
+    installed", which is a different, false statement.
+    """
+    log.warning("plugin_host_unavailable err=%s method=%s path=%s",
+                type(exc).__name__, method, path)
+    return HTTPException(
+        status_code=503,
+        detail="plugin-host unavailable",
+        headers={"Retry-After": PLUGIN_HOST_RETRY_AFTER},
+    )
 
 
 _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
@@ -165,9 +200,23 @@ async def proxy_to_plugin_host(
     # trailing slash 404s there. `safe_path`, not `path`: the URL must be built
     # from the value the gate above actually inspected.
     url = f"{_plugin_host_url()}/api/plugins" + (f"/{safe_path}" if safe_path else "")
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        upstream = await client.request(
-            request.method, url, params=request.query_params, content=body, headers=fwd
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            upstream = await client.request(
+                request.method, url, params=request.query_params, content=body, headers=fwd
+            )
+    except PLUGIN_HOST_UNREACHABLE as exc:
+        # Returned, not raised: core/error_handler.py rebuilds a raised
+        # HTTPException from its detail alone and drops its headers, so a
+        # raised 503 would reach the client without Retry-After.
+        err = plugin_host_unavailable(exc, request.method, url)
+        return JSONResponse(
+            status_code=err.status_code,
+            content={
+                "detail": err.detail,
+                "request_id": getattr(request.state, "request_id", "unknown"),
+            },
+            headers=err.headers,
         )
     return Response(
         content=upstream.content,
