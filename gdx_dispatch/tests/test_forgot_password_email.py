@@ -170,9 +170,12 @@ def test_no_outlook_falls_back_to_platform_smtp_when_configured(env, monkeypatch
     to, subject, html = platform[0]
     assert to == "owner@example.com"
     assert f"/reset-password?token={token}" in html
-    # The transactional attempt is still on the trail, redacted.
-    [row] = _rows(env.db)
-    assert row.status == "failed" and token not in row.body_html
+    # Both attempts are on the trail, redacted: the transactional one that
+    # failed, and the platform SMTP one that delivered.
+    rows = sorted(_rows(env.db), key=lambda r: r.status)
+    assert [(r.status, r.provider) for r in rows] == [("failed", None), ("sent", "platform_smtp")]
+    assert all(token not in r.body_html and "[reset link redacted]" in r.body_html for r in rows)
+    assert {(r.initiator_kind, r.initiator_ref) for r in rows} == {("system", None)}
 
 
 def test_neither_provider_warns_without_address_or_token(env, monkeypatch, caplog):
