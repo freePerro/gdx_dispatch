@@ -2702,6 +2702,9 @@ async function saveEdit() {
         // with the line. An empty list is sent too: it marks a suggestion
         // line.
         if (Array.isArray(ln.time_entry_ids)) body.time_entry_ids = [...ln.time_entry_ids];
+        // The closeout whose final-day hours the line includes; the server
+        // claims exactly what is named, never what it infers.
+        if (ln.closeout_id) body.closeout_id = ln.closeout_id;
         if (marginOverrideDec != null) body.margin_pct_override = marginOverrideDec;
         // Labor provenance rides the CREATE only. Which lane priced a line is
         // decided when it is added and does not change by editing its text or

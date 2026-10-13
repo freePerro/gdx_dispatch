@@ -118,7 +118,7 @@ def _as_line(s: dict, **over) -> InvoiceLineCreateIn:
         "description": s["description"], "quantity": Decimal(str(s["quantity"])),
         "unit_price": s["unit_price"], "taxable": False, "category": "Labor",
         "labor_source": "attested", "estimated_man_hours": s.get("estimated_man_hours"),
-        "time_entry_ids": s.get("time_entry_ids"),
+        "time_entry_ids": s.get("time_entry_ids"), "closeout_id": s.get("closeout_id"),
     }
     body.update(over)
     return InvoiceLineCreateIn(**body)

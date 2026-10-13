@@ -179,3 +179,19 @@ def test_blocked_ticket_records_nothing(monkeypatch):
                json={"key": "chipricing", "url": "https://evil.example.com/"})
     assert r.status_code == 400
     assert _audit_actions(c) == []
+
+
+def test_core_creds_unreachable_plugin_host_answers_503(monkeypatch):
+    # GDXA-857: a plugin-host that is down raised an uncaught ConnectError here
+    # (a 500). Real httpx against a closed port, so the error is httpx's own.
+    real = browser_proxy.httpx.AsyncClient
+    c = _core_client(monkeypatch)
+    monkeypatch.setattr(browser_proxy.httpx, "AsyncClient", real)
+    monkeypatch.setenv("PLUGIN_HOST_URL", "http://127.0.0.1:9")
+    r = c.get("/api/plugins/_browser/credentials", params={"key": "chipricing"})
+    assert r.status_code == 503, r.text
+    r = c.post("/api/plugins/_browser/credentials",
+               json={"key": "chipricing", "username": "u", "password": "p"})
+    assert r.status_code == 503, r.text
+    # The audit row says "requested", which stays true when the store is down.
+    assert "plugin.browser_credentials_save_requested" in _audit_actions(c)

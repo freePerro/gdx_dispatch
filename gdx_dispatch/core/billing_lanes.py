@@ -232,8 +232,9 @@ def job_labor_lines(
     Each dict: description, quantity, unit_price, line_total (Decimal),
     source "attested", labor_price_item_id None, man_hours (raw attested,
     float), and on exactly one line — the hourly line, or the first-hour line
-    when it stands alone — ``time_entry_ids`` (list of str, possibly empty)
-    and ``estimated_man_hours`` (Decimal, the raw attested man-hours).
+    when it stands alone — ``time_entry_ids`` (list of str, possibly empty),
+    ``closeout_id`` (str, only when the closeout's hours are included) and
+    ``estimated_man_hours`` (Decimal, the raw attested man-hours).
     """
     from gdx_dispatch.core.closeout_billing import (  # noqa: PLC0415
         closeout_hours_holder,
@@ -343,6 +344,11 @@ def job_labor_lines(
             ))
     carrier = lines[-1]
     carrier["time_entry_ids"] = [str(_id) for _id, _c, _m in day_rows]
+    # The closeout whose final-day hours this line's quantity includes
+    # (GDXA-812): the save sends it back and the server claims exactly that.
+    # Absent when they were left out, so a stale line never claims them.
+    if final_hours > 0:
+        carrier["closeout_id"] = str(closeout.id)
     carrier["estimated_man_hours"] = raw_man
     return lines
 
