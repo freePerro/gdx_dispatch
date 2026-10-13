@@ -29,7 +29,7 @@
         <Button label="See My Quotes" icon="pi pi-list" severity="secondary" outlined data-testid="resell-goto-quotes" @click="emit('goto-quotes')" />
       </div>
     </div>
-    <form v-else class="resell-body" @submit.prevent="submit">
+    <form v-else :id="formId" class="resell-body" @submit.prevent="submit">
       <p class="meta">
         Your customer sees your name and your price, never ours. Our estimate is not changed.
         <template v-if="!setUp"> You have not added your company details yet; the quote prints without them.</template>
@@ -62,12 +62,16 @@
         <span>Notes for your customer</span>
         <Textarea v-model="form.notes" rows="3" maxlength="5000" auto-resize data-testid="resell-notes" />
       </label>
-      <Message v-if="submitError" severity="error" data-testid="resell-error">{{ submitError }}</Message>
-      <div class="action-row">
-        <Button type="submit" label="Make my quote" icon="pi pi-check" :loading="submitting" :disabled="form.markup_pct == null" data-testid="resell-submit-btn" />
+      <Message v-if="submitError" ref="errorEl" severity="error" data-testid="resell-error">{{ submitError }}</Message>
+    </form>
+    <!-- Footer, not the end of the form: the content scrolls, and on a phone a
+         row at its end starts below the dialog's edge (GDXA-872). -->
+    <template v-if="showForm" #footer>
+      <div class="action-row footer-row">
+        <Button type="submit" :form="formId" label="Make my quote" icon="pi pi-check" :loading="submitting" :disabled="form.markup_pct == null" data-testid="resell-submit-btn" />
         <Button label="Cancel" severity="secondary" text @click="emit('update:visible', false)" />
       </div>
-    </form>
+    </template>
   </Dialog>
 </template>
 
@@ -78,7 +82,7 @@
  * (POST /portal/estimates/{id}/resale) and offers its PDF straight away.
  * The markup starts from the default on their branding.
  */
-import { reactive, ref, watch } from 'vue';
+import { computed, nextTick, reactive, ref, useId, watch } from 'vue';
 import Button from 'primevue/button';
 import Dialog from 'primevue/dialog';
 import InputNumber from 'primevue/inputnumber';
@@ -104,6 +108,18 @@ const submitting = ref(false);
 const submitError = ref('');
 const created = ref(null);
 const downloading = ref(false);
+const formId = `resell-form-${useId()}`;
+const errorEl = ref(null);
+// Save is pinned in the footer, so a refusal can land below the fold of the
+// scrolled form (GDXA-872): bring it into view.
+watch(submitError, async (msg) => {
+  if (!msg) return;
+  await nextTick();
+  // A component ref: Message's root element is what scrolls.
+  errorEl.value?.$el?.scrollIntoView?.({ block: 'nearest' });
+});
+// The same three branches the template walks; the form is the last.
+const showForm = computed(() => !loading.value && accepted.value && !created.value);
 
 function priceLine(q) {
   if (q.options) return `${q.options.length} options at ${Number(q.markup_pct)}% markup.`;
@@ -166,6 +182,9 @@ watch(() => props.visible, (v) => { if (v) open(); });
 .field > span { font-size: 0.85rem; font-weight: 600; color: var(--p-text-color, #374151); }
 .field :deep(.p-inputtext), .field :deep(.p-inputnumber), .field :deep(.p-textarea) { width: 100%; }
 .action-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+/* In the dialog footer (a flex row) the row must span it, or the phone rule
+   below has no width to stretch its buttons into. */
+.footer-row { flex: 1 1 auto; }
 .field-error { color: var(--p-red-500, #ef4444); }
 .meta { font-size: 0.85rem; color: var(--p-text-muted-color, #6b7280); }
 .empty-msg { text-align: center; padding: 1.5rem; color: var(--p-text-muted-color, #6b7280); }

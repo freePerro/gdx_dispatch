@@ -33,7 +33,7 @@ const stubs = {
   Dialog: {
     props: ['visible', 'header'],
     emits: ['update:visible'],
-    template: '<div v-if="visible" :data-testid="$attrs[\'data-testid\']"><slot /></div>',
+    template: '<div v-if="visible" :data-testid="$attrs[\'data-testid\']"><slot /><slot name="footer" /></div>',
     inheritAttrs: false,
   },
   Button: {

@@ -20,12 +20,12 @@ const vModel = (tag = 'input') => ({
 });
 
 const stubs = {
-  Dialog: { props: ['visible'], template: '<div v-if="visible" data-testid="resell-dialog"><slot /></div>' },
+  Dialog: { props: ['visible'], template: '<div v-if="visible" data-testid="resell-dialog"><slot /><slot name="footer" /></div>' },
   Button: {
     props: ['label', 'loading', 'type'],
     emits: ['click'],
     inheritAttrs: false,
-    template: '<button :type="type || \'button\'" :data-testid="$attrs[\'data-testid\']" @click="$emit(\'click\')">{{ label }}</button>',
+    template: '<button :type="type || \'button\'" :form="$attrs.form" :data-testid="$attrs[\'data-testid\']" @click="$emit(\'click\')">{{ label }}</button>',
   },
   Message: { inheritAttrs: false, template: '<div :data-testid="$attrs[\'data-testid\']"><slot /></div>' },
   InputText: vModel(),
@@ -115,5 +115,15 @@ describe('PortalResellDialog', () => {
     expect(w.get('[data-testid="resell-error"]').text()).toBe('Not found');
     expect(w.find('[data-testid="resell-submit-btn"]').exists()).toBe(true);
     expect(w.emitted('created')).toBeUndefined();
+  });
+
+  it('keeps Make my quote in the footer, submitting the form by id (GDXA-872)', async () => {
+    const { w } = await open(async () => profile(true));
+    const form = w.get('form');
+    const submit = w.get('[data-testid="resell-submit-btn"]');
+    expect(form.find('[data-testid="resell-submit-btn"]').exists()).toBe(false);
+    expect(form.attributes('id')).toBeTruthy();
+    expect(submit.attributes('type')).toBe('submit');
+    expect(submit.attributes('form')).toBe(form.attributes('id'));
   });
 });
