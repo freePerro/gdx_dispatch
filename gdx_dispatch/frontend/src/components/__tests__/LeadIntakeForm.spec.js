@@ -52,7 +52,7 @@ function mountForm(props = {}) {
       stubs: {
         Dialog: {
           props: ['visible', 'header'],
-          template: '<div v-if="visible" class="p-dialog-mock"><div class="header">{{ header }}</div><slot /></div>',
+          template: '<div v-if="visible" class="p-dialog-mock"><div class="header">{{ header }}</div><slot /><slot name="footer" /></div>',
         },
         PhoneInput: {
           props: ['modelValue'],
@@ -242,5 +242,22 @@ describe('LeadIntakeForm', () => {
     await flushPromises();
 
     expect(wrapper.find('[data-test="intake-dup-warning"]').exists()).toBe(true);
+  });
+
+  it('keeps Save/Cancel in the dialog footer, outside the scrolling form (GDXA-872)', async () => {
+    mockPost.mockResolvedValueOnce({ lead: { id: 'l1', name: 'Footer Test' }, matched_customer: null, possible_duplicate: null });
+    const wrapper = mountForm({ initialName: 'Footer Test' });
+    await flushPromises();
+
+    const form = wrapper.get('form');
+    const save = wrapper.get('[data-test="intake-save-btn"]');
+    expect(form.find('[data-test="intake-save-btn"]').exists()).toBe(false);
+    expect(form.attributes('id')).toBeTruthy();
+    expect(save.attributes('form')).toBe(form.attributes('id'));
+
+    // The result pane brings its own buttons; the form's footer goes with the form.
+    await form.trigger('submit');
+    await flushPromises();
+    expect(wrapper.find('[data-test="intake-save-btn"]').exists()).toBe(false);
   });
 });

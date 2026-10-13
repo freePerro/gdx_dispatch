@@ -60,7 +60,7 @@
     </div>
 
     <!-- Active intake form -->
-    <form v-else class="intake-form" @submit.prevent="save">
+    <form v-else :id="formId" class="intake-form" @submit.prevent="save">
       <div v-if="loadError" class="intake-error-banner" data-test="intake-load-error">
         {{ loadError }}
       </div>
@@ -212,6 +212,12 @@
         </div>
       </div>
 
+    </form>
+
+    <!-- Footer, not the end of the form: the content scrolls, and on a phone a
+         row at its end starts below the dialog's edge (GDXA-872). form= keeps
+         Save a submit of the form above. -->
+    <template v-if="!submittedResult" #footer>
       <div class="intake-footer">
         <Button
           label="Cancel"
@@ -222,6 +228,7 @@
         />
         <Button
           type="submit"
+          :form="formId"
           label="Save lead"
           icon="pi pi-check"
           :loading="saving"
@@ -229,12 +236,12 @@
           data-test="intake-save-btn"
         />
       </div>
-    </form>
+    </template>
   </Dialog>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onMounted, reactive, ref, useId, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import Dialog from 'primevue/dialog';
 import Button from 'primevue/button';
@@ -291,6 +298,7 @@ const loadError = ref('');
 const sourcesList = ref([]);
 const customFieldDefs = ref([]);
 const submittedResult = ref(null);
+const formId = `lead-intake-form-${useId()}`;
 
 const form = reactive({
   name: '',
@@ -553,11 +561,11 @@ function closeDialog() {
 }
 
 .intake-footer {
+  flex: 1 1 auto;
   display: flex;
   justify-content: flex-end;
   gap: 0.75rem;
   padding-top: 1rem;
-  margin-top: 0.5rem;
   border-top: 1px solid var(--p-content-border-color, #e5e7eb);
 }
 
