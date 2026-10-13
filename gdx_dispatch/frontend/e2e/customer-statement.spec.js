@@ -46,6 +46,46 @@ const isoDaysAgo = (n) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
+// Rows this run creates, undone in afterAll through the same API that made
+// them (GDXA-800). Ids are pushed the moment they're known, so a mid-test
+// failure is still cleaned up. The API cannot remove all of it: a statement
+// only counts invoices past draft, only a draft invoice can be deleted, and a
+// customer holding a void invoice refuses DELETE (409, its billing history
+// must stay visible). So payments and invoices are voided — no open AR is
+// left behind — and the customer DELETE is still tried and its refusal said.
+const created = { customers: [], invoices: [], payments: [] };
+
+test.afterAll(async ({ baseURL }) => {
+  if (!created.customers.length) return;
+  const fx = JSON.parse(fs.readFileSync(path.resolve('e2e/.state/fixtures.json'), 'utf8'));
+  const api = await pwRequest.newContext({
+    baseURL,
+    extraHTTPHeaders: { authorization: `Bearer ${fx.token}`, 'content-type': 'application/json' },
+  });
+  // request.* does not throw on 4xx/5xx, so every status is checked and a
+  // failure is said: a silent no-op cleanup is worse than none.
+  const failed = [];
+  const attempt = async (what, call) => {
+    const r = await call().catch(() => null);
+    if (!r || !r.ok()) failed.push(`${what} (${r ? `${r.status()} ${(await r.text()).slice(0, 120)}` : 'network'})`);
+  };
+  // Payments, then invoices (void refuses while a live payment remains), then customers.
+  for (const { invoiceId, id } of created.payments) {
+    await attempt(`payment ${id}`, () => api.post(`/api/invoices/${invoiceId}/payments/${id}/void`, { data: {} }));
+  }
+  for (const id of created.invoices) {
+    await attempt(`invoice ${id}`, () => api.post(`/api/invoices/${id}/void`, { data: {} }));
+  }
+  for (const id of created.customers) {
+    await attempt(`customer ${id}`, () => api.delete(`/api/customers/${id}`));
+  }
+  await api.dispose();
+  if (failed.length) {
+    // eslint-disable-next-line no-console
+    console.warn(`[cleanup] ${failed.length} row(s) NOT cleaned up: ${failed.join(', ')}`);
+  }
+});
+
 async function seedCustomer(api) {
   const customer = await ok(
     await api.post('/api/customers', {
@@ -53,6 +93,7 @@ async function seedCustomer(api) {
     }),
     'creating the customer',
   );
+  created.customers.push(customer.id);
   // A: 50 days ago, paid in two parts (45 and 20 days ago). B: 25 days ago,
   // part paid 10 days ago. C: 5 days ago, unpaid. Totals come back from the API
   // (the tenant's tax rate applies), so expectations are computed, not assumed.
@@ -67,6 +108,7 @@ async function seedCustomer(api) {
       await api.post('/api/invoices', { data: { customer_id: customer.id, invoice_date: isoDaysAgo(p.day), due_date: isoDaysAgo(p.day) } }),
       'creating an invoice',
     );
+    created.invoices.push(inv.id);
     await ok(await api.post(`/api/invoices/${inv.id}/lines`, { data: { description: 'Statement e2e work', quantity: 1, unit_price: p.amount } }), 'adding a line');
     let sent = await api.post(`/api/invoices/${inv.id}/mark-sent`, { data: { sent_via: 'manual' } });
     if (!sent.ok()) {
@@ -75,7 +117,8 @@ async function seedCustomer(api) {
     }
     await ok(sent, 'marking the invoice sent');
     for (const [amount, ago] of p.pays) {
-      await ok(await api.post(`/api/invoices/${inv.id}/payments`, { data: { amount, method: 'check', date: isoDaysAgo(ago) } }), 'recording a payment');
+      const pay = await ok(await api.post(`/api/invoices/${inv.id}/payments`, { data: { amount, method: 'check', date: isoDaysAgo(ago) } }), 'recording a payment');
+      created.payments.push({ invoiceId: inv.id, id: pay.id });
     }
     invoices.push({ ...(await ok(await api.get(`/api/invoices/${inv.id}`), 'reading the invoice back')), plan: p });
   }
