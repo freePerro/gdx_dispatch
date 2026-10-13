@@ -166,7 +166,7 @@ class TestLanesCarryWhatProvenanceNeeds:
         lines = job_labor_lines(
             db,
             SimpleNamespace(id=uuid4(), job_type=SERVICE_CALL),
-            SimpleNamespace(hours_worked=2.0, techs_on_site=1, closed_at=None),
+            SimpleNamespace(id=uuid4(), hours_worked=2.0, techs_on_site=1, closed_at=None),
             day_rows=[],
         )
         assert lines[-1]["estimated_man_hours"] == Decimal("2.00")

@@ -227,6 +227,114 @@ def test_a_suggestion_line_that_loses_the_claim_is_refused(db, monkeypatch):
     db.expire_all()
     assert db.query(Invoice).filter(Invoice.job_id == job.id).count() == 0
 
+
+# ── the line names its closeout (GDXA-812) ───────────────────────────
+# The server claims exactly the closeout a line names, never what it infers
+# from who holds the stamp at save time: a stale suggestion read that
+# differently and double-billed or stranded the hours.
+
+def test_the_suggestion_names_the_closeout_only_on_the_line_that_bills_it(db):
+    job = _job(db)
+    _row(db, job, at=DAY1, minutes=60)
+    co = _closeout(db, job, hours=2)
+    _c, body = _suggest(db, job)
+    assert [ln.get("closeout_id") for ln in body["labor_lines"]][-1] == str(co.id)
+    assert all("closeout_id" not in ln for ln in body["labor_lines"][:-1])
+
+    a = _bill_from_suggestion(db, job)
+    _row(db, job, at=DAY2, minutes=60)
+    _c, body = _suggest(db, job)  # A holds the closeout: day row only
+    assert body["labor_lines"] and all("closeout_id" not in ln for ln in body["labor_lines"])
+    assert _stamp(db, co) == UUID(a["id"])
+
+
+def test_a_stale_suggestion_that_named_a_free_closeout_is_refused_once_claimed(db):
+    # Case (a): loaded while the closeout was free, another invoice claimed it
+    # first. Before GDXA-812 the stale save returned 201 and both invoices
+    # billed the 2 h.
+    job = _job(db)
+    co = _closeout(db, job, hours=2)
+    _c, stale = _suggest(db, job)
+    a = _bill_from_suggestion(db, job)
+    assert _stamp(db, co) == UUID(a["id"])
+
+    with pytest.raises(HTTPException) as exc:
+        _create(db, job, [_as_line(ln) for ln in stale["labor_lines"]], force=True)
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "labor_already_billed"
+    db.expire_all()
+    assert db.query(Invoice).filter(Invoice.job_id == job.id).count() == 1
+    assert _stamp(db, co) == UUID(a["id"])
+
+
+def test_a_stale_add_line_that_named_a_free_closeout_is_refused_once_claimed(db):
+    # Case (a) on the add-line route.
+    job = _job(db)
+    co = _closeout(db, job, hours=2)
+    _c, stale = _suggest(db, job)
+    a = _bill_from_suggestion(db, job)
+    b = _create(db, job, [_as_line({"description": "Trip", "quantity": 1, "unit_price": 50},
+                                   labor_source=None, time_entry_ids=None)], force=True)
+    [line] = stale["labor_lines"]
+    with pytest.raises(HTTPException) as exc:
+        add_invoice_line(invoice_id=UUID(b["id"]), payload=_as_line(line), current_user=USER, db=db)
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "labor_already_billed"
+    assert _stamp(db, co) == UUID(a["id"])
+    assert _total(db, b["id"]) == Decimal("50.00")
+
+
+def test_a_stale_suggestion_without_the_closeout_does_not_claim_it_after_a_void(db):
+    # Case (b): loaded while A held the closeout (day rows only), then A was
+    # voided. Before GDXA-812 the stale save stamped the closeout to B, which
+    # bills none of it, and the 2 h were never offered again.
+    job = _job(db)
+    co = _closeout(db, job, hours=2)
+    a = _bill_from_suggestion(db, job)
+    _row(db, job, at=DAY2, minutes=60)
+    _c, stale = _suggest(db, job)
+    assert all("closeout_id" not in ln for ln in stale["labor_lines"])
+
+    void_invoice(invoice_id=UUID(a["id"]), _=USER, db=db)
+    b = _create(db, job, [_as_line(ln) for ln in stale["labor_lines"]], force=True)
+    assert _stamp(db, co) is None
+    assert _audits(db, "labor_closeout_claimed", b["id"]) == []
+    # The 2 h are still on offer, and claimable by the line that names them.
+    _c, fresh = _suggest(db, job)
+    assert fresh["labor_lines"][-1]["closeout_id"] == str(co.id)
+    c = _create(db, job, [_as_line(ln) for ln in fresh["labor_lines"]], force=True)
+    assert _stamp(db, co) == UUID(c["id"])
+
+
+def test_a_line_naming_a_superseded_closeout_is_refused_as_stale(db):
+    from datetime import UTC, datetime
+
+    job = _job(db)
+    old = _closeout(db, job, hours=2)
+    _c, stale = _suggest(db, job)
+    db.expire_all()
+    db.get(JobCloseout, old.id).superseded_at = datetime.now(UTC)
+    db.commit()
+    new = _closeout(db, job, hours=3)
+
+    with pytest.raises(HTTPException) as exc:
+        _create(db, job, [_as_line(ln) for ln in stale["labor_lines"]], force=True)
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "labor_suggestion_stale"
+    assert (_stamp(db, old), _stamp(db, new)) == (None, None)
+    db.expire_all()
+    assert db.query(Invoice).filter(Invoice.job_id == job.id).count() == 0
+
+
+def test_a_labor_line_that_does_not_name_the_closeout_never_claims_it(db):
+    # Before GDXA-812 any line sending time_entry_ids claimed a free closeout.
+    job = _job(db)
+    co = _closeout(db, job, hours=2)
+    _c, body = _suggest(db, job)
+    a = _create(db, job, [_as_line(ln, closeout_id=None) for ln in body["labor_lines"]], force=True)
+    assert _stamp(db, co) is None
+    assert _audits(db, "labor_closeout_claimed", a["id"]) == []
+
 # ── a race of two claims ─────────────────────────────────────────────
 
 _URL = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL") or ""
