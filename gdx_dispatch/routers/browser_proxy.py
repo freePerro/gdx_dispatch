@@ -46,6 +46,7 @@ from gdx_dispatch.core.audit import audit_or_rollback, audit_ready_db
 from gdx_dispatch.core.plugin_consent import fetch_permissions, has_permission_consent
 from gdx_dispatch.plugin_host.browser_stream import host_allowed
 from gdx_dispatch.routers.auth import get_current_user
+from gdx_dispatch.routers.plugins_proxy import PLUGIN_HOST_UNREACHABLE, plugin_host_unavailable
 
 log = logging.getLogger(__name__)
 
@@ -141,10 +142,17 @@ async def _creds_call(method: str, **kwargs) -> dict:
     from gdx_dispatch.core.plugin_consent import internal_auth_headers
 
     headers = {**internal_auth_headers(), **kwargs.pop("headers", {})}
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.request(
-            method, f"{_host_http_url()}/internal/browser/credentials", headers=headers, **kwargs
-        )
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.request(
+                method, f"{_host_http_url()}/internal/browser/credentials", headers=headers, **kwargs
+            )
+    except PLUGIN_HOST_UNREACHABLE as exc:
+        # plugin-host down or cycling: 503, not an uncaught 500 (GDXA-857). The
+        # save/forget audit rows already say "requested", which stays true.
+        # core/error_handler.py drops the headers of every raised HTTPException,
+        # so Retry-After does not survive; the status is the part that matters.
+        raise plugin_host_unavailable(exc, method, "/internal/browser/credentials") from exc
     if r.status_code in (401, 403):
         # Do NOT relay plugin-host's 401 to the browser. A 401 on this API means
         # "the OPERATOR's session expired" to every caller in the SPA:
