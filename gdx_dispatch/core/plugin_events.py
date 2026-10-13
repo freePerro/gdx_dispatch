@@ -94,8 +94,11 @@ def _signal_consent_drift(db, drifted: list[str], event_name: str) -> None:
 
             try:
                 catalog = fetch_catalog()
-            except PluginCatalogUnavailable:
-                return  # cannot prove any drift ended; the pending row stays
+            except PluginCatalogUnavailable as exc:
+                # cannot prove any drift ended; the pending row stays
+                log.warning("plugin_consent_drift: catalog unreachable, re-arm "
+                            "check skipped: %s", exc)
+                return
             closed = resolve_drift_signals(db, catalog)
             if closed:
                 log.warning("plugin_consent_drift: closed ended alarm rows %s "

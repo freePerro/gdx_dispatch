@@ -514,7 +514,8 @@ def plugin_consent_drift(
     the alarm when the next drift is signalled (``_signal_consent_drift``)."""
     try:
         catalog = fetch_catalog()
-    except PluginCatalogUnavailable:
+    except PluginCatalogUnavailable as exc:
+        log.warning("consent_drift_catalog_unreachable err=%s", exc)
         return {"catalog_reachable": False, "drifted": []}
     return {"catalog_reachable": True, "drifted": consent_drift(db, catalog)}
 
