@@ -75,7 +75,7 @@ PLUGIN_HOST_RETRY_AFTER = "5"
 
 
 # The transport errors that prove the request never reached plugin-host: it is
-# down or cycling, and retrying is safe. NOT every httpx.TransportError — a
+# down or cycling, and retrying is safe. NOT every transport error httpx raises: a
 # ReadTimeout or RemoteProtocolError means plugin-host may already have run the
 # request, and UnsupportedProtocol is a misconfigured PLUGIN_HOST_URL. Those
 # stay uncaught 500s, recorded in server_errors with their traceback.
