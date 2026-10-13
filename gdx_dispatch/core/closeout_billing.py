@@ -937,14 +937,9 @@ def autodraft_invoice_for_closeout(
     # Install lane (GDXA-793): an installation is a construction contract and
     # is never taxed, so it gets rate 0 — rate-mode at zero, which no later
     # recalc can turn into tax — and the tenant default is never read. This
-    # resolved 7.38% on every install draft before.
-    from gdx_dispatch.core.billing_lanes import lane_for_job  # noqa: PLC0415
-
-    rate: Decimal | None = (
-        Decimal("0")
-        if lane_for_job(job.job_type) == "install"
-        else _resolve_service_rate(db, inv, job)
-    )
+    # resolved 7.38% on every install draft before. The lane is decided by
+    # `resolve_rate_for_job`, the same helper office create uses (GDXA-846).
+    rate = _resolve_draft_rate(db, inv, job)
     inv.tax_rate = rate
 
     if lines_total > 0:
@@ -956,13 +951,24 @@ def autodraft_invoice_for_closeout(
     return inv
 
 
-def _resolve_service_rate(db: Session, inv: Invoice, job: Job) -> Decimal | None:
-    """The customer-aware rate for a repair/service draft: 0 → None for an
-    exempt customer (``resolve_rate`` answers 0), the tenant default
-    otherwise, None when the read fails."""
-    rate: Decimal | None = None
+def _resolve_draft_rate(db: Session, inv: Invoice, job: Job) -> Decimal | None:
+    """The draft's rate, decided by ``resolve_rate_for_job`` (GDXA-846), with
+    the same mapping as office create (``routers/invoices.py``):
+
+    - install lane → 0, rate-mode, tenant default never read — even when the
+      read below fails, because the lane check reads nothing;
+    - exempt customer (the helper answers 0 on a repair) → None;
+    - repair / service call → the tenant default;
+    - a failed read on a repair → None.
+    """
+    from gdx_dispatch.modules.tax.service import (  # noqa: PLC0415
+        is_install_lane,
+        resolve_rate_for_job,
+    )
+
+    install = is_install_lane(job.job_type)
+    rate: Decimal | None = Decimal("0") if install else None
     try:
-        from gdx_dispatch.modules.tax.service import resolve_rate  # noqa: PLC0415
 
         # SAVEPOINT-wrapped (GDXA-160). Be precise about what this buys, because
         # the first version of this comment overclaimed and an audit measured it
@@ -985,10 +991,10 @@ def _resolve_service_rate(db: Session, inv: Invoice, job: Job) -> Decimal | None
         # rather than swallowing, which is what makes `contained_read` the right
         # tool here rather than the wrong one — its rule 5.
         with contained_read(db):
-            candidate = resolve_rate(db, inv.customer_id)
-        if candidate is not None and candidate > 0:
+            candidate = resolve_rate_for_job(db, inv.customer_id, job.job_type)
+        if candidate > 0 or install:
             rate = Decimal(str(candidate))
     except Exception:  # noqa: BLE001 — tax resolution must never block a closeout
         log.exception("autodraft_tax_resolve_failed job=%s", job.id)
-        rate = None
+        rate = Decimal("0") if install else None
     return rate
