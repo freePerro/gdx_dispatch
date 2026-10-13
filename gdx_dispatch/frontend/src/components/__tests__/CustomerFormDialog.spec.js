@@ -175,7 +175,13 @@ describe('CustomerFormDialog footer actions (GDXA-872)', () => {
     await nextTick();
     await nextTick();
     expect(wrapper.get('[data-testid="customer-form-error"]').text()).toBe('Name is required.');
-    expect(scroll).toHaveBeenCalled();
+    expect(scroll).toHaveBeenCalledTimes(1);
+
+    // The same refusal again (the user scrolled up and tapped Save) scrolls again.
+    await wrapper.get('form').trigger('submit');
+    await nextTick();
+    await nextTick();
+    expect(scroll).toHaveBeenCalledTimes(2);
     delete Element.prototype.scrollIntoView;
   });
 });

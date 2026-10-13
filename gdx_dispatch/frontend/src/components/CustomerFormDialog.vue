@@ -189,11 +189,12 @@ const errorEl = ref(null);
 
 // Save is pinned in the footer, so it can be tapped with the form scrolled to
 // the top and the error far below it (GDXA-872): bring the error into view.
-watch(error, async (msg) => {
-  if (!msg) return;
+// Called, not watched: a second "Name is required." is the same value, and a
+// watcher would not fire for it.
+async function revealError() {
   await nextTick();
   errorEl.value?.scrollIntoView?.({ block: "nearest" });
-});
+}
 
 // Unsaved-changes guard — Esc / the header X are disabled while dirty, and
 // Cancel prompts before discarding typed-in work (2026-07-01 UX audit).
@@ -298,6 +299,7 @@ async function submitForm() {
   error.value = "";
   if (!form.value.name.trim()) {
     error.value = "Name is required.";
+    revealError();
     return;
   }
   const payload = {
@@ -334,6 +336,7 @@ async function submitForm() {
     emit("update:visible", false);
   } catch (e) {
     error.value = e?.message || "Failed to save customer.";
+    revealError();
     // A colleague saved first (GDXA-448): show their version in the form, so
     // the user re-applies the edit against it instead of 409ing forever on a
     // token the parent will hand back unchanged on reopen.
