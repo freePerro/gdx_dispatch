@@ -415,7 +415,8 @@ def event_recipients(db: Session, event_name: str) -> tuple[list[str], list[str]
     the event but plugin-host cannot list what is loaded: the caller retries,
     rather than reading every recipient as "not loaded" and dropping the
     event. The retry is bounded by the task's budget (3 × 30 s); there is no
-    plugin retry ledger, so a longer outage still loses the event, loudly.
+    plugin retry ledger, so a longer outage still loses the event, and the
+    only trace is Celery's task-failure line in the worker log.
     """
     ensure_consent_table(db)
     rows = db.execute(

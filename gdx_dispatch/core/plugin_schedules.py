@@ -92,10 +92,11 @@ def due_runs(runners: list[dict], minute: datetime) -> list[dict]:
 
 
 def _fetch_catalog() -> list[dict]:
-    """The live catalog, raising when plugin-host cannot answer. Deliberately
-    not ``plugin_consent.fetch_catalog``, which returns [] on any error: here
-    an empty catalog would read as "nothing is due" and the tick's runs would
-    vanish without a word — the same silent no-op this module exists to end."""
+    """The live catalog, raising when plugin-host cannot answer: an empty
+    catalog would read as "nothing is due" and the tick's runs would vanish
+    without a word — the same silent no-op this module exists to end.
+    ``plugin_consent.fetch_catalog`` has raised too since GDXA-860; this one
+    raises ``PluginHostUnavailable``, the error the tick already retries on."""
     try:
         r = httpx.get(f"{_plugin_host_url()}/api/plugins", timeout=5.0)
     except Exception as exc:
