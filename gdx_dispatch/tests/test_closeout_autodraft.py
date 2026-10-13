@@ -623,6 +623,70 @@ def test_exempt_customer_service_autodraft_is_never_taxed(db) -> None:
     assert by_cat["Parts"].taxable is True
 
 
+def test_autodraft_rate_is_decided_by_resolve_rate_for_job(db, monkeypatch) -> None:
+    """GDXA-846: the autodraft asks the shared lane-aware helper, not an
+    inline lane check. The helper is replaced with one answering a sentinel
+    5%; the sentinel landing on the persisted draft proves the helper's
+    answer IS the rate (the tenant default is 7.375%, so a bypass shows)."""
+    from gdx_dispatch.modules.tax import service as tax_service
+
+    db.add(TaxConfig(default_rate=Decimal("0.07375")))
+    db.commit()
+    calls: list[tuple] = []
+
+    def _spy(_db, customer_id, job_type):
+        calls.append((customer_id, job_type))
+        return Decimal("0.05")
+
+    monkeypatch.setattr(tax_service, "resolve_rate_for_job", _spy)
+
+    job = _seed_job(db)
+    part = _seed_part(db, sell=100.00)
+    resp = _closeout(
+        db, job,
+        hours=1.0,
+        no_parts_used=False,
+        parts=[CloseoutPart(part_id=str(part.id), sku=part.sku, name=part.name, qty=1, unit_cost=50.0)],
+    )
+    inv = db.get(Invoice, UUID(_body(resp)["autodraft_invoice_id"]))
+    assert calls == [(inv.customer_id, "Service Call")]
+    assert float(inv.tax_rate) == pytest.approx(0.05)
+    assert float(inv.tax_amount) == pytest.approx(5.00)
+
+
+@pytest.mark.parametrize(
+    ("job_type", "expected_rate"),
+    [("Installation", Decimal("0")), ("Service Call", None)],
+)
+def test_autodraft_failed_tax_read_keeps_install_at_zero(
+    db, monkeypatch, job_type, expected_rate
+) -> None:
+    """GDXA-846: when the rate read fails, an installation still gets rate 0
+    (rate-mode, so no later recalc can tax it) because the lane check reads
+    nothing; a repair degrades to None, never an invented rate."""
+    from gdx_dispatch.modules.tax import service as tax_service
+
+    db.add(TaxConfig(default_rate=Decimal("0.07375")))
+    db.commit()
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("tax read failed")
+
+    monkeypatch.setattr(tax_service, "resolve_rate_for_job", _boom)
+
+    job = _seed_job(db, job_type=job_type)
+    part = _seed_part(db, sell=100.00)
+    resp = _closeout(
+        db, job,
+        hours=1.0,
+        no_parts_used=False,
+        parts=[CloseoutPart(part_id=str(part.id), sku=part.sku, name=part.name, qty=1, unit_cost=50.0)],
+    )
+    inv = db.get(Invoice, UUID(_body(resp)["autodraft_invoice_id"]))
+    assert inv.tax_rate == expected_rate
+    assert float(inv.tax_amount) == 0.0
+
+
 def test_closeout_billing_suggestion_prices_labor_and_carries_notes(db) -> None:
     """The office create-invoice screen prefills from this endpoint (Doug
     2026-08-07: 'click invoice — it does not show hours or notes from the
