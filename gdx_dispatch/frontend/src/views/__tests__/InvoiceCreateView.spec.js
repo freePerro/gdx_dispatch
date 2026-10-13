@@ -203,6 +203,66 @@ describe('InvoiceCreateView — tax rate', () => {
 
     expect(apiPost.mock.calls[0][1].tax_rate).toBe(0);
   });
+
+  // GDXA-842 (M24): the prefilling estimate's rate override is the quoted
+  // price. The screen sends the estimate to /api/tax/resolve, which orders the
+  // quote after the lane and the exemption (pinned server-side), and the
+  // estimate-aware answer must win over the earlier job-only one.
+  function mockEstimateResolve(estimateAnswer) {
+    apiGet.mockImplementation((url) => {
+      if (url.startsWith('/api/customers')) return Promise.resolve(CUSTOMERS);
+      if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
+      if (url.startsWith('/api/tax/resolve') && url.includes('estimate_id=est-1')) {
+        return Promise.resolve({ rate: estimateAnswer });
+      }
+      if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0.0738, rate_pct: 7.38 });
+      if (url.startsWith('/api/estimates?job_id=job-1')) {
+        return Promise.resolve([{ id: 'est-1', status: 'accepted' }]);
+      }
+      if (url === '/api/estimates/est-1') {
+        return Promise.resolve({
+          lines: [{ description: 'Spring', quantity: 1, unit_price: 100, category: 'parts' }],
+        });
+      }
+      return Promise.resolve([]);
+    });
+  }
+
+  it.each([
+    [0, '0'],
+    [0.05, '5'],
+  ])('seeds the estimate-aware rate %s and POSTs it (GDXA-842)', async (answer, shown) => {
+    routeQuery.value = { job_id: 'job-1' };
+    mockEstimateResolve(answer);
+    apiPost.mockResolvedValue({ id: 'inv-5', invoice_number: 'INV-0005' });
+
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+    const resolveUrls = apiGet.mock.calls.map(([u]) => u).filter((u) => u.startsWith('/api/tax/resolve'));
+    expect(resolveUrls.at(-1)).toBe('/api/tax/resolve?customer_id=cust-1&job_id=job-1&estimate_id=est-1');
+    expect(wrapper.find('[data-testid="invoice-tax-rate"]').element.value).toBe(shown);
+
+    await wrapper.find('[data-testid="invoice-create-submit"]').trigger('click');
+    await flushPromises();
+    expect(apiPost.mock.calls[0][1].tax_rate).toBeCloseTo(answer, 6);
+    expect(apiPost.mock.calls[0][1].source_estimate_id).toBe('est-1');
+  });
+
+  it('drops the estimate from the resolve once the link is cleared', async () => {
+    routeQuery.value = { job_id: 'job-1' };
+    mockEstimateResolve(0);
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="invoice-tax-rate"]').element.value).toBe('0');
+    // A customer the job does not belong to clears the job and the link.
+    const custSelect = wrapper.find('[data-testid="invoice-customer-dropdown"]');
+    custSelect.element.value = 'cust-2';
+    await custSelect.trigger('change');
+    await flushPromises();
+    const resolveUrls = apiGet.mock.calls.map(([u]) => u).filter((u) => u.startsWith('/api/tax/resolve'));
+    expect(resolveUrls.at(-1)).not.toContain('estimate_id');
+    expect(wrapper.find('[data-testid="invoice-tax-rate"]').element.value).toBe('7.38');
+  });
 });
 
 describe('InvoiceCreateView — query prefill', () => {

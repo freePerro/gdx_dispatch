@@ -304,6 +304,7 @@ def delete_exemption(
 def resolve_rate_endpoint(
     customer_id: str | None = None,
     job_id: str | None = None,
+    estimate_id: str | None = None,
     user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
@@ -313,8 +314,26 @@ def resolve_rate_endpoint(
 
     ``job_id`` (GDXA-793): an install-lane job is a construction contract
     and is never taxed, so it answers 0 without reading the tenant default.
-    An unknown or malformed id falls through to the customer answer."""
+    ``estimate_id`` (GDXA-842): the estimate the bill was priced from; its own
+    rate override is the quoted rate, ordered after the lane and the
+    exemption by ``resolve_rate_for_job``, the same as invoice create.
+    An unknown or malformed id falls through to the answer without it."""
     _ = user
+    quoted_rate = None
+    if estimate_id:
+        from gdx_dispatch.modules.proposals.models import Estimate  # noqa: PLC0415
+
+        try:
+            eid = UUID(str(estimate_id))
+        except ValueError:
+            log.info("tax resolve: malformed estimate_id %r, ignoring it", estimate_id)
+            eid = None
+        if eid is not None:
+            est_rate = db.execute(
+                select(Estimate.tax_rate).where(Estimate.id == eid, Estimate.deleted_at.is_(None))
+            ).scalar_one_or_none()
+            if est_rate is not None:
+                quoted_rate = Decimal(str(est_rate))
     job_type = None
     if job_id:
         from gdx_dispatch.models.tenant_models import Job  # noqa: PLC0415
@@ -328,5 +347,5 @@ def resolve_rate_endpoint(
             job_type = db.execute(
                 select(Job.job_type).where(Job.id == jid, Job.deleted_at.is_(None))
             ).scalar_one_or_none()
-    rate = resolve_rate_for_job(db, customer_id, job_type)
+    rate = resolve_rate_for_job(db, customer_id, job_type, quoted_rate=quoted_rate)
     return {"rate": float(rate), "rate_pct": float(rate * 100)}

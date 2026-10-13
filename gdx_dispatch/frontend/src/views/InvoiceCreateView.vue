@@ -628,9 +628,13 @@ async function resolveTaxRate() {
     // Customer-aware: returns 0 for tax-exempt customers, else the tenant
     // default. Job-aware (GDXA-793): an installation job is never taxed, so
     // it seeds 0. The field stays editable — this only seeds it.
+    // The prefilling estimate's own rate is the quoted price (M24, GDXA-842);
+    // the server orders it after the lane and the exemption, so ask it rather
+    // than seeding the estimate's rate here.
     const params = new URLSearchParams();
     if (cid) params.set('customer_id', cid);
     if (jid) params.set('job_id', jid);
+    if (sourceEstimateId.value) params.set('estimate_id', sourceEstimateId.value);
     const qs = params.toString();
     const url = qs ? `/api/tax/resolve?${qs}` : '/api/tax/resolve';
     const r = await api.get(url, { suppressErrorToast: true });
@@ -937,6 +941,8 @@ async function prefillFromJobEstimate(jobId) {
     // Only claim provenance once lines actually landed — an estimate that
     // yielded no lines did not price this invoice.
     sourceEstimateId.value = latest.id;
+    // The seed depends on the estimate now too; the newer request wins.
+    await resolveTaxRate();
     if (!form.value.notes) form.value.notes = est.description || est.notes || '';
     await resolveInheritedHidePrices({ ...est, id: latest.id });
   } catch (e) {

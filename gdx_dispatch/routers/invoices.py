@@ -1605,20 +1605,26 @@ def create_invoice(
     # the legacy flat-tax_amount path stand, so callers that pass an
     # explicit tax_amount keep working unchanged.
     resolved_rate: Decimal | None = None
+    # M24 (money audit 2026-08-04): a per-estimate rate override IS the quoted
+    # price. Falling through to the tenant default re-taxed an estimate
+    # deliberately quoted at 0%, billing more than the customer accepted.
+    # Either estimate field counts, the same as `hide_source` below: the rate
+    # the customer was quoted does not depend on whether the lines were copied
+    # or built by the caller (GDXA-842).
+    rate_source = estimate if estimate is not None else src_estimate
+    quoted_rate = (
+        Decimal(str(rate_source.tax_rate))
+        if rate_source is not None and getattr(rate_source, "tax_rate", None) is not None
+        else None
+    )
     if payload.tax_rate is not None:
         resolved_rate = Decimal(str(payload.tax_rate))
-    elif estimate is not None and getattr(estimate, "tax_rate", None) is not None:
-        # M24 (money audit 2026-08-04): a per-estimate rate override IS the
-        # quoted price. Falling through to the tenant default re-taxed an
-        # estimate deliberately quoted at 0%, billing more than the customer
-        # accepted.
-        resolved_rate = Decimal(str(estimate.tax_rate))
     else:
         # The job lane decides first (GDXA-793/796): an installation is a
         # construction contract and is never taxed. `resolve_rate_for_job`
-        # answers 0 for it without reading the tenant default; a repair or
-        # service call gets `resolve_rate` (0 for an exempt customer, else
-        # the tenant default).
+        # answers 0 for it without reading the tenant default; then 0 for an
+        # exempt customer; then the quoted rate; then the tenant default. A
+        # quote cannot tax an installation or an exempt customer (GDXA-842).
         from gdx_dispatch.modules.tax.service import is_install_lane, resolve_rate_for_job
 
         job_type = job.job_type if job is not None else None
@@ -1641,16 +1647,21 @@ def create_invoice(
             # per site; that path is only whole once the deferral is fixed in
             # `modules/proposals/totals.py`.
             with contained_read(db):
-                candidate = resolve_rate_for_job(db, customer_id_value, job_type)
+                candidate = resolve_rate_for_job(
+                    db, customer_id_value, job_type, quoted_rate=quoted_rate
+                )
             # >0 → rate-mode. An installation's 0 is rate-mode too, so no later
-            # recalc can tax it; an exempt customer's 0 stays NULL (the legacy
-            # flat-tax_amount path, unchanged).
-            if candidate > 0 or is_install_lane(job_type):
+            # recalc can tax it, and so is any 0 on an estimate-quoted bill (as
+            # it always was under M24); an exempt customer's 0 with no quote
+            # stays NULL (the legacy flat-tax_amount path, unchanged).
+            if candidate > 0 or is_install_lane(job_type) or quoted_rate is not None:
                 resolved_rate = candidate
         except Exception:
             log.exception("invoice_create_tax_resolve_failed")
             # The lane check reads nothing, so an installation stays at 0
-            # even when the savepoint itself fails.
+            # even when the savepoint itself fails. On a quoted bill only the
+            # exemption read can fail, and an unknown exemption must not tax an
+            # exempt customer at the quote: NULL, the same as the unquoted path.
             resolved_rate = Decimal("0") if is_install_lane(job_type) else None
     initial_tax = _money(payload.tax_amount)
     if resolved_rate is not None and resolved_rate > 0:

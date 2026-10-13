@@ -89,7 +89,10 @@ def is_install_lane(job_type: str | None) -> bool:
 
 
 def resolve_rate_for_job(
-    db: Session, customer_id: UUID | str | None, job_type: str | None
+    db: Session,
+    customer_id: UUID | str | None,
+    job_type: str | None,
+    quoted_rate: Decimal | None = None,
 ) -> Decimal:
     """The tax rate for a job's bill, with the job lane applied first.
 
@@ -99,11 +102,19 @@ def resolve_rate_for_job(
     separate issues.
 
     - Install lane → 0, without reading the tenant default.
-    - Repair / service call / unlaned → `resolve_rate`: 0 for an exempt
-      customer, else the tenant default.
+    - Exempt customer → 0, on any lane.
+    - `quoted_rate` (an estimate's own rate override, M24) → that rate: the
+      customer accepted it, so the tenant default must not replace it
+      (GDXA-842). It cannot tax an installation or an exempt customer — both
+      are never taxed (Doug, 2026-10-12).
+    - Otherwise the tenant default.
 
     Like `resolve_rate`, this raises on a DB error; callers own containment.
     """
     if is_install_lane(job_type):
         return _ZERO
-    return resolve_rate(db, customer_id)
+    if quoted_rate is None:
+        return resolve_rate(db, customer_id)
+    if is_customer_exempt(db, customer_id):
+        return _ZERO
+    return Decimal(str(quoted_rate))
