@@ -23,6 +23,7 @@ Per Doug 2026-04-29 (UX audit F-11): "I like b but can we make it so the
 tenant can choose how they are? or what sequential number to start with?"
 """
 from gdx_dispatch.modules.numbering.service import (  # noqa: F401
+    allocate_job_number,
     apply_template,
     next_job_number,
     preview,

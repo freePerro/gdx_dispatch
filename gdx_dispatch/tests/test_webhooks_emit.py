@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+from contextlib import contextmanager
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -77,16 +79,39 @@ def _sub(db, events, *, secret="s3cr3t", active=True, deleted=False, tenant=TENA
     return sub
 
 
+class _Enqueued:
+    """The ``broker_enqueue`` calls (conftest) that queued ``task``. Dispatch
+    queues through ``core.celery_app.enqueue_bounded``, never ``.delay()``
+    (GDXA-825), and the stub records every call to it; this counts one task's
+    share, so a test reads ``delay.call_count`` as it did before."""
+
+    def __init__(self, enqueue, task):  # noqa: ANN001
+        self._enqueue, self._task = enqueue, task
+
+    @property
+    def calls(self) -> list:
+        return [c for c in self._enqueue.call_args_list if c.args and c.args[0] is self._task]
+
+    @property
+    def call_count(self) -> int:
+        return len(self.calls)
+
+
+@contextmanager
+def _enqueues(enqueue, task):  # noqa: ANN001
+    yield _Enqueued(enqueue, task)
+
+
 # ---------------------------------------------------------------------------
 # F1 — fan-out
 # ---------------------------------------------------------------------------
 
-def test_fanout_two_receivers_no_integrityerror():
+def test_fanout_two_receivers_no_integrityerror(broker_enqueue):
     db = _session()
     install_webhook_dispatch_hook()
     _sub(db, ["invoice.paid"])
     _sub(db, ["invoice.paid"])
-    with patch.object(tasks_mod.deliver_webhook_task, "delay") as delay:
+    with _enqueues(broker_enqueue, tasks_mod.deliver_webhook_task) as delay:
         n = emit_domain_event(db, "invoice.paid", "inv-1", {"invoice_id": "inv-1"}, tenant_id=TENANT)
         db.commit()
     assert n == 2
@@ -94,7 +119,7 @@ def test_fanout_two_receivers_no_integrityerror():
     assert delay.call_count == 2  # dispatched on commit, once per receiver
 
 
-def test_idempotency_key_not_truncated_for_uuid_ids():
+def test_idempotency_key_not_truncated_for_uuid_ids(broker_enqueue):
     # Real tenant/entity ids are UUIDs; a raw "{tenant}:{event}:{entity}:{sub}"
     # string overruns the 100-char column. Two subscribers must still receive
     # DISTINCT keys — a [:100] slice would chop the sub-id suffix and merge them
@@ -104,7 +129,7 @@ def test_idempotency_key_not_truncated_for_uuid_ids():
     big_tenant = str(uuid4())
     _sub(db, ["invoice.paid"], tenant=big_tenant)
     _sub(db, ["invoice.paid"], tenant=big_tenant)
-    with patch.object(tasks_mod.deliver_webhook_task, "delay"):
+    with _enqueues(broker_enqueue, tasks_mod.deliver_webhook_task):
         n = emit_domain_event(db, "invoice.paid", str(uuid4()), {}, tenant_id=big_tenant)
         db.commit()
     assert n == 2
@@ -113,14 +138,14 @@ def test_idempotency_key_not_truncated_for_uuid_ids():
     assert all(len(k) <= 100 for k in keys)
 
 
-def test_only_matching_subscriptions_receive():
+def test_only_matching_subscriptions_receive(broker_enqueue):
     db = _session()
     install_webhook_dispatch_hook()
     _sub(db, ["invoice.paid"])
     _sub(db, ["estimate.accepted"])
     _sub(db, ["invoice.paid"], active=False)
     _sub(db, ["invoice.paid"], deleted=True)
-    with patch.object(tasks_mod.deliver_webhook_task, "delay"):
+    with _enqueues(broker_enqueue, tasks_mod.deliver_webhook_task):
         n = emit_domain_event(db, "invoice.paid", "inv-2", {}, tenant_id=TENANT)
         db.commit()
     assert n == 1  # only the active, non-deleted, matching one
@@ -134,13 +159,13 @@ def test_suppress_and_no_tenant_emit_nothing():
     assert db.execute(select(WebhookDelivery)).scalars().all() == []
 
 
-def test_suppress_domain_events_contextvar_silences():
+def test_suppress_domain_events_contextvar_silences(broker_enqueue):
     from gdx_dispatch.core.webhooks.emit import suppress_domain_events
 
     db = _session()
     install_webhook_dispatch_hook()
     _sub(db, ["invoice.paid"])
-    with patch.object(tasks_mod.deliver_webhook_task, "delay"):
+    with _enqueues(broker_enqueue, tasks_mod.deliver_webhook_task):
         with suppress_domain_events():
             assert emit_domain_event(db, "invoice.paid", "x", {}, tenant_id=TENANT) == 0
         # outside the block it emits normally
@@ -194,12 +219,13 @@ def test_transition_paid_to_paid_is_noop():
     assert calls == []  # already paid → no re-emit
 
 
-def test_transition_to_paid_stages_real_delivery_unmocked():
+def test_transition_to_paid_stages_real_delivery_unmocked(broker_enqueue):
     # The mocked tests above prove the choke point CALLS emit; this one runs the
     # REAL emit on a REAL session with a live subscription — exercising the
     # select, the SAVEPOINT, and after_commit dispatch (audit: "tests are theater"
-    # otherwise). Only emit_domain_event is unmocked; ledger flag + Celery delay
-    # are stubbed (no gl_settings table / no broker in the unit harness).
+    # otherwise). Only emit_domain_event is unmocked; the ledger flag and the
+    # broker enqueue are stubbed (no gl_settings table / no broker in the unit
+    # harness).
     from gdx_dispatch.modules.ledger import service as ledger_service
 
     db = _session()
@@ -210,7 +236,7 @@ def test_transition_to_paid_stages_real_delivery_unmocked():
         total=250.0, invoice_number="INV-77", billing_type="standard",
     )
     with patch.object(ledger_service, "ledger_posting_enabled", return_value=False), \
-         patch.object(tasks_mod.deliver_webhook_task, "delay") as delay:
+         _enqueues(broker_enqueue, tasks_mod.deliver_webhook_task) as delay:
         ledger_service.transition_invoice_status(db, inv, "paid")
         db.commit()
     rows = db.execute(select(WebhookDelivery)).scalars().all()
@@ -234,11 +260,11 @@ def test_customer_id_is_flush_time_default():
 # duplicate re-emit — SAVEPOINT swallow
 # ---------------------------------------------------------------------------
 
-def test_duplicate_emit_swallowed():
+def test_duplicate_emit_swallowed(broker_enqueue):
     db = _session()
     install_webhook_dispatch_hook()
     _sub(db, ["invoice.paid"])
-    with patch.object(tasks_mod.deliver_webhook_task, "delay"):
+    with _enqueues(broker_enqueue, tasks_mod.deliver_webhook_task):
         assert emit_domain_event(db, "invoice.paid", "inv-1", {}, tenant_id=TENANT) == 1
         db.commit()
         # same entity+subscription again → duplicate idempotency_key → swallowed
@@ -253,18 +279,18 @@ def test_duplicate_emit_swallowed():
 # F2 — commit/rollback dispatch semantics
 # ---------------------------------------------------------------------------
 
-def test_rollback_drops_dispatch():
+def test_rollback_drops_dispatch(broker_enqueue):
     db = _session()
     install_webhook_dispatch_hook()
     _sub(db, ["invoice.paid"])
-    with patch.object(tasks_mod.deliver_webhook_task, "delay") as delay:
+    with _enqueues(broker_enqueue, tasks_mod.deliver_webhook_task) as delay:
         emit_domain_event(db, "invoice.paid", "inv-1", {}, tenant_id=TENANT)
         db.rollback()
     assert delay.call_count == 0
     assert db.execute(select(WebhookDelivery)).scalars().all() == []
 
 
-def test_emit_still_dispatches_when_consent_probe_savepoint_rolls_back():
+def test_emit_still_dispatches_when_consent_probe_savepoint_rolls_back(broker_enqueue):
     # Regression: on a FRESH box the plugin_consent table doesn't exist, so
     # any_event_consent's SELECT fails and rolls back its SAVEPOINT.
     # after_rollback fires on savepoint rollbacks too — an earlier version cleared
@@ -287,14 +313,14 @@ def test_emit_still_dispatches_when_consent_probe_savepoint_rolls_back():
     db = _session()
     install_webhook_dispatch_hook()
     _sub(db, ["invoice.paid"])
-    with patch.object(tasks_mod.deliver_webhook_task, "delay") as delay:
+    with _enqueues(broker_enqueue, tasks_mod.deliver_webhook_task) as delay:
         n = emit_domain_event(db, "invoice.paid", "inv-fresh", {}, tenant_id=TENANT)
         db.commit()
     assert n == 1
     assert delay.call_count == 1  # dispatched despite the probe savepoint rollback
 
 
-def test_emit_never_commits_callers_txn_with_consent_table_present():
+def test_emit_never_commits_callers_txn_with_consent_table_present(broker_enqueue):
     # Regression: the plugin-sink consent check must be READ-ONLY. An earlier
     # version called ensure_consent_table() (which commits) in the hot path,
     # which would commit the caller's half-built invoice/job mid-emit. With the
@@ -306,7 +332,7 @@ def test_emit_never_commits_callers_txn_with_consent_table_present():
     install_webhook_dispatch_hook()
     ensure_consent_table(db)  # commits; happens BEFORE emit
     _sub(db, ["invoice.paid"])
-    with patch.object(tasks_mod.deliver_webhook_task, "delay") as delay:
+    with _enqueues(broker_enqueue, tasks_mod.deliver_webhook_task) as delay:
         emit_domain_event(db, "invoice.paid", "inv-x", {}, tenant_id=TENANT)
         # This test built the whole GDXA-50 scenario and then threw the evidence
         # away: the premature dispatch happened right here, inside an unbound
@@ -318,7 +344,7 @@ def test_emit_never_commits_callers_txn_with_consent_table_present():
     assert db.execute(select(WebhookDelivery)).scalars().all() == []
 
 
-def test_consent_probe_savepoint_does_not_dispatch_before_business_commit():
+def test_consent_probe_savepoint_does_not_dispatch_before_business_commit(broker_enqueue):
     # GDXA-50 guard 1. after_commit is NOT root-only: SessionTransaction.commit
     # dispatches it whenever `self._parent is None or self.nested`, so every
     # SAVEPOINT release fires it. On any box where the plugin_consent table
@@ -347,7 +373,7 @@ def test_consent_probe_savepoint_does_not_dispatch_before_business_commit():
     install_webhook_dispatch_hook()
     ensure_consent_table(db)  # commits; the probe's SAVEPOINT now RELEASES
     _sub(db, ["invoice.paid"])
-    with patch.object(tasks_mod.deliver_webhook_task, "delay") as delay:
+    with _enqueues(broker_enqueue, tasks_mod.deliver_webhook_task) as delay:
         n = emit_domain_event(db, "invoice.paid", "inv-probe", {}, tenant_id=TENANT)
         assert n == 1
         assert delay.call_count == 0, "dispatched on the consent probe's SAVEPOINT release"
@@ -355,7 +381,7 @@ def test_consent_probe_savepoint_does_not_dispatch_before_business_commit():
     assert delay.call_count == 1  # exactly once, and only on the business commit
 
 
-def test_duplicate_reemit_still_dispatches_the_first_delivery():
+def test_duplicate_reemit_still_dispatches_the_first_delivery(broker_enqueue):
     # GDXA-50 guard 2. A legitimate re-emit of the same entity inside ONE business
     # transaction is the case emit's per-row SAVEPOINT exists for: the duplicate
     # idempotency key raises IntegrityError and the re-emit is a no-op. But that
@@ -366,7 +392,7 @@ def test_duplicate_reemit_still_dispatches_the_first_delivery():
     db = _session()
     install_webhook_dispatch_hook()
     _sub(db, ["invoice.paid"])
-    with patch.object(tasks_mod.deliver_webhook_task, "delay") as delay:
+    with _enqueues(broker_enqueue, tasks_mod.deliver_webhook_task) as delay:
         assert emit_domain_event(db, "invoice.paid", "inv-dup", {}, tenant_id=TENANT) == 1
         # same entity+subscription, same transaction → duplicate key → no-op
         assert emit_domain_event(db, "invoice.paid", "inv-dup", {}, tenant_id=TENANT) == 0
@@ -376,7 +402,7 @@ def test_duplicate_reemit_still_dispatches_the_first_delivery():
     assert delay.call_count == 1  # the surviving delivery IS dispatched
 
 
-def test_rollback_drops_plugin_and_workflow_dispatch_too():
+def test_rollback_drops_plugin_and_workflow_dispatch_too(broker_enqueue):
     # GDXA-50, worst severity. Unlike deliver_webhook_task, the plugin and
     # workflow sinks carry their payload INLINE and have no row-existence guard,
     # so a premature dispatch SUCCEEDS: plugin-host is POSTed and the automation
@@ -384,13 +410,36 @@ def test_rollback_drops_plugin_and_workflow_dispatch_too():
     # never committed. Two distinct entities in one business transaction is
     # enough: the 2nd emit's consent-probe SAVEPOINT release drained the 1st
     # emit's plugin and workflow queues before the caller rolled back.
-    from gdx_dispatch.core.plugin_consent import ensure_consent_table
     from gdx_dispatch.core.plugin_events import deliver_plugin_event_task
-    from gdx_dispatch.modules.workflows.models import WorkflowRule
     from gdx_dispatch.modules.workflows.tasks import run_workflow_rules_task
 
     db = _session()
     install_webhook_dispatch_hook()
+    _stage_all_three_sinks(db)
+
+    with _enqueues(broker_enqueue, tasks_mod.deliver_webhook_task) as wh, \
+         _enqueues(broker_enqueue, deliver_plugin_event_task) as plugin, \
+         _enqueues(broker_enqueue, run_workflow_rules_task) as workflow:
+        emit_domain_event(db, "invoice.paid", "inv-p1", {"invoice_id": "inv-p1"}, tenant_id=TENANT)
+        emit_domain_event(db, "invoice.paid", "inv-p2", {"invoice_id": "inv-p2"}, tenant_id=TENANT)
+        db.rollback()
+    assert db.execute(select(WebhookDelivery)).scalars().all() == []
+    assert wh.call_count == 0
+    assert plugin.call_count == 0, "plugin-host POSTed for a rolled-back invoice"
+    assert workflow.call_count == 0, "automation rule ran for a rolled-back invoice"
+
+
+# ---------------------------------------------------------------------------
+# GDXA-825 — dispatch runs in the committing request; a dead broker must not
+# hold that response
+# ---------------------------------------------------------------------------
+
+def _stage_all_three_sinks(db) -> None:  # noqa: ANN001
+    """A webhook subscriber, a consenting plugin and an active workflow rule,
+    all on invoice.paid — so one emit stages one item for each sink."""
+    from gdx_dispatch.core.plugin_consent import ensure_consent_table
+    from gdx_dispatch.modules.workflows.models import WorkflowRule
+
     WorkflowRule.__table__.create(bind=db.get_bind(), checkfirst=True)
     ensure_consent_table(db)
     db.execute(
@@ -406,16 +455,91 @@ def test_rollback_drops_plugin_and_workflow_dispatch_too():
     db.commit()
     _sub(db, ["invoice.paid"])
 
-    with patch.object(tasks_mod.deliver_webhook_task, "delay") as wh, \
-         patch.object(deliver_plugin_event_task, "delay") as plugin, \
-         patch.object(run_workflow_rules_task, "delay") as workflow:
-        emit_domain_event(db, "invoice.paid", "inv-p1", {"invoice_id": "inv-p1"}, tenant_id=TENANT)
-        emit_domain_event(db, "invoice.paid", "inv-p2", {"invoice_id": "inv-p2"}, tenant_id=TENANT)
-        db.rollback()
-    assert db.execute(select(WebhookDelivery)).scalars().all() == []
-    assert wh.call_count == 0
-    assert plugin.call_count == 0, "plugin-host POSTed for a rolled-back invoice"
-    assert workflow.call_count == 0, "automation rule ran for a rolled-back invoice"
+
+def test_every_sink_queues_through_the_bounded_helper(broker_enqueue):
+    # The guard: a staged subscriber, plugin and rule each reach the broker only
+    # through enqueue_bounded. A bare .delay() would bypass the stub and, with
+    # no broker, take ~19 s per item; patch the three .delay attributes to fail
+    # loudly so a regression names itself instead of just running slow.
+    from gdx_dispatch.core.plugin_events import deliver_plugin_event_task
+    from gdx_dispatch.modules.workflows.tasks import run_workflow_rules_task
+
+    db = _session()
+    install_webhook_dispatch_hook()
+    _stage_all_three_sinks(db)
+    bare = AssertionError("dispatch called .delay() — route it through enqueue_bounded")
+    with patch.object(tasks_mod.deliver_webhook_task, "delay", side_effect=bare), \
+         patch.object(deliver_plugin_event_task, "delay", side_effect=bare), \
+         patch.object(run_workflow_rules_task, "delay", side_effect=bare):
+        emit_domain_event(db, "invoice.paid", "inv-b1", {"invoice_id": "inv-b1"}, tenant_id=TENANT)
+        db.commit()
+
+    delivery = db.execute(select(WebhookDelivery)).scalars().one()
+    wh = _Enqueued(broker_enqueue, tasks_mod.deliver_webhook_task)
+    plugin = _Enqueued(broker_enqueue, deliver_plugin_event_task)
+    workflow = _Enqueued(broker_enqueue, run_workflow_rules_task)
+    assert [c.kwargs["args"] for c in wh.calls] == [[str(delivery.id)]]
+    assert plugin.call_count == 1
+    assert plugin.calls[0].kwargs["args"][0]["event"] == "invoice.paid"
+    assert workflow.call_count == 1
+    assert workflow.calls[0].kwargs["args"][0]["event_type"] == "invoice.paid"
+    # The stub answered as a dead broker: the row is committed and left for
+    # the retry sweep, exactly as a real outage leaves it.
+    assert delivery.status == "pending" and delivery.next_retry_at is None
+
+
+def test_a_commit_with_nothing_staged_does_not_enqueue(broker_enqueue):
+    db = _session()
+    install_webhook_dispatch_hook()
+    _sub(db, ["estimate.accepted"])
+    emit_domain_event(db, "invoice.paid", "inv-none", {}, tenant_id=TENANT)
+    db.commit()
+    assert broker_enqueue.call_count == 0
+
+
+@pytest.mark.real_broker_enqueue
+def test_enqueue_bounded_drops_the_result_and_bounds_the_connection(monkeypatch):
+    # What the helper passes: the result is not kept (the 19 s was the result
+    # store), the publish is not retried, and it rides the bounded connection.
+    from gdx_dispatch.core import celery_app as celery_mod
+
+    sent = {}
+    monkeypatch.setattr(
+        tasks_mod.deliver_webhook_task, "apply_async",
+        lambda **kw: sent.update(kw),
+    )
+    celery_mod.enqueue_bounded(tasks_mod.deliver_webhook_task, args=["d-1"])
+    assert sent["args"] == ["d-1"]
+    assert sent["kwargs"] == {}
+    assert sent["ignore_result"] is True
+    assert sent["retry"] is False
+    assert sent["connection"] is not None
+
+
+@pytest.mark.real_broker_enqueue
+def test_a_dead_broker_costs_the_committing_request_seconds_not_minutes(monkeypatch):
+    # The real thing, no stub: commit an invoice.paid with all three sinks staged
+    # while the broker refuses connections. Before GDXA-825 each bare .delay()
+    # spent ~19 s retrying the result store (measured on docker-app 2026-10-12:
+    # 19.11 s webhook, 19.03 s plugin), so this commit took ~57 s. Bounded and
+    # result-less, the three refusals cost well under a second together.
+    from gdx_dispatch.core.celery_app import celery_app
+
+    dead = "redis://127.0.0.1:1/0"  # port 1: nothing listens, connect is refused
+    monkeypatch.setattr(celery_app.conf, "broker_url", dead)
+    monkeypatch.setattr(celery_app.conf, "broker_write_url", dead)
+    db = _session()
+    install_webhook_dispatch_hook()
+    _stage_all_three_sinks(db)
+
+    emit_domain_event(db, "invoice.paid", "inv-dead", {"invoice_id": "inv-dead"}, tenant_id=TENANT)
+    started = time.monotonic()
+    db.commit()  # never raises: each sink's enqueue failure is caught and logged
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 10, f"commit held {elapsed:.1f}s on a dead broker"
+    delivery = db.execute(select(WebhookDelivery)).scalars().one()
+    assert delivery.status == "pending" and delivery.next_retry_at is None
 
 
 def test_retry_sweep_rescues_stranded_null_next_retry():

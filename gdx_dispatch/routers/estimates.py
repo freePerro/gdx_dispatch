@@ -42,6 +42,7 @@ from gdx_dispatch.modules.estimates_features import (
     get_features,
     require_line_margin_override_allowed,
 )
+from gdx_dispatch.modules.numbering import allocate_job_number
 from gdx_dispatch.modules.phone_com.scheduled import ScheduleLinkSmsIn  # the /schedule-sms composer
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
@@ -2764,9 +2765,24 @@ def _create_job_from_estimate(estimate, db: Session, actor: str) -> object:
 
     Lands the new job in the "Order Doors" holding area so the dispatcher
     sees a clear "doors pending arrival" queue. Audit-logs both sides.
+
+    The job takes the tenant's next job number, as the desktop create does:
+    allocated in its own session and committed before the job, and a
+    numbering failure leaves the job unnumbered rather than unmade
+    (GDXA-832). The tenant is the estimate's company_id, which every estimate
+    create sets from the request tenant. The holding area is looked up first
+    so a failure there burns no number.
     """
+    holding_area_id = _holding_area_id_by_name(db, "Order Doors")
+    customer_name = None
+    if estimate.customer_id is not None:
+        customer_name = db.execute(
+            select(Customer.name).where(Customer.id == estimate.customer_id)
+        ).scalar_one_or_none()
+    job_number = allocate_job_number(estimate.company_id or "", customer_name=customer_name)
     new_job = Job(
         id=uuid4(),
+        job_number=job_number,
         customer_id=estimate.customer_id,
         title=(estimate.label or f"Estimate {estimate.estimate_number}").strip()[:200],
         description=estimate.description or estimate.notes,
@@ -2784,7 +2800,7 @@ def _create_job_from_estimate(estimate, db: Session, actor: str) -> object:
         is_demo=False,
         created_at=utcnow(),
         updated_at=utcnow(),
-        holding_area_id=_holding_area_id_by_name(db, "Order Doors"),
+        holding_area_id=holding_area_id,
     )
     db.add(new_job)
     db.flush()

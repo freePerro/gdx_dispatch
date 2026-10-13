@@ -87,6 +87,38 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
 
 celery_app = create_celery()
 
+# A broker connection that gives up in seconds: no kombu reconnect loop
+# underneath a request. See enqueue_bounded.
+BOUNDED_BROKER_TRANSPORT = {"socket_connect_timeout": 2, "socket_timeout": 2, "max_retries": 0}
+
+
+def enqueue_bounded(task, *, args: list, kwargs: dict | None = None) -> None:
+    """Queue ``task`` from a request path without the ~19 s a dead broker
+    costs. Raises on a dead broker; the caller catches it, because only the
+    caller knows what not-queued costs (GDXA-825).
+
+    Two waits, two fixes, both measured on the docker-app image with no
+    broker reachable (2026-10-12):
+
+    * a plain ``.delay()`` on a task that keeps its result first subscribes to
+      the RESULT STORE, and Celery retries that for 19.1 s before raising
+      RuntimeError. ``ignore_result=True`` per call skips it: 0.07 s. Per call,
+      not per task, so it holds for a task whose decorator another module owns;
+    * the broker connection itself is bounded (connect/socket timeouts,
+      ``max_retries=0``, ``retry=False``), so kombu does not loop on the
+      connect. Only the refused-connection case was measured; a host that
+      drops packets should give up at the 2 s socket timeouts, untested.
+
+    Callers must not need the task's return value: none is stored. The money
+    paths' sibling is ``tasks.stale_intent_sweep.apply_async_bounded``, which
+    bounds the connection with the same options but keeps results.
+    """
+    with celery_app.connection_for_write(transport_options=BOUNDED_BROKER_TRANSPORT) as conn:
+        task.apply_async(
+            args=args, kwargs=kwargs or {}, retry=False, connection=conn, ignore_result=True
+        )
+
+
 # GL chokepoint tripwire (S4): workers write invoice status too (QB sync) —
 # the exact silent background path the guard exists for. create_app() covers
 # the API process only; workers boot through this module. Idempotent.

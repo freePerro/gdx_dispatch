@@ -53,6 +53,11 @@ gdx_dispatch/tests/test_models_hub_imports.py                platform-core
 # per-test clones, the stale-template sweep (GDXA-660). Tests are not a covered
 # root, so this rule is not demanded by the gate, but it must keep matching.
 gdx_dispatch/tests/fixtures/pg.py                            platform-core
+# The suite's own conftest (autouse isolation: module state, fake Redis, dead
+# broker) and the guard on its Redis fixture (GDXA-109, GDXA-828). Not gated,
+# as above.
+gdx_dispatch/tests/conftest.py                               platform-core
+gdx_dispatch/tests/test_redis_isolation_fixture.py           platform-core
 .github/*                                                    platform-core
 scripts/*                                                    platform-core
 tools/*                                                      platform-core

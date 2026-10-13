@@ -5,6 +5,7 @@ so two concurrent jobs creating in parallel can't grab the same seq.
 """
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 from uuid import UUID
@@ -13,6 +14,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.tenant_settings import TenantSettings
+
+log = logging.getLogger(__name__)
 
 _INITIALS_RE = re.compile(r"[A-Za-z]+")
 
@@ -121,3 +124,22 @@ def next_job_number(
     )
 
     return rendered
+
+
+def allocate_job_number(tenant_id: UUID | str, *, customer_name: str | None = None) -> str | None:
+    """The next job number in a session of its own, committed before the job.
+
+    The FOR UPDATE on tenant_settings is held for the allocation only, and a
+    numbering failure leaves the job unnumbered rather than unmade: it logs
+    and returns None (GDXA-834).
+    """
+    from gdx_dispatch.core.database import SessionLocal  # noqa: PLC0415
+
+    try:
+        with SessionLocal() as cdb:
+            number = next_job_number(cdb, tenant_id, customer_name=customer_name)
+            cdb.commit()
+            return number
+    except Exception:
+        log.exception("job_number_allocation_failed tenant=%s", tenant_id)
+        return None

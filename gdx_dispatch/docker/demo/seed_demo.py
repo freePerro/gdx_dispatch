@@ -42,6 +42,7 @@ from gdx_dispatch.core.database import SessionLocal
 from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.models.tenant_models import Customer, Invoice, Job, Technician, User
 from gdx_dispatch.modules.equipment.models import CustomerEquipment
+from gdx_dispatch.modules.numbering import allocate_job_number
 
 NOW = datetime.now(timezone.utc)
 ADMIN_EMAIL = os.getenv("GDX_ADMIN_EMAIL", "demo@gdxdispatch.com")  # pii-ok: public demo login
@@ -204,6 +205,7 @@ def seed() -> None:
             completed = sched if lifecycle == "completed" else None
             db.add(Job(
                 customer_id=cust_ids[ci], title=title, job_type=jtype,
+                job_number=allocate_job_number(tenant_id, customer_name=CUSTOMERS[ci][0]),
                 lifecycle_stage=lifecycle, dispatch_status=dispatch,
                 billing_status=billing, status=lifecycle,
                 scheduled_at=sched, completed_at=completed,
@@ -220,6 +222,7 @@ def seed() -> None:
                 sched = NOW.replace(hour=hour, minute=0, second=0, microsecond=0)
                 db.add(Job(
                     customer_id=cust_ids[ci], title=title, job_type="Service",
+                    job_number=allocate_job_number(tenant_id, customer_name=CUSTOMERS[ci][0]),
                     lifecycle_stage=lifecycle,
                     dispatch_status=("on_site" if lifecycle == "in_progress" else "assigned"),
                     billing_status="unbilled", status=lifecycle,
@@ -245,6 +248,7 @@ def seed() -> None:
             db.flush()
             db.add(Job(
                 customer_id=install_cust.id,
+                job_number=allocate_job_number(tenant_id, customer_name=install_cust.name),
                 title="New garage door installation — 9×7 insulated steel",
                 job_type="Installation", lifecycle_stage="scheduled",
                 dispatch_status="assigned", billing_status="unbilled",
