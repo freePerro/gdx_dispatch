@@ -121,11 +121,41 @@ def person_schedule(db: Session, settings: AppSettings | None, user_id: str) -> 
     """The person's shift start, shift end and workday mask: their `users`
     override when set, else the shop default, per field. Mirrors how the
     dispatch board reads them (routers/technicians.py `_tech_to_dict`)."""
+    return _schedule_for(settings, _load_user(db, user_id))
+
+
+def person_schedules(
+    db: Session, settings: AppSettings | None, user_ids: set[str]
+) -> dict[str, PersonSchedule]:
+    """`person_schedule` for many people in one `users` query, keyed by the
+    text id passed in. Every id gets an entry: one that does not parse or
+    names no live user falls back to the shop defaults, exactly as the
+    single lookup does. A database error propagates, as in `_load_user`."""
+    parsed = _parse_user_ids(user_ids)
+    users: dict[UUID, User] = {}
+    if parsed:
+        users = {
+            u.id: u
+            for u in db.execute(
+                select(User).where(User.id.in_(list(parsed)), User.deleted_at.is_(None))
+            ).scalars()
+        }
+    out: dict[str, PersonSchedule] = {}
+    for raw in user_ids:
+        try:
+            user = users.get(UUID(str(raw)))
+        except (ValueError, TypeError):
+            user = None
+        out[raw] = _schedule_for(settings, user)
+    return out
+
+
+def _schedule_for(settings: AppSettings | None, user: User | None) -> PersonSchedule:
+    """The per-field override of the shop default by the user's own values."""
     shift_start = getattr(settings, "default_shift_start", None) or DEFAULT_SHIFT_START
     shift_end = getattr(settings, "default_shift_end", None) or DEFAULT_SHIFT_END
     workdays = getattr(settings, "default_workdays", None)
     workdays = DEFAULT_WORKDAYS if workdays is None else int(workdays)
-    user = _load_user(db, user_id)
     if user is not None:
         if getattr(user, "shift_start", None):
             shift_start = user.shift_start

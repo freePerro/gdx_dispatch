@@ -67,6 +67,7 @@ from gdx_dispatch.core.time_off import (
     holidays_between,
     is_time_off,
     person_schedule,
+    person_schedules,
     posted_holiday_counts,
     user_names,
     vacation_balances,
@@ -403,10 +404,10 @@ def list_requests(
     ids = {str(r.technician_id) for r in rows} | {str(r.requested_by) for r in rows}
     ids |= {str(r.reviewed_by) for r in rows if r.reviewed_by}
     names = user_names(db, ids)
-    settings = _settings(db)
+    schedules = person_schedules(db, _settings(db), {str(r.technician_id) for r in rows})
     out = []
     for r in rows:
-        schedule = person_schedule(db, settings, str(r.technician_id))
+        schedule = schedules[str(r.technician_id)]
         out.append(_serialize(r, names, len(workdays_between(r.start_date, r.end_date, schedule.workdays))))
     return out
 
