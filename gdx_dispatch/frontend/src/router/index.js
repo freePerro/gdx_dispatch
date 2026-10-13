@@ -26,6 +26,7 @@ const SettingsView = () => import('../views/SettingsView.vue');
 const AccountingSettingsView = () => import('../views/AccountingSettingsView.vue');
 const AccountingLedgerView = () => import('../views/AccountingLedgerView.vue');
 const UserProfileView = () => import('../views/UserProfileView.vue');
+const ReleaseNotesView = () => import('../views/ReleaseNotesView.vue');
 const InvoiceRemindersView = () => import('../views/InvoiceRemindersView.vue');
 const JobDetailView = () => import('../views/JobDetailView.vue');
 const CustomerDetailView = () => import('../views/CustomerDetailView.vue');
@@ -214,6 +215,10 @@ export const routes = [
   { path: '/accounting-settings', name: 'accounting-settings', component: AccountingSettingsView, meta: { requiresPermission: 'accounting.read' } },
   { path: '/accounting-ledger', name: 'accounting-ledger', component: AccountingLedgerView, meta: { requiresPermission: 'accounting.read' } },
   { path: '/profile', name: 'profile', component: UserProfileView },
+  // What's new — release notes bundled in the image, readable by every
+  // signed-in user (no requiresPermission), including older releases.
+  { path: '/release-notes', name: 'release-notes', component: ReleaseNotesView },
+  { path: '/release-notes/:version', name: 'release-notes-version', component: ReleaseNotesView },
   // (duplicate /onboarding registration removed 2026-05-09 — already declared
   //  above at the top of the public-route block; Vue Router warned + the
   //  second declaration silently won. Single declaration now.)

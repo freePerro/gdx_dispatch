@@ -77,7 +77,7 @@ const SECTION_BY_KEY = {
   activity: 'Admin', onboarding: 'Admin',
   admin_operations: 'Admin', settings: 'Admin',
   // Account (MH-9b)
-  profile: 'Account',
+  profile: 'Account', release_notes: 'Account',
 };
 
 export const SECTION_ORDER = [

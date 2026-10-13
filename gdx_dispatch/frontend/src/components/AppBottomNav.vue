@@ -442,6 +442,17 @@ const PROFILE_DRAWER_ENTRY = {
   to: '/profile',
 };
 
+// Everyone gets What's new in the More drawer: on a phone the sidebar's
+// version link is behind the hamburger, and techs are the people asking
+// why something works differently after an update.
+const RELEASE_NOTES_DRAWER_ENTRY = {
+  key: 'release_notes',
+  label: "What's new",
+  icon: 'pi pi-sparkles',
+  to: '/release-notes',
+  mobile_friendly: true,
+};
+
 const moreModules = computed(() => {
   const isTech = isTechnician(effectiveRole.value);
   const base = allEnabledModules.value
@@ -464,7 +475,8 @@ const moreModules = computed(() => {
         mobile_friendly: module.mobile_friendly ?? MOBILE_FRIENDLY_PATHS.has(resolvedTo),
       };
     });
-  return isTech ? [...base, { ...PROFILE_DRAWER_ENTRY, mobile_friendly: true }] : base;
+  const extras = isTech ? [{ ...PROFILE_DRAWER_ENTRY, mobile_friendly: true }] : [];
+  return [...base, ...extras, RELEASE_NOTES_DRAWER_ENTRY];
 });
 
 // Group + search-filter via the shared composable. Visibility is already

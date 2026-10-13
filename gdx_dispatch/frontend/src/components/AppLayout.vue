@@ -44,6 +44,10 @@
         <!-- Breadcrumb removed sitewide 2026-05-03: desktop wayfinding crutch
              that ate ~32px on every screen. Mobile uses bottom-nav + page
              title; desktop uses the sidebar. Title is on each view. -->
+        <!-- Inside the header, not between it and <main>: .layout-main is a
+             two-row grid, and a third child takes the 1fr row at 0px while
+             <main> paints over it. -->
+        <WhatsNewBanner />
       </div>
 
       <main id="main-content" class="layout-content" tabindex="-1">
@@ -78,6 +82,7 @@ import AppBottomNav from './AppBottomNav.vue';
 import HelpDrawer from './HelpDrawer.vue';
 import BugReportButton from './BugReportButton.vue';
 import NotificationsDrawer from './NotificationsDrawer.vue';
+import WhatsNewBanner from './WhatsNewBanner.vue';
 import { useAuthStore } from '../stores/auth';
 import { isTechnician } from '../constants/roles';
 import { useTour } from '../composables/useTour';

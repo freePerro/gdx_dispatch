@@ -342,6 +342,11 @@ const userMenuItems = computed(() => {
       icon: 'pi pi-id-card',
       command: () => router.push('/profile'),
     },
+    {
+      label: "What's new",
+      icon: 'pi pi-sparkles',
+      command: () => router.push('/release-notes'),
+    },
     // MH-3 (audit P1 #12): in-app theme switch. Pre-fix the only way
     // for a tech to get dark mode was their phone's OS-level pref —
     // there was no mobile-chrome affordance. Each item calls
