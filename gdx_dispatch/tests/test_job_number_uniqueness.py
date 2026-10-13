@@ -83,3 +83,44 @@ def test_apply_template_is_injective_over_seq():
     rendered = [apply_template("JOB-{year}-{seq:03d}", s, year=2026) for s in range(1, 40)]
     assert len(set(rendered)) == 39  # distinct seq -> distinct number
     assert rendered[0] == "JOB-2026-001" and rendered[-1] == "JOB-2026-039"
+
+
+# ---------------------------------------------------------------------------
+# 3) allocate_job_number() for real on Postgres (GDXA-834): its own session,
+#    committed, monotonic; a failure returns None instead of raising.
+# ---------------------------------------------------------------------------
+def test_allocate_job_number_on_postgres(pg_test_db, monkeypatch):
+    from datetime import UTC, datetime
+
+    import gdx_dispatch.core.database as database
+    from gdx_dispatch.core.tenant_settings import Tenant, TenantSettings
+    from gdx_dispatch.modules.numbering import allocate_job_number
+
+    schema = "alloc_834"
+    engine = create_engine(pg_test_db, future=True, connect_args={"options": f"-csearch_path={schema}"})
+    try:
+        with engine.begin() as c:
+            c.exec_driver_sql(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+            c.exec_driver_sql(f"CREATE SCHEMA {schema}")
+        Tenant.__table__.create(engine)
+        TenantSettings.__table__.create(engine)
+        tid = uuid.uuid4()
+        year = datetime.now(UTC).year
+        with sessionmaker(bind=engine)() as s:
+            s.add(Tenant(id=tid, slug="t", name="t"))
+            s.flush()
+            s.add(TenantSettings(tenant_id=tid, job_number_next_seq=7, job_number_year_seen=year))
+            s.commit()
+        monkeypatch.setattr(database, "SessionLocal", sessionmaker(bind=engine))
+
+        first = allocate_job_number(str(tid), customer_name="Becky Meinecke")
+        second = allocate_job_number(tid)
+        assert (first, second) == (f"JOB-{year}-007", f"JOB-{year}-008")
+        with engine.connect() as c:
+            assert c.execute(text("SELECT job_number_next_seq FROM tenant_settings")).scalar() == 9
+
+        assert allocate_job_number("not-a-uuid") is None
+    finally:
+        with engine.begin() as c:
+            c.exec_driver_sql(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        engine.dispose()
