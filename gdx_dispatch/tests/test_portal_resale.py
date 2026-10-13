@@ -336,6 +336,38 @@ def test_bad_logos_are_refused_and_nothing_is_stored(ctx, tmp_path, name, data, 
     s.close()
 
 
+def test_a_new_estimate_resold_through_the_portal_carries_no_tax(ctx):
+    """GDXA-755. The contractor's estimate is created through the office's
+    create path (create_draft_estimate_record, the body of POST /api/estimates
+    and lead start-estimate) with no rate named, under a 7.38% tenant default.
+    Our portal page must show it untaxed, and the resale quote built from it
+    must be exactly the marked-up subtotal."""
+    from gdx_dispatch.modules.tax.models import TaxConfig
+    from gdx_dispatch.routers.estimates import create_draft_estimate_record
+
+    s = ctx.Session()
+    s.add(TaxConfig(name="Default", default_rate=Decimal("0.0738")))
+    est = create_draft_estimate_record(s, tenant_id=TENANT, customer_id=_CUST_A, label="Trade door")
+    s.add(EstimateLine(estimate_id=est.id, description="16x7 insulated door", quantity=1,
+                       unit_price=1000, line_total=1000, sort_order=1, company_id=TENANT))
+    est.total = Decimal("1000.00")
+    est.status = "sent"
+    s.commit()
+    est_id = est.id
+    s.close()
+
+    detail = ctx.client.get(f"/portal/estimates/{est_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["totals"]["tax"] == 0.0
+    assert detail.json()["totals"]["total"] == 1000.0
+
+    ctx.set_up()
+    r = ctx.resell(est_id, markup_pct=20)
+    assert r.status_code == 201, r.text
+    assert r.json()["base_subtotal"] == 1000.0
+    assert r.json()["resale_subtotal"] == 1200.0
+
+
 # ── Resale quotes ────────────────────────────────────────────────────────────
 
 

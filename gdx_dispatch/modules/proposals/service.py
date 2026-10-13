@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import SYSTEM_ACTOR, log_audit_event, utcnow
 from gdx_dispatch.modules.proposals.models import Estimate, ProposalTier, ProposalTierLine
+from gdx_dispatch.modules.proposals.totals import new_estimate_tax_rate
 
 
 def _money2(v) -> Decimal:
@@ -72,6 +73,7 @@ def create_estimate(job_id: UUID, estimate_number: str, db: Session, company_id:
     row = Estimate(
         job_id=job_id,
         estimate_number=estimate_number,
+        tax_rate=new_estimate_tax_rate(db, job_id),  # the job lane's default (GDXA-755)
         public_token=secrets.token_urlsafe(48)[:64],
         company_id=company_id,
     )

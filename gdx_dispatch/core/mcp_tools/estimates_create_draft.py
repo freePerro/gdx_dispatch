@@ -64,6 +64,7 @@ async def handler(
 ) -> dict[str, Any]:
     from gdx_dispatch.models.tenant_models import Customer, Job
     from gdx_dispatch.modules.proposals.models import Estimate
+    from gdx_dispatch.modules.proposals.totals import new_estimate_tax_rate
 
     cid = coerce_uuid(customer_id)
     if cid is None:
@@ -109,6 +110,9 @@ async def handler(
         description=description,
         notes=notes,
         jobsite_address=jobsite_address,
+        # The job lane's default (GDXA-755): 0 on no job or an install-lane
+        # job, NULL (the tenant default) on any other lane.
+        tax_rate=new_estimate_tax_rate(db, jid),
         public_token=secrets.token_urlsafe(48)[:64],
         company_id=str(tenant_id),
         status="draft",

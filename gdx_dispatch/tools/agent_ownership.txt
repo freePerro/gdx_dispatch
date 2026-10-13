@@ -58,6 +58,9 @@ gdx_dispatch/tests/fixtures/pg.py                            platform-core
 # as above.
 gdx_dispatch/tests/conftest.py                               platform-core
 gdx_dispatch/tests/test_redis_isolation_fixture.py           platform-core
+# The four report-only scanners run on the real tree against their baselines,
+# with each baseline's entry count pinned (GDXA-404). Not gated, like pg.py.
+gdx_dispatch/tests/test_scanner_real_repo_ratchet.py         platform-core
 .github/*                                                    platform-core
 scripts/*                                                    platform-core
 tools/*                                                      platform-core

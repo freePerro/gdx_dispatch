@@ -129,6 +129,28 @@ def test_start_estimate_stamps_the_estimate_with_its_lead(sales):
     assert str(_row(sales, Estimate, body["estimate"]["id"]).lead_id) == lead_id
 
 
+def test_start_estimate_stores_tax_rate_zero_not_the_tenant_default(sales):
+    """GDXA-755: NULL would price the lead's estimate at the 7.38% default."""
+    from decimal import Decimal
+
+    from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
+    from gdx_dispatch.modules.tax.models import TaxConfig
+
+    db = _db(sales)
+    db.add(TaxConfig(name="Default", default_rate=Decimal("0.0738")))
+    db.commit()
+    db.close()
+    est_id = _started(sales, _lead(sales))["estimate"]["id"]
+    db = _db(sales)
+    try:
+        est = db.get(Estimate, UUID(est_id))
+        assert est.tax_rate == Decimal("0")
+        est.total = Decimal("1000.00")
+        assert compute_estimate_totals(est, db)["tax"] == 0.0
+    finally:
+        db.close()
+
+
 def test_create_estimate_for_the_leads_own_customer_links_it_and_audits(sales):
     lead_id = _lead(sales)
     cust = _started(sales, lead_id)["customer"]["id"]

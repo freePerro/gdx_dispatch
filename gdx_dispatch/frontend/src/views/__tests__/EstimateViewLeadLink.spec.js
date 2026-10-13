@@ -67,12 +67,14 @@ const ESTIMATE = {
 };
 
 let customerList;
+let taxConfig = {};
 
 function routeGet(url) {
   if (url === '/api/estimates/est-1') return ESTIMATE;
   if (url.startsWith('/api/estimates/est-1/activity')) return { items: [], total: 0, context: null };
   if (url.startsWith('/api/customers?')) return customerList;
-  if (url === '/api/tax/config' || url === '/api/pricing-engine/settings' || url === '/api/estimates-features') return {};
+  if (url === '/api/tax/config') return taxConfig;
+  if (url === '/api/pricing-engine/settings' || url === '/api/estimates-features') return {};
   return [];
 }
 
@@ -162,7 +164,7 @@ describe('EstimateView — lead link on create', () => {
     return call?.[1];
   }
 
-  afterEach(() => { routeMock.query = {}; });
+  afterEach(() => { routeMock.query = {}; taxConfig = {}; });
 
   it("sends the lead when the estimate is for the lead's customer", async () => {
     routeMock.params = {};
@@ -179,5 +181,16 @@ describe('EstimateView — lead link on create', () => {
     const payload = await draftCreatePayload();
     expect(payload).toBeTruthy();
     expect(payload.lead_id).toBeNull();
+  });
+
+  it('starts a new estimate at 0% tax and sends 0, not null, under a retail default (GDXA-755)', async () => {
+    // null on create and on every autosave PATCH put the row on the tenant
+    // default, which the server then charged the customer.
+    taxConfig = { default_rate: 0.0738 };
+    routeMock.params = {};
+    routeMock.query = { customer_id: 'cust-1' };
+    const payload = await draftCreatePayload();
+    expect(payload).toBeTruthy();
+    expect(payload.tax_rate).toBe(0);
   });
 });

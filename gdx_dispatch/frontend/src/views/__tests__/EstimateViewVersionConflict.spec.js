@@ -50,12 +50,14 @@ const ESTIMATE = {
 };
 
 let estimateRow;
+let taxConfig = {};
 
 function routeGet(url) {
   if (url === '/api/estimates/est-1') return estimateRow;
   if (url.startsWith('/api/estimates/est-1/activity')) return { items: [], total: 0, context: null };
   if (url === '/api/estimates-features') return { estimate_expiry_days: 45 };
-  if (url === '/api/tax/config' || url === '/api/pricing-engine/settings') return {};
+  if (url === '/api/tax/config') return taxConfig;
+  if (url === '/api/pricing-engine/settings') return {};
   return [];
 }
 
@@ -115,6 +117,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  taxConfig = {};
 });
 
 function conflict() {
@@ -337,5 +340,48 @@ describe('EstimateView — optimistic concurrency on the header autosave', () =>
     wrapper.vm.form.notes = 'after reload';
     await settle();
     expect(headerPatches().at(-1).expected_version).toBe(7);
+  });
+});
+
+describe('EstimateView — the header autosave sends the rate on screen (GDXA-755)', () => {
+  // Under a 7.38% tenant default. null means "price at the tenant default",
+  // so only a legacy row (server rate NULL) left at that default may send it.
+  async function patchedRate(serverRate) {
+    taxConfig = { default_rate: 0.0738 };
+    estimateRow = { ...ESTIMATE, tax_rate: serverRate };
+    const wrapper = await mountAndSettle();
+    wrapper.vm.form.notes = 'edit';
+    await settle();
+    const body = headerPatches().at(-1);
+    expect(body).toBeTruthy();
+    return body.tax_rate;
+  }
+
+  it('an estimate set to the tenant rate sends that rate, not null', async () => {
+    expect(await patchedRate(0.0738)).toBeCloseTo(0.0738, 6);
+  });
+
+  it('a 0% estimate sends 0', async () => {
+    expect(await patchedRate(0)).toBe(0);
+  });
+
+  it('a legacy estimate with no rate still sends null', async () => {
+    expect(await patchedRate(null)).toBeNull();
+  });
+
+  it('a legacy estimate given a rate, then set back to the tenant rate, sends that rate', async () => {
+    // Once a save stores 5%, the row is no longer NULL; null now would be
+    // stored as 0 while the screen shows 7.38%.
+    taxConfig = { default_rate: 0.0738 };
+    estimateRow = { ...ESTIMATE, tax_rate: null };
+    const wrapper = await mountAndSettle();
+    wrapper.vm.form.tax_rate = 5;
+    await settle();
+    await settle(); // a debounce armed by the save itself would fire here
+    // One edit, one PATCH: clearing the page's flag is not an edit.
+    expect(headerPatches().map((b) => b.tax_rate)).toEqual([0.05]);
+    wrapper.vm.form.tax_rate = 7.38;
+    await settle();
+    expect(headerPatches().at(-1).tax_rate).toBeCloseTo(0.0738, 6);
   });
 });

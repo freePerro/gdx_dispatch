@@ -1486,12 +1486,14 @@ async function retryTaxConfig() {
     taxConfigRetrying.value = false;
   }
 }
-// The tax_rate a save sends, as a decimal. Only a rate the user changed from
-// the tenant default is persisted; null keeps the estimate tracking it. With
-// the default unknown nothing can be compared, so a rate in the form is sent
-// as it stands and a blank stays null.
+// The tax_rate a save sends, as a decimal. Any estimate that is not a legacy
+// row (server rate NULL) sends the rate on screen, a blank as 0 (GDXA-755).
+// A legacy row persists only a rate the user changed from the tenant default;
+// null keeps it tracking the default. With the default unknown nothing can be
+// compared, so a rate in the form is sent as it stands and a blank stays null.
 function taxRatePayload() {
   const raw = form.value.tax_rate;
+  if (!form.value._tax_rate_was_null) return (Number(raw) || 0) / 100;
   if (tenantDefaultTaxPct.value == null) return raw == null ? null : (Number(raw) || 0) / 100;
   const formPct = Number(raw) || 0;
   return Math.abs(formPct - tenantDefaultTaxPct.value) > 0.001 ? formPct / 100 : null;
@@ -2130,9 +2132,9 @@ const form = ref({
   jobsite_address: "",
   valid_until: null,
   notes: "",
-  // tax_rate is a percent (e.g. 8.25). null = "use tenant default" — we
-  // don't bind null directly to the InputNumber; the form watcher copies
-  // tenantDefaultTaxPct in once it loads.
+  // tax_rate is a percent (e.g. 8.25). A new estimate starts at 0 (GDXA-755);
+  // a loaded estimate whose server rate is null (legacy) shows the tenant
+  // default, which is what the server prices it at.
   tax_rate: 0,
   discount: 0,
   // "Total-only" override. null = inherit tenant default; true/false explicit.
@@ -2965,8 +2967,11 @@ function _followOwnWrite(body, prefix = "") {
 // are left out: the id a POST writes back is not an edit.
 let _syncedFormSnapshot = null;
 
+// _tax_rate_was_null is page bookkeeping, not an edit: clearing it after a save
+// must not schedule a same-values PATCH (GDXA-755).
 function _formSnapshot() {
-  return JSON.stringify(form.value, (key, value) => (key === "id" ? undefined : value));
+  return JSON.stringify(form.value, (key, value) =>
+    (key === "id" || key === "_tax_rate_was_null" ? undefined : value));
 }
 
 async function reloadAfterConflict() {
@@ -3165,6 +3170,9 @@ async function _flushNow() {
       throw err;
     }
     if ("valid_until" in header) _syncedValidUntil = validUntil;
+    // The row now has a rate, so it is no longer legacy NULL: a later pick of
+    // the tenant rate must send that rate, not null (GDXA-755).
+    if (header.tax_rate != null) form.value._tax_rate_was_null = false;
 
     // 2. Pending deletes — drain first so newly-added lines don't collide.
     if (pendingLineDeletes.value.length > 0) {
@@ -4192,8 +4200,11 @@ onMounted(async () => {
   if (isExisting.value) {
     await fetchEstimate();
   } else {
-    // New estimate: prefill tax rate with tenant default once it loads.
-    form.value.tax_rate = tenantDefaultTaxPct.value;
+    // New estimate: 0%, the construction-contract rate the server stamps on
+    // create (GDXA-755). Prefilling the tenant default kept persistTax false,
+    // so create and every autosave sent null, and PATCH null put the row back
+    // on the tenant default.
+    form.value.tax_rate = 0;
     loading.value = false;
   }
   // Pre-select customer when /estimates/new?customer_id=… is visited.
