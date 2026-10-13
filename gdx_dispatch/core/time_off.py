@@ -140,14 +140,11 @@ def person_schedules(
                 select(User).where(User.id.in_(list(parsed)), User.deleted_at.is_(None))
             ).scalars()
         }
-    out: dict[str, PersonSchedule] = {}
-    for raw in user_ids:
-        try:
-            user = users.get(UUID(str(raw)))
-        except (ValueError, TypeError):
-            user = None
-        out[raw] = _schedule_for(settings, user)
-    return out
+    uuid_of = {raw: uid for uid, raw in parsed.items()}
+    return {
+        raw: _schedule_for(settings, users.get(uuid_of.get(str(raw))))
+        for raw in user_ids
+    }
 
 
 def _schedule_for(settings: AppSettings | None, user: User | None) -> PersonSchedule:
