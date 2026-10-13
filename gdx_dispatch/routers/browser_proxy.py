@@ -43,7 +43,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import audit_or_rollback, audit_ready_db
-from gdx_dispatch.core.plugin_consent import fetch_permissions, has_permission_consent
+from gdx_dispatch.core.plugin_consent import (
+    PluginCatalogUnavailable,
+    fetch_permissions,
+    has_permission_consent,
+)
 from gdx_dispatch.plugin_host.browser_stream import host_allowed
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -73,7 +77,14 @@ def _gate_browser(user: dict, db: Session, key: str) -> None:
     if user.get("role") not in _OWNER_ROLES:
         raise HTTPException(403, "browser stream is owner-only")
     # Re-check the LIVE declared permission, not just a stored consent row.
-    if "browser" not in fetch_permissions(key):
+    # Unreachable is a 503, not a 403: "does not declare the permission" is a
+    # claim about a catalog nobody could read (GDXA-860).
+    try:
+        declared = fetch_permissions(key)
+    except PluginCatalogUnavailable as exc:
+        log.warning("browser_gate_catalog_unreachable key=%s err=%s", key, exc)
+        raise HTTPException(503, "the plugin service did not answer; try again shortly") from exc
+    if "browser" not in declared:
         raise HTTPException(403, f"plugin {key!r} does not declare the browser permission")
     if not has_permission_consent(db, key, "browser"):
         raise HTTPException(403, "owner consent required for the browser permission")

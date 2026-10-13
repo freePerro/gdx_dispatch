@@ -17,6 +17,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from gdx_dispatch.core import plugin_consent
 from gdx_dispatch.core.audit import AuditLog, TenantBase
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.plugin_host.app import create_plugin_host
@@ -170,6 +171,46 @@ def test_ticket_still_issued_after_gate_refactor(monkeypatch):
     assert r.status_code == 200 and r.json()["ticket"]
     # Issuing a browser capability is recorded with the URL it was scoped to.
     assert "plugin.browser_ticket_issued" in _audit_actions(c)
+
+
+def _four_gated_calls(c):
+    return [
+        c.post("/api/plugins/_browser/ticket",
+               json={"key": "chipricing", "url": "https://orderentry.chiohd.com/"}),
+        c.get("/api/plugins/_browser/credentials", params={"key": "chipricing"}),
+        c.post("/api/plugins/_browser/credentials",
+               json={"key": "chipricing", "username": "u", "password": "p"}),
+        c.delete("/api/plugins/_browser/credentials", params={"key": "chipricing"}),
+    ]
+
+
+def test_gate_answers_503_when_plugin_host_is_down(monkeypatch):
+    """GDXA-860: with plugin-host unreachable the gate said 403 "does not
+    declare the browser permission" — a claim about a catalog nobody read.
+    The REAL fetch_permissions runs here, against a closed port."""
+    c = _core_client(monkeypatch)
+    monkeypatch.setattr(browser_proxy, "fetch_permissions", plugin_consent.fetch_permissions)
+    monkeypatch.setenv("PLUGIN_HOST_URL", "http://127.0.0.1:9")
+    for r in _four_gated_calls(c):
+        assert r.status_code == 503, (r.request.method, r.request.url, r.text)
+    assert _audit_actions(c) == []  # nothing was attempted, nothing recorded
+
+
+def test_gate_still_403s_on_a_reachable_catalog_without_browser(monkeypatch):
+    """Control: plugin-host answers, the plugin is listed, no "browser"."""
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [{"key": "chipricing", "permissions": ["events"]}]
+
+    c = _core_client(monkeypatch)
+    monkeypatch.setattr(browser_proxy, "fetch_permissions", plugin_consent.fetch_permissions)
+    monkeypatch.setattr(plugin_consent.httpx, "get", lambda *a, **k: _Resp())
+    for r in _four_gated_calls(c):
+        assert r.status_code == 403, (r.request.method, r.request.url, r.text)
+        assert "does not declare the browser permission" in r.text
 
 
 def test_blocked_ticket_records_nothing(monkeypatch):
