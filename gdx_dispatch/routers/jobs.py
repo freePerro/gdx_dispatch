@@ -5000,12 +5000,33 @@ def create_follow_up_job(
 
         new_id = uuid.uuid4()
         now = datetime.now(UTC)
+        # GDXA-833: a follow-up is a job and gets its own number, allocated
+        # as create_job does (own session, committed first; a numbering
+        # failure leaves the job unnumbered rather than unmade). The name
+        # read is on ``db`` and contained, as in the closeout return visit.
+        cust_name: str | None = None
+        try:
+            if original.customer_id:
+                with contained_read(db):
+                    cust_name = db.scalar(
+                        select(Customer.name).where(Customer.id == original.customer_id)
+                    )
+        except Exception:
+            log.exception("follow_up_customer_name_read_failed", extra={"job_id": job_id})
+        assigned_number: str | None = None
+        try:
+            with SessionLocal() as cdb:
+                assigned_number = next_job_number(cdb, tenant_id, customer_name=cust_name)
+                cdb.commit()
+        except Exception:
+            log.exception("follow_up_job_number_alloc_failed", extra={"job_id": job_id})
         # Follow-up has no scheduled_at on creation — it's a service call
         # waiting for the dispatcher to slot. Don't fake-flag it as scheduled.
         follow_up = Job(
             id=new_id,
             title=f"Follow-up: {original.title}"[:200],
             customer_id=original.customer_id,
+            job_number=assigned_number,
             job_type=canonical_job_type(original.job_type) or SERVICE_CALL,
             status="Service Call",
             company_id=tenant_id,
@@ -5030,7 +5051,7 @@ def create_follow_up_job(
             request=request,
         )
         db.commit()
-        return jsonable_response({"id": str(new_id), "parent_job_id": job_id, "title": f"Follow-up: {original.title}"}, 201)
+        return jsonable_response({"id": str(new_id), "job_number": assigned_number, "parent_job_id": job_id, "title": f"Follow-up: {original.title}"}, 201)
     except SQLAlchemyError:
         db.rollback()
         log.exception("create_follow_up_failed", extra={"job_id": job_id})

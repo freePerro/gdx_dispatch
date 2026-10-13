@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -12,10 +12,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import SessionLocal, contained_read, get_db
 from gdx_dispatch.core.job_taxonomy import MAINTENANCE
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.models.tenant_models import Job, ServiceTrigger
+from gdx_dispatch.models.tenant_models import Customer, Job, ServiceTrigger
+from gdx_dispatch.modules.numbering import next_job_number
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -161,6 +162,7 @@ def run_triggers(
     due_triggers = db.scalars(stmt).all()
 
     jobs_created = []
+    triggers_skipped: list[dict[str, str]] = []
     triggers_processed = 0
 
     for trigger in due_triggers:
@@ -168,11 +170,48 @@ def run_triggers(
         trigger_id = str(trigger.id)
 
         if trigger.auto_create_job:
+            # GDXA-833: number the visit as create_job does — its own
+            # session, committed before the job, and a numbering failure
+            # leaves the job unnumbered rather than unmade. A number cannot be
+            # handed back, and every job here commits together at the end, so
+            # the trigger's customer is proven BEFORE a number is taken: one
+            # bad trigger is skipped (left due, so it stays visible) instead
+            # of failing the run after earlier triggers spent their numbers.
+            # ServiceTrigger.customer_id is String(36) and Job/Customer.id are
+            # Uuid; the bare string failed every insert on SQLite. The read is
+            # on this run's ``db``, so it is contained: a failed read must not
+            # abort the transaction holding the jobs already minted.
+            customer_row = None
+            try:
+                customer_uuid = UUID(str(trigger.customer_id))
+                with contained_read(db):
+                    customer_row = db.execute(
+                        select(Customer.id, Customer.name).where(Customer.id == customer_uuid)
+                    ).first()
+            except Exception:
+                log.exception("service_trigger_customer_read_failed for trigger %s", trigger_id)
+            if customer_row is None:
+                log.warning("service_trigger_skipped_unknown_customer for trigger %s", trigger_id)
+                triggers_skipped.append({
+                    "trigger_id": trigger_id,
+                    "customer_id": str(trigger.customer_id),
+                    "reason": "customer not found",
+                })
+                continue
+            customer_name = customer_row.name
+            assigned_number: str | None = None
+            try:
+                with SessionLocal() as cdb:
+                    assigned_number = next_job_number(cdb, tid, customer_name=customer_name)
+                    cdb.commit()
+            except Exception:
+                log.exception("service_trigger_job_number_allocation_failed for trigger %s", trigger_id)
             # Create a maintenance job via ORM
             job = Job(
                 id=uuid4(),
                 company_id=tid,
-                customer_id=trigger.customer_id,
+                customer_id=customer_uuid,
+                job_number=assigned_number,
                 title=f"Scheduled maintenance (agreement {trigger.agreement_id})",
                 description=f"Scheduled maintenance (agreement {trigger.agreement_id})",
                 # Plan §9 (audit round 2): these ARE maintenance visits —
@@ -189,6 +228,7 @@ def run_triggers(
                 db.add(job)
                 jobs_created.append({
                     "job_id": str(job.id),
+                    "job_number": assigned_number,
                     "trigger_id": trigger_id,
                     "customer_id": str(trigger.customer_id),
                 })
@@ -213,7 +253,8 @@ def run_triggers(
         log_audit_event_sync(
             db, tenant_id=tid, user_id=uid, action="create",
             entity_type="service_trigger_run", entity_id=str(uuid4()),
-            details={"triggers_processed": triggers_processed, "jobs_created": len(jobs_created)},
+            details={"triggers_processed": triggers_processed, "jobs_created": len(jobs_created),
+                     "triggers_skipped": triggers_skipped},
             request=request,
         )
     try:
@@ -226,6 +267,7 @@ def run_triggers(
     return {
         "triggers_processed": triggers_processed,
         "jobs_created": jobs_created,
+        "triggers_skipped": triggers_skipped,
     }
 
 

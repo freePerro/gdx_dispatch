@@ -9,12 +9,14 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import SessionLocal, contained_read, get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.tenant import company_id
+from gdx_dispatch.modules.numbering import next_job_number
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -56,12 +58,38 @@ def create_service_call(
         from uuid import UUID as _UUID
 
         from gdx_dispatch.core.job_taxonomy import SERVICE_CALL
-        from gdx_dispatch.models.tenant_models import Job
+        from gdx_dispatch.models.tenant_models import Customer, Job
         now_dt = datetime.now(timezone.utc)
+        customer_uuid = _UUID(payload.customer_id) if payload.customer_id else None
+        # GDXA-833: a service call is a job and gets a number like any other.
+        # As create_job does: its own session, committed before the job (the
+        # counter cannot roll back, so it comes after the one parse that can
+        # refuse the request), and a numbering failure leaves the job
+        # unnumbered rather than unmade.
+        # The customer record's name when there is one (create_job reads the
+        # same), else what the office typed. Contained: the read is on ``db``.
+        customer_name = payload.customer_name
+        if customer_uuid:
+            try:
+                with contained_read(db):
+                    record_name = db.scalar(
+                        select(Customer.name).where(Customer.id == customer_uuid)
+                    )
+                customer_name = record_name or customer_name
+            except Exception:
+                log.exception("service_call_customer_name_read_failed")
+        assigned_number: str | None = None
+        try:
+            with SessionLocal() as cdb:
+                assigned_number = next_job_number(cdb, tid, customer_name=customer_name)
+                cdb.commit()
+        except Exception:
+            log.exception("service_call_job_number_allocation_failed")
         job = Job(
             id=_UUID(job_id),
             company_id=tid,
-            customer_id=_UUID(payload.customer_id) if payload.customer_id else None,
+            customer_id=customer_uuid,
+            job_number=assigned_number,
             title=payload.customer_name,
             description=payload.problem_description,
             job_type=SERVICE_CALL,
@@ -94,6 +122,7 @@ def create_service_call(
     return {
         "status": "created",
         "job_id": job_id,
+        "job_number": assigned_number,
         "customer_name": payload.customer_name,
         "urgency": payload.urgency,
         "priority": priority,
@@ -108,7 +137,7 @@ def active_service_calls(
 ) -> list[dict[str, Any]]:
     """List active service calls (not complete/invoiced)."""
     try:
-        from sqlalchemy import case, or_, select
+        from sqlalchemy import case, or_
 
         from gdx_dispatch.core.job_taxonomy import SERVICE_LANE_TYPES
         from gdx_dispatch.models.tenant_models import Customer, Job

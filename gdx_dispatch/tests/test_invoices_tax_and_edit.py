@@ -262,6 +262,161 @@ def test_create_without_rate_follows_the_job_lane(db, job_type, expected_rate, e
 
 
 @pytest.mark.parametrize(
+    ("job_type", "exempt", "estimate_rate", "payload_rate", "expected_rate", "expected_tax"),
+    [
+        # GDXA-842: a 0% quote stays 0% on the bill — the tenant default
+        # (7.375%) used to win here and bill $7.38 tax.
+        ("Service Call", False, Decimal("0"), None, 0.0, 0.0),
+        ("Service Call", False, Decimal("0.05"), None, 0.05, 5.0),
+        # No override on the estimate: the job lane / tenant default, unchanged.
+        ("Service Call", False, None, None, 0.07375, 7.38),
+        # The caller's explicit rate still wins over the estimate's.
+        ("Service Call", False, Decimal("0"), 0.07375, 0.07375, 7.38),
+        ("Service Call", False, Decimal("0.05"), 0.0, 0.0, 0.0),
+        # A quote cannot tax an installation or an exempt customer: both are
+        # never taxed (Doug, 2026-10-12), so the lane and the exemption come
+        # before the quoted rate.
+        ("Installation", False, Decimal("0.05"), None, 0.0, 0.0),
+        ("Service Call", True, Decimal("0.05"), None, 0.0, 0.0),
+    ],
+)
+def test_source_estimate_rate_is_the_quoted_rate(
+    db, job_type, exempt, estimate_rate, payload_rate, expected_rate, expected_tax
+):
+    """`source_estimate_id` honors the estimate's rate override (M24) the same
+    as `estimate_id`, after the job lane and the customer's exemption."""
+    from gdx_dispatch.modules.proposals.models import Estimate
+    from gdx_dispatch.modules.tax.models import TaxConfig, TaxExemption
+
+    db.add(TaxConfig(name="Default", default_rate=Decimal("0.07375")))
+    db.commit()
+    job = _seed_job(db, job_type=job_type)
+    if exempt:
+        db.add(TaxExemption(customer_id=job.customer_id, exempt=True, reason="non-profit"))
+        db.commit()
+    est = Estimate(
+        job_id=job.id,
+        customer_id=job.customer_id,
+        estimate_number=f"EST-{uuid4().hex[:8]}",
+        proposal_mode=False,
+        total=Decimal("100.00"),
+        tax_rate=estimate_rate,
+        status="accepted",
+        public_token=uuid4().hex,
+        company_id="tenant-test",
+    )
+    db.add(est)
+    db.commit()
+    inv = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            invoice_date=shop_today_from_settings(db),
+            source_estimate_id=est.id,
+            tax_rate=payload_rate,
+            line_items=[
+                InvoiceLineCreateIn(description="Spring", quantity=1, unit_price=100.0, taxable=True),
+            ],
+        ),
+        _=_user(), db=db,
+    )
+    assert inv["tax_rate"] == pytest.approx(expected_rate)
+    assert round(inv["tax_amount"], 2) == expected_tax
+    assert round(inv["total"], 2) == round(100.0 + expected_tax, 2)
+    # Read the row back, not the response dict.
+    db.expire_all()
+    row = db.get(Invoice, UUID(inv["id"]))
+    assert float(row.tax_rate) == pytest.approx(expected_rate)
+    assert round(float(row.tax_amount), 2) == expected_tax
+    assert row.source_estimate_id == est.id
+
+
+def test_failed_exemption_read_never_taxes_at_the_quote(db, monkeypatch):
+    """GDXA-842: when the exemption read fails on an estimate-quoted bill, the
+    invoice falls back to NULL (untaxed), not the quoted rate — an exempt
+    customer must never be charged tax because a read failed."""
+    from gdx_dispatch.modules.proposals.models import Estimate
+    from gdx_dispatch.modules.tax import service as tax_service
+    from gdx_dispatch.modules.tax.models import TaxConfig
+
+    db.add(TaxConfig(name="Default", default_rate=Decimal("0.07375")))
+    db.commit()
+    job = _seed_job(db, job_type="Service Call")
+    est = Estimate(
+        job_id=job.id,
+        customer_id=job.customer_id,
+        estimate_number=f"EST-{uuid4().hex[:8]}",
+        proposal_mode=False,
+        total=Decimal("100.00"),
+        tax_rate=Decimal("0.05"),
+        status="accepted",
+        public_token=uuid4().hex,
+        company_id="tenant-test",
+    )
+    db.add(est)
+    db.commit()
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("exemption read failed")
+
+    monkeypatch.setattr(tax_service, "is_customer_exempt", _boom)
+    inv = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            invoice_date=shop_today_from_settings(db),
+            source_estimate_id=est.id,
+            line_items=[
+                InvoiceLineCreateIn(description="Spring", quantity=1, unit_price=100.0, taxable=True),
+            ],
+        ),
+        _=_user(), db=db,
+    )
+    assert inv["tax_rate"] is None
+    assert round(inv["tax_amount"], 2) == 0.0
+    assert round(inv["total"], 2) == 100.0
+
+
+@pytest.mark.parametrize(
+    ("job_type", "estimate_rate", "expected"),
+    [
+        ("Service Call", Decimal("0"), 0.0),
+        ("Service Call", Decimal("0.05"), 0.05),
+        ("Service Call", None, 0.07375),
+        ("Installation", Decimal("0.05"), 0.0),
+    ],
+)
+def test_resolve_endpoint_orders_the_estimate_rate(db, job_type, estimate_rate, expected):
+    """GDXA-842: `/api/tax/resolve?estimate_id=` is what the office create
+    screen seeds from, so it answers with the same order as invoice create."""
+    from gdx_dispatch.modules.proposals.models import Estimate
+    from gdx_dispatch.modules.tax.models import TaxConfig
+    from gdx_dispatch.modules.tax.router import resolve_rate_endpoint
+
+    db.add(TaxConfig(name="Default", default_rate=Decimal("0.07375")))
+    db.commit()
+    job = _seed_job(db, job_type=job_type)
+    est = Estimate(
+        job_id=job.id,
+        customer_id=job.customer_id,
+        estimate_number=f"EST-{uuid4().hex[:8]}",
+        proposal_mode=False,
+        total=Decimal("100.00"),
+        tax_rate=estimate_rate,
+        status="accepted",
+        public_token=uuid4().hex,
+        company_id="tenant-test",
+    )
+    db.add(est)
+    db.commit()
+    out = resolve_rate_endpoint(
+        customer_id=str(job.customer_id), job_id=str(job.id), estimate_id=str(est.id),
+        user=_user(), db=db,
+    )
+    assert out["rate"] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
     ("job_type", "exempt", "expected"),
     [
         ("Service Call", False, Decimal("0.07375")),
