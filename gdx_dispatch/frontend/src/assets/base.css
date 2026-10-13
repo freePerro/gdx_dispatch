@@ -39,6 +39,10 @@
   --interactive-primary: var(--color-brand-400);
   --interactive-primary-soft: rgba(99, 179, 255, 0.22);
 
+  /* Text-link colour. Dark keeps Aura's dark primary (#34d399, 9.2:1 on
+     #18181b); the light value is set in both light blocks below. */
+  --link-color: #34d399;
+
   --border-subtle: rgba(102, 123, 164, 0.3);
   --border-strong: rgba(131, 154, 197, 0.45);
 
@@ -115,6 +119,8 @@
   --interactive-primary: var(--color-brand-400);
   --interactive-primary-soft: rgba(37, 99, 235, 0.1);
 
+  --link-color: #047857;
+
   --border-subtle: rgba(0, 0, 0, 0.08);
   --border-strong: rgba(0, 0, 0, 0.15);
 
@@ -165,6 +171,8 @@
     --interactive-primary: var(--color-brand-400);
     --interactive-primary-soft: rgba(37, 99, 235, 0.1);
 
+    --link-color: #047857;
+
     --border-subtle: rgba(0, 0, 0, 0.08);
     --border-strong: rgba(0, 0, 0, 0.15);
 
@@ -206,6 +214,30 @@ body.no-shell:not(.p-overflow-hidden) {
 
 a {
   color: inherit;
+}
+
+/* Views colour their text links `var(--p-primary-color)`: Aura's light
+   primary is emerald #10b981, 2.54:1 on white, below WCAG AA 4.5:1. The
+   global token also drives fills, borders and focus rings, so it stays;
+   inside a link, a link-styled button or a file-pick label it is
+   re-pointed at --link-color (#047857: 5.48:1 on white, 5.01:1 on
+   --p-content-hover-background #f1f5f9). That reaches every scoped
+   `color: var(--p-primary-color)` on those elements without editing the
+   views; a fill inside one only darkens, which raises white-label contrast.
+   Light only: Aura's dark primary is already #34d399. Zero specificity so a
+   view can still override it. (GDXA-885) */
+:where(:root:not([data-theme="dark"])) :where(a, button, label) {
+  --p-primary-color: var(--link-color);
+}
+
+/* PrimeVue's `<Button link>` reads --p-button-link-*, which Aura resolves
+   from the primary at :root, so the rule above never reaches it. Point it at
+   the link token too; `!important` because Aura injects its :root rule at
+   mount, after this sheet (same reason as primevue-cta-contrast.css). */
+:root {
+  --p-button-link-color: var(--link-color) !important;
+  --p-button-link-hover-color: var(--link-color) !important;
+  --p-button-link-active-color: var(--link-color) !important;
 }
 
 button,
