@@ -157,7 +157,7 @@
       >
         <p>Are you sure you want to delete <strong>{{ deleteTarget?.name }}</strong>?</p>
         <p style="color: var(--p-text-muted-color)">This will also remove all associated data. This action cannot be undone.</p>
-        <div class="form-actions">
+        <template #footer>
           <Button label="Cancel" text @click="showDeleteDialog = false" />
           <Button
             label="Delete"
@@ -166,7 +166,7 @@
             data-testid="customer-confirm-delete-btn"
             @click="confirmDelete"
           />
-        </div>
+        </template>
       </Dialog>
 
       <Toast data-testid="customers-toast" />
@@ -387,13 +387,6 @@ defineExpose({ customers });
 }
 .tax-toggle .p-inputswitch {
   margin-top: 0.2rem;
-}
-
-.form-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 0.75rem;
 }
 
 .inline-error {

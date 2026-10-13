@@ -8,6 +8,8 @@
  *  2. Dirty form → Cancel prompts; declining keeps the dialog open.
  *  3. Dirty form → accepting the prompt closes the dialog.
  *  4. The Dialog gets :closable / :close-on-escape = false while dirty.
+ * and the footer placement (GDXA-872): Save/Cancel sit outside the scrolling
+ * form, with Save still submitting it through form=.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { mount } from '@vue/test-utils';
@@ -35,14 +37,14 @@ const stubs = {
     props: ['visible', 'closable', 'closeOnEscape'],
     emits: ['update:visible'],
     template:
-      '<div v-if="visible" data-testid="dlg" :data-closable="String(closable)" :data-close-on-escape="String(closeOnEscape)"><slot /></div>',
+      '<div v-if="visible" data-testid="dlg" :data-closable="String(closable)" :data-close-on-escape="String(closeOnEscape)"><slot /><slot name="footer" /></div>',
     inheritAttrs: false,
   },
   Button: {
     props: ['label', 'type', 'text', 'loading', 'disabled'],
     emits: ['click'],
     template:
-      '<button :type="type || \'button\'" :data-testid="$attrs[\'data-testid\']" @click="$emit(\'click\')">{{ label }}</button>',
+      '<button :type="type || \'button\'" :form="$attrs.form" :data-testid="$attrs[\'data-testid\']" @click="$emit(\'click\')">{{ label }}</button>',
     inheritAttrs: false,
   },
   InputText: {
@@ -132,5 +134,48 @@ describe('CustomerFormDialog dirty guard', () => {
     await wrapper.get('[data-testid="customer-name-input"]').setValue('Someone New');
     expect(dlg.attributes('data-closable')).toBe('false');
     expect(dlg.attributes('data-close-on-escape')).toBe('false');
+  });
+});
+
+describe('CustomerFormDialog footer actions (GDXA-872)', () => {
+  it('puts Save/Cancel outside the form, with Save naming the form it submits', async () => {
+    const wrapper = mountDialog();
+    await nextTick();
+
+    const form = wrapper.get('form');
+    const submit = wrapper.get('[data-testid="customer-submit-btn"]');
+    expect(form.find('[data-testid="customer-submit-btn"]').exists()).toBe(false);
+    expect(form.find('[data-testid="customer-cancel-btn"]').exists()).toBe(false);
+    expect(form.attributes('id')).toBeTruthy();
+    expect(submit.attributes('type')).toBe('submit');
+    expect(submit.attributes('form')).toBe(form.attributes('id'));
+  });
+
+  it('gives each dialog in one app its own form id', async () => {
+    // useId is unique per app, so both dialogs go under one parent.
+    const wrapper = mount(
+      {
+        components: { CustomerFormDialog },
+        template: '<div><CustomerFormDialog visible /><CustomerFormDialog visible /></div>',
+      },
+      { global: { stubs } },
+    );
+    await nextTick();
+    const ids = wrapper.findAll('form').map((f) => f.attributes('id'));
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+
+  it('scrolls the error into view, since Save no longer sits beside it', async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const wrapper = mountDialog();
+    await nextTick();
+    await wrapper.get('form').trigger('submit');
+    await nextTick();
+    await nextTick();
+    expect(wrapper.get('[data-testid="customer-form-error"]').text()).toBe('Name is required.');
+    expect(scroll).toHaveBeenCalled();
+    delete Element.prototype.scrollIntoView;
   });
 });

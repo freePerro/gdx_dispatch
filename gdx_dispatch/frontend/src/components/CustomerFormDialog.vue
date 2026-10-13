@@ -9,7 +9,7 @@
     data-testid="customer-form-dialog"
     @update:visible="$emit('update:visible', $event)"
   >
-    <form class="dialog-form" @submit.prevent="submitForm">
+    <form :id="formId" class="dialog-form" @submit.prevent="submitForm">
       <!-- name/phone/email/address stay raw label+InputText: their
            data-testids are consumed as real <input> elements by e2e
            (daily-ux-improvements) + unit specs, and FormField puts
@@ -93,23 +93,28 @@
            Stripped so the saved-toast can't lie about persisting them. -->
 
 
-      <div v-if="error" class="inline-error" data-testid="customer-form-error">{{ error }}</div>
-
-      <div class="form-actions">
-        <Button type="button" label="Cancel" text data-testid="customer-cancel-btn" @click="cancel" />
-        <Button
-          type="submit"
-          :label="isEditMode ? 'Save Changes' : 'Create Customer'"
-          :loading="saving"
-          data-testid="customer-submit-btn"
-        />
-      </div>
+      <div v-if="error" ref="errorEl" class="inline-error" data-testid="customer-form-error">{{ error }}</div>
     </form>
+
+    <!-- The actions live in the dialog footer, not the form: the content area
+         scrolls, and on a phone a row at its end starts below the dialog's
+         edge (GDXA-872). form= keeps Save a submit of the form above, so Enter
+         and the button both go through submitForm. -->
+    <template #footer>
+      <Button type="button" label="Cancel" text data-testid="customer-cancel-btn" @click="cancel" />
+      <Button
+        type="submit"
+        :form="formId"
+        :label="isEditMode ? 'Save Changes' : 'Create Customer'"
+        :loading="saving"
+        data-testid="customer-submit-btn"
+      />
+    </template>
   </Dialog>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from "vue";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { useApi } from "../composables/useApi";
@@ -136,6 +141,8 @@ const api = useApiWithToast();
 // so a transient blip mid-typing never nags the user.
 const lookupApi = useApi();
 const toast = useToast();
+// Per-instance, so two mounted dialogs never point a Save at the wrong form.
+const formId = `customer-form-${useId()}`;
 
 const trimOrNull = (value) => {
   const trimmed = value?.trim();
@@ -178,6 +185,15 @@ function formFromCustomer(customer) {
 const form = ref(emptyForm());
 const error = ref("");
 const saving = ref(false);
+const errorEl = ref(null);
+
+// Save is pinned in the footer, so it can be tapped with the form scrolled to
+// the top and the error far below it (GDXA-872): bring the error into view.
+watch(error, async (msg) => {
+  if (!msg) return;
+  await nextTick();
+  errorEl.value?.scrollIntoView?.({ block: "nearest" });
+});
 
 // Unsaved-changes guard — Esc / the header X are disabled while dirty, and
 // Cancel prompts before discarding typed-in work (2026-07-01 UX audit).
@@ -353,12 +369,6 @@ async function submitForm() {
 }
 .tax-toggle .p-inputswitch {
   margin-top: 0.2rem;
-}
-.form-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 0.75rem;
 }
 .inline-error {
   color: #b42318;
