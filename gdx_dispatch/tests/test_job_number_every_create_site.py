@@ -317,8 +317,6 @@ def test_follow_up_job_survives_a_numbering_failure(ctx, numbering):
 # job_number that are known and owned elsewhere. Delete the line when you fix
 # the site; a stale count is red.
 UNNUMBERED_ALLOWLIST: dict[str, int] = {
-    # estimates-pricing: estimate -> job conversion (sibling of GDXA-833).
-    "routers/estimates.py": 1,
     # platform-core: onboarding sample job (sibling of GDXA-833).
     "routers/onboarding.py": 1,
 }
