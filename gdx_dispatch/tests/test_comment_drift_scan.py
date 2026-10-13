@@ -144,6 +144,52 @@ def test_third_party_vocabulary_is_not_drift(tmp_path):
     assert scan(repo, ["D1", "X2"]) == []
 
 
+@pytest.mark.parametrize("module, name", [
+    ("httpx", "TransportError"),
+    ("httpx", "RemoteProtocolError"),
+    ("sqlalchemy.exc", "StatementError"),
+    ("psycopg2.errors", "SerializationFailure"),
+    ("stripe", "CardError"),
+])
+def test_library_exception_names_are_derived_vocabulary(module, name):
+    # None of these is in the literal floor, so only derivation from the
+    # installed library can put them in the vocabulary.
+    pytest.importorskip(module)
+    from gdx_dispatch.tools.comment_drift_scan import _EXTERNAL_VOCAB, _external_vocabulary
+
+    assert name not in _EXTERNAL_VOCAB
+    assert name in _external_vocabulary()
+
+
+def test_library_exception_name_is_not_drift_without_a_user(tmp_path):
+    # The tmp tree has no file that uses ReadTimeout, so code_words cannot
+    # carry it; before GDXA-869 this comment was flagged.
+    pytest.importorskip("httpx")
+    repo = _mkrepo(tmp_path, {
+        "pkg/proxy.py": '''
+            # A ReadTimeout or RemoteProtocolError from the host means it is down.
+            VALUE = 1
+        ''',
+    })
+    assert scan(repo, ["D1"]) == []
+
+
+def test_library_non_exception_names_still_flag_as_drift(tmp_path):
+    # stripe exports WebhookEndpoint and BankAccount, which are also repo
+    # class names; deriving all of dir(stripe) would hide a stale pointer
+    # to either once the repo class was renamed.
+    pytest.importorskip("stripe")
+    repo = _mkrepo(tmp_path, {
+        "pkg/hooks.py": '''
+            # Each WebhookEndpoint row is matched to a BankAccount here.
+            VALUE = 1
+        ''',
+    })
+    details = " ".join(f["detail"] for f in scan(repo, ["D1"]))
+    assert "WebhookEndpoint" in details
+    assert "BankAccount" in details
+
+
 def test_prose_section_after_args_is_not_a_ghost_param(tmp_path):
     """A 'Precedence:' paragraph under Args: must not read as a parameter."""
     repo = _mkrepo(tmp_path, {

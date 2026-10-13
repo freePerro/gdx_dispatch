@@ -133,6 +133,18 @@ _ENGLISH = set(
 
 _STDLIB_VOCAB_MODULES = ("builtins", "types", "zoneinfo", "decimal", "uuid", "datetime")
 
+# Dependencies whose exception classes comments name. A requirements.txt line
+# yields only the distribution name (`httpx`), never `ReadTimeout`, so without
+# these a comment naming one passed only while some other tracked file happened
+# to use the same identifier (GDXA-869).
+_LIBRARY_VOCAB_MODULES = (
+    "httpx",
+    "sqlalchemy.exc",
+    "sqlalchemy.orm.exc",
+    "psycopg2.errors",
+    "stripe",
+)
+
 
 def _external_vocabulary() -> set[str]:
     """The static floor above, UNION what the repo can tell us itself.
@@ -156,6 +168,23 @@ def _external_vocabulary() -> set[str]:
         except ImportError:
             continue
         vocab |= {n for n in dir(mod) if n and n[0].isupper() and not n.startswith("_")}
+
+    # Exceptions only: `dir(stripe)` is the whole SDK, and its resource names
+    # (WebhookEndpoint, BankAccount) are also class names this repo defines, so
+    # a comment pointing at a renamed one would stop being flagged.
+    for module in _LIBRARY_VOCAB_MODULES:
+        try:
+            mod = importlib.import_module(module)
+        except ImportError:
+            continue
+        for n in dir(mod):
+            obj = getattr(mod, n, None)
+            if (
+                n[:1].isupper()
+                and isinstance(obj, type)
+                and issubclass(obj, BaseException)
+            ):
+                vocab.add(n)
 
     req = REPO_ROOT / "gdx_dispatch" / "requirements.txt"
     if req.is_file():
