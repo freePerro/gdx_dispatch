@@ -27,7 +27,7 @@
 //  2. Parts used (SKU autocomplete via /api/parts-needed/sku-suggest)
 //  3. Parts to order (free-text; lands in the office Parts-to-Order queue)
 //  4. Return visit (toggle + required why; backend spawns the child job)
-//  5. Hours (defaults to open work time-entry duration if visible)
+//  5. Hours (starts blank and must be typed — 0 included; see `hoursEntered`)
 //  6. Signature canvas
 //  7. Notes
 //
@@ -366,7 +366,18 @@ async function onPhotoPicked(e) {
 }
 
 // ─── Hours / signature / notes ───────────────────────────────────────
-const hours = ref(0)
+// Blank until typed (GDXA-831). The closeout restates the tech's running job
+// timer AT these hours, so a field that started at 0 closed a skipped one at
+// 0 h — unbilled, unpaid, and indistinguishable from "I worked no time". With
+// the tenant's require-hours gate off nothing else stopped it. A blank cannot
+// submit; a typed 0 can, because then it is the tech's attestation.
+const hours = ref(null)
+// v-model.number leaves '' for a cleared field. Bounds match CloseoutPayload.
+const hoursEntered = computed(() => {
+  if (hours.value === null || hours.value === '') return false
+  const n = Number(hours.value)
+  return Number.isFinite(n) && n >= 0 && n <= 99
+})
 // Plan §11 (Doug): "ask how many techs on site". Billing input only — billed
 // man-hours = hours × techs under §8; never payroll for the other techs.
 const techsOnSite = ref(1)
@@ -468,6 +479,8 @@ const canSubmit = computed(() => {
   const hasNotes = (notes.value || '').trim().length > 0
   const hasOrders = orderParts.value.length > 0
   if (!(hasParts || hasHours || hasSig || hasNotes || noPartsUsed.value || hasOrders || returnVisitNeeded.value)) return false
+  // Hours are attested, never defaulted: blank refuses (see `hours`).
+  if (!hoursEntered.value) return false
   // Required: every parts row needs a name + qty >= 1.
   for (const p of parts.value) {
     if (!p.name.trim()) return false
@@ -527,7 +540,7 @@ async function submit() {
       note: (p.note || '').trim() || null,
     })),
     no_parts_used: noPartsUsed.value,
-    hours: Number(hours.value) || 0,
+    hours: Number(hours.value),
     techs_on_site: Math.max(1, Math.min(10, Number(techsOnSite.value) || 1)),
     labor_matrix_item_id: isInstallLane.value ? (matrixItemId.value || null) : null,
     signature_data,
@@ -667,7 +680,7 @@ function requestCancel() {
 function _resetForm() {
   finished.value = null
   parts.value = []
-  hours.value = 0
+  hours.value = null
   techsOnSite.value = 1
   matrixItemId.value = null
   confirmStep.value = false
@@ -1055,7 +1068,13 @@ watch(finished, async (v) => {
             class="hours-input"
             data-testid="mjco-hours"
             inputmode="decimal"
+            placeholder="Required"
+            :aria-invalid="!hoursEntered"
+            aria-describedby="mjco-hours-hint"
           />
+          <small v-if="!hoursEntered" id="mjco-hours-hint" class="muted" data-testid="mjco-hours-required">
+            Enter the hours you worked, from 0 to 99. Type 0 if you did no work.
+          </small>
         </div>
         <div class="form-field">
           <label for="mjco-techs">Techs on site</label>
@@ -1082,6 +1101,9 @@ watch(finished, async (v) => {
             on site — that bills
             <strong>{{ ((Number(hours) || 0) * techsOnSite).toFixed(2) }} man-hours</strong>.
             Is that what you meant?
+          </p>
+          <p v-if="Number(hours) === 0" data-testid="mjco-confirm-zero-hours">
+            <strong>0 h:</strong> your job timer closes with no hours, so nothing is billed or paid for it.
           </p>
           <small class="muted">Tap "Close out job" again to confirm, or change the numbers above.</small>
         </div>
