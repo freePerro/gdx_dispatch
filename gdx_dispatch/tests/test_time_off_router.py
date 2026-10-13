@@ -23,7 +23,7 @@ from datetime import date, timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from gdx_dispatch.core.audit import AuditLog
 from gdx_dispatch.core.pay_periods import shop_day_of, shop_today
@@ -374,6 +374,61 @@ def test_holidays_list_and_post_skip_people_who_already_hold_the_day():
             "date": f"{xmas.year}-12-26", "technician_ids": [TECH],
         })
         assert r.status_code == 422 and "calendar" in r.json()["detail"]
+    finally:
+        _teardown(c)
+
+
+# ── list ─────────────────────────────────────────────────────────────────────
+
+
+def test_the_office_list_reads_schedules_in_one_query_however_many_requests():
+    """GDXA-880: the list looked up each row's schedule with its own `users`
+    SELECT, up to 500 of them. The statement count must not grow with the
+    number of requests, and each row's workday count still follows its own
+    person's mask (OTHER_TECH works Saturdays)."""
+    c = _client("dispatcher", OFFICE)
+    _seed(c)
+    with c.SessionLocal() as db:
+        db.execute(select(User).where(User.id == UUID(OTHER_TECH))).scalars().one().workdays = 31 | 32
+        db.commit()
+    fri, mon = _fri_to_mon()
+    techs = (TECH, OTHER_TECH, OFFICE)
+
+    def add(n: int) -> None:
+        with c.SessionLocal() as db:
+            for _ in range(n):
+                for who in techs:
+                    db.add(TimeOffRequest(
+                        id=str(uuid4()), company_id=TENANT, technician_id=who, entry_type="vacation",
+                        start_date=fri, end_date=mon, minutes_per_day=480, status="pending",
+                        requested_by=who,
+                    ))
+            db.commit()
+
+    def count_list() -> tuple[int, list[dict]]:
+        seen: list[str] = []
+
+        def on_execute(_conn, _cursor, statement, *_a):
+            seen.append(statement)
+
+        event.listen(c._engine, "before_cursor_execute", on_execute)
+        try:
+            r = c.get("/api/timeclock/time-off/requests?all_technicians=true")
+        finally:
+            event.remove(c._engine, "before_cursor_execute", on_execute)
+        assert r.status_code == 200, r.text
+        return len(seen), r.json()
+
+    try:
+        add(1)
+        small, rows = count_list()
+        assert len(rows) == 3
+        add(9)
+        large, rows = count_list()
+        assert len(rows) == 30
+        assert large == small, f"{small} statements for 3 requests, {large} for 30"
+        counts = {(r["technician_id"], r["workday_count"]) for r in rows}
+        assert counts == {(TECH, 2), (OTHER_TECH, 3), (OFFICE, 2)}
     finally:
         _teardown(c)
 
