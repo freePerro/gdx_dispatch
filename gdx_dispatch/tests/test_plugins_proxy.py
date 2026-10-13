@@ -301,3 +301,74 @@ def test_forwarded_url_never_leaves_the_plugin_namespace(monkeypatch):
         url = _FakeClient.captured["url"]
         assert url.startswith("http://plugin-host:8000/api/plugins/"), url
         assert "/internal/" not in url
+
+
+# --- plugin-host down or cycling (GDXA-857) ---------------------------------
+# A transport error used to escape the proxy as an uncaught 500, which the
+# global handler sank into server_errors and the SPA reported as an api_error.
+# It is an expected outage: 503 with Retry-After, and never an empty catalog.
+
+_REAL_ASYNC_CLIENT = plugins_proxy.httpx.AsyncClient
+
+
+def _with_prod_error_handler(c):
+    # The app's global handler rebuilds a raised HTTPException and drops its
+    # headers, so the Retry-After assertions only mean something with it on.
+    from gdx_dispatch.core.error_handler import global_exception_handler
+
+    c.app.add_exception_handler(HTTPException, global_exception_handler)
+    c.app.add_exception_handler(Exception, global_exception_handler)
+    return c
+
+
+def _raising_client(exc):
+    class _Raising(_FakeClient):
+        async def request(self, *a, **k):
+            raise exc
+
+    return _Raising
+
+
+@pytest.mark.parametrize("path", ["/api/plugins", "/api/plugins/example/items"])
+def test_unreachable_plugin_host_answers_503_not_500(monkeypatch, path):
+    c = _with_prod_error_handler(_client(monkeypatch, modules={"example"}))
+    # A REAL httpx call to a closed port, so the ConnectError is the one httpx
+    # actually raises, not one a fake chose to raise.
+    monkeypatch.setattr(plugins_proxy.httpx, "AsyncClient", _REAL_ASYNC_CLIENT)
+    monkeypatch.setenv("PLUGIN_HOST_URL", "http://127.0.0.1:9")
+    r = c.get(path)
+    assert r.status_code == 503, r.text
+    assert r.headers["retry-after"] == plugins_proxy.PLUGIN_HOST_RETRY_AFTER
+    assert r.json()["detail"] == "plugin-host unavailable"
+
+
+def test_plugin_host_connect_timeout_answers_503(monkeypatch):
+    c = _with_prod_error_handler(_client(monkeypatch, modules={"example"}))
+    monkeypatch.setattr(plugins_proxy.httpx, "AsyncClient",
+                        _raising_client(plugins_proxy.httpx.ConnectTimeout("no route yet")))
+    for path in ("/api/plugins", "/api/plugins/example/items"):
+        r = c.get(path)
+        assert r.status_code == 503, (path, r.text)
+        assert "retry-after" in r.headers
+
+
+@pytest.mark.parametrize("exc", [
+    plugins_proxy.httpx.ReadTimeout("plugin handler ran past 30 s"),
+    plugins_proxy.httpx.RemoteProtocolError("server disconnected mid-response"),
+    plugins_proxy.httpx.UnsupportedProtocol("PLUGIN_HOST_URL has no scheme"),
+])
+def test_request_that_may_have_run_is_not_called_unavailable(monkeypatch, exc):
+    # plugin-host took the request (or the URL is wrong): "retry in 5 s" would
+    # be a false statement, and a 503 would keep it off the Server Errors page.
+    # It stays a 500 that reaches the server_errors sink.
+    from gdx_dispatch.core import error_handler
+
+    sunk = []
+    monkeypatch.setattr(error_handler, "_sink", lambda req, e, status, rid: sunk.append(status))
+    c = _with_prod_error_handler(_client(monkeypatch, modules={"example"}))
+    c = TestClient(c.app, raise_server_exceptions=False)
+    monkeypatch.setattr(plugins_proxy.httpx, "AsyncClient", _raising_client(exc))
+    r = c.post("/api/plugins/example/items", json={})
+    assert r.status_code == 500, r.text
+    assert "retry-after" not in r.headers
+    assert sunk == [500]
