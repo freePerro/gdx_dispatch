@@ -740,6 +740,7 @@ gdx_dispatch/routers/signatures.py                           documents-media
 gdx_dispatch/routers/branding_public.py                      documents-media
 gdx_dispatch/core/pdf_generator.py                           documents-media
 gdx_dispatch/core/document_text.py                           documents-media
+gdx_dispatch/core/file_serving.py                            documents-media
 gdx_dispatch/core/images.py                                  documents-media
 gdx_dispatch/core/job_photos.py                              documents-media
 gdx_dispatch/core/branding_logo.py                           documents-media
