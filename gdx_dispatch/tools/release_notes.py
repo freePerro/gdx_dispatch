@@ -3,10 +3,14 @@
     python -m gdx_dispatch.tools.release_notes draft 1.146.0
         Write release_notes/v1.146.0.md (title + an empty Highlights) and print
         the PRs merged since the last release, to write the highlights from.
+        When the file already exists, also print what merged after its last
+        edit, and leave the file alone.
 
     python -m gdx_dispatch.tools.release_notes check 1.146.0
-        Exit non-zero unless v1.146.0.md exists and every notes file parses.
-        The Release workflow runs this before it builds anything.
+        Exit non-zero unless v1.146.0.md exists, every notes file parses, and
+        no change other than docs merged after the file was last edited
+        (a warning, not a failure, where git cannot tell, as in a shallow
+        clone). The Release workflow runs this before it builds anything.
 
     python -m gdx_dispatch.tools.release_notes body 1.146.0 [--title]
         Print the notes file as the GitHub Release body (or its title line).
@@ -58,6 +62,19 @@ def _tag_exists(repo: Path, tag: str) -> bool:
     ).returncode == 0
 
 
+def _change_line(subject: str, body: str) -> str | None:
+    """A commit as a change line: an old-style merge commit becomes its PR
+    title from the body; a branch merge is None."""
+    subject = subject.strip()
+    merge = _MERGE_RE.match(subject)
+    if merge:
+        title = next((b.strip() for b in body.splitlines() if b.strip()), "")
+        return f"{title} (#{merge[1]})" if title else subject
+    if _SKIP_RE.match(subject):
+        return None
+    return subject
+
+
 def change_lines(repo: Path, rev_range: str) -> list[str]:
     """One line per first-parent commit in ``rev_range``, oldest last.
 
@@ -71,15 +88,58 @@ def change_lines(repo: Path, rev_range: str) -> list[str]:
         if not record:
             continue
         subject, _, body = record.partition("\x1f")
-        subject = subject.strip()
-        merge = _MERGE_RE.match(subject)
-        if merge:
-            title = next((b.strip() for b in body.splitlines() if b.strip()), "")
-            subject = f"{title} (#{merge[1]})" if title else subject
-        elif _SKIP_RE.match(subject):
-            continue
-        lines.append(subject)
+        line = _change_line(subject, body)
+        if line is not None:
+            lines.append(line)
     return lines
+
+
+def merged_after_notes(repo: Path, path: Path, ref: str) -> tuple[list[str] | None, str]:
+    """The changes at ``ref`` that landed after the last commit touching ``path``.
+
+    A notes file drafted days before its release says nothing about what
+    merged after it (v1.146.0.md, drafted in #1090 and caught up by hand in
+    #1159). Returns ``(lines, anchor)``: the first-parent commits after the
+    file's last edit, oldest last, leaving out commits that change only
+    ``.md`` files, and the short hash of that edit. ``lines`` is None when
+    git cannot answer (no git, not a repository, a shallow clone, the file
+    not committed at ``ref``), and ``anchor`` then says why. Anything else
+    git refuses, a ref that does not resolve among them, raises
+    ``ReleaseNotesError``: in the Release workflow's full clone that is a
+    fault, not a reason to wave the tag through.
+
+    It proves the file was edited after the last code change, not that the
+    edit covers it.
+    """
+    try:
+        shallow = _git(repo, "rev-parse", "--is-shallow-repository").strip()
+    except OSError:
+        return None, "git is not installed here"
+    except subprocess.CalledProcessError:
+        return None, f"{repo} is not a git repository"
+    if shallow == "true":
+        return None, "this is a shallow clone, so the history after the file is incomplete"
+    try:
+        _git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    except subprocess.CalledProcessError:
+        raise ReleaseNotesError(f"{ref} is not a commit here") from None
+    try:
+        rel = path.resolve().relative_to(repo.resolve()).as_posix()
+        anchor = _git(repo, "log", "-1", "--first-parent", "--format=%H", ref, "--", rel).strip()
+        if not anchor:
+            return None, f"{rel} is not committed at {ref} yet"
+        lines: list[str] = []
+        for sha in _git(repo, "rev-list", "--first-parent", f"{anchor}..{ref}").split():
+            files = _git(repo, "diff", "-z", "--name-only", f"{sha}^1", sha).split("\0")
+            if all(f.endswith(".md") for f in files if f):
+                continue
+            subject, _, body = _git(repo, "log", "-1", "--format=%s%x1f%b", sha).partition("\x1f")
+            line = _change_line(subject, body)
+            if line is not None:
+                lines.append(line)
+    except (ValueError, subprocess.CalledProcessError) as exc:
+        raise ReleaseNotesError(f"git could not read the history after {path.name}: {exc}") from None
+    return lines, anchor[:12]
 
 
 def compute_changes(repo: Path, versions: list[str]) -> dict[str, list[str]]:
@@ -94,6 +154,14 @@ def compute_changes(repo: Path, versions: list[str]) -> dict[str, list[str]]:
 
 def _repo_root() -> Path:
     return Path(_git(NOTES_DIR, "rev-parse", "--show-toplevel").strip())
+
+
+def _repo_root_or(fallback: Path) -> Path:
+    """The repo root, or ``fallback`` where there is no git to ask."""
+    try:
+        return _repo_root()
+    except (OSError, subprocess.CalledProcessError):
+        return fallback
 
 
 def _arg_version(args: argparse.Namespace) -> str | None:
@@ -145,6 +213,31 @@ def cmd_check(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    # Judge the file at its own tag once it is cut, so a later run does not
+    # count the next release's merges against it.
+    repo = _repo_root_or(NOTES_DIR)
+    ref = args.ref
+    if ref is None:
+        try:
+            ref = f"v{version}" if _tag_exists(repo, f"v{version}") else "origin/main"
+        except OSError:
+            ref = "origin/main"
+    try:
+        newer, anchor = merged_after_notes(repo, NOTES_DIR / f"v{version}.md", ref)
+    except ReleaseNotesError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    if newer is None:
+        print(f"warning: cannot tell whether v{version}.md is current at {ref}: {anchor}", file=sys.stderr)
+    elif newer:
+        print(
+            f"v{version}.md was last edited in {anchor}, and {len(newer)} change(s) merged after it "
+            f"at {ref}. Fold in what users will notice, re-confirm the warning: line for any new "
+            "migration, and merge the edited file (which re-anchors it):\n"
+            + "".join(f"  {line}\n" for line in newer),
+            file=sys.stderr,
+        )
+        return 1
     print(f"v{version}.md present; {len(versions)} notes files parse")
     return 0
 
@@ -185,6 +278,23 @@ def cmd_draft(args: argparse.Namespace) -> int:
             print(f"  {line}")
         print()
     if path.exists():
+        try:
+            newer, anchor = merged_after_notes(repo, path, args.ref)
+        except ReleaseNotesError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        if newer is None:
+            print(f"Cannot tell what merged after {path.name} was last edited: {anchor}\n")
+        elif newer:
+            print(
+                f"Merged since {path.name} was last edited ({anchor}) — fold these in, and "
+                "re-confirm the warning: line for any new migration:\n"
+            )
+            for line in newer:
+                print(f"  {line}")
+            print()
+        else:
+            print(f"Nothing but docs merged since {path.name} was last edited ({anchor}).\n")
         print(f"{path} already exists; not overwriting")
         return 0
     path.write_text(
@@ -203,8 +313,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("version")
     p.add_argument("--ref", default="origin/main", help="what the release will tag (default origin/main)")
     p.set_defaults(func=cmd_draft)
-    p = sub.add_parser("check", help="fail unless the release has a notes file and all files parse")
+    p = sub.add_parser("check", help="fail unless the release has a current notes file and all files parse")
     p.add_argument("version")
+    p.add_argument(
+        "--ref", default=None,
+        help="what the release tags (default: the vX.Y.Z tag if it exists, else origin/main)",
+    )
     p.set_defaults(func=cmd_check)
     p = sub.add_parser("body", help="print a notes file as the GitHub Release body (or --title)")
     p.add_argument("version")
