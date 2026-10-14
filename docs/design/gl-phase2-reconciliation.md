@@ -26,6 +26,14 @@ evidence layer already shipped. Note the live gap that creates: GL Phase 1 §11
 step 4 gates exposing the ledger reports on a monthly trial-balance hand-check
 *against QBO*, which is no longer possible. That gate needs replacing, most
 obviously with the statement tie-out — see `gl-phase1-core-ledger.md`.
+✅ **Replaced (Doug on GDXA-877, recorded 2026-10-13 in GDXA-902):** the gate is
+now the daily trial-balance zero-check plus this doc's §2.2 statement tie-out.
+The zero-check holds by construction, so §2.2 is the binding leg. It is
+cash-only and **not built**: the line above says there is no tie-out-to-GL
+assertion, and the import-level `tie_out_status` only checks that a statement
+agrees with itself. It is blocked on the 1050 clearing, and §2.2 itself names
+its other prerequisites. The gate stays unmeetable until §2.2 ships.
+§6's QBO loop and §6.2's diff stay WON'T BUILD and gate nothing.
 **Date:** 2026-07-02
 **Depends on:** Phase 1 (`gl-phase1-core-ledger.md`, v3). **Followed by:** Phase 3 (parallel run + trust switch).
 **Provenance labels:** **[VERIFIED]** adversarially verified 3-0 (research runs 2026-07-01/02) · **[SOURCED]** primary-source quotes, verification pass killed by spend limit — re-verify before implementation · **[CODE]** direct code reading, auditor-checked · **[AUDIT-R1]** audit finding · **[JUDGMENT]** / **[CPA]** as in Phase 1.

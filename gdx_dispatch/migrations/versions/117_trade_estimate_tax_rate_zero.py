@@ -1,5 +1,13 @@
 """Backfill tax_rate = 0 on open contractor/wholesale estimates left NULL (GDXA-756).
 
+SUPERSEDED (2026-10-13, GDXA-907): the rule below that a trade customer is
+"never charged sales tax" is retired. Doug's ruling: a trade customer is taxed
+at the tenant default unless a ``tax_exemption`` row exists; only an
+installation is untaxed. Migration 121 (``121_trade_estimate_tax_rate_null``)
+sets the open service-lane rows this wrote back to NULL. This file's code is
+unchanged; on a database that had not reached 117, both run in the same
+upgrade.
+
 A NULL ``estimates.tax_rate`` is not "no tax": ``compute_estimate_totals``
 (``modules/proposals/totals.py``) hands NULL to ``resolve_rate``, which returns
 0 only for an exempt customer and otherwise the tenant's

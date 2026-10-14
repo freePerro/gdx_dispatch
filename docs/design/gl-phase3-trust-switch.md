@@ -1,6 +1,33 @@
 # GL Phase 3 — Parallel Run, Trust Switch & the QBO End-State
 
 **Status:** v3 FINAL-DRAFT — survived 2 adversarial audit rounds (R1 NOT READY → six fixes; R2 delta READY-WITH-CONDITIONS → four surgical edits applied: reversal-window cap + amount-drift tracking, Phase 2 §5.5 backfill runbook now specified, AJE gate re-sequenced to tax season, §8 build-item text corrected). Blocked on CPA items (§9) before the gate can start.
+**Revised 2026-10-13 (Doug on GDXA-877, recorded in GDXA-902):** the
+trust-switch gate no longer uses QBO as its comparator. QB has read
+`needs_reconnect` since 2026-08-18, and Phase 2's QBO half is WON'T BUILD
+(2026-08-21). These now name the internal check (the daily trial-balance
+zero-check plus the Phase 2 §2.2 statement tie-out): §3.2 criterion 1, the
+QBO-only gate-start preconditions, §3.3's sign-off pack and §5.1 step (4).
+§3.2 criterion 3 records instead that no AR comparator remains. The 2026-07-02
+wording stays beside each one as history.
+Limits of the internal check:
+- The zero-check holds by construction (balance trigger), so the tie-out is
+  the binding leg.
+- The §2.2 tie-out is cash-only and **not built**. There is no tie-out-to-GL
+  assertion, it is blocked on the 1050 clearing, and it is not the
+  import-level `tie_out_status`.
+- **Nothing in the gate checks AR any more** (see criterion 3).
+**The gate cannot pass today.** The blockers this revision touches are §2.2
+(not built) and an AR check (Doug's call). Other parts of the gate are also
+unbuilt and are not changed here. They include criterion 4 (no 1060 account in
+the chart of accounts, no orphan-bt queue), criterion 6 (no period-lock path
+outside cutover) and the §3.2 scorecard. This list is not exhaustive. No job records
+the daily zero-check; it can be re-run per day with `trial_balance(as_of=…)`.
+Left as written, not gates on QBO-as-comparator:
+- Criterion 5 (push health) is now vacuous; it is noted in place.
+- §5.4's monthly/quarterly "diff" cadence, §7's rollback via QBO catch-up and
+  "unexplained diff" abort trigger, and §6's Option A all belong to the QBO
+  end-state decision, which is out of scope here.
+The §9 CPA items are untouched and still open.
 **Date:** 2026-07-02
 **Depends on:** Phase 1 (`gl-phase1-core-ledger.md` v3), Phase 2 (`gl-phase2-reconciliation.md` v4). **This phase is mostly process and decision-making; the build surface is small (§8).**
 **Provenance:** **[VERIFIED]** adversarially verified 3-0 against primary sources (deep-research 2026-07-02, 24/25 confirmed) · **[CONVERGENT]** consistent across regulatory/vendor/practitioner sources but no authoritative standard exists — the gap-fill research explicitly established the *absence* of an AICPA/ISACA prescription, so these are honest convergences, not standards · **[CODE]** direct code reading · **[JUDGMENT]** / **[CPA]** as before.
@@ -26,6 +53,8 @@ All **[VERIFIED]** against regulation text:
 
 Phase 2 go-live *is* the start of the parallel run: two books, entity-level push keeping QBO current, monthly statement tie-outs, monthly GDX-vs-QBO diff. The classical objection to parallel runs — doubled workload — is mostly absorbed by automation here: nobody keys anything twice; the push does the second book, and the diff does the comparison labor (**[CONVERGENT]** — the doubled-work warning appears in ISACA-derived material, Oracle's FLEXCUBE implementation guide, and FFIEC guidance; our automation is the mitigation, not a reason to skip the discipline).
 
+*(2026-10-13, GDXA-902: the push and the GDX-vs-QBO diff never shipped, and both are WON'T BUILD. So the "second book" half of this run never happened. What remains of the parallel run is the internal check: the daily trial-balance zero-check plus the monthly bank statement tie-out. The gate below is restated on that basis.)*
+
 ### 3.2 Acceptance gate **[CONVERGENT — criteria-based, not fixed-duration]**
 
 No authoritative body prescribes a duration. The convergent practice (Oracle: "at least one End of Month included"; accounting-migration guides: "at least one full accounting cycle, often 30–60 days"; FFIEC: "until they verify accuracy and reliability") is criteria-based with a close-cycle floor. GDX's gate, deliberately stricter than the floor because the marginal cost of waiting is near zero **[JUDGMENT]**:
@@ -34,19 +63,20 @@ No authoritative body prescribes a duration. The convergent practice (Oracle: "a
 
 - Phase 2 fully deployed: `push_payment` live **and the historical-payment backfill/QBO-dedup procedure executed** (Phase 2 §5.5 — specified there as of v4.1), Stripe catch-up posted, first clean statement tie-out done.
 - **QBO revenue ItemRefs configured** (Phase 2 §5.3's three-Item mapping) — no longer optional: without it, revenue diffs are coarse-group forever and gate criterion 1 can't mean anything at account level.
+- *(2026-10-13, GDXA-902: the QBO parts of these preconditions are dropped. These are `push_payment`, the QBO-dedup backfill and the ItemRefs bullet. They existed to make the QBO diff possible, and that diff is WON'T BUILD. What remains: Stripe catch-up posted and the first clean statement tie-out done.)*
 
 **Three consecutive clean monthly closes**, where *clean* means all of:
 
-1. **Trial-balance diff:** zero unexplained differences (every diff in an `expected_diff_class`, §Phase 2 6.2) — **under the classification governance below**.
+1. **Trial-balance zero-check:** the trial balance's `zero_proof_cents` is 0 on every day of the month. This is a smoke check: the balance trigger makes it 0 by construction, so it fails only if a write got past the trigger. *(Reworded 2026-10-13, GDXA-902. The 2026-07-02 wording, kept as history: "**Trial-balance diff:** zero unexplained differences (every diff in an `expected_diff_class`, §Phase 2 6.2) — under the classification governance below." That diff was against QBO.)*
 2. **Bank tie-outs:** every bank account tied out to its statement, no `aggregate_only` flags in the window (Phase 1-era months exempt).
-3. **AR aging:** GDX vs QBO agings match within tolerance.
+3. **AR:** no comparator left. Criteria 1 and 2 do not catch AR errors such as a payment applied to the wrong invoice, an invoice that never posted, or open-invoice balances drifting from the AR control account. The candidate internal check is an open-invoices-vs-AR-control tie. It does not exist yet, and whether to build it is Doug's call. Until then this criterion is **unmet, not passed**. *(Reworded 2026-10-13, GDXA-902. The 2026-07-02 wording, kept as history: "**AR aging:** GDX vs QBO agings match within tolerance.")*
 4. **Stripe:** 1060 zeroed per payout; orphan-bt queue empty or triaged.
-5. **Push health:** outbox empty at close; no `qb_dirty` older than the threshold; zero `blocked_on` items.
+5. **Push health:** outbox empty at close; no `qb_dirty` older than the threshold; zero `blocked_on` items. *(2026-10-13, GDXA-902: the QBO push will not be built, so this passes trivially. It is left as written because it is not a comparator.)*
 6. **Close ritual executed** (§5.1) including the period lock.
 
 A dashboard renders the gate as a 3-slot scorecard. Any failed month resets the count — consecutive is the point (**[CONVERGENT]** — "verification of financial equality... any laxity leads to indefinite extensions," Oracle; the reset forces root-causing instead of averaging).
 
-**Classification governance** (**[AUDIT-R1]** — without this, criterion 1 is a self-certifying rug: classify everything as "expected" and the gate passes itself):
+**Classification governance** (**[AUDIT-R1]** — without this, criterion 1 is a self-certifying rug: classify everything as "expected" and the gate passes itself). *(2026-10-13, GDXA-902: this governs the QBO diff's `expected_diff_class`. With criterion 1 reworded to the zero-check, nothing in the gate is classified any more, so this section is history. The same self-certifying risk now sits in Phase 2 §2.2's "accepted-outstanding" lines, which carry no rationale or age rule. That is not addressed here.)*
 
 - Every `expected_diff_class` assignment requires a **rationale string** and is audit-logged; assignments have a lifecycle — `timing` class diffs carry an expected-reversal window (**a register field, capped at 60 days unless the CPA approves longer** — **[AUDIT-R2]**) and **auto-escalate to unexplained** if the diff persists past it.
 - **Amount-drift tracking for non-reversing classes** (**[AUDIT-R2]** — `qbo_only`/`gdx_only` mappings never "reverse," so without this an approved classification is a permanent blind spot where new errors hide): each such classified mapping records a baseline amount at approval; the scorecard tracks the mapping's amount month-over-month, and drift beyond tolerance re-flags the account as **unexplained** despite the standing classification.
@@ -55,7 +85,7 @@ A dashboard renders the gate as a 3-slot scorecard. Any failed month resets the 
 
 ### 3.3 Go/no-go
 
-- **Sign-off: Doug + the CPA**, at a scheduled review of the third clean close (**[CONVERGENT]** — every cutover source assigns a named authority; for a one-owner shop with an external accountant, it's these two). The CPA reviews: the three diff reports, one bank tie-out, and the draft book-to-return workpaper (§2).
+- **Sign-off: Doug + the CPA**, at a scheduled review of the third clean close (**[CONVERGENT]** — every cutover source assigns a named authority; for a one-owner shop with an external accountant, it's these two). The CPA reviews: the three diff reports, one bank tie-out, and the draft book-to-return workpaper (§2). *(2026-10-13, GDXA-902: "the three diff reports" now means the three months' zero-check and tie-out results, since there is no QBO diff.)*
 - **Hard switch date**, first day of the next month after sign-off (**[CONVERGENT]** — "set a hard cutover date... without one, you'll run both forever"; "don't do the cutover when you have to close your books"). Never mid-quarter-close, never during tax season. **[CPA]** pick the month.
 - The decision is recorded in the repo (`docs/decisions/ADR-0xx-gl-trust-switch.md`) with the scorecard attached.
 
@@ -72,7 +102,7 @@ What actually changes on the switch date — deliberately small:
 
 ### 5.1 Monthly close ritual (GDX)
 
-Distilled from the convergent checklists (Intuit month-end guide, practitioner close checklists) minus what automation already does: (1) import statements + clear match queue; (2) tie out every bank account; (3) review AR aging, unbilled work, uncategorized expenses; (4) run the GDX-vs-QBO diff, resolve or classify everything; (5) eyeball P&L vs prior month; (6) lock the period (`gl_period_locks`). Target: under an hour for a clean month.
+Distilled from the convergent checklists (Intuit month-end guide, practitioner close checklists) minus what automation already does: (1) import statements + clear match queue; (2) tie out every bank account; (3) review AR aging, unbilled work, uncategorized expenses; (4) confirm the trial-balance zero-check held every day of the month *(2026-10-13, GDXA-902; was "run the GDX-vs-QBO diff, resolve or classify everything")*; (5) eyeball P&L vs prior month; (6) lock the period (`gl_period_locks`). Target: under an hour for a clean month.
 
 ### 5.2 CPA year-end package (new report bundle — the main §8 build item)
 
@@ -128,7 +158,7 @@ Monthly: close ritual + diff. Quarterly: CPA glance at the diff trend + classifi
 
 1. **[CPA]** Filing basis + entity type final confirmation; switch-month selection; quarterly-review appetite; Option B interest at first year-end.
 2. **Ledger-realm API behavior** — does the QBO API hard-reject entity writes against a Ledger company, or accept them unserviceably? **[VERIFIED as unknown]** — needs a developer-doc check or a sandbox probe before Option B is ever costed. Deferred until Option B is live.
-3. ~~Does Doug use QBO Payroll today?~~ **Resolved (Doug, 2026-07-02): payroll runs through an external payroll company, not QBO Payroll.** Consequences: the Workforce-SKU/payroll-alongside-Ledger research is moot; Options B and C lose their biggest complication (no payroll migration, no $150 year-end filing fee exposure); payroll reaches the GDX GL through Phase 2's bank-statement matching (the payroll company's debits → R5 user rules → wages/payroll-tax expense accounts), with `PayrollEntry` rows (already external-first: `source ∈ csv_import/gusto/...`) available for per-tech cost detail. In the QBO diff, payroll accounts are classified by however payroll lands in QBO today (payroll-company integration or CPA entries) — confirm which at the go/no-go. **[CPA]**
+3. ~~Does Doug use QBO Payroll today?~~ **Resolved (Doug, 2026-07-02): payroll runs through an external payroll company, not QBO Payroll.** Consequences: the Workforce-SKU/payroll-alongside-Ledger research is moot; Options B and C lose their biggest complication (no payroll migration, no $150 year-end filing fee exposure); payroll reaches the GDX GL through Phase 2's bank-statement matching (the payroll company's debits → R5 user rules → wages/payroll-tax expense accounts), with `PayrollEntry` rows (already external-first: `source ∈ csv_import/gusto/...`) available for per-tech cost detail. In the QBO diff, payroll accounts are classified by however payroll lands in QBO today (payroll-company integration or CPA entries) — confirm which at the go/no-go. **[CPA]** *(2026-10-13, GDXA-902: no QBO diff gates the switch any more, so the classification half of this question is moot. The [CPA] confirmation is left open; it is Doug's to answer.)*
 4. Sales-tax filing path (MN) under Options B/C — unresearched; irrelevant under Option A. Carried until Option B is considered.
 5. ~~Parallel-run window start~~ — resolved in §3.2 (**[AUDIT-R1]**): the count begins at the first close after the named gate-start preconditions; everything earlier is rehearsal.
 
