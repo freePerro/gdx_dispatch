@@ -334,6 +334,12 @@ gdx_dispatch/frontend/src/components/PaymentCaptureForm.vue  money-billing
 gdx_dispatch/frontend/src/utils/customerStatement.js         money-billing
 gdx_dispatch/frontend/src/utils/arAging.js                   money-billing
 gdx_dispatch/frontend/src/components/OutstandingAgingDialog.vue money-billing
+# The GL plans, live and archived: money-billing's charter claims
+# gl-phase2-reconciliation and gl-phase3-trust-switch, finished ones in
+# archive/ (GDXA-891). docs/ is not a covered root, so `--file` answers for
+# these and deleting them reddens nothing but the dead-rule check.
+docs/design/gl-*.md                                          money-billing
+docs/design/archive/gl-*.md                                  money-billing
 
 ## ---------------------------------------------------------------------------
 ## jobs-dispatch — jobs, closeouts, scheduling, dispatch board, planner,
