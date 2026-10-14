@@ -12,11 +12,15 @@ const apiGet = vi.fn();
 vi.mock('../../composables/useApiWithToast', () => ({
   useApiWithToast: () => ({ get: apiGet, post: vi.fn() }),
 }));
-vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }));
+const toastAdd = vi.fn();
+vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: toastAdd }) }));
+let routeQuery = {};
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ query: {} }),
+  useRoute: () => ({ query: routeQuery }),
   useRouter: () => ({ replace: vi.fn() }),
 }));
+let authState = { isAdmin: true };
+vi.mock('../../stores/auth', () => ({ useAuthStore: () => authState }));
 
 import QuickbooksView from '../QuickbooksView.vue';
 
@@ -54,8 +58,22 @@ function serve({ statusOk }) {
   });
 }
 
+function httpError(status, message, code) {
+  const err = new Error(message);
+  err.status = status;
+  err.code = code;
+  return err;
+}
+
+const EVENT = { timestamp: '2026-10-01T12:00:00Z', type: 'customers', count: 7, status: 'success' };
+
 describe('QuickbooksView status load failure', () => {
-  beforeEach(() => { apiGet.mockReset(); });
+  beforeEach(() => {
+    apiGet.mockReset();
+    toastAdd.mockReset();
+    routeQuery = {};
+    authState = { isAdmin: true };
+  });
 
   it('reads Status unknown on a first load that fails', async () => {
     serve({ statusOk: false });
@@ -87,5 +105,69 @@ describe('QuickbooksView status load failure', () => {
     expect(wrapper.find('[data-testid="qb-overview-last-sync"]').text()).toBe('Unknown');
     expect(wrapper.find('[data-testid="qb-overview-counts-unknown"]').exists()).toBe(true);
     expect(wrapper.text()).not.toContain('No entities synced yet');
+  });
+
+  it('keeps the events that loaded when both status calls fail', async () => {
+    routeQuery = { tab: 'log' };
+    apiGet.mockImplementation(async (url) => {
+      if (url.startsWith('/api/qb/events')) return { events: [EVENT] };
+      throw new Error('500 Internal Server Error');
+    });
+    const wrapper = mountView();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="qb-overview-connection"]').text()).toBe('Status unknown');
+    const table = wrapper.find('[data-testid="quickbooks-table"]');
+    expect(table.text()).toContain('customers');
+    expect(table.text()).not.toContain('No sync events yet');
+  });
+
+  it('clears the log and says it is unavailable when an events reload fails', async () => {
+    routeQuery = { tab: 'log' };
+    apiGet.mockImplementation(async (url) => {
+      if (url.startsWith('/api/qb/events')) return { events: [EVENT] };
+      return STALE;
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="quickbooks-table"]').text()).toContain('customers');
+
+    apiGet.mockImplementation(async (url) => {
+      if (url.startsWith('/api/qb/events')) throw new Error('502 Bad Gateway');
+      return STALE;
+    });
+    await wrapper.vm.loadQuickbooks();
+    await flushPromises();
+
+    const table = wrapper.find('[data-testid="quickbooks-table"]');
+    expect(table.text()).not.toContain('customers');
+    expect(table.find('[data-testid="qb-events-unavailable"]').text()).toContain('502 Bad Gateway');
+    expect(table.text()).not.toContain('No sync events yet');
+  });
+
+  it('a 5xx leaves Connect and Sync live', async () => {
+    serve({ statusOk: false });
+    const wrapper = mountView();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="qb-access-denied"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="quickbooks-connect-btn"]').element.disabled).toBe(false);
+    expect(wrapper.find('[data-testid="quickbooks-sync-btn"]').element.disabled).toBe(false);
+    // The view's own "QuickBooks load failed"; the API layer is mocked here.
+    expect(toastAdd).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers Disconnect only to admin/owner, as /disconnect requires', async () => {
+    serve({ statusOk: true });
+    authState = { isAdmin: false };
+    const office = mountView();
+    await flushPromises();
+    expect(office.find('[data-testid="quickbooks-disconnect-btn"]').exists()).toBe(false);
+    expect(office.find('[data-testid="quickbooks-connect-btn"]').exists()).toBe(true);
+
+    authState = { isAdmin: true };
+    const admin = mountView();
+    await flushPromises();
+    expect(admin.find('[data-testid="quickbooks-disconnect-btn"]').exists()).toBe(true);
   });
 });
