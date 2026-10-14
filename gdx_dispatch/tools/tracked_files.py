@@ -93,6 +93,17 @@ def read_tracked_files(repo_root: Path | None = None) -> set[str]:
     guard that silently falls back to walking the working tree is the defect
     this module exists to remove.
     """
+    return set(read_tracked_modes(repo_root))
+
+
+def read_tracked_modes(repo_root: Path | None = None) -> dict[str, int]:
+    """Repo-relative path -> git mode (``0o100644``, ``0o100755``, ``0o120000``
+    for a symlink, ``0o160000`` for a submodule) for every index entry.
+
+    The mode is what a fresh checkout or a bind mount gets, whatever the
+    maintainer's working tree says — the executable bit lives here, not on
+    disk (GDXA-993). Same refusals as `read_tracked_files`.
+    """
     root = repo_root or REPO_ROOT
     index = _index_path(root)
     if index is None or not index.is_file():
@@ -118,7 +129,7 @@ def read_tracked_files(repo_root: Path | None = None) -> set[str]:
         # mis-parse into a plausible-looking wrong answer.
         raise TrackedFilesUnavailable(f"unsupported git index version {version}")
 
-    out: set[str] = set()
+    out: dict[str, int] = {}
     pos = 12
     for _ in range(count):
         if pos + _ENTRY_FIXED > len(data):
@@ -136,7 +147,7 @@ def read_tracked_files(repo_root: Path | None = None) -> set[str]:
         if flags & _EXTENDED_FLAG:  # v3 extended flags add 2 bytes
             name_start += 2
         end = data.index(b"\x00", name_start)
-        out.add(data[name_start:end].decode("utf-8", "surrogateescape"))
+        out[data[name_start:end].decode("utf-8", "surrogateescape")] = mode
         entry_len = end - pos + 1
         pos += entry_len + ((8 - (entry_len % 8)) % 8)
 
