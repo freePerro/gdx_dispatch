@@ -42,6 +42,14 @@ async function handleLogin() {
       password: password.value,
     })
     await theme.loadBranding()
+    // GDXA-1003: an account that must change its password (the seeded owner,
+    // an invited user) goes to the change-password form on /profile — the
+    // server refuses everything else — and not to the remembered target,
+    // which for /oauth/ is a full-page load the router guard never sees.
+    if (auth.user?.must_change_password) {
+      await router.push('/profile')
+      return
+    }
     const target = getPostLoginRedirect(route)
     if (target.startsWith('/oauth/')) {
       window.location.assign(target)

@@ -1003,6 +1003,10 @@ def reset_password(body: ResetPasswordBody, request: Request, db: Session = Depe
     if not _u:
         raise HTTPException(status_code=400, detail="User not found.")
     _u.password_hash = new_hash
+    # GDXA-1003: the reset link is how an invited user sets the first password
+    # anyone knows, so it satisfies the flag just as a self-service change does.
+    was_flagged = bool(_u.must_change_password)
+    _u.must_change_password = False
 
     db.commit()
     redis.delete(f"pw_reset:{body.token}")
@@ -1011,7 +1015,9 @@ def reset_password(body: ResetPasswordBody, request: Request, db: Session = Depe
         log_audit_event_sync(
             db, tenant_id=tenant_id, user_id=user_id,
             action="password_reset_success", entity_type="auth",
-            entity_id=user_id, details={}, request=request,
+            entity_id=user_id,
+            details={"must_change_password_cleared": was_flagged},
+            request=request,
         )
         db.commit()
     except Exception:
@@ -1122,7 +1128,10 @@ def _db_verify_user(request: Request, principal_subject: str, actor_kind: str | 
 
         with app_engine.connect() as conn:
             row = conn.execute(
-                select(_RTUser.role, _RTUser.deleted_at, _RTUser.active)
+                select(
+                    _RTUser.role, _RTUser.deleted_at, _RTUser.active,
+                    _RTUser.must_change_password,
+                )
                 .where(_RTUser.id == subject_uuid)
             ).first()
     except Exception:
@@ -1140,7 +1149,53 @@ def _db_verify_user(request: Request, principal_subject: str, actor_kind: str | 
         return None
     if active is False:
         return None
-    return {"role": str(db_role or "user")}
+    return {"role": str(db_role or "user"), "must_change_password": bool(row[3])}
+
+
+# GDXA-1003: the endpoints a must_change_password session may still call —
+# read its own profile (the SPA renders the change-password form only once
+# GET /api/users/me succeeds) and change the password. Login, refresh and
+# logout decode their own token and never reach finalize_login_jwt, so they
+# need no entry. Matched on the endpoint function, not the path, so a path
+# alias cannot widen it.
+_PASSWORD_CHANGE_ALLOWED_ATTR = "_allowed_while_password_change_required"  # noqa: S105
+PASSWORD_CHANGE_REQUIRED = "password_change_required"  # noqa: S105
+
+
+def allowed_while_password_change_required(endpoint):
+    """Mark ``endpoint`` reachable by a session that must change its password.
+
+    Apply directly under the ``@router.<method>(...)`` decorator so the marked
+    function is the one FastAPI registers.
+    """
+    setattr(endpoint, _PASSWORD_CHANGE_ALLOWED_ATTR, True)
+    return endpoint
+
+
+def _enforce_password_change(request: Request, verified: dict) -> None:
+    """403 ``password_change_required`` unless the endpoint is allowlisted.
+
+    The flag is set on the seeded owner (whose password went to the boot log)
+    and on admin-created invitees; until it is cleared by a password change
+    or a reset-link reset, the session can do nothing but change it.
+    """
+    if not verified.get("must_change_password"):
+        return
+    endpoint = request.scope.get("endpoint")
+    if getattr(endpoint, _PASSWORD_CHANGE_ALLOWED_ATTR, False):
+        return
+    log.info(
+        "auth_denied_password_change_required sub=%s path=%s",
+        (getattr(request.state, "user", None) or {}).get("user_id"),
+        request.url.path,
+    )
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "code": PASSWORD_CHANGE_REQUIRED,
+            "message": "Change your password before continuing.",
+        },
+    )
 
 
 def _enforce_tenant_match(request: Request, user_tenant_id: str) -> None:
@@ -1211,6 +1266,11 @@ def finalize_login_jwt(
         DB-side demote takes effect on the next request.
       Slice 6 (tenant match) — JWT tenant_id must match the host-resolved
         tenant or 403. Defense in depth on top of RLS.
+      GDXA-1003 (password change) — a user flagged must_change_password
+        gets 403 ``password_change_required`` on every endpoint that reaches
+        this gate and is not marked ``@allowed_while_password_change_required``.
+        Surfaces that decode the token themselves (dispatch_ws, and
+        core.modules.require_role's claim fallback) never reach it.
     """
     # Slice H — denylist gate (cheap; runs before Slice 2's DB hit).
     if jti and _get_app_denylist(request).contains(str(jti)):
@@ -1233,6 +1293,8 @@ def finalize_login_jwt(
     request.state.user = user_dict
     # Slice 6 — tenant match (raises 403 on mismatch).
     _enforce_tenant_match(request, user_dict["tenant_id"])
+    # GDXA-1003 — a flagged account may only change its password.
+    _enforce_password_change(request, verified)
     return user_dict
 
 

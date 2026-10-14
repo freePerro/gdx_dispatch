@@ -17,6 +17,11 @@ Endpoints (all under /api/mobile, gated on the "mobile" module):
                                                       with signature
     POST /api/mobile/quotes/{estimate_id}/decline  — decline with reason
     GET  /api/mobile/quotes/{estimate_id}      — quote detail (with tiers)
+    POST /api/mobile/quotes/{estimate_id}/sms-preview  — what "Text to customer"
+                                                          would send, or why not
+    POST /api/mobile/quotes/{estimate_id}/send-sms     — text the approval link
+                                                          from the tech's phone
+    POST /api/mobile/quotes/{estimate_id}/schedule-sms — text that link later
 """
 from __future__ import annotations
 

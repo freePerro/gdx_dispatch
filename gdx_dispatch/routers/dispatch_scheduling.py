@@ -1,8 +1,8 @@
-"""Dispatch scheduling endpoints — traffic-aware scheduling, capacity.
+"""Dispatch scheduling endpoints — traffic-aware scheduling and the board's lanes.
 
 Routes:
   GET  /api/dispatch/schedule-with-traffic — optimized schedule with drive times
-  GET  /api/dispatch/check-capacity — overbooking prevention
+  GET  /api/dispatch/scheduled-unassigned — scheduled jobs with no tech assigned
   GET  /api/dispatch/late-open — open jobs whose scheduled day has passed
   GET  /api/dispatch/partial-jobs — a day worked, no day booked
   GET  /api/dispatch/visits — the visit cards of jobs not drawn by their job row
