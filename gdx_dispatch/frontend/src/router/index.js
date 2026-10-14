@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
+import { createApiClient } from '../composables/useApi';
 import { isTechnician } from '../constants/roles';
 import { getLoginRedirectLocation } from '../lib/auth-urls';
 import { useViewMode } from '../composables/useViewMode';
@@ -448,6 +449,10 @@ export const routes = [
   { path: '/:pathMatch(.*)*', name: 'not-found', component: NotFoundView, meta: { public: true, noShell: true } },
 ];
 
+// Where a must_change_password session is held: UserProfileView carries the
+// self-service change-password form.
+export const PASSWORD_CHANGE_PATH = '/profile';
+
 export function createAppRouter() {
   const router = createRouter({
     history: createWebHistory(),
@@ -493,6 +498,17 @@ export function createAppRouter() {
     window.location.reload();
   });
 
+  // A 403 `password_change_required` from any API call (useApi sets the flag
+  // and fires this) re-runs the guard by navigating, so the person lands on
+  // the form instead of a page whose every call now fails.
+  if (typeof window !== 'undefined') {
+    window.addEventListener('gdx:password-change-required', () => {
+      if (router.currentRoute.value.path !== PASSWORD_CHANGE_PATH) {
+        router.push(PASSWORD_CHANGE_PATH).catch(() => {});
+      }
+    });
+  }
+
   router.beforeEach(async (to) => {
     const auth = useAuthStore();
 
@@ -512,6 +528,32 @@ export function createAppRouter() {
         return false;
       }
       return { path: '/dashboard' };
+    }
+
+    // GDXA-1004: an account flagged must_change_password (the seeded initial
+    // admin, an admin-created user) goes to the change-password form on
+    // /profile and stays there until the change succeeds. The server
+    // (GDXA-1003) refuses a flagged session with 403 `password_change_required`
+    // everywhere but GET /api/users/me, the change itself and the login,
+    // refresh and logout endpoints, and clears the
+    // flag on a password change or reset. Ahead of the
+    // tech and mobile redirects, which would otherwise bounce /profile away.
+    // Public routes (login, reset-password) stay reachable, and logout is a
+    // store action, not a route, so the person is never trapped.
+    if (auth.isAuthenticated && auth.mustChangePassword && !to.meta.public) {
+      if (to.path === PASSWORD_CHANGE_PATH) return true;
+      // Leaving /profile: ask the server before bouncing back. A reset link,
+      // another tab, or a 403 that landed after the change can leave this
+      // flag stale, and the bounce back is a duplicate navigation that never
+      // reloads /profile — so without this only F5 would let the person go.
+      // Through the API client, not hydrateUser: it refreshes an access token
+      // that expired while the person sat on the form, and it sets the flag
+      // (and reloads permissions) from the answer.
+      await createApiClient().get('/api/users/me').catch(() => {});
+      // A dead refresh logs the session out inside that call, which also
+      // reads the flag as false; the auth check above has already run.
+      if (!auth.isAuthenticated) return getLoginRedirectLocation(to.fullPath);
+      if (auth.mustChangePassword) return { path: PASSWORD_CHANGE_PATH };
     }
 
     if (auth.isAuthenticated && !to.meta.public && to.path !== '/login') {
