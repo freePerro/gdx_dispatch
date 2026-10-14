@@ -140,7 +140,7 @@ onUnmounted(() => document.removeEventListener('visibilitychange', onVisible));
   background: none;
   border: 0;
   padding: 0;
-  color: var(--p-primary-color, #2563eb);
+  color: var(--p-primary-color);
   text-decoration: underline;
   font: inherit;
   cursor: pointer;
