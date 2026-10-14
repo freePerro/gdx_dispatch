@@ -320,6 +320,30 @@ def test_a_technician_cannot_read_the_partial_queue(client):
     assert client.client.get("/api/dispatch/partial-jobs").status_code == 403
 
 
+_BOARD_LISTS = (
+    ("/api/dispatch/scheduled-unassigned", {}),
+    ("/api/dispatch/schedule-with-traffic", {"tech_id": T1, "date": "2026-10-14"}),
+)
+
+
+def test_the_board_lists_are_gated_on_jobs_read_all(client):
+    """GDXA-1063: both listed every tenant job to a technician holding only
+    jobs.read_own, while late-open, partial-jobs and visits refused one."""
+    _job(client, scheduled_at=DAY3, assigned_to=None)
+    client.be_tech()
+    for path, params in _BOARD_LISTS:
+        r = client.client.get(path, params=params)
+        assert r.status_code == 403, (path, r.text)
+    # A dispatcher holds jobs.read_all by name, not through the admin wildcard.
+    from gdx_dispatch.routers.auth import get_current_user  # noqa: PLC0415
+
+    client.client.app.dependency_overrides[get_current_user]().update(user_id=OFFICE_USER, sub=OFFICE_USER, role="dispatcher")
+    for path, params in _BOARD_LISTS:
+        r = client.client.get(path, params=params)
+        assert r.status_code == 200, (path, r.text)
+    assert len(client.client.get("/api/dispatch/scheduled-unassigned").json()["items"]) == 1
+
+
 def test_a_board_drop_onto_a_tech_outside_the_crew_books_them_and_clears_partial(client):
     """The board's drop is PATCH /api/jobs/{id} with the tech and the date
     (DispatchView.vue assignJob). With no Current visit the planner books it
