@@ -387,30 +387,50 @@ PAYMENT_AUTH_FAILED_DETAIL = (
     "Your bank couldn't verify this card. Please use a different card or "
     "payment method."
 )
-_AUTH_FAILURE_CODES = frozenset({
-    "payment_intent_authentication_failure",
-    "setup_intent_authentication_failure",
-})
+# Stripe errors the payer can fix whatever their type, matched by code because
+# Stripe does not promise the type (GDXA-893: an ACH email Stripe refuses as
+# email_invalid read "try again in a few minutes"). Fixed text, never Stripe's
+# message, which for a non-card type may name our request. The ONE list: most
+# of these codes reach only Stripe.js, never this server, so the pay page's
+# stripeErrorText is meant to read it from the Jinja global below.
+# Codes and meanings: https://docs.stripe.com/error-codes (read 2026-10-13).
+PAYER_FIXABLE_STRIPE_DETAILS: dict[str, str] = {
+    "payment_intent_authentication_failure": PAYMENT_AUTH_FAILED_DETAIL,
+    "setup_intent_authentication_failure": PAYMENT_AUTH_FAILED_DETAIL,
+    "email_invalid": "That email address doesn't look right. Please check it and try again.",
+    "routing_number_invalid": "That routing number isn't valid. Please check it and try again.",
+    "account_number_invalid": "That account number isn't valid. Please check it and try again.",
+    "bank_account_unusable": (
+        "This bank account can't be used. Please use a different bank account "
+        "or pay by card."
+    ),
+    "payment_method_customer_decline": (
+        "The payment wasn't approved. Please try again or use a different "
+        "payment method."
+    ),
+}
+# A global, not per-render context: every render of payment_form.html has it,
+# including the ones that build their own context (`|tojson` on an undefined
+# name raises).
+templates.env.globals["payer_fixable_stripe_details"] = PAYER_FIXABLE_STRIPE_DETAILS
 
 
 def payer_facing_stripe_detail(exc: stripe.StripeError) -> str:
     """The text a payer may see for a Stripe failure.
 
-    Only a ``CardError`` is about the payer's own card ("Your card was
+    A ``CardError`` is about the payer's own card ("Your card was
     declined."); Stripe's error guide answers every other type by fixing the
     integration — a bad key, a bad request, an outage. Those messages name the
     key prefix and our request shape, so they go to the log and the payer gets
     the generic line. ``user_message`` is no filter: in stripe-python it is
     the raw message for every type (11.6.0: ``return self._message``). The
-    one non-card type the payer can fix is a failed 3D Secure check, matched
-    by its code.
+    non-card failures the payer can fix (a failed 3D Secure check, a mistyped
+    email or bank number) come from ``PAYER_FIXABLE_STRIPE_DETAILS`` by code.
     https://docs.stripe.com/error-handling#error-types (read 2026-10-07)
     """
     if isinstance(exc, stripe.CardError) and exc.user_message:
         return str(exc.user_message)
-    if getattr(exc, "code", None) in _AUTH_FAILURE_CODES:
-        return PAYMENT_AUTH_FAILED_DETAIL
-    return PAYMENT_UNAVAILABLE_DETAIL
+    return PAYER_FIXABLE_STRIPE_DETAILS.get(str(getattr(exc, "code", None) or ""), PAYMENT_UNAVAILABLE_DETAIL)
 
 
 def is_refused_debit(card: Any) -> bool:
