@@ -163,9 +163,9 @@ def test_flatten_produces_readable_strings(db):
 
 
 def test_detects_captured_door_without_source_tag(db):
-    """The real prod shape: the deployed plugin leaves source=null but writes the
-    full spec. Detection must fall back to the signature keys, or the whole
-    feature matches zero real data (the bug this fixes)."""
+    """The older prod shape: earlier plugin builds left source=null but wrote
+    the full spec. Detection must fall back to the signature keys, or those
+    captured doors match nothing (the bug this fixes)."""
     job_id = uuid4()
     prod_spec = {k: v for k, v in CHI_SPEC.items() if k != "source"}  # no source tag
     assert "source" not in prod_spec

@@ -28,10 +28,11 @@ from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 
 log = logging.getLogger(__name__)
 
-# The line_metadata.source tag the CHI plugin's estimate-line draft SETS IN
-# SOURCE — but the DEPLOYED plugin does not reliably persist it (every captured
-# door on prod carries source=null). So the tag is a hint, not the gate; see
-# _is_captured_door, which falls back to the capture's signature keys.
+# The line_metadata.source tag the CHI plugin's estimate-line draft sets. Earlier
+# deployed plugin builds did not persist it, so older captured doors carry
+# source=null; newer ones carry the tag (89 prod lines did on 2026-09-16). So
+# the tag is a hint, not the gate; see _is_captured_door, which falls back to
+# the capture's signature keys.
 CHI_SOURCE = "chi_hubx"
 
 # CHI-capture signature: fields present on every real captured door and absent
@@ -69,8 +70,8 @@ def _is_captured_door(md: Any) -> bool:
     """True if this estimate line's line_metadata is a captured CHI door.
 
     Prefer the explicit source tag, but fall back to the capture's signature
-    keys because the deployed plugin leaves source=null on real captures — the
-    full spec (Model, Spring, Track, Sections, weights) is all there, just
+    keys because captures saved by earlier plugin builds carry source=null —
+    the full spec (Model, Spring, Track, Sections, weights) is all there, just
     untagged. Ordinary line_metadata (sku/vendor/color from a manual line) has
     no Model + build field, so it's excluded.
     """
