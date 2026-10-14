@@ -1,6 +1,9 @@
 """Canonical role normalization — core/roles.py (role-name canonicalization #2)."""
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from gdx_dispatch.core import roles as R
@@ -71,6 +74,48 @@ def test_aliases_resolve_to_canonical_constants():
     }
     for target in R.ROLE_ALIASES.values():
         assert target in valid, f"alias target {target!r} is not a canonical constant"
+
+
+# ── GDXA-1010: frontend/src/constants/roles.js mirrors core/roles.py ─────────
+# Pins the role constants and the alias table only; normalizeRole's behaviour
+# is pinned by frontend/src/constants/__tests__/roles.spec.js.
+
+_ROLES_JS = Path(R.__file__).resolve().parents[1] / "frontend" / "src" / "constants" / "roles.js"
+_JS_CONST = re.compile(r"export const ([A-Z_]+) = '([^']*)';")
+_JS_ALIAS = re.compile(r"(\w+): ([A-Z_]+),")
+
+
+def _js_role_constants_and_aliases() -> tuple[dict[str, str], dict[str, str]]:
+    # Strict: a line the parser cannot read fails here, never slips past.
+    src = _ROLES_JS.read_text(encoding="utf-8")
+    consts: dict[str, str] = {}
+    for line in src.splitlines():
+        if re.match(r"export const [A-Z_]+\b", line):
+            m = _JS_CONST.fullmatch(line.strip())
+            assert m, f"unparseable role constant in roles.js: {line!r}"
+            consts[m.group(1)] = m.group(2)
+    block = re.search(r"^const ALIASES = \{\n(.*?)^\};", src, re.M | re.S)
+    assert block, "ALIASES block not found in roles.js"
+    aliases: dict[str, str] = {}
+    for line in block.group(1).splitlines():
+        m = _JS_ALIAS.fullmatch(line.strip())
+        assert m and m.group(2) in consts, f"unparseable alias in roles.js: {line!r}"
+        aliases[m.group(1)] = consts[m.group(2)]
+    return consts, aliases
+
+
+def test_roles_js_constants_match_roles_py():
+    py_consts = {
+        name: value for name, value in vars(R).items()
+        if name.isupper() and isinstance(value, str)
+    }
+    js_consts, _ = _js_role_constants_and_aliases()
+    assert js_consts == py_consts
+
+
+def test_roles_js_aliases_match_roles_py():
+    _, js_aliases = _js_role_constants_and_aliases()
+    assert js_aliases == dict(R.ROLE_ALIASES)
 
 
 # ── #45: write paths normalize users.role to ONE canonical (long) vocabulary ──
