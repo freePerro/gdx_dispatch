@@ -6,7 +6,7 @@
  * HTTP 200 `[]`) must NOT be locked out of their own nav — the escape hatch
  * stays for an empty loaded set. A non-empty loaded set is authoritative.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 import { useAuthStore } from '../auth';
 
@@ -80,5 +80,28 @@ describe('auth store — hasPermission', () => {
     // Only admin/owner get the empty-set hatch; a stripped tech stays stripped.
     const store = storeWith({ role: 'tech', loaded: true, perms: [] });
     expect(store.hasPermission('jobs.read_own')).toBe(false);
+  });
+});
+
+// Phone alerts end only on a logout the user chose (/audit 2026-10-14).
+describe('auth store — logout event', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    sessionStorage.clear();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true })));
+  });
+
+  function captured(run) {
+    const seen = [];
+    const on = (e) => seen.push(e.detail);
+    window.addEventListener('gdx:auth-logout', on);
+    try { run(); } finally { window.removeEventListener('gdx:auth-logout', on); }
+    return seen;
+  }
+
+  it('is automatic unless the caller says the user chose it', () => {
+    const store = storeWith({ role: 'admin' });
+    expect(captured(() => store.logout())).toEqual([{ chosen: false }]);
+    expect(captured(() => store.logout({ chosen: true }))).toEqual([{ chosen: true }]);
   });
 });

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from werkzeug.security import generate_password_hash
 
 from gdx_dispatch.core.audit import AuditLog, log_audit_event_sync, utcnow
+from gdx_dispatch.core.auth_revoke import revoke_device_alerts
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.log_redact import redact_email
 from gdx_dispatch.core.modules import require_module, require_permission
@@ -297,9 +298,11 @@ def change_my_password(payload: SelfPasswordChangeIn, request: Request, user: di
     was_flagged = bool(u.must_change_password)
     u.must_change_password = False
     u.updated_at = utcnow()
+    phones_revoked = revoke_device_alerts(db, str(u.id), reason="password_changed")
     db.commit()
     _audit(db, request=request, user=user, action="user_self_password_changed", entity_id=uid,
-           details={"must_change_password_cleared": was_flagged})
+           details={"must_change_password_cleared": was_flagged,
+                    "device_alerts_revoked": phones_revoked})
     return {"ok": "password_changed"}
 
 
@@ -691,8 +694,10 @@ def reset_password(user_id: str, payload: PasswordResetIn, request: Request, use
     user_id = str(u.id)
     u.password_hash = generate_password_hash(payload.new_password)
     u.updated_at = utcnow()
+    phones_revoked = revoke_device_alerts(db, str(u.id), reason="password_reset")
     db.commit()
-    _audit(db, request=request, user=user, action="user_password_reset", entity_id=user_id, details={"reset_by": _user_id(user)})
+    _audit(db, request=request, user=user, action="user_password_reset", entity_id=user_id,
+           details={"reset_by": _user_id(user), "device_alerts_revoked": phones_revoked})
     return {"ok": "password_reset", "user_id": user_id}
 
 

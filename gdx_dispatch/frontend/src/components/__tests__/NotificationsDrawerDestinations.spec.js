@@ -9,45 +9,36 @@
  * and its router were removed outright in #350; this guard stays so nothing
  * quietly points a notification back at a path that is now a redirect.
  *
- * Source-level assertion, same pattern as OutlookSettingsAutoEmailNotice.spec.js:
- * the destination map is a plain switch inside a component that needs a store,
- * a router and PrimeVue to mount, and none of that is the thing under test.
+ * The map lives in lib/notificationDestinations.js (shared with the Android
+ * office alerts since 2026-10-04), a plain function, so these call it. The
+ * category list is read from its source so a new case is covered too.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { destinationFor } from '../../lib/notificationDestinations';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SRC = readFileSync(resolve(__dirname, '../NotificationsDrawer.vue'), 'utf8');
-
-/** The `return` line of the case block that handles `category`. */
-function destinationLineFor(category) {
-  const at = SRC.indexOf(`case '${category}':`);
-  expect(at, `no case block for '${category}'`).toBeGreaterThan(-1);
-  const after = SRC.slice(at);
-  const line = after.split('\n').find((l) => l.includes('return mobile ?'));
-  expect(line, `no destination return after case '${category}'`).toBeTruthy();
-  return line;
-}
+const SRC = readFileSync(resolve(__dirname, '../../lib/notificationDestinations.js'), 'utf8');
+const CATEGORIES = [...SRC.matchAll(/case '([^']+)':/g)].map((m) => m[1]);
 
 describe('NotificationsDrawer destinations', () => {
   it('sends inbox/message notifications to the real Outlook mailbox on desktop', () => {
     for (const category of ['inbox', 'message']) {
-      const line = destinationLineFor(category);
-      expect(line, `${category} must not route to the in-memory Communications screen`)
-        .not.toMatch(/:\s*'\/communications'/);
-      expect(line).toMatch(/:\s*'\/inbox'/);
-      expect(line).toMatch(/'\/mobile\/inbox'/);
+      expect(destinationFor(category), `${category} must not route to the in-memory Communications screen`)
+        .toBe('/inbox');
+      expect(destinationFor(category, { mobile: true })).toBe('/mobile/inbox');
     }
   });
 
   it('no destination anywhere in the map points at /communications', () => {
-    const returns = SRC.split('\n').filter((l) => l.includes('return mobile ?'));
-    expect(returns.length).toBeGreaterThan(3);
-    for (const line of returns) {
-      expect(line, `destination still points at the fake screen: ${line.trim()}`)
-        .not.toMatch(/'\/communications'/);
+    expect(CATEGORIES.length).toBeGreaterThan(3);
+    for (const category of CATEGORIES) {
+      for (const mobile of [false, true]) {
+        expect(destinationFor(category, { mobile }), `${category} still points at the fake screen`)
+          .not.toBe('/communications');
+      }
     }
   });
 });

@@ -377,7 +377,7 @@ const userMenuItems = computed(() => {
       label: 'Logout',
       icon: 'pi pi-sign-out',
       command: () => {
-        auth.logout();
+        auth.logout({ chosen: true });
         router.push('/login');
       },
     },

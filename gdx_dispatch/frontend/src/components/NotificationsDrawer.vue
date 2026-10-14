@@ -58,7 +58,9 @@ import Drawer from 'primevue/drawer';
 import ProgressSpinner from 'primevue/progressspinner';
 import { useToast } from 'primevue/usetoast';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
+import { usePermission } from '../composables/usePermission';
 import { useNotificationsStore } from '../stores/notifications';
+import { destinationFor } from '../lib/notificationDestinations';
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -69,6 +71,7 @@ const router = useRouter();
 const store = useNotificationsStore();
 const toast = useToast();
 const { confirmAsync } = useDestructiveConfirm();
+const { hasPermission } = usePermission();
 const visible = ref(props.modelValue);
 
 async function onDelete(n) {
@@ -80,7 +83,12 @@ async function onDelete(n) {
 }
 
 async function onClearAll() {
-  if (!(await confirmAsync({ header: 'Clear notifications', message: 'Clear all notifications? This removes them for everyone in the company.' }))) return;
+  // Office alerts are shared rows: an office user's Clear all clears them for
+  // the whole office. Anyone else only ever sees (and clears) their own.
+  const message = hasPermission('nav.office')
+    ? 'Clear all notifications? Office alerts are cleared for everyone in the office.'
+    : 'Clear all your notifications?';
+  if (!(await confirmAsync({ header: 'Clear notifications', message }))) return;
   try {
     await store.clearAll();
   } catch (e) {
@@ -96,7 +104,7 @@ watch(visible, (v) => {
   if (v !== props.modelValue) emit('update:modelValue', v);
 });
 
-// Category → destination map. The Notification model doesn't carry an
+// Category → destination map (lib/notificationDestinations.js). The Notification model doesn't carry an
 // entity_id, so deep-links land on the list-level route for that
 // surface and the user picks the row. Mobile users get the mobile
 // route; desktop users get the desktop route. Anything not mapped
@@ -105,61 +113,7 @@ const _isMobileRoute = () => typeof window !== 'undefined'
   && /^\/mobile(\/|$)/.test(window.location.pathname);
 
 function _destinationFor(category) {
-  if (!category) return null;
-  const mobile = _isMobileRoute();
-  switch (category) {
-    case 'lead':
-      return '/leads';
-    case 'job':
-    case 'job_assigned':
-    case 'job_status':
-      return mobile ? '/mobile/jobs' : '/jobs';
-    case 'invoice':
-    case 'invoice_paid':
-    case 'invoice_overdue':
-    // 'payment' is what core/office_notifications.notify_payment_received
-    // writes when Stripe money lands. It belongs with the invoice cases:
-    // the row names an invoice number and the office's next move is to open
-    // it. Without this case the click fell through to `default` and merely
-    // closed the drawer.
-    case 'payment':
-      return mobile ? '/mobile/billing' : '/invoices';
-    case 'estimate':
-    case 'estimate_signed':
-      return mobile ? '/mobile/estimates' : '/estimates';
-    case 'customer':
-      return mobile ? '/mobile/customers' : '/customers';
-    // The scheduled payroll send writes this, both when it sends and when it
-    // holds. The held one is the whole point: it names the shifts to correct
-    // and the correction is made on /timesheets. Desktop only — the office
-    // fixes timesheets at a desk, and there is no mobile route to send to.
-    case 'timesheet':
-      return '/timesheets';
-    case 'part':
-    case 'part_shipped':
-    case 'parts_to_order':
-      return mobile ? '/mobile/parts-to-order' : '/purchase-orders';
-    // A scheduled REPLY that did not go (modules/phone_com/scheduled.py) —
-    // the thread shows what happened and is where to resend. Only the office
-    // can schedule a reply (both SMS views need nav.office), though the bell
-    // row reaches everyone, like the lead and payment broadcasts. Scheduled
-    // invoice and estimate texts alert under 'invoice' / 'estimate' instead,
-    // so an alert about a tech's own text opens a page a tech can reach.
-    case 'sms':
-      return mobile ? '/mobile/sms' : '/phone-com/messages';
-    case 'inbox':
-    case 'message':
-      // Desktop goes to /inbox (InboxView -> /api/outlook/*), the real
-      // Outlook-synced mailbox. It used to go to /communications, a screen
-      // backed by an in-memory dict (`_EMAILS_BY_TENANT`) that emptied on
-      // every container restart, so a message notification pointed at a
-      // mailbox that could never be holding the message (#492). That screen
-      // has since been removed outright (#350) and /communications now
-      // redirects here. Mobile already went to the right place.
-      return mobile ? '/mobile/inbox' : '/inbox';
-    default:
-      return null;
-  }
+  return destinationFor(category, { mobile: _isMobileRoute() });
 }
 
 function onClick(n) {

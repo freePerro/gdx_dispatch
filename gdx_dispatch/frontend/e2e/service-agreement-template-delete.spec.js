@@ -44,6 +44,7 @@ async function signInAndSeed(page, baseURL, name) {
   });
   expect(created.status(), 'seed template').toBe(201);
   await page.addInitScript((a) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', a.t);
     sessionStorage.setItem('gdx_tenant_slug', a.tid);
   }, { t: token, tid: TENANT });

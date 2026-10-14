@@ -83,6 +83,21 @@
           </router-link>
         </div>
       </section>
+          <section class="drawer-section drawer-section--system">
+        <h3 class="drawer-section-heading">Preferences</h3>
+        <div class="drawer-items">
+          <button
+            type="button"
+            class="drawer-link drawer-link--server-settings"
+            data-testid="more-server-settings"
+            @click="openServerSettings"
+          >
+            <i class="pi pi-cog" aria-hidden="true" />
+            <span class="drawer-link-label">Server Settings</span>
+          </button>
+          <OfficeAlertsToggle class="drawer-office-alerts" />
+        </div>
+      </section>
     </Drawer>
 
     <!-- Quick-capture FAB (2026-07-07): note a phone call in ~10s without
@@ -146,6 +161,7 @@
 
     <QuickCaptureSheet v-model:visible="captureOpen" :initial-note="captureSeed" @saved="onCaptureSaved" />
     <LeadIntakeForm v-model:visible="leadIntakeOpen" />
+      <MobileServerConfigDialog v-model:visible="serverConfigOpen" />
   </nav>
 </template>
 
@@ -163,6 +179,8 @@ import { isTechnician } from '../constants/roles';
 import { usePermission } from '../composables/usePermission';
 import QuickCaptureSheet from './QuickCaptureSheet.vue';
 import LeadIntakeForm from './LeadIntakeForm.vue';
+import MobileServerConfigDialog from './MobileServerConfigDialog.vue';
+import OfficeAlertsToggle from './OfficeAlertsToggle.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -182,6 +200,11 @@ const effectiveRole = computed(() => auth.user?.role || auth.role);
 
 const moreOpen = ref(false);
 const moreSearch = ref('');
+const serverConfigOpen = ref(false);
+function openServerSettings() {
+  moreOpen.value = false;
+  serverConfigOpen.value = true;
+}
 
 const captureOpen = ref(false);
 const leadIntakeOpen = ref(false);

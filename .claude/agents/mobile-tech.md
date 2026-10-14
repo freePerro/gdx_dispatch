@@ -63,7 +63,7 @@ jobs-dispatch's state contract. When you change one, that owner reviews.
 - **The PWA manifest and service worker** are yours
   (`core/pwa.py`, `pwa_manifest.spec.js`); a cache-header change is verified
   with `/verify` after deploy, not assumed.
-- Plans that own decisions here (slugs under `docs/design/`, finished ones in its `archive/`): `mobile-one-job-card-plan`,
+- Plans that own decisions here (slugs under `docs/design/`, finished ones in its `archive/`): `mobile-one-job-card-plan`, `mobile-android-capacitor-plan`,
   `gdx_dispatch/docs/tech_mobile.md`. Docs state; code proves.
 
 ## Neighbours

@@ -35,6 +35,7 @@ test('a seeded tier becomes a real category option', async ({ page, baseURL }) =
   test.skip(seeded.length === 0, 'tenant has seeded no extra pricing tier');
 
   await page.addInitScript((a) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', a.t);
   }, { t: token, tid: TENANT });
 

@@ -9,7 +9,7 @@ import AIAssistantView from '../AIAssistantView.vue'
 const STUBS = { AppLayout: { template: '<div><slot /></div>' } }
 
 function mkResponse(bodyObj, { ok = true, status = 200 } = {}) {
-  return { ok, status, json: async () => bodyObj }
+  return { ok, status, json: async () => bodyObj, text: async () => JSON.stringify(bodyObj) }
 }
 
 describe('AIAssistantView.vue — tools-used panel (S32)', () => {

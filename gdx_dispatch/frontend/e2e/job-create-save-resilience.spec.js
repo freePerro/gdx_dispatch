@@ -95,6 +95,7 @@ async function login(baseURL) {
 async function primeSession(page, token) {
   await page.addInitScript(
     (a) => {
+      if (window !== window.top) return;
       sessionStorage.setItem('gdx_access_token', a.t);
     },
     { t: token, tid: TENANT },
@@ -280,7 +281,7 @@ test.describe('job create — a saved job never looks unsaved', () => {
       test.skip(!EMAIL || !PASSWORD, 'E2E_EMAIL/E2E_PASSWORD not set');
       const { api, token } = await login(baseURL);
       await primeSession(page, token);
-      await page.addInitScript((t) => localStorage.setItem('gdx_theme', t), theme);
+      await page.addInitScript((t) => { if (window === window.top) localStorage.setItem('gdx_theme', t); }, theme);
 
       await page.goto('/jobs');
       await expect(page.locator('[data-testid="new-job-btn"]')).toBeVisible({ timeout: 20000 });

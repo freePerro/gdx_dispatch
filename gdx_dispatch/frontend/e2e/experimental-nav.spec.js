@@ -16,6 +16,7 @@ test('Experimental nav group contains the relocated reporting items', async ({ p
   const { access_token } = await r.json();
 
   await page.addInitScript((a) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', a.t);
   }, { t: access_token, tid: TENANT });
 

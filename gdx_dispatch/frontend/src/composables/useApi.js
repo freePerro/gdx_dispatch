@@ -132,10 +132,15 @@ export function createApiClient() {
       auth.setMustChangePassword?.(false);
     }
 
-    if (response.status === 204 || response.headers?.get?.('content-length') === '0') {
+    if (response.status === 204) {
       return null;
     }
-    const data = await response.json();
+    // Decide "empty" from the body, not the Content-Length header: the
+    // Capacitor native HTTP bridge reports `content-length: 0` on chunked
+    // responses that do carry a body, which made every call on the Android
+    // app resolve to null.
+    const text = await response.text();
+    const data = text ? JSON.parse(text) : null;
     // /me carries the live flag, and /profile reads it on every load (and
     // Refresh): a password reset by link or changed in another tab is picked
     // up there too, not only when the router re-asks on the way out.
