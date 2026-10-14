@@ -69,7 +69,7 @@ CREATE TABLE server_errors (
 """
 
 
-def _env(router, *, extra_ddl: str | None = None, stash_principal: bool = True):
+def _env(router, *, extra_ddl: str | None = None, stash_principal: bool = True, role: str = "admin"):
     """SQLite TestClient over one router, with `audit_logs` from ORM metadata.
 
     ``stash_principal`` mirrors production: ``routers/auth/core.py`` sets
@@ -106,9 +106,11 @@ def _env(router, *, extra_ddl: str | None = None, stash_principal: bool = True):
 
     app.include_router(router)
 
-    def _override_user(request: Request):
-        principal = {"user_id": USER, "role": "admin", "tenant_id": TID}
-        if stash_principal:
+    # `request` is optional because `require_role` (GDXA-1097) re-reads this
+    # override with no arguments when nothing is stashed on the request.
+    def _override_user(request: Request = None):
+        principal = {"user_id": USER, "role": role, "tenant_id": TID}
+        if stash_principal and request is not None:
             # Exactly what routers/auth/core.py does before returning.
             request.state.user = principal
         return principal
@@ -255,6 +257,12 @@ def test_the_actor_assertion_can_fail():
     """
     tc, Session, engine = _workflows_env(stash_principal=False)
     try:
+        # The role gate stashes the principal it admits, so with it in place
+        # no request reaches the handler without one. Lift the gate here only:
+        # this test is about the audit lookup, not about who may write.
+        import gdx_dispatch.modules.workflows.router as wr
+
+        tc.app.dependency_overrides[wr._office] = lambda: None
         assert tc.post("/api/workflows", json=RULE).status_code == 200
         row = _audit_rows(Session, "workflow_rule_created")[0]
         assert (row.user_id or row.actor_id) == "system", (
@@ -368,6 +376,106 @@ def test_a_failed_audit_write_takes_the_rule_with_it():
             )
         finally:
             db.close()
+    finally:
+        tc.app.dependency_overrides.clear()
+        engine.dispose()
+
+
+# ── role gate (GDXA-1097) ────────────────────────────────────────────────
+# Every rule is a standing order to send customer email, so writing one is a
+# dispatch-manager action. A technician is refused and nothing changes; a
+# dispatcher gets through. Reads stay open to any signed-in user.
+
+
+def _seed_rule(Session) -> str:
+    from gdx_dispatch.modules.workflows.models import WorkflowRule
+
+    db = Session()
+    try:
+        row = WorkflowRule(**RULE)
+        db.add(row)
+        db.commit()
+        return str(row.id)
+    finally:
+        db.close()
+
+
+def _rule_state(Session) -> list[tuple]:
+    from gdx_dispatch.modules.workflows.models import WorkflowRule
+
+    db = Session()
+    try:
+        return [
+            (str(r.id), r.name, r.trigger_event, bool(r.is_active))
+            for r in db.query(WorkflowRule).order_by(WorkflowRule.name).all()
+        ]
+    finally:
+        db.close()
+
+
+def _write(tc, method: str, rule_id: str):
+    if method == "POST":
+        return tc.post("/api/workflows", json={**RULE, "name": "Tech-authored"})
+    if method == "PUT":
+        return tc.put(f"/api/workflows/{rule_id}", json={"name": "Tech-renamed"})
+    return tc.delete(f"/api/workflows/{rule_id}")
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE"])
+@pytest.mark.parametrize("stash_principal", [True, False])
+def test_a_technician_cannot_write_a_rule_and_nothing_changes(method, stash_principal):
+    tc, Session, engine = _workflows_env(role="technician", stash_principal=stash_principal)
+    try:
+        rule_id = _seed_rule(Session)
+        before = _rule_state(Session)
+        resp = _write(tc, method, rule_id)
+        assert resp.status_code == 403, resp.text
+        assert _rule_state(Session) == before, "a refused write must not touch the rules"
+        for action in ("workflow_rule_created", "workflow_rule_updated", "workflow_rule_deactivated"):
+            assert _audit_rows(Session, action) == []
+    finally:
+        tc.app.dependency_overrides.clear()
+        engine.dispose()
+
+
+@pytest.mark.parametrize("role", ["sales", "accounting"])
+def test_other_non_dispatch_roles_cannot_create_a_rule(role):
+    tc, Session, engine = _workflows_env(role=role)
+    try:
+        assert tc.post("/api/workflows", json=RULE).status_code == 403
+        assert _rule_state(Session) == []
+    finally:
+        tc.app.dependency_overrides.clear()
+        engine.dispose()
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE"])
+def test_a_dispatcher_can_write_a_rule(method):
+    tc, Session, engine = _workflows_env(role="dispatcher")
+    try:
+        rule_id = _seed_rule(Session)
+        resp = _write(tc, method, rule_id)
+        assert resp.status_code == 200, resp.text
+        after = {r[1]: r for r in _rule_state(Session)}
+        if method == "POST":
+            assert "Tech-authored" in after
+        elif method == "PUT":
+            assert "Tech-renamed" in after
+        else:
+            assert after[RULE["name"]][3] is False
+    finally:
+        tc.app.dependency_overrides.clear()
+        engine.dispose()
+
+
+def test_a_technician_can_still_read_rules_and_runs():
+    tc, Session, engine = _workflows_env(role="technician")
+    try:
+        rule_id = _seed_rule(Session)
+        listed = tc.get("/api/workflows")
+        assert listed.status_code == 200, listed.text
+        assert [r["id"] for r in listed.json()] == [rule_id]
+        assert tc.get(f"/api/workflows/{rule_id}/runs").status_code == 200
     finally:
         tc.app.dependency_overrides.clear()
         engine.dispose()

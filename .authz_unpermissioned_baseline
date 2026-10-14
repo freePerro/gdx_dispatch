@@ -103,6 +103,11 @@
 # require_role(DISPATCH_MANAGER_ROLES), the gate its undo-arrival siblings already
 # had. No technician screen calls them; a tech's arrival goes through
 # routers/mobile.py.
+#
+# 374 → 371 (2026-10-14, GDXA-1097): POST /api/workflows and PUT and DELETE
+# /api/workflows/{rule_id}. PRUNED, gated: each now carries
+# require_role(DISPATCH_MANAGER_ROLES). Every rule is a standing order to send
+# customer email; reads stay open to any signed-in user.
 
 # ── customer portal ───────────────────────────────────────────────────────
 # These authenticate a CUSTOMER, not a tenant user, so no role or permission
@@ -184,7 +189,6 @@ DELETE /api/technicians/{technician_id}
 DELETE /api/vehicle-inspections/{inspection_id}
 DELETE /api/vendors/{vendor_id}
 DELETE /api/warranties/{warranty_id}
-DELETE /api/workflows/{rule_id}
 PATCH /api/billing/terms
 PATCH /api/catalog-policy
 PATCH /api/catalogs/{catalog_id}
@@ -484,7 +488,6 @@ POST /api/warranties/{warranty_id}/claim
 POST /api/warranty-claims
 POST /api/winback/campaigns
 POST /api/winback/campaigns/{campaign_id}/send
-POST /api/workflows
 PUT /api/commissions/rules/{rule_id}
 PUT /api/holding-areas/{area_id}
 PUT /api/integrations/{integration_id}
@@ -495,4 +498,3 @@ PUT /api/plugins
 PUT /api/plugins/{path:path}
 PUT /api/qb/schedule
 PUT /api/settings/email
-PUT /api/workflows/{rule_id}
