@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 
 import stripe
 from fastapi import APIRouter, Depends, Request
@@ -35,10 +34,13 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)) -> JSO
     """
     payload = await request.body()
     sig = request.headers.get("stripe-signature", "")
-    secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    from gdx_dispatch.core.payments import stripe_env  # noqa: PLC0415
+
+    secret = stripe_env("STRIPE_WEBHOOK_SECRET")
     if not secret:
         # Fail closed: without a verifier secret any caller could POST a fake
-        # "payment succeeded" event and settle invoices for free.
+        # "payment succeeded" event and settle invoices for free. A template
+        # placeholder counts as missing (GDXA-920).
         logger.error("stripe_webhook_secret_missing — refusing to process event")
         return JSONResponse(status_code=503, content={"detail": "webhook not configured"})
     try:

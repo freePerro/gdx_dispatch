@@ -197,7 +197,8 @@ def sweep_stale_intents(
             if not stripe_configured():
                 log.error(
                     "stale_intent_sweep_stripe_unconfigured invoice=%s why=%s — this worker "
-                    "has no STRIPE_SECRET_KEY, so no stale intent can be cancelled anywhere. "
+                    "has no real STRIPE_SECRET_KEY (unset, or the .env.template placeholder), "
+                    "so no stale intent can be cancelled anywhere. "
                     "Check that the celery services receive it.",
                     invoice_id, why,
                 )
