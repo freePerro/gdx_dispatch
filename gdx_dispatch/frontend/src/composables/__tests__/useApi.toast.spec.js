@@ -113,6 +113,130 @@ describe('useApi toast contract', () => {
     expect(document.body.innerHTML).toContain('billing.edit');
   });
 
+  it('names the key and points at /role-permissions for the plugin proxy refusal', async () => {
+    fetchMock
+      .mockResolvedValueOnce(mkResponse({ detail: 'Missing permission: plugin.acme.write' }, { ok: false, status: 403 }))
+      .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }));
+    const { api } = makeHarness();
+
+    await expect(api.put('/api/plugins/acme/x', {})).rejects.toThrow();
+    await nextTick();
+    await nextTick();
+
+    expect(document.body.innerHTML).toContain('plugin.acme.write');
+    expect(document.body.innerHTML).toContain('/role-permissions');
+  });
+
+  it('gives the generic /role-permissions advice for a bare 403', async () => {
+    fetchMock
+      .mockResolvedValueOnce(mkResponse({ detail: 'Forbidden' }, { ok: false, status: 403 }))
+      .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }));
+    const { api } = makeHarness();
+
+    await expect(api.get('/api/foo')).rejects.toThrow();
+    await nextTick();
+    await nextTick();
+
+    expect(document.body.innerHTML).toContain("You don't have permission to do that.");
+    expect(document.body.innerHTML).toContain('/role-permissions');
+  });
+
+  it('a non-core 403 toasts its own message without the /role-permissions advice', async () => {
+    fetchMock
+      .mockResolvedValueOnce(mkResponse({ detail: "Module 'acme' is not enabled" }, { ok: false, status: 403 }))
+      .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }));
+    const { api } = makeHarness();
+
+    await expect(api.get('/api/plugins/acme/items')).rejects.toThrow();
+    await nextTick();
+    await nextTick();
+
+    expect(document.body.innerHTML).toContain('Permission denied');
+    expect(document.body.innerHTML).toContain("Module 'acme' is not enabled");
+    expect(document.body.innerHTML).not.toContain('/role-permissions');
+  });
+
+  it("a plugin's own bare Forbidden gets no /role-permissions advice", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mkResponse({ detail: 'Forbidden' }, { ok: false, status: 403 }))
+      .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }));
+    const { api } = makeHarness();
+
+    await expect(api.get('/api/plugins/acme/items')).rejects.toThrow();
+    await nextTick();
+    await nextTick();
+
+    expect(document.body.innerHTML).toContain("You don't have permission to do that.");
+    expect(document.body.innerHTML).not.toContain('/role-permissions');
+  });
+
+  it("a plugin's own Missing permission text is not taken for core's", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mkResponse({ detail: 'Missing permission: acme.approve (ask the plugin owner)' }, { ok: false, status: 403 }))
+      .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }));
+    const { api } = makeHarness();
+
+    await expect(api.post('/api/plugins/acme/approve', {})).rejects.toThrow();
+    await nextTick();
+    await nextTick();
+
+    expect(document.body.innerHTML).toContain('Missing permission: acme.approve (ask the plugin owner)');
+    expect(document.body.innerHTML).not.toContain('/role-permissions');
+  });
+
+  it("a require_role refusal shows its reason, not raw JSON", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mkResponse(
+        { detail: { error_type: 'insufficient_role', detail: "role 'tech' not in ['admin']", required_roles: ['admin'] } },
+        { ok: false, status: 403 },
+      ))
+      .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }));
+    const { api } = makeHarness();
+
+    await expect(api.get('/api/admin/db')).rejects.toThrow();
+    await nextTick();
+    await nextTick();
+
+    expect(document.body.innerHTML).toContain("role 'tech' not in ['admin']");
+    expect(document.body.innerHTML).not.toContain('error_type');
+    expect(document.body.innerHTML).not.toContain('/role-permissions');
+  });
+
+  it('a JSON-array 403 detail does not toast raw JSON', async () => {
+    fetchMock
+      .mockResolvedValueOnce(mkResponse({ detail: [{ msg: 'x' }] }, { ok: false, status: 403 }))
+      .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }));
+    const { api } = makeHarness();
+
+    await expect(api.get('/api/foo')).rejects.toThrow();
+    await nextTick();
+    await nextTick();
+
+    expect(document.body.innerHTML).toContain("You don't have permission to do that.");
+    expect(document.body.innerHTML).not.toContain('&quot;msg&quot;');
+    expect(document.body.innerHTML).not.toContain('"msg"');
+  });
+
+  it('a non-JSON 403 body (not core) gets no /role-permissions advice', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        headers: { get: () => null },
+        json: async () => { throw new SyntaxError('Unexpected token <'); },
+        text: async () => '<html>403</html>',
+      })
+      .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }));
+    const { api } = makeHarness();
+
+    await expect(api.get('/api/foo')).rejects.toThrow();
+    await nextTick();
+    await nextTick();
+
+    expect(document.body.innerHTML).toContain("You don't have permission to do that.");
+    expect(document.body.innerHTML).not.toContain('/role-permissions');
+  });
+
   it('respects suppressErrorToast option', async () => {
     fetchMock
       .mockResolvedValueOnce(mkResponse({ detail: 'boom' }, { ok: false, status: 500 }))
