@@ -1272,7 +1272,7 @@ import { useApiWithToast } from "../composables/useApiWithToast";
 import { classifyPickerError, useEstimateSources } from "../composables/useEstimateSources";
 import { useAuthStore } from "../stores/auth";
 import { formatDate, formatMoney, formatPercent, formatPhone, localDateString } from "../composables/useFormatters";
-import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
+import { openAuthedFile, downloadAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
 import PaymentCaptureForm from "../components/PaymentCaptureForm.vue";
 import SmsLinkDialog from "../components/SmsLinkDialog.vue";
 import { useTenantModules } from "../composables/useTenantModules";
@@ -2756,12 +2756,16 @@ async function loadAttachments() {
   }
 }
 
+// Saved to disk, never opened in a tab: a blob: URL inherits the app's origin
+// and keeps the stored content type, so HTML or SVG opened that way would run
+// script with the session's reach. The upload allowlist admits only images and
+// PDFs today; this holds if that list ever widens (GDXA-973).
 async function openAttachment(att) {
   if (!att?.download_url) return;
   try {
-    await openAuthedFile(att.download_url);
+    await downloadAuthedFile(att.download_url, att.original_name);
   } catch {
-    toast.add({ severity: "error", summary: "Open failed", life: 4000 });
+    toast.add({ severity: "error", summary: "Download failed", life: 4000 });
   }
 }
 
