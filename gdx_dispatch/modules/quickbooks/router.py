@@ -55,6 +55,50 @@ def _delete_sync_source(conn: QBConnection | None) -> str:
     return "env"
 
 
+def _is_missing_table(exc: Exception) -> bool:
+    """True ONLY for a missing table: SQLSTATE 42P01 (psycopg2 UndefinedTable)
+    on Postgres, "no such table" on SQLite. A missing table proves there is no
+    row; any other read failure (timeout, dropped connection, lock, missing
+    column) proves nothing and must not read as "not connected"."""
+    orig = getattr(exc, "orig", None)
+    if getattr(orig, "pgcode", None) == "42P01":
+        return True
+    return "no such table" in str(orig or exc).lower()
+
+
+def _connection_status_unknown(db: Session, what: str) -> HTTPException:
+    """Roll back and build the 503 a connection-status read raises when it
+    cannot tell connected from not (GDXA-1135). The QuickBooks page renders a
+    failed status read as "Status unknown"."""
+    log.exception("%s — QuickBooks connection status unknown", what)
+    try:
+        db.rollback()
+    except Exception:  # a dropped connection can fail the rollback too; still 503
+        log.exception("%s — rollback failed", what)
+    return HTTPException(status_code=503, detail="QuickBooks connection status could not be read")
+
+
+def _latest_token_row(db: Session, tenant_id: str, what: str) -> QBTokenStore | None:
+    """The tenant's newest QBTokenStore row, or None when it has none.
+
+    The store is unique on (tenant, realm), so a reconnect to a second company
+    leaves two rows: newest wins. A missing table is "no token" (pre-migration
+    tenant DB); any other read error raises 503, because a tenant connected
+    after the token-store rewrite has no legacy row and would otherwise read
+    as a definite connected:false (GDXA-1135)."""
+    try:
+        return db.execute(
+            select(QBTokenStore).where(QBTokenStore.tenant_id == tenant_id)
+            .order_by(QBTokenStore.updated_at.desc())
+        ).scalars().first()
+    except Exception as exc:
+        if not _is_missing_table(exc):
+            raise _connection_status_unknown(db, f"{what}_token_store_query_failed") from exc
+        log.warning("%s_token_store_missing — no token row", what)
+        db.rollback()
+        return None
+
+
 def _audit(db: Session, request: FastAPIRequest, user: dict, action: str, entity_type: str = "quickbooks") -> None:
     tenant_id = _tenant_id(request)
     user_id = str(user.get("sub") or user.get("user_id") or "system")
@@ -259,38 +303,40 @@ def qb_status(
 
     # Check new token store first (S122-4: tenant-scoped per N1).
     # The table may not exist yet on tenant DBs that haven't been migrated —
-    # fall through to legacy QBConnection if so.
+    # fall through to legacy QBConnection if so. Any OTHER read error is a 503:
+    # a tenant connected after the token-store rewrite has no legacy row, so
+    # falling through would answer a definite connected:false (GDXA-1135).
     tenant_id = _tenant_id(request)
-    try:
-        token_row = db.execute(
-            select(QBTokenStore).where(QBTokenStore.tenant_id == tenant_id)
-            .order_by(QBTokenStore.updated_at.desc())
-        ).scalar_one_or_none()
-        if token_row:
-            # S122-13: surface auth_state so the frontend can render a
-            # "Reconnect QuickBooks" CTA when the refresh token is dead
-            # instead of silently failing every sync attempt.
-            auth_state = getattr(token_row, "auth_state", "healthy") or "healthy"
-            return {
-                "connected": True,
-                "realm_id": token_row.realm_id,
-                "environment": token_row.environment,
-                "expires_at": token_row.access_token_expires_at.isoformat(),
-                "last_sync_at": legacy_last_sync_at,
-                "error_count": 0,
-                "last_error": None,
-                "auth_state": auth_state,
-                "needs_reconnect": auth_state == "needs_reconnect",
-                **ledger_fields,
-            }
-    except Exception:
-        log.exception("qb_token_store_query_failed — falling back to QBConnection")
-        db.rollback()
+    token_row = _latest_token_row(db, tenant_id, "qb_status")
+    if token_row:
+        # S122-13: surface auth_state so the frontend can render a
+        # "Reconnect QuickBooks" CTA when the refresh token is dead
+        # instead of silently failing every sync attempt.
+        auth_state = getattr(token_row, "auth_state", "healthy") or "healthy"
+        return {
+            "connected": True,
+            "realm_id": token_row.realm_id,
+            "environment": token_row.environment,
+            "expires_at": token_row.access_token_expires_at.isoformat(),
+            "last_sync_at": legacy_last_sync_at,
+            "error_count": 0,
+            "last_error": None,
+            "auth_state": auth_state,
+            "needs_reconnect": auth_state == "needs_reconnect",
+            **ledger_fields,
+        }
 
-    # Fall back to legacy QBConnection
-    row = db.execute(
-        select(QBConnection).where(QBConnection.tenant_id == tenant_id)
-    ).scalar_one_or_none()
+    # Fall back to legacy QBConnection. With neither table present the tenant
+    # cannot be connected, so connected:false is then a true answer.
+    try:
+        row = db.execute(
+            select(QBConnection).where(QBConnection.tenant_id == tenant_id)
+        ).scalar_one_or_none()
+    except Exception as exc:
+        if not _is_missing_table(exc):
+            raise _connection_status_unknown(db, "qb_connection_query_failed") from exc
+        db.rollback()
+        row = None
     return {
         "connected": bool(row),
         "realm_id": row.realm_id if row else None,
@@ -744,17 +790,10 @@ def qb_dashboard(
     # Connected status: true if EITHER the legacy QBConnection row exists OR
     # the new encrypted QBTokenStore has a row for this tenant. The
     # disconnect endpoint clears both, so the OR matches reality.
-    token_row = None
-    try:
-        # S122-4 (N1): filter by tenant; previously .limit(1) returned the
-        # whichever-tenant global row, leaking dashboard connected-status
-        # across tenants.
-        token_row = db.execute(
-            select(QBTokenStore).where(QBTokenStore.tenant_id == tenant_id)
-        ).scalar_one_or_none()
-    except Exception:
-        log.exception("qb_dashboard_token_store_query_failed")
-        db.rollback()
+    # S122-4 (N1): filter by tenant; previously .limit(1) returned the
+    # whichever-tenant global row, leaking dashboard connected-status
+    # across tenants.
+    token_row = _latest_token_row(db, tenant_id, "qb_dashboard")
     token_present = token_row is not None
 
     # S122-13 parity with /status: the dashboard is the frontend's PRIMARY
