@@ -318,4 +318,82 @@ describe('PhoneComIntegrationCard', () => {
     expect(wrapper.text()).toContain('Admin access required');
     expect(wrapper.find('[data-test="pc-token-input"]').exists()).toBe(false);
   });
+
+  // ── GDXA-1138: a failed status load is "Status unknown", not unset ──
+
+  it('a 500 on the settings GET reads Status unknown with Retry, no connect form', async () => {
+    getMock.mockResolvedValueOnce(_MODULE_ON);
+    getMock.mockRejectedValueOnce({ status: 500, message: 'Request failed (500)' });
+
+    const wrapper = mount(PhoneComIntegrationCard);
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="pc-status-unknown-tag"]').text()).toBe('Status unknown');
+    expect(wrapper.find('[data-test="pc-status-unknown"]').text()).toContain('Request failed (500)');
+    expect(wrapper.find('[data-test="pc-status-retry"]').exists()).toBe(true);
+    // None of the not-connected affordances: no token form, no OAuth row,
+    // no "No token yet" guidance.
+    expect(wrapper.find('[data-test="pc-token-input"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="pc-save-test"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="pc-oauth-toggle"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain('No token yet');
+    expect(wrapper.text()).not.toContain('Admin access required');
+  });
+
+  it('a 401 that survives refresh is Status unknown too, not a silent unset card', async () => {
+    getMock.mockResolvedValueOnce(_MODULE_ON);
+    getMock.mockRejectedValueOnce({ status: 401, message: 'Not authenticated' });
+
+    const wrapper = mount(PhoneComIntegrationCard);
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="pc-status-unknown"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="pc-oauth-toggle"]').exists()).toBe(false);
+  });
+
+  it('Retry after a failed load re-fetches and renders the connected card', async () => {
+    getMock.mockResolvedValueOnce(_MODULE_ON);
+    getMock.mockRejectedValueOnce({ status: 503, message: 'unavailable' });
+    const wrapper = mount(PhoneComIntegrationCard);
+    await flushPromises();
+    expect(wrapper.find('[data-test="pc-status-unknown"]').exists()).toBe(true);
+
+    getMock
+      .mockResolvedValueOnce(_MODULE_ON)
+      .mockResolvedValueOnce(_CONFIGURED_STATE);
+    await wrapper.find('[data-test="pc-status-retry"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="pc-status-unknown"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain('Token on file');
+    expect(wrapper.find('[data-test="pc-disconnect"]').exists()).toBe(true);
+  });
+
+  it('a failed module-state load disables the toggle and offers Retry', async () => {
+    getMock.mockRejectedValueOnce({ status: 500, message: 'modules down' });
+    getMock.mockResolvedValueOnce(_CONFIGURED_STATE);
+    const wrapper = mount(PhoneComIntegrationCard);
+    await flushPromises();
+
+    const toggle = wrapper.find('[data-test="phone-com-module-toggle"]');
+    expect(toggle.element.disabled).toBe(true);
+    expect(wrapper.find('[data-test="pc-modules-retry"]').exists()).toBe(true);
+    await toggle.trigger('change');
+    expect(postMock).not.toHaveBeenCalled();
+    // The settings load succeeded, so the token state is known and shown.
+    expect(wrapper.text()).toContain('Token on file');
+  });
+
+  it('control: a successful load shows neither Status unknown nor a Retry', async () => {
+    getMock
+      .mockResolvedValueOnce(_MODULE_ON)
+      .mockResolvedValueOnce(_UNSET_STATE);
+    const wrapper = mount(PhoneComIntegrationCard);
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="pc-status-unknown"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="pc-modules-retry"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="phone-com-module-toggle"]').element.disabled).toBe(false);
+    expect(wrapper.find('[data-test="pc-oauth-toggle"]').exists()).toBe(true);
+  });
 });
