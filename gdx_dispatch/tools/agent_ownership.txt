@@ -85,6 +85,9 @@ sgconfig.yml                                                 platform-core
 # read — present-tense instructions every agent follows (GDXA-966). Gated:
 # the directory is in COVERED_ROOTS.
 .claude/rules/*                                              platform-core
+# The skills: gdx-harness carries the merge path and runner facts every agent
+# acts on. Gated: `.claude/skills/` is in COVERED_ROOTS (GDXA-1054).
+.claude/skills/*                                             platform-core
 
 # Ratchet baselines and scanner/harness state at the repo root. Gated, via
 # COVERED_ROOT_GLOBS — `.tenant_plane_redundant_filter_baseline` is line-keyed,
