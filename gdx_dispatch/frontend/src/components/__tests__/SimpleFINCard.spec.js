@@ -221,6 +221,10 @@ describe('SimpleFINCard', () => {
     expect(wrapper.find('[data-testid="sfin-connect-btn"]').exists()).toBe(true);
     // And it must not claim to be fine.
     expect(wrapper.find('[data-testid="sfin-status-tag"]').text()).not.toBe('Connected');
+    // The generic arm rendered, not the known-state one: each arm has its own
+    // testid so this assertion can tell them apart.
+    expect(wrapper.find('[data-testid="sfin-reconnect-banner-unknown"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="sfin-reconnect-banner"]').exists()).toBe(false);
   });
 
   it('re-links from the unhealthy state without disconnecting first', async () => {
