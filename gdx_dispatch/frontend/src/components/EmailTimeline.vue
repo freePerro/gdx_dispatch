@@ -184,14 +184,14 @@ defineExpose({ reload: load })
   border: 1px solid var(--p-content-border-color, #e5e7eb);
   color: var(--p-text-muted-color, #64748b);
 }
-.tl-dir.outbound { border-color: var(--p-primary-color, #2563eb); color: var(--p-primary-color, #2563eb); }
+.tl-dir.outbound { border-color: var(--p-primary-color); color: var(--p-primary-color); }
 .tl-who { flex: 0 0 auto; font-weight: 600; max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-subject { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-clip { flex: 0 0 auto; color: var(--p-text-muted-color, #94a3b8); }
 .tl-when { flex: 0 0 auto; font-size: 0.75rem; color: var(--p-text-muted-color, #94a3b8); }
 .tl-body { padding: 0.5rem 0.7rem 0.7rem; border-top: 1px solid var(--p-content-border-color, #e5e7eb); }
 .tl-actions { margin-top: 0.4rem; }
-.tl-link { font-size: 0.8rem; color: var(--p-primary-color, #2563eb); text-decoration: none; }
+.tl-link { font-size: 0.8rem; color: var(--p-primary-color); text-decoration: none; }
 
 @media (max-width: 640px) {
   .tl-head { flex-wrap: wrap; }

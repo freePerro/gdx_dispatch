@@ -584,7 +584,7 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
-  color: var(--p-primary-color, #3b82f6);
+  color: var(--p-primary-color);
   text-decoration: underline;
 }
 .muted {
