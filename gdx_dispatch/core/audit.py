@@ -625,7 +625,9 @@ def _log_audit_event_impl(db: Any, *args: Any, **kwargs: Any) -> AuditLog:
     # Strictly after the tip, so created_at order IS chain order even when the
     # clock steps back: the tip read above and the verifier both walk it.
     now = utcnow()
-    if tip and tip.created_at is not None:
+    # isinstance, not "is not None": a router unit test's MagicMock session
+    # hands back a MagicMock here, and the unlocked read used to tolerate it.
+    if tip and isinstance(tip.created_at, datetime):
         tip_at = tip.created_at if tip.created_at.tzinfo else tip.created_at.replace(tzinfo=UTC)
         if now <= tip_at:
             now = tip_at + timedelta(microseconds=1)
