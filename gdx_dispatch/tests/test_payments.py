@@ -2054,6 +2054,63 @@ def test_a_failed_3d_secure_check_tells_the_payer_to_use_another_card(code):
     assert payer_facing_stripe_detail(exc) == PAYMENT_AUTH_FAILED_DETAIL
 
 
+# GDXA-893: payer-fixable codes Stripe may report with a non-card type.
+_PAYER_FIXABLE_CODES = [
+    "payment_intent_authentication_failure",
+    "setup_intent_authentication_failure",
+    "email_invalid",
+    "routing_number_invalid",
+    "account_number_invalid",
+    "bank_account_unusable",
+    "payment_method_customer_decline",
+]
+
+
+def test_the_payer_fixable_list_is_exactly_the_reviewed_codes():
+    """Growing the list widens what a payer reads; that is a decision, so a
+    new code has to be added here too."""
+    from gdx_dispatch.core.payments import PAYER_FIXABLE_STRIPE_DETAILS, PAYMENT_UNAVAILABLE_DETAIL
+
+    assert sorted(PAYER_FIXABLE_STRIPE_DETAILS) == sorted(_PAYER_FIXABLE_CODES)
+    for code, text in PAYER_FIXABLE_STRIPE_DETAILS.items():
+        assert text and text != PAYMENT_UNAVAILABLE_DETAIL, code
+
+
+@pytest.mark.parametrize("code", _PAYER_FIXABLE_CODES)
+def test_a_payer_fixable_code_is_shown_whatever_its_stripe_type(code):
+    import stripe as _stripe
+
+    from gdx_dispatch.core.payments import PAYER_FIXABLE_STRIPE_DETAILS, payer_facing_stripe_detail
+
+    raw = "Invalid email address: a@b (request req_123, param billing_details[email])"
+    exc = _stripe.error.InvalidRequestError(raw, "billing_details[email]", code=code)
+    detail = payer_facing_stripe_detail(exc)
+    assert detail == PAYER_FIXABLE_STRIPE_DETAILS[code]
+    assert "req_" not in detail and "billing_details" not in detail
+
+
+def test_an_unlisted_code_on_a_non_card_error_stays_generic():
+    import stripe as _stripe
+
+    from gdx_dispatch.core.payments import PAYMENT_UNAVAILABLE_DETAIL, payer_facing_stripe_detail
+
+    for code in ("resource_missing", "parameter_unknown", None):
+        exc = _stripe.error.InvalidRequestError("No such thing: sk_test_x", "p", code=code)
+        assert payer_facing_stripe_detail(exc) == PAYMENT_UNAVAILABLE_DETAIL, code
+
+
+def test_the_pay_page_templates_can_render_the_same_payer_fixable_list():
+    """Most of these codes reach only Stripe.js, so the pay page has to read
+    the list from here. A render that passes no context (as the pay-page
+    template tests do) still gets it, through the shared Jinja env."""
+    import json
+
+    from gdx_dispatch.core.payments import PAYER_FIXABLE_STRIPE_DETAILS, templates
+
+    out = templates.env.from_string("{{ payer_fixable_stripe_details | tojson }}").render()
+    assert json.loads(out) == PAYER_FIXABLE_STRIPE_DETAILS
+
+
 @pytest.mark.parametrize("which", range(4))
 def test_create_intent_never_shows_the_payer_our_stripe_setup(client, invoice, which):
     from gdx_dispatch.core.payments import PAYMENT_UNAVAILABLE_DETAIL
