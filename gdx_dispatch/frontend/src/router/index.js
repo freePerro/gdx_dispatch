@@ -1,4 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router';
+import { Capacitor } from '@capacitor/core';
+import { getServerUrl } from '../lib/serverConfig';
 import { useAuthStore } from '../stores/auth';
 import { createApiClient } from '../composables/useApi';
 import { isTechnician } from '../constants/roles';
@@ -509,8 +511,33 @@ export function createAppRouter() {
     });
   }
 
+  // The Android app loses sessionStorage (and with it the access token) every
+  // time it is closed, but the refresh cookie survives in the native cookie
+  // store. Try it once per launch before sending the tech to the login page.
+  // Every navigation waits on the same attempt: a cold start from a
+  // notification tap navigates twice, and the second must not see the user
+  // as signed out while the first is still restoring.
+  let nativeSessionRestore = null;
+
   router.beforeEach(async (to) => {
     const auth = useAuthStore();
+
+    if (
+      !auth.isAuthenticated &&
+      (nativeSessionRestore || (Capacitor.isNativePlatform() && getServerUrl()))
+    ) {
+      nativeSessionRestore ||= (async () => {
+        try {
+          await auth.refreshAccessToken();
+          // The stored password-change hold went with sessionStorage: ask the
+          // server, so a flagged account is held on the form from the first screen.
+          await createApiClient().get('/api/users/me').catch(() => {});
+        } catch {
+          // No live refresh cookie: fall through to the login redirect.
+        }
+      })();
+      await nativeSessionRestore;
+    }
 
     if (!to.meta.public && !auth.isAuthenticated) {
       return getLoginRedirectLocation(to.fullPath);

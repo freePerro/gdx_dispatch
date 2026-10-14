@@ -56,6 +56,7 @@ test("Delete on the job page removes the job and returns to the list", async ({ 
 
   await page.addInitScript(
     (a) => {
+      if (window !== window.top) return;
       sessionStorage.setItem("gdx_access_token", a.t);
       localStorage.setItem("gdx_theme", a.theme);
     },
@@ -107,6 +108,7 @@ test("the Delete verb and its dialog are legible in dark mode", async ({ page, b
 
   await page.addInitScript(
     (a) => {
+      if (window !== window.top) return;
       sessionStorage.setItem("gdx_access_token", a.t);
       localStorage.setItem("gdx_theme", "dark");
     },

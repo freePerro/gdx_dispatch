@@ -127,7 +127,7 @@ async function seedCustomer(api) {
 
 async function openStatement(page, customerId, { theme = 'light', width = 1440, height = 900 } = {}) {
   await page.setViewportSize({ width, height });
-  await page.addInitScript((t) => localStorage.setItem('gdx_theme', t), theme);
+  await page.addInitScript((t) => { if (window === window.top) localStorage.setItem('gdx_theme', t); }, theme);
   await page.goto(`/customers/${customerId}`);
   const button = page.locator('[data-testid="customer-statement-btn"]');
   await expect(button).toBeVisible({ timeout: 20000 });

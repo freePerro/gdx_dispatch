@@ -28,7 +28,7 @@ async function signIn(page, baseURL) {
   expect(r.ok(), 'login').toBeTruthy();
   const { access_token: token } = await r.json();
   const headers = { 'x-tenant-id': TENANT, authorization: `Bearer ${token}` };
-  await page.addInitScript((t) => sessionStorage.setItem('gdx_access_token', t), token);
+  await page.addInitScript((t) => { if (window === window.top) sessionStorage.setItem('gdx_access_token', t); }, token);
   const me = await (await api.get('/api/users/me', { headers })).json();
   return { api, headers, me };
 }

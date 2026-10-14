@@ -101,7 +101,9 @@ export const useAuthStore = defineStore('auth', () => {
       _clearSession();
       await _serverLogout();
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.detail || 'Login failed');
+      const err = new Error(data.detail || 'Login failed');
+      err.status = response.status;
+      throw err;
     }
 
     const data = await response.json();
@@ -189,7 +191,10 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  function logout() {
+  // `chosen`: the user picked Logout. Every other caller (an expired session,
+  // the idle timer) is automatic, and listeners that end something the
+  // session does not own — phone alerts — act only on a chosen one.
+  function logout({ chosen = false } = {}) {
     // Fire the server-side logout FIRST so the still-attached HttpOnly
     // refresh cookie rides along on the request. JS can't delete that
     // cookie (httpOnly + domain=.example.com) — only the server's
@@ -203,7 +208,7 @@ export const useAuthStore = defineStore('auth', () => {
     _serverLogout();
     _clearSession();
     try {
-      window.dispatchEvent(new CustomEvent('gdx:auth-logout'));
+      window.dispatchEvent(new CustomEvent('gdx:auth-logout', { detail: { chosen } }));
     } catch { /* swallow */ }
   }
 

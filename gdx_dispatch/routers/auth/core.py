@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync
-from gdx_dispatch.core.auth_revoke import revoke_user_sessions
+from gdx_dispatch.core.auth_revoke import revoke_device_alerts, revoke_user_sessions
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.denylist import Denylist
 from gdx_dispatch.core.modules import require_role
@@ -310,6 +310,26 @@ class LoginBody(BaseModel):
 def _unauth(msg: str = "Invalid credentials") -> HTTPException:
     return HTTPException(status_code=401, detail=msg)
 
+def _end_phone_alerts(db: Session, sub: str, reason: str) -> int | str:
+    """A revoked session can mint a phone-alerts token that outlives it, so
+    an admin-revoked refresh token, and an admin "revoke all sessions", end
+    the user's phone alerts too. Not on replay detection: on prod that fires
+    on benign races (9 in 90 days, 7 of them the owner's, none theft —
+    /audit 2026-10-14) and would turn the office's phone alerts off for
+    nothing. Never raises: the 401, or the audit row of a revoke that already
+    happened, must still go out. Returns the count, or "error"."""
+    try:
+        count = revoke_device_alerts(db, sub, reason=reason)
+        db.commit()
+        return count
+    except Exception:
+        log.exception("device_alerts_revoke_failed reason=%s", reason)
+        try:
+            db.rollback()
+        except Exception:
+            log.exception("device_alerts_revoke_rollback_failed")
+        return "error"
+
 def _issue(sub: str, tenant_id: str, role: str, ttl: int, typ: str) -> tuple[str, str]:
     c = {
         "sub": sub, "tenant_id": tenant_id, "role": role, "jti": str(uuid4()), "typ": typ,
@@ -492,6 +512,7 @@ def refresh(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
     # "replay attack" accurately.
     if _get_app_denylist(request).contains(old_jti):
         revoked_count = revoke_user_sessions(sub, reason="refresh_denylist_hit")
+        phones_revoked = _end_phone_alerts(db, sub, "refresh_denylist_hit")
         try:
             log_audit_event_sync(
                 db,
@@ -504,6 +525,7 @@ def refresh(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
                     "jti": old_jti,
                     "family_revoked": True,
                     "sessions_revoked": revoked_count,
+                    "device_alerts_revoked": phones_revoked,
                 },
                 request=request,
             )
@@ -1007,17 +1029,17 @@ def reset_password(body: ResetPasswordBody, request: Request, db: Session = Depe
     # anyone knows, so it satisfies the flag just as a self-service change does.
     was_flagged = bool(_u.must_change_password)
     _u.must_change_password = False
+    phones_revoked = revoke_device_alerts(db, str(_u.id), reason="password_reset")
 
     db.commit()
     redis.delete(f"pw_reset:{body.token}")
 
+    details = {"must_change_password_cleared": was_flagged, "device_alerts_revoked": phones_revoked}
     try:
         log_audit_event_sync(
             db, tenant_id=tenant_id, user_id=user_id,
             action="password_reset_success", entity_type="auth",
-            entity_id=user_id,
-            details={"must_change_password_cleared": was_flagged},
-            request=request,
+            entity_id=user_id, details=details, request=request,
         )
         db.commit()
     except Exception:
@@ -1424,6 +1446,9 @@ def admin_revoke_user(
     D-S119-revoke-by-user-vs-jti (2026-05-10).
     """
     sessions_revoked = revoke_user_sessions(body.user_id, reason=body.reason)
+    # Never raises: the sessions are already revoked, so the audit row below
+    # must still be written (it records "error" if the phones could not be).
+    phones_revoked = _end_phone_alerts(db, body.user_id, "sessions_revoked")
     try:
         tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
         log_audit_event_sync(
@@ -1436,6 +1461,7 @@ def admin_revoke_user(
             details={
                 "target_user_id": body.user_id,
                 "sessions_revoked": sessions_revoked,
+                "device_alerts_revoked": phones_revoked,
                 "reason": body.reason,
             },
             request=request,

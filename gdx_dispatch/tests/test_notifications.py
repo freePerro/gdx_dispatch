@@ -210,7 +210,12 @@ def test_device_token_tenant_isolation(notif_db):
 TENANT_ID = "tenant-test"
 
 
-def _make_client(*, grant_module: bool = True, tenant_id: str = TENANT_ID) -> TestClient:
+def _make_client(
+    *,
+    grant_module: bool = True,
+    tenant_id: str = TENANT_ID,
+    permissions: frozenset[str] = frozenset({"*"}),
+) -> TestClient:
     """Build an isolated app mounting only the notifications router.
 
     Mirrors test_appointments._make_client. When ``grant_module`` is False we
@@ -219,6 +224,10 @@ def _make_client(*, grant_module: bool = True, tenant_id: str = TENANT_ID) -> Te
     auto-grant every module on first check, and ``communications`` stays absent
     — letting ``require_module`` 403. (Seeding zero rows would single-tenant
     seed everything, masking the gate.)
+
+    ``permissions`` is the caller's resolved permission set, placed in the
+    per-request cache ``has_permission`` reads. The default is the owner
+    wildcard; a technician has no ``nav.office``.
     """
     from gdx_dispatch.routers.notifications import router
 
@@ -256,6 +265,7 @@ def _make_client(*, grant_module: bool = True, tenant_id: str = TENANT_ID) -> Te
     @app.middleware("http")
     async def inject_tenant(request, call_next):
         request.state.tenant = {"id": tenant_id}
+        request.state.user_permissions = set(permissions)
         return await call_next(request)
 
     app.include_router(router)
@@ -514,7 +524,7 @@ def test_delete_notification_soft_deletes(client):
 
 
 def test_delete_broadcast_notification(client):
-    """A broadcast row (user_id NULL) can be deleted by any user — one office,
+    """An office user can delete a broadcast row (user_id NULL) — one office,
     'delete' means handled for everyone."""
     _seed_notification(client, notif_id="b1", user_id=None, is_read=0)
     assert client.delete("/api/notifications/b1").status_code == 200
@@ -535,8 +545,8 @@ def test_mark_read_deleted_notification_404(client):
 
 
 def test_clear_all_notifications(client):
-    """Clear-all soft-deletes everything visible to the caller (own + broadcast,
-    read or unread) and leaves other users' rows alone."""
+    """For an office user, clear-all soft-deletes everything visible (own +
+    broadcast, read or unread) and leaves other users' rows alone."""
     _seed_notification(client, notif_id="n1", user_id="user-1", is_read=0)
     _seed_notification(client, notif_id="n2", user_id=None, is_read=1)
     _seed_notification(client, notif_id="n3", user_id="other-user", is_read=0)
@@ -556,6 +566,82 @@ def test_clear_all_notifications(client):
     finally:
         db.close()
     assert row is None
+
+
+# --- office alerts are for the office ---------------------------------------
+# Broadcast rows (user_id NULL) carry payments, leads, customer texts and
+# payroll. Read and delete state is on the shared row, so a technician who
+# could see one could also mark it read or clear it for the whole office.
+
+
+@pytest.fixture
+def tech_client():
+    from gdx_dispatch.core.permissions import BUILTIN_ROLES
+
+    tc = _make_client(permissions=frozenset(BUILTIN_ROLES["technician"]))
+    yield tc
+    tc.app.dependency_overrides.clear()
+    tc._engine.dispose()  # type: ignore[attr-defined]
+
+
+def _deleted_at(tc: TestClient, notif_id: str):
+    db = tc._Session()  # type: ignore[attr-defined]
+    try:
+        return db.execute(
+            text("SELECT deleted_at FROM notifications WHERE id = :id"), {"id": notif_id}
+        ).scalar()
+    finally:
+        db.close()
+
+
+def test_tech_count_and_list_exclude_office_broadcasts(tech_client):
+    _seed_notification(tech_client, notif_id="mine", user_id="user-1")
+    _seed_notification(tech_client, notif_id="office", user_id=None)
+
+    assert tech_client.get("/api/notifications/count").json() == {"count": 1}
+    data = tech_client.get("/api/notifications").json()
+    assert data["total"] == 1
+    assert [item["id"] for item in data["items"]] == ["mine"]
+
+
+def test_tech_cannot_mark_read_or_delete_an_office_broadcast(tech_client):
+    _seed_notification(tech_client, notif_id="office", user_id=None, is_read=0)
+
+    assert tech_client.post("/api/notifications/office/read").status_code == 404
+    assert tech_client.delete("/api/notifications/office").status_code == 404
+
+    db = tech_client._Session()  # type: ignore[attr-defined]
+    try:
+        is_read = db.execute(
+            text("SELECT is_read FROM notifications WHERE id = 'office'")
+        ).scalar()
+    finally:
+        db.close()
+    assert is_read == 0
+    assert _deleted_at(tech_client, "office") is None
+
+
+def test_tech_clear_all_leaves_office_broadcasts(tech_client):
+    _seed_notification(tech_client, notif_id="mine", user_id="user-1")
+    _seed_notification(tech_client, notif_id="office", user_id=None)
+
+    resp = tech_client.delete("/api/notifications")
+    assert resp.status_code == 200
+    assert resp.json() == {"cleared": 1}
+    assert _deleted_at(tech_client, "mine") is not None
+    assert _deleted_at(tech_client, "office") is None
+
+
+def test_nav_office_without_wildcard_sees_broadcasts():
+    """The gate is the nav.office key, not the owner wildcard."""
+    tc = _make_client(permissions=frozenset({"nav.office"}))
+    try:
+        _seed_notification(tc, notif_id="office", user_id=None)
+        assert tc.get("/api/notifications/count").json() == {"count": 1}
+        assert tc.post("/api/notifications/office/read").status_code == 200
+    finally:
+        tc.app.dependency_overrides.clear()
+        tc._engine.dispose()  # type: ignore[attr-defined]
 
 
 # --- gating -----------------------------------------------------------------

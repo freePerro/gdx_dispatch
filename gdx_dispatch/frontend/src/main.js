@@ -10,6 +10,9 @@ import App from './App.vue';
 import { createAppRouter } from './router';
 import { startKeyboardInsetTracking } from './lib/keyboardInset';
 import { installErrorCapture } from './plugins/errorCapture';
+import { initServerConfig } from './lib/serverConfig';
+import { initNativeAppBridge } from './lib/nativeBridge';
+import { installOfficeAlertsBridge } from './lib/officeAlerts';
 import { installSwNavigation } from './lib/swNavigation';
 import { installDatePickerTyping } from './lib/datePickerTyping';
 import './assets/base.css';
@@ -20,6 +23,9 @@ import './assets/responsive.css';
 // on-emerald CTA contrast app-wide.
 import './assets/primevue-cta-contrast.css';
 
+// Initialize server endpoint configuration for self-hosted / native Android mobile shell
+initServerConfig();
+
 // A half-typed date in any DatePicker stays as typed until it is complete
 // (GDXA-423). Patches the shared component, so it must run before mount.
 installDatePickerTyping();
@@ -28,6 +34,8 @@ const app = createApp(App);
 installErrorCapture(app);
 const pinia = createPinia();
 const router = createAppRouter();
+initNativeAppBridge(router);
+installOfficeAlertsBridge(router);
 
 app.use(pinia);
 app.use(router);

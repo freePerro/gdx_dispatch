@@ -254,6 +254,46 @@ def test_beat_schedule_includes_messages_refresh():
     assert entry["task"] == "phone_com.sync_all_recent_messages"
 
 
+def test_sync_recent_messages_task_passes_window_hours(control_db, monkeypatch):
+    seen = {}
+
+    def fake(cdb, tid, **kw):
+        seen.update(kw)
+        return {"ok": True, "messages_synced": 0}
+
+    monkeypatch.setattr(
+        "gdx_dispatch.modules.phone_com.tasks.sync_recent_messages", fake,
+    )
+    pc_tasks.sync_recent_messages_task.run(str(uuid4()), window_hours=1)
+    assert seen["window_hours"] == 1
+
+
+def test_beat_schedule_includes_fast_messages_poll():
+    """Office phone alerts (2026-10-04): a 1-hour window every minute, with
+    the 48-hour 10-minute entry kept as the backstop."""
+    from gdx_dispatch.core.scheduler import build_beat_schedule
+
+    sched = build_beat_schedule()
+    entry = sched["phone-com-messages-fast"]
+    assert entry["task"] == "phone_com.sync_all_recent_messages"
+    assert entry["kwargs"] == {"window_hours": 1}
+    assert entry["options"]["expires"] < 60
+    assert "phone-com-messages-refresh" in sched
+
+
+def test_sync_all_recent_messages_forwards_window_hours(control_db):
+    s = control_db()
+    a = uuid4()
+    s.add(Tenant(id=a, slug="tf", name="TF"))
+    s.commit()
+    key_storage.set_token(s, a, "phc-good-f-12345")
+    s.commit()
+    s.close()
+    with patch.object(pc_tasks.sync_recent_messages_task, "delay") as mock_delay:
+        pc_tasks.sync_all_recent_messages.run(window_hours=1)
+    assert mock_delay.call_args_list[0].kwargs == {"window_hours": 1}
+
+
 # ── calls-refresh beat task (voicemail live path, 2026-08-03) ───────────
 
 

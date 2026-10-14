@@ -38,6 +38,7 @@ async function login(baseURL) {
 async function primeSession(page, token) {
   await page.addInitScript(
     (a) => {
+      if (window !== window.top) return;
       sessionStorage.setItem('gdx_access_token', a.t);
     },
     { t: token, tid: TENANT },
@@ -50,7 +51,7 @@ test.describe('closeout card — real data', () => {
       test.skip(!EMAIL || !PASSWORD || !JOB_ID, 'env not set');
       const { api, token } = await login(baseURL);
       await primeSession(page, token);
-      await page.addInitScript((t) => localStorage.setItem('gdx_theme', t), theme);
+      await page.addInitScript((t) => { if (window === window.top) localStorage.setItem('gdx_theme', t); }, theme);
 
       // What the API says the card should show.
       const r = await api.get(`/api/jobs/${JOB_ID}/closeout`, {

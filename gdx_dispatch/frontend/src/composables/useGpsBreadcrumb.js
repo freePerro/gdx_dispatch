@@ -5,9 +5,21 @@
 // the privacy boundary (refuses with 403 if the user is not clocked
 // in); when the client sees that 403 it stops sampling until restart()
 // is called explicitly.
+//
+// On native Android / Capacitor, starts a persistent Foreground Service
+// so GPS updates continue uninterrupted while clocked in, even with the
+// screen off or while navigating with Google Maps.
+// Adheres strictly to Google Play Prominent Disclosure policy by checking
+// isLocationDisclosureNeeded() before starting native tracking.
 
 import { ref, onBeforeUnmount } from "vue";
 import { useApi } from "./useApi";
+import {
+  getGpsPosition,
+  startForegroundGps,
+  stopForegroundGps,
+  isLocationDisclosureNeeded,
+} from "../lib/nativeGps";
 
 const DEFAULT_INTERVAL_MS = 30_000;
 const MIN_INTERVAL_MS = 10_000;
@@ -21,17 +33,11 @@ export function useGpsBreadcrumb(options = {}) {
   const lastLocation = ref(null);
   let timer = null;
 
-  function getCurrentPosition() {
-    return new Promise((resolve, reject) => {
-      if (!("geolocation" in navigator)) {
-        reject(new Error("geolocation_unsupported"));
-        return;
-      }
-      navigator.geolocation.getCurrentPosition(resolve, reject, {
-        enableHighAccuracy: true,
-        timeout: 15_000,
-        maximumAge: 5_000,
-      });
+  async function getCurrentPosition() {
+    return await getGpsPosition({
+      enableHighAccuracy: true,
+      timeout: 15_000,
+      maximumAge: 5_000,
     });
   }
 
@@ -68,13 +74,22 @@ export function useGpsBreadcrumb(options = {}) {
 
   function start() {
     if (timer) return;
+    if (isLocationDisclosureNeeded()) {
+      lastError.value = 'location_disclosure_required';
+      return;
+    }
     enabled.value = true;
+    startForegroundGps({
+      title: 'GDX Dispatch',
+      text: 'GPS tracking active while clocked in',
+    }).catch(() => {});
     sampleOnce();
     timer = setInterval(sampleOnce, intervalMs.value);
   }
 
   function stop() {
     enabled.value = false;
+    stopForegroundGps().catch(() => {});
     if (timer) {
       clearInterval(timer);
       timer = null;
@@ -101,5 +116,6 @@ export function useGpsBreadcrumb(options = {}) {
     stop,
     sampleOnce,
     setInterval: setInterval_,
+    isLocationDisclosureNeeded,
   };
 }
