@@ -218,7 +218,7 @@ function close() {
 
 .header-icon {
   font-size: 1.25rem;
-  color: var(--p-primary-color, #3b82f6);
+  color: var(--p-primary-color);
 }
 
 .dialog-header h2 {
