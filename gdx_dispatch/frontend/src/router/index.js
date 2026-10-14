@@ -224,15 +224,6 @@ export const routes = [
   //  second declaration silently won. Single declaration now.)
   { path: '/inventory', name: 'inventory', component: InventoryView },
   { path: '/door-listings', name: 'door-listings', component: DoorListingsView },
-  // Office timesheets — read + correct ANY tech's shifts.
-  //
-  // scheduling.write, NOT dispatch.read. dispatch.read was wrong twice over:
-  // it is a READ key on a page whose entire purpose is editing, and `viewer`
-  // holds every `.read` permission by construction while failing the backend's
-  // is_dispatch_manager gate — so a viewer got a nav entry and a passing route
-  // guard, then two 403s and an empty page. scheduling.write's holders
-  // (owner / admin / dispatcher) match DISPATCH_MANAGER_ROLES exactly, and
-  // "create / edit schedule entries" is the right verb for correcting a clock.
   // /communications → /inbox. The CommunicationsView screen was removed
   // (#350): threads lived in a dict in the API process, its senders were
   // unconfigured, and Send answered with a green toast when nothing left.
@@ -309,6 +300,15 @@ export const routes = [
     component: ModuleTabsPage,
     props: { clusterKey: 'payroll_hub' },
     children: [
+      // Office timesheets — read + correct ANY tech's shifts.
+      //
+      // scheduling.write, NOT dispatch.read. dispatch.read was wrong twice over:
+      // it is a READ key on a page whose entire purpose is editing, and `viewer`
+      // holds every `.read` permission by construction while failing the backend's
+      // is_dispatch_manager gate — so a viewer got a nav entry and a passing route
+      // guard, then two 403s and an empty page. scheduling.write's holders
+      // (owner / admin / dispatcher) match DISPATCH_MANAGER_ROLES exactly, and
+      // "create / edit schedule entries" is the right verb for correcting a clock.
       { path: '', name: 'timesheets', component: TimesheetsView, meta: { requiresPermission: 'scheduling.write' } },
       { path: '/timeclock', name: 'timeclock', component: TimeclockView },
       { path: '/payroll', name: 'payroll', component: PayrollView, meta: { requiresPermission: 'payroll.read' } },
