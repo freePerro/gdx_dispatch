@@ -154,7 +154,9 @@ function enumOptions(entry) {
 
 // ── Tags tab (S1-A8) ──────────────────────────────────────────────────
 const tags = ref([])
-const tagsLoading = ref(false)
+// Starts true: onMounted runs loadTags() only after `await load()`, and the
+// tab read "No tags yet" when opened during that request (GDXA-941).
+const tagsLoading = ref(true)
 const tagDialogVisible = ref(false)
 const tagDialogMode = ref('create') // 'create' | 'edit'
 const tagDraft = ref({ id: null, name: '', color: '6366f1', description: '' })

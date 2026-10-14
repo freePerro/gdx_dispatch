@@ -412,3 +412,78 @@ describe('MobileBillingView overdue is the server\'s verdict (GDXA-653)', () => 
     expect(w.findAll('.kpi')[1].text()).toContain('125.00');
   });
 });
+
+describe('MobileBillingView says nothing about emptiness until the list is in (GDXA-941)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    apiGetMock.mockReset();
+    hasPermissionMock.mockReset();
+    hasPermissionMock.mockReturnValue(true);
+    permissionsLoadedRef.value = true;
+    loadPermissionsMock.mockReset();
+    loadPermissionsMock.mockImplementation(async () => {});
+    toastAddMock.mockReset();
+  });
+
+  const EMPTY = ['No invoices yet', 'No open invoices', 'Nothing overdue'];
+  const kpis = (w) => w.find('[data-test="mb-kpis"]').text();
+
+  it('the first paint, before permissions resolve, shows Loading and no empty title', async () => {
+    // onMounted awaits permissions before fetchInvoices(); loading used to start
+    // false, so that window painted "No open invoices" and $0.00.
+    permissionsLoadedRef.value = false;
+    loadPermissionsMock.mockImplementation(() => new Promise(() => {}));
+
+    const w = mount(MobileBillingView, { global: { stubs } });
+    await flushPromises();
+
+    expect(apiGetMock).not.toHaveBeenCalled();
+    expect(w.text()).toContain('Loading…');
+    for (const t of EMPTY) expect(w.text()).not.toContain(t);
+    expect(kpis(w)).not.toContain('$0.00');
+  });
+
+  it('a pending /api/invoices shows no empty title; an empty answer then does', async () => {
+    let resolveList;
+    apiGetMock.mockImplementation((url) => {
+      if (url === '/api/invoices') return new Promise((r) => { resolveList = r; });
+      return Promise.reject(new Error('no summary'));
+    });
+
+    const w = mount(MobileBillingView, { global: { stubs } });
+    w.vm.filter = 'all';
+    await flushPromises();
+
+    expect(resolveList).toBeTypeOf('function');
+    expect(w.text()).toContain('Loading…');
+    for (const t of EMPTY) expect(w.text()).not.toContain(t);
+    expect(kpis(w)).not.toContain('$0.00');
+
+    resolveList([]);
+    await flushPromises();
+
+    expect(w.text()).not.toContain('Loading…');
+    expect(w.text()).toContain('No invoices yet');
+    expect(kpis(w)).toContain('$0.00');
+  });
+
+  it('a technician waiting on their own list sees no "No open invoices" yet', async () => {
+    hasPermissionMock.mockReturnValue(false);
+    let resolveList;
+    apiGetMock.mockImplementation((url) => {
+      if (url === '/api/mobile/invoices/open') return new Promise((r) => { resolveList = r; });
+      return Promise.reject(new Error(`unexpected GET ${url}`));
+    });
+
+    const w = mount(MobileBillingView, { global: { stubs } });
+    await flushPromises();
+
+    expect(w.text()).not.toContain('No open invoices');
+    expect(kpis(w)).not.toContain('$0.00');
+
+    resolveList({ invoices: [] });
+    await flushPromises();
+
+    expect(w.text()).toContain('No open invoices');
+  });
+});
