@@ -9,8 +9,15 @@ S2 `modules/ledger/coa.py`; S3 `engine.py` + `rules.py`; S4 `guard.py`; S4.5
 money pulls on the flag; S10 `opening.py` + `backfill.py`; S11 `reports.py`
 (trial_balance / pnl_accrual / pnl_cash / balance_sheet) + `AccountingLedgerView.vue`.
 Prod: flag ON, July cutover, 188 posted entries, trial balance imbalance = 0.
-**Open:** §Rollout step 4 — exposing reports + receipts UI is gated on the
+**Open (2026-08-21):** §Rollout step 4 — exposing reports + receipts UI is gated on the
 monthly trial-balance hand-check against QBO, and that decision is unrecorded.
+**Decided 2026-10-13 (Doug on GDXA-877, recorded in GDXA-902):** step 4 now gates
+on the internal check (daily trial-balance zero-check plus the Phase 2 bank
+statement tie-out). The zero-check holds by construction (balance trigger), so
+the tie-out (Phase 2 §2.2) is the binding leg. It covers cash only and is not
+built yet: there is no tie-out-to-GL assertion, and the import-level
+`tie_out_status` is a separate check. See the `gl-phase1-core-ledger.md` header
+for all caveats.
 
 **Purpose:** turn `gl-phase1-core-ledger.md` (v3 FINAL-DRAFT spec) into a sequence of
 small, independently-testable slices. The spec says *what* and *why*; this doc says
@@ -265,8 +272,10 @@ proportional allocation), balance sheet (computed RE rollup), journal browser dr
    daily trial-balance zero-check + §5 writer-coverage counters.
 3. Enable on prod at a **month boundary**: final QB import → P8 opening balances + AR
    reconciliation vs QBO aging → flag on → replay from cutover.
-4. Reports exposed once TB passes the monthly hand-check vs QBO (repeated monthly until
-   Phase 2 automates the divergence loop).
+4. Reports exposed once the daily TB zero-check passes and the Phase 2 bank statement
+   tie-out agrees. *(Reworded 2026-10-13, GDXA-902. The 2026-07-02 wording, kept as
+   history: "Reports exposed once TB passes the monthly hand-check vs QBO (repeated
+   monthly until Phase 2 automates the divergence loop).")*
 
 ## Still-open gates (from spec §12 — do not need answers to start S1–S4)
 

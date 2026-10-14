@@ -15,6 +15,33 @@ comparison cannot be run. A replacement gate is a decision, not a bug: the
 bank-statement tie-out is the obvious candidate and its evidence exists on prod
 (9 statement imports, 388 lines) — but `bank_matches` is still **0 rows**, so
 the Reconcile flow has shipped and never been exercised.
+✅ **DECIDED (Doug, GDXA-877 decision card; recorded 2026-10-13, GDXA-902):
+§11 step 4's gate is reworded to an internal check.** The gate is now the
+daily trial-balance zero-check plus the Phase 2 bank-statement tie-out; QBO is
+no longer the comparator. The original wording stays in §11 as history. Code
+check the same day, four caveats:
+(1) **The zero-check is a smoke check and cannot fail in practice.** The
+deferred balance trigger (`modules/ledger/ddl.py`) and `engine.py` reject any
+unbalanced entry, and lines are append-only. So `zero_proof_cents` is 0 by
+construction; a non-zero value would mean a write got past the trigger.
+(2) **The tie-out is the binding leg, and it is not built.** Phase 2's own
+header says "no tie-out-to-GL assertion", and no code compares a statement
+ending balance with a GL balance. It is also blocked on the 1050 clearing
+(`undeposited-funds-clearing-plan`); Phase 2 §2.2 and §4.4 name its other
+prerequisites. It
+is **not** the import-level `tie_out_status` (`compute_tie_out` in
+`modules/bank_feeds/statement_service.py`), which only checks that a statement
+agrees with itself. Until §2.2 is built, this gate cannot be met, any more than
+the QBO hand-check could.
+(3) **The tie-out covers cash only.** Nothing compares AR to anything now that
+the QBO aging comparison is gone (a misapplied payment, for example). No
+internal AR tie exists yet (open invoices vs the AR control account), and
+whether to build one is Doug's call.
+(4) No scheduled job runs a zero-check: `modules/ledger/reports.py`
+`trial_balance()` renders `zero_proof_cents` only on demand. Also, the Ledger
+reports UI is already in the nav (`frontend/src/constants/modules.js`,
+`accounting.read`), so the gate records when the reports may be trusted; it
+does not hold the UI back.
 ✅ **DECIDED (Doug, 2026-08-22): the GL posts on the BANKED date, not the
 date money changed hands.** Raised while designing a split of `payment_date`
 (banked) from a field date — a split that was **drafted and dropped**, so no
@@ -32,8 +59,10 @@ not a verified property of the existing 340 rows.
 **Still open:** §12's CPA questions — `gl_settings.cpa_review` is still `{}`,
 and question 1 (expense parts at purchase vs capitalize) is marked BLOCKING
 for §7. §11 step 4 (expose reports + receipts UI after the monthly
-trial-balance hand-check against QBO) is a judgement call that has not been
-recorded either way. The v3 design content below is unchanged.
+trial-balance hand-check against QBO) was a judgement call that had not been
+recorded either way as of 2026-08-21. It is now decided; see the 2026-10-13
+note above. Apart from the dated notes in §5.4 and §11, the v3 design content
+below is unchanged.
 **Date:** 2026-07-01
 **Depends on:** nothing (additive). **Followed by:** Phase 2 (bank feeds + QBO verification loop), Phase 3 (parallel run + trust switch).
 **Provenance:** load-bearing choices are backed by (a) adversarially-verified research (two deep-research passes, 2026-07-01, ~35 claims confirmed 3-0 against primary sources), (b) direct code reading, or (c) audit findings (**[AUDIT-R1]** / **[AUDIT-R2]**). Judgment calls: **[JUDGMENT]**. CPA items: **[CPA]**.
@@ -173,7 +202,7 @@ When `ledger_posting_enabled`:
 - **Pulls that mutate Invoice/Payment/Expense are disabled** (fail loudly + `/qb` health surfacing): `pull_invoices`, `_resync_invoice_lines`, `pull_payments`, `_apply_qbo_deletes` (the last also stays behind `delete_sync_enabled`, default OFF). Initial QB import remains available only pre-cutover.
 - **Read-only `qb_*` mirror pulls continue** (**[AUDIT-R2]** correction): the beat-scheduled banking sync (`core/scheduler.py:128` → `tasks.py:418`) writes only mirror tables (`banking.py:36`) and is untouched — it becomes Phase 2 reconciliation input.
 - **Known workflow loss, accepted:** CPA edits made in QBO no longer flow back. Corrections happen in GDX (credit memo, void, adjustment) and push forward. **[JUDGMENT]**
-- **Known gap, accepted for Phase 1** (**[AUDIT-R2]**): there is **no automated detection of QBO-side divergence** (e.g., a CPA-recorded ReceivePayment leaves the GDX invoice open). Interim mitigation: the §11 monthly hand-check against QBO's AR/trial balance. Permanent fix: Phase 2's verification loop — this gap is a design input to that document.
+- **Known gap, accepted for Phase 1** (**[AUDIT-R2]**): there is **no automated detection of QBO-side divergence** (e.g., a CPA-recorded ReceivePayment leaves the GDX invoice open). Interim mitigation: the §11 monthly hand-check against QBO's AR/trial balance. Permanent fix: Phase 2's verification loop — this gap is a design input to that document. *(2026-10-13, GDXA-902: neither mitigation survived. The hand-check cannot run, because QB has read `needs_reconnect` since 2026-08-18. Phase 2's QBO loop is WON'T BUILD (2026-08-21). With QBO no longer a maintained book, no QBO-side divergence remains to detect. §11 step 4 now gates on the internal check instead; see the header.)*
 
 ### 5.5 Expenses
 
@@ -224,7 +253,7 @@ As v2: trial balance (rendered zero-proof; Phase 2 reconciliation anchor), P&L w
 1. Migration 012: GL tables + triggers + CoA seed + `payments.voided_at` + `job_receipts.promoted_expense_id` + `invoice_adjustments`; router fixes ship with it (Stripe recording consolidation, refund enum, overpayment validation, expense `gt=0`, `_mark_invoice_paid` refactor, dead-code deletion).
 2. Engine dark behind `ledger_posting_enabled` (default off); **the flag and the pull-path disable are the same switch**. Dark-launch validation is defined, not vibes: daily trial-balance zero-check + §5 writer-coverage counters on the demo stack.
 3. Enable on prod at a month boundary: final QB import → per-invoice opening balances + AR reconciliation vs QBO aging (§5.7) → flag on → replay from cutover.
-4. Reports + receipts UI exposed once the trial balance passes the monthly hand-check against QBO (repeated monthly until Phase 2 automates it — this is also the §5.4 divergence mitigation).
+4. Reports + receipts UI are exposed once the daily trial-balance zero-check passes and the bank statement tie-out (Phase 2 §2.2) agrees. *(Reworded 2026-10-13 by Doug's decision on GDXA-877, recorded in GDXA-902. The 2026-07-01 wording, kept as history: "Reports + receipts UI exposed once the trial balance passes the monthly hand-check against QBO (repeated monthly until Phase 2 automates it — this is also the §5.4 divergence mitigation)." It could not be met after 2026-08-18; see the header.)*
 
 ## 12. Open questions & flagged defects
 
