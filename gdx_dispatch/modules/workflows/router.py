@@ -13,11 +13,18 @@ from gdx_dispatch.core.audit import (
     resolve_audit_actor,
 )
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.modules import require_module, require_role
+from gdx_dispatch.core.roles import DISPATCH_MANAGER_ROLES
 from gdx_dispatch.modules.workflows.models import WorkflowRule, WorkflowRun
 from gdx_dispatch.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api", tags=["workflows"], dependencies=[Depends(require_module("workflows")), Depends(get_current_user)])
+
+# Writing a rule is a dispatch-manager action (owner, admin, dispatcher,
+# manager): every rule is a standing order to send customer email
+# (`IMPLEMENTED_ACTIONS == ("send_email",)`), so a login alone is no gate.
+# Reads stay open to any signed-in user (GDXA-1097).
+_office = require_role(*sorted(DISPATCH_MANAGER_ROLES))
 
 def _validate_rule_shape(trigger_event: str | None, actions: list[dict] | None) -> None:
     """Reject rules that can never run (email overhaul: a rule on a trigger
@@ -104,7 +111,7 @@ class WorkflowRulePatch(BaseModel): name: str | None = None; trigger_event: str 
 def list_workflows(db: Session = Depends(get_db)) -> list[WorkflowRule]:
     return list(db.execute(select(WorkflowRule).where(WorkflowRule.is_active.is_(True)).order_by(WorkflowRule.created_at.desc())).scalars().all())
 
-@router.post("/workflows", response_model=None)
+@router.post("/workflows", response_model=None, dependencies=[Depends(_office)])
 def create_workflow(payload: WorkflowRuleIn, request: Request, db: Session = Depends(get_db)) -> WorkflowRule:
     # `ensure_audit_table` runs here, before anything is staged: its first call
     # for an engine COMMITS the guard DDL, and fired lazily from inside the
@@ -120,7 +127,7 @@ def create_workflow(payload: WorkflowRuleIn, request: Request, db: Session = Dep
     db.refresh(row)
     return row
 
-@router.put("/workflows/{rule_id}", response_model=None)
+@router.put("/workflows/{rule_id}", response_model=None, dependencies=[Depends(_office)])
 def update_workflow(rule_id: UUID, payload: WorkflowRulePatch, request: Request, db: Session = Depends(get_db)) -> WorkflowRule:
     # `ensure_audit_table` runs here, before anything is staged: its first call
     # for an engine COMMITS the guard DDL, and fired lazily from inside the
@@ -144,7 +151,7 @@ def update_workflow(rule_id: UUID, payload: WorkflowRulePatch, request: Request,
     db.refresh(row)
     return row
 
-@router.delete("/workflows/{rule_id}", response_model=None)
+@router.delete("/workflows/{rule_id}", response_model=None, dependencies=[Depends(_office)])
 def delete_workflow(rule_id: UUID, request: Request, db: Session = Depends(get_db)) -> dict[str, bool]:
     # `ensure_audit_table` runs here, before anything is staged: its first call
     # for an engine COMMITS the guard DDL, and fired lazily from inside the

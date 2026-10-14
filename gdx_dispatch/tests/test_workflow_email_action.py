@@ -170,7 +170,7 @@ def test_router_rejects_dead_rules(db):
         yield db
 
     app.dependency_overrides[get_db] = _db
-    app.dependency_overrides[get_current_user] = lambda: {"user_id": "u"}
+    app.dependency_overrides[get_current_user] = lambda: {"user_id": "u", "role": "admin"}
     app.dependency_overrides[require_module("workflows")] = lambda: None
     c = TestClient(app)
 
@@ -223,7 +223,7 @@ def test_router_rejects_actions_without_an_executor(db):
         yield db
 
     app.dependency_overrides[get_db] = _db
-    app.dependency_overrides[get_current_user] = lambda: {"user_id": "u"}
+    app.dependency_overrides[get_current_user] = lambda: {"user_id": "u", "role": "admin"}
     app.dependency_overrides[require_module("workflows")] = lambda: None
     c = TestClient(app)
 
