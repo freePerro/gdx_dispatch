@@ -456,6 +456,40 @@ def _version_claim_stmt(customer_id: UUID, expected: int):
     )
 
 
+def _emit_customer_updated(db: Session, customer: Customer, changed_fields: list[str]) -> None:
+    """Stage customer.updated before the PATCH commits (GDXA-968).
+
+    It was in WEBHOOK_EVENTS with no emitter, so a subscriber who picked it
+    never got a delivery. PII-minimized like customer.created: the changed
+    field NAMES, never their values (an email or phone edit would otherwise
+    cross to the receiver). The one value that ships is the CURRENT name, as
+    customer.created sends it; the old name never does. Flushed first so `version` holds this edit's bump;
+    the version rides in the entity id because emit's idempotency key is
+    (tenant, event, entity, subscription) — keyed on the bare customer id,
+    every edit after the first would dedupe away as a re-emit. Called only
+    when a value really changed: an unchanged save does not bump the version,
+    and its key would collide with the previous edit's.
+    """
+    from gdx_dispatch.core.webhooks.emit import emit_domain_event
+
+    db.flush()
+    tid = str(getattr(customer, "company_id", "") or "")
+    emit_domain_event(
+        db,
+        "customer.updated",
+        f"{customer.id}:v{customer.version}",
+        {
+            "customer_id": str(customer.id),
+            "name": customer.name,
+            "customer_type": getattr(customer, "customer_type", None),
+            "changed_fields": sorted(changed_fields),
+            "version": customer.version,
+            "company_id": tid,
+        },
+        tenant_id=tid,
+    )
+
+
 def _claim_customer_version(db: Session, customer: Customer, expected: int) -> None:
     """Refuse with 409 unless the row is still at `expected` (GDXA-448).
 
@@ -846,11 +880,13 @@ async def update_customer(
             # value already at `<field>` (operator-facing names). Flat
             # scalars, because the Activity list prints `key: value` and a
             # nested object would read "[object Object]".
+            changed_fields: list[str] = []
             for key, value in updates.items():
                 old = getattr(customer, key, None)
                 if (old if old is not None else "") != (value if value is not None else ""):
                     name = "referral_source" if key == "source" else key
                     audit_details[f"{name}_old"] = str(old) if isinstance(old, _D) else old
+                    changed_fields.append(name)
             for key, value in updates.items():
                 setattr(customer, key, value)
             if identity_changed:
@@ -861,6 +897,8 @@ async def update_customer(
                 customer.local_edit_fields = sorted(
                     set(customer.local_edit_fields or []) | set(identity_changed)
                 )
+            if changed_fields:
+                _emit_customer_updated(db, customer, changed_fields)
             db.commit()
             db.refresh(customer)
         except SQLAlchemyError as exc:
