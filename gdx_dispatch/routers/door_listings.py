@@ -2,13 +2,12 @@
 
 Three ways a listing is born (office, a technician, a customer in the portal)
 and exactly one way it reaches the public website: an office approval.
-
-NOTE: technician submission is supported by this API (any holder of
-`inventory.write` can POST, and the row is forced to `pending_review`), but the
-tech-mobile console has NO listing UI yet — a tech reaches this through the
-office web app. The field-capture screen is still to build.
-That invariant is enforced here, in `_approve`, and nowhere else — no PATCH on
+That invariant is enforced here, in `publish_listing`, and nowhere else — no PATCH on
 `status`, no create-with-status.
+
+Technicians submit from the mobile console at `/mobile/door-listings`
+(`MobileDoorListingsView`): any holder of `inventory.write` can POST, and a
+submitter who cannot approve gets a row forced to `pending_review`.
 
 Permission model (door-listings plan §4): submitting
 needs `inventory.write`, which technicians already hold. Approving needs
