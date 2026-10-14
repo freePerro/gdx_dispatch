@@ -416,7 +416,7 @@ onMounted(() => {
 }
 
 .tax-chip-total {
-  background: var(--p-primary-color, #0ea5e9);
+  background: var(--p-primary-color);
   color: var(--p-primary-contrast-color, #ffffff);
   border-color: transparent;
 }
