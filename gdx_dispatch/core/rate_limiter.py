@@ -168,7 +168,9 @@ class TenantRateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path in self._BYPASS_PATHS:
             return await call_next(request)
 
-        # Bypass rate limiting for E2E test traffic (only when explicitly enabled)
+        # Bypass rate limiting for E2E test traffic (only when explicitly enabled).
+        # create_app() refuses to boot with GDX_E2E_BYPASS=1 in a
+        # production-like environment (GDXA-988), so this cannot fire there.
         if os.getenv("GDX_E2E_BYPASS") == "1" and request.headers.get("x-e2e-test") == "true":
             return await call_next(request)
 
