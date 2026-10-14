@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import Response
 
 from gdx_dispatch.core.activity_feed import collapse_runs, feed_filter, wanted_fetch_size
-from gdx_dispatch.core.audit import AuditLog, verify_audit_chain
+from gdx_dispatch.core.audit import AuditLog, audit_chain_broken, audit_chain_report, verify_audit_chain
 from gdx_dispatch.core.audit_labels import decorate_rows
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_role
@@ -224,14 +224,23 @@ def verify_audit_chain_endpoint(
             cq = cq.where(AuditLog.entity_id == entity_id)
     count = int(db.execute(cq).scalar() or 0)
 
-    scope: Any = "all"
+    result: dict[str, Any] = {"ok": bool(ok), "scope": "all", "rows_checked": count, "unchained_rows": unchained}
     if entity_type:
-        scope = {"entity_type": entity_type, "entity_id": entity_id}
-    return {
-        "ok": bool(ok),
-        "scope": scope,
-        "rows_checked": count,
-        "unchained_rows": unchained,
-        # A tamper is a break with NOTHING legitimately unchained.
-        "tamper_suspected": bool(not ok and unchained == 0),
-    }
+        # A scoped walk is one record's trail; it says nothing of forks.
+        result["scope"] = {"entity_type": entity_type, "entity_id": entity_id}
+        result["tamper_suspected"] = bool(not ok and unchained == 0)
+        return result
+
+    # All-scope: the structural check names a fork or an altered row whatever
+    # the unchained count. Before GDXA-979 any unchained row read as "not
+    # tamper", which hid every fork on prod.
+    report = audit_chain_report(db)
+    result.update(
+        forked_parents=len(report["forks"]),
+        new_forks=report["new_forks"],
+        bad_hash_rows=report["bad_hash"],
+        dangling_rows=report["dangling"],
+        known_breaks_before=report["known_breaks_before"],
+        tamper_suspected=audit_chain_broken(ok, report),
+    )
+    return result

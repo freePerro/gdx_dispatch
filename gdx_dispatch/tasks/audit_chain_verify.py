@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from gdx_dispatch.core.audit import verify_audit_chain
+from gdx_dispatch.core.audit import audit_chain_broken, audit_chain_report, verify_audit_chain
 from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import SessionLocal
 
@@ -34,40 +34,55 @@ def verify_chain_nightly() -> dict:
 
             ok = verify_audit_chain(db)
             rows = int(db.execute(select(func.count()).select_from(AuditLog)).scalar() or 0)
-            from sqlalchemy import or_ as _or
-            unchained = int(db.execute(
-                select(func.count()).select_from(AuditLog).where(
-                    _or(AuditLog.row_hash.is_(None), AuditLog.row_hash == "")
-                )
-            ).scalar() or 0)
+            report = audit_chain_report(db)
     except Exception:  # noqa: BLE001 — a scheduled integrity check must never
         # crash the beat; a read failure is itself worth logging.
         log.exception("audit_chain_verify_failed_to_run")
         return {"ok": None, "rows": 0, "error": "read_failed"}
 
-    if ok:
-        log.info("audit_chain_verify_ok", extra={"rows_checked": rows})
-    elif unchained > 0:
-        # Known: the GL ledger writers build audit rows directly (no hash).
-        # That is a data-hygiene gap, not tampering — WARN, don't cry wolf.
-        # A clean nightly check needs those writers routed through the chain
-        # (tracked separately); until then this quantifies the gap.
-        log.warning(
-            "audit_chain_has_unchained_rows — %d of %d rows bypass the hash "
-            "chain (GL/legacy writers); not tamper, but the all-scope check "
-            "can't attest until they chain.",
-            unchained, rows,
-        )
-    else:
-        # ok:false with ZERO unchained rows = a genuine break in the chain.
+    unchained = report["unchained"]
+    known_breaks = report["known_breaks"]
+    # The structural check names a fork, a bad hash or a missing predecessor
+    # whatever the unchained count (GDXA-979: the old WARN branch swallowed
+    # every failure once any row was unchained).
+    broken = audit_chain_broken(ok, report)
+    unexplained = broken and not report["broken"]
+    if broken:
         log.error(
-            "AUDIT_CHAIN_BROKEN — the hash chain failed with no unchained "
-            "rows to explain it; a row was tampered, reordered, or deleted. "
-            "Investigate immediately.",
+            "AUDIT_CHAIN_BROKEN — %d row(s) fail their own hash, %d name a "
+            "missing predecessor, %d new fork(s), %d new restart(s)%s; a row was "
+            "tampered, inserted out of chain, or deleted. Investigate immediately.",
+            report["bad_hash"], report["dangling"], report["new_forks"], report["new_restarts"],
+            " (and the ordered walk fails with nothing to explain it)" if unexplained else "",
             extra={
                 "rows_checked": rows,
                 "ops_alert": True,
                 "ops_fingerprint": "audit-chain-verify-nightly",
             },
         )
-    return {"ok": bool(ok), "rows": rows, "unchained": unchained}
+    elif ok:
+        log.info("audit_chain_verify_ok", extra={"rows_checked": rows})
+    if unchained > 0:
+        # Known: the GL ledger writers build audit rows directly (no hash).
+        # That is a data-hygiene gap, not tampering. This WARN is about those
+        # rows only; it no longer stands in for the check above.
+        log.warning(
+            "audit_chain_has_unchained_rows — %d of %d rows bypass the hash "
+            "chain (GL/legacy writers); not tamper, but the all-scope check "
+            "can't attest until they chain.",
+            unchained, rows,
+        )
+    if known_breaks:
+        log.info(
+            "audit_chain_known_breaks — %d fork(s)/restart(s) written before %s "
+            "by the unlocked tip read (GDXA-979); history, not re-alerted.",
+            known_breaks, report["known_breaks_before"],
+        )
+    return {
+        "ok": bool(ok),
+        "rows": rows,
+        "unchained": unchained,
+        "forks": len(report["forks"]),
+        "new_forks": report["new_forks"],
+        "broken": broken,
+    }

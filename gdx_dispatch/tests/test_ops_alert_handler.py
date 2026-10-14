@@ -109,6 +109,11 @@ def _run_audit_task_with_broken_chain(monkeypatch, factory):
 
     monkeypatch.setattr(audit_chain_verify, "SessionLocal", factory)
     monkeypatch.setattr(audit_chain_verify, "verify_audit_chain", lambda _db: False)
+    # The structural check finds nothing, so the failing walk is unexplained.
+    monkeypatch.setattr(audit_chain_verify, "audit_chain_report", lambda _db: {
+        "unchained": 0, "forks": [], "new_forks": 0, "restarts": 0, "new_restarts": 0,
+        "bad_hash": 0, "dangling": 0, "known_breaks": 0, "known_breaks_before": "", "broken": False,
+    })
     result = audit_chain_verify.verify_chain_nightly.apply().get()
     assert result["ok"] is False and result["unchained"] == 0
     return result
