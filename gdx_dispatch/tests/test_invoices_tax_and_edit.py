@@ -237,6 +237,11 @@ def test_explicit_zero_rate_beats_configured_default(db):
         ("Service Call", 0.07375, 7.38),
         # GDXA-793: an installation is never taxed — rate 0, not the default.
         ("Installation", 0.0, 0.0),
+        # GDXA-889: New Construction is an installation for tax.
+        ("New Construction", 0.0, 0.0),
+        # Not an installation: taxed at the default, never guessed from text.
+        ("Other", 0.07375, 7.38),
+        ("Garage Door Install", 0.07375, 7.38),
     ],
 )
 def test_create_without_rate_follows_the_job_lane(db, job_type, expected_rate, expected_tax):
@@ -384,6 +389,8 @@ def test_failed_exemption_read_never_taxes_at_the_quote(db, monkeypatch):
         ("Service Call", Decimal("0.05"), 0.05),
         ("Service Call", None, 0.07375),
         ("Installation", Decimal("0.05"), 0.0),
+        ("New Construction", Decimal("0.05"), 0.0),  # GDXA-889
+        ("New Construction", None, 0.0),
     ],
 )
 def test_resolve_endpoint_orders_the_estimate_rate(db, job_type, estimate_rate, expected):

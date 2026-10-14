@@ -81,11 +81,23 @@ def resolve_rate(db: Session, customer_id: UUID | str | None = None) -> Decimal:
 
 
 def is_install_lane(job_type: str | None) -> bool:
-    """True when the job is an installation (§8 install lane): a construction
-    contract, never taxed (Doug, 2026-10-12, GDXA-793/796)."""
-    from gdx_dispatch.core.billing_lanes import lane_for_job  # noqa: PLC0415
+    """True when the job is an installation FOR TAX: a construction contract,
+    never taxed (Doug, 2026-10-12, GDXA-793/796).
 
-    return lane_for_job(job_type) == "install"
+    Tax-only, and wider than the §8 pricing lane on purpose: New Construction
+    is an installation for tax (Doug, 2026-10-13, GDXA-840/889) but stays in
+    the "office" pricing lane, so it is never auto-priced flat. Exact
+    canonical spellings only: Other, Inspection, QB Import, NULL and free
+    text ("Garage Door Install") stay taxed, because a work kind is never
+    guessed from free text (`canonical_job_type`).
+    """
+    from gdx_dispatch.core.job_taxonomy import (  # noqa: PLC0415
+        INSTALLATION,
+        NEW_CONSTRUCTION,
+        canonical_job_type,
+    )
+
+    return canonical_job_type(job_type) in (INSTALLATION, NEW_CONSTRUCTION)
 
 
 def resolve_rate_for_job(
@@ -98,9 +110,13 @@ def resolve_rate_for_job(
 
     Used by office invoice create and `/api/tax/resolve` (GDXA-796), the
     change order detail total (GDXA-797) and the closeout autodraft
-    (GDXA-846). Not yet by estimate totals (no lane check): a separate issue.
+    (GDXA-846). A new estimate's rate takes the same `is_install_lane` check
+    (`proposals.totals.new_estimate_tax_rate`, GDXA-755). Not estimate
+    totals: an estimate stored with a NULL rate still resolves the tenant
+    default with no lane check (`compute_estimate_totals`).
 
-    - Install lane → 0, without reading the tenant default.
+    - Installation or New Construction (`is_install_lane`) → 0, without
+      reading the tenant default.
     - Exempt customer → 0, on any lane.
     - `quoted_rate` (an estimate's own rate override, M24) → that rate: the
       customer accepted it, so the tenant default must not replace it

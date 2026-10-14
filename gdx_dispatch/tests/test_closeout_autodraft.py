@@ -562,15 +562,18 @@ def test_autodraft_taxes_parts_not_labor_with_resolved_rate(db) -> None:
     assert _serialize_invoice(inv)["origin"] == "closeout_autodraft"
 
 
-def test_install_autodraft_never_taxes_parts(db) -> None:
+@pytest.mark.parametrize("job_type", ["Installation", "New Construction"])
+def test_install_autodraft_never_taxes_parts(db, job_type) -> None:
     """GDXA-793: an installation is a construction contract and is never
     taxed. Same 7.375% tenant default as the service control above; the
     install draft gets rate 0, its part line is not taxable, and tax is 0.
-    Before the fix the draft resolved the tenant default and taxed the part."""
+    Before the fix the draft resolved the tenant default and taxed the part.
+    New Construction is an installation for tax (GDXA-889) but office-priced,
+    so its labor is unpriced the same way."""
     db.add(TaxConfig(default_rate=Decimal("0.07375")))
     db.commit()
 
-    job = _seed_job(db, job_type="Installation")
+    job = _seed_job(db, job_type=job_type)
     part = _seed_part(db, sell=100.00)
     resp = _closeout(
         db, job,
@@ -656,7 +659,7 @@ def test_autodraft_rate_is_decided_by_resolve_rate_for_job(db, monkeypatch) -> N
 
 @pytest.mark.parametrize(
     ("job_type", "expected_rate"),
-    [("Installation", Decimal("0")), ("Service Call", None)],
+    [("Installation", Decimal("0")), ("New Construction", Decimal("0")), ("Service Call", None)],
 )
 def test_autodraft_failed_tax_read_keeps_install_at_zero(
     db, monkeypatch, job_type, expected_rate

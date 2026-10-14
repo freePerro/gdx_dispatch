@@ -433,8 +433,9 @@ def build_closeout_lines(
     Taxable flags (2026-08-08 audit): labor lines carry the tenant's
     tax-labor flag (same M24 rule the estimate→invoice copy applies — the
     old default-True meant a later office line-edit recalc would suddenly
-    tax labor); parts stay taxable. Install lane (GDXA-793): nothing is
-    taxable and taxable_total is 0. taxable_total feeds the caller's tax
+    tax labor); parts stay taxable. Installation or New Construction
+    (GDXA-793, GDXA-889): nothing is taxable and taxable_total is 0.
+    taxable_total feeds the caller's tax
     computation so an autodraft with a resolved rate taxes parts exactly
     like an office-created invoice would.
 
@@ -494,10 +495,13 @@ def build_closeout_lines(
     taxable_total = Decimal("0")
     lane = lane_for_job(job_type)
     # An installation is a construction contract and is never taxed (Doug,
-    # 2026-10-12, GDXA-793): no line on an install-lane draft is taxable, so
+    # 2026-10-12, GDXA-793): no line on an installation's draft is taxable, so
     # a later office line edit cannot start taxing it either. Repairs and
-    # service calls keep taxable parts.
-    parts_taxable = lane != "install"
+    # service calls keep taxable parts. Decided by the tax predicate, not the
+    # pricing lane: New Construction is untaxed but office-priced (GDXA-889).
+    from gdx_dispatch.modules.tax.service import is_install_lane  # noqa: PLC0415
+
+    parts_taxable = not is_install_lane(job_type)
     if not parts_taxable:
         labor_taxable = False
     if lane == "install" and getattr(closeout, "labor_matrix_item_id", None):
@@ -955,8 +959,9 @@ def _resolve_draft_rate(db: Session, inv: Invoice, job: Job) -> Decimal | None:
     """The draft's rate, decided by ``resolve_rate_for_job`` (GDXA-846), with
     the same mapping as office create (``routers/invoices.py``):
 
-    - install lane → 0, rate-mode, tenant default never read — even when the
-      read below fails, because the lane check reads nothing;
+    - Installation or New Construction (``is_install_lane``, GDXA-889) → 0,
+      rate-mode, tenant default never read — even when the read below fails,
+      because the check reads nothing;
     - exempt customer (the helper answers 0 on a repair) → None;
     - repair / service call → the tenant default;
     - a failed read on a repair → None.
