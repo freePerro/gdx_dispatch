@@ -16,7 +16,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -342,17 +342,114 @@ def _list_tags_for_entity(
             Tag.company_id == tenant_id,
             TagAssignment.company_id == tenant_id,
             TagAssignment.entity_type == entity_type,
-            TagAssignment.entity_id == entity_id,
+            _entity_id_matches(entity_id),
             Tag.deleted_at.is_(None),
         )
         .order_by(Tag.name.asc())
     )
     out: list[dict[str, Any]] = []
+    seen: set[Any] = set()
     for tag, assignment in db.execute(stmt).all():
+        # Two spellings of one id can each carry the tag; show it once.
+        if tag.id in seen:
+            continue
+        seen.add(tag.id)
         row = _serialize_tag(tag)
         row["assignment_id"] = str(assignment.id)
         out.append(row)
     return out
+
+
+def canonical_entity_id(value: Any) -> str | None:
+    """Dashed lowercase UUID text, the spelling `entity_id` is written in.
+
+    SQLite hands a raw-SQL `customers.id` back as 32 dashless hex; Postgres as
+    a UUID. Both canonicalize to the one string `_assign_tag` stores.
+    """
+    try:
+        return str(UUID(str(value)))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _dashless(column: Any) -> Any:
+    return func.lower(func.replace(column, "-", ""))
+
+
+def _entity_id_matches(entity_id: str) -> Any:
+    """Match `entity_id` in any spelling of the same UUID.
+
+    Before GDXA-1046 the customer routes stored the path id as typed, so a row
+    can hold an uppercase or dashless spelling, and one customer can hold the
+    same tag under two spellings (the unique constraint is on the raw string).
+    The readers and writers in this module find every spelling, so the list
+    filter, the row's tags and the segment rule agree. A non-UUID id (none
+    today) still matches exactly.
+    """
+    key = canonical_entity_id(entity_id)
+    if key is None:
+        return TagAssignment.entity_id == entity_id
+    return _dashless(TagAssignment.entity_id) == key.replace("-", "")
+
+
+def customer_tags_by_id(
+    db: Session, customer_ids: list[Any] | None = None
+) -> dict[str, list[dict[str, str]]]:
+    """``{customer id: [{id, name, color}, ...]}``, live tags only, by name.
+
+    One query for any number of customers: the customer list batches its page
+    through it and the segment rollup passes ``None`` for every customer
+    (GDXA-1046). Keys are canonical customer ids; a soft-deleted tag is gone
+    from every reader, as it is from ``_list_tags_for_entity``.
+    """
+    stmt = (
+        select(TagAssignment.entity_id, Tag)
+        .join(Tag, Tag.id == TagAssignment.tag_id)
+        .where(TagAssignment.entity_type == "customer", Tag.deleted_at.is_(None))
+        .order_by(Tag.name.asc())
+    )
+    if customer_ids is not None:
+        keys = [k for k in (canonical_entity_id(c) for c in customer_ids) if k]
+        if not keys:
+            return {}
+        stmt = stmt.where(
+            _dashless(TagAssignment.entity_id).in_([k.replace("-", "") for k in keys])
+        )
+    out: dict[str, list[dict[str, str]]] = {}
+    for entity_id, tag in db.execute(stmt).all():
+        key = canonical_entity_id(entity_id)
+        if key is None:
+            continue
+        tags = out.setdefault(key, [])
+        # Two spellings of one id can each carry the tag; show it once.
+        if all(t["id"] != str(tag.id) for t in tags):
+            tags.append({"id": str(tag.id), "name": tag.name, "color": tag.color})
+    return out
+
+
+def live_tag_or_none(db: Session, raw_id: Any) -> Tag | None:
+    """The live tag with this id, or None for a malformed, unknown or deleted id."""
+    try:
+        tag_uuid = UUID(str(raw_id))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return db.execute(
+        select(Tag).where(Tag.id == tag_uuid, Tag.deleted_at.is_(None))
+    ).scalar_one_or_none()
+
+
+def _find_assignments(
+    db: Session, tenant_id: str, tag_id: UUID, entity_type: str, entity_id: str
+) -> list[TagAssignment]:
+    """Every row tying this tag to this entity, one per stored spelling."""
+    return list(db.execute(
+        select(TagAssignment).where(
+            TagAssignment.company_id == tenant_id,
+            TagAssignment.tag_id == tag_id,
+            TagAssignment.entity_type == entity_type,
+            _entity_id_matches(entity_id),
+        )
+    ).scalars().all())
 
 
 def _assign_tag(
@@ -367,17 +464,14 @@ def _assign_tag(
 ) -> dict[str, Any]:
     # Tag must exist and belong to this tenant.
     tag = _get_scoped_tag(db, tag_id, tenant_id)
+    if entity_type == "customer":
+        # One spelling on write, so the customer list, its tag filter and the
+        # segment rule all key the same row (GDXA-1046).
+        entity_id = canonical_entity_id(entity_id) or entity_id
 
-    existing = db.execute(
-        select(TagAssignment).where(
-            TagAssignment.company_id == tenant_id,
-            TagAssignment.tag_id == tag.id,
-            TagAssignment.entity_type == entity_type,
-            TagAssignment.entity_id == entity_id,
-        )
-    ).scalar_one_or_none()
+    existing = _find_assignments(db, tenant_id, tag.id, entity_type, entity_id)
     if existing:
-        return _serialize_assignment(existing)
+        return _serialize_assignment(existing[0])
 
     assignment = TagAssignment(
         company_id=tenant_id,
@@ -390,16 +484,9 @@ def _assign_tag(
         db.commit()
     except IntegrityError:
         db.rollback()
-        existing = db.execute(
-            select(TagAssignment).where(
-                TagAssignment.company_id == tenant_id,
-                TagAssignment.tag_id == tag.id,
-                TagAssignment.entity_type == entity_type,
-                TagAssignment.entity_id == entity_id,
-            )
-        ).scalar_one_or_none()
+        existing = _find_assignments(db, tenant_id, tag.id, entity_type, entity_id)
         if existing:
-            return _serialize_assignment(existing)
+            return _serialize_assignment(existing[0])
         raise HTTPException(status_code=409, detail="Assignment conflict") from None
     db.refresh(assignment)
     _audit(
@@ -424,17 +511,12 @@ def _unassign_tag(
     user: Any,
     request: Request,
 ) -> None:
-    assignment = db.execute(
-        select(TagAssignment).where(
-            TagAssignment.company_id == tenant_id,
-            TagAssignment.tag_id == tag_id,
-            TagAssignment.entity_type == entity_type,
-            TagAssignment.entity_id == entity_id,
-        )
-    ).scalar_one_or_none()
-    if not assignment:
+    assignments = _find_assignments(db, tenant_id, tag_id, entity_type, entity_id)
+    if not assignments:
         raise HTTPException(status_code=404, detail="Tag assignment not found")
-    db.delete(assignment)
+    # Untagging removes the tag in every spelling, or a second row keeps it on.
+    for assignment in assignments:
+        db.delete(assignment)
     db.commit()
     _audit(
         db,

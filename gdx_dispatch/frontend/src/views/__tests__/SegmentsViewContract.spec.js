@@ -466,3 +466,69 @@ describe('SegmentsView — Export CSV on selected customers (#673)', () => {
     }));
   });
 });
+
+describe('SegmentsView — tags (GDXA-1046)', () => {
+  const VIP = { id: 'aaaaaaaa-1111-4111-8111-000000000001', name: 'VIP', color: '#ff0000' };
+  const TAGGED = {
+    id: 'cccccccc-0000-4000-8000-000000000001',
+    name: 'Tagged Co',
+    tags: [{ id: VIP.id, name: 'VIP', color: '#ff0000' }],
+  };
+
+  beforeEach(() => {
+    apiGet.mockReset();
+    apiPost.mockReset();
+    apiGet.mockImplementation((url) => {
+      if (url === '/api/tags') return Promise.resolve([VIP]);
+      if (url === '/api/segments') return Promise.resolve({ items: [] });
+      if (url.startsWith('/api/customers')) return Promise.resolve({ items: [TAGGED], total: 1 });
+      return Promise.resolve({ items: [] });
+    });
+  });
+
+  it('builds a tag rule that sends the tag id, and refuses one with no tag chosen', async () => {
+    const wrapper = await mountView();
+    await wrapper.find('[data-testid="segments-open-dialog"]').trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-testid="segments-dialog-name"]').setValue('VIPs');
+
+    await wrapper.find('[data-testid="segments-rule-field-0"]').setValue('tag');
+    await flushPromises();
+    // The number box gives way to a tag picker, and the stale "90" is cleared.
+    expect(wrapper.find('[data-testid="segments-rule-value-0"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="segments-dialog-invalid"]').text()).toContain('Choose a tag');
+    expect(wrapper.find('[data-testid="segments-dialog-save"]').attributes('disabled')).toBeDefined();
+
+    await wrapper.find('[data-testid="segments-rule-tag-0"]').setValue(VIP.id);
+    await flushPromises();
+    expect(wrapper.text()).toContain('Tag has "VIP"');
+    await wrapper.find('[data-testid="segments-dialog-save"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPost).toHaveBeenCalledTimes(1);
+    expect(apiPost.mock.calls[0][1].rules.rules).toEqual([
+      { field: 'tag', operator: 'has', value: VIP.id },
+    ]);
+  });
+
+  it('shows each customer\'s tags in the segment customers table', async () => {
+    const wrapper = await mountView();
+    const chips = wrapper.findAll('[data-testid="customer-tag-chip"]');
+    expect(chips.map((c) => c.text())).toEqual(['VIP']);
+  });
+
+  it('calls a missing tag deleted only when the tag list actually loaded', async () => {
+    const GONE = { id: 's-gone', name: 'Old tag rule', rules: { field: 'tag', operator: 'has', value: 'dddddddd-0000-4000-8000-000000000009' } };
+    const base = apiGet.getMockImplementation();
+    apiGet.mockImplementation((url) => (url === '/api/segments' ? Promise.resolve({ items: [GONE] }) : base(url)));
+    expect((await mountView()).text()).toContain('Tag has a deleted tag');
+
+    apiGet.mockImplementation((url) => {
+      if (url === '/api/tags') return Promise.reject(new Error('down'));
+      return url === '/api/segments' ? Promise.resolve({ items: [GONE] }) : base(url);
+    });
+    const text = (await mountView()).text();
+    expect(text).toContain('Tag has a tag');
+    expect(text).not.toContain('deleted tag');
+  });
+});

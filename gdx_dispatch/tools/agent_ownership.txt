@@ -529,6 +529,7 @@ gdx_dispatch/frontend/src/components/PortalResellDialog.vue  customers-crm
 gdx_dispatch/frontend/src/components/quoteRequestOptions.js customers-crm
 gdx_dispatch/frontend/src/views/SegmentsView.vue             customers-crm
 gdx_dispatch/frontend/src/views/TagsView.vue                 customers-crm
+gdx_dispatch/frontend/src/components/CustomerTagChips.vue   customers-crm
 gdx_dispatch/frontend/src/views/LoyaltyView.vue              customers-crm
 gdx_dispatch/frontend/src/views/ReferralsView.vue            customers-crm
 gdx_dispatch/frontend/src/views/ReviewsView.vue              customers-crm
