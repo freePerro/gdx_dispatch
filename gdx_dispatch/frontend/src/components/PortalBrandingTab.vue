@@ -154,7 +154,16 @@ const props = defineProps({
   // The same, returning a Blob: the logo is behind the portal token.
   blobFetcher: { type: Function, required: true },
 });
-const emit = defineEmits(['changed']);
+// changed: a saved profile (or nothing, after a logo upload).
+// not-eligible: refused as not a reseller, so the view re-reads its flags.
+const emit = defineEmits(['changed', 'not-eligible']);
+
+// The server's refusal codes (routers/portal_resale.py).
+const NOT_ELIGIBLE = 'reseller_not_eligible';
+const TERMS_NOT_ACCEPTED = 'reseller_terms_not_accepted';
+const TERMS_CHANGED = 'reseller_terms_changed';
+// The tab reloads the new wording itself, so the copy must not ask them to.
+const TERMS_CHANGED_MSG = 'The terms were updated. Please read the new wording and agree again.';
 
 const FIELDS = ['company_name', 'phone', 'email', 'address', 'website', 'license_no', 'terms_text'];
 
@@ -199,10 +208,28 @@ async function load() {
     loadError.value = '';
     if (profile.has_logo) await loadLogo();
   } catch (e) {
+    if (e?.code === NOT_ELIGIBLE) emit('not-eligible');
     loadError.value = e?.message?.startsWith('request failed') ? 'Could not load your branding.' : (e?.message || 'Could not load your branding.');
   } finally {
     loading.value = false;
   }
+}
+
+// Refused as not agreed although the tab showed agreed: the wording changed
+// since. Re-read the terms only (their unsaved edits stay), so "I agree" comes
+// back, and tell the view so My Quotes locks too.
+async function reloadTerms() {
+  try {
+    const profile = await props.fetcher('/portal/reseller/profile');
+    Object.assign(disclaimer, profile.disclaimer || {});
+    emit('changed', { disclaimer: { ...disclaimer } });
+  } catch { /* the message already says what to do */ }
+}
+
+// Every refusal of a write: not a reseller any more, or the terms to agree again.
+async function onRefused(e) {
+  if (e?.code === NOT_ELIGIBLE) emit('not-eligible');
+  if (e?.code === TERMS_NOT_ACCEPTED) await reloadTerms();
 }
 
 async function put(body) {
@@ -217,11 +244,13 @@ async function accept() {
   accepting.value = true;
   acceptError.value = '';
   try {
-    apply(await put({ accept_disclaimer_version: disclaimer.version }));
-    emit('changed');
+    const saved = await put({ accept_disclaimer_version: disclaimer.version });
+    apply(saved);
+    emit('changed', saved);
   } catch (e) {
-    acceptError.value = e?.message || 'Could not save. Try again.';
-    // A 409 means the wording changed under them: show the new text.
+    if (e?.code === NOT_ELIGIBLE) emit('not-eligible');
+    // The wording changed under them: show the new text, and say so.
+    acceptError.value = e?.code === TERMS_CHANGED ? TERMS_CHANGED_MSG : (e?.message || 'Could not save. Try again.');
     if (e?.status === 409) await load();
   } finally {
     accepting.value = false;
@@ -237,10 +266,12 @@ async function save() {
   try {
     const body = Object.fromEntries(FIELDS.map((f) => [f, form[f] ?? '']));
     body.default_markup_pct = form.default_markup_pct;
-    apply(await put(body));
+    const saved = await put(body);
+    apply(saved);
     savedMsg.value = 'Branding saved.';
-    emit('changed');
+    emit('changed', saved);
   } catch (e) {
+    await onRefused(e);
     saveError.value = e?.message?.startsWith('request failed') ? 'Could not save. Check the fields and try again.' : (e?.message || 'Could not save.');
   } finally {
     saving.value = false;
@@ -265,6 +296,7 @@ async function onLogoPicked(ev) {
     await loadLogo();
     emit('changed');
   } catch (e) {
+    await onRefused(e);
     logoError.value = e?.message?.startsWith('request failed') ? 'That logo could not be uploaded.' : (e?.message || 'That logo could not be uploaded.');
   } finally {
     uploading.value = false;

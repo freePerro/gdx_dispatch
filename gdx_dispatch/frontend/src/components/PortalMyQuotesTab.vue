@@ -93,8 +93,16 @@ const props = defineProps({
   downloader: { type: Function, required: true },
   // Bumped by the view when a quote is made elsewhere, to reload the list.
   refreshKey: { type: Number, default: 0 },
+  // /portal/context's disclaimer_accepted: until then the list is refused,
+  // so it is not asked for.
+  termsAccepted: { type: Boolean, default: false },
 });
-const emit = defineEmits(['goto-branding', 'goto-estimates']);
+// not-eligible: refused as not a reseller, so the view re-reads its flags.
+const emit = defineEmits(['goto-branding', 'goto-estimates', 'not-eligible']);
+
+// The server's refusal codes (routers/portal_resale.py).
+const NOT_ELIGIBLE = 'reseller_not_eligible';
+const TERMS_NOT_ACCEPTED = 'reseller_terms_not_accepted';
 
 const quotes = ref([]);
 const loading = ref(true);
@@ -114,14 +122,21 @@ function clearBusy(id) {
 function pct(v) { return `${Number(v) || 0}%`; }
 
 async function load() {
+  if (!props.termsAccepted) {
+    locked.value = true;
+    loading.value = false;
+    return;
+  }
   try {
     const data = await props.fetcher('/portal/resale-quotes');
     quotes.value = Array.isArray(data) ? data : [];
     locked.value = false;
     listError.value = '';
   } catch (e) {
-    // 403 before the disclaimer: say where to go, not "could not load".
-    locked.value = e?.status === 403;
+    // Not agreed (the wording changed since): say where to go, not "could
+    // not load". Not a reseller any more: the tab is going away.
+    locked.value = e?.code === TERMS_NOT_ACCEPTED;
+    if (e?.code === NOT_ELIGIBLE) emit('not-eligible');
     listError.value = locked.value ? '' : 'Could not load your quotes.';
   } finally {
     loading.value = false;
@@ -159,7 +174,7 @@ function confirmDelete(q) {
 }
 
 onMounted(load);
-watch(() => props.refreshKey, load);
+watch(() => [props.refreshKey, props.termsAccepted], load);
 </script>
 
 <style scoped>

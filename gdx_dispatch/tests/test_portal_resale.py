@@ -198,7 +198,10 @@ def test_a_retail_customer_gets_403_everywhere_and_context_hides_it(ctx):
     assert ctx.client.put("/portal/reseller/profile",
                           json={"accept_disclaimer_version": service.DISCLAIMER_VERSION}).status_code == 403
     assert ctx.resell(ctx.est_r).status_code == 403
-    assert ctx.client.get("/portal/resale-quotes").status_code == 403
+    r = ctx.client.get("/portal/resale-quotes")
+    assert r.status_code == 403
+    # The code, not the wording, is what the portal tab branches on (GDXA-1081).
+    assert r.json()["detail"]["code"] == "reseller_not_eligible"
     assert ctx.client.get("/portal/context").json()["reseller"] == {
         "eligible": False, "disclaimer_accepted": False, "set_up": False,
     }
@@ -242,9 +245,13 @@ def test_without_the_disclaimer_quotes_and_branding_are_refused(ctx):
     profile = ctx.client.get("/portal/reseller/profile").json()
     assert profile["disclaimer"]["accepted"] is False
     assert profile["disclaimer"]["text"] == service.DISCLAIMER_TEXT
-    assert ctx.client.put("/portal/reseller/profile", json={"company_name": "X"}).status_code == 403
+    r = ctx.client.put("/portal/reseller/profile", json={"company_name": "X"})
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "reseller_terms_not_accepted"
     assert ctx.resell().status_code == 403
-    assert ctx.client.get("/portal/resale-quotes").status_code == 403
+    r = ctx.client.get("/portal/resale-quotes")
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "reseller_terms_not_accepted"
     r = ctx.client.post("/portal/reseller/logo", files={"file": ("l.png", _png(), "image/png")})
     assert r.status_code == 403
 
@@ -252,6 +259,7 @@ def test_without_the_disclaimer_quotes_and_branding_are_refused(ctx):
 def test_a_stale_disclaimer_version_is_refused_and_a_reworded_one_needs_agreeing_again(ctx, monkeypatch):
     r = ctx.client.put("/portal/reseller/profile", json={"accept_disclaimer_version": "not-the-version"})
     assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "reseller_terms_changed"
     ctx.set_up()
     assert ctx.resell().status_code == 201
     monkeypatch.setattr(service, "DISCLAIMER_VERSION", "reworded-000001")
