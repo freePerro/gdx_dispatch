@@ -581,6 +581,7 @@ async def list_customers(
             try:
                 tagged_ids.append(UUID(str(entity_id)))
             except (ValueError, TypeError):
+                log.debug("list_customers: skipped a tag assignment with a malformed entity_id", exc_info=True)
                 continue
 
     def _fetch() -> dict[str, Any]:

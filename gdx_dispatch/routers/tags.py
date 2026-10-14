@@ -368,7 +368,8 @@ def canonical_entity_id(value: Any) -> str | None:
     """
     try:
         return str(UUID(str(value)))
-    except (ValueError, TypeError, AttributeError):
+    except (ValueError, TypeError, AttributeError):  # noqa: silent-failure — None for a non-UUID is the contract; callers skip or 422
+        log.debug("canonical_entity_id: value is not a UUID", exc_info=True)
         return None
 
 
@@ -431,7 +432,8 @@ def live_tag_or_none(db: Session, raw_id: Any) -> Tag | None:
     """The live tag with this id, or None for a malformed, unknown or deleted id."""
     try:
         tag_uuid = UUID(str(raw_id))
-    except (ValueError, TypeError, AttributeError):
+    except (ValueError, TypeError, AttributeError):  # noqa: silent-failure — None for a malformed id is the contract; callers 422
+        log.debug("live_tag_or_none: tag id is not a UUID", exc_info=True)
         return None
     return db.execute(
         select(Tag).where(Tag.id == tag_uuid, Tag.deleted_at.is_(None))
