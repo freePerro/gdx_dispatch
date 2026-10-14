@@ -206,9 +206,10 @@ buttons wired to stubs. Before calling anything done:
 
 - **Sales tax follows the job** (Doug, 2026-10-12): parts on repair and
   service-call jobs are taxed at the tenant default rate; installations
-  (converted estimates, install-lane jobs) are a construction contract and
-  are not taxed; tax-exempt customers are never taxed, on any job. Labor is
-  untaxed unless `tax_labor` is set.
+  (converted estimates, install-lane jobs, and New Construction jobs — Doug,
+  2026-10-13; for tax only, still office-priced) are a construction contract
+  and are not taxed; tax-exempt customers are never taxed, on any job. Labor
+  is untaxed unless `tax_labor` is set.
 - Billed labor comes from **attested hours only** — elapsed clock time is
   not evidence and code may not invent hours.
 - Taxonomy: a service call is a repair; a converted estimate is an

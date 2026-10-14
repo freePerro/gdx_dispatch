@@ -269,6 +269,7 @@ def test_mcp_create_draft_on_a_service_call_job_stays_on_the_default(tc: TestCli
 
 @pytest.mark.parametrize(("job_type", "expected"), [
     ("Installation", (Decimal("0"), 0.0)),
+    ("New Construction", (Decimal("0"), 0.0)),  # GDXA-889
     ("Service Call", (None, 73.8)),
 ])
 def test_proposals_service_create_estimate_follows_the_job_lane(tc: TestClient, job_type, expected):

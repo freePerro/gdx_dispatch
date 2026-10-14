@@ -494,6 +494,7 @@ def _co_detail(db, co: ChangeOrder) -> dict:
     ("job_type", "exempt", "rate", "tax"),
     [
         ("Installation", False, 0.0, 0.0),
+        ("New Construction", False, 0.0, 0.0),  # GDXA-889
         ("Service Call", False, TAX_RATE, 24.0),
         ("Repair", False, TAX_RATE, 24.0),
         ("Installation", True, 0.0, 0.0),
