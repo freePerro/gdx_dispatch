@@ -109,6 +109,18 @@ describe('QbOverviewPanel', () => {
     expect(wrapper.text()).toContain('No entities synced yet');
   });
 
+  // The view sets status_unknown when /dashboard and /status both fail; its
+  // placeholder still says connected:false, which is not evidence of anything.
+  it('reads Status unknown, not Disconnected, when the status load failed', () => {
+    const wrapper = mount(QbOverviewPanel, {
+      props: { status: makeStatus({ connected: false, status_unknown: true }), loading: false },
+      global: { stubs: STUBS },
+    });
+    const tag = wrapper.find('[data-testid="qb-overview-connection"]');
+    expect(tag.text()).toBe('Status unknown');
+    expect(tag.attributes('data-severity')).toBe('secondary');
+  });
+
   it('renders the spinner while loading', () => {
     const wrapper = mount(QbOverviewPanel, {
       props: { status: makeStatus(), loading: true },

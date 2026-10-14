@@ -244,7 +244,7 @@ watch(activeTab, (next) => {
   router.replace({ query: { ...route.query, tab: next } });
 });
 
-const quickbooksStatus = ref({
+const EMPTY_QB_STATUS = Object.freeze({
   connected: false,
   last_sync_at: null,
   realm_id: null,
@@ -253,6 +253,7 @@ const quickbooksStatus = ref({
   entity_counts: {},
   delete_sync_enabled: false,
 });
+const quickbooksStatus = ref({ ...EMPTY_QB_STATUS });
 const syncEvents = ref([]);
 const loading = ref(true);
 const logFilter = ref('all');
@@ -320,6 +321,11 @@ const loadQuickbooks = async () => {
     };
     syncEvents.value = Array.isArray(events?.events) ? events.events : [];
   } catch (err) {
+    // Both status endpoints failed: the connection is unknown, not off. The
+    // placeholder's connected:false would otherwise read "Disconnected", and a
+    // reload after a sync must not keep the previous snapshot's banners,
+    // realm and live sync buttons beside "Status unknown".
+    quickbooksStatus.value = { ...EMPTY_QB_STATUS, status_unknown: true };
     toast.add({
       severity: 'error',
       summary: 'QuickBooks load failed',
