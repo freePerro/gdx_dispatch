@@ -312,8 +312,9 @@ def resolve_rate_endpoint(
     tax rate that would be applied. Used by the invoice-create flow and
     by the Settings → Tax UI to preview the effect of an exemption.
 
-    ``job_id`` (GDXA-793): an install-lane job is a construction contract
-    and is never taxed, so it answers 0 without reading the tenant default.
+    ``job_id`` (GDXA-793): an Installation or New Construction job
+    (``is_install_lane``, GDXA-889) is a construction contract and is never
+    taxed, so it answers 0 without reading the tenant default.
     ``estimate_id`` (GDXA-842): the estimate the bill was priced from; its own
     rate override is the quoted rate, ordered after the lane and the
     exemption by ``resolve_rate_for_job``, the same as invoice create.
