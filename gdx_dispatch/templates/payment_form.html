@@ -18,12 +18,76 @@
        load a third-party script on a page whose URL carries the signature. -->
   <script src="https://js.stripe.com/v3/"></script>
   {% endif %}
+  <!-- Follows the customer's phone (GDXA-909): light by default, dark when the
+       OS asks for it. Every color below is a variable set here; the card
+       field's colors live in the script (cardStyle), because it is a Stripe
+       iframe that page CSS cannot reach. -->
+  <meta name="color-scheme" content="light dark" />
   <style>
+    :root {
+      color-scheme: light dark;
+      --page: #f3f4f6;
+      --card: #ffffff;
+      --panel: #f8fafc;
+      --thumb: #f1f5f9;
+      --border: #e2e8f0;
+      --rule: #e5e7eb;
+      --border-strong: #d1d5db;
+      --strong: #111827;
+      --text: #1f2937;
+      --body: #374151;
+      --body-soft: #4b5563;
+      --muted: #6b7280;
+      --label: #64748b;
+      --faint: #9ca3af;
+      --accent: #2563eb;
+      --btn: #2563eb;
+      --btn-hover: #1d4ed8;
+      --ring: rgba(37,99,235,0.1);
+      --shadow: rgba(0,0,0,0.10);
+      --err-bg: #fef2f2; --err-border: #fecaca; --err-text: #b91c1c;
+      --ok-bg: #f0fdf4; --ok-border: #bbf7d0; --ok-text: #15803d;
+      --warn-bg: #fffbeb; --warn-border: #fde68a; --warn-text: #92400e;
+      --info-bg: #eff6ff; --info-border: #bfdbfe; --info-text: #1e3a8a;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page: #0b1120;
+        --card: #1e293b;
+        --panel: #0f172a;
+        --thumb: #0f172a;
+        --border: #334155;
+        --rule: #334155;
+        --border-strong: #475569;
+        --strong: #f8fafc;
+        --text: #f1f5f9;
+        --body: #cbd5e1;
+        --body-soft: #cbd5e1;
+        --muted: #94a3b8;
+        --label: #94a3b8;
+        --faint: #94a3b8;
+        --accent: #60a5fa;
+        /* The filled buttons keep the light blue: white text needs it. */
+        --btn: #2563eb;
+        --btn-hover: #1d4ed8;
+        --ring: rgba(96,165,250,0.25);
+        --shadow: rgba(0,0,0,0.45);
+        --err-bg: #450a0a; --err-border: #7f1d1d; --err-text: #fca5a5;
+        --ok-bg: #052e16; --ok-border: #166534; --ok-text: #86efac;
+        --warn-bg: #451a03; --warn-border: #92400e; --warn-text: #fcd34d;
+        --info-bg: #172554; --info-border: #1e40af; --info-text: #bfdbfe;
+      }
+      /* Every link: today only the ACH verification links in the green alerts. */
+      a { color: #93c5fd; }
+      .form-input::placeholder { color: var(--faint); }
+    }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: #f3f4f6;
+      background: var(--page);
       min-height: 100vh;
       display: flex;
       align-items: center;
@@ -32,9 +96,9 @@
     }
 
     .card {
-      background: #ffffff;
+      background: var(--card);
       border-radius: 12px;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+      box-shadow: 0 4px 24px var(--shadow);
       max-width: 480px;
       width: 100%;
       padding: 2rem;
@@ -50,7 +114,7 @@
     .brand-icon {
       width: 36px;
       height: 36px;
-      background: #2563eb;
+      background: var(--btn);
       border-radius: 8px;
       display: flex;
       align-items: center;
@@ -58,11 +122,11 @@
     }
 
     .brand-icon svg { color: #fff; }
-    .brand-name { font-size: 1rem; font-weight: 700; color: #1f2937; }
+    .brand-name { font-size: 1rem; font-weight: 700; color: var(--text); }
 
     .invoice-summary {
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
+      background: var(--panel);
+      border: 1px solid var(--border);
       border-radius: 8px;
       padding: 1rem 1.25rem;
       margin-bottom: 1.5rem;
@@ -76,7 +140,7 @@
     .job-photos h2 {
       font-size: 0.75rem;
       font-weight: 600;
-      color: #64748b;
+      color: var(--label);
       text-transform: uppercase;
       letter-spacing: 0.05em;
       margin: 0 0 0.5rem;
@@ -92,13 +156,13 @@
       aspect-ratio: 4 / 3;
       object-fit: cover;
       border-radius: 6px;
-      border: 1px solid #e2e8f0;
-      background: #f1f5f9;
+      border: 1px solid var(--border);
+      background: var(--thumb);
       display: block;
     }
     .job-photo figcaption {
       font-size: 0.7rem;
-      color: #64748b;
+      color: var(--label);
       margin-top: 0.25rem;
       word-break: break-word;
     }
@@ -106,7 +170,7 @@
     .invoice-summary h2 {
       font-size: 0.75rem;
       font-weight: 600;
-      color: #64748b;
+      color: var(--label);
       text-transform: uppercase;
       letter-spacing: 0.05em;
       margin-bottom: 0.5rem;
@@ -117,21 +181,21 @@
       justify-content: space-between;
       align-items: baseline;
       font-size: 0.9rem;
-      color: #374151;
+      color: var(--body);
       margin-bottom: 0.25rem;
     }
 
     .invoice-total {
       font-size: 1.5rem;
       font-weight: 700;
-      color: #111827;
+      color: var(--strong);
       margin-top: 0.25rem;
     }
 
     /* Tabs */
     .tabs {
       display: flex;
-      border-bottom: 2px solid #e5e7eb;
+      border-bottom: 2px solid var(--rule);
       margin-bottom: 1.5rem;
       gap: 0;
     }
@@ -141,7 +205,7 @@
       padding: 0.625rem 1rem;
       font-size: 0.875rem;
       font-weight: 600;
-      color: #6b7280;
+      color: var(--muted);
       background: transparent;
       border: none;
       border-bottom: 2px solid transparent;
@@ -155,50 +219,50 @@
     }
 
     .tab-btn.active {
-      color: #2563eb;
-      border-bottom-color: #2563eb;
+      color: var(--accent);
+      border-bottom-color: var(--accent);
     }
 
-    .tab-btn:hover:not(.active) { color: #374151; }
+    .tab-btn:hover:not(.active) { color: var(--body); }
 
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
     /* Stripe card element wrapper */
     .element-wrapper {
-      background: #f8fafc;
-      border: 1px solid #d1d5db;
+      background: var(--panel);
+      border: 1px solid var(--border-strong);
       border-radius: 8px;
       padding: 0.875rem 1rem;
       margin-bottom: 1rem;
       transition: border-color 0.15s;
     }
 
-    .element-wrapper.focused { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+    .element-wrapper.focused { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
 
     /* ACH form fields */
     [hidden] { display: none !important; }
     .form-group { margin-bottom: 1rem; }
-    .hint { font-size: 0.8rem; color: #6b7280; margin-bottom: 0.75rem; }
+    .hint { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.75rem; }
     .bank-summary {
       display: flex;
       align-items: center;
       gap: 0.5rem;
-      background: #f8fafc;
-      border: 1px solid #d1d5db;
+      background: var(--panel);
+      border: 1px solid var(--border-strong);
       border-radius: 8px;
       padding: 0.875rem 1rem;
       margin-bottom: 1rem;
       font-weight: 600;
-      color: #111827;
+      color: var(--strong);
     }
-    .bank-summary .muted { font-weight: 400; color: #6b7280; }
+    .bank-summary .muted { font-weight: 400; color: var(--muted); }
     .mandate {
       font-size: 0.75rem;
-      color: #4b5563;
+      color: var(--body-soft);
       line-height: 1.45;
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
+      background: var(--panel);
+      border: 1px solid var(--border);
       border-radius: 8px;
       padding: 0.75rem 0.875rem;
       margin-bottom: 0.75rem;
@@ -209,7 +273,7 @@
       margin-top: 0.75rem;
       background: none;
       border: none;
-      color: #2563eb;
+      color: var(--accent);
       font-size: 0.85rem;
       cursor: pointer;
       text-align: center;
@@ -219,41 +283,41 @@
     /* Card surcharge (2026-09-16): the statutory notice and the fee breakdown */
     .fee-notice {
       font-size: 0.8rem;
-      color: #92400e;
-      background: #fffbeb;
-      border: 1px solid #fde68a;
+      color: var(--warn-text);
+      background: var(--warn-bg);
+      border: 1px solid var(--warn-border);
       border-radius: 8px;
       padding: 0.6rem 0.875rem;
       margin-bottom: 1rem;
     }
     .breakdown { margin-bottom: 1rem; }
     .breakdown .invoice-row { padding: 0.15rem 0; }
-    .breakdown .total { font-weight: 700; color: #111827; border-top: 1px solid #e5e7eb; margin-top: 0.35rem; padding-top: 0.45rem; }
-    .tab-sub { font-size: 0.7rem; font-weight: 500; color: #15803d; margin-left: 0.25rem; }
+    .breakdown .total { font-weight: 700; color: var(--strong); border-top: 1px solid var(--rule); margin-top: 0.35rem; padding-top: 0.45rem; }
+    .tab-sub { font-size: 0.7rem; font-weight: 500; color: var(--ok-text); margin-left: 0.25rem; }
 
     .form-label {
       display: block;
       font-size: 0.8rem;
       font-weight: 600;
-      color: #374151;
+      color: var(--body);
       margin-bottom: 0.4rem;
     }
 
     .form-input {
       width: 100%;
       padding: 0.75rem 1rem;
-      border: 1px solid #d1d5db;
+      border: 1px solid var(--border-strong);
       border-radius: 8px;
       font-size: 0.9rem;
-      color: #111827;
-      background: #f8fafc;
+      color: var(--strong);
+      background: var(--panel);
       outline: none;
       transition: border-color 0.15s, box-shadow 0.15s;
     }
 
     .form-input:focus {
-      border-color: #2563eb;
-      box-shadow: 0 0 0 3px rgba(37,99,235,0.1);
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--ring);
     }
 
     .form-row { display: flex; gap: 0.75rem; }
@@ -263,7 +327,7 @@
     .btn-pay {
       width: 100%;
       padding: 0.875rem;
-      background: #2563eb;
+      background: var(--btn);
       color: #fff;
       font-size: 1rem;
       font-weight: 700;
@@ -278,7 +342,7 @@
       margin-top: 0.5rem;
     }
 
-    .btn-pay:hover:not(:disabled) { background: #1d4ed8; }
+    .btn-pay:hover:not(:disabled) { background: var(--btn-hover); }
     .btn-pay:disabled { opacity: 0.65; cursor: not-allowed; }
 
     /* Spinner */
@@ -306,22 +370,22 @@
       display: none;
     }
 
-    .alert.error { background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; }
-    .alert.success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; }
+    .alert.error { background: var(--err-bg); border: 1px solid var(--err-border); color: var(--err-text); }
+    .alert.success { background: var(--ok-bg); border: 1px solid var(--ok-border); color: var(--ok-text); }
     .alert.visible { display: block; }
 
     /* Staff preview banner (?preview=, core/customer_page_preview.py). */
     .preview-banner {
-      background: #eff6ff;
-      border: 1px solid #bfdbfe;
-      color: #1e3a8a;
+      background: var(--info-bg);
+      border: 1px solid var(--info-border);
+      color: var(--info-text);
       border-radius: 8px;
       padding: 0.75rem 1rem;
       margin-bottom: 1.25rem;
       font-size: 0.875rem;
       line-height: 1.4;
     }
-    .preview-card-slot { color: #9ca3af; font-size: 0.875rem; }
+    .preview-card-slot { color: var(--faint); font-size: 0.875rem; }
 
     .secure-note {
       display: flex;
@@ -329,7 +393,7 @@
       justify-content: center;
       gap: 0.4rem;
       font-size: 0.75rem;
-      color: #9ca3af;
+      color: var(--faint);
       margin-top: 1.25rem;
     }
   </style>
@@ -367,12 +431,12 @@
       <span>{{ invoice.invoice_number }}</span>
     </div>
     {% if settled %}
-    <div class="invoice-row" style="color:#15803d; font-weight:600; margin-top:0.5rem;">
+    <div class="invoice-row" style="color:var(--ok-text); font-weight:600; margin-top:0.5rem;">
       <span>Status</span>
       <span>Paid</span>
     </div>
     {% elif ach_processing %}
-    <div class="invoice-row" style="color:#92400e; font-weight:600; margin-top:0.5rem;" data-testid="ach-processing-status">
+    <div class="invoice-row" style="color:var(--warn-text); font-weight:600; margin-top:0.5rem;" data-testid="ach-processing-status">
       <span>Status</span>
       <span>{% if ach_processing.get("stage") == "verifying" %}Bank transfer awaiting verification{% else %}Bank transfer processing{% endif %}</span>
     </div>
@@ -625,17 +689,34 @@
   const elements = stripe.elements();
 
   // ── Card element ────────────────────────────────────────────────────────
-  const cardStyle = {
-    base: {
-      fontSize: "15px",
-      color: "#111827",
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-      "::placeholder": { color: "#9ca3af" },
-    },
-    invalid: { color: "#b91c1c" },
-  };
-  const cardElement = elements.create("card", { style: cardStyle, hidePostalCode: false });
+  // The field is a Stripe iframe: its background is the wrapper's (page CSS),
+  // but its text colors are only reachable through this style object, so it
+  // carries the same light/dark pair as the :root variables and follows a
+  // scheme change through cardElement.update (GDXA-909;
+  // docs.stripe.com/js/appendix/style and /js/element/other_methods/update,
+  // read 2026-10-13).
+  const darkScheme = window.matchMedia("(prefers-color-scheme: dark)");
+  function cardStyle(dark) {
+    // iconColor is set in both schemes because update() merges: a key only
+    // dark sets would survive the switch back to light.
+    return {
+      base: {
+        fontSize: "15px",
+        color: dark ? "#f8fafc" : "#111827",
+        iconColor: dark ? "#94a3b8" : "#6b7280",
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        "::placeholder": { color: dark ? "#94a3b8" : "#9ca3af" },
+      },
+      invalid: { color: dark ? "#fca5a5" : "#b91c1c", iconColor: dark ? "#fca5a5" : "#b91c1c" },
+    };
+  }
+  const cardElement = elements.create("card", { style: cardStyle(darkScheme.matches), hidePostalCode: false });
   cardElement.mount("#card-element");
+  // Safari before 14 has only addListener; an unguarded addEventListener
+  // throws there and stops every payment handler below from attaching.
+  const onSchemeChange = (e) => cardElement.update({ style: cardStyle(e.matches) });
+  if (darkScheme.addEventListener) darkScheme.addEventListener("change", onSchemeChange);
+  else if (darkScheme.addListener) darkScheme.addListener(onSchemeChange);
 
   cardElement.on("focus",  () => document.getElementById("card-element-wrapper").classList.add("focused"));
   cardElement.on("blur",   () => document.getElementById("card-element-wrapper").classList.remove("focused"));
