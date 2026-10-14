@@ -229,3 +229,41 @@ def test_job_note_id_columns_are_string_not_uuid():
             f"JobNote.{col_name} must be String to match live text schema, "
             f"got {type(col.type).__name__}"
         )
+
+
+def _audit_details(client: TestClient, action: str) -> list[dict]:
+    from sqlalchemy import select
+
+    from gdx_dispatch.core.audit import AuditLog
+
+    Session = sessionmaker(bind=client._engine)  # type: ignore[attr-defined]
+    with Session() as db:
+        rows = db.execute(
+            select(AuditLog).where(AuditLog.action == action).order_by(AuditLog.created_at, AuditLog.id)
+        ).scalars().all()
+        return [r.details for r in rows]
+
+
+def test_note_edit_audits_what_changed_not_what_was_sent(client: TestClient):
+    """GDXA-997: the row named every key sent; it now carries old -> new of
+    the fields that changed, and a same-value save writes no row."""
+    job_id = str(uuid4())
+    created = client.post(
+        f"/api/jobs/{job_id}/notes", json={"body": "first draft", "visibility": "internal"}
+    ).json()
+    url = f"/api/jobs/{job_id}/notes/{created['id']}"
+
+    r = client.patch(url, json={"body": "first draft", "visibility": "external"})
+    assert r.status_code == 200, r.text
+    r = client.patch(url, json={"body": "first draft", "visibility": "external"})
+    assert r.status_code == 200, r.text
+    r = client.patch(url, json={"body": "gate code removed"})
+    assert r.status_code == 200, r.text
+
+    rows = _audit_details(client, "job_note_updated")
+    assert rows == [
+        {"fields": ["visibility"], "changes": {"visibility": {"old": "internal", "new": "external"}}},
+        {"fields": ["body"], "changes": {"body": {"text_changed": True}}},
+    ]
+    # Audit details reach every role through the activity feed: no note text in them.
+    assert "first draft" not in str(rows) and "gate code" not in str(rows)
