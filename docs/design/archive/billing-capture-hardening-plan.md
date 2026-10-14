@@ -48,7 +48,7 @@ The system has *visibility* (Ready-to-Bill list, billing summary) but almost no 
 5. Draft invoices are invisible to every AR KPI; recurring billing is entirely dead (task not scheduled, INSERT broken).
 6. Reminders don't send (endpoints only log rows); no dunning automation; collections aging report always returns $0 (case bug + deprecated `amount_paid`).
 
-**Out of scope (already owned elsewhere):** Stripe Payment-row consolidation + webhook wiring (GL Phase 1 §5.4/§12 — dormant, Stripe not in use); QB payment-push (GL Phase 1 P3/push design supersedes it — building it twice is waste; office reconciles manually in QB until GL cutover); job-profitability true costing (GL parts-inventory CPA question pending).
+**Out of scope (already owned elsewhere):** Stripe Payment-row consolidation + webhook wiring (GL Phase 1 §5.4/§12 — dormant, Stripe not in use *as of 2026-07-07; live from 2026-07-21*); QB payment-push (GL Phase 1 P3/push design supersedes it — building it twice is waste; office reconciles manually in QB until GL cutover); job-profitability true costing (GL parts-inventory CPA question pending).
 
 ## Design principles
 
@@ -182,7 +182,7 @@ Make the cache real: update `billing_status` inside `_recalculate_invoice` + inv
 
 ## Follow-ups filed by implementation-time audits (PR 1 & PR 2 rounds)
 
-- **Portal `pay_invoice` void/paid door:** creates a Stripe checkout for any non-deleted invoice with no status check and records no Payment row (GL Phase-1 Stripe scope; dormant).
+- **Portal `pay_invoice` void/paid door:** creates a Stripe checkout for any non-deleted invoice with no status check and records no Payment row (GL Phase-1 Stripe scope; dormant *as of 2026-07-07; Stripe live from 2026-07-21*).
 - **No void/un-void lifecycle:** nothing in the app can set `status="void"` today; the PR 1 guards are defense-in-depth for legacy/QB rows. Candidate small follow-up.
 - **No "won't-bill" terminal state:** PR 2's void-exclusion means a job whose only invoice was voided re-enters Ready-for-Billing permanently — correct for real leaks, but a deliberate write-off is un-dismissable until display-model Slice 2 (Written Off) ships storage.
 - **$0-draft stacking:** `create_invoice_from_job` has no existing-invoice guard; repeated raw-API calls stack $0 drafts (no UI caller exists — both Create Invoice buttons route to /billing/new). Guard when PR 4/5 touch that path.

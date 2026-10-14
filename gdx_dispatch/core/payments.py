@@ -155,14 +155,37 @@ class ReleaseVerifyingRequest(BaseModel):
 CURRENCY = "usd"
 
 
+def _is_template_placeholder(value: str) -> bool:
+    """The ``.env.template`` fill-me-in shape (``sk_test_your-secret-key-here``).
+
+    GDXA-920: a copied template left every Stripe key non-empty, so a plain
+    truthiness check called it configured and the stale-intent sweep hit
+    Stripe with it and logged an AuthenticationError traceback every run.
+    The markers are the template's English wording, not a Stripe key format:
+    https://docs.stripe.com/keys (read 2026-10-13) documents only the prefixes
+    (``sk_``/``rk_``/``pk_`` + ``test_``/``live_``), not the characters after.
+    This catches the shipped placeholder only; any other wrong key is still
+    "configured" and still fails at Stripe.
+    """
+    v = value.lower()
+    return v.endswith("-here") or "your-" in v
+
+
+def stripe_env(name: str) -> str:
+    """A ``STRIPE_*`` setting, or ``""`` when it is unset, blank or still the
+    template placeholder. Every Stripe env read goes through this."""
+    value = (os.getenv(name) or "").strip()
+    return "" if _is_template_placeholder(value) else value
+
+
 def _init_stripe() -> None:
     """Set Stripe API key from environment."""
-    stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "")
+    stripe.api_key = stripe_env("STRIPE_SECRET_KEY")
 
 
 def stripe_configured() -> bool:
-    """Whether online payments can actually charge (a Stripe key is set)."""
-    return bool(os.getenv("STRIPE_SECRET_KEY"))
+    """Whether online payments can actually charge (a real Stripe key is set)."""
+    return bool(stripe_env("STRIPE_SECRET_KEY"))
 
 
 def public_pay_url(public_token: str | None) -> str | None:
@@ -2594,7 +2617,7 @@ def pay_invoice(
         {
             "invoice": invoice,
             "ach_processing": ach_processing,
-            "stripe_publishable_key": os.getenv("STRIPE_PUBLISHABLE_KEY", ""),
+            "stripe_publishable_key": stripe_env("STRIPE_PUBLISHABLE_KEY"),
             # Nacha requires the ACH mandate to name the business being
             # authorized; Stripe's recommended text names it five times.
             "company_name": _business_name(db),
@@ -2865,7 +2888,7 @@ def _failure_event_is_superseded(
     if not intent_id or not failed_charge_id:
         return None
     try:
-        stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "")
+        stripe.api_key = stripe_env("STRIPE_SECRET_KEY")
         # PaymentIntents are CREATED with `**_stripe_extra(tenant)`, which
         # carries `stripe_account` on a Connect tenant. A retrieve without it
         # looks in the platform account, 404s, and this guard degrades to

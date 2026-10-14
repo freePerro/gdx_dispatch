@@ -259,7 +259,7 @@ As v2: trial balance (rendered zero-proof; Phase 2 reconciliation anchor), P&L w
 
 **Pre-existing production defects (fix regardless of GL timeline):**
 
-- **Front-office AND portal Stripe paths would move real money with no Payment row** (`core/payments.py:127/:212/:295`; `routers/payments.py:235`; real webhook `stripe_webhook.py:15` logs only; `core/payments.py:416` handler is dead code). **Urgency downgraded 2026-07-02: Doug confirms Stripe is not currently in use — this is a dormant defect, not live leakage.** Must be fixed before any Stripe activation; run the prod Stripe-history sweep once to confirm it's empty. **[AUDIT-R1+R2]**
+- **Front-office AND portal Stripe paths would move real money with no Payment row** (`core/payments.py:127/:212/:295`; `routers/payments.py:235`; real webhook `stripe_webhook.py:15` logs only; `core/payments.py:416` handler is dead code). **Urgency downgraded 2026-07-02: Doug confirms Stripe is not currently in use — this is a dormant defect, not live leakage.** Must be fixed before any Stripe activation; run the prod Stripe-history sweep once to confirm it's empty. **[AUDIT-R1+R2]** *(2026-10-13, GDXA-915: the downgrade's premise ended on 2026-07-21, when Stripe began taking live payments through the pay page. Prod held at least 6 Stripe-backed payments by 2026-08-26 (`phase-d-saas-residue.md`), so the sweep is not expected to return empty. Not checked here: whether any charge landed without a Payment row. That question belongs to `gl-phase2-reconciliation.md` §4.1's orphan-bt queue.)*
 - `/refund` writes enum-invalid `status="refunded"` (`models:344-348`).
 - `/send` resurrects voided invoices (:1030).
 - `/credit-memo` mutates deprecated `amount_paid`, which balance recomputation ignores (:1473 vs :192-196).
