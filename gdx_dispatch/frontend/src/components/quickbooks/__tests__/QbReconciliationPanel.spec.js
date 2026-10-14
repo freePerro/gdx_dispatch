@@ -4,7 +4,7 @@
  * reflects delete_sync_enabled, table rows render qb_delete_sync entries,
  * empty-state copy switches based on flag.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 
 import QbReconciliationPanel from '../QbReconciliationPanel.vue';
@@ -51,8 +51,38 @@ vi.mock('../../../composables/useApiWithToast', () => {
   };
 });
 
+// /settings/delete-sync refuses anyone but admin/owner; the panel reads the
+// role from the auth store.
+globalThis.__qbReconcilAuth = { isAdmin: true };
+vi.mock('../../../stores/auth', () => ({
+  useAuthStore: () => globalThis.__qbReconcilAuth,
+}));
+
 
 describe('QbReconciliationPanel', () => {
+  beforeEach(() => { globalThis.__qbReconcilAuth = { isAdmin: true }; });
+
+  it('lets an admin flip delete sync', async () => {
+    globalThis.__qbReconcilFakeApi = makeApi([], { delete_sync_enabled: false, delete_sync_source: 'tenant' });
+    const wrapper = mount(QbReconciliationPanel, { global: { stubs: STUBS } });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="qb-reconciliation-toggle"] input').element.disabled).toBe(false);
+    expect(wrapper.find('[data-testid="qb-reconciliation-clear-override"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="qb-reconciliation-admin-only"]').exists()).toBe(false);
+  });
+
+  it('does not offer the delete-sync switch to a non-admin', async () => {
+    globalThis.__qbReconcilAuth = { isAdmin: false };
+    globalThis.__qbReconcilFakeApi = makeApi([], { delete_sync_enabled: false, delete_sync_source: 'tenant' });
+    const wrapper = mount(QbReconciliationPanel, { global: { stubs: STUBS } });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="qb-reconciliation-toggle"] input').element.disabled).toBe(true);
+    expect(wrapper.find('[data-testid="qb-reconciliation-clear-override"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="qb-reconciliation-admin-only"]').text()).toBe('Only an admin can change this.');
+  });
+
   it('shows DISABLED banner + flag-off empty copy when delete_sync_enabled=false', async () => {
     globalThis.__qbReconcilFakeApi = makeApi([], { delete_sync_enabled: false });
     const wrapper = mount(QbReconciliationPanel, { global: { stubs: STUBS } });

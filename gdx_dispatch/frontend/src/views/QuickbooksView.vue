@@ -9,11 +9,15 @@
             label="Connect"
             icon="pi pi-link"
             :loading="actionLoading === 'connect'"
+            :disabled="accessDenied"
             class="p-button-outlined"
             data-testid="quickbooks-connect-btn"
             @click="runAction('connect')"
           />
+          <!-- /disconnect refuses anyone but admin/owner (router.py qb_disconnect). -->
           <Button
+            v-if="auth.isAdmin"
+            :disabled="accessDenied"
             label="Disconnect"
             icon="pi pi-unlink"
             :loading="actionLoading === 'disconnect'"
@@ -25,12 +29,22 @@
             label="Sync Now"
             icon="pi pi-sync"
             :loading="actionLoading === 'sync'"
+            :disabled="accessDenied"
             data-testid="quickbooks-sync-btn"
             @click="runAction('sync')"
           />
-          <QbSyncScheduleSelect data-testid="qb-schedule-select-wrap" />
+          <QbSyncScheduleSelect v-if="panelsReady" data-testid="qb-schedule-select-wrap" />
         </template>
       </Toolbar>
+
+      <!-- A 403 from both status routes is a refusal, not an unknown. Those
+           routes check only require_module("quickbooks") and login, so outside
+           a password change (useApi redirects) the module is off, and Connect
+           and Sync would be refused the same way. -->
+      <p v-if="accessDenied" class="qb-denied" data-testid="qb-access-denied">
+        The QuickBooks module is turned off, so nothing on this page can load or run.
+        An admin can turn it on under Settings → Modules. ({{ deniedDetail }})
+      </p>
 
       <Tabs v-model:value="activeTab" class="quickbooks-tabview">
         <TabList>
@@ -81,7 +95,16 @@
               @row-click="openEventDialog"
             >
               <template #empty>
+                <!-- An empty list after a failed load is not "no events". -->
                 <EmptyState
+                  v-if="eventsError"
+                  icon="pi pi-exclamation-circle"
+                  title="Sync log unavailable"
+                  :message="`The sync log could not be loaded — ${eventsError}`"
+                  data-testid="qb-events-unavailable"
+                />
+                <EmptyState
+                  v-else
                   icon="pi pi-sync"
                   title="No sync events yet"
                   message="QuickBooks sync activity will be logged here after your first sync."
@@ -101,15 +124,18 @@
           </TabPanel>
 
           <TabPanel value="accounts">
-            <QbAccountsPanel data-testid="qb-accounts-panel" />
+            <!-- The child panels fetch on mount. Held until the first status load
+                 so a module that is off yields the note above, not a 403 toast
+                 per panel pointing at /role-permissions. -->
+            <QbAccountsPanel v-if="panelsReady" data-testid="qb-accounts-panel" />
           </TabPanel>
 
           <TabPanel value="bank-transactions">
-            <QbBankingPanel data-testid="qb-banking-panel" />
+            <QbBankingPanel v-if="panelsReady" data-testid="qb-banking-panel" />
           </TabPanel>
 
           <TabPanel value="reconciliation">
-            <QbReconciliationPanel data-testid="qb-reconciliation-panel" />
+            <QbReconciliationPanel v-if="panelsReady" data-testid="qb-reconciliation-panel" />
           </TabPanel>
         </TabPanels>
       </Tabs>
@@ -215,7 +241,9 @@ import QbBankingPanel from '../components/quickbooks/QbBankingPanel.vue';
 import QbSyncScheduleSelect from '../components/quickbooks/QbSyncScheduleSelect.vue';
 import QbReconciliationPanel from '../components/quickbooks/QbReconciliationPanel.vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { isPasswordChangeRequired } from '../composables/useApi';
 import { useQBSync } from '../composables/useQBSync';
+import { useAuthStore } from '../stores/auth';
 import { formatDateTime } from '../composables/useFormatters';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
@@ -232,6 +260,7 @@ import Toolbar from 'primevue/toolbar';
 
 const api = useApiWithToast();
 const toast = useToast();
+const auth = useAuthStore();
 const route = useRoute();
 const router = useRouter();
 
@@ -255,6 +284,11 @@ const EMPTY_QB_STATUS = Object.freeze({
 });
 const quickbooksStatus = ref({ ...EMPTY_QB_STATUS });
 const syncEvents = ref([]);
+const eventsError = ref('');
+const accessDenied = ref(false);
+const firstLoadDone = ref(false);
+const panelsReady = computed(() => firstLoadDone.value && !accessDenied.value);
+const deniedDetail = ref('');
 const loading = ref(true);
 const logFilter = ref('all');
 const logTabs = ['all', 'success', 'failed'];
@@ -294,15 +328,35 @@ const tabLabel = (tab) => {
   return `${label}${suffix}`;
 };
 
+const QUIET = { suppressErrorToast: true };
+
 const loadQuickbooks = async () => {
   loading.value = true;
   try {
-    const [dashboard, events] = await Promise.all([
+    // Settled separately: a failed status call must not discard events that
+    // loaded, and a failed events call must not read as an empty log.
+    const [statusResult, eventsResult] = await Promise.allSettled([
       // /dashboard returns connection + entity_counts + delete_sync_enabled.
       // Falls back to /status if /dashboard fails (older builds).
-      api.get('/api/qb/dashboard').catch(() => api.get('/api/qb/status')),
-      api.get('/api/qb/events?limit=50').catch(() => ({ events: [] })),
+      // Toasts suppressed: a failure renders in place below, and a 403 toast
+      // would point at /role-permissions, which cannot turn a module on.
+      api.get('/api/qb/dashboard', QUIET)
+        .catch(() => api.get('/api/qb/status', QUIET)),
+      api.get('/api/qb/events?limit=50', QUIET),
     ]);
+    if (eventsResult.status === 'fulfilled') {
+      const events = eventsResult.value;
+      syncEvents.value = Array.isArray(events?.events) ? events.events : [];
+      eventsError.value = '';
+    } else {
+      // A failed reload clears the list rather than keep the previous one.
+      syncEvents.value = [];
+      eventsError.value = eventsResult.reason?.message || 'Unable to fetch the sync log';
+    }
+    if (statusResult.status === 'rejected') throw statusResult.reason;
+    const dashboard = statusResult.value;
+    accessDenied.value = false;
+    deniedDetail.value = '';
     quickbooksStatus.value = {
       connected: !!dashboard.connected,
       last_sync_at: dashboard.last_sync_at || null,
@@ -319,13 +373,17 @@ const loadQuickbooks = async () => {
       auth_state: dashboard.auth_state || 'healthy',
       needs_reconnect: !!dashboard.needs_reconnect,
     };
-    syncEvents.value = Array.isArray(events?.events) ? events.events : [];
   } catch (err) {
     // Both status endpoints failed: the connection is unknown, not off. The
     // placeholder's connected:false would otherwise read "Disconnected", and a
     // reload after a sync must not keep the previous snapshot's banners,
     // realm and live sync buttons beside "Status unknown".
     quickbooksStatus.value = { ...EMPTY_QB_STATUS, status_unknown: true };
+    // A password-change 403 is useApi's to handle (it redirects); any other
+    // 403 is the module gate, which refuses every action on this page too.
+    accessDenied.value = err?.status === 403 && !isPasswordChangeRequired(err);
+    deniedDetail.value = accessDenied.value ? (err?.message || '') : '';
+    if (accessDenied.value) return;
     toast.add({
       severity: 'error',
       summary: 'QuickBooks load failed',
@@ -334,6 +392,7 @@ const loadQuickbooks = async () => {
     });
   } finally {
     loading.value = false;
+    firstLoadDone.value = true;
   }
 };
 
@@ -445,6 +504,12 @@ onBeforeUnmount(() => {
 <style scoped>
 .quickbooks-tabview {
   margin-top: 1rem;
+}
+
+.qb-denied {
+  margin: 1rem 0 0;
+  color: var(--color-warning-500, #f59e0b);
+  font-size: 0.875rem;
 }
 
 .sync-progress-hint {
