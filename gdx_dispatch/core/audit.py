@@ -6,7 +6,7 @@ import json
 import logging
 import time
 import weakref
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -525,6 +525,42 @@ def _ensure_pg_guard(db: Any, engine: Any) -> None:
     _AUDIT_GUARD_INITIALIZED.add(engine)
 
 
+_CHAIN_LOCK_TIMEOUT = "15s"
+
+
+def _lock_chain_tip(db: Any) -> None:
+    """Serialize chain writers from the tip read to the caller's commit (GDXA-979).
+
+    The chain is one linked list, so its tip is a single point every audited
+    write contends on. Unlocked, two open transactions read the same tip and
+    both wrote it as ``prev_hash``: a fork (measured 5 forks in 20 rows with
+    four writers, SQLite and Postgres alike). The lock is held until the
+    caller's transaction ends, so the next writer's tip read sees this row.
+
+    Postgres: a transaction-scoped advisory lock; re-entrant within one
+    transaction, released by commit or rollback, and seen by the deadlock
+    detector. SQLite: pysqlite runs a SELECT before any BEGIN in autocommit, so
+    the tip read held nothing; an INSERT that inserts no row makes pysqlite
+    BEGIN and takes the database's RESERVED write lock first. It touches no
+    row, so the append-only triggers never fire.
+    """
+    bind = getattr(db, "bind", None) or getattr(db, "get_bind", lambda: None)()
+    if bind is None:
+        return
+    dialect = bind.dialect.name
+    if dialect == "postgresql":
+        # Bounded: a thread holding the lock on one session that audits on a
+        # second session before committing the first waits on itself, which
+        # the deadlock detector cannot see. Fail that loudly instead of
+        # hanging the worker; then put the caller's own lock_timeout back.
+        prev_timeout = db.execute(text("SELECT current_setting('lock_timeout')")).scalar()
+        db.execute(text("SELECT set_config('lock_timeout', :t, true)"), {"t": _CHAIN_LOCK_TIMEOUT})
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext('gdx:audit_logs:chain_tip'))"))
+        db.execute(text("SELECT set_config('lock_timeout', :t, true)"), {"t": prev_timeout})
+    elif dialect == "sqlite":
+        db.execute(text("INSERT INTO audit_logs SELECT * FROM audit_logs WHERE 0"))
+
+
 def _log_audit_event_impl(db: Any, *args: Any, **kwargs: Any) -> AuditLog:
     """Append-only, hash-chained audit log entry with backward-compatible signature."""
     # New style: log_audit_event(db=..., tenant_id=..., user_id=..., action=..., ...)
@@ -592,13 +628,27 @@ def _log_audit_event_impl(db: Any, *args: Any, **kwargs: Any) -> AuditLog:
     # action it records over a representational issue.
     details = json.loads(_payload_json(details))
 
-    result = db.execute(select(AuditLog.row_hash).order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(1))
-    row = result
+    _lock_chain_tip(db)
+    result = db.execute(
+        select(AuditLog.row_hash, AuditLog.created_at)
+        .where(AuditLog.row_hash != "")
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(1)
+    )
     if inspect.isawaitable(result):
         raise RuntimeError("Async DB execution is not supported in sync audit logging path")
-    prev_hash = str(row.scalar_one_or_none() or "")
+    tip = result.first()
+    prev_hash = str(tip.row_hash) if tip else ""
 
+    # Strictly after the tip, so created_at order IS chain order even when the
+    # clock steps back: the tip read above and the verifier both walk it.
     now = utcnow()
+    # isinstance, not "is not None": a router unit test's MagicMock session
+    # hands back a MagicMock here, and the unlocked read used to tolerate it.
+    if tip and isinstance(tip.created_at, datetime):
+        tip_at = tip.created_at if tip.created_at.tzinfo else tip.created_at.replace(tzinfo=UTC)
+        if now <= tip_at:
+            now = tip_at + timedelta(microseconds=1)
     row_data = f"{tenant_id}:{user_id}:{action}:{entity_type}:{entity_id}:{_payload_json(details)}:{request_id}"
     row_hash = hashlib.sha256(f"{prev_hash}{row_data}".encode()).hexdigest()
 
@@ -977,6 +1027,15 @@ def audit_best_effort_precommit(
     return True
 
 
+def _expected_row_hash(row: AuditLog, prev_hash: str) -> str:
+    """The hash ``_log_audit_event_impl`` would have written for ``row`` after ``prev_hash``."""
+    actor = row.user_id or row.actor_id or "system"
+    details = row.details if row.details is not None else (row.payload or {})
+    action = row.action or row.event_type or "unknown"
+    row_data = f"{row.tenant_id}:{actor}:{action}:{row.entity_type}:{row.entity_id}:{_payload_json(details)}:{row.request_id}"
+    return hashlib.sha256(f"{prev_hash}{row_data}".encode()).hexdigest()
+
+
 def verify_audit_chain(db: Any, entity_type: str | None = None, entity_id: str | None = None) -> bool:
     q = select(AuditLog).order_by(AuditLog.created_at.asc(), AuditLog.id.asc())
     if entity_type is not None:
@@ -990,13 +1049,102 @@ def verify_audit_chain(db: Any, entity_type: str | None = None, entity_id: str |
 
     prev_hash = rows[0].prev_hash or ""
     for row in rows:
-        actor = row.user_id or row.actor_id or "system"
-        details = row.details if row.details is not None else (row.payload or {})
-        action = row.action or row.event_type or "unknown"
-        row_data = f"{row.tenant_id}:{actor}:{action}:{row.entity_type}:{row.entity_id}:{_payload_json(details)}:{row.request_id}"
-        expected = hashlib.sha256(f"{prev_hash}{row_data}".encode()).hexdigest()
+        expected = _expected_row_hash(row, prev_hash)
         stored_hash = row.row_hash or row.hash
         if row.prev_hash != prev_hash or stored_hash != expected:
             return False
         prev_hash = stored_hash
     return True
+
+
+# Migration 123 writes one row with this action as the serialized writer starts
+# (GDXA-979). Forks and restarts whose newest row predates it are history: the
+# unlocked tip read made them, and audit rows are never rewritten. They are
+# counted, not alerted on. One at or after it alerts. No marker, no history.
+AUDIT_CHAIN_SERIALIZED_ACTION = "audit_chain.serialized_writer"
+
+
+def _aware(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def _known_breaks_before(db: Any) -> datetime | None:
+    at = db.execute(
+        select(func.min(AuditLog.created_at)).where(AuditLog.action == AUDIT_CHAIN_SERIALIZED_ACTION)
+    ).scalar()
+    return _aware(at) if at is not None else None
+
+
+def audit_chain_report(db: Any) -> dict[str, Any]:
+    """Check the chain's shape, apart from created_at order and unchained rows.
+
+    ``verify_audit_chain`` walks rows in created_at order and fails at the
+    first surprise, so an unchained (GL-written, empty ``row_hash``) row makes
+    it fail with no way to tell that from a fork or a tampered row. This
+    checks each chained row on its own: its hash matches its content and its
+    ``prev_hash`` (``bad_hash``), its ``prev_hash`` names a row that exists
+    (``dangling``), no two rows name the same predecessor (``forks``), and only
+    one row starts the chain (``restarts``). ``known_breaks`` counts the forks
+    and restarts older than the serialized-writer marker
+    (``AUDIT_CHAIN_SERIALIZED_ACTION``); ``broken`` is True when any of them is
+    not explained as that history.
+    """
+    rows = db.execute(select(AuditLog).where(AuditLog.row_hash != "")).scalars().all()
+    hashes = {row.row_hash for row in rows}
+    children: dict[str, list[AuditLog]] = {}
+    bad_hash = dangling = 0
+    for row in rows:
+        prev = row.prev_hash or ""
+        if row.row_hash != _expected_row_hash(row, prev):
+            bad_hash += 1
+        if prev and prev not in hashes:
+            dangling += 1
+        children.setdefault(prev, []).append(row)
+
+    cutoff = _known_breaks_before(db)
+
+    def history(at: datetime) -> bool:
+        return cutoff is not None and at < cutoff
+
+    forks = [
+        {
+            "prev_hash": prev,
+            "children": len(kids),
+            "last_at": max(_aware(k.created_at) for k in kids).isoformat(),
+            "known": history(max(_aware(k.created_at) for k in kids)),
+        }
+        for prev, kids in children.items()
+        if prev and len(kids) > 1
+    ]
+    starts = sorted(children.get("", []), key=lambda r: (_aware(r.created_at), str(r.id)))
+    restarts = starts[1:]
+    new_forks = sum(1 for f in forks if not f["known"])
+    new_restarts = sum(1 for r in restarts if not history(_aware(r.created_at)))
+    unchained = int(
+        db.execute(
+            select(func.count()).select_from(AuditLog).where(
+                (AuditLog.row_hash.is_(None)) | (AuditLog.row_hash == "")
+            )
+        ).scalar()
+        or 0
+    )
+    return {
+        "chained": len(rows),
+        "unchained": unchained,
+        "bad_hash": bad_hash,
+        "dangling": dangling,
+        "forks": forks,
+        "new_forks": new_forks,
+        "restarts": len(restarts),
+        "new_restarts": new_restarts,
+        "known_breaks": len(forks) - new_forks + len(restarts) - new_restarts,
+        "known_breaks_before": cutoff.isoformat() if cutoff else None,
+        "broken": bool(bad_hash or dangling or new_forks or new_restarts),
+    }
+
+
+def audit_chain_broken(ok: bool, report: dict[str, Any]) -> bool:
+    """The alerting verdict: a structural break, or the created_at walk
+    (``ok`` from ``verify_audit_chain``) failing with no unchained row and no
+    dated history to explain it."""
+    return bool(report["broken"] or (not ok and report["unchained"] == 0 and report["known_breaks"] == 0))

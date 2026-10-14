@@ -120,8 +120,8 @@
         {{ verifyResult.ok
           ? `Chain intact — ${verifyResult.rows} rows verified`
           : (verifyResult.tamper
-            ? 'CHAIN BROKEN — no unchained rows explain it; escalate to ops'
-            : `${verifyResult.unchained} row(s) bypass the chain (GL/legacy writers) — data-hygiene, not tampering`) }}
+            ? 'CHAIN BROKEN — a fork, an altered row or a missing row that history does not explain; escalate to ops'
+            : `${verifyResult.unchained} row(s) bypass the chain (GL/legacy writers) and ${verifyResult.knownForks} fork(s) predate the fix that stopped them — history, not tampering`) }}
       </span>
     </form>
 
@@ -231,6 +231,7 @@ async function verifyChain() {
       rows: r?.rows_checked ?? 0,
       unchained: r?.unchained_rows ?? 0,
       tamper: !!r?.tamper_suspected,
+      knownForks: (r?.forked_parents ?? 0) - (r?.new_forks ?? 0),
     };
     chainIntegrity.value = { valid: !!r?.ok, break_at: r?.ok ? null : "verify" };
   } catch (e) {
