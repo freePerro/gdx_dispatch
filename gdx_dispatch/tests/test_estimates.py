@@ -1962,3 +1962,67 @@ def test_reassign_audit_row_and_change_land_together(client: TestClient):
         assert row.public_token == before_token, "the token must NOT have rotated without a trail"
     finally:
         db.close()
+
+
+# GDXA-955: the PATCH and line-mutation audit rows were written with
+# details={}, so a rewritten tax rate or a repriced line left no trace of what
+# moved. These pin the old/new values on the rows themselves.
+
+def test_patch_estimate_audit_names_server_defaulted_tax_rate(client: TestClient):
+    est = _create_estimate(client)
+    r = client.patch(f"/api/estimates/{est['id']}", json={"tax_rate": 0.0825})
+    assert r.status_code == 200, r.text
+
+    # A null rate on a rated estimate is rewritten server-side to the lane
+    # default (0 on no job); the row must show the rate chosen, not the null.
+    r = client.patch(f"/api/estimates/{est['id']}", json={"tax_rate": None, "notes": "  new notes  "})
+    assert r.status_code == 200, r.text
+
+    rows = [row for row in _audit_rows(client, "patch_estimate") if row["entity_id"] == est["id"]]
+    assert len(rows) == 2
+    first, last = rows
+    assert first["details"]["tax_rate_defaulted"] is False
+    assert float(first["details"]["changed"]["tax_rate"]["new"]) == pytest.approx(0.0825)
+
+    changed = last["details"]["changed"]
+    assert last["details"]["tax_rate_defaulted"] is True
+    assert float(changed["tax_rate"]["old"]) == pytest.approx(0.0825)
+    assert float(changed["tax_rate"]["new"]) == 0.0
+    assert changed["notes"] == {"old": "Check spring and opener", "new": "new notes"}
+    assert set(changed) == {"tax_rate", "notes"}
+    assert last["user_id"] == "user-1"
+
+
+def test_line_patch_and_delete_audits_carry_the_line(client: TestClient):
+    est = _create_estimate(client)
+    r = client.post(
+        f"/api/estimates/{est['id']}/lines",
+        json={"description": "Spring", "quantity": 2, "unit_price": 100.0},
+    )
+    assert r.status_code == 201, r.text
+    line_id = r.json()["id"]
+
+    added = [row for row in _audit_rows(client, "add_line") if row["entity_id"] == est["id"]]
+    assert len(added) == 1
+    assert added[0]["details"]["line_id"] == line_id
+    assert added[0]["details"]["quantity"] == 2
+    assert float(added[0]["details"]["unit_price"]) == 100.0
+
+    r = client.patch(f"/api/estimates/{est['id']}/lines/{line_id}", json={"unit_price": 120.0})
+    assert r.status_code == 200, r.text
+    (patched,) = [row for row in _audit_rows(client, "patch_line") if row["entity_id"] == line_id]
+    changed = patched["details"]["changed"]
+    assert float(changed["unit_price"]["old"]) == 100.0
+    assert float(changed["unit_price"]["new"]) == 120.0
+    # Derived, not sent: the total moved with the price and is recorded too.
+    assert float(changed["line_total"]["old"]) == 200.0
+    assert float(changed["line_total"]["new"]) == 240.0
+    assert "description" not in changed
+
+    r = client.delete(f"/api/estimates/{est['id']}/lines/{line_id}")
+    assert r.status_code == 200, r.text
+    (deleted,) = [row for row in _audit_rows(client, "delete_line") if row["entity_id"] == line_id]
+    assert deleted["details"]["estimate_id"] == est["id"]
+    assert deleted["details"]["description"] == "Spring"
+    assert float(deleted["details"]["line_total"]) == 240.0
+    assert deleted["user_id"] == "user-1"

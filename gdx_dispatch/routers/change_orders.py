@@ -18,10 +18,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text, Uuid, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync, resolve_audit_actor, utcnow
+from gdx_dispatch.core.audit import TenantBase, audit_best_effort, resolve_audit_actor, utcnow
 from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.quantities import recorded_quantity
+from gdx_dispatch.modules.proposals.audit_details import audit_field_changes
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -204,6 +205,21 @@ def _serialize(
     return out
 
 
+# What a change-order PATCH can move, for its audit row's old/new pairs.
+_CO_AUDIT_FIELDS = ("title", "description", "reason", "customer_name", "job_id", "customer_id", "amount", "status")
+
+
+def _audit_status_change(db: Session, actor: dict, co: ChangeOrder, old_status: str, action: str) -> None:
+    audit_best_effort(
+        db,
+        actor=actor,
+        action=action,
+        entity_type="change_order",
+        entity_id=str(co.id),
+        details={"co_number": co.co_number, "status": {"old": old_status, "new": co.status}, "amount": co.amount},
+    )
+
+
 def _next_co_number(db: Session) -> str:
     count = db.execute(select(ChangeOrder)).scalars().all()
     return f"CO-{len(count) + 1:05d}"
@@ -281,28 +297,21 @@ def create_change_order(
             ))
     db.commit()
     db.refresh(co)
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="create_change_order",
-                entity_type="change_order",
-                entity_id="",
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('create_change_order_audit_failed')
+    audit_best_effort(
+        db,
+        actor=user,
+        action="create_change_order",
+        entity_type="change_order",
+        entity_id=str(co.id),
+        details={
+            "co_number": co.co_number,
+            "status": co.status,
+            "amount": co.amount,
+            "job_id": co.job_id,
+            "customer_id": co.customer_id,
+            "line_count": len(payload.line_items),
+        },
+    )
     return _serialize(co)
 
 
@@ -340,6 +349,7 @@ def update_change_order(
             status_code=409,
             detail=f"{co.co_number} is billed on an invoice — delete that draft invoice to release it before editing.",
         )
+    before = {field: getattr(co, field) for field in _CO_AUDIT_FIELDS}
     for field in ("title", "description", "reason", "customer_name"):
         val = getattr(payload, field, None)
         if val is not None:
@@ -363,7 +373,15 @@ def update_change_order(
     # the same transaction: delete the old set, write the new one, and
     # recompute amount from the new subtotal.
     from gdx_dispatch.models.tenant_models import ChangeOrderLine
+    replaced_lines = None
     if payload.line_items:
+        # The rows are hard-deleted below (no deleted_at), so the audit row is
+        # the only record of what the customer had approved before (GDXA-955).
+        replaced_lines = [
+            {"description": ln.description, "qty": ln.qty, "unit_price": ln.unit_price,
+             "line_total": ln.line_total, "taxable": ln.taxable}
+            for ln in db.execute(select(ChangeOrderLine).where(ChangeOrderLine.co_id == co.id)).scalars()
+        ]
         # Replace strategy: delete existing rows, insert the new set. Safe
         # because ChangeOrderLine has no FK references TO it (consumer is
         # only ChangeOrder itself).
@@ -413,28 +431,18 @@ def update_change_order(
         co.status = payload.status
     db.commit()
     db.refresh(co)
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="update_change_order",
-                entity_type="change_order",
-                entity_id=str(co_id),
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('update_change_order_audit_failed')
+    audit_best_effort(
+        db,
+        actor=current_user,
+        action="update_change_order",
+        entity_type="change_order",
+        entity_id=str(co_id),
+        details={
+            "co_number": co.co_number,
+            "changed": audit_field_changes(before, co),
+            "replaced_lines": replaced_lines,
+        },
+    )
     return _serialize(co)
 
 
@@ -447,33 +455,13 @@ def approve_change_order(
     co = db.get(ChangeOrder, co_id)
     if not co or co.deleted_at:
         raise HTTPException(status_code=404, detail="Change order not found")
+    old_status = co.status
     co.status = "approved"
     co.approved_by = resolve_audit_actor(user)  # the approver's id (#701), not an email the login never carries
     co.approved_at = utcnow()
     db.commit()
     db.refresh(co)
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="approve_change_order",
-                entity_type="change_order",
-                entity_id=str(co_id),
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('approve_change_order_audit_failed')
+    _audit_status_change(db, user, co, old_status, "approve_change_order")
     return _serialize(co)
 
 
@@ -482,31 +470,11 @@ def decline_change_order(co_id: UUID, current_user: dict = Depends(get_current_u
     co = db.get(ChangeOrder, co_id)
     if not co or co.deleted_at:
         raise HTTPException(status_code=404, detail="Change order not found")
+    old_status = co.status
     co.status = "declined"
     db.commit()
     db.refresh(co)
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="decline_change_order",
-                entity_type="change_order",
-                entity_id=str(co_id),
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('decline_change_order_audit_failed')
+    _audit_status_change(db, current_user, co, old_status, "decline_change_order")
     return _serialize(co)
 
 
@@ -524,26 +492,12 @@ def delete_change_order(co_id: UUID, current_user: dict = Depends(get_current_us
         )
     co.deleted_at = utcnow()
     db.commit()
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="delete_change_order",
-                entity_type="change_order",
-                entity_id=str(co_id),
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('delete_change_order_audit_failed')
+    audit_best_effort(
+        db,
+        actor=current_user,
+        action="delete_change_order",
+        entity_type="change_order",
+        entity_id=str(co_id),
+        details={"co_number": co.co_number, "status": co.status, "amount": co.amount},
+    )
     return None
