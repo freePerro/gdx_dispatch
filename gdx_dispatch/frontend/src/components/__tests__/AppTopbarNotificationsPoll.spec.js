@@ -33,6 +33,7 @@ vi.mock('../../composables/useTenantModules', async () => {
       isEnabled: (key) => (key === 'communications' ? communicationsOn.ref.value : true),
       enabledModules: computed(() => ({})),
       allEnabledModules: computed(() => []),
+      loadTenantModules: () => Promise.resolve(),
     }),
   };
 });

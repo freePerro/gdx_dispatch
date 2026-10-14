@@ -73,6 +73,10 @@ function normalizeEnabledModules(payload) {
 // across callers and the fetch fires at most once per session unless a
 // caller explicitly invokes loadTenantModules() to refresh after a save.
 const _loading = ref(false);
+// True once /api/settings/modules and /api/plugins have answered for this
+// session (or failed and fallen back). Until then the module lists are the
+// optimistic full catalog without any plugin.
+const _loaded = ref(false);
 const _enabledModules = ref({});
 // Installed third-party plugins, from the /api/plugins catalog (ADR-013). Each
 // entry: { key, name, ui }. Drives a synthetic "Plugins" nav category.
@@ -334,6 +338,7 @@ async function _doLoad(api) {
     const auth = useAuthStore();
     if (!auth.isAuthenticated) {
       _enabledModules.value = {};
+      _loaded.value = false;
       return false;
     }
   } catch (_e) {
@@ -358,6 +363,8 @@ async function _doLoad(api) {
   } catch (_error) {
     _plugins.value = [];
   }
+  // After the plugins too: a starred plugin is a favorite like any module.
+  _loaded.value = true;
   return true;
 }
 
@@ -392,6 +399,7 @@ export function useTenantModules({ refresh = false } = {}) {
 
   return {
     loading: _loading,
+    loaded: _loaded,
     categories: _categories,
     allEnabledModules: _allEnabledModules,
     enabledModules: _enabledModules,

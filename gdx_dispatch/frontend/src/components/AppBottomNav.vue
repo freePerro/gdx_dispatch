@@ -56,6 +56,56 @@
         No modules match "{{ moreSearch }}".
       </div>
 
+      <!-- Favorites (2026-10-13): starred modules pinned above the
+           sections, per device. On the Android app the first four are also
+           the launcher's long-press shortcuts (lib/mobileFavorites.js). -->
+      <section
+        v-if="!moreSearch && favoriteModules.length"
+        class="drawer-section"
+        data-testid="more-section-favorites"
+      >
+        <h3 class="drawer-section-heading">Favorites</h3>
+        <div class="drawer-items">
+          <div
+            v-for="module in favoriteModules"
+            :key="`fav-${module.key}-${module.to}`"
+            class="drawer-row"
+          >
+            <router-link
+              :to="module.to"
+              class="drawer-link"
+              :class="{ 'drawer-link--desktop-only': !module.mobile_friendly }"
+              :title="module.mobile_friendly ? null : 'Best viewed on desktop'"
+              @click="closeDrawer"
+            >
+              <i :class="module.icon" aria-hidden="true" />
+              <span class="drawer-link-label">{{ module.label }}</span>
+              <span
+                v-if="!module.mobile_friendly"
+                class="drawer-link-badge"
+                aria-label="Desktop only"
+              >Desktop</span>
+            </router-link>
+            <button
+              type="button"
+              class="drawer-star"
+              :class="{ 'drawer-star--on': isFavorite(module.to) }"
+              :aria-pressed="isFavorite(module.to)"
+              :aria-label="isFavorite(module.to) ? `Remove ${module.label} from favorites` : `Add ${module.label} to favorites`"
+              :data-testid="`more-fav-star-${module.key}`"
+              @click="onStar($event, module.to)"
+            >
+              <i :class="isFavorite(module.to) ? 'pi pi-star-fill' : 'pi pi-star'" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      </section>
+      <p
+        v-else-if="!moreSearch && moreSections.length"
+        class="drawer-fav-hint"
+        data-testid="more-favorites-hint"
+      >Tap <i class="pi pi-star" aria-hidden="true" /> to pin a module to the top{{ shortcutsHint }}.</p>
+
       <section
         v-for="bucket in moreSections"
         :key="bucket.section"
@@ -64,23 +114,38 @@
       >
         <h3 class="drawer-section-heading">{{ bucket.section }}</h3>
         <div class="drawer-items">
-          <router-link
+          <div
             v-for="module in bucket.modules"
             :key="`${bucket.section}-${module.key}-${module.to}`"
-            :to="module.to"
-            class="drawer-link"
-            :class="{ 'drawer-link--desktop-only': !module.mobile_friendly }"
-            :title="module.mobile_friendly ? null : 'Best viewed on desktop'"
-            @click="closeDrawer"
+            class="drawer-row"
           >
-            <i :class="module.icon" aria-hidden="true" />
-            <span class="drawer-link-label">{{ module.label }}</span>
-            <span
-              v-if="!module.mobile_friendly"
-              class="drawer-link-badge"
-              aria-label="Desktop only"
-            >Desktop</span>
-          </router-link>
+            <router-link
+              :to="module.to"
+              class="drawer-link"
+              :class="{ 'drawer-link--desktop-only': !module.mobile_friendly }"
+              :title="module.mobile_friendly ? null : 'Best viewed on desktop'"
+              @click="closeDrawer"
+            >
+              <i :class="module.icon" aria-hidden="true" />
+              <span class="drawer-link-label">{{ module.label }}</span>
+              <span
+                v-if="!module.mobile_friendly"
+                class="drawer-link-badge"
+                aria-label="Desktop only"
+              >Desktop</span>
+            </router-link>
+            <button
+              type="button"
+              class="drawer-star"
+              :class="{ 'drawer-star--on': isFavorite(module.to) }"
+              :aria-pressed="isFavorite(module.to)"
+              :aria-label="isFavorite(module.to) ? `Remove ${module.label} from favorites` : `Add ${module.label} to favorites`"
+              :data-testid="`more-star-${module.key}`"
+              @click="onStar($event, module.to)"
+            >
+              <i :class="isFavorite(module.to) ? 'pi pi-star-fill' : 'pi pi-star'" aria-hidden="true" />
+            </button>
+          </div>
         </div>
       </section>
           <section class="drawer-section drawer-section--system">
@@ -166,7 +231,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useToast } from 'primevue/usetoast';
 import Drawer from 'primevue/drawer';
@@ -181,11 +246,12 @@ import QuickCaptureSheet from './QuickCaptureSheet.vue';
 import LeadIntakeForm from './LeadIntakeForm.vue';
 import MobileServerConfigDialog from './MobileServerConfigDialog.vue';
 import OfficeAlertsToggle from './OfficeAlertsToggle.vue';
+import { isAppShortcutsAvailable, MAX_SHORTCUTS, syncAppShortcuts, useMobileFavorites } from '../lib/mobileFavorites';
 
 const route = useRoute();
 const router = useRouter();
 const toast = useToast();
-const { allEnabledModules, isEnabled } = useTenantModules();
+const { allEnabledModules, isEnabled, loaded: modulesLoaded } = useTenantModules();
 const auth = useAuthStore();
 const emailUnread = useEmailUnreadStore();
 const { hasPermission } = usePermission();
@@ -510,6 +576,48 @@ const moreSections = computed(() =>
   groupModules(moreModules.value, moreSearch.value),
 );
 
+// Favorites: starred drawer entries, in the order they were starred. Only
+// what this user can still see (moreModules is permission-filtered), so a
+// favorite for a module since turned off just drops out of the list.
+const { favorites, isFavorite, toggleFavorite } = useMobileFavorites();
+const favoriteModules = computed(() => {
+  const byTo = new Map(moreModules.value.map((m) => [m.to, m]));
+  return favorites.value.map((to) => byTo.get(to)).filter(Boolean);
+});
+// Starring grows the Favorites section above the list, which slid the row
+// out from under the finger: a second quick tap landed on the row the first
+// one had just starred and unstarred it (seen on a Pixel, 2026-10-13). Keep
+// the tapped star where it was by scrolling the drawer by however far it moved.
+async function onStar(event, to) {
+  const button = event.currentTarget;
+  const before = button.getBoundingClientRect().top;
+  toggleFavorite(to);
+  await nextTick();
+  if (!button.isConnected) return; // unstarred from Favorites: its row is gone
+  const delta = button.getBoundingClientRect().top - before;
+  let scroller = button.parentElement;
+  while (scroller && scroller.scrollHeight <= scroller.clientHeight) scroller = scroller.parentElement;
+  if (delta && scroller) scroller.scrollTop += delta;
+}
+const shortcutsHint = isAppShortcutsAvailable()
+  ? `; the first ${MAX_SHORTCUTS} also show when you long-press the app icon`
+  : '';
+// The Android launcher's long-press menu mirrors the first favorites. Waits
+// until the tenant's modules and this user's permissions have loaded: before
+// that the list is the optimistic catalog minus every permission-gated entry,
+// and syncing it shrank or cleared the shortcuts on each cold start (/audit
+// 2026-10-14).
+watch(
+  () => (modulesLoaded?.value && auth.permissionsLoaded
+    ? favoriteModules.value.map((m) => `${m.to}\t${m.label}`).join('\n')
+    : null),
+  (sig) => {
+    if (sig === null) return;
+    syncAppShortcuts(favoriteModules.value);
+  },
+  { immediate: true },
+);
+
 function isRouteActive(targetPath) {
   if (!targetPath) {
     return false;
@@ -747,6 +855,39 @@ function handleTab(item) {
 .drawer-link-label {
   flex: 1 1 auto;
   min-width: 0;
+}
+/* Favorites: a star beside each drawer entry, 44px to clear the touch
+   target minimum; the filled star uses the warning tone in both themes. */
+.drawer-row {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-1, 0.25rem);
+}
+.drawer-row .drawer-link {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.drawer-star {
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  border-radius: 0.625rem;
+  color: var(--text-muted, #64748b);
+  cursor: pointer;
+  font-size: 1.1rem;
+}
+.drawer-star--on {
+  color: var(--p-yellow-500, #eab308);
+}
+.drawer-fav-hint {
+  margin: 0 0 var(--space-3);
+  font-size: 0.8rem;
+  color: var(--text-muted, #64748b);
 }
 /* Mobile-walk 2026-06-04: modules without a phone-shaped view get
    dimmed + a "Desktop" pill so the tech knows what they're tapping

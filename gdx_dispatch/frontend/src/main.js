@@ -13,6 +13,7 @@ import { installErrorCapture } from './plugins/errorCapture';
 import { initServerConfig } from './lib/serverConfig';
 import { initNativeAppBridge } from './lib/nativeBridge';
 import { installOfficeAlertsBridge } from './lib/officeAlerts';
+import { installAppShortcutsBridge } from './lib/mobileFavorites';
 import { installSwNavigation } from './lib/swNavigation';
 import { installDatePickerTyping } from './lib/datePickerTyping';
 import './assets/base.css';
@@ -36,6 +37,7 @@ const pinia = createPinia();
 const router = createAppRouter();
 initNativeAppBridge(router);
 installOfficeAlertsBridge(router);
+installAppShortcutsBridge(router);
 
 app.use(pinia);
 app.use(router);

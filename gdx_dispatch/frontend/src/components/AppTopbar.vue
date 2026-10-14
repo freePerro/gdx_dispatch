@@ -133,6 +133,27 @@
           <i class="pi pi-search" aria-hidden="true" />
         </Button>
 
+        <!-- Phone-only SMS button: the sidebar's SMS pin and its unread badge
+             live in a drawer on a phone, so texts were three taps away. Same
+             gate as that pin — the Phone.com SMS module in this user's
+             permission-filtered list. /phone-com/messages resolves to
+             /mobile/sms on a phone (useViewMode). -->
+        <Button
+          v-if="isOnMobileRoute && smsShown"
+          type="button"
+          class="p-button-text sms-btn"
+          :aria-label="smsUnread.count > 0 ? `Text messages, ${smsUnread.count} unread` : 'Text messages'"
+          data-testid="mobile-sms-btn"
+          @click="router.push('/phone-com/messages')"
+        >
+          <i class="pi pi-comment" aria-hidden="true" />
+          <Badge
+            v-if="smsUnread.count > 0"
+            :value="smsUnread.count > 99 ? '99+' : smsUnread.count"
+            severity="danger"
+          />
+        </Button>
+
         <!-- Tier-7: every /api/notifications* endpoint requires the module
              keyed `communications`; with it disabled the store collapses the
              403 to zero and the bell was a permanently-empty lie. -->
@@ -183,6 +204,7 @@ import HelpButton from './HelpButton.vue';
 import { useAuthStore } from '../stores/auth';
 import { useThemeStore } from '../stores/theme';
 import { useNotificationsStore } from '../stores/notifications';
+import { useSmsUnreadStore } from '../stores/smsUnread';
 import { useTenantModules } from '../composables/useTenantModules';
 import { useViewMode } from '../composables/useViewMode';
 import { isTechnician, humanizeRole } from '../constants/roles';
@@ -272,6 +294,31 @@ watch(() => notificationsEnabled.value && auth.isAuthenticated, (on) => {
 onUnmounted(() => {
   if (_releaseNotificationsPoll) _releaseNotificationsPoll();
   _releaseNotificationsPoll = null;
+});
+
+// SMS button: shown, and its unread count polled, only on a phone with the
+// SMS module in this user's list. Wait for the module payload first — before
+// it lands the list is the optimistic default, and the backend refuses
+// unread-count with the module off (GDXA-453, same as AppSidebar's pin).
+const smsUnread = useSmsUnreadStore();
+const modulesReady = ref(false);
+tenantModules.loadTenantModules().then(() => { modulesReady.value = true; });
+const smsShown = computed(() =>
+  modulesReady.value
+  && auth.isAuthenticated
+  && tenantModules.allEnabledModules.value.some((m) => m.key === 'phone_com_messages'));
+let _releaseSmsPoll = null;
+watch(() => isOnMobileRoute.value && smsShown.value, (on) => {
+  if (on && !_releaseSmsPoll) {
+    _releaseSmsPoll = smsUnread.startPolling();
+  } else if (!on && _releaseSmsPoll) {
+    _releaseSmsPoll();
+    _releaseSmsPoll = null;
+  }
+}, { immediate: true });
+onUnmounted(() => {
+  if (_releaseSmsPoll) _releaseSmsPoll();
+  _releaseSmsPoll = null;
 });
 
 // Flash the bell + badge briefly when the count *increases* (i.e. a new
