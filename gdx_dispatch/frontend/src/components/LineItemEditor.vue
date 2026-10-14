@@ -125,7 +125,12 @@
     </div>
 
     <!-- Line items table -->
-    <div class="line-items-editor" data-testid="line-items-editor">
+    <div
+      ref="editorEl"
+      class="line-items-editor"
+      :class="{ 'lines-stacked': stacked }"
+      data-testid="line-items-editor"
+    >
       <div class="line-item-header" :style="gridStyle">
         <span class="col-action"></span>
         <span v-if="categories.length" class="col-cat">Category</span>
@@ -152,28 +157,35 @@
       >
         <template v-if="isLocked(item)">
           <span
-            class="col-action locked-cell"
+            class="col-action col-action-start locked-cell"
             v-tooltip="lockedTooltip"
             :data-testid="`line-locked-${idx}`"
           >
             <i class="pi pi-lock" />
           </span>
+          <span v-if="categories.length" class="line-label">Category</span>
           <span v-if="categories.length" class="col-cat locked-cell">{{ item.category || '—' }}</span>
+          <span class="line-label">Description</span>
           <span class="col-desc locked-cell">{{ item.description }}</span>
+          <span class="line-label">Qty</span>
           <span class="col-qty locked-cell">{{ toNum(item.quantity) }}</span>
           <span v-if="showCost" class="col-cost locked-cell"></span>
+          <span class="line-label">Unit Price</span>
           <span class="col-price locked-cell">{{ currency(toNum(item.unit_price)) }}</span>
+          <span v-if="showTaxable" class="line-label">Taxable</span>
           <span v-if="showTaxable" class="col-taxable locked-cell">
             <input type="checkbox" :checked="item.taxable !== false" disabled />
           </span>
+          <span v-if="showTaxable" class="line-label">Incl. install</span>
           <span v-if="showTaxable" class="col-taxable locked-cell">
             <input type="checkbox" :checked="!!item.includes_labor" disabled />
           </span>
           <span v-if="showMargin" class="col-margin locked-cell"></span>
+          <span class="line-label">Total</span>
           <span class="col-total line-total-display" :data-testid="`line-total-${idx}`">
             {{ currency(lineAmount(item.quantity, item.unit_price)) }}
           </span>
-          <span class="col-action"></span>
+          <span class="col-action col-action-end"></span>
         </template>
         <template v-else>
         <Button
@@ -183,10 +195,15 @@
           severity="danger"
           text
           size="small"
-          class="col-action"
+          class="col-action col-action-start"
           :data-testid="`line-delete-${idx}`"
           @click="removeLineAt(idx)"
         />
+        <!-- Field labels for the narrow (phone) layout, where the header row is
+             hidden. `display: none` everywhere else takes them out of the grid
+             (a display:none element is not a grid item), so the desktop track
+             list below is unchanged by their presence. -->
+        <span v-if="categories.length" class="line-label">Category</span>
         <Select
           v-if="categories.length"
           v-model="item.category"
@@ -201,6 +218,7 @@
         <!-- Description + its catalog-source pill share ONE grid cell. A
              sibling span here would become a 12th column and desync the
              gridTemplateColumns track list below. -->
+        <span class="line-label">Description</span>
         <span class="col-desc line-desc-cell">
           <InputText
             v-model="item.description"
@@ -215,6 +233,7 @@
             :data-testid="`line-source-${idx}`"
           >{{ item._catalogName }}</span>
         </span>
+        <span class="line-label">Qty</span>
         <InputNumber
           v-model="item.quantity"
           :min="fractionalQuantity ? 0.01 : 1"
@@ -227,6 +246,7 @@
           @update:modelValue="onQtyCommit(item)"
           @input="onQtyInput(item, $event)"
         />
+        <span v-if="showCost" class="line-label">Cost</span>
         <InputNumber
           v-if="showCost"
           v-model="item.cost"
@@ -239,6 +259,7 @@
           @update:modelValue="onCostChange(item)"
           @input="onCostInput(item, $event)"
         />
+        <span class="line-label">Unit Price</span>
         <InputNumber
           v-model="item.unit_price"
           mode="currency"
@@ -250,6 +271,7 @@
           @update:modelValue="markPriceOverride(item)"
           @input="onPriceInput(item, $event)"
         />
+        <span v-if="showTaxable" class="line-label">Taxable</span>
         <span
           v-if="showTaxable"
           class="col-taxable"
@@ -261,6 +283,7 @@
             @change="setTaxable(idx, $event.target.checked)"
           />
         </span>
+        <span v-if="showTaxable" class="line-label">Incl. install</span>
         <span
           v-if="showTaxable"
           class="col-taxable"
@@ -273,6 +296,7 @@
             @change="setIncludesLabor(idx, $event.target.checked)"
           />
         </span>
+        <span v-if="showMargin" class="line-label">Margin</span>
         <InputNumber
           v-if="showMargin"
           v-model="item.margin_pct_override"
@@ -286,6 +310,7 @@
           @update:modelValue="onMarginOverrideChange(item)"
           @input="onMarginInput(item, $event)"
         />
+        <span class="line-label">Total</span>
         <span class="col-total line-total-display" :data-testid="`line-total-${idx}`">
           {{ currency(lineAmount(item.quantity, item.unit_price)) }}
         </span>
@@ -295,7 +320,7 @@
           v-tooltip="'Duplicate line'"
           text
           size="small"
-          class="col-action"
+          class="col-action col-action-end"
           :data-testid="`line-copy-${idx}`"
           @click="duplicateLineAt(idx)"
         />
@@ -349,7 +374,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { capQuantity, lineAmount, MAX_LINE_QUANTITY, recordedQuantity } from '../utils/quantity';
 import Button from 'primevue/button';
 import InputText from 'primevue/inputtext';
@@ -933,7 +958,7 @@ const subtotal = computed(() =>
 // cells rendered, which varies by flags. Build the column track list to match
 // the conditional <span>/<input> order in the template (left action + cat? +
 // desc + qty + cost? + price + taxable? + margin? + total + right action).
-const gridStyle = computed(() => {
+const gridTracks = computed(() => {
   // Widths trimmed 2026-08-20 so all 11 tracks FIT at 1366px, the common
   // office laptop. They summed to 1018px in a 962px box, so the row scrolled
   // inside its own container and the TOTAL column sat off-screen -- the one
@@ -957,7 +982,64 @@ const gridStyle = computed(() => {
   if (props.showMargin) cols.push('72px');        // margin override
   cols.push('90px');                               // total
   cols.push('36px');                               // right action (copy)
-  return { gridTemplateColumns: cols.join(' ') };
+  return cols;
+});
+
+// A custom property, not an inline gridTemplateColumns: an inline declaration
+// beats every stylesheet rule, so the stacked layout below could never
+// restack the row. The desktop rule reads it back.
+const gridStyle = computed(() => ({ '--line-tracks': gridTracks.value.join(' ') }));
+
+// The `.line-item-row` column gap (0.25rem), in px, for the width sum below.
+const ROW_GAP_PX = 4;
+
+/**
+ * The narrowest box THIS editor's one-row grid fits in: every track at its
+ * minimum plus the gaps between them. 492px for a bare change-order editor,
+ * 940px with every invoice column -- which is why no single breakpoint can
+ * stand in for it (GDXA-938's first cut used 520px and left a landscape phone
+ * and the 1280px laptop scrolling sideways with the Total off-screen).
+ */
+const minRowWidth = computed(() => {
+  const tracks = gridTracks.value;
+  const px = tracks.reduce((sum, t) => sum + parseFloat(t.replace('minmax(', '')), 0);
+  return px + ROW_GAP_PX * (tracks.length - 1);
+});
+
+// GDXA-938: when the editor's own content box is narrower than its row, each
+// line becomes a label/value card instead of a row that scrolls sideways and
+// hides the Total. Measured on the editor, not the viewport: the same
+// component sits in a full-width invoice card and a 600px change-order dialog.
+// No ResizeObserver (jsdom) leaves the desktop grid, which is what it was.
+const editorEl = ref(null);
+const editorWidth = ref(null);
+const stacked = computed(() => editorWidth.value != null && editorWidth.value < minRowWidth.value);
+let editorObserver = null;
+let pendingFrame = null;
+
+// The width lands on the next frame, not inside the callback: Vue flushes the
+// class change in a microtask, which runs inside the observer's own step, so
+// the restack resized the box mid-step and the browser raised "ResizeObserver
+// loop completed with undelivered notifications" -- which App.vue toasts as
+// "Something went wrong" (seen at 768 and 915px).
+onMounted(() => {
+  if (typeof ResizeObserver === 'undefined' || !editorEl.value) return;
+  editorObserver = new ResizeObserver((entries) => {
+    const width = entries[entries.length - 1].contentRect.width;
+    if (pendingFrame != null) cancelAnimationFrame(pendingFrame);
+    pendingFrame = requestAnimationFrame(() => {
+      pendingFrame = null;
+      editorWidth.value = width;
+    });
+  });
+  editorObserver.observe(editorEl.value);
+});
+
+onBeforeUnmount(() => {
+  if (pendingFrame != null) cancelAnimationFrame(pendingFrame);
+  pendingFrame = null;
+  if (editorObserver) editorObserver.disconnect();
+  editorObserver = null;
 });
 
 // ---------------------------------------------------------------------------
@@ -1267,7 +1349,8 @@ function addFromCatalog(items) {
 .line-item-header,
 .line-item-row {
   display: grid;
-  /* grid-template-columns set inline via :style="gridStyle" (computed). */
+  /* Track list comes from gridStyle (computed), as a custom property. */
+  grid-template-columns: var(--line-tracks);
   /* 0.25rem, not 0.5rem: this gap applies TEN times across an 11-column row,
      so it cost 80px -- more than any single track. Halving it reclaims 40px,
      which is most of what kept the Total column off-screen at 1366px. */
@@ -1329,6 +1412,66 @@ function addFromCatalog(items) {
   gap: 0.5rem;
   padding-top: 0.5rem;
 }
+.line-label {
+  display: none;
+}
+
+/* Stacked layout (GDXA-938). `lines-stacked` is set when the editor's own
+   box is narrower than the row it renders (`minRowWidth`): 492px with no
+   optional columns, 940px with every invoice column. Without it the row
+   scrolled sideways inside this box and the Total -- second-to-last track --
+   was the column off-screen, on a phone and on a 1280px laptop alike. Each
+   line becomes a label/value card, so every field and the line total sit on
+   the line itself. Same inputs, same handlers: only the layout changes, the
+   shape EstimateView's own phone block (max-width: 768px) shipped. */
+.lines-stacked .line-item-header { display: none; }
+.lines-stacked .line-item-row {
+  grid-template-columns: minmax(5.5rem, auto) minmax(0, 1fr);
+  gap: 0.35rem 0.6rem;
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--p-content-border-color, #e5e7eb);
+  border-radius: 6px;
+}
+/* Definite columns keep every label beside its own value, whichever optional
+   columns this editor renders. */
+.lines-stacked .line-label {
+  display: block;
+  grid-column: 1;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--p-text-muted-color, #6b7280);
+}
+.lines-stacked .line-item-row > :not(.line-label):not(.col-action) {
+  grid-column: 2;
+  min-width: 0;
+}
+/* Delete and duplicate share the card's first row, at opposite ends so a
+   thumb aimed at one does not land on the other. */
+.lines-stacked .line-item-row > .col-action-start {
+  grid-row: 1;
+  grid-column: 1;
+  justify-self: start;
+}
+.lines-stacked .line-item-row > .col-action-end {
+  grid-row: 1;
+  grid-column: 2;
+  justify-self: end;
+}
+.lines-stacked .line-item-row > .col-taxable {
+  text-align: left;
+}
+/* A locked row's cost and margin cells are empty placeholders kept only to
+   fill desktop tracks; on the card they would be unlabelled blank rows. */
+.lines-stacked .line-item-row-locked > .col-cost,
+.lines-stacked .line-item-row-locked > .col-margin {
+  display: none;
+}
+.lines-stacked .line-total-display {
+  text-align: left;
+  font-weight: 600;
+}
+.lines-stacked .line-item-buttons { flex-wrap: wrap; }
 .line-items-subtotal {
   text-align: right;
   padding-top: 0.5rem;
