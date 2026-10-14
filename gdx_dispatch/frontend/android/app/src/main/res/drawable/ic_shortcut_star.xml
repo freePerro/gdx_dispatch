@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Long-press app shortcut icon for a favorited module (src/lib/mobileFavorites.js). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path
+        android:fillColor="#121C2F"
+        android:pathData="M24,0a24,24 0,1 1,0 48a24,24 0,1 1,0 -48z" />
+    <path
+        android:fillColor="#EAB308"
+        android:pathData="M24,11l3.9,8.1 8.9,1.2 -6.5,6.2 1.6,8.8L24,31.1l-7.9,4.2 1.6,-8.8 -6.5,-6.2 8.9,-1.2z" />
+</vector>

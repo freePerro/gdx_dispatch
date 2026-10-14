@@ -16,6 +16,7 @@ dependencies {
     implementation project(':capacitor-network')
     implementation project(':capacitor-preferences')
     implementation project(':capacitor-push-notifications')
+    implementation project(':capawesome-capacitor-app-shortcuts')
     implementation project(':capgo-capacitor-native-biometric')
 
 }
