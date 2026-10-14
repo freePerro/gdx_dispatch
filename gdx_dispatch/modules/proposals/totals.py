@@ -4,7 +4,9 @@ Estimate.total stores the line subtotal (sum of EstimateLine.line_total).
 Tax and discount are computed at render time using:
   - Estimate.tax_rate (per-estimate override; nullable decimal e.g. 0.0825)
   - Estimate.discount (per-estimate flat dollar amount; nullable)
-  - gdx_dispatch.modules.tax.service.resolve_rate(db, customer_id) when no override
+  - when no override, the job lane first (`null_rate_untaxed`: no job, a
+    job id matching no job, or an install-lane job -> 0, GDXA-930), else
+    gdx_dispatch.modules.tax.service.resolve_rate(db, customer_id)
     (reads TaxConfig.default_rate, honors customer exemptions).
   - TaxConfig.tax_labor (when False, excludes lines marked category=='labor'
     from the taxable subtotal — most US states don't tax service labor).
@@ -33,8 +35,8 @@ log = logging.getLogger(__name__)
 # The rate a new estimate is stored with when it is an installation: on an
 # install-lane job, or on no job yet (a converted estimate is an installation).
 # Installations are a construction contract and are not taxed (CLAUDE.md, Doug
-# 2026-10-12). A NULL rate is not "no tax": it falls through to resolve_rate
-# below, i.e. TaxConfig.default_rate. Not an exemption (GDXA-755).
+# 2026-10-12). A NULL rate is not "no tax": on any other lane it falls through
+# to resolve_rate below, i.e. TaxConfig.default_rate. Not an exemption (GDXA-755).
 NEW_ESTIMATE_TAX_RATE = Decimal("0")
 
 
@@ -55,6 +57,17 @@ def new_estimate_tax_rate(db: Session, job_id: Any) -> Decimal | None:
     if row is None or is_install_lane(row[0]):
         return NEW_ESTIMATE_TAX_RATE
     return None
+
+
+def null_rate_untaxed(db: Session, job_id: Any) -> bool:
+    """True when an estimate stored with a NULL tax_rate is untaxed by its lane.
+
+    The rule `new_estimate_tax_rate` stamps on a new row, read at render time
+    for the rows that predate it (GDXA-930): GDXA-755 left existing NULL rows
+    alone, so a job-less or install-lane estimate printed the tenant default
+    while the invoice made from it (`resolve_rate_for_job`) billed 0. Raises
+    on a DB error like the rate read it sits beside; callers own containment."""
+    return new_estimate_tax_rate(db, job_id) is not None
 
 
 class EstimateTotals(TypedDict):
@@ -245,11 +258,16 @@ def compute_estimate_totals(estimate: Estimate, db: Session | None) -> EstimateT
         # from the public proposal page. Contained, the customer still sees a
         # correct subtotal and total with tax 0. Logged, because a rate read
         # that fails shows the same 0 as a construction-contract rate (GDXA-755).
+        # The lane comes first (GDXA-930): an installation is never taxed, so
+        # the default is read only for a job on a taxed lane.
         try:
             with contained_read(db):
-                rate = _to_float(
-                    _resolve_tax_rate(db, getattr(estimate, "customer_id", None))
-                )
+                if null_rate_untaxed(db, getattr(estimate, "job_id", None)):
+                    rate = 0.0
+                else:
+                    rate = _to_float(
+                        _resolve_tax_rate(db, getattr(estimate, "customer_id", None))
+                    )
         except Exception:
             log.warning(
                 "estimate_tax_rate_read_failed estimate=%s; tax shown as 0",
@@ -295,4 +313,4 @@ def compute_estimate_totals(estimate: Estimate, db: Session | None) -> EstimateT
     }
 
 
-__all__ = ["EstimateTotals", "compute_estimate_totals"]
+__all__ = ["EstimateTotals", "compute_estimate_totals", "null_rate_untaxed"]

@@ -16,6 +16,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.models.tenant_models import Job
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
 from gdx_dispatch.modules.tax.models import TaxConfig
@@ -43,7 +44,13 @@ def _make_estimate(
     estimate_tax_rate: float | None = None,
     discount: float | None = None,
 ):
+    # On a service-call job: a NULL rate on no job is an installation's and
+    # untaxed (GDXA-930), and these tests exercise the tenant default.
+    job = Job(title="Repair", job_type="Service Call", company_id="tenant-test")
+    db.add(job)
+    db.flush()
     est = Estimate(
+        job_id=job.id,
         estimate_number=f"E-{uuid4().hex[:8]}",
         status="sent",
         company_id="tenant-test",

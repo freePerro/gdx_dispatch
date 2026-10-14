@@ -135,7 +135,7 @@ def _public_estimate_row(db):
     )
 
 
-def _estimate(*, total="1000.00", tax_rate=None, customer_id=None, lines=None):
+def _estimate(*, total="1000.00", tax_rate=None, customer_id=None, lines=None, job_id=None):
     """A stand-in estimate for the totals engine, which only READS attributes.
 
     Not an ORM row on purpose — see the module docstring on the stale template.
@@ -144,8 +144,27 @@ def _estimate(*, total="1000.00", tax_rate=None, customer_id=None, lines=None):
     """
     return SimpleNamespace(
         id=uuid.uuid4(), total=total, discount=None, tax_rate=tax_rate,
-        accepted_tier_id=None, customer_id=customer_id, lines=lines,
+        accepted_tier_id=None, customer_id=customer_id, lines=lines, job_id=job_id,
     )
+
+
+def _service_call_job(engine) -> uuid.UUID:
+    """A job on a taxed lane, so a NULL-rate estimate on it reads the tenant rate.
+
+    On no job or an installation a NULL rate is 0 by lane before any tax table
+    is read (``null_rate_untaxed``, GDXA-930), so a DROP of ``tax_config`` would
+    break nothing and a rate-read test on a job-less estimate passes vacuously.
+    """
+    job_id = uuid.uuid4()
+    with engine.begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO jobs (id, title, job_type, dispatch_status, company_id)"
+                " VALUES (:j, 'Spring replacement', 'Service Call', 'assigned', :t)"
+            ),
+            {"j": job_id, "t": TENANT},
+        )
+    return job_id
 
 
 def _break(engine, *statements: str) -> None:
@@ -290,12 +309,13 @@ def test_pg_tax_rate_read_failure_cannot_cost_the_caller_its_estimate(pg_test_en
     """
     _make_tax_config(pg_test_engine)
     cust = uuid.uuid4()
+    job = _service_call_job(pg_test_engine)
 
     # The read WORKS first — otherwise the drop below proves nothing. On its own
     # session, closed before the DROP, or the DROP deadlocks on its read lock.
     def _probe(probe):
         assert compute_estimate_totals(
-            _estimate(customer_id=cust), probe
+            _estimate(customer_id=cust, job_id=job), probe
         )["tax_rate"] == pytest.approx(0.07375)
 
     _prove_read_works(pg_test_engine, _probe)
@@ -304,7 +324,7 @@ def test_pg_tax_rate_read_failure_cannot_cost_the_caller_its_estimate(pg_test_en
     Session = _sessions(pg_test_engine)
     db = Session()
     _pending(db)
-    totals = compute_estimate_totals(_estimate(customer_id=cust), db)
+    totals = compute_estimate_totals(_estimate(customer_id=cust, job_id=job), db)
     assert totals["tax_rate"] == 0.0, "the documented degraded rate"
     assert totals["tax"] == 0.0
 
@@ -384,10 +404,12 @@ def test_pg_a_failed_rate_read_no_longer_takes_the_totals_block_with_it(pg_test_
             "VALUES (:i, 'GDXA157', :t, now())"
         ), {"i": str(cust), "t": TENANT})
 
+    # On a taxed lane, or the NULL rate is 0 by lane and the rate read never runs.
     est = Estimate(
         id=uuid.uuid4(), estimate_number="EST-TOTALS", proposal_mode=False,
         total="1000.00", status="draft", company_id=TENANT,
         public_token=uuid.uuid4().hex, customer_id=cust,
+        job_id=_service_call_job(pg_test_engine),
     )
     db.add(est)
     db.add(EstimateLine(
@@ -548,10 +570,11 @@ def test_pg_nesting_a_contained_read_around_a_self_swallowing_callee_is_legal(pg
     from gdx_dispatch.core.database import contained_read
 
     _make_tax_config(pg_test_engine)
+    job = _service_call_job(pg_test_engine)
     Session = _sessions(pg_test_engine)
     db = Session()
     _pending(db)
-    est = _estimate(customer_id=uuid.uuid4())
+    est = _estimate(customer_id=uuid.uuid4(), job_id=job)
 
     # The caller has emitted no SQL yet, so it holds no lock the DROP would wait on.
     _break(pg_test_engine, "DROP TABLE tax_exemption", "DROP TABLE tax_config")

@@ -111,9 +111,9 @@ def resolve_rate_for_job(
     Used by office invoice create and `/api/tax/resolve` (GDXA-796), the
     change order detail total (GDXA-797) and the closeout autodraft
     (GDXA-846). A new estimate's rate takes the same `is_install_lane` check
-    (`proposals.totals.new_estimate_tax_rate`, GDXA-755). Not estimate
-    totals: an estimate stored with a NULL rate still resolves the tenant
-    default with no lane check (`compute_estimate_totals`).
+    (`proposals.totals.new_estimate_tax_rate`, GDXA-755), and so does an
+    estimate stored with a NULL rate when its totals are computed
+    (`proposals.totals.null_rate_untaxed`, GDXA-930).
 
     - Installation or New Construction (`is_install_lane`) → 0, without
       reading the tenant default.
