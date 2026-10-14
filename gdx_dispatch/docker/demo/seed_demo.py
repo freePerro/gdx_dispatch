@@ -12,8 +12,11 @@ What it does:
      set by the app's own bootstrap from GDX_ADMIN_PASSWORD — we never re-hash
      it here, so it always matches what /auth/login verifies.
   2. Seeds a believable garage-door business: customers, jobs across the real
-     lifecycle stages, and invoices across the real AR statuses. Uses only
-     model-verified fields + enum values (tenant_models.py).
+     lifecycle stages, and invoices across the real AR statuses. Each invoice
+     bills a seeded job, is built from line items, is taxed by the
+     tax-follows-the-job rule (tax.service.resolve_rate_for_job), and is paid
+     by a Payment row when it is paid. Uses only model-verified fields + enum
+     values (tenant_models.py).
 
 Idempotent-ish: if the tenant already has live customers, business seeding is
 skipped. The nightly reset (reset-demo.sh) wipes the DB first and re-runs this,
@@ -33,16 +36,26 @@ from __future__ import annotations
 import os
 import secrets
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import select
 from werkzeug.security import generate_password_hash
 
 from gdx_dispatch.core.database import SessionLocal
+from gdx_dispatch.core.pricing_provenance import build_invoice_line
 from gdx_dispatch.core.tenant import company_id
-from gdx_dispatch.models.tenant_models import Customer, Invoice, Job, Technician, User
+from gdx_dispatch.models.tenant_models import (
+    Customer,
+    Invoice,
+    Job,
+    Payment,
+    Technician,
+    User,
+)
 from gdx_dispatch.modules.equipment.models import CustomerEquipment
 from gdx_dispatch.modules.numbering import allocate_job_number
+from gdx_dispatch.modules.tax.models import TaxConfig, TaxExemption
+from gdx_dispatch.modules.tax.service import resolve_rate_for_job
 
 NOW = datetime.now(timezone.utc)
 ADMIN_EMAIL = os.getenv("GDX_ADMIN_EMAIL", "demo@gdxdispatch.com")  # pii-ok: public demo login
@@ -81,7 +94,7 @@ JOBS = [
     (3, "Quarterly PM — 12 doors", "Maintenance", "scheduled", "assigned", "unbilled", 7),
     (4, "Off-track door realignment", "Repair", "completed", "done", "paid", -3),
     (5, "New construction — 4 door install", "Install", "estimate", "unassigned", "unbilled", 14),
-    (6, "Remote reprogramming", "Service", "completed", "done", "paid", -30),
+    (6, "Remote reprogramming", "Service", "completed", "done", "overdue", -30),
     (7, "Roll-up door cable repair", "Repair", "scheduled", "en_route", "unbilled", 1),
     (8, "Weather seal replacement", "Service", "completed", "done", "invoiced", -6),
     (9, "Spring + roller package", "Repair", "scheduled", "assigned", "unbilled", 2),
@@ -90,16 +103,57 @@ JOBS = [
     (3, "Emergency — door stuck open", "Repair", "completed", "done", "paid", -1),
 ]
 
-# (customer_index, status, subtotal, tax, days_offset_invoice_date)
+# The demo tenant's sales-tax setup, seeded with the business data so the
+# rate the invoices are billed at is the rate Settings shows.
+DEMO_TAX_RATE = "0.0825"
+# Wholesale reseller with a resale certificate: never taxed, on any job.
+EXEMPT_CUSTOMER_INDEXES = (5,)
+
+# Every invoice bills a seeded job (index into JOBS) and is built from lines;
+# subtotal, tax and total are computed from those lines in seed(), never
+# typed in. Tax follows the job (CLAUDE.md, Doug 2026-10-12/13): parts on a
+# repair/service job are taxed at the tenant default, an install is not, an
+# exempt customer never is, and labor is untaxed unless TaxConfig.tax_labor.
+#   (job_index, status, days_offset_invoice_date,
+#    [(description, category, quantity, unit_price), ...])
 INVOICES = [
-    (0, "paid", "285.00", "23.51", -20),
-    (1, "sent", "612.40", "50.52", -8),
-    (4, "paid", "189.00", "15.59", -3),
-    (8, "sent", "342.75", "28.28", -6),
-    (5, "paid", "4180.00", "344.85", -44),
-    (3, "paid", "525.00", "43.31", -1),
-    (6, "overdue", "95.00", "7.84", -52),
-    (9, "draft", "740.00", "61.05", 0),
+    (0, "paid", -20, [
+        ("Torsion spring pair, .250 x 2\" x 32\"", "Parts", "1", "145.00"),
+        ("Spring replacement labor", "Labor", "1.5", "95.00"),
+    ]),
+    (2, "sent", -8, [
+        ("Safety sensor pair", "Parts", "1", "64.00"),
+        ("Opener logic board", "Parts", "1", "189.00"),
+        ("Diagnose and repair opener", "Labor", "2", "95.00"),
+    ]),
+    (5, "paid", -3, [
+        ("Nylon rollers, 13-ball (set of 10)", "Parts", "1", "58.00"),
+        ("Lift cable pair", "Parts", "1", "32.00"),
+        ("Realign track and rehang door", "Labor", "1.5", "95.00"),
+    ]),
+    (9, "sent", -6, [
+        ("Bottom weather seal, 18 ft", "Parts", "1", "46.00"),
+        ("Vinyl stop molding, 9 ft (pair)", "Parts", "1", "38.00"),
+        ("Weather seal replacement labor", "Labor", "1", "95.00"),
+    ]),
+    (12, "paid", -44, [  # exempt customer: untaxed
+        ("Dock leveler hydraulic cylinder", "Parts", "1", "1240.00"),
+        ("Hydraulic fluid and seal kit", "Parts", "1", "185.00"),
+        ("Leveler service labor", "Labor", "6", "95.00"),
+    ]),
+    (13, "paid", -1, [
+        ("Lift cable pair", "Parts", "1", "32.00"),
+        ("Cable drum pair", "Parts", "1", "88.00"),
+        ("Emergency after-hours labor", "Labor", "2", "145.00"),
+    ]),
+    (7, "overdue", -30, [
+        ("3-button remote, Security+ 2.0", "Parts", "2", "39.00"),
+        ("Remote programming labor", "Labor", "0.5", "95.00"),
+    ]),
+    (3, "draft", 0, [  # installation: untaxed
+        ("Replacement gate panel, 24 ga steel", "Parts", "6", "385.00"),
+        ("Panel installation labor", "Labor", "8", "95.00"),
+    ]),
 ]
 
 # The demo TECH's route for TODAY — populates the /mobile "Today's Route" and the
@@ -115,8 +169,8 @@ TECH_JOBS = [
 ]
 
 
-def _money(s: str) -> Decimal:
-    return Decimal(s)
+def _money(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def seed() -> None:
@@ -199,11 +253,11 @@ def seed() -> None:
             cust_ids.append(c.id)
         print(f"[seed] {len(cust_ids)} customers")
 
-        job_count = 0
+        jobs = []
         for ci, title, jtype, lifecycle, dispatch, billing, off in JOBS:
             sched = NOW + timedelta(days=off)
             completed = sched if lifecycle == "completed" else None
-            db.add(Job(
+            jobs.append(Job(
                 customer_id=cust_ids[ci], title=title, job_type=jtype,
                 job_number=allocate_job_number(tenant_id, customer_name=CUSTOMERS[ci][0]),
                 lifecycle_stage=lifecycle, dispatch_status=dispatch,
@@ -212,8 +266,9 @@ def seed() -> None:
                 priority="Normal", is_demo=True, source="demo",
                 company_id=tenant_id,
             ))
-            job_count += 1
-        print(f"[seed] {job_count} jobs")
+        db.add_all(jobs)
+        db.flush()
+        print(f"[seed] {len(jobs)} jobs")
 
         # Today's route for the demo tech (assigned_to = Technician.id).
         if tech_id:
@@ -288,27 +343,73 @@ def seed() -> None:
             ))
             print("[seed] install job + door/opener equipment seeded")
 
+        # Tax setup before the invoices: resolve_rate_for_job reads both.
+        tax_cfg = db.execute(select(TaxConfig).limit(1)).scalars().first()
+        if tax_cfg is None:
+            tax_cfg = TaxConfig(
+                name="Default", default_rate=Decimal(DEMO_TAX_RATE),
+                tax_labor=False, configured_at=NOW,
+            )
+            db.add(tax_cfg)
+        for ci in EXEMPT_CUSTOMER_INDEXES:
+            db.add(TaxExemption(
+                customer_id=cust_ids[ci], exempt=True,
+                reason="Resale certificate on file",
+                certificate_id=f"DEMO-RESALE-{ci + 1:04d}",
+            ))
+        db.flush()
+
         inv_count = 0
-        for ci, status, subtotal, tax, off in INVOICES:
-            sub, tx = _money(subtotal), _money(tax)
-            total = sub + tx
+        for ji, status, off, lines in INVOICES:
+            job = jobs[ji]
+            rate = resolve_rate_for_job(db, job.customer_id, job.job_type)
             inv_date = (NOW + timedelta(days=off)).date()
-            due = inv_date + timedelta(days=15)
             paid = status == "paid"
-            db.add(Invoice(
-                customer_id=cust_ids[ci], job_id=None,
+            invoice = Invoice(
+                customer_id=job.customer_id, job_id=job.id,
                 invoice_number=f"INV-2026-{1000 + inv_count}",
                 public_token=secrets.token_urlsafe(24),
                 billing_type="standard", sequence_number=inv_count + 1,
-                subtotal=sub, tax_amount=tx, total=total,
-                balance_due=(Decimal("0.00") if paid else total),
-                status=status, invoice_date=inv_date, due_date=due,
+                tax_rate=rate, status=status,
+                invoice_date=inv_date, due_date=inv_date + timedelta(days=15),
                 sent_at=(NOW + timedelta(days=off) if status != "draft" else None),
                 paid_at=(NOW + timedelta(days=off) if paid else None),
                 company_id=tenant_id,
-            ))
+            )
+            db.add(invoice)
+            db.flush()
+            subtotal = taxable = Decimal("0")
+            for desc, category, qty, unit in lines:
+                line_total = _money(Decimal(qty) * Decimal(unit))
+                is_taxable = category != "Labor" or bool(tax_cfg.tax_labor)
+                # "manual": typed-in demo prices; the labor hours are demo
+                # figures with no time entries behind them, not attested.
+                db.add(build_invoice_line(
+                    pricing_source="manual", invoice_id=invoice.id, description=desc, category=category,
+                    quantity=Decimal(qty), unit_price=Decimal(unit),
+                    line_total=line_total, taxable=is_taxable,
+                    company_id=tenant_id,
+                ))
+                subtotal += line_total
+                if is_taxable:
+                    taxable += line_total
+            # Same arithmetic as invoices._recalculate_invoice on a
+            # rate-aware invoice.
+            invoice.subtotal = _money(subtotal)
+            invoice.tax_amount = _money(taxable * rate)
+            invoice.total = invoice.subtotal + invoice.tax_amount
+            invoice.balance_due = invoice.total
+            if paid:
+                # A paid invoice is paid by a payment row, not by a zeroed
+                # balance with nothing behind it.
+                db.add(Payment(
+                    invoice_id=invoice.id, amount=invoice.total,
+                    method="check", reference=f"CHK {4101 + inv_count}",
+                    payment_date=inv_date, company_id=tenant_id,
+                ))
+                invoice.balance_due = Decimal("0.00")
             inv_count += 1
-        print(f"[seed] {inv_count} invoices")
+        print(f"[seed] {inv_count} invoices, each built from its lines and billed to its job")
 
         db.commit()
         print("[seed] done.")
