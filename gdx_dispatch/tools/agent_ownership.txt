@@ -61,6 +61,9 @@ gdx_dispatch/tests/test_redis_isolation_fixture.py           platform-core
 # The four report-only scanners run on the real tree against their baselines,
 # with each baseline's entry count pinned (GDXA-404). Not gated, like pg.py.
 gdx_dispatch/tests/test_scanner_real_repo_ratchet.py         platform-core
+# core/roles.py's normalizer and its parity with the frontend mirror
+# constants/roles.js (GDXA-1010). Not gated, like pg.py.
+gdx_dispatch/tests/test_roles_canonical.py                   platform-core
 .github/*                                                    platform-core
 scripts/*                                                    platform-core
 tools/*                                                      platform-core
@@ -740,6 +743,7 @@ gdx_dispatch/routers/signatures.py                           documents-media
 gdx_dispatch/routers/branding_public.py                      documents-media
 gdx_dispatch/core/pdf_generator.py                           documents-media
 gdx_dispatch/core/document_text.py                           documents-media
+gdx_dispatch/core/file_serving.py                            documents-media
 gdx_dispatch/core/images.py                                  documents-media
 gdx_dispatch/core/job_photos.py                              documents-media
 gdx_dispatch/core/branding_logo.py                           documents-media

@@ -94,6 +94,24 @@ def _sanitize_details(d: dict) -> dict:
     return result
 
 
+def field_changes(
+    before: dict[str, Any], after: dict[str, Any], fields: tuple[str, ...], text_fields: tuple[str, ...] = ()
+) -> dict[str, dict[str, Any]]:
+    """The fields whose value differs, old -> new, for an update's audit row.
+
+    An update row records what CHANGED, not the keys the caller sent: a
+    same-value save names nothing, and an empty result means write no row
+    (GDXA-997). A free-text field is named but its text is not copied:
+    audit details are readable by every role through the activity feed, and
+    an edit that removes something from a note must not keep it there.
+    """
+    return {
+        k: {"text_changed": True} if k in text_fields else {"old": before[k], "new": after[k]}
+        for k in fields
+        if before[k] != after[k]
+    }
+
+
 def _payload_json(payload: dict[str, Any] | None) -> str:
     return json.dumps(payload or {}, sort_keys=True, separators=(",", ":"), default=str)
 

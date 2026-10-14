@@ -161,4 +161,24 @@ describe("Appointments page — arrivals", () => {
     expect(w.find('[data-testid="undo-arrival-tapped"]').exists()).toBe(false);
     expect(w.find('[data-testid="needs-answer-undo"]').exists()).toBe(false);
   });
+
+  // GDXA-1059: every write is a dispatch-manager action server-side, so an
+  // office role that can open the page (sales) gets no button that 403s.
+  it("an office role outside dispatch reads the page with no write controls", async () => {
+    role = "sales";
+    const w = await mountView();
+    expect(w.text()).toContain("Spring swap");
+    for (const id of ["new-appointment", "row-action-tapped", "enter-time-old", "undo-arrival-tapped", "cancel-tapped"]) {
+      expect(w.find(`[data-testid="${id}"]`).exists(), id).toBe(false);
+    }
+    await w.find("tbody tr").trigger("click");
+    expect(w.find(".dlg").exists()).toBe(false);
+  });
+
+  it("a dispatcher keeps every write control", async () => {
+    const w = await mountView();
+    for (const id of ["new-appointment", "row-action-tapped", "enter-time-old", "undo-arrival-tapped", "cancel-tapped"]) {
+      expect(w.find(`[data-testid="${id}"]`).exists(), id).toBe(true);
+    }
+  });
 });

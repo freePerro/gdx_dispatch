@@ -1,15 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from uuid import uuid4
-
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select, text
-from sqlalchemy.orm import Session
-
-from gdx_dispatch.core.audit import SYSTEM_ACTOR, log_audit_event
-from gdx_dispatch.models.tenant_models import LoyaltyPoints, LoyaltyReferral
 
 router = APIRouter(prefix="/api", tags=["marketing"])
 
@@ -22,75 +14,4 @@ class ReferralCreateIn(BaseModel):
     referee_phone: str = Field(..., min_length=1, max_length=30)
 
 
-# NOTE: /api/reviews/* and /api/referrals/* endpoints moved to dedicated
-# gdx_dispatch/routers/reviews.py and gdx_dispatch/routers/referrals.py. The prior inline
-# versions here lacked company_id scoping (tenant leak) and collided on
-# operation_id. Keeping only convert_referrals_for_customer below as it's
-# a helper used by other routers, not an HTTP endpoint.
-
-
-async def convert_referrals_for_customer(customer_id: str, customer_phone: str, db: Session) -> int:
-    if not customer_phone.strip():
-        return 0
-
-    now = datetime.now(UTC).isoformat()
-
-    # Fetch pending referrals matching this phone number via ORM
-    referrals = db.execute(
-        select(LoyaltyReferral).where(
-            LoyaltyReferral.status == "pending",
-            LoyaltyReferral.referee_phone == customer_phone.strip(),
-        )
-    ).scalars().all()
-
-    converted = 0
-    for referral in referrals:
-        # converted_customer_id is not in the ORM model — use text() for this column
-        db.execute(
-            text(
-                """
-                UPDATE loyalty_referrals
-                SET status = 'converted', converted_customer_id = :customer_id, converted_at = :converted_at
-                WHERE id = :referral_id
-                """
-            ),
-            {
-                "referral_id": referral.id,
-                "customer_id": customer_id,
-                "converted_at": now,
-            },
-        )
-
-        # Award loyalty points via ORM
-        points = LoyaltyPoints(
-            id=uuid4(),
-            customer_id=referral.referrer_id,
-            amount=250,
-            reason=f"Referral converted: {customer_id}",
-            created_by="system",
-        )
-        db.add(points)
-
-        # Mark referral as rewarded via ORM
-        referral.status = "rewarded"
-        referral.rewarded_at = now
-
-        # SYSTEM_ACTOR is deliberate: a referral converts as an automatic
-        # side effect of a customer being created. No human performs it.
-        await log_audit_event(
-            db,
-            event_type="referral_converted",
-            user_id=SYSTEM_ACTOR,
-            entity_type="referral",
-            entity_id=str(referral.id),
-            details={
-                "referrer_customer_id": referral.referrer_id,
-                "converted_customer_id": customer_id,
-                "points": 250,
-            },
-        )
-        converted += 1
-
-    if converted:
-        db.commit()
-    return converted
+# The review and referral endpoints live in routers/reviews.py and routers/referrals.py.

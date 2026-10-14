@@ -48,6 +48,19 @@
              two-row grid, and a third child takes the 1fr row at 0px while
              <main> paints over it. -->
         <WhatsNewBanner />
+        <!-- GDXA-1004: the router holds a must_change_password session on
+             /profile; say why, or the bounce off every nav item reads as a
+             broken sidebar. -->
+        <Message
+          v-if="auth.mustChangePassword"
+          severity="warn"
+          :closable="false"
+          class="password-change-banner"
+          data-testid="password-change-required-banner"
+        >
+          Your password must be changed before you can continue. Set a new one
+          under Change password below.
+        </Message>
       </div>
 
       <main id="main-content" class="layout-content" tabindex="-1">
@@ -76,6 +89,7 @@ import { useRoute } from 'vue-router';
 import Breadcrumb from 'primevue/breadcrumb';
 import ConfirmDialog from 'primevue/confirmdialog';
 import Drawer from 'primevue/drawer';
+import Message from 'primevue/message';
 import AppSidebar from './AppSidebar.vue';
 import AppTopbar from './AppTopbar.vue';
 import AppBottomNav from './AppBottomNav.vue';
@@ -271,6 +285,10 @@ onUnmounted(() => {
      to the column width and the topbar's own min-width:0 chain can ellipsise
      the brand instead. */
   min-width: 0;
+}
+
+.password-change-banner {
+  margin: var(--space-2) var(--space-4);
 }
 
 .breadcrumbs-row {

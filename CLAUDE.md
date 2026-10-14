@@ -65,7 +65,8 @@ this — the budget governs sweeps, not repairs.
 
 - Backend tests run through the docker-app image — never against a real DB.
   Frontend unit tests are vitest; e2e runs against a throwaway container,
-  which needs `-e GDX_E2E_BYPASS=1`.
+  which needs `-e GDX_E2E_BYPASS=1` **and** `-e GDX_ENV=dev`: the app refuses
+  to boot with the bypass when `GDX_ENV` is unset or production-like (GDXA-988).
 - Each gated commit needs its own dedicated `cd`; everywhere else use
   `git -C`. Check the current branch before every commit — an IDE or a
   parallel session can move it under you.

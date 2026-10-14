@@ -6,6 +6,8 @@
     GET  /api/vendor-invoices/{id}              detail + job suggestions + flags
     PATCH/api/vendor-invoices/{id}              set matched job / status
     POST /api/vendor-invoices/{id}/lines/{lid}/confirm   route a line + apply effects
+    POST /api/vendor-invoices/{id}/payments     record a manual payment on a bill
+    POST /api/vendor-invoices/{id}/payments/{pid}/void   void one payment record
 
 Vendor-invoice intake, Phase 1.
 """

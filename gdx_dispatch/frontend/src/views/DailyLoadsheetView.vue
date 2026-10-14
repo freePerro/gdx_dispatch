@@ -131,7 +131,7 @@ onMounted(loadData);
 
 /* Category groups */
 .category-group { margin-bottom: 1.25rem; }
-.category-header { font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: var(--p-primary-color, #3b82f6); border-bottom: 2px solid var(--p-primary-color, #3b82f6); padding-bottom: 0.3rem; margin-bottom: 0.5rem; }
+.category-header { font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: var(--p-primary-color); border-bottom: 2px solid var(--p-primary-color); padding-bottom: 0.3rem; margin-bottom: 0.5rem; }
 
 /* Checklist items */
 .checklist-item { display: flex; align-items: flex-start; gap: 0.75rem; padding: 0.75rem; background: var(--p-content-hover-background, #1e293b); border: 1px solid var(--p-content-border-color, #334155); border-radius: 8px; margin-bottom: 0.4rem; cursor: pointer; transition: opacity 0.2s; }

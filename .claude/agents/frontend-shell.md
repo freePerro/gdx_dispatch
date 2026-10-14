@@ -59,7 +59,9 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner frontend-s
 - **The lockfile regenerates only on npm 11.** 10.8.2 (CI's `setup-node` 20
   and `node:20-slim`) and 9.2.0 crash in arborist. Prove `npm ci` in
   `node:20-slim` before pushing a lockfile.
-- **e2e runs against a throwaway container with `-e GDX_E2E_BYPASS=1`**;
+- **e2e runs against a throwaway container with `-e GDX_E2E_BYPASS=1`**
+  and a non-production `GDX_ENV` (`dev`; the cloned env file already says
+  `development`), or the app refuses to boot (GDXA-988);
   the `verifyplaywright` path passes `--env-file` rather than cloning the
   environment, because cloning trips the credential guard. An empty
   `JWT_SECRET` crash-loops the container.

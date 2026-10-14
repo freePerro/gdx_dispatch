@@ -15,9 +15,10 @@ the plugin-host would be:
   a 5xx or an unreachable host is a 502 so nomad redelivers;
 - a 404 — the plugin-host answering while the plugin is NOT installed, which
   is prod's default state until the owner installs the card — passes through
-  and is not audited as received. Whether the shim should also log that drop
-  (today it does not) is an open ruling in the plan's owed-before-prod-use;
-  the test below pins the status and the no-audit rule, not the silence.
+  and is not audited as received;
+- every non-200 upstream verdict (404, 422, 5xx) leaves one warning naming the
+  status and nothing else — no body, no number (GDXA-1019 closed the ruling
+  the plan had left open on the 404 drop).
 
 Secret policy tests mirror test_inbound_comms's gate tests because the gate is
 the SAME code (core/webhook_auth.py): fail closed in prod with no secret,
@@ -118,6 +119,18 @@ def _audit_rows(TS):
         db.close()
 
 
+def _rejection_logs(caplog):
+    return [r for r in caplog.records
+            if r.name == cell_gateway.__name__ and "cell_gateway_upstream_rejected" in r.getMessage()]
+
+
+def _assert_rejection_logged(caplog, status):
+    """One warning, status only: the PII in SMS_EVENT never reaches it."""
+    [rec] = _rejection_logs(caplog)
+    assert rec.levelname == "WARNING"
+    assert rec.getMessage() == f"cell_gateway_upstream_rejected status={status}"
+
+
 # --- the door -----------------------------------------------------------------
 
 def test_secret_missing_config_fails_closed_in_prod(stack, monkeypatch):
@@ -188,10 +201,11 @@ def test_relay_stamps_core_context_and_forwards_nothing_from_the_phone(stack):
     assert "x-forwarded-for" not in h
 
 
-def test_accepted_event_is_audited_without_pii(stack):
+def test_accepted_event_is_audited_without_pii(stack, caplog):
     client, TS, upstream = stack
     upstream.body = {"status": "ok", "kind": "call", "id": "c-42"}
     assert _post(client).status_code == 200
+    assert _rejection_logs(caplog) == []  # only a non-200 is a drop
 
     [row] = [a for a in _audit_rows(TS) if a.action == "cell_event_received"]
     assert row.user_id == "cell-gateway"
@@ -205,7 +219,7 @@ def test_accepted_event_is_audited_without_pii(stack):
     assert "hello" not in str(row.details)
 
 
-def test_duplicate_is_a_cheap_200_and_not_audited(stack):
+def test_duplicate_is_a_cheap_200_and_not_audited(stack, caplog):
     """nomad retries at-least-once; the plugin answers `duplicate` for a
     redelivery and the shim neither errors nor audits the event twice."""
     client, TS, upstream = stack
@@ -213,9 +227,10 @@ def test_duplicate_is_a_cheap_200_and_not_audited(stack):
     r = _post(client)
     assert r.status_code == 200 and r.json()["status"] == "duplicate"
     assert _audit_rows(TS) == []
+    assert _rejection_logs(caplog) == []
 
 
-def test_plugin_422_passes_through_with_its_detail(stack):
+def test_plugin_422_passes_through_with_its_detail(stack, caplog):
     """A misconfigured forwarding rule on the phone gets the plugin's reason."""
     client, TS, upstream = stack
     upstream.status_code, upstream.body = 422, {"detail": "unknown kind 'pigeon'"}
@@ -223,24 +238,29 @@ def test_plugin_422_passes_through_with_its_detail(stack):
     assert r.status_code == 422
     assert r.json()["detail"] == "unknown kind 'pigeon'"
     assert _audit_rows(TS) == []
+    _assert_rejection_logged(caplog, 422)
 
 
-def test_plugin_not_installed_404_passes_through_untraced(stack):
+def test_plugin_not_installed_404_passes_through_logged_not_audited(stack, caplog):
     """The plugin-host is up but nothing is mounted at /api/plugins/cellcomms —
     prod's state until the owner installs the plugin. The phone gets the 404
-    back, and an event that never landed must not be audited as received."""
+    back, the drop is logged by status, and an event that never landed must
+    not be audited as received."""
     client, TS, upstream = stack
     upstream.status_code, upstream.body = 404, {"detail": "Not Found"}
     r = _post(client)
     assert r.status_code == 404
     assert _audit_rows(TS) == []
+    _assert_rejection_logged(caplog, 404)
 
 
-def test_plugin_5xx_is_502_so_nomad_retries(stack):
+@pytest.mark.parametrize("status", [500, 503])
+def test_plugin_5xx_is_502_so_nomad_retries(stack, caplog, status):
     client, TS, upstream = stack
-    upstream.status_code, upstream.body = 500, {"detail": "boom"}
+    upstream.status_code, upstream.body = status, {"detail": "boom"}
     assert _post(client).status_code == 502
     assert _audit_rows(TS) == []
+    _assert_rejection_logged(caplog, status)
 
 
 def test_plugin_host_down_is_502_so_nomad_retries(stack, monkeypatch):

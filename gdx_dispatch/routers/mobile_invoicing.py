@@ -23,6 +23,11 @@ Endpoints (all under /api/mobile, gated on the "mobile" module):
     POST /api/mobile/invoices/{invoice_id}/send    — email invoice to customer
     POST /api/mobile/invoices/{invoice_id}/send-receipt — send receipt for a
                                                           recorded payment
+    POST /api/mobile/invoices/{invoice_id}/sms-preview  — what "Text invoice"
+                                                          would send, or why not
+    POST /api/mobile/invoices/{invoice_id}/send-sms     — text the view-and-pay
+                                                          link from the tech's phone
+    POST /api/mobile/invoices/{invoice_id}/schedule-sms — text that link later
 """
 from __future__ import annotations
 

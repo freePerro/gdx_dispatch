@@ -670,3 +670,23 @@ def test_a_zero_quantity_is_zero_not_one(client):
     assert out["items"][0]["subtotal"] == 0.0
     assert out["items"][0]["cost_known"] is True
     db.close()
+
+
+def test_markup_rule_edit_audits_what_changed_not_what_was_sent(client: TestClient):
+    """GDXA-997: the row named every key sent; it now carries old -> new of
+    the fields that changed, and a same-value save writes no row."""
+    from gdx_dispatch.core.audit import AuditLog
+
+    created = client.post("/api/costing/markup-rules", json={"category": "parts", "markup_percent": 40}).json()
+    url = f"/api/costing/markup-rules/{created['id']}"
+    assert client.patch(url, json={"category": "parts", "markup_percent": 55}).status_code == 200
+    assert client.patch(url, json={"category": "parts", "markup_percent": 55, "active": True}).status_code == 200
+
+    Session = sessionmaker(bind=client._engine)  # type: ignore[attr-defined]
+    with Session() as db:
+        rows = db.execute(
+            select(AuditLog).where(AuditLog.action == "markup_rule_updated")
+        ).scalars().all()
+        assert [r.details for r in rows] == [
+            {"fields": ["markup_percent"], "changes": {"markup_percent": {"old": 40.0, "new": 55.0}}},
+        ]

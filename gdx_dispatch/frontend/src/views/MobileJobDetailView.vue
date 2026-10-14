@@ -2194,7 +2194,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
-  color: var(--p-primary-color, #3b82f6);
+  color: var(--p-primary-color);
   text-decoration: none;
 }
 .detail-customer .customer-link:active { text-decoration: underline; }
@@ -2217,7 +2217,7 @@ onBeforeUnmount(() => {
 .clock-row-day .clock-name { font-weight: 600; color: var(--p-text-color, #374151); }
 .clock-row-job .clock-name { font-size: 0.85rem; color: var(--p-text-muted-color, #6b7280); }
 .clock-state { font-size: 0.85rem; color: var(--p-text-muted-color, #6b7280); font-variant-numeric: tabular-nums; }
-.clock-state-on { color: var(--p-primary-color, #2563eb); font-weight: 600; }
+.clock-state-on { color: var(--p-primary-color); font-weight: 600; }
 /* #645 — break and stale read as NOT-running-normally at a glance.
    --p-orange-500 / --p-red-500 are PRIMITIVE palette tokens: they do not swap
    with the theme, so both modes get the same hue and the hex fallback only
@@ -2240,7 +2240,7 @@ onBeforeUnmount(() => {
    link inside a sentence — so the height comes from padding rather than from
    min-height, which an inline-block would not honour against the text box. */
 .clock-break-link {
-  color: var(--p-primary-color, #2563eb);
+  color: var(--p-primary-color);
   font-weight: 600;
   text-decoration: underline;
   display: inline-block;
@@ -2256,7 +2256,7 @@ onBeforeUnmount(() => {
 .detail-description { margin: 0; white-space: pre-wrap; font-size: 0.95rem; }
 .contact-row {
   display: flex; align-items: center; gap: 0.5rem;
-  color: var(--p-primary-color, #2563eb); text-decoration: none;
+  color: var(--p-primary-color); text-decoration: none;
   font-size: 0.95rem; padding: 0.25rem 0;
 }
 .contact-list { list-style: none; margin: 0.4rem 0 0; padding: 0; }
@@ -2273,7 +2273,7 @@ onBeforeUnmount(() => {
 .site-label {
   font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
   letter-spacing: 0.02em; margin-right: 0.35rem;
-  color: var(--p-primary-color, #2563eb);
+  color: var(--p-primary-color);
   border: 1px solid currentColor; border-radius: 4px; padding: 0.05rem 0.3rem;
 }
 .site-missing { color: var(--p-orange-500, #f59e0b); font-style: italic; }
@@ -2303,7 +2303,7 @@ onBeforeUnmount(() => {
   display: flex; align-items: center; justify-content: center;
   min-height: 44px; border-radius: 0.5rem; cursor: pointer;
   border: 1px dashed var(--p-content-border-color, #d1d5db);
-  color: var(--p-primary-color, #2563eb);
+  color: var(--p-primary-color);
   font-size: 0.95rem; font-weight: 600;
 }
 .photo-add input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
@@ -2352,7 +2352,7 @@ onBeforeUnmount(() => {
 
 .pending-flag {
   display: inline-flex; align-items: center; gap: 0.3rem;
-  color: var(--p-primary-color, #3b82f6);
+  color: var(--p-primary-color);
 }
 .failed-flag {
   display: inline-flex; align-items: center; gap: 0.3rem;
@@ -2409,8 +2409,8 @@ onBeforeUnmount(() => {
   font: inherit; font-size: 0.8rem; white-space: nowrap;
 }
 .chip-on {
-  background: var(--p-primary-color, #3b82f6);
-  border-color: var(--p-primary-color, #3b82f6); color: #fff; font-weight: 600;
+  background: var(--p-primary-color);
+  border-color: var(--p-primary-color); color: #fff; font-weight: 600;
 }
 .suggest-list {
   list-style: none; margin: 0; padding: 0;

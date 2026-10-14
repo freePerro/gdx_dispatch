@@ -502,7 +502,7 @@ onUnmounted(() => {
 .thread-title.customer-link {
   display: inline-block;
   line-height: 44px;
-  color: var(--p-primary-color, #3b82f6);
+  color: var(--p-primary-color);
   text-decoration: underline;
 }
 .thread-card.unread .thread-who {

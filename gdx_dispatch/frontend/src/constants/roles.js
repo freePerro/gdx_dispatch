@@ -2,8 +2,12 @@
  * Canonical role names + normalization — single source of truth (frontend).
  *
  * Mirror of backend core/roles.py. The same role is spelled multiple ways:
- *   - users.role (DB / JWT claim) uses SHORT legacy forms: 'tech', 'dispatch'
- *   - the RBAC catalog uses LONG forms: 'technician', 'dispatcher'
+ *   - users.role (DB / JWT claim) stores LONG forms: 'technician',
+ *     'dispatcher' — routers/users.py normalizes on write and migration 009
+ *     backfilled legacy rows (#45). Short 'tech' / 'dispatch' rows can still
+ *     exist (un-migrated rows; admin_ops user create/patch store the role as
+ *     sent); normalizeRole() collapses them.
+ *   - the RBAC catalog and tenant_roles.name use LONG forms too
  *   - a platform 'superadmin' role existed until 2026-09-06 (never a real
  *     account here; migration 089 folds any row into owner)
  *
@@ -18,6 +22,10 @@ export const TECHNICIAN = 'technician';
 export const SALES = 'sales';
 export const ACCOUNTING = 'accounting';
 export const VIEWER = 'viewer';
+// Not a BUILTIN_ROLES key: matches only a users.role written as 'manager'
+// (admin_ops user create/patch, or a direct write). A custom tenant role of
+// that name never reaches users.role (role_permissions assign_role syncs only
+// BUILTIN_ROLES names).
 export const MANAGER = 'manager';
 
 const ALIASES = {

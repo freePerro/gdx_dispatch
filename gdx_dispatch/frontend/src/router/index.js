@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
+import { createApiClient } from '../composables/useApi';
 import { isTechnician } from '../constants/roles';
 import { getLoginRedirectLocation } from '../lib/auth-urls';
 import { useViewMode } from '../composables/useViewMode';
@@ -224,15 +225,6 @@ export const routes = [
   //  second declaration silently won. Single declaration now.)
   { path: '/inventory', name: 'inventory', component: InventoryView },
   { path: '/door-listings', name: 'door-listings', component: DoorListingsView },
-  // Office timesheets — read + correct ANY tech's shifts.
-  //
-  // scheduling.write, NOT dispatch.read. dispatch.read was wrong twice over:
-  // it is a READ key on a page whose entire purpose is editing, and `viewer`
-  // holds every `.read` permission by construction while failing the backend's
-  // is_dispatch_manager gate — so a viewer got a nav entry and a passing route
-  // guard, then two 403s and an empty page. scheduling.write's holders
-  // (owner / admin / dispatcher) match DISPATCH_MANAGER_ROLES exactly, and
-  // "create / edit schedule entries" is the right verb for correcting a clock.
   // /communications → /inbox. The CommunicationsView screen was removed
   // (#350): threads lived in a dict in the API process, its senders were
   // unconfigured, and Send answered with a green toast when nothing left.
@@ -309,6 +301,15 @@ export const routes = [
     component: ModuleTabsPage,
     props: { clusterKey: 'payroll_hub' },
     children: [
+      // Office timesheets — read + correct ANY tech's shifts.
+      //
+      // scheduling.write, NOT dispatch.read. dispatch.read was wrong twice over:
+      // it is a READ key on a page whose entire purpose is editing, and `viewer`
+      // holds every `.read` permission by construction while failing the backend's
+      // is_dispatch_manager gate — so a viewer got a nav entry and a passing route
+      // guard, then two 403s and an empty page. scheduling.write's holders
+      // (owner / admin / dispatcher) match DISPATCH_MANAGER_ROLES exactly, and
+      // "create / edit schedule entries" is the right verb for correcting a clock.
       { path: '', name: 'timesheets', component: TimesheetsView, meta: { requiresPermission: 'scheduling.write' } },
       { path: '/timeclock', name: 'timeclock', component: TimeclockView },
       { path: '/payroll', name: 'payroll', component: PayrollView, meta: { requiresPermission: 'payroll.read' } },
@@ -448,6 +449,10 @@ export const routes = [
   { path: '/:pathMatch(.*)*', name: 'not-found', component: NotFoundView, meta: { public: true, noShell: true } },
 ];
 
+// Where a must_change_password session is held: UserProfileView carries the
+// self-service change-password form.
+export const PASSWORD_CHANGE_PATH = '/profile';
+
 export function createAppRouter() {
   const router = createRouter({
     history: createWebHistory(),
@@ -493,6 +498,17 @@ export function createAppRouter() {
     window.location.reload();
   });
 
+  // A 403 `password_change_required` from any API call (useApi sets the flag
+  // and fires this) re-runs the guard by navigating, so the person lands on
+  // the form instead of a page whose every call now fails.
+  if (typeof window !== 'undefined') {
+    window.addEventListener('gdx:password-change-required', () => {
+      if (router.currentRoute.value.path !== PASSWORD_CHANGE_PATH) {
+        router.push(PASSWORD_CHANGE_PATH).catch(() => {});
+      }
+    });
+  }
+
   router.beforeEach(async (to) => {
     const auth = useAuthStore();
 
@@ -512,6 +528,32 @@ export function createAppRouter() {
         return false;
       }
       return { path: '/dashboard' };
+    }
+
+    // GDXA-1004: an account flagged must_change_password (the seeded initial
+    // admin, an admin-created user) goes to the change-password form on
+    // /profile and stays there until the change succeeds. The server
+    // (GDXA-1003) refuses a flagged session with 403 `password_change_required`
+    // everywhere but GET /api/users/me, the change itself and the login,
+    // refresh and logout endpoints, and clears the
+    // flag on a password change or reset. Ahead of the
+    // tech and mobile redirects, which would otherwise bounce /profile away.
+    // Public routes (login, reset-password) stay reachable, and logout is a
+    // store action, not a route, so the person is never trapped.
+    if (auth.isAuthenticated && auth.mustChangePassword && !to.meta.public) {
+      if (to.path === PASSWORD_CHANGE_PATH) return true;
+      // Leaving /profile: ask the server before bouncing back. A reset link,
+      // another tab, or a 403 that landed after the change can leave this
+      // flag stale, and the bounce back is a duplicate navigation that never
+      // reloads /profile — so without this only F5 would let the person go.
+      // Through the API client, not hydrateUser: it refreshes an access token
+      // that expired while the person sat on the form, and it sets the flag
+      // (and reloads permissions) from the answer.
+      await createApiClient().get('/api/users/me').catch(() => {});
+      // A dead refresh logs the session out inside that call, which also
+      // reads the flag as false; the auth check above has already run.
+      if (!auth.isAuthenticated) return getLoginRedirectLocation(to.fullPath);
+      if (auth.mustChangePassword) return { path: PASSWORD_CHANGE_PATH };
     }
 
     if (auth.isAuthenticated && !to.meta.public && to.path !== '/login') {

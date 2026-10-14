@@ -59,6 +59,7 @@ _UNDOCUMENTED = "operator knob with a default; not yet documented in the templat
 
 NOT_IN_TEMPLATE: dict[str, str] = {
     "PYTEST_CURRENT_TEST": _RUNTIME,
+    "PYTEST_VERSION": _RUNTIME,
     "ALEMBIC_DATABASE_URL": _RUNTIME,
     "GIT_SHA": _RUNTIME,
     "APP_GIT_SHA": _RUNTIME,

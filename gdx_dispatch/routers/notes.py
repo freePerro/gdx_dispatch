@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
+from gdx_dispatch.core.audit import field_changes, log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.job_access import assert_job_access
 from gdx_dispatch.core.modules import require_module
@@ -237,6 +237,7 @@ def update_job_note(
     tenant_id = _tenant_id(request)
     note = _get_job_note_scoped(db, note_id, job_id, tenant_id)
     _author_gate(note, user)
+    before = _serialize_job_note(note)
     data = payload.model_dump(exclude_unset=True)
     if "body" in data and data["body"] is not None:
         note.body = data["body"]
@@ -244,17 +245,20 @@ def update_job_note(
         note.visibility = data["visibility"]
     db.commit()
     db.refresh(note)
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="job_note_updated",
-        entity_type="job_note",
-        entity_id=str(note.id),
-        details={"fields": list(data.keys())},
-        request=request,
-    )
-    return _serialize_job_note(note)
+    after = _serialize_job_note(note)
+    # What changed, old -> new (GDXA-997): the row used to list every key sent, unchanged ones included.
+    if changes := field_changes(before, after, ("body", "visibility"), text_fields=("body",)):
+        _audit(
+            db,
+            tenant_id=tenant_id,
+            user=user,
+            action="job_note_updated",
+            entity_type="job_note",
+            entity_id=str(note.id),
+            details={"fields": list(changes), "changes": changes},
+            request=request,
+        )
+    return after
 
 
 @router.delete(

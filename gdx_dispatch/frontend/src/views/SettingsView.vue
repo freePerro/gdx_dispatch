@@ -3083,7 +3083,7 @@ onBeforeUnmount(() => {
 }
 
 .native-select:focus {
-  outline: 2px solid var(--p-primary-color, #3b82f6);
+  outline: 2px solid var(--p-primary-color);
   outline-offset: 2px;
 }
 

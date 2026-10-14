@@ -267,3 +267,117 @@ def test_claim_warranty_not_found(tenant_db_session):
     with pytest.raises(Exception) as exc:
         file_warranty_claim(warranty_id=str(uuid4()), request=_mock_request(), payload={"notes": "Any"}, user={}, db=tenant_db_session)
     assert getattr(exc.value, "status_code", None) == 404
+
+
+# GDXA-997: the update audit row records what CHANGED, not what was sent.
+
+def _warranty_audit_rows(db, warranty_id: str) -> list[dict]:
+    from sqlalchemy import select
+
+    from gdx_dispatch.core.audit import AuditLog
+
+    # The audit table is created lazily on first write; a no-op PATCH never writes.
+    AuditLog.__table__.create(bind=db.get_bind(), checkfirst=True)
+    rows = db.execute(
+        select(AuditLog)
+        .where(AuditLog.action == "warranty_updated", AuditLog.entity_id == warranty_id)
+        .order_by(AuditLog.created_at, AuditLog.id)
+    ).scalars().all()
+    return [r.details for r in rows]
+
+
+def _stored_updated_at(db, warranty_id: str):
+    return db.execute(text("SELECT updated_at FROM warranties WHERE id = :id"), {"id": warranty_id}).scalar_one()
+
+
+def test_patch_audit_row_records_old_new_of_changed_fields_only(tenant_db_session):
+    warranty_id = _seed_warranty(tenant_db_session, description="Spring warranty", status="active")
+
+    update_warranty(
+        warranty_id=warranty_id,
+        request=_mock_request(),
+        # description resent unchanged, status changed, two keys the handler ignores
+        payload={"description": "Spring warranty", "status": "voided", "claim_count": 9, "bogus": 1},
+        user={"sub": "office-1"},
+        db=tenant_db_session,
+    )
+
+    rows = _warranty_audit_rows(tenant_db_session, warranty_id)
+    assert len(rows) == 1
+    assert rows[0]["fields_updated"] == ["status"]
+    assert rows[0]["changes"] == {"status": {"old": "active", "new": "voided"}}
+
+
+def test_patch_audit_row_carries_date_and_terms_old_new(tenant_db_session):
+    start = date(2026, 1, 1)
+    warranty_id = _seed_warranty(tenant_db_session, start_date=start, end_date=date(2027, 1, 1))
+
+    update_warranty(
+        warranty_id=warranty_id,
+        request=_mock_request(),
+        payload={"start_date": "2026-01-01", "end_date": "2027-06-30", "terms": "Parts only"},
+        user={},
+        db=tenant_db_session,
+    )
+
+    (row,) = _warranty_audit_rows(tenant_db_session, warranty_id)
+    assert row["changes"] == {
+        "end_date": {"old": "2027-01-01", "new": "2027-06-30"},
+        "terms": {"text_changed": True},  # free text is named, never copied into the feed
+    }
+
+
+def test_same_value_patch_writes_no_audit_row_and_keeps_updated_at(tenant_db_session):
+    warranty_id = _seed_warranty(tenant_db_session, description="Opener warranty", status="active")
+    before = get_warranty(warranty_id=warranty_id, _={}, db=tenant_db_session)
+
+    body = update_warranty(
+        warranty_id=warranty_id,
+        request=_mock_request(),
+        payload={
+            "description": "  Opener warranty  ",
+            "status": "active",
+            "terms": before["terms"],
+            "start_date": before["start_date"],
+            "end_date": before["end_date"],
+            "claim_count": 4,
+        },
+        user={},
+        db=tenant_db_session,
+    )
+
+    assert body == before
+    assert _warranty_audit_rows(tenant_db_session, warranty_id) == []
+    assert _stored_updated_at(tenant_db_session, warranty_id) is None  # seeded NULL, never bumped
+
+
+def test_patch_with_only_unknown_keys_is_still_400(tenant_db_session):
+    warranty_id = _seed_warranty(tenant_db_session)
+    with pytest.raises(Exception) as exc:
+        update_warranty(warranty_id=warranty_id, request=_mock_request(), payload={"claim_count": 3},
+                        user={}, db=tenant_db_session)
+    assert getattr(exc.value, "status_code", None) == 400
+
+
+def test_patch_non_string_status_is_422_over_http_not_500(tenant_db_session):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from gdx_dispatch.core.database import get_db
+
+    app = FastAPI()
+    app.include_router(router)
+    for dep in router.dependencies:  # require_module("warranties")
+        app.dependency_overrides[dep.dependency] = lambda: None
+    app.dependency_overrides[get_db] = lambda: tenant_db_session
+    app.dependency_overrides[get_current_user] = lambda: {"sub": "office-1"}
+    warranty_id = _seed_warranty(tenant_db_session, status="active")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    for bad in ([], ["active"], {"s": 1}, 1, None):
+        r = client.patch(f"/api/warranties/{warranty_id}", json={"status": bad})
+        assert r.status_code == 422, (bad, r.status_code, r.text)
+
+    ok = client.patch(f"/api/warranties/{warranty_id}", json={"status": "claimed"})
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["status"] == "claimed"
