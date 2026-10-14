@@ -36,6 +36,20 @@ class _FakeClient:
         return _FakeResp()
 
 
+class _NoDb:
+    """Session stand-in for the tests that patch out every DB read. The proxy
+    closes its session before the upstream call, so it needs a close()."""
+
+    def close(self):
+        pass
+
+
+def _no_db():
+    # A generator function, so FastAPI runs it as a yield dependency. A lambda
+    # returning iter([...]) is a plain callable: the handler got the iterator.
+    yield _NoDb()
+
+
 def _app(monkeypatch, *, modules, perms=("*",)):
     return _client(monkeypatch, modules=modules, perms=perms).app
 
@@ -59,7 +73,7 @@ def _client(monkeypatch, *, modules, perms=("*",)):
 
     app.include_router(plugins_proxy.router)
     app.dependency_overrides[get_current_user] = lambda: {"sub": "user-9", "role": "admin"}
-    app.dependency_overrides[plugins_proxy.get_db] = lambda: iter([None])
+    app.dependency_overrides[plugins_proxy.get_db] = _no_db
     return TestClient(app)
 
 
@@ -372,3 +386,44 @@ def test_request_that_may_have_run_is_not_called_unavailable(monkeypatch, exc):
     assert r.status_code == 500, r.text
     assert "retry-after" not in r.headers
     assert sunk == [500]
+
+
+@pytest.mark.parametrize("path", ["", "example/items"])
+def test_db_connection_is_back_in_the_pool_during_the_upstream_call(monkeypatch, tmp_path, path):
+    # A real engine and session, not a stand-in: the claim is about the pool.
+    # The proxy's reads (modules, permissions) open a transaction that holds a
+    # pooled connection until the session closes. Held across the upstream
+    # wait (up to 30 s), every in-flight plugin call pins one of the pool's
+    # connections and slow plugins starve every other request.
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import Session
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'pool.db'}")
+    c = _client(monkeypatch, modules={"example"})
+
+    def _modules_read(db, tid):
+        db.execute(text("SELECT 1"))
+        return {"example"}
+
+    monkeypatch.setattr(plugins_proxy, "enabled_module_keys", _modules_read)
+
+    def _real_db():
+        db = Session(engine)
+        try:
+            yield db
+        finally:
+            db.close()
+
+    c.app.dependency_overrides[plugins_proxy.get_db] = _real_db
+    seen = {}
+
+    class _PoolWatchingClient(_FakeClient):
+        async def request(self, *a, **k):
+            seen["checked_out"] = engine.pool.checkedout()
+            return _FakeResp()
+
+    monkeypatch.setattr(plugins_proxy.httpx, "AsyncClient", _PoolWatchingClient)
+    r = c.get(f"/api/plugins/{path}" if path else "/api/plugins")
+    assert r.status_code == 200, r.text
+    assert seen == {"checked_out": 0}
+    engine.dispose()
