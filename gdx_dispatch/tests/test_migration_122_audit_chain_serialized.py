@@ -152,6 +152,21 @@ def test_postgres(pg_test_db) -> None:
         engine.dispose()
 
 
+def test_on_an_empty_audit_log_it_writes_no_marker(tmp_path) -> None:
+    """A fresh install, and the pave's step 4b: the pave upgrades an empty
+    schema, then reloads the rows with the original marker among them, so a
+    marker written here is one row too many (test_pave_rebuild_pg's
+    `MISMATCH audit_logs: 3 -> 4`)."""
+    from gdx_dispatch.core.audit import AuditLog, TenantBase
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'fresh.db'}", future=True)
+    TenantBase.metadata.create_all(bind=engine)
+    with engine.begin() as c:
+        _load(c).upgrade()
+    with Session(engine) as s:
+        assert s.scalar(select(func.count()).select_from(AuditLog)) == 0
+
+
 def test_on_a_database_without_the_table_both_directions_are_no_ops(tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'empty.db'}", future=True)
     with engine.begin() as c:

@@ -24,6 +24,11 @@ Portability: one aggregate query with no literal ``%``; no Uuid comparison.
 Rerunnable: an existing marker means no second row, so the boundary never
 moves forward over forks that were already history.
 
+Empty table: no marker. Nothing the unlocked writer made exists, so nothing is
+history, which is what no marker means. This is a fresh install, and it is
+also ``tools/pave_tenant_db.py`` step 4b, which upgrades an empty schema
+before step 5 reloads the rows, the original marker among them.
+
 Rollback: ``downgrade()`` writes nothing and deletes nothing. The marker is an
 audit row and stays (the table refuses deletes). Code before GDXA-979 never
 reads it. After a downgrade and a fresh upgrade the first marker still holds,
@@ -52,6 +57,7 @@ ACTION = "audit_chain.serialized_writer"
 ACTOR = "migration:122_audit_chain_serialized"
 
 _EXISTING = text("SELECT 1 FROM audit_logs WHERE action = :action")
+_ANY_ROW = text("SELECT 1 FROM audit_logs LIMIT 1")
 _FORKED_PARENTS = text(
     "SELECT COUNT(*) FROM (SELECT prev_hash FROM audit_logs "
     "WHERE row_hash <> '' AND prev_hash <> '' GROUP BY prev_hash HAVING COUNT(*) > 1) forked"
@@ -65,6 +71,12 @@ def upgrade() -> None:
         return
     if bind.execute(_EXISTING, {"action": ACTION}).first() is not None:
         log.info("122: the audit-chain marker is already written; left as is")
+        return
+    if bind.execute(_ANY_ROW).first() is None:
+        # No row, so no history for a boundary to separate. This is also the
+        # pave's step 4b (empty schema, rows reloaded after): a marker written
+        # here would sit beside the reloaded one and fail its row count.
+        log.info("122: audit_logs is empty; no unlocked-writer history, no marker")
         return
 
     forked_parents = int(bind.execute(_FORKED_PARENTS).scalar() or 0)
