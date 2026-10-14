@@ -31,6 +31,7 @@ from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.auth.core import (
     PASSWORD_RESET_NOT_SENT_MESSAGES,
     PasswordResetEmailNotSent,
+    allowed_while_password_change_required,
     send_password_reset_link,
 )
 from gdx_dispatch.routers.settings import MAX_VACATION_ALLOWANCE_HOURS, allowance_hours_out
@@ -208,8 +209,12 @@ def _get_user_or_404(db: Session, tenant_id: str, user_id: str) -> User:
 
 
 @router.get("/me", response_model=None)
+@allowed_while_password_change_required
 def get_me(request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
-    return _serialize(_get_user_or_404(db, _tenant_id(request), _user_id(user)))
+    u = _get_user_or_404(db, _tenant_id(request), _user_id(user))
+    # GDXA-1003: report the live flag, so a client can learn that a password
+    # changed elsewhere has released this session without logging in again.
+    return {**_serialize(u), "must_change_password": bool(u.must_change_password)}
 
 
 @router.get("/me/permissions", response_model=None)
@@ -263,6 +268,7 @@ def update_me(payload: SelfPatchIn, request: Request, user: dict = Depends(get_c
 
 
 @router.post("/me/change-password", response_model=None)
+@allowed_while_password_change_required
 def change_my_password(payload: SelfPasswordChangeIn, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, str]:
     tid = _tenant_id(request)
     uid = _user_id(user)
@@ -286,9 +292,14 @@ def change_my_password(payload: SelfPasswordChangeIn, request: Request, user: di
     if payload.new_password == payload.current_password:
         raise HTTPException(status_code=400, detail="New password must be different from current password")
     u.password_hash = generate_password_hash(payload.new_password)
+    # GDXA-1003: this is the change the flag asks for; clearing it releases
+    # the session from the password_change_required gate on its next request.
+    was_flagged = bool(u.must_change_password)
+    u.must_change_password = False
     u.updated_at = utcnow()
     db.commit()
-    _audit(db, request=request, user=user, action="user_self_password_changed", entity_id=uid, details={})
+    _audit(db, request=request, user=user, action="user_self_password_changed", entity_id=uid,
+           details={"must_change_password_cleared": was_flagged})
     return {"ok": "password_changed"}
 
 
