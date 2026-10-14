@@ -56,6 +56,47 @@ def preview(template: str, seq: int, *, year: int | None = None, customer_name: 
     return apply_template(template, seq, year=y, customer_name=customer_name)
 
 
+class NumberingExhausted(RuntimeError):
+    """No number within ``_MAX_SKIPS`` of the counter is free of every job."""
+
+
+# The same reach migration 119's backfill gives itself. A template with no
+# ``{seq}`` renders one number for every seq, so the bound is what stops it.
+_MAX_SKIPS = 100_000
+
+_TAKEN_NUMBER = text("SELECT 1 FROM jobs WHERE job_number = :number")
+_TAKEN_NUMBERS = text("SELECT job_number FROM jobs WHERE job_number IS NOT NULL")
+
+
+def first_free_seq(
+    db: Session,
+    template: str,
+    seq: int,
+    *,
+    year: int,
+    customer_name: str | None = None,
+) -> tuple[int, str]:
+    """The first seq at or after ``seq`` whose number is on no job, and that number.
+
+    A counter behind the numbers already issued (rewound in Settings, or a
+    restored database) otherwise hands out a number ``ux_jobs_job_number_live``
+    refuses, and the job create 500s (GDXA-924). A soft-deleted job keeps its
+    number too, though the index would allow reuse: purchase orders, sent
+    emails and the audit trail still quote it, and migration 119's backfill
+    never reuses one either. The usual case is one indexed lookup; only a
+    collision reads the issued numbers to walk past them.
+    """
+    rendered = apply_template(template, seq, year=year, customer_name=customer_name)
+    if db.execute(_TAKEN_NUMBER, {"number": rendered}).first() is None:
+        return seq, rendered
+    used = set(db.execute(_TAKEN_NUMBERS).scalars())
+    for candidate in range(seq + 1, seq + 1 + _MAX_SKIPS):
+        rendered = apply_template(template, candidate, year=year, customer_name=customer_name)
+        if rendered not in used:
+            return candidate, rendered
+    raise NumberingExhausted(f"no free job number within {_MAX_SKIPS} of seq {seq} for {template!r}")
+
+
 def next_job_number(
     control_db: Session,
     tenant_id: UUID | str,
@@ -70,6 +111,10 @@ def next_job_number(
 
     Yearly reset: when the template contains ``{year}`` or ``{yy}`` AND
     the year has changed since job_number_year_seen, the seq resets to 1.
+
+    A number already on a job, live or deleted, is skipped and the counter persisted past
+    it (``first_free_seq``). ``jobs`` is read through this same session: the
+    app has one engine, so the "control" session is the tenant database.
     """
     tid = tenant_id if isinstance(tenant_id, UUID) else UUID(str(tenant_id))
 
@@ -108,7 +153,16 @@ def next_job_number(
     if ("{year}" in template or "{yy}" in template) and year_seen and year_seen != current_year:
         next_seq = 1
 
-    rendered = apply_template(template, next_seq, year=current_year, customer_name=customer_name)
+    # Skip past any number already on a job. Raises NumberingExhausted
+    # before the UPDATE, so the counter is left where it was.
+    free_seq, rendered = first_free_seq(
+        control_db, template, next_seq, year=current_year, customer_name=customer_name
+    )
+    if free_seq != next_seq:
+        log.warning(
+            "job_number_counter_behind tenant=%s seq=%s advanced_to=%s", tid, next_seq, free_seq
+        )
+        next_seq = free_seq
 
     # Persist incremented counter + last year seen
     control_db.execute(

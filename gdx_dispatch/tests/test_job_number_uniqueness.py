@@ -94,6 +94,7 @@ def test_allocate_job_number_on_postgres(pg_test_db, monkeypatch):
 
     import gdx_dispatch.core.database as database
     from gdx_dispatch.core.tenant_settings import Tenant, TenantSettings
+    from gdx_dispatch.models.tenant_models import Customer, CustomerLocation, Job
     from gdx_dispatch.modules.numbering import allocate_job_number
 
     schema = "alloc_834"
@@ -104,6 +105,11 @@ def test_allocate_job_number_on_postgres(pg_test_db, monkeypatch):
             c.exec_driver_sql(f"CREATE SCHEMA {schema}")
         Tenant.__table__.create(engine)
         TenantSettings.__table__.create(engine)
+        # The allocator skips numbers already on a live job (GDXA-924), so it
+        # reads jobs; built from the ORM with the tables its FKs name.
+        Job.metadata.create_all(
+            engine, tables=[Customer.__table__, CustomerLocation.__table__, Job.__table__]
+        )
         tid = uuid.uuid4()
         year = datetime.now(UTC).year
         with sessionmaker(bind=engine)() as s:
