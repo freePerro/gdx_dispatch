@@ -33,6 +33,7 @@ async function loginToken(baseURL) {
 
 async function prime(page, token) {
   await page.addInitScript((t) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', t);
   }, token);
 }

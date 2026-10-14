@@ -26,6 +26,7 @@ export const test = base.extend({
     const fx = loadFixtures();
     await page.addInitScript(
       ({ token, tenant }) => {
+        if (window !== window.top) return;
         sessionStorage.setItem('gdx_access_token', token);
       },
       { token: fx.token, tenant: fx.tenant },

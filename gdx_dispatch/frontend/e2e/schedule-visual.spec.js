@@ -41,8 +41,9 @@ test('screenshots: schedule dialog + dispatch queue, light and dark', async ({ p
   page.on('console', (m) => { if (m.type() === 'error') failures.push(`console: ${m.text().slice(0, 160)}`); });
 
   for (const theme of ['light', 'dark']) {
-    await page.addInitScript((t) => { localStorage.setItem('gdx_theme', t); }, theme);
+    await page.addInitScript((t) => { if (window !== window.top) return; localStorage.setItem('gdx_theme', t); }, theme);
     await page.addInitScript((a) => {
+      if (window !== window.top) return;
       sessionStorage.setItem('gdx_access_token', a.t);
     }, { t: access_token, tid: TENANT });
 

@@ -29,6 +29,7 @@ async function authedPage(page, baseURL) {
   const { access_token } = await r.json();
   await page.addInitScript(
     (a) => {
+      if (window !== window.top) return;
       sessionStorage.setItem("gdx_access_token", a.t);
     },
     { t: access_token, tid: TENANT },
@@ -114,7 +115,7 @@ test("C-visual — dedup warning light + dark screenshots", async ({ page, baseU
   await authedPage(page, baseURL);
 
   for (const theme of ["light", "dark"]) {
-    await page.addInitScript((t) => localStorage.setItem("gdx_theme", t), theme);
+    await page.addInitScript((t) => { if (window === window.top) localStorage.setItem("gdx_theme", t); }, theme);
     await page.goto("/customers");
     await page.locator('[data-testid="new-customer-btn"]').click();
     await expect(page.locator('[data-testid="customer-form-dialog"]')).toBeVisible({ timeout: 15000 });

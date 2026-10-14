@@ -24,7 +24,7 @@ test('the User column and the resolver name the person, not "system"', async ({ 
   });
   expect(r.ok(), 'login').toBeTruthy();
   const { access_token: token } = await r.json();
-  await page.addInitScript((t) => sessionStorage.setItem('gdx_access_token', t), token);
+  await page.addInitScript((t) => { if (window === window.top) sessionStorage.setItem('gdx_access_token', t); }, token);
 
   await page.goto('/server-errors');
   await page.getByTestId('server-errors-path-filter').fill(ERROR_PATH);

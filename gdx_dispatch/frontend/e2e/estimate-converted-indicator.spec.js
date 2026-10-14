@@ -52,6 +52,7 @@ test('converted estimate shows indicator + job link, hides Convert button', asyn
   expect(jobId, 'estimate accept should auto-create a job').toBeTruthy();
 
   await page.addInitScript((a) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', a.t);
   }, { t: access_token, tid: TENANT });
 

@@ -28,6 +28,7 @@ async function loginToken(baseURL, email, password) {
 
 async function primeAuth(page, token) {
   await page.addInitScript((t) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', t);
     sessionStorage.removeItem('gdx_user');
   }, token);

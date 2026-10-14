@@ -17,7 +17,16 @@ import { describe, expect, it, vi } from 'vitest';
 
 const mockGet = vi.fn();
 const mockPost = vi.fn();
-const mockAuth = { isAdmin: true, role: 'admin' };
+// Mirrors the real store with an empty permission set: loadPermissions
+// resolves, hasPermission fails open for an admin and closed otherwise.
+// Without them CashCalendarSummaryCard's onMounted threw an unhandled
+// TypeError that the blanket vitest ignore hid (GDXA-1068).
+const mockAuth = {
+  isAdmin: true,
+  role: 'admin',
+  loadPermissions: vi.fn().mockResolvedValue(undefined),
+  hasPermission: vi.fn(() => mockAuth.isAdmin),
+};
 
 vi.mock('../../composables/useApiWithToast', () => ({
   useApiWithToast: () => ({ get: mockGet, post: mockPost, patch: vi.fn() }),
