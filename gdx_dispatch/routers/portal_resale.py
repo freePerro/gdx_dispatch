@@ -73,16 +73,27 @@ def _audit(
     )
 
 
+# Refusals carry a code the portal branches on (detail.code), so a tab can
+# tell "not a reseller" from "has not agreed" without reading the wording.
+NOT_ELIGIBLE = "reseller_not_eligible"
+TERMS_NOT_ACCEPTED = "reseller_terms_not_accepted"
+TERMS_CHANGED = "reseller_terms_changed"
+
+
+def _refuse(status: int, code: str, message: str) -> HTTPException:
+    return HTTPException(status_code=status, detail={"code": code, "message": message})
+
+
 def _require_eligible(db: Session, principal: PortalPrincipal) -> None:
     if not service.is_eligible(db, principal.customer_id):
-        raise HTTPException(status_code=403, detail="Resale quotes are for contractor and wholesale accounts")
+        raise _refuse(403, NOT_ELIGIBLE, "Resale quotes are for contractor and wholesale accounts")
 
 
 def _require_disclaimer(db: Session, principal: PortalPrincipal) -> ResellerProfile:
     _require_eligible(db, principal)
     profile = service.get_profile(db, principal.customer_id)
     if not service.disclaimer_current(profile):
-        raise HTTPException(status_code=403, detail="Agree to the reseller terms on My Branding first")
+        raise _refuse(403, TERMS_NOT_ACCEPTED, "Agree to the reseller terms on My Branding first")
     return profile  # type: ignore[return-value]
 
 
@@ -129,11 +140,11 @@ def portal_save_reseller_profile(
 
     accepting = payload.accept_disclaimer_version is not None
     if accepting and payload.accept_disclaimer_version != service.DISCLAIMER_VERSION:
-        raise HTTPException(status_code=409, detail="The reseller terms changed. Reload and read them again.")
+        raise _refuse(409, TERMS_CHANGED, "The reseller terms changed. Read the new wording and agree again.")
 
     sent = payload.model_fields_set - {"accept_disclaimer_version"}
     if sent and not accepting and not service.disclaimer_current(profile):
-        raise HTTPException(status_code=403, detail="Agree to the reseller terms first")
+        raise _refuse(403, TERMS_NOT_ACCEPTED, "Agree to the reseller terms first")
 
     if profile is None:
         profile = ResellerProfile(customer_id=principal.customer_id, created_at=now)

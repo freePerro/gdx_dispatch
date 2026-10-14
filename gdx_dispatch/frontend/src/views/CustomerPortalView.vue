@@ -184,13 +184,15 @@
           <!-- Contractor and wholesale accounts only: their own brand and
                the quotes they resell our estimates under it. -->
           <TabPanel v-if="reseller.eligible" value="branding">
-            <PortalBrandingTab :fetcher="authedFetch" :blob-fetcher="authedBlob" @changed="resaleRefresh++" />
+            <PortalBrandingTab :fetcher="authedFetch" :blob-fetcher="authedBlob" @changed="onBrandingChanged" @not-eligible="refreshContext" />
           </TabPanel>
           <TabPanel v-if="reseller.eligible" value="myquotes">
             <PortalMyQuotesTab
               :fetcher="authedFetch"
               :downloader="downloadFile"
               :refresh-key="resaleRefresh"
+              :terms-accepted="reseller.disclaimer_accepted"
+              @not-eligible="refreshContext"
               @goto-branding="activeTab = 'branding'"
               @goto-estimates="activeTab = 'estimates'"
             />
@@ -620,12 +622,19 @@ async function authedFetch(path, options = {}) {
   if (!res.ok) {
     // Surface the server's detail string — "already accepted" is a far
     // better message than "request failed: 409".
+    // A coded refusal ({code, message}) keeps its code on the error, so a
+    // caller branches on what was refused rather than on the status.
     let detail = `request failed: ${res.status}`;
+    let code;
     try {
       const body = await res.json();
       if (typeof body?.detail === "string" && body.detail) detail = body.detail;
+      else if (typeof body?.detail?.message === "string" && body.detail.message) {
+        detail = body.detail.message;
+        if (typeof body.detail.code === "string") code = body.detail.code;
+      }
     } catch { /* non-JSON error body */ }
-    throw Object.assign(new Error(detail), { status: res.status });
+    throw Object.assign(new Error(detail), { status: res.status, code });
   }
   return res.json();
 }
@@ -836,6 +845,25 @@ function openResell(est) {
   resellEstimate.value = est;
   detailVisible.value = false;
   resellVisible.value = true;
+}
+
+// My Branding saved: a profile carries whether the terms are agreed, which
+// My Quotes waits on; a logo upload carries none and only re-reads the list.
+function onBrandingChanged(profile) {
+  if (profile?.disclaimer) {
+    reseller.value = { ...reseller.value, disclaimer_accepted: !!profile.disclaimer.accepted };
+  }
+  resaleRefresh.value += 1;
+}
+
+// A reseller tab was refused as not eligible (the account's type changed
+// mid-session): re-read the flags so the tabs go, and leave the tab they were on.
+async function refreshContext() {
+  try {
+    const ctx = await authedFetch("/portal/context");
+    if (ctx?.reseller) reseller.value = ctx.reseller;
+  } catch { /* the next full refresh retries */ }
+  if (!reseller.value.eligible && ["branding", "myquotes"].includes(activeTab.value)) activeTab.value = "estimates";
 }
 
 async function startDepositPay(estimateId) {

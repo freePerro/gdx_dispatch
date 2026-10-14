@@ -5,7 +5,8 @@
  * Pinned:
  *  1. Before the terms are agreed, the form is locked and "I agree" PUTs the
  *     version shown, and nothing else.
- *  2. A 409 (the wording changed) reloads the new wording.
+ *  2. The wording changed under them (409, reseller_terms_changed): it reloads
+ *     the new wording and says so, without telling them to reload (GDXA-1081).
  *  3. Save PUTs every field, so a cleared field is cleared on the server.
  *  4. A logo goes up as multipart `file`, then the preview is re-read through
  *     the authed blob fetcher.
@@ -81,12 +82,14 @@ describe('PortalBrandingTab', () => {
     expect(w.find('[data-testid="branding-disclaimer-accepted"]').exists()).toBe(true);
     expect(w.get('[data-testid="branding-save-btn"]').attributes('disabled')).toBeUndefined();
     expect(w.emitted('changed')).toHaveLength(1);
+    // The view gates My Quotes on this.
+    expect(w.emitted('changed')[0][0].disclaimer.accepted).toBe(true);
   });
 
-  it('a 409 shows the server message and reloads the new wording', async () => {
+  it('changed terms reload the new wording, with copy that does not say to reload', async () => {
     let gets = 0;
     const { w } = setup(async (url, opts) => {
-      if (opts?.method === 'PUT') throw Object.assign(new Error('The reseller terms changed. Reload and read them again.'), { status: 409 });
+      if (opts?.method === 'PUT') throw Object.assign(new Error('The reseller terms changed. Read the new wording and agree again.'), { status: 409, code: 'reseller_terms_changed' });
       gets += 1;
       return gets === 1 ? profile() : profile({ disclaimer: { ...profile().disclaimer, text: 'New words.', version: 'v2' } });
     });
@@ -95,7 +98,47 @@ describe('PortalBrandingTab', () => {
     await flushPromises();
     expect(gets).toBe(2);
     expect(w.get('[data-testid="branding-disclaimer-text"]').text()).toBe('New words.');
-    expect(w.get('[data-testid="branding-accept-error"]').text()).toContain('terms changed');
+    expect(w.get('[data-testid="branding-accept-error"]').text()).toBe('The terms were updated. Please read the new wording and agree again.');
+  });
+
+  it('another 409 (a save from another window) keeps its own message', async () => {
+    const { w } = setup(async (url, opts) => {
+      if (opts?.method === 'PUT') throw Object.assign(new Error('Saved from another window. Reload and try again.'), { status: 409 });
+      return profile();
+    });
+    await flushPromises();
+    await w.get('[data-testid="branding-accept-btn"]').trigger('click');
+    await flushPromises();
+    expect(w.get('[data-testid="branding-accept-error"]').text()).toBe('Saved from another window. Reload and try again.');
+  });
+
+  it('terms reworded since they agreed: a refused save brings I agree back and keeps their edits', async () => {
+    let gets = 0;
+    const { w } = setup(async (url, opts) => {
+      if (opts?.method === 'PUT') throw Object.assign(new Error('Agree to the reseller terms first'), { status: 403, code: 'reseller_terms_not_accepted' });
+      gets += 1;
+      return gets === 1
+        ? profile({ company_name: 'Acme Doors', disclaimer: ACCEPTED })
+        : profile({ company_name: 'Acme Doors', disclaimer: { text: 'New words.', version: 'v2', accepted: false, accepted_at: null } });
+    });
+    await flushPromises();
+    expect(w.find('[data-testid="branding-accept-btn"]').exists()).toBe(false);
+    await w.get('[data-testid="branding-company-name"]').setValue('Acme Doors LLC');
+    await w.get('[data-testid="branding-save-btn"]').trigger('click');
+    await flushPromises();
+    expect(w.find('[data-testid="branding-accept-btn"]').exists()).toBe(true);
+    expect(w.get('[data-testid="branding-disclaimer-text"]').text()).toBe('New words.');
+    expect(w.get('[data-testid="branding-company-name"]').element.value).toBe('Acme Doors LLC');
+    // The view lowers its flag, so My Quotes locks too.
+    expect(w.emitted('changed').at(-1)[0].disclaimer.accepted).toBe(false);
+  });
+
+  it('a not-eligible refusal asks the view to re-read', async () => {
+    const { w } = setup(async () => {
+      throw Object.assign(new Error('Resale quotes are for contractor and wholesale accounts'), { status: 403, code: 'reseller_not_eligible' });
+    });
+    await flushPromises();
+    expect(w.emitted('not-eligible')).toHaveLength(1);
   });
 
   it('save sends every field, so clearing one clears it', async () => {

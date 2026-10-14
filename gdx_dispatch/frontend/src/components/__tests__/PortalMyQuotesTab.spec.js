@@ -2,7 +2,10 @@
  * Customer portal — "My Quotes" (contractor resale quotes, PR B).
  *
  * Pinned:
- *  1. Before the terms are agreed (403) it says where to go, not "could not load".
+ *  1. Before the terms are agreed it says where to go, not "could not load",
+ *     and does not ask for a list the server will refuse; agreeing loads it.
+ *     A refusal is read by its code: "not a reseller" is not "not agreed"
+ *     (GDXA-1081).
  *  2. Each quote shows our price before tax, their price and the markup; an
  *     options quote lists each option.
  *  3. Download PDF hands the path and a filename to the downloader.
@@ -44,20 +47,49 @@ const OPTIONS_ROW = {
 function setup(fetchImpl, props = {}) {
   const fetcher = vi.fn(fetchImpl);
   const downloader = vi.fn(async () => {});
-  const w = mount(PortalMyQuotesTab, { props: { fetcher, downloader, ...props }, global: { stubs } });
+  const w = mount(PortalMyQuotesTab, { props: { fetcher, downloader, termsAccepted: true, ...props }, global: { stubs } });
   return { w, fetcher, downloader };
 }
 
 beforeEach(() => { confirmAnswer = true; confirmDestructive.mockClear(); });
 
 describe('PortalMyQuotesTab', () => {
-  it('before the terms are agreed it points at My Branding', async () => {
-    const { w } = setup(async () => { throw Object.assign(new Error('Agree to the reseller terms on My Branding first'), { status: 403 }); });
+  it('before the terms are agreed it asks for nothing and points at My Branding', async () => {
+    const { w, fetcher } = setup(async () => [ROW], { termsAccepted: false });
     await flushPromises();
+    expect(fetcher).not.toHaveBeenCalled();
     expect(w.find('[data-testid="my-quotes-locked"]').exists()).toBe(true);
     expect(w.find('[data-testid="my-quotes-error"]').exists()).toBe(false);
     await w.get('[data-testid="my-quotes-goto-branding"]').trigger('click');
     expect(w.emitted('goto-branding')).toHaveLength(1);
+  });
+
+  it('agreeing on My Branding loads the list', async () => {
+    const { w, fetcher } = setup(async () => [ROW], { termsAccepted: false });
+    await flushPromises();
+    await w.setProps({ termsAccepted: true });
+    await flushPromises();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(w.find('[data-testid="my-quotes-locked"]').exists()).toBe(false);
+    expect(w.find('[data-testid="my-quote-rq-1"]').exists()).toBe(true);
+  });
+
+  it('terms reworded since they agreed: the refusal locks it again', async () => {
+    const { w } = setup(async () => {
+      throw Object.assign(new Error('Agree to the reseller terms on My Branding first'), { status: 403, code: 'reseller_terms_not_accepted' });
+    });
+    await flushPromises();
+    expect(w.find('[data-testid="my-quotes-locked"]').exists()).toBe(true);
+    expect(w.emitted('not-eligible')).toBeUndefined();
+  });
+
+  it('a not-eligible 403 does not say to agree to the terms, and asks the view to re-read', async () => {
+    const { w } = setup(async () => {
+      throw Object.assign(new Error('Resale quotes are for contractor and wholesale accounts'), { status: 403, code: 'reseller_not_eligible' });
+    });
+    await flushPromises();
+    expect(w.find('[data-testid="my-quotes-locked"]').exists()).toBe(false);
+    expect(w.emitted('not-eligible')).toHaveLength(1);
   });
 
   it('an empty list says how to make a quote and links to estimates', async () => {
