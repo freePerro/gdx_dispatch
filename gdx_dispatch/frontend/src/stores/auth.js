@@ -1,6 +1,10 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 
+// sessionStorage marker for a session the server holds until its password
+// changes (GDXA-1004). Only ever '1' or absent.
+const PASSWORD_HOLD_KEY = 'gdx_pw_change_hold';
+
 /* Auth store — session token + current user. The server pins the one tenant. */
 export const useAuthStore = defineStore('auth', () => {
   const accessToken = ref(sessionStorage.getItem('gdx_access_token') || null);
@@ -44,13 +48,25 @@ export const useAuthStore = defineStore('auth', () => {
   // /api/users/me/change-password succeeds. The router guard keeps a flagged
   // session on /profile, where the change-password form lives. The server
   // enforces it; this only routes the person to the way out.
-  const mustChangePassword = computed(() => Boolean(user.value?.must_change_password));
+  // This ref is the source of truth, persisted only as a constant marker
+  // under its own key; no stored `gdx_user` carries the field, so no value
+  // read from a password-named field reaches storage (CodeQL
+  // js/clear-text-storage-of-sensitive-data, PR #1139). The login payload in
+  // memory (`user.must_change_password`) is not updated after login.
+  const mustChangePassword = ref(sessionStorage.getItem(PASSWORD_HOLD_KEY) === '1');
+
+  function _persistPasswordHold(flag) {
+    try {
+      if (flag) sessionStorage.setItem(PASSWORD_HOLD_KEY, '1');
+      else sessionStorage.removeItem(PASSWORD_HOLD_KEY);
+    } catch { /* ignore */ }
+  }
 
   function setMustChangePassword(value) {
     const flag = Boolean(value);
-    if (Boolean(user.value?.must_change_password) === flag) return;
-    user.value = { ...(user.value || {}), must_change_password: flag };
-    try { sessionStorage.setItem('gdx_user', JSON.stringify(user.value)); } catch { /* ignore */ }
+    if (mustChangePassword.value === flag) return;
+    mustChangePassword.value = flag;
+    _persistPasswordHold(flag);
     // Permission loads 403 while the flag is set; reload once it clears so
     // the sidebar and route gates see the real grants.
     if (!flag) loadPermissions({ force: true }).catch(() => {});
@@ -92,11 +108,16 @@ export const useAuthStore = defineStore('auth', () => {
     accessToken.value = data.access_token;
     sessionStorage.setItem('gdx_access_token', data.access_token);
     user.value = data.user || null;
-    if (user.value) {
-      try { sessionStorage.setItem('gdx_user', JSON.stringify(user.value)); } catch { /* ignore */ }
+    if (data.user) {
+      // The stored copy leaves the flag out; it persists as its own marker
+      // below. (LoginView reads it off the in-memory payload right after this.)
+      const { must_change_password: _flag, ...storedUser } = data.user;
+      try { sessionStorage.setItem('gdx_user', JSON.stringify(storedUser)); } catch { /* ignore */ }
     } else {
       sessionStorage.removeItem('gdx_user');
     }
+    mustChangePassword.value = data.user?.must_change_password === true;
+    _persistPasswordHold(mustChangePassword.value);
     loadPermissions({ force: true }).catch(() => {});
 
     return data;
@@ -120,6 +141,8 @@ export const useAuthStore = defineStore('auth', () => {
     permissionsLoaded.value = false;
     sessionStorage.removeItem('gdx_access_token');
     sessionStorage.removeItem('gdx_user');
+    mustChangePassword.value = false;
+    _persistPasswordHold(false);
     // localStorage too, for anything holding CUSTOMER data rather than session
     // data. The offline route cache keeps a full day of stops — customer name,
     // phone, address, notes and tags — so a shared or handed-on phone would
@@ -248,16 +271,16 @@ export const useAuthStore = defineStore('auth', () => {
           name: data.name || data.full_name || user.value?.name,
           full_name: data.full_name || data.name || user.value?.full_name,
           role: data.role || user.value?.role,
-          // /api/users/me reports the flag (GDXA-1003); take it when present.
-          // A response without the field keeps what login said rather than
-          // letting the guard go. (A held tab is released through useApi's
-          // GET /me — the router's re-ask and /profile's own load.)
-          must_change_password: typeof data.must_change_password === 'boolean'
-            ? data.must_change_password
-            : Boolean(user.value?.must_change_password),
         };
         user.value = merged;
         try { sessionStorage.setItem('gdx_user', JSON.stringify(merged)); } catch { /* ignore */ }
+        // /api/users/me reports the flag (GDXA-1003); take it when present.
+        // A response without the field keeps what login said rather than
+        // letting the guard go. (A held tab is released through useApi's
+        // GET /me — the router's re-ask and /profile's own load.)
+        if (typeof data.must_change_password === 'boolean') {
+          setMustChangePassword(data.must_change_password);
+        }
         return merged;
       } catch (_) {
         return null;

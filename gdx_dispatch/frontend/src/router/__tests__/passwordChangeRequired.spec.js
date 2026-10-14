@@ -48,7 +48,8 @@ describe('must_change_password routing', () => {
     setActivePinia(createPinia());
     auth = useAuthStore();
     auth.accessToken = 'opaque-test-token';
-    auth.user = { name: 'Initial Admin', role: 'admin', must_change_password: true };
+    auth.user = { name: 'Initial Admin', role: 'admin' };
+    auth.mustChangePassword = true;
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, { permissions: ['*'] })));
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -78,7 +79,8 @@ describe('must_change_password routing', () => {
   });
 
   it('runs before the technician redirect, which would bounce a tech to /mobile', async () => {
-    auth.user = { name: 'New Tech', role: 'technician', must_change_password: true };
+    auth.user = { name: 'New Tech', role: 'technician' };
+    auth.mustChangePassword = true;
     const router = createAppRouter();
     await router.push('/dashboard');
     expect(router.currentRoute.value.path).toBe('/profile');
@@ -91,7 +93,8 @@ describe('must_change_password routing', () => {
   });
 
   it('does not touch an unflagged session', async () => {
-    auth.user = { name: 'Office', role: 'admin', must_change_password: false };
+    auth.user = { name: 'Office', role: 'admin' };
+    auth.mustChangePassword = false;
     const router = createAppRouter();
     await router.push('/customers');
     expect(router.currentRoute.value.path).toBe('/customers');
@@ -101,7 +104,8 @@ describe('must_change_password routing', () => {
     ['a bare detail string', { detail: 'password_change_required' }],
     ['a structured detail', { detail: { code: 'password_change_required', message: 'Change your password' } }],
   ])('flags the session and moves to /profile on a 403 with %s', async (_label, body) => {
-    auth.user = { name: 'Office', role: 'admin', must_change_password: false };
+    auth.user = { name: 'Office', role: 'admin' };
+    auth.mustChangePassword = false;
     const router = createAppRouter();
     await router.push('/customers');
     expect(router.currentRoute.value.path).toBe('/customers');
@@ -116,7 +120,7 @@ describe('must_change_password routing', () => {
     // An expected refusal: not reported to the client-error tracker.
     expect(fetch).not.toHaveBeenCalledWith('/api/feedback/client-error', expect.anything());
     expect(auth.mustChangePassword).toBe(true);
-    expect(JSON.parse(sessionStorage.getItem('gdx_user')).must_change_password).toBe(true);
+    expect(sessionStorage.getItem('gdx_pw_change_hold')).toBe('1');
 
     await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/profile'));
   });
@@ -133,7 +137,8 @@ describe('must_change_password routing', () => {
   });
 
   it('leaves a plain permission 403 alone', async () => {
-    auth.user = { name: 'Office', role: 'admin', must_change_password: false };
+    auth.user = { name: 'Office', role: 'admin' };
+    auth.mustChangePassword = false;
     fetch.mockImplementation(async () => jsonResponse(403, { detail: 'Missing permission: [invoices.read_all]' }));
     const err = await createApiClient().get('/api/invoices').catch((e) => e);
     expect(err.status).toBe(403);
@@ -150,7 +155,7 @@ describe('must_change_password routing', () => {
       current_password: 'bootstrap', new_password: 'a-new-password',
     });
     expect(auth.mustChangePassword).toBe(false);
-    expect(JSON.parse(sessionStorage.getItem('gdx_user')).must_change_password).toBe(false);
+    expect(sessionStorage.getItem('gdx_pw_change_hold')).toBeNull();
     // Permissions 403'd while flagged; they are reloaded once it clears.
     expect(fetch).toHaveBeenCalledWith('/api/users/me/permissions', expect.anything());
 
@@ -259,7 +264,8 @@ describe('must_change_password routing', () => {
   });
 
   it('takes a set flag from GET /api/users/me, and leaves it alone when absent', async () => {
-    auth.user = { name: 'Office', role: 'admin', must_change_password: false };
+    auth.user = { name: 'Office', role: 'admin' };
+    auth.mustChangePassword = false;
     fetch.mockImplementation(async () => jsonResponse(200, { id: 'u1', role: 'admin', must_change_password: true }));
     await createApiClient().get('/api/users/me');
     expect(auth.mustChangePassword).toBe(true);
@@ -284,8 +290,36 @@ describe('must_change_password routing', () => {
     ));
     await auth.login({ email: 'a@example.test', password: 'bootstrap' });
     expect(auth.mustChangePassword).toBe(true);
+    expect(sessionStorage.getItem('gdx_pw_change_hold')).toBe('1');
+    // The stored user copy carries no flag; LoginView reads the in-memory one.
+    expect(JSON.parse(sessionStorage.getItem('gdx_user'))).toEqual({ id: 'u1', email: 'a@example.test', role: 'admin' });
+    expect(auth.user.must_change_password).toBe(true);
     const router = createAppRouter();
     await router.push('/dashboard');
     expect(router.currentRoute.value.path).toBe('/profile');
+  });
+
+  it('survives a reload through its own storage marker, and logout clears it', async () => {
+    auth.setMustChangePassword(false);
+    auth.setMustChangePassword(true);
+    expect(sessionStorage.getItem('gdx_pw_change_hold')).toBe('1');
+    // A fresh store (a hard reload) reads the marker back.
+    setActivePinia(createPinia());
+    const reloaded = useAuthStore();
+    expect(reloaded.mustChangePassword).toBe(true);
+    reloaded.logout();
+    expect(reloaded.mustChangePassword).toBe(false);
+    expect(sessionStorage.getItem('gdx_pw_change_hold')).toBeNull();
+  });
+
+  it('writes the flag into no stored user object', async () => {
+    // CodeQL js/clear-text-storage-of-sensitive-data (PR #1139): the flag
+    // lives under its own constant marker, never inside gdx_user.
+    auth.setMustChangePassword(false);
+    auth.setMustChangePassword(true);
+    fetch.mockImplementation(async () => jsonResponse(200, { id: 'u1', email: 'a@example.test', name: 'A', role: 'admin', must_change_password: true }));
+    await auth.hydrateUser({ force: true });
+    expect(JSON.parse(sessionStorage.getItem('gdx_user'))).not.toHaveProperty('must_change_password');
+    expect(auth.mustChangePassword).toBe(true);
   });
 });
