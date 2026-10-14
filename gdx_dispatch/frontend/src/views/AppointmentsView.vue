@@ -24,7 +24,7 @@
               class="range-clear"
               @click="clearDateRange"
             />
-            <Button label="+ New Appointment" icon="pi pi-plus" @click="openCreate" />
+            <Button v-if="canWrite" label="+ New Appointment" icon="pi pi-plus" data-testid="new-appointment" @click="openCreate" />
           </div>
         </template>
       </Toolbar>
@@ -57,7 +57,8 @@
       <div v-if="loading" class="spinner-wrap"><ProgressSpinner /></div>
 
       <DataTable
-        class="clickable-rows appointments-table"
+        class="appointments-table"
+        :class="{ 'clickable-rows': canWrite }"
       responsiveLayout="scroll"
         v-else
         :value="appointments"
@@ -74,7 +75,7 @@
             <i class="pi pi-calendar" aria-hidden="true"></i>
             <h3>No appointments found</h3>
             <p>Schedule a visit to keep jobs moving and customers in the loop.</p>
-            <Button label="+ Schedule First" icon="pi pi-plus" @click="openCreate" />
+            <Button v-if="canWrite" label="+ Schedule First" icon="pi pi-plus" @click="openCreate" />
           </div>
         </template>
 
@@ -106,7 +107,7 @@
           <template #body="{ data }">
             <div class="row-actions">
               <Button
-                v-if="rowAction(data)"
+                v-if="canWrite && rowAction(data)"
                 :label="rowAction(data).label"
                 size="small"
                 :loading="actionLoadingId === data.id"
@@ -116,7 +117,7 @@
                 @click.stop="runRowAction(data)"
               />
               <Button
-                v-if="isStatusOnlyArrival(data)"
+                v-if="canWrite && isStatusOnlyArrival(data)"
                 label="Enter arrival time"
                 size="small"
                 severity="secondary"
@@ -125,7 +126,7 @@
                 @click.stop="openArrivalTime(data, 'enter')"
               />
               <Button
-                v-if="canUndoArrival && hasArrival(data)"
+                v-if="canWrite && hasArrival(data)"
                 v-tooltip="'Undo arrival'"
                 aria-label="Undo arrival"
                 icon="pi pi-undo"
@@ -137,7 +138,7 @@
                 @click.stop="openUndo(data)"
               />
               <Button
-                v-if="data.status !== 'completed' && data.status !== 'cancelled'"
+                v-if="canWrite && data.status !== 'completed' && data.status !== 'cancelled'"
                 v-tooltip="'Cancel'"
                 aria-label="Cancel appointment"
                 icon="pi pi-ban"
@@ -146,6 +147,7 @@
                 size="small"
                 :loading="actionLoadingId === data.id"
                 :disabled="actionLoadingId === data.id"
+                :data-testid="`cancel-${data.id}`"
                 @click.stop="cancelAppointment(data)"
               />
             </div>
@@ -293,7 +295,7 @@
         <template #footer>
           <Button label="Close" severity="secondary" @click="question.visible = false" />
           <Button
-            v-if="canUndoArrival"
+            v-if="canWrite"
             label="Undo arrival"
             icon="pi pi-undo"
             severity="secondary"
@@ -349,8 +351,9 @@ const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
 const toast = useToast();
-// Undo arrival is a dispatcher/admin/owner action server-side (403 otherwise).
-const canUndoArrival = computed(() => isDispatchManagerRole(auth?.user?.role));
+// Every write on this page is a dispatch-manager action server-side (403
+// otherwise, GDXA-1059). Other office roles that reach the page read it only.
+const canWrite = computed(() => isDispatchManagerRole(auth?.user?.role));
 
 const appointments = ref([]);
 const loading = ref(false);
@@ -508,7 +511,7 @@ function openEdit(eventOrAppt) {
   // pass the row. Accept both shapes; reading `.data` off a plain
   // appointment row is undefined → fall through.
   const appointment = eventOrAppt?.data ?? eventOrAppt;
-  if (!appointment) return;
+  if (!appointment || !canWrite.value) return;
   editingAppointment.value = appointment;
   form.value = {
     title: appointment.title || '',
