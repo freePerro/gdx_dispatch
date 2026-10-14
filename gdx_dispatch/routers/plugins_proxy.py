@@ -182,6 +182,13 @@ async def proxy_to_plugin_host(
                 detail=f"Missing permission: plugin.{plugin_key}.{action}",
             )
 
+    # Every DB read this handler makes is above. Close the session before the
+    # upstream wait (up to 30 s): its reads opened a transaction that holds a
+    # pooled connection until close, so otherwise each in-flight plugin call
+    # pins one and slow plugins starve every other request of a connection.
+    # get_db closes it again afterwards, which is a no-op.
+    db.close()
+
     # Forward incoming headers EXCEPT hop-by-hop and any client-supplied X-GDX-*
     # (those are ours to set — never trust the client's copy).
     fwd = {
