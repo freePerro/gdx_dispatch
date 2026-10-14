@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -162,6 +162,50 @@ def test_build_quote_from_preset_creates_estimate_with_three_tiers(session_facto
         assert body["total"] >= 600
         # Lines copied — one good, two better, three best lines from preset
         assert len(body["lines"]) >= 6
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(("job_type", "taxed"), [("Installation", False), ("Service Call", True)])
+def test_build_quote_tax_rate_follows_the_job_lane(session_factory, job_type, taxed):
+    """GDXA-755: the quote goes out `sent`. An installation is a construction
+    contract, stored at 0; parts on a service call are taxed, so it stays NULL,
+    the 7.38% tenant default. The job is an ORM row: _seed's raw-SQL dashed id
+    never matches the ORM lane lookup on SQLite, and would read as no job (0)."""
+    from decimal import Decimal
+
+    from gdx_dispatch.models.tenant_models import Job
+    from gdx_dispatch.modules.proposals.models import Estimate
+    from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
+    from gdx_dispatch.modules.tax.models import TaxConfig
+
+    seed = _seed(session_factory)
+    db = session_factory()
+    try:
+        db.add(TaxConfig(name="Default", default_rate=Decimal("0.0738")))
+        job = Job(
+            title=job_type, job_type=job_type, customer_id=UUID(seed["customer_id"]),
+            company_id="tenant-a", assigned_to="user-1", dispatch_status="on_site",
+        )
+        db.add(job)
+        db.commit()
+        resp = mobile_quoting.build_quote(
+            job_id=job.id.hex,  # SQLite stores the 32-hex form the raw gate compares
+            payload=mobile_quoting.BuildQuoteIn(service="spring_replacement"),
+            request=_request(),
+            current_user=_TEST_USER,
+            db=db,
+        )
+        assert resp.status_code == 201, resp.body
+        est = db.get(Estimate, UUID(_as_json(resp)["id"]))
+        assert est.total > 0
+        tax = compute_estimate_totals(est, db)["tax"]
+        if taxed:
+            assert est.tax_rate is None
+            assert tax == pytest.approx(float(est.total) * 0.0738, abs=0.01)
+        else:
+            assert est.tax_rate == Decimal("0")
+            assert tax == 0.0
     finally:
         db.close()
 

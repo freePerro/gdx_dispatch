@@ -67,12 +67,14 @@ const ESTIMATE = {
 };
 
 let customerList;
+let taxConfig = {};
 
 function routeGet(url) {
   if (url === '/api/estimates/est-1') return ESTIMATE;
   if (url.startsWith('/api/estimates/est-1/activity')) return { items: [], total: 0, context: null };
   if (url.startsWith('/api/customers?')) return customerList;
-  if (url === '/api/tax/config' || url === '/api/pricing-engine/settings' || url === '/api/estimates-features') return {};
+  if (url === '/api/tax/config') return taxConfig;
+  if (url === '/api/pricing-engine/settings' || url === '/api/estimates-features') return {};
   return [];
 }
 
@@ -162,7 +164,7 @@ describe('EstimateView — lead link on create', () => {
     return call?.[1];
   }
 
-  afterEach(() => { routeMock.query = {}; });
+  afterEach(() => { routeMock.query = {}; taxConfig = {}; });
 
   it("sends the lead when the estimate is for the lead's customer", async () => {
     routeMock.params = {};
@@ -179,5 +181,45 @@ describe('EstimateView — lead link on create', () => {
     const payload = await draftCreatePayload();
     expect(payload).toBeTruthy();
     expect(payload.lead_id).toBeNull();
+  });
+
+  it('shows a new estimate at 0% and sends null until the rate is edited, so the server picks the lane rate (GDXA-892)', async () => {
+    taxConfig = { default_rate: 0.0738 };
+    routeMock.params = {};
+    routeMock.query = { customer_id: 'cust-1' };
+    const payload = await draftCreatePayload();
+    expect(payload).toBeTruthy();
+    expect(payload.tax_rate).toBeNull();
+  });
+
+  // The rate field emits `emitted` (PrimeVue emits on every blur, changed or
+  // not), then a customer is picked: the create payload's tax_rate.
+  async function createRateAfterRateEmit(emitted) {
+    taxConfig = { default_rate: 0.0738 };
+    routeMock.params = {};
+    routeMock.query = {};
+    apiPost.mockReset().mockImplementation(async (url) => (
+      url === '/api/estimates' ? { id: 'est-new', estimate_number: 'EST-0002' } : {}
+    ));
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.vm.form.tax_rate).toBe(0);
+    const rate = wrapper.findAllComponents(baseStubs.InputNumber)
+      .find((c) => c.attributes('id') === 'est-tax-rate');
+    rate.vm.$emit('update:modelValue', emitted);
+    await flushPromises();
+    wrapper.vm.form.customer_id = 'cust-1';
+    await flushPromises();
+    await new Promise((r) => setTimeout(r, 700));  // the 500 ms pick debounce
+    await flushPromises();
+    return apiPost.mock.calls.find(([url]) => url === '/api/estimates')?.[1].tax_rate;
+  }
+
+  it('sends the rate the user typed on a new estimate (GDXA-892)', async () => {
+    expect(await createRateAfterRateEmit(5)).toBe(0.05);
+  });
+
+  it('still sends null when the rate field is only tabbed through (GDXA-892)', async () => {
+    expect(await createRateAfterRateEmit(0)).toBeNull();
   });
 });

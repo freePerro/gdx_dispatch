@@ -25,7 +25,8 @@ from gdx_dispatch.tools import silent_failure_scanner
 # a count in the same change that fixes a finding; a raised count means
 # someone re-froze over a new finding, and review sees it here.
 BASELINE_CEILING = {
-    "drift_scanner": 324,
+    # 324 -> 323: GDXA-755 logs the rate-read swallow in proposals/totals.py.
+    "drift_scanner": 323,
     "silent_failure_scanner": 94,
     "comment_drift_scan": 71,
     "frontend_contract_scan": 4,

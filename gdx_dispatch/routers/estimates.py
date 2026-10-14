@@ -45,6 +45,7 @@ from gdx_dispatch.modules.estimates_features import (
 from gdx_dispatch.modules.numbering import allocate_job_number
 from gdx_dispatch.modules.phone_com.scheduled import ScheduleLinkSmsIn  # the /schedule-sms composer
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
+from gdx_dispatch.modules.proposals.totals import new_estimate_tax_rate
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -557,8 +558,9 @@ class EstimateCreateIn(BaseModel):
     label: str | None = None
     jobsite_address: str | None = None
     notes: str | None = None
-    # Per-estimate overrides — null = use tenant-wide tax rate from
-    # /api/tax/config; tax_rate is a decimal (0.0825 = 8.25%).
+    # Per-estimate overrides; tax_rate is a decimal (0.0825 = 8.25%). null =
+    # the job lane's default: 0 on no job or an install-lane job, the tenant
+    # default on any other lane (GDXA-755, new_estimate_tax_rate).
     tax_rate: float | None = Field(default=None, ge=0, le=1)
     discount: float | None = Field(default=None, ge=0, le=999999.99)
     # Frontend submits the full line-items array on /estimates/new. Pre-fix
@@ -878,7 +880,10 @@ def create_draft_estimate_record(
     """Stage a draft estimate (flush, no commit, no audit) — the body of
     POST /api/estimates, shared with lead start-estimate so numbering and
     defaults live in one place. hide_line_prices is tri-state: None inherits
-    the tenant's total-only default; False would force prices visible."""
+    the tenant's total-only default; False would force prices visible.
+    tax_rate=None stores the job lane's default (new_estimate_tax_rate): 0 on
+    no job or an install-lane job, NULL (the tenant default) on any other lane
+    (GDXA-755)."""
     estimate = Estimate(
         job_id=job_id,
         customer_id=customer_id,
@@ -887,7 +892,7 @@ def create_draft_estimate_record(
         jobsite_address=jobsite_address.strip() if jobsite_address else None,
         description=description.strip() if description else None,
         notes=notes.strip() if notes else None,
-        tax_rate=tax_rate,
+        tax_rate=tax_rate if tax_rate is not None else new_estimate_tax_rate(db, job_id),
         discount=discount,
         hide_line_prices=hide_line_prices,
         lead_id=lead_id,
@@ -1306,6 +1311,15 @@ def patch_estimate(
         job = db.execute(select(Job).where(Job.id == updates["job_id"], Job.deleted_at.is_(None))).scalar_one_or_none()
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
+
+    # A null rate on a rated estimate means "the default", which is the job
+    # lane's (GDXA-755): 0 on no job or an install-lane job, the tenant default
+    # on any other lane. The editor sends null only for a NULL-rate row, but a
+    # page loaded before that fix sends it whenever its form equals the tenant
+    # default. A row already at NULL stays NULL: GDXA-756's backfill.
+    if "tax_rate" in updates and updates["tax_rate"] is None and estimate.tax_rate is not None:
+        lane_job_id = updates.get("job_id", estimate.job_id)
+        updates["tax_rate"] = new_estimate_tax_rate(db, lane_job_id)
 
     for key, value in updates.items():
         if isinstance(value, str):
@@ -3500,7 +3514,15 @@ def duplicate_estimate(
         jobsite_address=source.jobsite_address,
         description=source.description,
         notes=source.notes,
-        tax_rate=source.tax_rate,
+        # A NULL source gets the default of the copy's own lane, not the
+        # source's (GDXA-755): the copy is on no job, and convert-to-job makes
+        # it an installation, whose invoice is untaxed. A NULL here would quote
+        # the tenant default and bill 0.
+        tax_rate=(
+            source.tax_rate
+            if source.tax_rate is not None
+            else new_estimate_tax_rate(db, None)
+        ),
         discount=source.discount,
         proposal_mode=bool(source.proposal_mode),
         hide_line_prices=source.hide_line_prices,

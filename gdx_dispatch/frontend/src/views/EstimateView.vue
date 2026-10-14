@@ -499,10 +499,11 @@
             <!-- Tax & Discount -->
             <div class="form-field">
               <label for="est-tax-rate">Tax Rate</label>
-              <InputNumber id="est-tax-rate" v-model="form.tax_rate" suffix="%" :min="0" :max="100"
+              <InputNumber id="est-tax-rate" :modelValue="form.tax_rate" suffix="%" :min="0" :max="100"
                 :minFractionDigits="0" :maxFractionDigits="2" class="w-full"
                 :placeholder="taxRateUnknown ? 'Default unavailable' : undefined"
-                :disabled="estimateLocked" data-testid="estimate-tax-rate" />
+                :disabled="estimateLocked" data-testid="estimate-tax-rate"
+                @update:modelValue="onTaxRateInput" />
             </div>
             <div class="form-field">
               <label for="est-discount">Discount</label>
@@ -1486,12 +1487,25 @@ async function retryTaxConfig() {
     taxConfigRetrying.value = false;
   }
 }
-// The tax_rate a save sends, as a decimal. Only a rate the user changed from
-// the tenant default is persisted; null keeps the estimate tracking it. With
-// the default unknown nothing can be compared, so a rate in the form is sent
-// as it stands and a blank stays null.
+// Set when the user changes the rate field; a programmatic fill is not an edit.
+// PrimeVue's InputNumber emits update:modelValue on every blur, so only a
+// different value counts: tabbing through the field is not an edit.
+const taxRateEdited = ref(false);
+function onTaxRateInput(value) {
+  if (value !== form.value.tax_rate) taxRateEdited.value = true;
+  form.value.tax_rate = value;
+}
+// The tax_rate a save sends, as a decimal. A new estimate whose rate nobody
+// edited sends null, so the server stamps the job lane's rate
+// (new_estimate_tax_rate; GDXA-892). Any other estimate that is not a legacy
+// row (server rate NULL) sends the rate on screen, a blank as 0 (GDXA-755).
+// A legacy row persists only a rate the user changed from the tenant default;
+// null keeps it tracking the default. With the default unknown nothing can be
+// compared, so a rate in the form is sent as it stands and a blank stays null.
 function taxRatePayload() {
   const raw = form.value.tax_rate;
+  if (!isExisting.value && !taxRateEdited.value) return null;
+  if (!form.value._tax_rate_was_null) return (Number(raw) || 0) / 100;
   if (tenantDefaultTaxPct.value == null) return raw == null ? null : (Number(raw) || 0) / 100;
   const formPct = Number(raw) || 0;
   return Math.abs(formPct - tenantDefaultTaxPct.value) > 0.001 ? formPct / 100 : null;
@@ -2130,9 +2144,9 @@ const form = ref({
   jobsite_address: "",
   valid_until: null,
   notes: "",
-  // tax_rate is a percent (e.g. 8.25). null = "use tenant default" — we
-  // don't bind null directly to the InputNumber; the form watcher copies
-  // tenantDefaultTaxPct in once it loads.
+  // tax_rate is a percent (e.g. 8.25). A new estimate starts at 0 (GDXA-755);
+  // a loaded estimate whose server rate is null (legacy) shows the tenant
+  // default, which is what the server prices it at.
   tax_rate: 0,
   discount: 0,
   // "Total-only" override. null = inherit tenant default; true/false explicit.
@@ -2965,8 +2979,11 @@ function _followOwnWrite(body, prefix = "") {
 // are left out: the id a POST writes back is not an edit.
 let _syncedFormSnapshot = null;
 
+// _tax_rate_was_null is page bookkeeping, not an edit: clearing it after a save
+// must not schedule a same-values PATCH (GDXA-755).
 function _formSnapshot() {
-  return JSON.stringify(form.value, (key, value) => (key === "id" ? undefined : value));
+  return JSON.stringify(form.value, (key, value) =>
+    (key === "id" || key === "_tax_rate_was_null" ? undefined : value));
 }
 
 async function reloadAfterConflict() {
@@ -3165,6 +3182,9 @@ async function _flushNow() {
       throw err;
     }
     if ("valid_until" in header) _syncedValidUntil = validUntil;
+    // The row now has a rate, so it is no longer legacy NULL: a later pick of
+    // the tenant rate must send that rate, not null (GDXA-755).
+    if (header.tax_rate != null) form.value._tax_rate_was_null = false;
 
     // 2. Pending deletes — drain first so newly-added lines don't collide.
     if (pendingLineDeletes.value.length > 0) {
@@ -4192,8 +4212,10 @@ onMounted(async () => {
   if (isExisting.value) {
     await fetchEstimate();
   } else {
-    // New estimate: prefill tax rate with tenant default once it loads.
-    form.value.tax_rate = tenantDefaultTaxPct.value;
+    // New estimate: shows 0%, the construction-contract rate the server stamps
+    // on a job-less create (GDXA-755). Create sends null until the rate is
+    // edited (taxRatePayload), and the form then follows the row it gets back.
+    form.value.tax_rate = 0;
     loading.value = false;
   }
   // Pre-select customer when /estimates/new?customer_id=… is visited.

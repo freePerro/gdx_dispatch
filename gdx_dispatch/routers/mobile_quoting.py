@@ -45,7 +45,7 @@ from gdx_dispatch.core.service_presets import (
 from gdx_dispatch.core.tenant_mobile_settings import get_tenant_mobile_setting
 from gdx_dispatch.modules.phone_com.scheduled import ScheduleLinkSmsIn  # the /schedule-sms composer
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine, ProposalTier
-from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
+from gdx_dispatch.modules.proposals.totals import compute_estimate_totals, new_estimate_tax_rate
 
 log = logging.getLogger(__name__)
 
@@ -466,6 +466,9 @@ def build_quote(
         jobsite_address=quote_jobsite,
         notes=payload.notes,
         proposal_mode=True,
+        # The job lane's default (GDXA-755): 0 on an install-lane job, NULL
+        # (the tenant default) on a service call, whose parts are taxed.
+        tax_rate=new_estimate_tax_rate(db, _UUID(job_id)),
         status="draft",
         valid_until=valid_until,
         company_id=str(tenant_id),
