@@ -781,7 +781,7 @@ onMounted(() => {
 .msg-card.flagged { border-left: 3px solid var(--p-orange-500, #f97316); }
 .msg-flag { color: var(--p-orange-500, #f97316); font-size: 0.8rem; margin-right: 0.3rem; }
 .msg-card.unread {
-  border-left: 3px solid var(--p-primary-color, #2563eb);
+  border-left: 3px solid var(--p-primary-color);
   font-weight: 500;
 }
 
@@ -999,8 +999,8 @@ onMounted(() => {
   font-size: 0.7rem;
   padding: 0.05rem 0.45rem;
   border-radius: 10px;
-  border: 1px solid var(--p-primary-color, #2563eb);
-  color: var(--p-primary-color, #2563eb);
+  border: 1px solid var(--p-primary-color);
+  color: var(--p-primary-color);
   max-width: 12rem;
   overflow: hidden;
   text-overflow: ellipsis;

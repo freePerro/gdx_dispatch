@@ -491,7 +491,7 @@ onUnmounted(() => {
    reason as the call dialog: the primary token's light-mode contrast is low
    app-wide (2.53:1, recorded in main.js), so colour alone is not enough. */
 .pane-header .customer-link {
-  color: var(--p-primary-color, #3b82f6);
+  color: var(--p-primary-color);
   text-decoration: underline;
 }
 .pane-header-actions {
