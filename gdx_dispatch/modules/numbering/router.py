@@ -96,6 +96,14 @@ def update_config(
     # for the initial-less number only; the allocator's skip covers the rest.
     fmt, seq = payload.job_number_format, payload.job_number_next_seq
     year = datetime.now(UTC).year
+    # A format that renders the same number for every seq (no {seq}) numbers
+    # one job; the allocator skips the taken number, finds no other, and every
+    # later job is created unnumbered with only a log line to show for it.
+    if apply_template(fmt, seq, year=year) == apply_template(fmt, seq + 1, year=year):
+        raise HTTPException(
+            status_code=400,
+            detail="the format must include {seq}, or every job after the first gets the same number",
+        )
     try:
         free_seq, free_number = first_free_seq(db, fmt, seq, year=year)
     except NumberingExhausted as exc:

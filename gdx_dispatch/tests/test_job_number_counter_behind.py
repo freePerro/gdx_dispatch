@@ -214,3 +214,21 @@ def test_patch_config_refuses_a_seq_already_issued(pg, monkeypatch):
         assert audited == 1
     finally:
         db.close()
+
+
+def test_patch_config_refuses_a_format_without_seq(pg, monkeypatch):
+    """A fixed format numbers one job; every later create would go unnumbered."""
+    from gdx_dispatch.modules.numbering.router import router as numbering_router
+
+    engine, Session, tid = pg
+    client, db = _client(monkeypatch, Session, tid, role="admin", routers=[numbering_router])
+    try:
+        for fmt in ("GDX", "{customer_initials}-{year}"):
+            r = client.patch("/api/numbering/config",
+                             json={"job_number_format": fmt, "job_number_next_seq": 2})
+            assert r.status_code == 400, (fmt, r.text[:400])
+            assert "{seq}" in r.json()["detail"]
+        with engine.connect() as c:
+            assert c.execute(text("SELECT job_number_format FROM tenant_settings")).scalar() != "GDX"
+    finally:
+        db.close()
