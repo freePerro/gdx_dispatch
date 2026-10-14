@@ -15,6 +15,7 @@ in one place updates everywhere consistently.
 """
 from __future__ import annotations
 
+import logging
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, TypedDict
 
@@ -24,7 +25,36 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
+from gdx_dispatch.modules.tax.service import is_install_lane
 from gdx_dispatch.modules.tax.service import resolve_rate as _resolve_tax_rate
+
+log = logging.getLogger(__name__)
+
+# The rate a new estimate is stored with when it is an installation: on an
+# install-lane job, or on no job yet (a converted estimate is an installation).
+# Installations are a construction contract and are not taxed (CLAUDE.md, Doug
+# 2026-10-12). A NULL rate is not "no tax": it falls through to resolve_rate
+# below, i.e. TaxConfig.default_rate. Not an exemption (GDXA-755).
+NEW_ESTIMATE_TAX_RATE = Decimal("0")
+
+
+def new_estimate_tax_rate(db: Session, job_id: Any) -> Decimal | None:
+    """The tax_rate a new estimate is stored with when the caller names none.
+
+    Lane-aware (Doug's ruling on GDXA-772, 2026-10-13): 0 for an estimate on
+    no job or on an install-lane job; None, the tenant default, for a job on
+    any other lane, whose parts are taxed. A job id that matches no job is
+    treated as no job. The same lane rule invoices apply
+    (tax.service.resolve_rate_for_job): a 0 on a service-call estimate would
+    be billed as a quoted 0% (GDXA-842)."""
+    if job_id is None:
+        return NEW_ESTIMATE_TAX_RATE
+    from gdx_dispatch.models.tenant_models import Job  # noqa: PLC0415
+
+    row = db.execute(select(Job.job_type).where(Job.id == job_id)).first()
+    if row is None or is_install_lane(row[0]):
+        return NEW_ESTIMATE_TAX_RATE
+    return None
 
 
 class EstimateTotals(TypedDict):
@@ -213,13 +243,19 @@ def compute_estimate_totals(estimate: Estimate, db: Session | None) -> EstimateT
         # a failed rate read poisoned the session, and then `_load_lines`'s lazy
         # `estimate.lines` load failed too, so the whole totals block vanished
         # from the public proposal page. Contained, the customer still sees a
-        # correct subtotal and total with tax 0.
+        # correct subtotal and total with tax 0. Logged, because a rate read
+        # that fails shows the same 0 as a construction-contract rate (GDXA-755).
         try:
             with contained_read(db):
                 rate = _to_float(
                     _resolve_tax_rate(db, getattr(estimate, "customer_id", None))
                 )
         except Exception:
+            log.warning(
+                "estimate_tax_rate_read_failed estimate=%s; tax shown as 0",
+                getattr(estimate, "id", None),
+                exc_info=True,
+            )
             rate = 0.0
     else:
         rate = 0.0

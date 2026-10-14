@@ -13,7 +13,7 @@ they were not owed, or fails to pay one they were:
 from __future__ import annotations
 
 from collections.abc import Generator
-from datetime import date, time
+from datetime import UTC, date, datetime, time
 from uuid import uuid4
 
 import pytest
@@ -28,6 +28,7 @@ from gdx_dispatch.core.time_off import (
     existing_time_off_days,
     normalize_holiday_calendar,
     person_schedule,
+    person_schedules,
     posted_holiday_counts,
     time_off_stamps,
     user_names,
@@ -101,6 +102,31 @@ def test_person_schedule_falls_back_to_the_shop_then_honours_the_override(db):
     # An id that is not a user (the timeclock's legacy text ids) → shop default.
     sched = person_schedule(db, settings, "tech-user-1")
     assert sched.shift_start == time(7, 30)
+
+
+def test_person_schedules_gives_each_id_what_person_schedule_gives_it(db):
+    """The batch lookup the request list uses must answer exactly as the
+    single one does, per field and per id: override, shop default, an id
+    that is not a UUID, and a soft-deleted user (shop default, not theirs)."""
+    settings = _settings(db, default_shift_start=time(7, 30), default_workdays=31)
+    plain, custom, gone = uuid4(), uuid4(), uuid4()
+    db.add(User(id=plain, company_id=TENANT, email="p@x", role="technician"))
+    db.add(User(id=custom, company_id=TENANT, email="c@x", role="technician",
+                shift_start=time(6, 0), shift_end=time(14, 30), workdays=31 | 32))
+    db.add(User(id=gone, company_id=TENANT, email="g@x", role="technician", workdays=1,
+                deleted_at=datetime(2026, 10, 1, tzinfo=UTC)))
+    db.commit()
+    ids = {str(plain), str(custom), str(gone), plain.hex, "tech-user-1"}
+
+    batch = person_schedules(db, settings, ids)
+
+    assert set(batch) == ids
+    for raw in ids:
+        assert batch[raw] == person_schedule(db, settings, raw), raw
+    assert batch[str(custom)].workdays == 63 and batch[str(custom)].shift_end == time(14, 30)
+    assert batch[str(gone)].workdays == 31, "a deleted user's override is not read"
+    assert batch[plain.hex] == batch[str(plain)], "dashless and dashed name one person"
+    assert person_schedules(db, settings, set()) == {}
 
 
 # ── stamps ───────────────────────────────────────────────────────────────────

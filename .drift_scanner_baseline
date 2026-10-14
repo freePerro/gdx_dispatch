@@ -160,7 +160,6 @@ gdx_dispatch/modules/proposals/router.py|except-block-swallows-error-sile|76f83f
 gdx_dispatch/modules/proposals/totals.py|except-block-swallows-error-sile|76f83f17ee55d80a
 gdx_dispatch/modules/proposals/totals.py|except-block-swallows-error-sile|76f83f17ee55d80a
 gdx_dispatch/modules/proposals/totals.py|except-block-swallows-error-sile|76f83f17ee55d80a
-gdx_dispatch/modules/proposals/totals.py|except-block-swallows-error-sile|76f83f17ee55d80a
 gdx_dispatch/modules/quickbooks/banking.py|except-block-swallows-error-sile|27b8f56f33b19107
 gdx_dispatch/modules/quickbooks/banking.py|except-block-swallows-error-sile|27b8f56f33b19107
 gdx_dispatch/modules/quickbooks/banking.py|except-block-swallows-error-sile|27b8f56f33b19107
