@@ -6,7 +6,9 @@
  * a re-login stacked a second subscription the module-off watcher could no
  * longer stop. This mounts the real component (shallow — PrimeVue chrome
  * stubbed, the <script setup> runs for real) and drives the three transitions:
- * module on → poll; module off → released; unmount → released.
+ * module on → poll; module off → released; unmount → released. Since
+ * GDXA-1023 the poll also waits for a signed-in session: signed out the
+ * endpoint is a 401.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
@@ -44,10 +46,13 @@ vi.mock('vue-router', () => ({
 
 // eslint-disable-next-line import/first
 import AppTopbar from '../AppTopbar.vue';
+// eslint-disable-next-line import/first
+import { useAuthStore } from '../../stores/auth';
 
-function mountBar() {
+function mountBar({ signedIn = true } = {}) {
   const pinia = createPinia();
   setActivePinia(pinia);
+  if (signedIn) useAuthStore().accessToken = 'opaque-test-token';
   return mount(AppTopbar, {
     shallow: true,
     global: {
@@ -62,6 +67,7 @@ const countCalls = () =>
 
 describe('AppTopbar — notifications poll lifecycle', () => {
   beforeEach(() => {
+    sessionStorage.clear();
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     apiGet.mockReset().mockResolvedValue({ count: 0 });
     communicationsOn.ref.value = true;
@@ -96,7 +102,33 @@ describe('AppTopbar — notifications poll lifecycle', () => {
     await flushPromises();
     vi.advanceTimersByTime(180000);
     await flushPromises();
+    expect(afterMount).toBeGreaterThan(0);
     expect(countCalls()).toBe(afterMount);
     second.unmount();
+  });
+
+  it('does not poll signed out, and starts once a token lands', async () => {
+    const wrapper = mountBar({ signedIn: false });
+    await flushPromises();
+    vi.advanceTimersByTime(180000);
+    await flushPromises();
+    expect(countCalls()).toBe(0);
+
+    useAuthStore().accessToken = 'opaque-test-token';
+    await flushPromises();
+    expect(countCalls()).toBe(1);
+    wrapper.unmount();
+  });
+
+  it('stops polling when the session ends while the bar is still mounted', async () => {
+    const wrapper = mountBar();
+    await flushPromises();
+    expect(countCalls()).toBe(1);
+    useAuthStore().accessToken = null;
+    await flushPromises();
+    vi.advanceTimersByTime(180000);
+    await flushPromises();
+    expect(countCalls()).toBe(1);
+    wrapper.unmount();
   });
 });

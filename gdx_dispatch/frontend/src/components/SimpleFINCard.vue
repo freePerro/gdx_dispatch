@@ -82,7 +82,9 @@ const connected = computed(() => Boolean(status.value?.connected))
 // It is deliberately open-world: an allowlist of the bad states would leave a
 // 5th auth_state, added later, rendering that button while this card reported
 // a green "Connected" with nothing to do — the dead end this screen exists to
-// end. Anything not explicitly healthy needs the token form.
+// end. Anything not explicitly healthy needs the token form. With the four
+// auth_states that exist today the generic banner arm below cannot render (a
+// disconnected row reports connected=false); it is insurance for a future fifth.
 const unhealthy = computed(() =>
   !connected.value || status.value?.auth_state !== 'healthy')
 // The known bad states, used only to pick the wording of the banner. A state
@@ -402,7 +404,7 @@ onMounted(() => { load() })
         The bridge connection needs attention — sign in at bridge.simplefin.org, fix the
         bank connection there, then paste a fresh setup token below.
       </p>
-      <p v-else-if="connected && unhealthy" class="status-error" data-testid="sfin-reconnect-banner">
+      <p v-else-if="connected && unhealthy" class="status-error" data-testid="sfin-reconnect-banner-unknown">
         The bridge connection is not healthy ({{ status.auth_state }}) — check the
         connection at bridge.simplefin.org, then paste a fresh setup token below.
       </p>

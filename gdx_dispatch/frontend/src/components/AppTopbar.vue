@@ -253,8 +253,11 @@ const aiAssistantEnabled = computed(() => {
 // silently — the lie just moved from the bell to the server logs. Poll
 // only while the module is on (immediate covers the default-enabled
 // pre-fetch state; the watcher stops it if the payload lands disabled).
+// Signed out the endpoint is a 401: App.vue keeps the shell off until the
+// route resolves, and this gate holds even if something mounts the bar early
+// (GDXA-1023).
 let _releaseNotificationsPoll = null;
-watch(notificationsEnabled, (on) => {
+watch(() => notificationsEnabled.value && auth.isAuthenticated, (on) => {
   if (on) {
     if (!_releaseNotificationsPoll) _releaseNotificationsPoll = notifications.startPolling();
   } else if (_releaseNotificationsPoll) {

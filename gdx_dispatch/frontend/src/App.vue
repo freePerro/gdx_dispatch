@@ -35,7 +35,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { useToast } from 'primevue/usetoast';
 import ThemeProvider from './components/ThemeProvider.vue';
 import CommandPalette from './components/CommandPalette.vue';
@@ -48,11 +48,24 @@ import { useIdleLogout } from './composables/useIdleLogout';
 const commandPaletteOpen = ref(false);
 const toast = useToast();
 const route = useRoute();
+const router = useRouter();
 
 // Inactivity auto-logout (configured in Settings → Feature Settings).
 useIdleLogout();
 
-const noShell = computed(() => Boolean(route?.meta?.noShell));
+// Until the initial navigation resolves the route is START_LOCATION: it matches
+// nothing and has no meta, so the shell (topbar polls, sidebar) mounted for
+// the first tick of every cold load — signed out, that fired a 401 before the
+// guard reached /login (GDXA-1023). The catch-all route means a resolved route
+// always matches something, so "matches nothing" is exactly "not resolved yet".
+// A first navigation that FAILS (a lazy chunk on a weak signal, once the
+// one-shot reload in router.onError is spent) never resolves: fall back to the
+// shell so the user can navigate away instead of facing a blank page. Its
+// fetches are gated on auth, so a signed-out user still draws no 401.
+const firstNavFailed = ref(false);
+router?.isReady?.().catch(() => { firstNavFailed.value = true; });
+const routeResolved = computed(() => firstNavFailed.value || (route?.matched?.length ?? 0) > 0);
+const noShell = computed(() => !routeResolved.value || Boolean(route?.meta?.noShell));
 
 // base.css locks body scrolling because AppLayout scrolls inside its own main
 // panel. A no-shell page has no such panel, so without this the portal and the
