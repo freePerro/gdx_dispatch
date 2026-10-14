@@ -38,6 +38,14 @@ The script-path form (``python gdx_dispatch/tools/pave_tenant_db.py --yes``)
 works too — see the sys.path bootstrap below — but the module form is the
 documented one because it cannot be run from the wrong directory.
 
+Connect as a superuser. The data dump is taken with ``--disable-triggers``, so
+its reload (step 5) runs ``ALTER TABLE ... DISABLE TRIGGER ALL``, which needs
+superuser on any table with a foreign key, even for the table's owner. The
+preflight refuses any other role before anything is dropped. In
+``docker/docker-compose.yml`` the ``DATABASE_URL`` role is the database's
+``POSTGRES_USER``, which is a superuser. A deployment that connects the app as
+a narrower role has to pass a superuser URL as the argument.
+
 Flags:
     --strict     (default) ON_ERROR_STOP=on; aborts on first reload error. Safe.
     --no-strict  legacy ON_ERROR_STOP=off; logs errors and continues. Risk: silent data loss.
@@ -45,10 +53,10 @@ Flags:
 Steps per database:
     0.  Pre-pave row counts and table list
     0b. Preflight: refuse outright when TENANT_AI_*_PASSWORD is set (there is
-        no role bootstrap to consume it), when the database's alembic stamp is
-        not this tree's head, on an object kind or property pave has no DDL
-        for, on a comment it cannot re-issue, or on an owner the paving role
-        cannot act as. Then record the schema inventory, the owners, ACLs,
+        no role bootstrap to consume it), when the paving role is not a
+        superuser (step 5 needs it, see below), when the database's alembic
+        stamp is not this tree's head, on an object kind or property pave has
+        no DDL for, or on a comment it cannot re-issue. Then record the schema inventory, the owners, ACLs,
         schema default privileges and comments, and capture the DDL of every
         table create_all() will not rebuild plus every non-table object.
         Every failure here refuses with NOTHING dropped.
@@ -111,6 +119,9 @@ USAGE = """Usage (inside the app container):
                rebuilds it from the ORM + `alembic upgrade head` (data reloaded
                from the dump it takes first). With no URL the target IS the
                application database.
+               The URL's role must be a superuser: the reload runs
+               `ALTER TABLE ... DISABLE TRIGGER ALL` (pg_dump --disable-triggers).
+               Any other role is refused before anything is dropped.
   --strict     (default) abort on any reload error; preserves full backup.
   --no-strict  legacy behavior; logs errors but continues. Risk: silent data loss."""
 
@@ -982,45 +993,6 @@ def extensions_pave_cannot_reinstall(engine) -> list[str]:
                for name in commented])
 
 
-def roles_pave_cannot_act_as(engine, state: dict) -> list[str]:
-    """Owners and default-ACL roles the paving role could not restore.
-
-    `ALTER ... OWNER TO r` needs superuser or the right to SET ROLE r, and the
-    reload, sequence reset and matview refresh that follow act on what `r` owns,
-    which needs r's privileges (USAGE, i.e. an inherited membership). Plain
-    MEMBER is not enough: on PostgreSQL 16 a grant made WITH SET FALSE passes
-    it and ALTER OWNER still refuses (measured 2026-10-11). Without either the
-    replay fails after the DROP and the database is left owned by the wrong
-    role, so it is checked here instead. Before 16 there is no SET option and
-    membership is what ALTER OWNER checks. ALTER OWNER also needs the NEW owner
-    to hold CREATE on the schema; step 4e restores the schema's ACL before any
-    owner, so the live grant read here is the one the replay will have.
-    """
-    with engine.connect() as conn:
-        is_super, me, version = conn.execute(text(
-            "SELECT rolsuper, quote_ident(current_user), current_setting('server_version_num')::int "
-            "FROM pg_roles WHERE rolname = current_user")).one()
-        if is_super:
-            return []
-        need = ("USAGE", "SET") if version >= 160000 else ("USAGE", "MEMBER")
-        object_owners = {owner for (kind, _k), (_t, owner) in state["owners"].items()
-                         if kind != "schema"}
-        roles = ({owner for _t, owner in state["owners"].values()}
-                 | {row[0] for row in state["default_acl"]})
-        blocked = []
-        for role in sorted(roles - {me}):
-            ok = all(conn.execute(text(
-                "SELECT pg_has_role(current_user, CAST(:r AS regrole), :mode)"
-            ).bindparams(r=role, mode=mode)).scalar() for mode in need)
-            if ok and role in object_owners:
-                ok = conn.execute(text(
-                    "SELECT has_schema_privilege(CAST(:r AS regrole), 'public', 'CREATE')"
-                ).bindparams(r=role)).scalar()
-            if not ok:
-                blocked.append(role)
-        return blocked
-
-
 def _run_each(engine, statements: list[str]) -> list[str]:
     """Run each statement in its own transaction; return the ones that failed.
 
@@ -1202,6 +1174,32 @@ def refuse_unless_at_head(engine) -> None:
     sys.exit(1)
 
 
+# Step 5 replays a `pg_dump --disable-triggers` file, which wraps every table's
+# rows in `ALTER TABLE ... DISABLE TRIGGER ALL`. On a table with a foreign key
+# or a deferrable unique constraint that statement needs superuser, even for
+# the table's owner, because those constraints are enforced by internal
+# triggers. The pave reaches it after `DROP SCHEMA`, so a non-superuser used
+# to stop there under ON_ERROR_STOP with an empty schema and the full backup as
+# the only copy. Every step after the drop also creates extensions, re-owns
+# objects to other roles and sets default privileges for them. A superuser
+# holds every privilege those steps need, so this one check covers them all.
+def refuse_unless_superuser(engine) -> None:
+    with engine.connect() as conn:
+        me, is_super = conn.execute(text(
+            "SELECT current_user, rolsuper FROM pg_roles WHERE rolname = current_user")).one()
+    if is_super:
+        log.info("  paving role %s is a superuser", me)
+        return
+    log.error("The paving role %s is not a superuser.", me)
+    log.error("Step 5 reloads a `pg_dump --disable-triggers` dump: its `ALTER TABLE ... "
+              "DISABLE TRIGGER ALL` needs superuser on any table with a foreign key, and "
+              "it runs after `DROP SCHEMA public CASCADE`.")
+    log.error("Refusing to pave: NOTHING has been dropped. The database is untouched.")
+    log.error("Re-run with a DATABASE_URL (or URL argument) for a superuser role, such as "
+              "the POSTGRES_USER the database container was created with.")
+    sys.exit(1)
+
+
 # TENANT_AI_*_PASSWORD used to drive a step 4e that imported
 # gdx_dispatch.tools.sql.ai_roles_bootstrap — a module that has never existed
 # in this tree's history. It ran after the DROP, so setting either variable
@@ -1326,8 +1324,8 @@ def dump_full(db_info: dict, output_path: str) -> None:
     from memory, so an exit before 4e (3b, 4c, 4d) would otherwise leave a
     restore that brings the rows back owned by the paving role with no grants
     for gdx_app or gdx_ai_readonly. Restored as the paving role, its
-    `ALTER ... OWNER` lines succeed because roles_pave_cannot_act_as() has
-    already refused any owner that role could not act as — once
+    `ALTER ... OWNER` lines succeed because refuse_unless_superuser() has
+    already refused a paving role that is not a superuser — once
     schema_restore_sql() has given the schema back its ACL; the file alone
     does not restore the public schema's owner, ACL or comment.
     """
@@ -1635,6 +1633,7 @@ def pave_one(db_url: str, label: str, strict: bool = True) -> bool:
     # an object kind pave has no DDL for at all.
     log.info("--- Step 0b: Preflight ---")
     refuse_ai_role_bootstrap_env()
+    refuse_unless_superuser(engine)
     refuse_unless_at_head(engine)
     uncounted = sorted(t for t, c in pre_counts.items() if c == -1)
     if uncounted:
@@ -1663,14 +1662,9 @@ def pave_one(db_url: str, label: str, strict: bool = True) -> bool:
     unreplayable = (unreplayable_privilege_state(pre_privileges)
                     + privileges_pave_cannot_rebuild(engine, pre_privileges)
                     + extensions_pave_cannot_reinstall(engine))
-    blocked_roles = roles_pave_cannot_act_as(engine, pre_privileges)
-    if unreplayable or blocked_roles:
+    if unreplayable:
         for item in unreplayable:
             log.error("  pave cannot restore: %s", item)
-        for role in blocked_roles:
-            log.error("  the paving role cannot restore what %s owns: that needs superuser, or "
-                      "USAGE and SET on %s (membership before PostgreSQL 16), and %s itself "
-                      "needs CREATE on schema public", role, role, role)
         log.error("Refusing to pave: NOTHING has been dropped. The database is untouched.")
         engine.dispose()
         sys.exit(1)
