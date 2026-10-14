@@ -19,6 +19,7 @@ function mkResponse(body, { ok = true, status = 200 } = {}) {
     status,
     headers: { get: () => null },
     json: async () => body,
+    text: async () => (body === undefined ? '' : JSON.stringify(body)),
   };
 }
 

@@ -1,20 +1,112 @@
 <script setup>
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
+import { Capacitor } from '@capacitor/core'
+import {
+  checkBiometricAvailability,
+  forgetFingerprintSignIn,
+  isFingerprintSignInSaved,
+  readFingerprintSignIn,
+  saveFingerprintSignIn,
+} from '../lib/nativeAuth'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useThemeStore } from '../stores/theme'
 import { getPostLoginRedirect } from '../lib/auth-urls'
+import MobileServerConfigDialog from '../components/MobileServerConfigDialog.vue'
+import { getServerUrl } from '../lib/serverConfig'
 
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
 const theme = useThemeStore()
 
-
 const email = ref('')
 const password = ref('')
 const error = ref('')
 const submitting = ref(false)
+
+// Native / self-hosted server configuration modal
+const showServerConfig = ref(false)
+// Server choice is an Android-app setting; the web app talks to its own host.
+const isNativeApp = Capacitor.isNativePlatform()
+const activeServerUrl = ref(isNativeApp ? getServerUrl() : '')
+
+// Fingerprint sign-in (Android app only): the password lives in the Keystore
+// behind a biometric check, saved per server — see lib/nativeAuth.js.
+const fingerprintAvailable = ref(false)
+const fingerprintSaved = ref(false)
+const rememberFingerprint = ref(true)
+
+async function refreshFingerprintState() {
+  if (!Capacitor.isNativePlatform()) return
+  fingerprintAvailable.value = (await checkBiometricAvailability()).available
+  fingerprintSaved.value =
+    fingerprintAvailable.value && (await isFingerprintSignInSaved(activeServerUrl.value))
+}
+
+onMounted(refreshFingerprintState)
+
+function onServerSaved(savedUrl) {
+  activeServerUrl.value = savedUrl
+  refreshFingerprintState()
+}
+
+async function finishLogin() {
+  await theme.loadBranding()
+  // GDXA-1003: an account that must change its password (the seeded owner,
+  // an invited user) goes to the change-password form on /profile — the
+  // server refuses everything else — and not to the remembered target,
+  // which for /oauth/ is a full-page load the router guard never sees.
+  if (auth.user?.must_change_password) {
+    await router.push('/profile')
+    return
+  }
+  const target = getPostLoginRedirect(route)
+  if (target.startsWith('/oauth/')) {
+    window.location.assign(target)
+  } else {
+    await router.push(target)
+  }
+}
+
+async function handleFingerprintLogin() {
+  error.value = ''
+  let creds
+  try {
+    creds = await readFingerprintSignIn(activeServerUrl.value)
+  } catch (e) {
+    // Code 21: the Keystore entry is gone (e.g. biometrics were reset).
+    if (String(e?.code) === '21' || /no protected credentials/i.test(e?.message || '')) {
+      await forgetFingerprintSignIn(activeServerUrl.value)
+      fingerprintSaved.value = false
+      error.value = 'Fingerprint sign-in was reset on this phone. Sign in with your password.'
+    }
+    return // otherwise the prompt was cancelled: stay on the form
+  }
+
+  submitting.value = true
+  try {
+    await auth.login(creds)
+    await finishLogin()
+  } catch (e) {
+    if (e?.status === 401) {
+      // The saved password no longer works (changed or account disabled).
+      await forgetFingerprintSignIn(activeServerUrl.value)
+      fingerprintSaved.value = false
+      email.value = creds.email
+      error.value = 'Your saved sign-in no longer works. Enter your password to set fingerprint sign-in up again.'
+    } else {
+      error.value = e instanceof Error ? e.message : 'Unable to login'
+    }
+  } finally {
+    submitting.value = false
+  }
+}
+
+async function handleForgetFingerprint() {
+  await forgetFingerprintSignIn(activeServerUrl.value)
+  fingerprintSaved.value = false
+}
 
 // The multi-tenant workspace picker that used to live here was removed
 // 2026-09-01 (Phase D S2). It answered "Unknown tenant" — a reply Phase A
@@ -33,6 +125,13 @@ async function handleLogin() {
     error.value = 'Password is required'
     return
   }
+  // The Android app serves its UI from the device, so with no server set the
+  // login request hits the bundled files and fails with a JSON parse error.
+  if (Capacitor.isNativePlatform() && !getServerUrl()) {
+    error.value = 'Set your server first — tap the gear above.'
+    showServerConfig.value = true
+    return
+  }
 
   submitting.value = true
 
@@ -41,21 +140,18 @@ async function handleLogin() {
       email: email.value,
       password: password.value,
     })
-    await theme.loadBranding()
-    // GDXA-1003: an account that must change its password (the seeded owner,
-    // an invited user) goes to the change-password form on /profile — the
-    // server refuses everything else — and not to the remembered target,
-    // which for /oauth/ is a full-page load the router guard never sees.
-    if (auth.user?.must_change_password) {
-      await router.push('/profile')
-      return
+    // Not for a password about to be replaced (GDXA-1003): the saved one would
+    // stop working the moment it is changed.
+    if (fingerprintAvailable.value && !fingerprintSaved.value && rememberFingerprint.value
+      && !auth.user?.must_change_password) {
+      try {
+        // Shows the system fingerprint prompt; declining it just skips setup.
+        await saveFingerprintSignIn(activeServerUrl.value, email.value.trim(), password.value)
+      } catch {
+        /* declined or failed: sign-in itself already succeeded */
+      }
     }
-    const target = getPostLoginRedirect(route)
-    if (target.startsWith('/oauth/')) {
-      window.location.assign(target)
-    } else {
-      await router.push(target)
-    }
+    await finishLogin()
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Unable to login'
   } finally {
@@ -67,9 +163,28 @@ async function handleLogin() {
 <template>
   <div class="login-page">
     <div class="login-card">
+      <button
+        v-if="isNativeApp"
+        type="button"
+        class="server-gear-btn"
+        @click="showServerConfig = true"
+        aria-label="Server Settings"
+        title="Server Settings"
+        data-testid="server-settings-gear"
+      >
+        <svg class="gear-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
+
       <div class="header">
         <h1>Sign In</h1>
         <p>Enter your credentials to continue</p>
+        <div v-if="activeServerUrl" class="active-server-indicator" @click="showServerConfig = true" title="Click to change server">
+          <i class="pi pi-server"></i>
+          <span>{{ activeServerUrl }}</span>
+        </div>
       </div>
 
       <form @submit.prevent="handleLogin" class="login-form" data-testid="login-form">
@@ -114,18 +229,48 @@ async function handleLogin() {
           <span v-else class="loader"></span>
         </button>
 
+        <label
+          v-if="fingerprintAvailable && !fingerprintSaved"
+          class="remember-fingerprint"
+          data-testid="login-remember-fingerprint"
+        >
+          <input v-model="rememberFingerprint" type="checkbox" />
+          <span>Use fingerprint to sign in next time</span>
+        </label>
+
+        <template v-if="fingerprintSaved">
+          <div class="or-divider"><span>or</span></div>
+          <button
+            type="button"
+            class="fingerprint-btn"
+            :disabled="submitting"
+            data-testid="login-fingerprint"
+            @click="handleFingerprintLogin"
+          >
+            <i class="pi pi-lock-open" aria-hidden="true"></i>
+            <span>Sign in with fingerprint</span>
+          </button>
+        </template>
+
         <p v-if="error" class="error-message" data-testid="login-error">{{ error }}</p>
+
+        <p v-if="fingerprintSaved" class="forgot-link">
+          <button type="button" class="link-btn" data-testid="login-forget-fingerprint" @click="handleForgetFingerprint">
+            Turn off fingerprint sign-in on this phone
+          </button>
+        </p>
 
         <p class="forgot-link">
           <router-link to="/forgot-password">Forgot your password?</router-link>
         </p>
       </form>
+
+      <MobileServerConfigDialog v-if="isNativeApp" v-model:visible="showServerConfig" @saved="onServerSaved" />
     </div>
   </div>
 </template>
 
 <style scoped>
-
 .login-page {
   min-height: 100vh;
   display: flex;
@@ -136,6 +281,7 @@ async function handleLogin() {
 }
 
 .login-card {
+  position: relative;
   width: 100%;
   max-width: 420px;
   background: var(--card, #1e293b);
@@ -144,6 +290,34 @@ async function handleLogin() {
   border-radius: 16px;
   box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
   border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.server-gear-btn {
+  position: absolute;
+  top: 1.25rem;
+  right: 1.25rem;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.server-gear-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: #3b82f6;
+  color: #3b82f6;
+}
+
+.gear-icon {
+  width: 18px;
+  height: 18px;
 }
 
 .header {
@@ -161,6 +335,27 @@ async function handleLogin() {
   color: #94a3b8;
   font-size: 0.875rem;
   margin: 0;
+}
+
+.active-server-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 9999px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  color: #60a5fa;
+  font-size: 0.75rem;
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.active-server-indicator span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .login-form {
@@ -267,6 +462,73 @@ input::placeholder {
   to { transform: rotate(360deg); }
 }
 
+.remember-fingerprint {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: #cbd5e1;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.remember-fingerprint input {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: var(--primary, #3b82f6);
+}
+
+.or-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: #64748b;
+  font-size: 0.8rem;
+}
+
+.or-divider::before,
+.or-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #334155;
+}
+
+.fingerprint-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.75rem;
+  background: transparent;
+  color: #e2e8f0;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.fingerprint-btn:hover:not(:disabled) {
+  border-color: var(--primary, #3b82f6);
+  color: #fff;
+}
+
+.fingerprint-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #94a3b8;
+  font-size: 0.85rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .forgot-link {
   text-align: center;
   margin-top: 1rem;
@@ -279,5 +541,4 @@ input::placeholder {
 .forgot-link a:hover {
   text-decoration: underline;
 }
-
 </style>

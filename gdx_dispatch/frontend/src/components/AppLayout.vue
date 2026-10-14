@@ -100,6 +100,7 @@ import WhatsNewBanner from './WhatsNewBanner.vue';
 import { useAuthStore } from '../stores/auth';
 import { isTechnician } from '../constants/roles';
 import { useTour } from '../composables/useTour';
+import { useOfficeAlertsKeeper } from '../composables/useOfficeAlertsKeeper';
 
 const route = useRoute();
 
@@ -109,6 +110,8 @@ const isMobile = ref(false);
 const notificationsOpen = ref(false);
 
 const auth = useAuthStore();
+// Android app: someone else's phone alerts go off; an office user's keep running.
+useOfficeAlertsKeeper();
 // Same predicate AppBottomNav uses to render the quick-capture FAB: the
 // content only needs to clear the FAB when there is one. Techs get the nav
 // alone, and pay no dead space for a button they never see.

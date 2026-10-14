@@ -7,6 +7,7 @@ const jsonResponse = (status, body) => ({
   ok: status >= 200 && status < 300,
   status,
   json: async () => body,
+  text: async () => (body === undefined ? '' : JSON.stringify(body)),
 });
 
 describe('useApi composable', () => {

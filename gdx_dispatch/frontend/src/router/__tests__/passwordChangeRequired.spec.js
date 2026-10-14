@@ -37,6 +37,7 @@ function jsonResponse(status, body) {
     status,
     headers: { get: () => null },
     json: async () => body,
+    text: async () => (body === undefined ? '' : JSON.stringify(body)),
   };
 }
 

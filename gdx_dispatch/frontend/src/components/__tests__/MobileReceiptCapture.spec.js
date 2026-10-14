@@ -4,6 +4,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import MobileReceiptCapture from '../MobileReceiptCapture.vue'
+import * as nativeCamera from '../../lib/nativeCamera'
 
 const toastAdd = vi.fn()
 vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: toastAdd }) }))
@@ -14,10 +15,15 @@ vi.mock('../../composables/useApi', () => ({
   useApi: () => ({ get: apiGet, post: apiPost }),
 }))
 
+vi.mock('../../lib/nativeCamera', () => ({
+  isNativeCamera: vi.fn(() => false),
+  captureNativePhoto: vi.fn(),
+}))
+
 const stubs = {
-  Dialog: { template: '<div><slot /><slot name="footer" /></div>' },
+  Dialog: { template: '<div><slot /><slot name=\"footer\" /></div>' },
   Button: {
-    template: '<button :data-testid="$attrs[\'data-testid\']" @click="$emit(\'click\')"><slot /></button>',
+    template: '<button :data-testid=\"$attrs[\'data-testid\']\"><slot /></button>',
     inheritAttrs: false,
   },
   InputNumber: { template: '<input />', props: ['modelValue'] },
@@ -43,6 +49,8 @@ beforeEach(() => {
   apiGet.mockReset()
   apiPost.mockReset()
   apiGet.mockResolvedValue(['Fuel', 'Parts/Supplies', 'Other'])
+  vi.mocked(nativeCamera.isNativeCamera).mockReturnValue(false)
+  vi.mocked(nativeCamera.captureNativePhoto).mockReset()
 })
 
 describe('MobileReceiptCapture', () => {
@@ -113,5 +121,17 @@ describe('MobileReceiptCapture', () => {
     const wrapper = mountIt()
     await wrapper.vm.open()
     expect(wrapper.vm.form.category).toBe('Fuel')
+  })
+
+  it('invokes native camera on native platform when photo slot clicked', async () => {
+    vi.mocked(nativeCamera.isNativeCamera).mockReturnValue(true)
+    const mockFile = new File(['receipt-bits'], 'rcpt.jpg', { type: 'image/jpeg' })
+    vi.mocked(nativeCamera.captureNativePhoto).mockResolvedValue(mockFile)
+
+    const wrapper = mountIt()
+    await wrapper.vm.onPhotoSlotClick()
+
+    expect(nativeCamera.captureNativePhoto).toHaveBeenCalledWith({ promptHeader: 'Receipt Photo' })
+    expect(wrapper.vm.file).toBe(mockFile)
   })
 })

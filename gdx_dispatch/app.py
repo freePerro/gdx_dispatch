@@ -223,6 +223,7 @@ admin_settings_router = _load_router("gdx_dispatch.routers", "admin_settings")
 maps_router = _load_router("gdx_dispatch.routers", "maps")
 
 notifications_router = _load_router("gdx_dispatch.routers", "notifications")
+device_alerts_router = _load_router("gdx_dispatch.routers", "device_alerts")
 
 timeclock_router = _load_router("gdx_dispatch.routers", "timeclock")
 
@@ -1152,6 +1153,11 @@ def create_app() -> FastAPI:
     app.include_router(settings_router.router if hasattr(settings_router, "router") else settings_router)
     app.include_router(admin_settings_router.router if hasattr(admin_settings_router, "router") else admin_settings_router)
     app.include_router(maps_router.router if hasattr(maps_router, "router") else maps_router)
+    # Office alerts on the Android app: the device
+    # token, its revoke and the bell long-poll the phone's service reads.
+    app.include_router(
+        device_alerts_router.router if hasattr(device_alerts_router, "router") else device_alerts_router
+    )
     app.include_router(
         notifications_router.router if hasattr(notifications_router, "router") else notifications_router
     )

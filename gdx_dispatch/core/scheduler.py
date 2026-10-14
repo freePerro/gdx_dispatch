@@ -150,6 +150,17 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             # fan-outs are dropped instead of stacking into a burst.
             "options": {"queue": "priority:low", "expires": 540},
         },
+        "phone-com-messages-fast": {
+            # Every minute, last hour only: a new customer text reaches the
+            # office bell — and the phones with office alerts on — within
+            # about a minute instead of up to ten.
+            # The 48h entry above stays as the backstop; a 48h window every
+            # minute would be ten times the Phone.com load for nothing.
+            "task": "phone_com.sync_all_recent_messages",
+            "schedule": crontab(),
+            "kwargs": {"window_hours": 1},
+            "options": {"queue": "priority:low", "expires": 50},
+        },
         "phone-com-calls-refresh": {
             # Voicemail live path. Voicemail rows are synthesized from inline
             # call-log payloads, so before this poll they only landed at the
