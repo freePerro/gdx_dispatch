@@ -2111,6 +2111,30 @@ def test_the_pay_page_templates_can_render_the_same_payer_fixable_list():
     assert json.loads(out) == PAYER_FIXABLE_STRIPE_DETAILS
 
 
+def test_the_rendered_pay_page_matches_stripe_errors_by_the_server_list():
+    """Both layers agree (GDXA-894): stripeErrorText in the rendered page holds
+    exactly PAYER_FIXABLE_STRIPE_DETAILS, not a hand-kept copy of some codes."""
+    import json
+    import re
+    from types import SimpleNamespace
+
+    from gdx_dispatch.core.payments import PAYER_FIXABLE_STRIPE_DETAILS, templates
+
+    html = templates.get_template("payment_form.html").render(
+        invoice=SimpleNamespace(invoice_number="INV-0001", public_token="tok_test", status="sent", balance_due=10),
+        ach_processing=None,
+        stripe_publishable_key="pk_test",
+        company_name="Test Co",
+        surcharge_rate=0.0,
+        surcharge_percent_label="",
+        job_photos=[],
+    )
+    found = re.findall(r"^\s*const PAYER_FIXABLE = (.+);$", html, re.MULTILINE)
+    assert len(found) == 1
+    assert json.loads(found[0]) == PAYER_FIXABLE_STRIPE_DETAILS
+    assert "AUTH_FAILURE_CODES" not in html
+
+
 @pytest.mark.parametrize("which", range(4))
 def test_create_intent_never_shows_the_payer_our_stripe_setup(client, invoice, which):
     from gdx_dispatch.core.payments import PAYMENT_UNAVAILABLE_DETAIL

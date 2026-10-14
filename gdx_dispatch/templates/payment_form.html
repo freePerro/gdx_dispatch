@@ -749,17 +749,20 @@
   // and its message names our setup. "For card errors, these messages can be
   // shown to your users." — https://docs.stripe.com/api/errors
   const PAYMENT_UNAVAILABLE = "We couldn't process this payment right now. Please try again in a few minutes, or contact us to pay another way.";
-  // A failed or cancelled 3D Secure check comes back as invalid_request_error,
-  // yet the payer's next step is a different card (core/payments.py, same text).
-  const PAYMENT_AUTH_FAILED = "Your bank couldn't verify this card. Please use a different card or payment method.";
-  const AUTH_FAILURE_CODES = ["payment_intent_authentication_failure", "setup_intent_authentication_failure"];
+  // Errors the payer can fix whatever type Stripe gives them (a failed 3D
+  // Secure check, a mistyped email or bank number), matched by code, with our
+  // fixed text: the one list in core/payments.py, PAYER_FIXABLE_STRIPE_DETAILS.
+  const PAYER_FIXABLE = {{ payer_fixable_stripe_details | tojson }};
   function stripeErrorText(error) {
     const t = error && error.type;
     if ((t === "card_error" || t === "validation_error") && error.message) return error.message;
-    if (error && AUTH_FAILURE_CODES.includes(error.code)) return PAYMENT_AUTH_FAILED;
+    if (error && Object.prototype.hasOwnProperty.call(PAYER_FIXABLE, error.code)) return PAYER_FIXABLE[error.code];
     console.error("Stripe error", t, error && error.code);
     return PAYMENT_UNAVAILABLE;
   }
+  // type="email" lets "a@b" through; Stripe refuses it as email_invalid only
+  // after the payer has opened the bank picker. A dot in the domain, here first.
+  const EMAIL_SHAPE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
 
   function showSuccess(msg) {
     const el = document.getElementById("payment-success");
@@ -1055,6 +1058,10 @@
 
     if (!email || !name) {
       showError("Please fill in your email and account holder name.");
+      return;
+    }
+    if (!EMAIL_SHAPE.test(email)) {
+      showError(PAYER_FIXABLE.email_invalid);
       return;
     }
 
