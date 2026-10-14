@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import logging
 import re
+import string
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.tenant_settings import TenantSettings
@@ -18,6 +19,11 @@ from gdx_dispatch.core.tenant_settings import TenantSettings
 log = logging.getLogger(__name__)
 
 _INITIALS_RE = re.compile(r"[A-Za-z]+")
+
+# How far next_job_number walks past numbers already issued before giving up and
+# letting ux_jobs_job_number_live refuse the insert. A counter this far behind
+# is a restore or import gone wrong, not drift.
+_MAX_SKIP = 10_000
 
 
 def _customer_initials(customer_name: str | None) -> str:
@@ -54,6 +60,78 @@ def preview(template: str, seq: int, *, year: int | None = None, customer_name: 
     """Render a sample number for the Settings UI preview pane."""
     y = year if year is not None else datetime.now(timezone.utc).year
     return apply_template(template, seq, year=y, customer_name=customer_name)
+
+
+def _has_jobs_table(db: Session) -> bool:
+    return inspect(db.connection()).has_table("jobs")
+
+
+def _is_issued(db: Session, number: str) -> bool:
+    """True when any job, live or soft-deleted, already carries ``number``.
+
+    Wider than ux_jobs_job_number_live on purpose: a deleted job's invoices and
+    payments still quote its number, so it is never handed out again (the rule
+    migration 119 follows).
+    """
+    return (
+        db.execute(
+            text("SELECT 1 FROM jobs WHERE job_number = :n LIMIT 1"),
+            {"n": number},
+        ).first()
+        is not None
+    )
+
+
+def _template_pattern(template: str, year: int) -> re.Pattern[str] | None:
+    """A regex matching the numbers ``template`` renders in ``year``, ``{seq}`` captured.
+
+    None when the template has no ``{seq}`` or uses a token apply_template does not
+    know (it then renders the ``JOB-{seq:03d}`` fallback, which this does not chase).
+    """
+    parts: list[str] = []
+    has_seq = False
+    try:
+        for literal, field, spec, _conv in string.Formatter().parse(template):
+            parts.append(re.escape(literal))
+            if field is None:
+                continue
+            if field == "seq":
+                parts.append(r"\d+" if has_seq else r"(\d+)")
+                has_seq = True
+            elif field == "year":
+                parts.append(re.escape(format(year, spec or "")))
+            elif field == "yy":
+                parts.append(re.escape(format(f"{year % 100:02d}", spec or "")))
+            elif field == "month":
+                parts.append(r"\d{2}")
+            elif field == "customer_initials":
+                parts.append(r"[A-Z]*")
+            else:
+                return None
+    except (ValueError, TypeError):
+        return None
+    return re.compile("^" + "".join(parts) + "$") if has_seq else None
+
+
+def highest_issued_seq(db: Session, template: str, *, year: int | None = None) -> int:
+    """The highest ``{seq}`` among job numbers, live or deleted, ``template`` renders this year.
+
+    0 when none match, when the template cannot be matched, or when ``jobs`` is absent.
+    Reads every number: it serves the settings save, not job creation.
+    """
+    y = year if year is not None else datetime.now(timezone.utc).year
+    pattern = _template_pattern(template, y)
+    if pattern is None or not _has_jobs_table(db):
+        return 0
+    rows = db.execute(
+        text("SELECT job_number FROM jobs WHERE job_number IS NOT NULL")
+    ).scalars()
+    best = 0
+    for number in rows:
+        m = pattern.match(number)
+        if m:
+            best = max(best, int(m.group(1)))
+    return best
 
 
 def next_job_number(
@@ -109,6 +187,25 @@ def next_job_number(
         next_seq = 1
 
     rendered = apply_template(template, next_seq, year=current_year, customer_name=customer_name)
+
+    # The counter is not the only record of what has been issued: a year reset,
+    # a restore, an import or a settings rewind can leave it behind live jobs,
+    # and then the Job insert hits ux_jobs_job_number_live after this number is
+    # already committed (GDXA-933). Walk past every number already issued while
+    # the row lock is held, so the counter heals itself.
+    if _has_jobs_table(control_db):
+        skipped = 0
+        while _is_issued(control_db, rendered) and skipped < _MAX_SKIP:
+            candidate = apply_template(template, next_seq + 1, year=current_year, customer_name=customer_name)
+            if candidate == rendered:
+                break  # the template does not vary with {seq}; the index will refuse it
+            next_seq += 1
+            skipped += 1
+            rendered = candidate
+        if skipped:
+            log.warning(
+                "job_number_counter_behind tenant=%s skipped=%d issued=%s", tid, skipped, rendered
+            )
 
     # Persist incremented counter + last year seen
     control_db.execute(

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.settings_audit import audited_settings_upsert
 from gdx_dispatch.core.settings_row import read_settings_row
+from gdx_dispatch.modules.numbering.service import highest_issued_seq
 from gdx_dispatch.modules.numbering.service import preview as render_preview
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -86,6 +87,19 @@ def update_config(
         render_preview(payload.job_number_format, payload.job_number_next_seq)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid format template: {exc}") from exc
+    # A counter at or below a number already issued would hand it out again.
+    # The allocator walks past such numbers anyway; refusing the save keeps an
+    # admin from rewinding the counter without being told (GDXA-933). The
+    # year reset in next_job_number still applies after this.
+    highest = highest_issued_seq(db, payload.job_number_format)
+    if payload.job_number_next_seq <= highest:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Next number {payload.job_number_next_seq} is already in use: jobs under this "
+                f"format are numbered up to {highest}. Set it to {highest + 1} or higher."
+            ),
+        )
 
     # Invariant #1. This is the change most likely to need forensics: the
     # router's own docstring warns that rewinding the counter collides with
