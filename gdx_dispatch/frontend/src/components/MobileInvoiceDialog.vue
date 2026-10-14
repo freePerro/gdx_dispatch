@@ -537,7 +537,7 @@ async function sendReceipt(inv) {
   display: flex; flex-direction: column; align-items: center; gap: 0.25rem;
   border: 1px solid var(--p-content-border-color, #e5e7eb); border-radius: 0.5rem;
 }
-.photo-pick.selected { border-color: var(--p-primary-color, #3b82f6); border-width: 2px; }
+.photo-pick.selected { border-color: var(--p-primary-color); border-width: 2px; }
 .photo-pick :deep(img) {
   width: 100%; height: 60px; object-fit: cover; border-radius: 0.25rem; display: block;
 }

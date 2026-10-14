@@ -426,8 +426,8 @@ onBeforeUnmount(() => shots.value.forEach((s) => URL.revokeObjectURL(s.preview))
 .shot-add {
   display: flex; align-items: center; justify-content: center; gap: 0.4rem;
   min-height: 48px; border-radius: 0.5rem; cursor: pointer;
-  border: 1px dashed var(--p-primary-color, #2563eb);
-  color: var(--p-primary-color, #2563eb); font-weight: 600;
+  border: 1px dashed var(--p-primary-color);
+  color: var(--p-primary-color); font-weight: 600;
 }
 .shot-add input { display: none; }
 .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
@@ -439,8 +439,8 @@ onBeforeUnmount(() => shots.value.forEach((s) => URL.revokeObjectURL(s.preview))
   color: inherit; font-size: 0.95rem; font-weight: 600;
 }
 .chip--on {
-  background: var(--p-primary-color, #2563eb); color: #fff;
-  border-color: var(--p-primary-color, #2563eb);
+  background: var(--p-primary-color); color: #fff;
+  border-color: var(--p-primary-color);
 }
 .two-up { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
 label.stack, .two-up label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.85rem; font-weight: 600; }
@@ -456,7 +456,7 @@ input[type='text'], input[type='number'], textarea {
 textarea { min-height: 72px; }
 .submit {
   min-height: 52px; border: none; border-radius: 0.65rem; cursor: pointer;
-  background: var(--p-primary-color, #2563eb); color: #fff;
+  background: var(--p-primary-color); color: #fff;
   font-size: 1.05rem; font-weight: 700;
   display: flex; align-items: center; justify-content: center; gap: 0.5rem;
 }
@@ -488,8 +488,8 @@ textarea { min-height: 72px; }
 .mine-add {
   display: inline-flex; align-items: center; gap: 0.35rem; margin-top: 0.45rem;
   min-height: 44px; padding: 0 0.7rem; border-radius: 0.4rem; cursor: pointer;
-  border: 1px dashed var(--p-primary-color, #2563eb);
-  color: var(--p-primary-color, #2563eb); font-size: 0.85rem; font-weight: 600;
+  border: 1px dashed var(--p-primary-color);
+  color: var(--p-primary-color); font-size: 0.85rem; font-weight: 600;
 }
 .mine-add input { display: none; }
 .banner--err {

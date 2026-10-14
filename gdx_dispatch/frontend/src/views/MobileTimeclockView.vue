@@ -730,7 +730,7 @@ onUnmounted(() => {
   border-bottom: none;
 }
 .week-day-today {
-  background: color-mix(in srgb, var(--p-primary-color, #3b82f6) 6%, transparent);
+  background: color-mix(in srgb, var(--p-primary-color) 6%, transparent);
   border-radius: 0.4rem;
 }
 .week-day-head {
@@ -742,7 +742,7 @@ onUnmounted(() => {
   margin-left: auto;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: var(--p-primary-color, #3b82f6);
+  color: var(--p-primary-color);
 }
 .day-none {
   margin-left: auto;
@@ -843,7 +843,7 @@ onUnmounted(() => {
   font-size: 1.8rem;
   font-weight: 800;
   text-align: center;
-  color: var(--p-primary-color, #2563eb);
+  color: var(--p-primary-color);
 }
 .since {
   text-align: center;

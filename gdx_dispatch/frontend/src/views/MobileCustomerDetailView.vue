@@ -601,7 +601,7 @@ onMounted(async () => {
   border: 0;
   font: inherit;
   cursor: pointer;
-  background: var(--p-primary-color, #2563eb);
+  background: var(--p-primary-color);
   color: #fff;
 }
 
@@ -672,9 +672,9 @@ onMounted(async () => {
   color: var(--p-text-color, #111);
 }
 .tab-btn.active {
-  background: var(--p-primary-color, #2563eb);
+  background: var(--p-primary-color);
   color: #fff;
-  border-color: var(--p-primary-color, #2563eb);
+  border-color: var(--p-primary-color);
 }
 
 .tab-content {
@@ -720,7 +720,7 @@ onMounted(async () => {
 .row-money {
   font-weight: 700;
   font-size: 0.95rem;
-  color: var(--p-primary-color, #2563eb);
+  color: var(--p-primary-color);
 }
 .row-meta {
   display: flex;
@@ -737,7 +737,7 @@ onMounted(async () => {
   gap: 0.3rem;
   margin-top: 0.3rem;
   font-size: 0.85rem;
-  color: var(--p-primary-color, #2563eb);
+  color: var(--p-primary-color);
   text-decoration: none;
   min-height: 44px;
 }
