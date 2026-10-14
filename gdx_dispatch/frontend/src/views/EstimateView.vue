@@ -1442,6 +1442,11 @@ const hideLinePricesChoice = computed({
 // estimate showed 0% and a total without the tax the server bills (GDXA-768).
 const tenantDefaultTaxPct = ref(null);
 const tenantTaxConfigFailed = ref(false);
+// What this estimate's NULL rate resolves to. On no job or an install-lane job
+// the server charges 0, not the tenant default (null_tax_rate, GDXA-930);
+// showing the default there put tax on screen that the PDF does not print.
+const nullRateUntaxed = ref(false);
+const nullRateTaxPct = computed(() => (nullRateUntaxed.value ? 0 : tenantDefaultTaxPct.value));
 // Tenant-wide "tax labor lines?" toggle. Default false — most US states
 // don't tax service labor. Mirrors compute_estimate_totals server logic so
 // the on-screen total matches the PDF + saved invoice exactly.
@@ -1478,9 +1483,9 @@ async function retryTaxConfig() {
     // The save path still sends null for it (taxRatePayload), so the fill is
     // not an edit: keep an in-sync form in sync, or autosave writes a PATCH
     // nobody asked for and bumps the version (GDXA-450).
-    if (tenantDefaultTaxPct.value != null && form.value.tax_rate == null) {
+    if (nullRateTaxPct.value != null && form.value.tax_rate == null) {
       const wasSynced = _syncedFormSnapshot === _formSnapshot();
-      form.value.tax_rate = tenantDefaultTaxPct.value;
+      form.value.tax_rate = nullRateTaxPct.value;
       if (wasSynced) _syncedFormSnapshot = _formSnapshot();
     }
   } finally {
@@ -1499,16 +1504,17 @@ function onTaxRateInput(value) {
 // edited sends null, so the server stamps the job lane's rate
 // (new_estimate_tax_rate; GDXA-892). Any other estimate that is not a legacy
 // row (server rate NULL) sends the rate on screen, a blank as 0 (GDXA-755).
-// A legacy row persists only a rate the user changed from the tenant default;
+// A legacy row persists only a rate the user changed from what its NULL resolves to
+// (the tenant default, or 0 on an installation: nullRateTaxPct, GDXA-930);
 // null keeps it tracking the default. With the default unknown nothing can be
 // compared, so a rate in the form is sent as it stands and a blank stays null.
 function taxRatePayload() {
   const raw = form.value.tax_rate;
   if (!isExisting.value && !taxRateEdited.value) return null;
   if (!form.value._tax_rate_was_null) return (Number(raw) || 0) / 100;
-  if (tenantDefaultTaxPct.value == null) return raw == null ? null : (Number(raw) || 0) / 100;
+  if (nullRateTaxPct.value == null) return raw == null ? null : (Number(raw) || 0) / 100;
   const formPct = Number(raw) || 0;
-  return Math.abs(formPct - tenantDefaultTaxPct.value) > 0.001 ? formPct / 100 : null;
+  return Math.abs(formPct - nullRateTaxPct.value) > 0.001 ? formPct / 100 : null;
 }
 
 async function loadEstimateFeatures() {
@@ -2261,7 +2267,7 @@ const total = computed(() =>
 // The estimate tracks the tenant default and the default could not be read:
 // the tax, and so the total, are unknown here (GDXA-768).
 const taxRateUnknown = computed(() =>
-  form.value.tax_rate == null && tenantDefaultTaxPct.value == null
+  form.value.tax_rate == null && nullRateTaxPct.value == null
 );
 // Warn whenever the failed read can change what is shown: an unknown rate, or
 // a taxed estimate with labor lines, whose taxability is the tenant's call.
@@ -2429,9 +2435,10 @@ async function fetchEstimate() {
     loadActivity();
     // tax_rate on server is decimal (0.0825); null means "use tenant default".
     const serverRate = data.tax_rate ?? data.taxRate;
+    nullRateUntaxed.value = data.null_tax_rate === 0;
     let taxPct;
     if (serverRate == null) {
-      taxPct = tenantDefaultTaxPct.value;
+      taxPct = nullRateTaxPct.value;
     } else {
       const rate = toNum(serverRate);
       // Round to 4 decimals to dodge float-precision artifacts (7.380000000000001).

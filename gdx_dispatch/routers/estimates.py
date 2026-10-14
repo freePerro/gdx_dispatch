@@ -45,7 +45,7 @@ from gdx_dispatch.modules.estimates_features import (
 from gdx_dispatch.modules.numbering import allocate_job_number
 from gdx_dispatch.modules.phone_com.scheduled import ScheduleLinkSmsIn  # the /schedule-sms composer
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
-from gdx_dispatch.modules.proposals.totals import new_estimate_tax_rate
+from gdx_dispatch.modules.proposals.totals import new_estimate_tax_rate, null_rate_untaxed
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -1259,6 +1259,12 @@ def get_estimate(
         if row and row[0]:
             out["customer_name"] = row[0]
             out["customer_deleted"] = row[1] is not None
+    # What a NULL tax_rate resolves to by lane, for the editor to show: 0 on
+    # an installation or no job, null for "the tenant default" (GDXA-930).
+    # Without it the editor showed the default's tax where the PDF printed none.
+    out["null_tax_rate"] = (
+        0.0 if null_rate_untaxed(db, getattr(estimate, "job_id", None)) else None
+    )
     return out
 
 

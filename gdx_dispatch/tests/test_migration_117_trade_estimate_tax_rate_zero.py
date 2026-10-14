@@ -57,11 +57,15 @@ def test_no_unescaped_percent_signs_in_its_sql() -> None:
 
 
 def _seed(s: Session) -> dict[str, uuid.UUID]:
-    from gdx_dispatch.models.tenant_models import Customer
+    from gdx_dispatch.models.tenant_models import Customer, Job
     from gdx_dispatch.modules.proposals.models import Estimate
     from gdx_dispatch.modules.tax.models import TaxConfig
 
     s.add(TaxConfig(name="Default", default_rate=Decimal("0.0738")))
+    # The ledger's row sits on a service call: on no job a NULL rate is an
+    # installation's and untaxed since GDXA-930, which would hide the defect.
+    service_call = Job(title="Repair", job_type="Service Call", company_id=TENANT)
+    s.add(service_call)
     cust = {}
     for cls in ("wholesale", "contractor", "retail", None):
         c = Customer(name=f"c-{cls}", company_id=TENANT, pricing_class=cls)
@@ -71,9 +75,10 @@ def _seed(s: Session) -> dict[str, uuid.UUID]:
 
     ids: dict[str, uuid.UUID] = {}
 
-    def est(key, customer, status, rate=None, deleted=False):
+    def est(key, customer, status, rate=None, deleted=False, job=None):
         e = Estimate(
             customer_id=customer.id if customer is not None else None,
+            job_id=job.id if job is not None else None,
             estimate_number=f"E-{key}", public_token=f"tok-{key}", company_id=TENANT,
             status=status, tax_rate=rate, total=Decimal("1000.00"),
         )
@@ -84,7 +89,7 @@ def _seed(s: Session) -> dict[str, uuid.UUID]:
         s.flush()
         ids[key] = e.id
 
-    est("wholesale_sent", cust["wholesale"], "sent")          # the ledger's row
+    est("wholesale_sent", cust["wholesale"], "sent", job=service_call)  # the ledger's row
     est("contractor_draft", cust["contractor"], "draft")
     est("wholesale_draft", cust["wholesale"], "draft")
     est("wholesale_accepted", cust["wholesale"], "accepted")  # left, named

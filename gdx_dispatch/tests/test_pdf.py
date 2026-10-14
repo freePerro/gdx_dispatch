@@ -248,13 +248,18 @@ def test_estimate_payload_applies_per_estimate_tax_and_discount(pdf_app: FastAPI
 
 
 def test_estimate_payload_falls_back_to_tax_config(pdf_app: FastAPI):
-    """Estimate.tax_rate is None → resolve via TaxConfig.default_rate."""
+    """Estimate.tax_rate is None on a service call → resolve via TaxConfig.default_rate."""
+    from gdx_dispatch.models.tenant_models import Job
     from gdx_dispatch.modules.tax.models import TaxConfig
 
     db = pdf_app.dependency_overrides[get_db]()
     try:
         db.add(TaxConfig(name="Default", default_rate=Decimal("0.0738")))
+        job = Job(title="Repair", job_type="Service Call", company_id="tenant-test")
+        db.add(job)
+        db.flush()
         est = Estimate(
+            job_id=job.id,
             estimate_number="EST-TAX-2",
             total=Decimal("200.00"),
             tax_rate=None,
@@ -269,6 +274,30 @@ def test_estimate_payload_falls_back_to_tax_config(pdf_app: FastAPI):
         db.close()
     assert payload["tax"] == 14.76
     assert payload["total"] == 214.76
+
+
+def test_estimate_payload_null_rate_on_no_job_prints_no_tax(pdf_app: FastAPI):
+    """GDXA-930: a NULL-rate estimate on no job is an installation's quote.
+    It printed "Tax (7.38%)" while the invoice made from it billed 0."""
+    from gdx_dispatch.modules.tax.models import TaxConfig
+
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        db.add(TaxConfig(name="Default", default_rate=Decimal("0.0738")))
+        est = Estimate(
+            estimate_number="EST-TAX-930",
+            total=Decimal("200.00"),
+            tax_rate=None,
+            status="draft",
+            public_token=uuid4().hex,
+            company_id="tenant-test",
+        )
+        db.add(est)
+        db.commit()
+        payload = pdf_router._estimate_payload(est, None, db=db)
+    finally:
+        db.close()
+    assert (payload["tax"], payload["tax_rate_pct"], payload["total"]) == (0.0, 0.0, 200.0)
 
 
 def test_invoice_payload_tax_rate_pct_uses_persisted_rate(pdf_app: FastAPI):

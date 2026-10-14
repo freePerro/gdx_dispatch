@@ -222,3 +222,40 @@ describe('EstimateView — a failed tax config read is not a 0% default', () => 
     expect(wrapper.get('[data-testid="estimate-total"]').text()).not.toBe('—');
   });
 });
+
+// GDXA-930: a NULL rate on no job or an install-lane job resolves to 0 on the
+// server (compute_estimate_totals), which says so in GET's null_tax_rate. The
+// editor showed the tenant default there: tax on screen the PDF does not print.
+describe('EstimateView — a NULL rate on an installation shows no tax', () => {
+  it('shows 0%, totals without tax, and an edit still saves null', async () => {
+    estimateRow = { ...ESTIMATE, null_tax_rate: 0 };
+    const wrapper = await mountAndSettle();
+
+    expect(wrapper.vm.form.tax_rate).toBe(0);
+    expect(wrapper.get('[data-testid="estimate-total"]').text()).toBe('$100.00');
+    expect(wrapper.text()).not.toContain('Tax (8.25%)');
+
+    wrapper.vm.form.notes = 'an edit';
+    await settle();
+    expect(headerPatches().at(-1).tax_rate).toBeNull();
+  });
+
+  it('a rate typed over it is saved', async () => {
+    estimateRow = { ...ESTIMATE, null_tax_rate: 0 };
+    const wrapper = await mountAndSettle();
+
+    wrapper.vm.onTaxRateInput(5);
+    await settle();
+    expect(headerPatches().at(-1).tax_rate).toBeCloseTo(0.05);
+  });
+
+  it('a failed config read leaves its total known: 0 does not need the default', async () => {
+    taxConfigFails = true;
+    estimateRow = { ...ESTIMATE, null_tax_rate: 0 };
+    const wrapper = await mountAndSettle();
+
+    expect(wrapper.vm.form.tax_rate).toBe(0);
+    expect(wrapper.get('[data-testid="estimate-total"]').text()).toBe('$100.00');
+    expect(wrapper.find('[data-testid="estimate-tax-config-warning"]').exists()).toBe(false);
+  });
+});

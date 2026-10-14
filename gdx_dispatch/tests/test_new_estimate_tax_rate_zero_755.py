@@ -102,9 +102,10 @@ def _legacy_null_estimate(tc: TestClient, customer_id: str, job_id: str | None =
 
 
 def test_the_seeded_default_does_tax_a_null_rate(tc: TestClient):
-    """Control: without it every 0 below could be a fixture that taxes nothing."""
+    """Control: without it every 0 below could be a fixture that taxes nothing.
+    On a service call: a NULL rate on no job is untaxed since GDXA-930."""
     _seed_tax_default(tc)
-    legacy = _legacy_null_estimate(tc, _create_customer(tc))
+    legacy = _legacy_null_estimate(tc, _create_customer(tc), job_id=_job(tc, "Service Call"))
     rate, tax = _tax_on_1000(tc, legacy)
     assert rate is None
     assert tax == 73.8
@@ -227,7 +228,7 @@ def test_patch_null_rate_on_an_install_estimate_stores_zero(tc: TestClient):
 def test_patch_null_rate_leaves_a_legacy_null_row_as_it_was(tc: TestClient):
     """Existing rows are GDXA-756's backfill, not a side effect of an edit."""
     _seed_tax_default(tc)
-    legacy = _legacy_null_estimate(tc, _create_customer(tc))
+    legacy = _legacy_null_estimate(tc, _create_customer(tc), job_id=_job(tc, "Service Call"))
     assert tc.patch(f"/api/estimates/{legacy}", json={"tax_rate": None, "notes": "x"}).status_code == 200
     assert _tax_on_1000(tc, legacy) == (None, 73.8)
 
