@@ -8,15 +8,15 @@
           role="button" tabindex="0" aria-label="Total Outstanding — break down by age"
           @click="showAgingDialog = true" @keydown.enter.prevent="showAgingDialog = true" @keydown.space.prevent="showAgingDialog = true">
           <template #title>Total Outstanding <i class="pi pi-chart-bar card-hint" /></template>
-          <template #content><p class="stat-value outstanding">{{ currency(totalOutstanding) }}</p></template>
+          <template #content><p class="stat-value outstanding">{{ kpiReady ? currency(totalOutstanding) : '—' }}</p></template>
         </Card>
         <Card data-testid="billing-overdue-amount">
           <template #title>Overdue</template>
-          <template #content><p class="stat-value overdue">{{ currency(overdueAmount) }}</p></template>
+          <template #content><p class="stat-value overdue">{{ kpiReady ? currency(overdueAmount) : '—' }}</p></template>
         </Card>
         <Card data-testid="billing-paid-this-month">
           <template #title>{{ dateFilterActive ? 'Paid in Range' : 'Paid This Month' }}</template>
-          <template #content><p class="stat-value paid">{{ currency(paidThisMonth) }}</p></template>
+          <template #content><p class="stat-value paid">{{ kpiReady ? currency(paidThisMonth) : '—' }}</p></template>
         </Card>
         <!-- PR1-billing-capture: drafts are excluded from Outstanding (they
              aren't receivables yet) which made never-sent invoices invisible
@@ -24,10 +24,11 @@
         <Card data-testid="billing-draft-invoices" class="draft-card" @click="activeStatus = 'Draft'">
           <template #title>Unsent Drafts</template>
           <template #content>
-            <p class="stat-value drafts">
+            <p v-if="kpiReady" class="stat-value drafts">
               {{ draftCount }}
               <span class="draft-total">({{ currency(draftTotal) }})</span>
             </p>
+            <p v-else class="stat-value drafts">—</p>
           </template>
         </Card>
       </div>
@@ -232,7 +233,7 @@
         <Button
           v-for="tab in statusTabs"
           :key="tab.value"
-          :label="`${tab.label} (${tabCount(tab.value)})`"
+          :label="invoiceListState === 'loaded' ? `${tab.label} (${tabCount(tab.value)})` : tab.label"
           :severity="activeStatus === tab.value ? undefined : 'secondary'"
           :data-testid="`billing-status-${tab.value.toLowerCase()}`"
           size="small"
@@ -278,7 +279,18 @@
         dataKey="id"
       >
         <template #empty>
+          <!-- GDXA-940: an empty list is only "no invoices" once the list has
+               actually arrived; before that the mask is the whole message. -->
           <EmptyState
+            v-if="invoiceListState === 'error'"
+            icon="pi pi-exclamation-triangle"
+            title="Couldn't load invoices"
+            message="Refresh the page to retry."
+            data-testid="billing-list-error"
+          />
+          <EmptyState
+            v-else-if="invoiceListState === 'loaded'"
+            data-testid="billing-list-empty"
             icon="pi pi-file"
             :title="searchQuery || activeStatus !== 'All' ? 'No invoices match your filters' : 'No invoices yet'"
             :message="searchQuery || activeStatus !== 'All' ? 'Try clearing your search, status, or date filter.' : 'Click &quot;Create Invoice&quot; to start.'"
@@ -658,7 +670,13 @@ const api = useApi();
 const toast = useToast();
 
 // --- State ---
-const loading = ref(false);
+// Starts true: the first paint happens before onMounted's fetch begins, and an
+// empty list with no mask read as "No invoices yet / All (0)" (GDXA-940).
+const loading = ref(true);
+// "loading" until the first /api/invoices answer, then "loaded" or "error".
+// Gates the empty state and the tab counts, which are both claims about the
+// whole list and are false until it has arrived.
+const invoiceListState = ref("loading");
 const readyJobs = ref([]);
 // PR4 — /api/parts-needed/unbilled-consumed: parts used on completed jobs
 // that never reached an invoice, grouped per job.
@@ -1176,6 +1194,15 @@ async function loadBillingSummary() {
 // unpaginated), scoped by ISSUE date. The status tab and search box
 // deliberately do NOT scope the cards: each card is its own status slice.
 // With no date filter, the server aggregator stays preferred as before.
+// A card has a figure to show once either source is in: the server summary
+// (used with no date filter) or the invoice list (the fallback, and the only
+// source under a date filter). Before that every card would read $0.00 — the
+// same false empty as "No invoices yet" (GDXA-940).
+const kpiReady = computed(() =>
+  invoiceListState.value === "loaded"
+  || (!dateFilterActive.value && typeof billingSummary.value?.total_outstanding === "number")
+);
+
 const kpiWindowInvoices = computed(() =>
   dateFilterActive.value ? invoices.value.filter(inDateWindow) : invoices.value
 );
@@ -1349,6 +1376,9 @@ async function loadAchPending() {
 
 async function loadData() {
   loading.value = true;
+  // Started with the list, not after it, so the queue cards above the table
+  // land with it instead of pushing rows down once it is usable.
+  const queues = loadBillingQueues();
   try {
     const [invRes, custRes, jobRes] = await Promise.allSettled([
       api.get("/api/invoices", { suppressErrorToast: true }),
@@ -1373,48 +1403,64 @@ async function loadData() {
       const raw = invRes.value;
       const list = Array.isArray(raw) ? raw : raw?.items || raw?.data || [];
       invoices.value = list.map((inv) => normalizeInvoice(inv, customerMap));
+      invoiceListState.value = "loaded";
     }
     loadAchPending(); // fire-and-forget — asks Stripe, so never on the list's critical path
     // If the invoice fetch itself failed, surface it instead of silently
     // showing an empty list (otherwise the page renders "No invoices yet"
     // even when there are 305 invoices in the DB).
     if (invRes.status === "rejected") {
+      // A failed refresh keeps the list it already has; only a list that
+      // never arrived is an error state.
+      if (invoiceListState.value !== "loaded") invoiceListState.value = "error";
       const status = invRes.reason?.status || invRes.reason?.response?.status;
       const msg = status === 401 || status === 403
         ? "Your session may have expired — refresh the page to retry."
         : "Failed to load invoices. Refresh to retry.";
       toast.add({ severity: "error", summary: "Couldn't load invoices", detail: msg, life: 4000 });
     }
-    // Load ready-for-billing jobs
-    try {
-      const rfb = await api.get("/api/jobs/ready-for-billing");
-      readyJobs.value = Array.isArray(rfb) ? rfb : [];
-    } catch (e) {
-      console.warn("ready_for_billing_failed", e);
-      readyJobs.value = [];
-    }
-    // PR4 — parts consumed on completed jobs that never reached an invoice.
-    try {
-      const leaked = await api.get("/api/parts-needed/unbilled-consumed");
-      leakedParts.value = Array.isArray(leaked) ? leaked : [];
-    } catch (e) {
-      console.warn("unbilled_consumed_parts_failed", e);
-      leakedParts.value = [];
-    }
-    // §12 — jobs re-closed-out after billing. Server gates on the company
-    // toggle (enabled:false → empty), so the card just stays hidden when off.
-    try {
-      const disc = await api.get("/api/invoices/closeout-discrepancies");
-      closeoutDiscrepancies.value = disc && Array.isArray(disc.items) ? disc.items : [];
-    } catch (e) {
-      console.warn("closeout_discrepancies_failed", e);
-      closeoutDiscrepancies.value = [];
-    }
   } catch (e) {
     console.error("billing_loadData_failed", e);
+    if (invoiceListState.value !== "loaded") invoiceListState.value = "error";
     toast.add({ severity: "error", summary: "Error", detail: "Failed to load billing data", life: 3000 });
   } finally {
+    // The table mask covers the invoice list only; the queue cards below
+    // load on their own and must not hold it (GDXA-940).
     loading.value = false;
+  }
+  await queues;
+}
+
+// The three work-queue cards above the list. Independent of one another and
+// of the invoice list, so fetched in parallel; each failure empties its own
+// card and nothing else.
+async function loadBillingQueues() {
+  const [rfbRes, leakedRes, discRes] = await Promise.allSettled([
+    api.get("/api/jobs/ready-for-billing"),
+    // PR4 — parts consumed on completed jobs that never reached an invoice.
+    api.get("/api/parts-needed/unbilled-consumed"),
+    // §12 — jobs re-closed-out after billing. Server gates on the company
+    // toggle (enabled:false → empty), so the card just stays hidden when off.
+    api.get("/api/invoices/closeout-discrepancies"),
+  ]);
+  if (rfbRes.status === "fulfilled") {
+    readyJobs.value = Array.isArray(rfbRes.value) ? rfbRes.value : [];
+  } else {
+    console.warn("ready_for_billing_failed", rfbRes.reason);
+    readyJobs.value = [];
+  }
+  if (leakedRes.status === "fulfilled") {
+    leakedParts.value = Array.isArray(leakedRes.value) ? leakedRes.value : [];
+  } else {
+    console.warn("unbilled_consumed_parts_failed", leakedRes.reason);
+    leakedParts.value = [];
+  }
+  if (discRes.status === "fulfilled") {
+    const disc = discRes.value;
+    closeoutDiscrepancies.value = disc && Array.isArray(disc.items) ? disc.items : [];
+  } else {
+    console.warn("closeout_discrepancies_failed", discRes.reason);
+    closeoutDiscrepancies.value = [];
   }
 }
 
@@ -1616,16 +1662,18 @@ function onRowClick(event) {
 defineExpose({ openPaymentDialog, sendInvoice });
 
 onMounted(async () => {
-  loadBillingSummary();
-  await loadData();
   // ?status=Overdue|Paid|Sent|Draft on mount sets the active tab — used by
   // the Dashboard "X overdue invoices need collection" alert so the user
   // lands directly on the filtered list instead of the All view, where
   // overdue rows scatter among 300 invoices sorted by created_at desc.
+  // Set before loading: the table unmasks before the queue cards finish
+  // (GDXA-940), and the All list must not show in between.
   const qs = String(route.query.status || "");
   if (qs && statusTabs.some((t) => t.value === qs)) {
     activeStatus.value = qs;
   }
+  loadBillingSummary();
+  await loadData();
   // S122 — legacy ?action=create&customer_id=…&job_id=… deep links now route
   // to the dedicated /billing/new page; preserves the Job-Detail "Create
   // Invoice" link contract.
