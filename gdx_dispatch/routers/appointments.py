@@ -38,6 +38,14 @@ router = APIRouter(
     dependencies=[Depends(require_module("jobs"))],
 )
 
+# Every write in this router is a dispatch-manager action (owner, admin,
+# dispatcher, manager). The callers are office screens (AppointmentsView,
+# JobVisitsCard, UndoArrivalDialog); a technician records their own arrival
+# and completion through routers/mobile.py, which checks that the job is
+# theirs. `jobs.write` is no gate here: the technician role holds it
+# (GDXA-1059).
+_office = require_role(*sorted(DISPATCH_MANAGER_ROLES))
+
 
 APPOINTMENT_STATUSES = (
     "scheduled",
@@ -460,7 +468,7 @@ def get_suggested_duration(
     }
 
 
-@router.post("/api/appointments", response_model=None, status_code=201)
+@router.post("/api/appointments", response_model=None, status_code=201, dependencies=[Depends(_office)])
 def create_appointment(
     payload: AppointmentIn,
     request: Request,
@@ -547,7 +555,7 @@ def get_appointment(
     return _serialize(_get_scoped(db, appt_id, tenant_id))
 
 
-@router.patch("/api/appointments/{appt_id}", response_model=None)
+@router.patch("/api/appointments/{appt_id}", response_model=None, dependencies=[Depends(_office)])
 def update_appointment(
     appt_id: UUID,
     payload: AppointmentPatch,
@@ -699,7 +707,9 @@ def update_appointment(
     return _serialize(a)
 
 
-@router.delete("/api/appointments/{appt_id}", response_model=None, status_code=204)
+@router.delete(
+    "/api/appointments/{appt_id}", response_model=None, status_code=204, dependencies=[Depends(_office)]
+)
 def delete_appointment(
     appt_id: UUID,
     request: Request,
@@ -723,7 +733,7 @@ def delete_appointment(
     return None
 
 
-@router.post("/api/appointments/{appt_id}/confirm", response_model=None)
+@router.post("/api/appointments/{appt_id}/confirm", response_model=None, dependencies=[Depends(_office)])
 def confirm_appointment(
     appt_id: UUID,
     request: Request,
@@ -746,7 +756,7 @@ def confirm_appointment(
     return _serialize(a)
 
 
-@router.post("/api/appointments/{appt_id}/on-my-way", response_model=None)
+@router.post("/api/appointments/{appt_id}/on-my-way", response_model=None, dependencies=[Depends(_office)])
 def on_my_way(
     appt_id: UUID,
     request: Request,
@@ -769,7 +779,7 @@ def on_my_way(
     return _serialize(a)
 
 
-@router.post("/api/appointments/{appt_id}/arrived", response_model=None)
+@router.post("/api/appointments/{appt_id}/arrived", response_model=None, dependencies=[Depends(_office)])
 def arrived(
     appt_id: UUID,
     request: Request,
@@ -827,7 +837,7 @@ def close_visit(a: Appointment, completed_at: datetime, day_closed_at: datetime 
         a.day_closed_at = day_closed_at
 
 
-@router.post("/api/appointments/{appt_id}/complete", response_model=None)
+@router.post("/api/appointments/{appt_id}/complete", response_model=None, dependencies=[Depends(_office)])
 def complete_appointment(
     appt_id: UUID,
     request: Request,
@@ -848,7 +858,7 @@ def complete_appointment(
     return _serialize(a)
 
 
-@router.post("/api/appointments/{appt_id}/cancel", response_model=None)
+@router.post("/api/appointments/{appt_id}/cancel", response_model=None, dependencies=[Depends(_office)])
 def cancel_appointment(
     appt_id: UUID,
     request: Request,
@@ -893,10 +903,6 @@ class UndoJobTapsIn(BaseModel):
     tech_id: str = Field(min_length=1, max_length=64)
     tap_record_ids: list[str] = Field(default_factory=list, max_length=50)
     reason: str = Field(min_length=1, max_length=1000)
-
-
-# Undo arrival is a dispatch-manager action (owner, admin, dispatcher, manager).
-_office = require_role(*sorted(DISPATCH_MANAGER_ROLES))
 
 
 def _job_of(db: Session, job_id: Any) -> Any:
