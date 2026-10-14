@@ -11,6 +11,11 @@ tenant match — and reopen known bypass classes):
   * WS /api/plugins/_browser/ws?ticket=... — validates only the ticket (signature
     + expiry + scope), re-checks the allowlist, then relays frames/input to the
     internal plugin-host stream. No role/consent logic lives in the socket.
+  * POST /api/plugins/_browser/credentials — remember the sign-in for a
+    plugin's browser workspace, behind the same gate as the ticket; stored
+    on the plugin-host, never in core.
+  * GET /api/plugins/_browser/credentials — whether a sign-in is remembered.
+  * DELETE /api/plugins/_browser/credentials — forget it.
 
 This way a revoked or DB-demoted owner cannot open a stream with a stale token,
 and a stale consent row for a plugin that no longer declares "browser" is
