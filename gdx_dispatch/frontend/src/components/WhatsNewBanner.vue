@@ -40,8 +40,10 @@ import {
   loadSeenProgress,
   markReleaseSeen,
 } from '../composables/useReleaseNotes';
+import { useAuthStore } from '../stores/auth';
 
 const route = useRoute();
+const auth = useAuthStore();
 const release = ref(null);
 
 // Opening the notes page some other way (sidebar, menu) reads them too.
@@ -56,6 +58,10 @@ async function dismiss() {
 }
 
 onMounted(async () => {
+  // Both reads are behind login. App.vue keeps the shell (and this banner)
+  // off until the first navigation resolves; this holds if it mounts early
+  // anyway (GDXA-1023).
+  if (!auth.isAuthenticated) return;
   let data;
   try {
     data = await loadReleaseNotes();
