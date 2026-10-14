@@ -4,8 +4,9 @@ Redis is the Celery broker and also the refresh-token store: `used_refresh_jtis`
 (replay detection) and `refresh_family:{sub}` (family revoke, invariant 7 /
 RFC 9700). All three compose files ran `--maxmemory-policy allkeys-lru` with no
 `--appendonly` and no volume of their own on /data (GDXA-1117). The image's
-anonymous /data volume kept the hourly RDB across a restart but not across a
-container recreate, and a full cache could evict the one replay set whole.
+anonymous /data volume kept the RDB snapshot (up to an hour stale) across a
+restart and an `up -d` recreate, but not across `down`; and a full cache could
+evict the one replay set whole.
 
 Every security key is written with an `expire`, so a `volatile-*` policy evicts
 them just as readily; only `noeviction` keeps them. A guard on the word "lru"
@@ -26,7 +27,7 @@ from gdx_dispatch.tools.tracked_files import REPO_ROOT, read_tracked_files
 
 _COMPOSE_NAME = re.compile(r"(?:^|/)docker-compose[\w.-]*\.ya?ml$")
 _POLICY = re.compile(r"--maxmemory-policy\s+(\S+?)'?(?:\s|$)")
-_APPENDONLY = re.compile(r"--appendonly\s+yes\b")
+_APPENDONLY = re.compile(r"--appendonly\s+(\w+)")
 
 # The files the GDXA-1117 fix touched. Pinned so a rename that drops one from
 # the scan, or a yaml the loader stops reading, is red rather than vacuous.
@@ -91,7 +92,9 @@ def test_redis_policy_is_noeviction(rel: str) -> None:
 
 @pytest.mark.parametrize("rel", sorted(_SERVICES))
 def test_redis_appendonly_is_on(rel: str) -> None:
-    assert _APPENDONLY.search(_command(_SERVICES[rel][0])), f"{rel}: redis runs without --appendonly yes"
+    # Redis applies the last occurrence, so `--appendonly yes --appendonly no` is off.
+    values = _APPENDONLY.findall(_command(_SERVICES[rel][0]))
+    assert values[-1:] == ["yes"], f"{rel}: redis runs with --appendonly {values or 'unset'}, not yes"
 
 
 @pytest.mark.parametrize("rel", sorted(_SERVICES))

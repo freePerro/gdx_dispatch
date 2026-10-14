@@ -117,12 +117,13 @@ services:
     # refresh-token replay and family-revoke state (invariant 7). They carry a
     # TTL, so volatile-* policies could evict them too; noeviction refuses the
     # write at the cap instead of silently dropping replay history. AOF on a
-    # named volume keeps that state across a container recreate (GDXA-1117).
-    # A recreate no longer empties used_refresh_jtis either; its TTL is reset on
-    # every add, so it only grows (~80 B a jti, ~14k jtis in 41 days on prod).
+    # named volume keeps that state to the second, and across `down` (GDXA-1117).
+    # Nothing empties used_refresh_jtis now: its TTL is reset on every add, so
+    # it only grows (~80 B a jti, ~14k jtis in 41 days on prod).
     # Moving to this volume starts empty, and a dump.rdb copied in is ignored
     # once AOF is on. To carry the state over: `config set appendonly yes` in
-    # the old container, copy its /data/appendonlydir into the new volume, `up`.
+    # the old container, wait for aof_rewrite_in_progress:0 in `info
+    # persistence`, copy its /data/appendonlydir into the new volume, `up`.
     command: redis-server --maxmemory 256mb --maxmemory-policy noeviction --appendonly yes
     volumes:
       - redis_data:/data
