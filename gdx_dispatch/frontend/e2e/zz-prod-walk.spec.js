@@ -34,6 +34,7 @@ async function auth(page) {
     await api.dispose();
   }
   await page.addInitScript((t) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', t);
   }, TOKEN);
 }
@@ -137,7 +138,7 @@ test('the job detail screen carries the actions this release moved there', async
 test('light and dark on prod', async ({ page }) => {
   for (const theme of ['light', 'dark']) {
     await auth(page);
-    await page.addInitScript((t) => localStorage.setItem('gdx_theme', t), theme);
+    await page.addInitScript((t) => { if (window === window.top) localStorage.setItem('gdx_theme', t); }, theme);
     await showAllJobs(page);
     await expect(page.locator('[data-testid^="mobile-job-card-"]').first()).toBeVisible({ timeout: 30000 });
     expect(await page.evaluate(() => document.documentElement.getAttribute('data-theme'))).toBe(theme);

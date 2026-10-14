@@ -30,6 +30,7 @@ async function auth(page, baseURL) {
   expect(r.ok()).toBeTruthy();
   const body = await r.json();
   await page.addInitScript((a) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', a.t);
   }, { t: body.access_token, tid: TENANT });
   await api.dispose();
@@ -119,7 +120,7 @@ test('cards in the initial viewport are not covered by anything', async ({ page,
 
 test('dark mode: the shared card is readable on both surfaces', async ({ page, baseURL }) => {
   await auth(page, baseURL);
-  await page.addInitScript(() => localStorage.setItem('gdx_theme', 'dark'));
+  await page.addInitScript(() => { if (window === window.top) localStorage.setItem('gdx_theme', 'dark'); });
   await page.goto('/mobile/jobs');
   await expect(page.locator('[data-testid^="mobile-job-card-"]').first()).toBeVisible({ timeout: 20000 });
   expect(await page.evaluate(() => document.documentElement.getAttribute('data-theme'))).toBe('dark');
@@ -131,7 +132,7 @@ test('dark mode: the shared card is readable on both surfaces', async ({ page, b
 
 test('light mode screenshots for both surfaces', async ({ page, baseURL }) => {
   await auth(page, baseURL);
-  await page.addInitScript(() => localStorage.setItem('gdx_theme', 'light'));
+  await page.addInitScript(() => { if (window === window.top) localStorage.setItem('gdx_theme', 'light'); });
   await page.goto('/mobile');
   await page.waitForTimeout(2500);
   await page.screenshot({ path: 'test-results/prb-today-light.png', fullPage: true });

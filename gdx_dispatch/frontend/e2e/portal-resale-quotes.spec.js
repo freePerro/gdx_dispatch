@@ -59,7 +59,7 @@ async function seed(request) {
 
 test('a contractor brands, resells an estimate, downloads the PDF and deletes the quote', async ({ page, request }) => {
   const { portalJwt, estimateNumber } = await seed(request);
-  await page.addInitScript((jwt) => sessionStorage.setItem('gdx_portal_jwt', jwt), portalJwt);
+  await page.addInitScript((jwt) => { if (window === window.top) sessionStorage.setItem('gdx_portal_jwt', jwt); }, portalJwt);
   await page.goto('/customer-portal');
 
   // My Quotes before agreeing points at My Branding.

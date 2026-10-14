@@ -18,6 +18,7 @@ async function auth(page, baseURL) {
   expect(r.ok()).toBeTruthy();
   const body = await r.json();
   await page.addInitScript((a) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', a.t);
   }, { t: body.access_token, tid: TENANT });
   await api.dispose();
@@ -102,7 +103,7 @@ test('job context and the customer warning render', async ({ page, baseURL }) =>
 
 test('dark mode: the new sections are readable', async ({ page, baseURL }) => {
   await auth(page, baseURL);
-  await page.addInitScript(() => localStorage.setItem('gdx_theme', 'dark'));
+  await page.addInitScript(() => { if (window === window.top) localStorage.setItem('gdx_theme', 'dark'); });
   await page.goto(`/mobile/jobs/${JOB}`);
   await expect(page.locator('[data-testid="mjd-job-context"]')).toBeVisible({ timeout: 20000 });
   expect(await page.evaluate(() => document.documentElement.getAttribute('data-theme'))).toBe('dark');

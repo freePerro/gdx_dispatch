@@ -41,6 +41,7 @@ async function signIn(page, baseURL) {
     session = { token: access_token, job };
   }
   await page.addInitScript((t) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', t);
   }, session.token);
   return session.job;
@@ -67,7 +68,7 @@ test('the link is legible in dark mode as well as light', async ({ page, baseURL
   const job = await signIn(page, baseURL);
 
   for (const mode of ['light', 'dark']) {
-    await page.addInitScript((m) => localStorage.setItem('gdx_theme', m), mode);
+    await page.addInitScript((m) => { if (window === window.top) localStorage.setItem('gdx_theme', m); }, mode);
     await page.goto(`/jobs/${job.id}`);
     await expect(page.locator('html')).toHaveAttribute('data-theme', mode);
 

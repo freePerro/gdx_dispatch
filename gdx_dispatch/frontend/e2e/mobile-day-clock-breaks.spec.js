@@ -36,8 +36,8 @@ async function login(baseURL) {
 }
 
 async function openJob(page, token, theme) {
-  await page.addInitScript((t) => sessionStorage.setItem('gdx_access_token', t), token);
-  await page.addInitScript((t) => localStorage.setItem('gdx_theme', t), theme);
+  await page.addInitScript((t) => { if (window === window.top) sessionStorage.setItem('gdx_access_token', t); }, token);
+  await page.addInitScript((t) => { if (window === window.top) localStorage.setItem('gdx_theme', t); }, theme);
   await page.goto(`/mobile/jobs/${JOB_ID}`);
   const card = page.locator('[data-testid="mjd-day-clock"]');
   await expect(card).toBeVisible({ timeout: 20000 });

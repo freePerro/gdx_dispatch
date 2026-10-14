@@ -45,8 +45,8 @@ test.describe('#653 job costing panel', () => {
       const requested = [];
       page.on('request', (r) => requested.push(`${r.method()} ${new URL(r.url()).pathname}`));
 
-      await page.addInitScript((t) => sessionStorage.setItem('gdx_access_token', t), token);
-      await page.addInitScript((t) => localStorage.setItem('gdx_theme', t), theme);
+      await page.addInitScript((t) => { if (window === window.top) sessionStorage.setItem('gdx_access_token', t); }, token);
+      await page.addInitScript((t) => { if (window === window.top) localStorage.setItem('gdx_theme', t); }, theme);
 
       await page.goto('/job-costing');
       // Open the dialog the way a user does.

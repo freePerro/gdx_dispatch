@@ -25,6 +25,7 @@ async function signIn(page, baseURL) {
   expect(r.ok(), 'login').toBeTruthy();
   const { access_token } = await r.json();
   await page.addInitScript((a) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', a.t);
   }, { t: access_token, tid: TENANT });
   await api.dispose();
@@ -94,7 +95,7 @@ test.describe('invoice line editor — p1..p5 on /billing/new', () => {
   });
 
   test('p5 + theming: the editor renders in dark mode', async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('gdx_theme', 'dark'));
+    await page.addInitScript(() => { if (window === window.top) localStorage.setItem('gdx_theme', 'dark'); });
     await page.goto('/billing/new');
     await expect(page.locator('[data-testid="line-items-editor"]')).toBeVisible({ timeout: 20000 });
     const theme = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
@@ -175,7 +176,7 @@ test.describe('GDXA-938 — the line total stays on screen on a phone or tablet'
   ]) {
     test(`${width}px, ${theme}: no sideways scroll, Total in the viewport`, async ({ page, baseURL }) => {
       await signIn(page, baseURL);
-      await page.addInitScript((t) => localStorage.setItem('gdx_theme', t), theme);
+      await page.addInitScript((t) => { if (window === window.top) localStorage.setItem('gdx_theme', t); }, theme);
       // A restack inside the observer callback raised "ResizeObserver loop
       // completed with undelivered notifications", toasted as "Something went
       // wrong". Record every window error so that cannot come back silently.

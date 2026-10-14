@@ -30,6 +30,7 @@ async function signIn(page, baseURL) {
   expect(r.ok(), 'login').toBeTruthy();
   const { access_token } = await r.json();
   await page.addInitScript((a) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', a.t);
     sessionStorage.setItem('gdx_tenant_slug', a.tid);
   }, { t: access_token, tid: TENANT });
@@ -221,7 +222,7 @@ test('the rule selects are not truncated at desktop width', async ({ page }) => 
 });
 
 test('the page is legible in dark mode', async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem('gdx_theme', 'dark'));
+  await page.addInitScript(() => { if (window === window.top) localStorage.setItem('gdx_theme', 'dark'); });
   await gotoSegments(page);
   expect(await page.evaluate(() => document.documentElement.getAttribute('data-theme'))).toBe('dark');
   await page.getByTestId('segments-open-dialog').click();

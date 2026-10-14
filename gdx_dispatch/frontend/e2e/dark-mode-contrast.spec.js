@@ -98,6 +98,7 @@ async function login(baseURL) {
 async function prime(page, token, theme) {
   await page.addInitScript(
     (a) => {
+      if (window !== window.top) return;
       sessionStorage.setItem('gdx_access_token', a.t);
       localStorage.setItem('gdx_theme', a.theme);
     },
