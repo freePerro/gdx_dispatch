@@ -283,3 +283,107 @@ def test_proposals_service_create_estimate_follows_the_job_lane(tc: TestClient, 
     finally:
         db.close()
     assert _tax_on_1000(tc, est_id) == expected
+
+
+# --- GDXA-892 (Doug, 2026-10-13): the 2026-10-13 wholesale ruling does not
+# reach a job-less estimate. A contractor or wholesale customer is keyed on
+# customer_type (modules/reseller/service.py), and a job-less estimate for one
+# stays at 0 like any other: it converts to an Installation, a construction
+# contract, untaxed on both the quote and the invoice.
+
+
+def _customer(tc: TestClient, customer_type: str) -> str:
+    from gdx_dispatch.models.tenant_models import Customer
+
+    customer_id = _create_customer(tc, name=f"{customer_type} customer")
+    db = _db(tc)
+    try:
+        db.get(Customer, UUID(customer_id)).customer_type = customer_type
+        db.commit()
+    finally:
+        db.close()
+    return customer_id
+
+
+def _job_for(tc: TestClient, job_type: str, customer_id: str) -> str:
+    job_id = _job(tc, job_type)
+    db = _db(tc)
+    try:
+        db.get(Job, UUID(job_id)).customer_id = UUID(customer_id)
+        db.commit()
+    finally:
+        db.close()
+    return job_id
+
+
+@pytest.mark.parametrize(("customer_type", "job_type", "expected"), [
+    ("Retail", None, (Decimal("0"), 0.0)),
+    ("Contractor", None, (Decimal("0"), 0.0)),
+    ("Wholesale", None, (Decimal("0"), 0.0)),
+    ("Contractor", "Installation", (Decimal("0"), 0.0)),
+    ("Retail", "Installation", (Decimal("0"), 0.0)),
+    ("Contractor", "Service Call", (None, 73.8)),
+    ("Retail", "Service Call", (None, 73.8)),
+])
+def test_create_follows_the_lane_whatever_the_customer_type(tc: TestClient, customer_type, job_type, expected):
+    _seed_tax_default(tc)
+    customer_id = _customer(tc, customer_type)
+    body = {"customer_id": customer_id}
+    if job_type is not None:
+        body["job_id"] = _job_for(tc, job_type, customer_id)
+    r = tc.post("/api/estimates", json=body)
+    assert r.status_code == 201, r.text
+    assert _tax_on_1000(tc, r.json()["id"]) == expected
+
+
+def test_walk_contractor_create_duplicate_convert_invoice_is_untaxed(tc: TestClient, monkeypatch):
+    """GDXA-892 step 2, a non-exempt contractor on $1,000 of parts: create,
+    duplicate, convert-to-job (job_type "Installation") and the invoice seeded
+    from that estimate all charge 0, so the quote and the bill agree."""
+    import gdx_dispatch.routers.estimates as estimates_router
+    from gdx_dispatch.core.pay_periods import shop_today_from_settings
+    from gdx_dispatch.routers.invoices import InvoiceCreateIn, InvoiceLineCreateIn, create_invoice
+
+    monkeypatch.setattr(estimates_router, "allocate_job_number", lambda *a, **k: "JOB-T-001")
+    _seed_tax_default(tc)
+    customer_id = _customer(tc, "Contractor")
+
+    created = tc.post("/api/estimates", json={"customer_id": customer_id})
+    assert created.status_code == 201, created.text
+    assert _tax_on_1000(tc, created.json()["id"]) == (Decimal("0"), 0.0)
+
+    dup = tc.post(f"/api/estimates/{created.json()['id']}/duplicate")
+    assert dup.status_code == 201, dup.text
+    dup_id = dup.json()["id"]
+    assert _tax_on_1000(tc, dup_id) == (Decimal("0"), 0.0)
+
+    db = _db(tc)
+    try:
+        db.get(Estimate, UUID(dup_id)).status = "accepted"
+        db.commit()
+    finally:
+        db.close()
+    conv = tc.post(f"/api/estimates/{dup_id}/convert-to-job")
+    assert conv.status_code == 200, conv.text
+    job_id = UUID(conv.json()["job_id"])
+
+    db = _db(tc)
+    try:
+        assert db.get(Job, job_id).job_type == "Installation"
+        est = db.get(Estimate, UUID(dup_id))
+        assert compute_estimate_totals(est, db)["tax"] == 0.0
+        inv = create_invoice(
+            payload=InvoiceCreateIn(
+                job_id=job_id, customer_id=UUID(customer_id),
+                invoice_date=shop_today_from_settings(db), source_estimate_id=est.id,
+                line_items=[InvoiceLineCreateIn(
+                    description="Door", quantity=1, unit_price=1000.0, taxable=True,
+                )],
+            ),
+            _={"sub": "u-1", "user_id": "u-1", "role": "admin", "tenant_id": "tenant-test"},
+            db=db,
+        )
+    finally:
+        db.close()
+    assert float(inv["tax_rate"]) == 0.0
+    assert round(inv["tax_amount"], 2) == 0.0

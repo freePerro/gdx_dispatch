@@ -499,10 +499,11 @@
             <!-- Tax & Discount -->
             <div class="form-field">
               <label for="est-tax-rate">Tax Rate</label>
-              <InputNumber id="est-tax-rate" v-model="form.tax_rate" suffix="%" :min="0" :max="100"
+              <InputNumber id="est-tax-rate" :modelValue="form.tax_rate" suffix="%" :min="0" :max="100"
                 :minFractionDigits="0" :maxFractionDigits="2" class="w-full"
                 :placeholder="taxRateUnknown ? 'Default unavailable' : undefined"
-                :disabled="estimateLocked" data-testid="estimate-tax-rate" />
+                :disabled="estimateLocked" data-testid="estimate-tax-rate"
+                @update:modelValue="onTaxRateInput" />
             </div>
             <div class="form-field">
               <label for="est-discount">Discount</label>
@@ -1486,13 +1487,24 @@ async function retryTaxConfig() {
     taxConfigRetrying.value = false;
   }
 }
-// The tax_rate a save sends, as a decimal. Any estimate that is not a legacy
+// Set when the user changes the rate field; a programmatic fill is not an edit.
+// PrimeVue's InputNumber emits update:modelValue on every blur, so only a
+// different value counts: tabbing through the field is not an edit.
+const taxRateEdited = ref(false);
+function onTaxRateInput(value) {
+  if (value !== form.value.tax_rate) taxRateEdited.value = true;
+  form.value.tax_rate = value;
+}
+// The tax_rate a save sends, as a decimal. A new estimate whose rate nobody
+// edited sends null, so the server stamps the job lane's rate
+// (new_estimate_tax_rate; GDXA-892). Any other estimate that is not a legacy
 // row (server rate NULL) sends the rate on screen, a blank as 0 (GDXA-755).
 // A legacy row persists only a rate the user changed from the tenant default;
 // null keeps it tracking the default. With the default unknown nothing can be
 // compared, so a rate in the form is sent as it stands and a blank stays null.
 function taxRatePayload() {
   const raw = form.value.tax_rate;
+  if (!isExisting.value && !taxRateEdited.value) return null;
   if (!form.value._tax_rate_was_null) return (Number(raw) || 0) / 100;
   if (tenantDefaultTaxPct.value == null) return raw == null ? null : (Number(raw) || 0) / 100;
   const formPct = Number(raw) || 0;
@@ -4200,10 +4212,9 @@ onMounted(async () => {
   if (isExisting.value) {
     await fetchEstimate();
   } else {
-    // New estimate: 0%, the construction-contract rate the server stamps on
-    // create (GDXA-755). Prefilling the tenant default kept persistTax false,
-    // so create and every autosave sent null, and PATCH null put the row back
-    // on the tenant default.
+    // New estimate: shows 0%, the construction-contract rate the server stamps
+    // on a job-less create (GDXA-755). Create sends null until the rate is
+    // edited (taxRatePayload), and the form then follows the row it gets back.
     form.value.tax_rate = 0;
     loading.value = false;
   }
