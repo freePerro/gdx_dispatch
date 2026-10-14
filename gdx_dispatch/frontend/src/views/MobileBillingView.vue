@@ -10,15 +10,15 @@
         <div class="kpi-strip" data-test="mb-kpis">
           <div class="kpi" :class="{ alert: overdueAmount > 0 }">
             <span class="kpi-label">Outstanding</span>
-            <span class="kpi-val">${{ fmtMoney(totalOutstanding) }}</span>
+            <span class="kpi-val">{{ kpiText(totalOutstanding) }}</span>
           </div>
           <div class="kpi" :class="{ alert: overdueAmount > 0 }">
             <span class="kpi-label">Overdue</span>
-            <span class="kpi-val">${{ fmtMoney(overdueAmount) }}</span>
+            <span class="kpi-val">{{ kpiText(overdueAmount) }}</span>
           </div>
           <div class="kpi">
             <span class="kpi-label">Paid (mo)</span>
-            <span class="kpi-val">${{ fmtMoney(paidThisMonth) }}</span>
+            <span class="kpi-val">{{ kpiText(paidThisMonth) }}</span>
           </div>
         </div>
 
@@ -213,7 +213,10 @@ const FILTERS = [
 const filter = ref('open')
 
 const invoices = ref([])
-const loading = ref(false)
+// Starts true: onMounted awaits permissions before fetchInvoices() runs, and a
+// false here painted "No open invoices" and $0.00 tiles over a list that had
+// not been asked for yet (GDXA-941).
+const loading = ref(true)
 
 const detailOpen = ref(false)
 const detail = ref(null)
@@ -256,6 +259,13 @@ async function loadBillingSummary() {
   } catch (_) {
     billingSummary.value = null
   }
+}
+
+// The client fallback sums a list that is not in yet; show a dash, not $0.00.
+const kpiPending = computed(() => loading.value && !invoices.value.length && !billingSummary.value)
+
+function kpiText(n) {
+  return kpiPending.value ? '—' : `$${fmtMoney(n)}`
 }
 
 const totalOutstanding = computed(() => {
