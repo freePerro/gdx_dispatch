@@ -53,7 +53,7 @@ checkpoint.
    before the next starts.
 6. **Fold the pre-existing bug fixes into the slice that already touches that code** so
    we don't refactor the same call site twice. (All four §12 defects are Stripe-dormant
-   or low-blast-radius; none is live leakage — Doug does not use Stripe.)
+   or low-blast-radius; none is live leakage — Doug does not use Stripe. *As of 2026-07-02; Stripe went live on 2026-07-21, see `gl-phase2-reconciliation.md` §4.0.*)
 
 ## Module boundary
 

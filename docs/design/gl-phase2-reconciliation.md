@@ -58,7 +58,7 @@ R1 falsified v1's architecture, not just details:
 ## 1. Scope
 
 1. **Statement-based bank reconciliation** — imported bank statements ↔ GL, suggest-and-confirm matching + monthly tie-out (the only true external anchor).
-2. **Payment-processor fee reconciliation** — provider-agnostic (§4.0); clearing-account pattern for net-deposit processors, statement-rule fees for gross-deposit ones; fees stop being invisible either way. (Stripe is the worked adapter example but is **not currently in use** — Doug, 2026-07-02.)
+2. **Payment-processor fee reconciliation** — provider-agnostic (§4.0); clearing-account pattern for net-deposit processors, statement-rule fees for gross-deposit ones; fees stop being invisible either way. (Stripe is the worked adapter example but is **not currently in use** — Doug, 2026-07-02. **No longer true from 2026-07-21:** Stripe takes live payments through the pay page; see §4.0.)
 3. **QBO push completion** — payments, invoice updates, adjustments; push-outbox with failure detection. (Absorbed from what the verification loop turned out to require.)
 4. **QBO verification loop** — transition-era books-vs-books diff (honestly labeled as such) + divergence detection, feeding Phase 3's trust-switch criteria.
 
@@ -125,18 +125,20 @@ As v1 (`bank_matches` + `bank_match_externals` + `bank_match_gl_lines`, cardinal
 
 P10/P12 posting rules and reversal-on-unconfirm as v1.
 
-## 4. Payment-processor reconciliation (provider-agnostic; Stripe adapter dormant)
+## 4. Payment-processor reconciliation (provider-agnostic; Stripe live since 2026-07-21, adapter not built)
 
 ### 4.0 Reality check & generalization (Doug, 2026-07-02)
 
-**GDX does not currently process payments through Stripe.** The Stripe code surface (`stripe_connect.py`, portal charge endpoints, webhook stubs) exists but is not live — which reclassifies Phase 1 §12's "orphaned charges" defect from *live money leakage* to *dormant defect: must be fixed before any Stripe activation* (and the prod-history sweep should trivially return empty — run it once to confirm).
+**As of 2026-07-02, GDX did not process payments through Stripe.** The Stripe code surface (`stripe_connect.py`, portal charge endpoints, webhook stubs) existed but was not live — which reclassified Phase 1 §12's "orphaned charges" defect from *live money leakage* to *dormant defect: must be fixed before any Stripe activation* (and the prod-history sweep should trivially return empty — run it once to confirm).
+
+**⚠ Superseded 2026-07-21 (recorded 2026-10-13, GDXA-915):** Stripe has taken live payments since the public pay page was un-broken on 2026-07-21 (`c992dc78`). Two measurements on prod, both read-only: `archive/phase-d-saas-residue.md` found **6 `card` payments totalling $7,650.02, 2026-07-22 → 2026-08-26, every one carrying a `pi_` PaymentIntent reference**. `archive/money-audit-2026-08-04.md` (§ on the stale-intent sweep) listed **2 `succeeded` intents** on the prod Stripe key on 2026-08-24, with `invoice_id` set on both; that list was limited to a time window. Both counts are floors as of their dates, not a census. The "dormant" reclassification above and the "trivially return empty" expectation no longer hold. Stripe pays out net of fees by default, so the condition that activates the dormant adapter spec below ("if a net-deposit processor ever activates") is expected to have been met. That is not yet observed for this account: no payout or matching bank line has been recorded here. Whether to build that spec or keep the statement-driven branch is Doug's decision, and it is still open. `stripe_connect.py` no longer exists: Connect was retired (`test_stripe_connect_retired`).
 
 The design below therefore generalizes. Everything reduces to one question per processor: **do deposits arrive gross (fees billed separately) or net (fees withheld)?**
 
 - **Gross-deposit processors** (typical bank merchant services: daily gross batches, fees debited monthly): **no clearing account needed.** P3 debits 1000 directly; the deposit statement line matches the day's card payments via R3 (sum match); the monthly fee debit is an R5 user rule → 6950 Payment Processing Fees. This is the simplest case and may be all Phase 2 ever needs.
 - **Net-deposit processors** (Stripe, Square, most PSPs): the clearing-account pattern below (1060, P3′/P13/P14/P15) applies, with a **provider adapter** supplying the balance-transaction data — via API where one exists, or derived from monthly processor statements where it doesn't (fees post from the statement, coarser but sufficient at this volume).
 - **Routing generalizes:** P3′ applies iff the Payment row carries a `processor_payment_ref` (provider-namespaced, e.g. `stripe:pi_...`, `square:...`) — the Stripe-specific `stripe_payment_intent_id` becomes this general column.
-- **Switching providers later** = adding an adapter + an R5/R1 rule set; the match engine, clearing pattern, and posting rules don't change. The §4.4 catch-up procedure applies only to periods where a net-deposit processor was actually live (if Stripe never processed real money, it is a no-op).
+- **Switching providers later** = adding an adapter + an R5/R1 rule set; the match engine, clearing pattern, and posting rules don't change. The §4.4 catch-up procedure applies only to periods where a net-deposit processor was actually live. Stripe has been live since 2026-07-21, so **§4.4 is not a no-op**. Its size is set by its step 0 count of prod payments that carry a Stripe intent id.
 
 **Doug's answer (2026-07-02): "everything is line items on accounts"** — deposits and processing fees each appear as their own line items on the bank account. **Branch picked: statement-driven, no clearing account, no processor API, no mirror tables.** Phase 2 builds for card money exactly two things:
 
@@ -145,7 +147,7 @@ The design below therefore generalizes. Everything reduces to one question per p
 
 Self-diagnosing safety net: if some fees turn out to be netted out of deposits rather than listed separately, R3's sum-match won't close and the deposit lands in the exception queue — the first month's tie-out reveals the true shape with no design change needed (worst case, the R4 tolerance/residual path or the clearing pattern below activates for that provider).
 
-The remainder of §4 (clearing account, 1060/P3′/P13-P15, mirror tables, catch-up) is retained as the **dormant adapter spec** — built only if a net-deposit processor (Stripe or otherwise) ever activates. §4.4's catch-up is a no-op for GDX's actual history.
+The remainder of §4 (clearing account, 1060/P3′/P13-P15, mirror tables, catch-up) is retained as the **dormant adapter spec** — built only if a net-deposit processor (Stripe or otherwise) ever activates. *(2026-10-13, GDXA-915: Stripe activated on 2026-07-21, so that condition has been met; see the note under §4.0.)* §4.4's catch-up is **not** a no-op for GDX's actual history: every Stripe charge since 2026-07-21 posted gross with no fee expensed. Its size comes from §4.4 step 0.
 
 ### 4.1 Clearing pattern
 
@@ -168,8 +170,17 @@ Charge (P3′) → fee (P13) → payout (P14) → **statement line** (R1 on payo
 
 ### 4.4 The P3→P3′ transition: Stripe catch-up **[AUDIT-R2 — new]**
 
-Between Phase 1 cutover and Phase 2 go-live, card payments posted **gross to 1000** and fees were never expensed — so GL 1000 is overstated by exactly the accumulated fees, and those months cannot tie out. One-time catch-up at Phase 2 go-live, before any historical tie-out runs:
+Between Phase 1 cutover and Phase 2 go-live, card payments posted **gross to 1000** and fees were never expensed — so GL 1000 is overstated by exactly the accumulated fees, and those months cannot tie out. *(2026-10-13, GDXA-915: as built, that premise holds for Stripe bank payments, which are recorded as `ach` and post to 1000. Card payments post to **1050** Undeposited Funds, and nothing credits 1050 yet (`undeposited-funds-clearing-plan.md`). So no card fee has reached 1000 today; which account the card fees overstate depends on how that plan lands. See step 0.)* One-time catch-up at Phase 2 go-live, before any historical tie-out runs:
 
+0. **Size it first** *(added 2026-10-13, GDXA-915)*. Run a read-only query on prod for the count, gross sum and date range of Stripe-backed payments. Split by method and void reason: a card refund or dispute void still leaves the fee with Stripe, while a failure void (mostly ACH) may carry a different fee or none:
+   ```sql
+   SELECT method, voided_reason, COUNT(*), SUM(amount),
+          SUM(surcharge_amount), MIN(payment_date), MAX(payment_date)
+     FROM payments
+    WHERE reference LIKE 'pi\_%' ESCAPE '\'
+    GROUP BY 1, 2;
+   ```
+   The intent id lives in `payments.reference`. The Stripe webhook and the refund handler both key on it (`routers/stripe_webhook.py`, `core/payments.py`). The `stripe_payment_intent_id` column that §4.1 specifies was never added. Check step 1's balance-transaction count against this one. Step 1 still pulls back to the Phase 1 cutover date, not to `MIN(payment_date)`, because an orphan charge can predate the first recorded row. A bt with no matching row is an orphan (§4.1). Note also that the shipped default map sends `card` to **1050**, not 1000, while Stripe bank payments (recorded as `ach`) go to 1000 and carry a different fee schedule (`modules/ledger/service.py`, `DEFAULT_PAYMENT_METHOD_ROLE_MAP`), so the "credit 1000" in step 2 must be checked against where the P3 debits actually landed before anything posts. `undeposited-funds-clearing-plan.md` raises the same mismatch and the net-of-fees CPA question.
 1. Pull balance transactions back to the Phase 1 cutover date.
 2. Post **one catch-up entry per payout** (**[AUDIT-R3]** — per-month granularity left Phase-1-era statement lines unmatchable): debit 6950 (that payout's fees), credit 1000 — key `stripe_catchup:{payout_id}`, memo linking the bt ids. Each Phase-1-era payout statement line (net) then line-matches N:1 against {its charges' gross P3 debits} + {its catch-up credit}, which sum exactly to net — expressible in the standard match schema.
 3. Prospectively, P3′ applies from go-live (dated posting-rule version, as Phase 1 anticipated). Historical P3 entries are NOT restated — the per-payout catch-up entries are the correction, and 3950 is never involved (fees are expense, not opening equity).
