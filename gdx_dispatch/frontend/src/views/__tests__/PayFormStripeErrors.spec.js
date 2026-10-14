@@ -80,13 +80,16 @@ describe('/pay Stripe.js error filter', () => {
 
 describe('/pay ACH email check', () => {
   it('refuses what type="email" lets through but Stripe calls email_invalid', () => {
-    for (const email of ['a@b', 'a@b.', 'a@.com', 'a b@c.com', '@c.com', 'a@b..com', 'a@@b.com']) {
+    for (const email of [
+      'a@b', 'a@b.', 'a@.com', 'a b@example.com', '@example.com', 'a@@example.com',
+      'a@b..example.com', // pii-ok: an empty label is never a real mailbox
+    ]) {
       expect(EMAIL_SHAPE.test(email), email).toBe(false);
     }
   });
 
   it('takes an ordinary address', () => {
-    for (const email of ['you@example.com', 'first.last+tag@mail.co.uk', 'a@b.io']) {
+    for (const email of ['you@example.com', 'first.last+tag@mail.example.org', 'a@b.test']) {
       expect(EMAIL_SHAPE.test(email), email).toBe(true);
     }
   });
