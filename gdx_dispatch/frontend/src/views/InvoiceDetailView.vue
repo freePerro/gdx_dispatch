@@ -3225,7 +3225,7 @@ onMounted(loadPaymentPlan);
   font-size: 0.95rem;
 }
 .bill-to-row i { color: var(--p-text-muted-color, #6b7280); width: 1rem; }
-.bill-to-row a { color: var(--p-primary-color, #3b82f6); text-decoration: none; }
+.bill-to-row a { color: var(--p-primary-color); text-decoration: none; }
 .bill-to-row a:hover { text-decoration: underline; }
 .bill-to-row .add-link { font-style: italic; }
 /* Theme tokens only — this sits above the fold on a money screen and has to

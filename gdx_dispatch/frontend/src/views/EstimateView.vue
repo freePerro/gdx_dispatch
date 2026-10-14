@@ -4469,7 +4469,7 @@ onUnmounted(() => {
 .total-row { font-size: 1.15rem; }
 .summary-value.total {
   font-weight: 700;
-  color: var(--p-primary-color, #3b82f6);
+  color: var(--p-primary-color);
   font-size: 1.25rem;
 }
 
@@ -4655,7 +4655,7 @@ onUnmounted(() => {
 .attachment-label-row { display: flex; align-items: center; gap: 0.25rem; margin-top: 0.15rem; }
 .attachment-label-row :deep(.p-inputtext) { max-width: 16rem; }
 .attachment-label { font-weight: 600; }
-.attachment-name { font-weight: 600; color: var(--p-primary-color, #0057a8); text-decoration: none; word-break: break-word; }
+.attachment-name { font-weight: 600; color: var(--p-primary-color); text-decoration: none; word-break: break-word; }
 .attachment-name:hover { text-decoration: underline; }
 
 /* Good / better / best tier editor. Theme tokens only (no literal light-mode

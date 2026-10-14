@@ -1583,7 +1583,7 @@ onMounted(() => {
 
 /* Links */
 .doc-link {
-  color: var(--p-primary-color, #4fc3f7);
+  color: var(--p-primary-color);
   text-decoration: none;
   font-weight: 600;
 }
@@ -1748,17 +1748,17 @@ onMounted(() => {
 
 .folder-item--all.active {
   background: rgba(16, 185, 129, 0.08);
-  border-left-color: var(--p-primary-color, #10b981);
+  border-left-color: var(--p-primary-color);
 }
 
 .folder-item--all.active .folder-name {
-  color: var(--p-primary-color, #10b981);
+  color: var(--p-primary-color);
   font-weight: 500;
 }
 
 .folder-item--all.drop-target {
   background: rgba(16, 185, 129, 0.18);
-  outline: 1px dashed var(--p-primary-color, #10b981);
+  outline: 1px dashed var(--p-primary-color);
   outline-offset: -2px;
 }
 
@@ -1768,7 +1768,7 @@ onMounted(() => {
 }
 
 .folder-item--all .folder-icon {
-  color: var(--p-primary-color, #10b981);
+  color: var(--p-primary-color);
   opacity: 0.85;
   font-size: 0.95rem;
 }

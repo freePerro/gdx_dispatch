@@ -1,16 +1,18 @@
 """Sprint Outlook Integration — OAuth router (s7 start + s8 callback + s11 account).
 
-Three endpoints under ``/api/oauth/outlook``:
+Four endpoints under ``/api/oauth/outlook``:
 
-- ``GET /start`` (s7) — 302 redirects an authed user to Microsoft Entra's
-  authorize URL with a signed CSRF state. State carries user_id +
-  tenant_id; callback validates the signature + matches user_id against
-  the authed callback request.
-- ``GET /callback`` (s8) — exchanges the auth code for access + refresh
+- ``POST /api/oauth/outlook/start`` (s7) — returns Microsoft Entra's
+  authorize URL with a signed CSRF state for an authed user; the SPA then
+  navigates to it (a top-level navigation cannot carry the Bearer header,
+  so this is a POST that answers JSON, not a GET that redirects). State
+  carries user_id + tenant_id; callback validates the signature + matches
+  user_id against the authed callback request.
+- ``GET /api/oauth/outlook/callback`` (s8) — exchanges the auth code for access + refresh
   tokens, hits /me to capture upn/display, persists encrypted tokens via
   ``key_storage.set_user_tokens``, redirects to ``/settings?integration=outlook``.
-- ``GET /account`` and ``DELETE /account`` (s11) — connection state +
-  idempotent disconnect.
+- ``GET /api/oauth/outlook/account`` (s11) — connection state.
+- ``DELETE /api/oauth/outlook/account`` (s11) — idempotent disconnect.
 
 Auth: ``gdx_dispatch.routers.auth.get_current_user`` (SS-7 SPA-compatible JWT path)
 — same dep that admin_ai_settings uses for the Tenant AI sprint.

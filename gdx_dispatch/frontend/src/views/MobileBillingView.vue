@@ -620,7 +620,7 @@ onMounted(async () => {
 .inv-total {
   font-weight: 700;
   font-size: 1rem;
-  color: var(--p-primary-color, #2563eb);
+  color: var(--p-primary-color);
 }
 
 .inv-number {
@@ -685,7 +685,7 @@ onMounted(async () => {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
-  color: var(--p-primary-color, #3b82f6);
+  color: var(--p-primary-color);
   text-decoration: underline;
 }
 

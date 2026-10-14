@@ -92,6 +92,12 @@ async def cell_gateway_webhook(
         log.warning("cell_gateway_relay_failed err=%s", type(exc).__name__)
         raise HTTPException(status_code=502, detail="plugin-host unreachable") from exc
 
+    # Every non-200 verdict is a dropped event: log the status (never the body
+    # or the number — texts are PII) so the drop is visible; it is not audited,
+    # because nothing was received.
+    if upstream.status_code != 200:
+        log.warning("cell_gateway_upstream_rejected status=%s", upstream.status_code)
+
     if upstream.status_code >= 500:
         raise HTTPException(status_code=502, detail="plugin ingest failed")
 

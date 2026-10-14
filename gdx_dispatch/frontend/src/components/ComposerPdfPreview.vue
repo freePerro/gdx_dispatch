@@ -82,7 +82,7 @@ onUnmounted(revoke);
   color: var(--p-text-muted-color, #6b7280);
 }
 .pdf-preview-open {
-  color: var(--p-primary-color, #3b82f6);
+  color: var(--p-primary-color);
   font-size: 0.85rem;
   white-space: nowrap;
 }

@@ -201,7 +201,7 @@ const flags = computed(() => {
 }
 .mjc-address {
   display: flex; align-items: center; gap: 0.35rem;
-  font-size: 0.9rem; color: var(--p-primary-color, #2563eb);
+  font-size: 0.9rem; color: var(--p-primary-color);
   min-height: 24px;
 }
 .mjc-address-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -237,7 +237,7 @@ const flags = computed(() => {
   border-radius: 0.5rem; cursor: pointer;
   border: 1px solid var(--p-content-border-color, #e5e7eb);
   background: var(--p-content-background, #fff);
-  color: var(--p-primary-color, #2563eb);
+  color: var(--p-primary-color);
 }
 .mjc-nav:active { background: var(--p-content-hover-background, #f3f4f6); }
 
