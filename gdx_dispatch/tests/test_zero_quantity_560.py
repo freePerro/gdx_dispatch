@@ -330,6 +330,8 @@ INVOICE_LINE_ALLOWED = {
            "never emitted at 0: it returns no line for 0 man-hours and no remainder at 0"),
     ("core/closeout_billing.py", "build_closeout_lines", "_install.quantity"): (
         1, "a computed install labor line (a picked matrix row), not a stored quantity"),
+    ("docker/demo/seed_demo.py", "seed", "Decimal(qty)"): (
+        1, "the demo seed's INVOICES table — positive literals in the source, no stored row"),
 }
 
 
