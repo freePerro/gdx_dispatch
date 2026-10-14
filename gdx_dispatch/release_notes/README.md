@@ -65,17 +65,39 @@ change lists.
    python -m gdx_dispatch.tools.release_notes draft X.Y.Z
    ```
 
+   If the file already exists (it was written ahead of the release), `draft`
+   leaves it alone and also prints what merged after the file was last
+   edited. Fold in anything there that users will notice, and re-confirm
+   the `warning:` line for any new migration. `check` refuses a file with
+   changes merged after it, so this step is not optional.
+
 2. Write the title and highlights, then check the file:
 
    ```
    python -m gdx_dispatch.tools.release_notes check X.Y.Z
    ```
 
+   On the notes branch this only warns that the file is not on `origin/main`
+   yet. Freshness is judged against `origin/main`, like `draft`.
+
 3. Merge the notes file to `main` through a PR, **before** tagging.
-4. Tag `vX.Y.Z` on that main commit and push the tag.
+4. `git fetch` and run `check X.Y.Z` again. If anything merged after the
+   notes, it fails and lists it: go back to step 1, fold those in, and merge
+   the edited file.
+5. Tag `vX.Y.Z` on that main commit and push the tag.
 
 The Release workflow runs `check` before it builds anything, so a tag with no
-notes file fails in seconds and publishes nothing. To recover, delete the tag
+notes file fails in seconds and publishes nothing. So does a tag where
+anything other than docs (commits that change only `.md` files) merged after
+the notes file was last edited: `check` lists those changes. `check` judges a
+file at its own tag once that tag exists. It only warns where git cannot tell
+(a shallow clone, or a file not committed yet), and fails on any other git
+error, such as a `--ref` that does not resolve.
+
+What `check` proves is that the file was edited after the last code change,
+not that the edit covers it: any commit to the file clears the list. Read
+what `draft` printed and fold it in. Editing a blank line only silences
+`check`. To recover, delete the tag
 (`git push --delete origin vX.Y.Z` and `git tag -d vX.Y.Z`), merge the notes,
 and tag again. The GitHub Release body is this file's text
 (`release_notes body X.Y.Z`), with the warning shown first.

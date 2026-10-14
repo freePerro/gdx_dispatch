@@ -188,6 +188,10 @@ gdx_dispatch/core/well_known_manifest.py                     platform-core
 gdx_dispatch/core/app_version.py                             platform-core
 gdx_dispatch/release_notes/*                                 platform-core
 gdx_dispatch/services/release_notes.py                       platform-core
+# The notes files, parser, router and release tool (draft / check / body /
+# changes) the Release workflow runs. Tests are not a covered root, so this
+# rule is not demanded by the gate, but it must keep matching.
+gdx_dispatch/tests/test_release_notes.py                     platform-core
 
 gdx_dispatch/modules/error_sink/*                            platform-core
 gdx_dispatch/modules/numbering/*                             platform-core
