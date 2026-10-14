@@ -2497,6 +2497,33 @@ class PushSubscription(Base):
     revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class DeviceAlertRegistration(Base):
+    """A phone that receives office bell notifications as Android alerts.
+
+    The Android app's foreground service polls the bell feed with an opaque
+    random token; only its SHA-256 is stored here. A JWT was rejected
+    because one signed with the login key would pass every
+    ``require_permission`` route. Revoked by a logout on that phone, by
+    turning alerts off, by a password change or reset, or by an admin
+    "revoke all sessions"; refused by the feed after 90 days, or once the
+    user is locked out, deleted, or no longer holds nav.office.
+    Tenant scope = the connection; no tenant_id column.
+    """
+
+    __tablename__ = "device_alert_registrations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    device_label: Mapped[str] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(tz=timezone.utc)
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_reason: Mapped[str] = mapped_column(String(40), nullable=True)
+
+
 class JobPartNeeded(Base):
     __tablename__ = "job_parts_needed"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

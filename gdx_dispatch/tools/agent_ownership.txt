@@ -545,6 +545,7 @@ gdx_dispatch/frontend/src/constants/customerTypes.js         customers-crm
 ## email, cell gateway, notifications, push, transactional email, team chat.
 ## ---------------------------------------------------------------------------
 gdx_dispatch/routers/notifications.py                        comms-email-phone
+gdx_dispatch/routers/device_alerts.py                        comms-email-phone
 gdx_dispatch/routers/push.py                                 comms-email-phone
 gdx_dispatch/routers/messages.py                             comms-email-phone
 gdx_dispatch/routers/inbound_comms.py                        comms-email-phone
@@ -583,6 +584,7 @@ gdx_dispatch/frontend/src/components/OutlookConnectButton.vue comms-email-phone
 gdx_dispatch/frontend/src/components/OutlookIntegrationCard.vue comms-email-phone
 gdx_dispatch/frontend/src/components/PhoneComIntegrationCard.vue comms-email-phone
 gdx_dispatch/frontend/src/components/NotificationsDrawer.vue comms-email-phone
+gdx_dispatch/frontend/src/lib/notificationDestinations.js    comms-email-phone
 gdx_dispatch/frontend/src/stores/emailUnread.js              comms-email-phone
 gdx_dispatch/frontend/src/stores/smsUnread.js                comms-email-phone
 gdx_dispatch/frontend/src/stores/notifications.js            comms-email-phone
@@ -703,8 +705,18 @@ gdx_dispatch/frontend/src/composables/useOfflineSync.js      mobile-tech
 gdx_dispatch/frontend/src/composables/usePhotoQueue.js       mobile-tech
 gdx_dispatch/frontend/src/composables/useGpsBreadcrumb.js    mobile-tech
 gdx_dispatch/frontend/src/composables/useMobileTour.js       mobile-tech
+gdx_dispatch/frontend/src/composables/useOfficeAlertsKeeper.js mobile-tech
 gdx_dispatch/frontend/src/lib/offlineDb.js                   mobile-tech
 gdx_dispatch/frontend/src/lib/keyboardInset.js               mobile-tech
+gdx_dispatch/frontend/src/lib/serverConfig.js                mobile-tech
+gdx_dispatch/frontend/src/lib/nativeBridge.js                mobile-tech
+gdx_dispatch/frontend/src/lib/nativeCamera.js                mobile-tech
+gdx_dispatch/frontend/src/lib/nativeGps.js                   mobile-tech
+gdx_dispatch/frontend/src/lib/nativePush.js                  mobile-tech
+gdx_dispatch/frontend/src/lib/officeAlerts.js                mobile-tech
+gdx_dispatch/frontend/src/components/OfficeAlertsToggle.vue  mobile-tech
+gdx_dispatch/frontend/src/lib/nativeBarcode.js               mobile-tech
+gdx_dispatch/frontend/src/lib/nativeAuth.js                  mobile-tech
 # Exceptions to the Mobile*.vue rule: these are communication surfaces.
 gdx_dispatch/frontend/src/views/MobileInboxView.vue          comms-email-phone
 gdx_dispatch/frontend/src/views/MobilePhoneView.vue          comms-email-phone

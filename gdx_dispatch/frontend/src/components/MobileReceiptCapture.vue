@@ -32,7 +32,7 @@
         data-testid="receipt-file-input"
         @change="onFilePicked"
       />
-      <button type="button" class="rc-photo-slot" data-testid="receipt-photo-slot" @click="fileInput?.click()">
+      <button type="button" class="rc-photo-slot" data-testid="receipt-photo-slot" @click="onPhotoSlotClick">
         <img v-if="previewUrl" :src="previewUrl" alt="Receipt preview" class="rc-preview" />
         <span v-else class="rc-photo-hint">
           <i class="pi pi-camera" />
@@ -105,6 +105,7 @@ import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
+import { isNativeCamera, captureNativePhoto } from '../lib/nativeCamera'
 
 defineProps({
   buttonLabel: { type: String, default: 'Receipt' },
@@ -133,12 +134,36 @@ async function open() {
   }
 }
 
-function onFilePicked(event) {
-  const picked = event.target?.files?.[0]
-  if (!picked) return
+function setPickedFile(picked) {
   file.value = picked
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
   previewUrl.value = picked.type?.startsWith('image/') ? URL.createObjectURL(picked) : null
+}
+
+async function onPhotoSlotClick() {
+  if (isNativeCamera()) {
+    try {
+      const picked = await captureNativePhoto({ promptHeader: 'Receipt Photo' })
+      if (picked) {
+        setPickedFile(picked)
+      }
+    } catch (err) {
+      toast.add({
+        severity: 'error',
+        summary: 'Camera error',
+        detail: err?.message || 'Could not open camera',
+        life: 5000,
+      })
+    }
+    return
+  }
+  fileInput.value?.click()
+}
+
+function onFilePicked(event) {
+  const picked = event.target?.files?.[0]
+  if (!picked) return
+  setPickedFile(picked)
 }
 
 function localToday() {
@@ -192,7 +217,7 @@ onBeforeUnmount(() => {
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
 })
 
-defineExpose({ open, save, form, file, canSave, onFilePicked, visible })
+defineExpose({ open, save, form, file, canSave, onFilePicked, onPhotoSlotClick, visible })
 </script>
 
 <style scoped>

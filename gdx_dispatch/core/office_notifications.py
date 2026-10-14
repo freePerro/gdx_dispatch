@@ -1,12 +1,14 @@
 """
 gdx_dispatch/core/office_notifications.py — broadcast in-app alerts to the office.
 
-A `Notification` row with user_id=NULL is tenant-broadcast: the topbar bell
-count query matches `user_id = :me OR user_id IS NULL`, the 60s poll in
-frontend `stores/notifications.js` turns it into the red badge, and
+A `Notification` row with user_id=NULL is an office broadcast. For users with
+`nav.office` the topbar bell count query matches `user_id = :me OR user_id IS
+NULL`; everyone else sees only rows addressed to them (`_visible_to` in
+`routers/notifications.py`). The 60s poll in frontend
+`stores/notifications.js` turns it into the red badge, and
 `NotificationsDrawer.vue` deep-links the row by `category` ("estimate" →
-/estimates, "lead" → /leads, …). Same mechanism the public landing-lead
-endpoint uses for "New lead".
+/estimates, "lead" → /leads, …). The public landing-lead endpoint writes the
+same kind of row inline for "New lead".
 
 Everything here is best-effort by contract: these alerts ride customer-facing
 actions (a customer just accepted an estimate from the emailed link) and a
@@ -59,7 +61,7 @@ def notify_office(
         db.add(Notification(
             id=uuid.uuid4().hex,
             tenant_id=tenant_id,
-            user_id=None,  # broadcast: every user on this tenant sees it
+            user_id=None,  # broadcast: every nav.office user sees it
             title=title,
             message=message,
             category=category,
