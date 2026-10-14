@@ -433,7 +433,7 @@
              read-only for clocks/status (payroll evidence) but a photo of the
              door is not evidence of hours — the tech standing at it is the
              only person who can take it. -->
-        <label v-if="!readOnly || canAddPhotos" class="photo-add" data-testid="mjd-photo-add">
+        <label v-if="!readOnly || canAddPhotos" class="photo-add" data-testid="mjd-photo-add" @click="onAddPhotoClick">
           <input
             ref="photoInput"
             type="file"
@@ -1047,6 +1047,7 @@ import MobileQuoteBuilderDialog from '../components/MobileQuoteBuilderDialog.vue
 import MobileCustomerQuoteDialog from '../components/MobileCustomerQuoteDialog.vue'
 import MobileChangeOrderDialog from '../components/MobileChangeOrderDialog.vue'
 import MobileChatDialog from '../components/MobileChatDialog.vue'
+import { isNativeCamera, captureNativePhoto } from '../lib/nativeCamera'
 
 const api = useApi()
 const toast = useToast()
@@ -2064,9 +2065,28 @@ async function undoUsedPart(p) {
 }
 
 
-async function onPhotoPicked(e) {
-  const files = Array.from(e?.target?.files || [])
-  if (!files.length) return
+async function onAddPhotoClick(e) {
+  if (isNativeCamera()) {
+    e.preventDefault()
+    e.stopPropagation()
+    if (photoBusy.value) return
+    try {
+      const file = await captureNativePhoto({ promptHeader: 'Job Photo' })
+      if (!file) return
+      await handlePhotoFiles([file])
+    } catch (err) {
+      toast.add({
+        severity: 'error',
+        summary: 'Camera error',
+        detail: err?.message || 'Could not open camera',
+        life: 5000,
+      })
+    }
+  }
+}
+
+async function handlePhotoFiles(files) {
+  if (!files || !files.length) return
   photoBusy.value = true
   let queued = 0
   const refused = []
@@ -2113,6 +2133,11 @@ async function onPhotoPicked(e) {
     // Let the same file be picked again (Chrome won't re-fire change otherwise).
     if (photoInput.value) photoInput.value.value = ''
   }
+}
+
+async function onPhotoPicked(e) {
+  const files = Array.from(e?.target?.files || [])
+  await handlePhotoFiles(files)
 }
 
 function goBack() {

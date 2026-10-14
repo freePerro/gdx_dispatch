@@ -15,8 +15,9 @@ rows).
 from __future__ import annotations
 
 import contextlib
+import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -30,6 +31,8 @@ from gdx_dispatch.modules.phone_com.models import (
     PhoneComNumber,
     PhoneComVoicemail,
 )
+
+log = logging.getLogger(__name__)
 
 _DIAL_OUT_RE = re.compile(r"^\s*dial[_\s]?out\s+(\+?\d+)\s*$", re.IGNORECASE)
 _TYPE_PREFIX_RE = re.compile(r"^\s*type\s+", re.IGNORECASE)
@@ -222,6 +225,7 @@ def upsert_message(tenant_db: Session, payload: dict[str, Any]) -> PhoneComMessa
         (m for m in matches if m.phone_com_message_id == pc_id),
         matches[0] if matches else None,
     )
+    created = row is None
     if row is None:
         row = PhoneComMessage(
             phone_com_message_id=pc_id,
@@ -297,7 +301,54 @@ def upsert_message(tenant_db: Session, payload: dict[str, Any]) -> PhoneComMessa
     row.raw_payload = payload
     tenant_db.commit()
     tenant_db.refresh(row)
+    if created:
+        _ring_office_for_new_text(tenant_db, row)
     return row
+
+
+# A text older than this when it first lands is backlog (the first 48-hour
+# poll after a deploy, the nightly resync), not news: no bell.
+NEW_TEXT_BELL_WINDOW = timedelta(minutes=30)
+
+
+def _ring_office_for_new_text(tenant_db: Session, row: PhoneComMessage) -> None:
+    """Bell row for a customer text that just arrived.
+
+    Only on insert, so the poll and the webhook can never both ring for one
+    message: the loser of that race hits the UNIQUE index and never inserts.
+    Never raises — a failed bell must not fail the sync.
+    """
+    if row.direction != "in":
+        return
+    when = row.received_at or row.sent_at
+    if when is None:
+        return
+    if when.tzinfo is None:  # SQLite hands timezone=True columns back naive
+        when = when.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) - when > NEW_TEXT_BELL_WINDOW:
+        return
+    try:
+        from gdx_dispatch.core.office_notifications import notify_office
+        from gdx_dispatch.core.tenant import company_id
+        from gdx_dispatch.models.tenant_models import Customer
+
+        who = None
+        if row.customer_id is not None:
+            customer = tenant_db.get(Customer, row.customer_id)
+            who = (customer.name or "").strip() if customer is not None else None
+        if not who:
+            digits = re.sub(r"\D", "", row.from_number or "")
+            who = f"…{digits[-4:]}" if digits else "Unknown number"
+        body = (row.body or "").strip() or ("(picture)" if row.attachments else "(no text)")
+        notify_office(
+            tenant_db,
+            company_id(),
+            title="New text",
+            message=f"{who}: {body[:140]}",
+            category="sms",
+        )
+    except Exception:
+        log.exception("phone_com: new-text bell failed for message %s", row.id)
 
 
 def upsert_voicemail(tenant_db: Session, payload: dict[str, Any]) -> PhoneComVoicemail | None:

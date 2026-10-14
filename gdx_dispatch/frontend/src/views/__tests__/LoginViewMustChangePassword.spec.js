@@ -67,3 +67,12 @@ describe('LoginView must_change_password', () => {
     expect(push).not.toHaveBeenCalledWith('/profile')
   })
 })
+
+// Audit 2026-10-14: the server gear is an Android-app setting. On the web it
+// rerouted every API call, the login password included.
+describe('LoginView server gear', () => {
+  it('is not offered in the web app', () => {
+    const wrapper = mount(LoginView)
+    expect(wrapper.find('[data-testid="server-settings-gear"]').exists()).toBe(false)
+  })
+})

@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.modules import has_permission, require_module
 from gdx_dispatch.models.tenant_models import (
     Notification,
     NotificationSentHistory,
@@ -102,6 +102,20 @@ class NotificationHistoryResponse(BaseModel):
 
 def _tenant_id(request: Request) -> str:
     return str((getattr(request.state, "tenant", {}) or {}).get("id") or "")
+
+
+def _visible_to(request: Request, db: Session, uid: str):
+    """WHERE clause for the bell rows this user may see and act on.
+
+    A row with user_id NULL is an office alert (``notify_office``: payments,
+    leads, customer texts, payroll). Only ``nav.office`` holders see those;
+    everyone else sees rows addressed to them. Read and delete state live on
+    the shared row, so a user who cannot see a broadcast must not be able to
+    mark it read or clear it for the office either.
+    """
+    if has_permission(request, db, "nav.office"):
+        return or_(Notification.user_id == uid, Notification.user_id.is_(None))
+    return Notification.user_id == uid
 
 
 def _user_id(current_user: Any) -> str:
@@ -469,7 +483,7 @@ def get_notification_count(
             db.execute(
                 select(func.count()).select_from(Notification).where(
                     Notification.tenant_id == tenant_id,
-                    or_(Notification.user_id == uid, Notification.user_id.is_(None)),
+                    _visible_to(request, db, uid),
                     Notification.is_read == 0,
                     Notification.deleted_at.is_(None),
                 )
@@ -498,7 +512,7 @@ def list_notifications(
         offset = (page - 1) * page_size
         base_filter = [
             Notification.tenant_id == tenant_id,
-            or_(Notification.user_id == uid, Notification.user_id.is_(None)),
+            _visible_to(request, db, uid),
             Notification.deleted_at.is_(None),
         ]
         total = int(
@@ -549,7 +563,7 @@ def mark_notification_read(
             select(Notification).where(
                 Notification.id == notification_id,
                 Notification.tenant_id == tenant_id,
-                or_(Notification.user_id == uid, Notification.user_id.is_(None)),
+                _visible_to(request, db, uid),
                 Notification.deleted_at.is_(None),
             )
         ).scalars().first()
@@ -591,8 +605,9 @@ def delete_notification(
 ) -> dict[str, str]:
     """Soft-delete a single notification (sets deleted_at; house pattern).
 
-    Deleting a broadcast row (user_id NULL) removes it for the whole tenant —
-    intended: single-tenant shop, "delete" means the office handled it.
+    Deleting a broadcast row (user_id NULL) removes it for the whole office —
+    intended: "delete" means the office handled it. Only office users can
+    reach a broadcast row (``_visible_to``).
     """
     tenant_id = _tenant_id(request)
     uid = _user_id(current_user)
@@ -601,7 +616,7 @@ def delete_notification(
             select(Notification).where(
                 Notification.id == notification_id,
                 Notification.tenant_id == tenant_id,
-                or_(Notification.user_id == uid, Notification.user_id.is_(None)),
+                _visible_to(request, db, uid),
                 Notification.deleted_at.is_(None),
             )
         ).scalars().first()
@@ -641,7 +656,9 @@ def clear_notifications(
     db: Session = Depends(get_db),
 ) -> dict[str, int]:
     """Soft-delete every notification visible to the current user
-    ("Clear all" in the drawer). Returns how many were cleared."""
+    ("Clear all" in the drawer). For an office user that includes the office
+    alerts, for everyone; anyone else clears only their own rows. Returns how
+    many were cleared."""
     tenant_id = _tenant_id(request)
     uid = _user_id(current_user)
     try:
@@ -650,7 +667,7 @@ def clear_notifications(
             sa_update(Notification)
             .where(
                 Notification.tenant_id == tenant_id,
-                or_(Notification.user_id == uid, Notification.user_id.is_(None)),
+                _visible_to(request, db, uid),
                 Notification.deleted_at.is_(None),
             )
             .values(deleted_at=now)

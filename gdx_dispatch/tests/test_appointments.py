@@ -257,3 +257,53 @@ def test_unconfirmed_filter(client: TestClient):
     assert a1["id"] in ids
     assert a2["id"] not in ids
     assert all(a["status"] == "scheduled" for a in data)
+
+
+# GDXA-1059: every write here is a dispatch-manager action. A technician is
+# refused even on their own visit — the tech records arrival and completion
+# through routers/mobile.py, which no office screen shares.
+_WRITES = [
+    ("POST", "/api/appointments", _payload, 201),
+    ("PATCH", "/api/appointments/{id}", lambda: {"notes": "moved"}, 200),
+    ("DELETE", "/api/appointments/{id}", None, 204),
+    ("POST", "/api/appointments/{id}/confirm", None, 200),
+    ("POST", "/api/appointments/{id}/on-my-way", None, 200),
+    ("POST", "/api/appointments/{id}/arrived", lambda: {}, 200),
+    ("POST", "/api/appointments/{id}/complete", None, 200),
+    ("POST", "/api/appointments/{id}/cancel", lambda: {"reason": "duplicate"}, 200),
+]
+
+
+def _be(client: TestClient, user_id: str, role: str) -> None:
+    client.app.dependency_overrides[get_current_user] = lambda: {
+        "user_id": user_id, "sub": user_id, "role": role, "tenant_id": "tenant-test",
+    }
+
+
+def _write(client: TestClient, method: str, path: str, body, appt_id: str):
+    return client.request(
+        method, path.format(id=appt_id), json=body() if body is not None else None,
+    )
+
+
+@pytest.mark.parametrize(("method", "path", "body", "ok"), _WRITES, ids=[f"{m} {p}" for m, p, _, _ in _WRITES])
+def test_appointment_write_refuses_a_technician(client: TestClient, method, path, body, ok):
+    created = client.post("/api/appointments", json=_payload()).json()
+    _be(client, "tech-42", "technician")  # the visit's own tech
+
+    r = _write(client, method, path, body, created["id"])
+    assert r.status_code == 403, r.text
+
+    _be(client, "user-1", "admin")
+    after = client.get(f"/api/appointments/{created['id']}").json()
+    assert after == created
+    assert len(client.get("/api/appointments").json()) == 1
+
+
+@pytest.mark.parametrize(("method", "path", "body", "ok"), _WRITES, ids=[f"{m} {p}" for m, p, _, _ in _WRITES])
+def test_appointment_write_admits_a_dispatcher(client: TestClient, method, path, body, ok):
+    created = client.post("/api/appointments", json=_payload()).json()
+    _be(client, "disp-1", "dispatcher")
+
+    r = _write(client, method, path, body, created["id"])
+    assert r.status_code == ok, r.text

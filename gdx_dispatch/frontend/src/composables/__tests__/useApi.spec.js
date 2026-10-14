@@ -10,9 +10,42 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 import { createApiClient } from '../useApi';
 
-function mkResponse(body, { ok = true, status = 200 } = {}) {
-  return { ok, status, json: async () => body };
+function mkResponse(body, { ok = true, status = 200, headers = {} } = {}) {
+  return {
+    ok,
+    status,
+    headers: { get: (k) => headers[k.toLowerCase()] ?? null },
+    json: async () => body,
+    text: async () => (body === undefined ? '' : JSON.stringify(body)),
+  };
 }
+
+describe('useApi response body', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // The Capacitor native HTTP bridge stamps `content-length: 0` on chunked
+  // responses that carry a body; trusting the header nulled every call on
+  // the Android app.
+  it('parses the body even when content-length says 0', async () => {
+    global.fetch = vi.fn().mockResolvedValueOnce(
+      mkResponse({ items: [{ id: 1 }] }, { headers: { 'content-length': '0' } }),
+    );
+    const api = createApiClient();
+    await expect(api.get('/api/customers')).resolves.toEqual({ items: [{ id: 1 }] });
+  });
+
+  it('returns null for an empty body', async () => {
+    global.fetch = vi.fn().mockResolvedValueOnce(mkResponse(undefined));
+    const api = createApiClient();
+    await expect(api.get('/api/thing')).resolves.toBeNull();
+  });
+});
 
 describe('useApi client-error reporting', () => {
   let fetchMock;

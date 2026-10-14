@@ -59,6 +59,7 @@ for (const [route, label, settle] of ROUTES) {
     const token = await login(baseURL);
     await page.addInitScript(
       (a) => {
+        if (window !== window.top) return;
         sessionStorage.setItem('gdx_access_token', a.t);
         localStorage.setItem('gdx_theme', 'dark');
       },

@@ -34,6 +34,7 @@ async function login(page, baseURL) {
   expect(r.ok()).toBeTruthy();
   const { access_token } = await r.json();
   await page.addInitScript((a) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', a.t);
   }, { t: access_token, tid: TENANT });
   return { api, token: access_token };
@@ -127,7 +128,7 @@ test('the office can void an invoice, and the typed confirmation gates it', asyn
 test('the void dialog is readable in dark mode', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 1440, height: 1100 });
   await login(page, baseURL);
-  await page.addInitScript(() => localStorage.setItem('gdx_theme', 'dark'));
+  await page.addInitScript(() => { if (window === window.top) localStorage.setItem('gdx_theme', 'dark'); });
 
   await page.goto(`/billing/${DARK_INVOICE_ID}`);
   await expect(page.getByTestId('invoice-number')).toBeVisible({ timeout: 20000 });

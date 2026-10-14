@@ -141,7 +141,7 @@ def test_change_password_clears_the_flag_and_unlocks(env) -> None:
     # Same access token, next request: released.
     assert tc.get("/api/users", headers=headers).status_code == 200
     assert tc.get("/api/users/me", headers=headers).json()["must_change_password"] is False
-    assert {"must_change_password_cleared": True} in _audit_details(Session, "user_self_password_changed")
+    assert {"must_change_password_cleared": True, "device_alerts_revoked": 0} in _audit_details(Session, "user_self_password_changed")
 
 
 def test_wrong_current_password_leaves_the_flag(env) -> None:
@@ -166,7 +166,7 @@ def test_reset_link_clears_the_flag_for_an_invited_user(env) -> None:
         pw_hash = s.execute(select(User.password_hash).where(User.id == uuid.UUID(uid))).scalar_one()
     assert check_password_hash(pw_hash, NEW_PW)
     assert tc.get("/api/users", headers=_bearer(uid)).status_code == 200
-    assert {"must_change_password_cleared": True} in _audit_details(Session, "password_reset_success")
+    assert {"must_change_password_cleared": True, "device_alerts_revoked": 0} in _audit_details(Session, "password_reset_success")
 
 
 @pytest.mark.parametrize("flag", [False, None])

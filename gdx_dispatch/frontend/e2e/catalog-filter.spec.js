@@ -26,6 +26,7 @@ test('catalog active/inactive filter shows and hides tabs in the browser', async
   const { access_token } = await login.json();
   // The SPA's auth store reads sessionStorage 'gdx_access_token'.
   await page.addInitScript(([t, tid]) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', t);
   }, [access_token, TENANT]);
 

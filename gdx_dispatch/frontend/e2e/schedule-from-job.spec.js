@@ -70,6 +70,7 @@ test.describe('scheduling a job', () => {
     expect(job.scheduled_at).toBeFalsy();
 
     await page.addInitScript((a) => {
+      if (window !== window.top) return;
       sessionStorage.setItem('gdx_access_token', a.t);
     }, { t: access_token, tid: TENANT });
 
@@ -140,6 +141,7 @@ test.describe('scheduling a job', () => {
     const job = await seedJob(api, {});
 
     await page.addInitScript((a) => {
+      if (window !== window.top) return;
       sessionStorage.setItem('gdx_access_token', a.t);
     }, { t: access_token, tid: TENANT });
 
@@ -159,6 +161,7 @@ test.describe('scheduling a job', () => {
     const job = await seedJob(api, {});
 
     await page.addInitScript((a) => {
+      if (window !== window.top) return;
       sessionStorage.setItem('gdx_access_token', a.t);
     }, { t: access_token, tid: TENANT });
 
@@ -177,6 +180,7 @@ test.describe('scheduling a job', () => {
     const dated = await seedJob(api, { scheduled_at: new Date(Date.now() + 86400000).toISOString() });
 
     await page.addInitScript((a) => {
+      if (window !== window.top) return;
       sessionStorage.setItem('gdx_access_token', a.t);
     }, { t: access_token, tid: TENANT });
 

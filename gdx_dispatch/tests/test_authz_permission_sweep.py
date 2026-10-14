@@ -58,7 +58,9 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_unpermissioned_bas
 # and ui_compat's POST /api/payments/intent stub were deleted (GDXA-552).
 # 383 → 382 (2026-10-12): POST /api/jobs/{job_id}/line-items was deleted
 # (GDXA-736); lines are added at POST /api/invoices/{id}/lines.
-BASELINE_SIZE = 382
+# 382 → 374 (2026-10-14): the eight appointment writes now require a
+# dispatch-manager role (GDXA-1059).
+BASELINE_SIZE = 374
 
 
 def _baseline() -> set[str]:

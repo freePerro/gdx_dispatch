@@ -21,6 +21,7 @@ async function signIn(page, baseURL) {
   expect(r.ok()).toBeTruthy();
   const { access_token } = await r.json();
   await page.addInitScript((a) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', a.t);
   }, { t: access_token, tid: TENANT });
   await api.dispose();
@@ -62,7 +63,7 @@ test('the Running now table shows a Version column with the live version', async
 
 test('the Version column is readable in dark mode', async ({ page, baseURL }) => {
   await signIn(page, baseURL);
-  await page.addInitScript(() => localStorage.setItem('gdx_theme', 'dark'));
+  await page.addInitScript(() => { if (window === window.top) localStorage.setItem('gdx_theme', 'dark'); });
   await page.goto('/admin/plugins');
 
   await expect(page.getByText('Running now')).toBeVisible({ timeout: 20000 });
