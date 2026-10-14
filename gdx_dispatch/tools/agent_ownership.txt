@@ -75,6 +75,10 @@ sgconfig.yml                                                 platform-core
 # The agent definitions themselves — the map's own owner list. Gated: the
 # directory is in COVERED_ROOTS, so an agent file with no rule here is red.
 .claude/agents/*                                             platform-core
+# The area rules (`.claude/rules/*.md`) that load when a matching file is
+# read — present-tense instructions every agent follows (GDXA-966). Gated:
+# the directory is in COVERED_ROOTS.
+.claude/rules/*                                              platform-core
 
 # Ratchet baselines and scanner/harness state at the repo root. Gated, via
 # COVERED_ROOT_GLOBS — `.tenant_plane_redundant_filter_baseline` is line-keyed,
