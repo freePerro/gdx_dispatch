@@ -2,10 +2,11 @@
 
 The same role has historically been spelled multiple ways:
 
-  * DB (``users.role``) now stores LONG canonical forms (``"technician"``,
-    ``"dispatcher"``) — both write paths normalize on write and migration 009
-    backfilled legacy short rows (#45). Old short rows (``"tech"``/``"dispatch"``)
-    may still exist on un-migrated tenants.
+  * DB (``users.role``) stores LONG canonical forms (``"technician"``,
+    ``"dispatcher"``): ``routers/users.py`` normalizes on write and migration
+    009 backfilled legacy short rows (#45). Short rows (``"tech"``/``"dispatch"``)
+    can still exist — un-migrated rows, and ``routers/admin_ops.py`` user
+    create/patch store the role as sent.
   * RBAC catalog (:data:`core.permissions.BUILTIN_ROLES`) and ``tenant_roles.name``
     use LONG forms: ``"technician"``, ``"dispatcher"``.
   * A platform "superadmin" role (spelled three ways) existed until 2026-09-06;
@@ -36,6 +37,10 @@ TECHNICIAN: Final = "technician"
 SALES: Final = "sales"
 ACCOUNTING: Final = "accounting"
 VIEWER: Final = "viewer"
+# Not a BUILTIN_ROLES key: matches only a users.role written as "manager"
+# (admin_ops user create/patch, or a direct write). A custom tenant role of
+# that name never reaches users.role (role_permissions assign_role syncs only
+# BUILTIN_ROLES names).
 MANAGER: Final = "manager"
 
 # Every known spelling → its canonical form. Lowercased keys; normalize_role

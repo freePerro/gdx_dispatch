@@ -810,9 +810,9 @@ function avatarColor(user) {
 // a backend taxonomy migration.
 const ROLE_ALIASES = { dispatch: 'dispatcher', tech: 'technician' };
 
-// Inverse: UI long form → backend short form. Backend regex still accepts only
-// `admin|dispatch|tech|sales|owner`; sending 'technician'/'dispatcher' returns 422.
-// Until the taxonomy is unified server-side, translate at the UI boundary.
+// Inverse: UI long form → short form. Redundant since #45: every endpoint this
+// view writes to accepts both spellings and stores the long form
+// (routers/users.py _ROLE_INPUT_PATTERN + its normalizing validators).
 const ROLE_TO_BACKEND = { technician: 'tech', dispatcher: 'dispatch' };
 const toBackendRole = (r) => ROLE_TO_BACKEND[r] || r;
 const fromBackendRole = (r) => ROLE_ALIASES[r] || r;
