@@ -37,6 +37,25 @@ export const useAuthStore = defineStore('auth', () => {
   const role = computed(() => (claims.value?.role || '').toLowerCase());
   const isAdmin = computed(() => role.value === 'admin' || role.value === 'owner');
 
+  // The account must change its password before doing anything else: the
+  // seeded initial admin and admin-created users start this way (GDXA-1004).
+  // Set from the login response's user payload, or by a 403
+  // `password_change_required` from any API call; cleared when
+  // /api/users/me/change-password succeeds. The router guard keeps a flagged
+  // session on /profile, where the change-password form lives. The server
+  // enforces it; this only routes the person to the way out.
+  const mustChangePassword = computed(() => Boolean(user.value?.must_change_password));
+
+  function setMustChangePassword(value) {
+    const flag = Boolean(value);
+    if (Boolean(user.value?.must_change_password) === flag) return;
+    user.value = { ...(user.value || {}), must_change_password: flag };
+    try { sessionStorage.setItem('gdx_user', JSON.stringify(user.value)); } catch { /* ignore */ }
+    // Permission loads 403 while the flag is set; reload once it clears so
+    // the sidebar and route gates see the real grants.
+    if (!flag) loadPermissions({ force: true }).catch(() => {});
+  }
+
   async function login(credentials) {
     let response;
     try {
@@ -229,6 +248,13 @@ export const useAuthStore = defineStore('auth', () => {
           name: data.name || data.full_name || user.value?.name,
           full_name: data.full_name || data.name || user.value?.full_name,
           role: data.role || user.value?.role,
+          // /api/users/me reports the flag (GDXA-1003); take it when present.
+          // A response without the field keeps what login said rather than
+          // letting the guard go. (A held tab is released through useApi's
+          // GET /me — the router's re-ask and /profile's own load.)
+          must_change_password: typeof data.must_change_password === 'boolean'
+            ? data.must_change_password
+            : Boolean(user.value?.must_change_password),
         };
         user.value = merged;
         try { sessionStorage.setItem('gdx_user', JSON.stringify(merged)); } catch { /* ignore */ }
@@ -329,6 +355,8 @@ export const useAuthStore = defineStore('auth', () => {
     claims,
     role,
     isAdmin,
+    mustChangePassword,
+    setMustChangePassword,
     login,
     logout,
     refreshAccessToken,
