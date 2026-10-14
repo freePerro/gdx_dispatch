@@ -9,7 +9,7 @@
           is recorded in the <RouterLink to="/email-log">Email Log</RouterLink>.
         </p>
       </div>
-      <Button label="New rule" icon="pi pi-plus" data-testid="ar-new" @click="openCreate" />
+      <Button v-if="canWrite" label="New rule" icon="pi pi-plus" data-testid="ar-new" @click="openCreate" />
     </div>
 
     <Message v-if="!emailsEnabled" severity="warn" :closable="false" class="mb-3"
@@ -40,7 +40,7 @@
           <small v-if="data.last_run_at" class="muted block">last {{ formatDateTime(data.last_run_at) }}</small>
         </template>
       </Column>
-      <Column header="">
+      <Column v-if="canWrite" header="">
         <template #body="{ data }">
           <Button icon="pi pi-pencil" text size="small" data-testid="ar-edit" @click="openEdit(data)" />
           <Button v-if="confirmingDelete !== data.id" icon="pi pi-trash" text size="small"
@@ -51,14 +51,14 @@
       </Column>
       <template #empty>
         <div class="empty">
-          No rules yet. Create one — for example: when an invoice is paid,
-          email the customer a thank-you.
+          No rules yet.<template v-if="canWrite"> Create one — for example: when
+          an invoice is paid, email the customer a thank-you.</template>
         </div>
       </template>
     </DataTable>
 
     <!-- Create / edit -->
-    <Dialog v-model:visible="showEditor" :header="editing ? 'Edit rule' : 'New rule'" modal
+    <Dialog v-if="canWrite" v-model:visible="showEditor" :header="editing ? 'Edit rule' : 'New rule'" modal
       :style="{ width: '640px' }" data-testid="ar-editor">
       <div class="form-field">
         <label>Name</label>
@@ -133,8 +133,15 @@ import Textarea from "primevue/textarea";
 import Toast from "primevue/toast";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { formatDateTime } from "../composables/useFormatters";
+import { useAuthStore } from "../stores/auth";
+import { isDispatchManagerRole } from "../utils/visitRefusals";
 
 const api = useApiWithToast();
+const auth = useAuthStore();
+
+// Rule writes are dispatch-manager only on the server (GDXA-1097): every rule
+// is a standing order to send customer email. Anyone signed in may read.
+const canWrite = computed(() => isDispatchManagerRole(auth?.user?.role));
 
 // Mirrors modules/workflows/engine.SUPPORTED_TRIGGERS — the server 422s
 // anything else, so drift shows up loudly, not as a dead rule.

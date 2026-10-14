@@ -60,7 +60,9 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_unpermissioned_bas
 # (GDXA-736); lines are added at POST /api/invoices/{id}/lines.
 # 382 → 374 (2026-10-14): the eight appointment writes now require a
 # dispatch-manager role (GDXA-1059).
-BASELINE_SIZE = 374
+# 374 → 371 (2026-10-14): the three workflow-rule writes now require a
+# dispatch-manager role (GDXA-1097).
+BASELINE_SIZE = 371
 
 
 def _baseline() -> set[str]:
