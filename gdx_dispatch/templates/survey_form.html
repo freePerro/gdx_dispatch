@@ -4,12 +4,44 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{{ company_name }} — Feedback</title>
+  <!-- Follows the customer's phone (GDXA-909): light by default, dark when the
+       OS asks for it. Same palette as payment_form.html. -->
+  <meta name="color-scheme" content="light dark" />
   <style>
+    :root {
+      color-scheme: light dark;
+      --page: #f3f4f6;
+      --card: #ffffff;
+      --input: #ffffff;
+      --border: #cbd5e1;
+      --text: #1f2937;
+      --body: #374151;
+      --muted: #6b7280;
+      --btn: #2563eb;
+      --err-text: #b91c1c;
+      --shadow: rgba(0,0,0,0.10);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page: #0b1120;
+        --card: #1e293b;
+        --input: #0f172a;
+        --border: #475569;
+        --text: #f1f5f9;
+        --body: #cbd5e1;
+        --muted: #94a3b8;
+        --btn: #2563eb;
+        --err-text: #fca5a5;
+        --shadow: rgba(0,0,0,0.45);
+      }
+    }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: #f3f4f6;
+      background: var(--page);
       min-height: 100vh;
       display: flex;
       align-items: center;
@@ -18,9 +50,9 @@
     }
 
     .card {
-      background: #ffffff;
+      background: var(--card);
       border-radius: 12px;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+      box-shadow: 0 4px 24px var(--shadow);
       max-width: 480px;
       width: 100%;
       padding: 2rem;
@@ -36,7 +68,7 @@
     .brand-icon {
       width: 36px;
       height: 36px;
-      background: #2563eb;
+      background: var(--btn);
       border-radius: 8px;
       display: flex;
       align-items: center;
@@ -45,9 +77,9 @@
       font-weight: 700;
     }
 
-    .brand-name { font-size: 1rem; font-weight: 700; color: #1f2937; }
+    .brand-name { font-size: 1rem; font-weight: 700; color: var(--text); }
 
-    h1 { font-size: 1.15rem; color: #1f2937; margin-bottom: 1.25rem; line-height: 1.4; }
+    h1 { font-size: 1.15rem; color: var(--text); margin-bottom: 1.25rem; line-height: 1.4; }
 
     .scores {
       display: flex;
@@ -60,34 +92,35 @@
       flex: 1 0 3ch;
       min-width: 2.6rem;
       min-height: 2.8rem;
-      border: 1px solid #cbd5e1;
+      border: 1px solid var(--border);
       border-radius: 8px;
-      background: #fff;
+      background: var(--input);
       font-size: 1rem;
-      color: #1f2937;
+      color: var(--text);
       cursor: pointer;
     }
 
-    .score-btn.selected { background: #2563eb; border-color: #2563eb; color: #fff; }
+    .score-btn.selected { background: var(--btn); border-color: var(--btn); color: #fff; }
 
     .scale-labels {
       display: flex;
       justify-content: space-between;
       font-size: 0.75rem;
-      color: #6b7280;
+      color: var(--muted);
       margin-bottom: 1.25rem;
     }
 
-    label { display: block; font-size: 0.85rem; color: #374151; margin-bottom: 0.4rem; }
+    label { display: block; font-size: 0.85rem; color: var(--body); margin-bottom: 0.4rem; }
 
     textarea {
       width: 100%;
       min-height: 5.5rem;
-      border: 1px solid #cbd5e1;
+      border: 1px solid var(--border);
       border-radius: 8px;
       padding: 0.6rem 0.75rem;
       font: inherit;
-      color: #1f2937;
+      color: var(--text);
+      background: var(--input);
       resize: vertical;
       margin-bottom: 1.25rem;
     }
@@ -95,7 +128,7 @@
     .submit-btn {
       width: 100%;
       min-height: 2.9rem;
-      background: #2563eb;
+      background: var(--btn);
       color: #fff;
       border: none;
       border-radius: 8px;
@@ -106,11 +139,11 @@
 
     .submit-btn:disabled { opacity: 0.6; cursor: default; }
 
-    .error { color: #b91c1c; font-size: 0.85rem; margin-bottom: 0.75rem; display: none; }
+    .error { color: var(--err-text); font-size: 0.85rem; margin-bottom: 0.75rem; display: none; }
 
     .done, .unavailable { text-align: center; padding: 1rem 0; }
-    .done h2, .unavailable h2 { font-size: 1.15rem; color: #1f2937; margin-bottom: 0.5rem; }
-    .done p, .unavailable p { color: #6b7280; font-size: 0.9rem; }
+    .done h2, .unavailable h2 { font-size: 1.15rem; color: var(--text); margin-bottom: 0.5rem; }
+    .done p, .unavailable p { color: var(--muted); font-size: 0.9rem; }
     .done .check { font-size: 2.2rem; margin-bottom: 0.5rem; }
   </style>
 </head>
