@@ -1086,7 +1086,7 @@ function replayTour() {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .job-address {
-  color: var(--p-primary-color, #2563eb);
+  color: var(--p-primary-color);
   cursor: pointer;
   font-size: 0.95rem;
   display: flex;
@@ -1382,7 +1382,7 @@ function replayTour() {
 .area-chevron { color: var(--p-text-muted-color, #9ca3af); font-size: 0.8rem; }
 .area-address {
   display: flex; align-items: center; gap: 0.35rem;
-  font-size: 0.9rem; color: var(--p-primary-color, #2563eb);
+  font-size: 0.9rem; color: var(--p-primary-color);
 }
 .area-address span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .area-title { color: var(--p-text-muted-color, #6b7280); font-size: 0.85rem; }

@@ -1313,7 +1313,7 @@ watch(finished, async (v) => {
   display: flex; align-items: center; justify-content: center;
   min-height: 44px; border-radius: 0.5rem; cursor: pointer;
   border: 1px dashed var(--p-content-border-color, #d1d5db);
-  color: var(--p-primary-color, #2563eb);
+  color: var(--p-primary-color);
   font-size: 0.95rem; font-weight: 600;
 }
 .photo-add input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
