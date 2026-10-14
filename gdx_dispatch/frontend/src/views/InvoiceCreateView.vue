@@ -1281,8 +1281,16 @@ watch(() => form.value.customer_id, () => onCustomerChange());
 }
 .form-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, 1fr), not 1fr (GDXA-938): 1fr's `auto` minimum let the widest
+     field's content set the track, so the two tracks summed to 615px whatever
+     the card's width -- the grid spilled past its card from 412 to ~800px and
+     the line editor below was laid out wider than the screen. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 1rem;
+}
+/* Phone: one column. */
+@media (max-width: 640px) {
+  .form-grid { grid-template-columns: minmax(0, 1fr); }
 }
 .form-field {
   display: flex;

@@ -156,11 +156,75 @@ test.describe('F14 — no horizontal page scroll at any realistic width', () => 
         bodyClientW: document.body.clientWidth,
       }));
       expect(m.bodyScrollW, 'the PAGE scrolls horizontally').toBeLessThanOrEqual(m.bodyClientW + 1);
-      if (width >= 1366) {
-        // At 1366+ the row must FIT, not merely scroll -- the Total column
-        // being off-screen is what made this worth fixing.
-        expect(m.editorScrollW, `row overflows at ${width}px`).toBeLessThanOrEqual(m.editorClientW + 1);
-      }
+      // The row must FIT, not merely scroll -- the Total column being
+      // off-screen is what made this worth fixing. Since GDXA-938 that holds at
+      // 1280 too: a box narrower than the row stacks the lines instead.
+      expect(m.editorScrollW, `row overflows at ${width}px`).toBeLessThanOrEqual(m.editorClientW + 1);
+    });
+  }
+});
+
+test.describe('GDXA-938 — the line total stays on screen on a phone or tablet', () => {
+  // The one-row grid with every invoice column needs 940px. Any narrower box
+  // scrolled it sideways inside the editor and Total, the second-to-last
+  // track, was the column off-screen. Such a box now stacks each line as a
+  // card. 412 is a phone, 768 a tablet, 915 a phone turned sideways.
+  for (const [width, height, theme] of [
+    [412, 915, 'light'], [412, 915, 'dark'], [641, 900, 'light'], [700, 900, 'dark'],
+    [768, 1024, 'light'], [915, 412, 'dark'],
+  ]) {
+    test(`${width}px, ${theme}: no sideways scroll, Total in the viewport`, async ({ page, baseURL }) => {
+      await signIn(page, baseURL);
+      await page.addInitScript((t) => localStorage.setItem('gdx_theme', t), theme);
+      // A restack inside the observer callback raised "ResizeObserver loop
+      // completed with undelivered notifications", toasted as "Something went
+      // wrong". Record every window error so that cannot come back silently.
+      await page.addInitScript(() => {
+        window.__pageErrors = [];
+        window.addEventListener('error', (e) => window.__pageErrors.push(String(e.message)));
+      });
+      await page.setViewportSize({ width, height });
+      await page.goto('/billing/new');
+      const editor = page.locator('[data-testid="line-items-editor"]');
+      await expect(editor).toBeVisible({ timeout: 20000 });
+
+      await page.locator('[data-testid="line-desc-0"]').fill('Door');
+      const price = page.locator('[data-testid="line-price-0"] input').first();
+      await price.fill('1234.5');
+      await price.blur();
+
+      // The app scrolls inside main.layout-content, not the body, so the body
+      // alone could not see a sideways scroll (final audit, 641px). Check the
+      // editor and every ancestor: none may be wider than its own box.
+      const m = await editor.evaluate((el) => {
+        const overflowing = [];
+        for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+          if (n.scrollWidth > n.clientWidth + 1) {
+            overflowing.push(`${n.tagName.toLowerCase()}.${[...n.classList].join('.')} ${n.scrollWidth}>${n.clientWidth}`);
+          }
+        }
+        const r = el.getBoundingClientRect();
+        return { overflowing, editorRight: r.right };
+      });
+      expect(m.overflowing, 'an element around the line editor scrolls sideways').toEqual([]);
+      expect(m.editorRight, 'the line editor runs past the right edge').toBeLessThanOrEqual(width);
+
+      const total = page.locator('[data-testid="line-total-0"]');
+      await total.scrollIntoViewIfNeeded();
+      await expect(total).toBeInViewport({ ratio: 1 });
+      await expect(total).toContainText('1234.50');
+      const box = await total.boundingBox();
+      expect(box.x + box.width, 'Total runs past the right edge').toBeLessThanOrEqual(width);
+
+      // Resize across the threshold both ways; neither may raise the loop error.
+      await page.setViewportSize({ width: 1400, height });
+      await page.setViewportSize({ width, height });
+      await page.waitForTimeout(300);
+      const errors = await page.evaluate(() => window.__pageErrors);
+      expect(errors.filter((e) => /ResizeObserver/.test(e)), 'ResizeObserver loop error').toEqual([]);
+      await expect(page.getByText('ResizeObserver loop')).toHaveCount(0);
+
+      await page.screenshot({ path: `test-results/invoice-editor-${width}-${theme}.png`, fullPage: false });
     });
   }
 });
