@@ -16,16 +16,25 @@ const toast = useToast()
 const state = ref(null)
 const loading = ref(false)
 const error = ref(null)
+// A 403 is a known answer (the email module is off, or this user may not use
+// it), not an unknown status: say why, and offer neither Retry nor Connect.
+const forbidden = ref(null)
 
 const isConnected = computed(() => !!state.value?.connected)
 
 async function refresh() {
   loading.value = true
   error.value = null
+  forbidden.value = null
   try {
     state.value = await api.get('/api/oauth/outlook/account')
   } catch (err) {
+    state.value = null
     const detail = err?.message || err?.response?.data?.detail || 'Failed to load Outlook state'
+    if (err?.status === 403) {
+      forbidden.value = detail
+      return
+    }
     error.value = detail
     console.error('OutlookConnectButton: load failed', err)
     toast.add({
@@ -118,13 +127,30 @@ defineExpose({ refresh, isConnected, state })
         />
       </div>
     </template>
+    <!-- GDXA-1138: a failed load is "Status unknown", not "not connected" —
+         offering Connect here would send a connected user back through consent. -->
+    <div v-else-if="forbidden" class="loading-text" data-testid="outlook-account-forbidden">
+      Outlook is not available to you: {{ forbidden }}
+    </div>
+    <template v-else-if="error">
+      <div class="error-text" data-testid="outlook-account-status-unknown">
+        ⚠ Outlook status unknown: {{ error }}
+      </div>
+      <Button
+        icon="pi pi-refresh"
+        label="Retry"
+        severity="secondary"
+        size="small"
+        data-testid="outlook-account-retry"
+        @click="refresh"
+      />
+    </template>
     <template v-else>
       <Button
         icon="pi pi-microsoft"
         label="Connect Outlook"
         @click="onConnect"
       />
-      <div v-if="error" class="error-text">⚠ {{ error }}</div>
     </template>
   </div>
 </template>

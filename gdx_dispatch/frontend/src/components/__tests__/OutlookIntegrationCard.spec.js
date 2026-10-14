@@ -8,6 +8,7 @@ import { createRouter, createMemoryHistory } from 'vue-router';
 import PrimeVue from 'primevue/config';
 import ConfirmationService from 'primevue/confirmationservice';
 import ToastService from 'primevue/toastservice';
+import Button from 'primevue/button';
 
 import OutlookIntegrationCard from '../OutlookIntegrationCard.vue';
 
@@ -97,24 +98,59 @@ describe('OutlookIntegrationCard', () => {
     expect(w.text()).toContain('Admin access required');
   });
 
-  it('toasts loudly on a non-403 load failure', async () => {
-    // Spy on console.warn BEFORE mount so the load() error path's
-    // warn() call is captured. Component uses console.warn (not error)
-    // at OutlookIntegrationCard.vue:39 for the load-failure log.
+  it('logs a non-403 load failure', async () => {
     const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     fetchMock.mockRejectedValueOnce(new Error('500 internal'));
-    mount(OutlookIntegrationCard, {
-      global: { plugins: [router, PrimeVue, ConfirmationService, ToastService] },
-    });
+    _mount();
     await flushPromises();
-    // The "fail loudly" contract: console.warn must fire with the error.
-    expect(consoleWarnSpy).toHaveBeenCalled();
     expect(consoleWarnSpy.mock.calls.some((args) =>
       args.some((a) => String(a).includes('outlook card load failed')),
     )).toBe(true);
-    // The card should also display the error inline (loadError state)
-    // — it surfaces via component state; not asserting DOM here because
-    // the inline render is contingent on tab visibility.
+  });
+
+  // GDXA-1138: a failed load must not read as "Not Configured".
+  it('a 500 reads Status unknown with Retry, not Not Configured / Configure', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(mkResponse({ detail: 'boom' }, { ok: false, status: 500 }));
+    const w = _mount();
+    await flushPromises();
+    expect(w.find('[data-testid="outlook-status-unknown-tag"]').text()).toBe('Status unknown');
+    expect(w.find('[data-testid="outlook-status-unknown"]').text()).toContain('boom');
+    expect(w.text()).not.toContain('Not Configured');
+    expect(w.find('[data-testid="outlook-status-retry"]').exists()).toBe(true);
+    const buttons = w.findAllComponents(Button);
+    const open = buttons.find((b) => b.attributes('data-testid') === 'outlook-open-settings');
+    expect(open.text()).toBe('Manage');
+    expect(open.props('severity')).toBe('secondary');
+    const retry = buttons.find((b) => b.attributes('data-testid') === 'outlook-status-retry');
+    expect(retry.props('severity')).toBe('primary');
+  });
+
+  it('Retry re-fetches and renders the real status', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const w = _mount();
+    await flushPromises();
+    fetchMock.mockResolvedValueOnce(mkResponse({
+      microsoft_tenant_id: 'ms-tid', client_id: 'abc', secret_set: true, secret_set_at: null,
+    }));
+    await w.find('[data-testid="outlook-status-retry"]').trigger('click');
+    await flushPromises();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(w.find('[data-testid="outlook-status-unknown-tag"]').exists()).toBe(false);
+    expect(w.text()).toContain('Connected');
+    expect(w.find('[data-testid="outlook-status-retry"]').exists()).toBe(false);
+  });
+
+  it('control: a 403 stays Admin access required, with no Status unknown', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(mkResponse({ detail: 'forbidden' }, { ok: false, status: 403 }));
+    const w = _mount();
+    await flushPromises();
+    expect(w.text()).toContain('Admin access required');
+    expect(w.find('[data-testid="outlook-status-unknown-tag"]').exists()).toBe(false);
+    expect(w.find('[data-testid="outlook-status-retry"]').exists()).toBe(false);
   });
 
   it('navigates to outlook-settings route on Configure click', async () => {
