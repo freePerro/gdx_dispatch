@@ -261,3 +261,42 @@ def test_billing_type_validation(client: TestClient):
         "/api/maintenance/plans", json=_plan_payload(billing_type="weekly")
     )
     assert r.status_code == 422
+
+
+def _audit_details(client: TestClient, action: str) -> list[dict]:
+    from sqlalchemy import select
+
+    from gdx_dispatch.core.audit import AuditLog
+
+    Session = sessionmaker(bind=client._engine)  # type: ignore[attr-defined]
+    with Session() as db:
+        rows = db.execute(
+            select(AuditLog).where(AuditLog.action == action).order_by(AuditLog.created_at, AuditLog.id)
+        ).scalars().all()
+        return [r.details for r in rows]
+
+
+def test_plan_edit_audits_what_changed_not_what_was_sent(client: TestClient):
+    """GDXA-997: the row named every key sent; it now carries old -> new of
+    the fields that changed, and a same-value save writes no row."""
+    plan = client.post("/api/maintenance/plans", json=_plan_payload()).json()
+    url = f"/api/maintenance/plans/{plan['id']}"
+    assert client.patch(url, json=_plan_payload(price=249.0)).status_code == 200
+    assert client.patch(url, json=_plan_payload(price=249.0)).status_code == 200
+
+    assert _audit_details(client, "maintenance_plan_updated") == [
+        {"fields": ["price"], "changes": {"price": {"old": 199.0, "new": 249.0}}},
+    ]
+
+
+def test_enrollment_edit_audits_what_changed_not_what_was_sent(client: TestClient):
+    plan = client.post("/api/maintenance/plans", json=_plan_payload()).json()
+    e = client.post("/api/maintenance/enrollments", json=_enrollment_payload(plan["id"])).json()
+    url = f"/api/maintenance/enrollments/{e['id']}"
+    body = {"status": "paused", "notes": "Preferred morning appointments"}
+    assert client.patch(url, json=body).status_code == 200
+    assert client.patch(url, json=body).status_code == 200
+
+    assert _audit_details(client, "enrollment_updated") == [
+        {"fields": ["status"], "changes": {"status": {"old": "active", "new": "paused"}}},
+    ]
