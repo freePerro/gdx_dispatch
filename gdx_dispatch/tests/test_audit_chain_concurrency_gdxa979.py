@@ -223,11 +223,11 @@ def test_report_names_the_fork_apart_from_unchained_rows(db_session):
 
 
 def _write_marker(db) -> AuditLog:
-    """The row migration 122 writes."""
+    """The row migration 123 writes."""
     from gdx_dispatch.core.audit import AUDIT_CHAIN_SERIALIZED_ACTION
 
     return log_audit_event_sync(
-        db, user_id="migration:122_audit_chain_serialized", action=AUDIT_CHAIN_SERIALIZED_ACTION,
+        db, user_id="migration:123_audit_chain_serialized", action=AUDIT_CHAIN_SERIALIZED_ACTION,
         entity_type="audit_logs", entity_id="chain",
     )
 

@@ -34,8 +34,8 @@ audit row and stays (the table refuses deletes). Code before GDXA-979 never
 reads it. After a downgrade and a fresh upgrade the first marker still holds,
 so any fork the unlocked writer made in between alerts, as it should.
 
-Revision ID: 122_audit_chain_serialized
-Revises: 121_trade_estimate_tax_rate_null
+Revision ID: 123_audit_chain_serialized
+Revises: 122_device_alert_registrations
 Create Date: 2026-10-14
 """
 from __future__ import annotations
@@ -45,8 +45,8 @@ import logging
 from alembic import op
 from sqlalchemy import inspect, text
 
-revision = "122_audit_chain_serialized"
-down_revision = "121_trade_estimate_tax_rate_null"
+revision = "123_audit_chain_serialized"
+down_revision = "122_device_alert_registrations"
 branch_labels = None
 depends_on = None
 
@@ -54,7 +54,7 @@ log = logging.getLogger("alembic.runtime.migration")
 
 # Must equal core.audit.AUDIT_CHAIN_SERIALIZED_ACTION (pinned by the test).
 ACTION = "audit_chain.serialized_writer"
-ACTOR = "migration:122_audit_chain_serialized"
+ACTOR = "migration:123_audit_chain_serialized"
 
 _EXISTING = text("SELECT 1 FROM audit_logs WHERE action = :action")
 _ANY_ROW = text("SELECT 1 FROM audit_logs LIMIT 1")
@@ -70,13 +70,13 @@ def upgrade() -> None:
     if "audit_logs" not in inspect(bind).get_table_names():
         return
     if bind.execute(_EXISTING, {"action": ACTION}).first() is not None:
-        log.info("122: the audit-chain marker is already written; left as is")
+        log.info("123: the audit-chain marker is already written; left as is")
         return
     if bind.execute(_ANY_ROW).first() is None:
         # No row, so no history for a boundary to separate. This is also the
         # pave's step 4b (empty schema, rows reloaded after): a marker written
         # here would sit beside the reloaded one and fail its row count.
-        log.info("122: audit_logs is empty; no unlocked-writer history, no marker")
+        log.info("123: audit_logs is empty; no unlocked-writer history, no marker")
         return
 
     forked_parents = int(bind.execute(_FORKED_PARENTS).scalar() or 0)
@@ -103,7 +103,7 @@ def upgrade() -> None:
         },
     )
     session.flush()
-    log.info("122: audit-chain marker written; %d forked parent(s), %d restart(s) are history", forked_parents, restarts)
+    log.info("123: audit-chain marker written; %d forked parent(s), %d restart(s) are history", forked_parents, restarts)
 
 
 def downgrade() -> None:

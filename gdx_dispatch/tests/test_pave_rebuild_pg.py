@@ -135,12 +135,12 @@ INSERT INTO plug_fake_catalog (sku, price) VALUES ('D-4', 40);
 # installs them, and `core/audit.py` only ever installs them once — so a pave
 # that does not put them back leaves audit_logs mutable with ARCHITECTURAL
 # INVARIANT #2 silently unenforced.
-MARKER_122_SCRIPT = """
+MARKER_123_SCRIPT = """
 import importlib.util, os
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import create_engine
-path = 'gdx_dispatch/migrations/versions/122_audit_chain_serialized.py'
+path = 'gdx_dispatch/migrations/versions/123_audit_chain_serialized.py'
 spec = importlib.util.spec_from_file_location('m122', path)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
@@ -355,12 +355,12 @@ def migrated_pg_db():
             [sys.executable, "-m", "gdx_dispatch.tools.bootstrap_app"],
             REPO_ROOT, env,
         )
-        # A deployed database reached 122 with audit rows already in it, so it
-        # carries the chain marker; the upgrade above ran 122 on an empty table
-        # and wrote none. Run 122 again now that bootstrap has written rows, so
+        # A deployed database reached 123 with audit rows already in it, so it
+        # carries the chain marker; the upgrade above ran 123 on an empty table
+        # and wrote none. Run 123 again now that bootstrap has written rows, so
         # the pave below has a marker to bring back (GDXA-1050: step 4b wrote a
         # second one, MISMATCH audit_logs 3 -> 4).
-        _run_step("122 on a non-empty audit_logs", [sys.executable, "-c", MARKER_122_SCRIPT],
+        _run_step("123 on a non-empty audit_logs", [sys.executable, "-c", MARKER_123_SCRIPT],
                   REPO_ROOT, env)
         _exec(url, PLUGIN_TABLE_DDL)
         _exec(url, EXTRA_OBJECTS_DDL)

@@ -1,4 +1,4 @@
-"""Migration 122: one hash-chained marker row is the boundary between the
+"""Migration 123: one hash-chained marker row is the boundary between the
 forks the unlocked writer made and a fork that must alert (GDXA-979).
 
 On both engines, against an ORM-built schema: a chain with a fork and a
@@ -21,8 +21,8 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 VERSIONS = pathlib.Path(__file__).resolve().parents[1] / "migrations/versions"
-MIGRATION = VERSIONS / "122_audit_chain_serialized.py"
-REV = "122_audit_chain_serialized"
+MIGRATION = VERSIONS / "123_audit_chain_serialized.py"
+REV = "123_audit_chain_serialized"
 
 
 def _load(conn):
@@ -34,14 +34,14 @@ def _load(conn):
     return mod
 
 
-def test_it_chains_onto_121_and_is_the_only_reviser() -> None:
+def test_it_chains_onto_122_and_is_the_only_reviser() -> None:
     source = MIGRATION.read_text()
     assert f'revision = "{REV}"' in source
-    assert 'down_revision = "121_trade_estimate_tax_rate_null"' in source
+    assert 'down_revision = "122_device_alert_registrations"' in source
     assert len(REV) <= 32  # alembic_version.version_num is VARCHAR(32)
     revising = [
         p.name for p in VERSIONS.glob("*.py")
-        if re.search(r'^down_revision = "121_trade_estimate_tax_rate_null"', p.read_text(), re.M)
+        if re.search(r'^down_revision = "122_device_alert_registrations"', p.read_text(), re.M)
     ]
     assert revising == [MIGRATION.name], revising
 
@@ -99,7 +99,7 @@ def _exercise(engine) -> None:
 
     with Session(engine) as s:
         (marker,) = _markers(s)
-        assert marker.user_id == "migration:122_audit_chain_serialized"
+        assert marker.user_id == "migration:123_audit_chain_serialized"
         assert marker.prev_hash == tip, "the marker is a chained row on the tip"
         assert marker.details["forked_parents_before"] == 1
         assert marker.details["restarts_before"] == 1

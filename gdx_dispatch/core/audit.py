@@ -1057,7 +1057,7 @@ def verify_audit_chain(db: Any, entity_type: str | None = None, entity_id: str |
     return True
 
 
-# Migration 122 writes one row with this action as the serialized writer starts
+# Migration 123 writes one row with this action as the serialized writer starts
 # (GDXA-979). Forks and restarts whose newest row predates it are history: the
 # unlocked tip read made them, and audit rows are never rewritten. They are
 # counted, not alerted on. One at or after it alerts. No marker, no history.
