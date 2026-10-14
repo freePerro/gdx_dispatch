@@ -3,7 +3,10 @@ Job Costing router — per-job cost breakdown, markup rules, price calculator.
 
 Profitability tooling:
 - GET /api/costing/jobs/{job_id} — labor + parts + overhead + margin breakdown
-- CRUD /api/costing/markup-rules — per-category markup/minimum-margin rules
+- GET /api/costing/markup-rules — per-category markup/minimum-margin rules
+- POST /api/costing/markup-rules — add a rule
+- PATCH /api/costing/markup-rules/{rule_id} — edit a rule
+- DELETE /api/costing/markup-rules/{rule_id} — remove a rule
 - POST /api/costing/calculate-price — suggested price with markup + margin floor
 - GET /api/costing/profitability — aggregate per-job profitability over N days
 - GET /api/costing/catalog-pricing — list all markup rules (for settings UI)
