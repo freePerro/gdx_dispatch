@@ -199,7 +199,7 @@ onMounted(fetchParts)
 .part-qty {
   font-size: 1.15rem;
   font-weight: 700;
-  color: var(--p-primary-color, #2563eb);
+  color: var(--p-primary-color);
 }
 
 .part-meta {
