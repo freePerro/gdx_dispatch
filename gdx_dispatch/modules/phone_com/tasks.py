@@ -81,14 +81,14 @@ def sync_all_phone_com_tenants(self) -> dict[str, int]:
 
 
 @celery_app.task(name="phone_com.sync_recent_messages", queue="priority:low", bind=True)
-def sync_recent_messages_task(self, tenant_id: str) -> dict[str, Any]:
+def sync_recent_messages_task(self, tenant_id: str, window_hours: int = 48) -> dict[str, Any]:
     """Per-tenant messages-only poll (see sync.sync_recent_messages). This is
     the SMS inbox's live path — Phone.com webhooks don't deliver to us."""
     _ = self
     tid = UUID(tenant_id) if not isinstance(tenant_id, UUID) else tenant_id
     with contextlib.closing(SessionLocal()) as cdb:
         try:
-            result = sync_recent_messages(cdb, tid)
+            result = sync_recent_messages(cdb, tid, window_hours=window_hours)
         except Exception as exc:  # noqa: BLE001
             log.exception("phone_com.sync_recent_messages failed tenant=%s", tid)
             return {"ok": False, "error": str(exc), "tenant_id": str(tid)}
@@ -96,8 +96,12 @@ def sync_recent_messages_task(self, tenant_id: str) -> dict[str, Any]:
 
 
 @celery_app.task(name="phone_com.sync_all_recent_messages", queue="priority:low", bind=True)
-def sync_all_recent_messages(self) -> dict[str, int]:
-    """Beat task — fan out the messages-only poll to every configured tenant."""
+def sync_all_recent_messages(self, window_hours: int = 48) -> dict[str, int]:
+    """Beat task — fan out the messages-only poll to every configured tenant.
+
+    ``window_hours`` is how far back each poll asks Phone.com: 48 for the
+    10-minute backstop, 1 for the every-minute pass that makes a new text
+    ring the office within about a minute."""
     _ = self
     with contextlib.closing(SessionLocal()) as cdb:
         rows = (
@@ -107,7 +111,7 @@ def sync_all_recent_messages(self) -> dict[str, int]:
         )
         tenant_ids = [str(r[0]) for r in rows]
     for tid in tenant_ids:
-        sync_recent_messages_task.delay(tid)
+        sync_recent_messages_task.delay(tid, window_hours=window_hours)
     log.info("phone_com.sync_all_recent_messages dispatched=%d", len(tenant_ids))
     return {"dispatched": len(tenant_ids)}
 

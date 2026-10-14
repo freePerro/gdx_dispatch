@@ -1641,6 +1641,10 @@ def test_admin_revoke_user_kills_refresh_family(monkeypatch):
 
     monkeypatch.setattr(auth_router, "log_audit_event_sync", lambda *_a, **_k: None)
 
+    # The endpoint also pulls the user's phone alert registrations; this
+    # SimpleNamespace db has no execute, so stand that call in.
+    monkeypatch.setattr(auth_router, "revoke_device_alerts", lambda *_a, **_k: 0)
+
     body = auth_router.RevokeUserBody(user_id=target_user_id, reason="admin_revoke")
     request = _fake_request()
     fake_db = SimpleNamespace(commit=lambda: None)
@@ -1676,6 +1680,8 @@ def test_admin_revoke_user_emits_audit_event(monkeypatch):
 
     monkeypatch.setattr(auth_router, "log_audit_event_sync", fake_audit)
 
+    monkeypatch.setattr(auth_router, "revoke_device_alerts", lambda *_a, **_k: 0)
+
     body = auth_router.RevokeUserBody(user_id="target-42", reason="security_incident")
     request = _fake_request()
     fake_db = SimpleNamespace(commit=lambda: None)
@@ -1710,6 +1716,8 @@ def test_admin_revoke_user_idempotent_on_unknown_user(monkeypatch):
     )
     monkeypatch.setattr(auth_router, "log_audit_event_sync", lambda *_a, **_k: None)
 
+    monkeypatch.setattr(auth_router, "revoke_device_alerts", lambda *_a, **_k: 0)
+
     body = auth_router.RevokeUserBody(user_id="never-logged-in")
     request = _fake_request()
     result = auth_router.admin_revoke_user(
@@ -1738,6 +1746,8 @@ def test_admin_revoke_user_audit_failure_still_returns_ok(monkeypatch):
         raise RuntimeError("audit chain offline")
 
     monkeypatch.setattr(auth_router, "log_audit_event_sync", fake_audit_raises)
+
+    monkeypatch.setattr(auth_router, "revoke_device_alerts", lambda *_a, **_k: 0)
 
     body = auth_router.RevokeUserBody(user_id="target")
     request = _fake_request()

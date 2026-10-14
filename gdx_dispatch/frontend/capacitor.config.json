@@ -1,0 +1,19 @@
+{
+  "appId": "com.gdx.dispatch",
+  "appName": "GDX Dispatch",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "android": {
+    "backgroundColor": "#0e1525",
+    "allowMixedContent": true,
+    "captureInput": true
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}

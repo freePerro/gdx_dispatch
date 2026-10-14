@@ -24,6 +24,7 @@ test('payroll says it is not built instead of 501-ing on every control', async (
   expect(r.ok()).toBeTruthy();
   const { access_token } = await r.json();
   await page.addInitScript((a) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', a.t);
   }, { t: access_token, tid: TENANT });
 

@@ -394,6 +394,7 @@ GET /api/mobile/today
 GET /api/next-actions
 GET /api/notifications
 GET /api/notifications/count
+GET /api/notifications/device-alerts/feed
 GET /api/notifications/history
 GET /api/notifications/settings
 GET /api/notifications/templates
@@ -1059,6 +1060,8 @@ POST /api/mobile/voice-note
 POST /api/next-actions
 POST /api/next-actions/{action_id}/complete
 POST /api/next-actions/{action_id}/snooze
+POST /api/notifications/device-alerts/revoke
+POST /api/notifications/device-alerts/token
 POST /api/notifications/send
 POST /api/notifications/templates
 POST /api/notifications/{notification_id}/read

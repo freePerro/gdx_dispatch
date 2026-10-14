@@ -6,6 +6,9 @@ Routes:
   GET  /api/dispatch/late-open — open jobs whose scheduled day has passed
   GET  /api/dispatch/partial-jobs — a day worked, no day booked
   GET  /api/dispatch/visits — the visit cards of jobs not drawn by their job row
+
+Every route here lists other people's jobs, so every route is gated on
+jobs.read_all (GDXA-1063: two were open to the default technician role's jobs.read_own).
 """
 from __future__ import annotations
 
@@ -37,7 +40,7 @@ def _tenant_id(request: Request) -> str:
 # Traffic-Aware Scheduling (#174)
 # ---------------------------------------------------------------------------
 
-@router.get("/api/dispatch/schedule-with-traffic")
+@router.get("/api/dispatch/schedule-with-traffic", dependencies=[Depends(require_permission("jobs.read_all"))])
 def schedule_with_traffic(
     tech_id: str,
     date: str,
@@ -141,7 +144,7 @@ def _job_key(job_id: Any) -> str:
 # column on the Dispatch board; this is the forward-looking view so they
 # don't slip past the dispatcher's eyes.
 
-@router.get("/api/dispatch/scheduled-unassigned")
+@router.get("/api/dispatch/scheduled-unassigned", dependencies=[Depends(require_permission("jobs.read_all"))])
 def scheduled_unassigned(
     request: Request,
     db: Session = Depends(get_db),

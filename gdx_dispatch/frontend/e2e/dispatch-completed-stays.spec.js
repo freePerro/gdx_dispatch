@@ -72,6 +72,7 @@ test('a completed job stays visible on the dispatch board', async ({ page, baseU
 
   // --- Prime auth the way the SPA expects (never touch the login form) ------
   await page.addInitScript((a) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', a.t);
   }, { t: access_token, tid: TENANT });
 

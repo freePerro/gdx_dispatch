@@ -95,6 +95,14 @@
 # and /uncomplete below: core/job_access.job_write_denial (the jobs write key AND
 # a claim on the job, or office tier). The sweep cannot see a gate reached
 # through that helper.
+#
+# 382 → 374 (2026-10-14, GDXA-1059; the running count above reads 390, but the
+# pin, BASELINE_SIZE in test_authz_permission_sweep.py, was 382): the eight appointment writes — POST
+# /api/appointments, PATCH and DELETE /api/appointments/{appt_id}, and POST
+# .../{confirm,on-my-way,arrived,complete,cancel}. PRUNED, gated: each now carries
+# require_role(DISPATCH_MANAGER_ROLES), the gate its undo-arrival siblings already
+# had. No technician screen calls them; a tech's arrival goes through
+# routers/mobile.py.
 
 # ── customer portal ───────────────────────────────────────────────────────
 # These authenticate a CUSTOMER, not a tenant user, so no role or permission
@@ -125,7 +133,6 @@ POST /portal/reseller/logo
 PUT /portal/reseller/profile
 
 # ── staff surface ─────────────────────────────────────────────────────────
-DELETE /api/appointments/{appt_id}
 DELETE /api/catalogs/{catalog_id}
 DELETE /api/catalogs/{catalog_id}/items/{item_id}
 DELETE /api/change-orders/{co_id}
@@ -178,7 +185,6 @@ DELETE /api/vehicle-inspections/{inspection_id}
 DELETE /api/vendors/{vendor_id}
 DELETE /api/warranties/{warranty_id}
 DELETE /api/workflows/{rule_id}
-PATCH /api/appointments/{appt_id}
 PATCH /api/billing/terms
 PATCH /api/catalog-policy
 PATCH /api/catalogs/{catalog_id}
@@ -249,12 +255,6 @@ POST /api/ai/instant-estimate
 POST /api/ai/sentiment
 POST /api/ai/smart-estimate
 POST /api/ai/suggest-dispatch
-POST /api/appointments
-POST /api/appointments/{appt_id}/arrived
-POST /api/appointments/{appt_id}/cancel
-POST /api/appointments/{appt_id}/complete
-POST /api/appointments/{appt_id}/confirm
-POST /api/appointments/{appt_id}/on-my-way
 POST /api/audit/ux-event
 POST /api/catalogs
 POST /api/catalogs/save-from-estimate-line
