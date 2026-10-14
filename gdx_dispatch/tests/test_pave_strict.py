@@ -163,6 +163,9 @@ class _FakeConn:
     def fetchall(self):
         return self._rows
 
+    def one(self):
+        return self._rows[0]
+
     def __iter__(self):
         return iter(self._rows)
 
@@ -453,13 +456,15 @@ def test_verify_counts_passes_when_the_table_list_and_counts_match():
 # --- GDXA-531: refusals that have to land before the DROP --------------------
 
 
-def _pave_one_up_to_the_preflight(monkeypatch, **patches):
+def _pave_one_up_to_the_preflight(monkeypatch, superuser=True, **patches):
     """Run pave_one with everything before Step 0b stubbed and the DROP armed
-    to fail the test: a refusal that only lands after it is no refusal."""
+    to fail the test: a refusal that only lands after it is no refusal. The
+    fake engine answers the superuser check's one row and nothing else."""
     def _no_drop(_engine):
         raise AssertionError("DROP SCHEMA reached — the refusal came too late")
 
-    monkeypatch.setattr(pave_tenant_db, "create_engine", lambda url: _FakeEngine([]))
+    monkeypatch.setattr(pave_tenant_db, "create_engine",
+                        lambda url: _FakeEngine([("paver", superuser)]))
     monkeypatch.setattr(pave_tenant_db, "get_row_counts", lambda engine: {"users": 1})
     monkeypatch.setattr(pave_tenant_db, "get_matview_states", lambda engine: {})
     monkeypatch.setattr(pave_tenant_db, "drop_and_recreate_schema", _no_drop)
@@ -479,6 +484,24 @@ def test_ai_role_password_env_refuses_before_the_drop(monkeypatch, caplog):
     assert code == 1
     messages = "\n".join(r.message for r in caplog.records)
     assert "TENANT_AI_READONLY_PASSWORD or TENANT_AI_WRITE_PASSWORD is set" in messages
+    assert "NOTHING has been dropped" in messages
+
+
+def test_a_non_superuser_is_refused_before_the_drop(monkeypatch, caplog):
+    """Step 5's `DISABLE TRIGGER ALL` needs superuser and runs after the DROP.
+    The real-Postgres half is in test_pave_rebuild_pg.py."""
+    monkeypatch.delenv("TENANT_AI_READONLY_PASSWORD", raising=False)
+    monkeypatch.delenv("TENANT_AI_WRITE_PASSWORD", raising=False)
+
+    def _not_reached(_engine):
+        raise AssertionError("the stamp check ran: the superuser refusal did not land first")
+
+    code = _pave_one_up_to_the_preflight(
+        monkeypatch, superuser=False, refuse_unless_at_head=_not_reached)
+    assert code == 1
+    messages = "\n".join(r.message for r in caplog.records)
+    assert "The paving role paver is not a superuser." in messages
+    assert "--disable-triggers" in messages
     assert "NOTHING has been dropped" in messages
 
 

@@ -945,55 +945,55 @@ def test_pave_keeps_owners_grants_comments_and_extensions(migrated_pg_db, tmp_pa
         _exec(url, f"DROP ROLE {role}")
 
 
-@pytest.mark.parametrize("grant_options, schema_create, blocked", [
-    ("WITH INHERIT TRUE, SET TRUE", True, False),
-    # Passes pg_has_role(..., 'MEMBER') and still cannot ALTER ... OWNER TO.
-    ("WITH INHERIT FALSE, SET FALSE", True, True),
-    # ALTER ... OWNER TO also needs the new owner to hold CREATE on the schema.
-    ("WITH INHERIT TRUE, SET TRUE", False, True),
-])
-def test_a_non_superuser_paver_restores_owners_or_refuses_first(
-        bare_pg_db, grant_options, schema_create, blocked):
-    """Every other test paves as a superuser and so never reaches this check.
-
-    Where the preflight lets the pave through, the same non-superuser then
-    drops the schema, re-creates the one table by hand and runs the step-4e
-    replay. That proves the replay of owners and ACLs, not a whole pave:
-    create_all, alembic, the reload and the rest never run as this role here.
-    """
-    from sqlalchemy import create_engine, text
-
-    from gdx_dispatch.tools import pave_tenant_db
-
-    url = bare_pg_db
+def _non_superuser_owning(url: str) -> tuple[str, str]:
+    """A LOGIN NOSUPERUSER role that owns the database, its public schema and
+    `keep_me`: everything a role can hold short of superuser."""
     dbname = url.rsplit("/", 1)[1]
-    tag = uuid.uuid4().hex[:8]
-    owner, paver = f"gdx_pave_owner_{tag}", f"gdx_pave_paver_{tag}"
-    # The public schema is owned by pg_database_owner, which only the
-    # database's owner holds, so a paver has to own the database.
-    _exec(url, f"CREATE ROLE {owner} NOLOGIN; CREATE ROLE {paver} LOGIN PASSWORD 'x';"
-               f"ALTER DATABASE {dbname} OWNER TO {paver};"
-               f"GRANT CREATE ON SCHEMA public TO {owner};"
-               f"CREATE TABLE owned_elsewhere (id int); ALTER TABLE owned_elsewhere OWNER TO {owner};"
-               f"GRANT {owner} TO {paver} {grant_options}")  # noqa: S608 — names generated above
-    if not schema_create:
-        _exec(url, f"REVOKE CREATE ON SCHEMA public FROM {owner}")
-    engine = create_engine(url.replace(f"{PG_USER}:{PG_PASSWORD}@", f"{paver}:x@"))
+    paver = f"gdx_pave_paver_{uuid.uuid4().hex[:8]}"
+    _exec(url, f"CREATE ROLE {paver} LOGIN NOSUPERUSER PASSWORD 'x';"
+               f"ALTER DATABASE {dbname} OWNER TO {paver}")  # noqa: S608 — names generated above
+    return paver, url.replace(f"{PG_USER}:{PG_PASSWORD}@", f"{paver}:x@")
+
+
+def _drop_paver(url: str, paver: str) -> None:
+    dbname = url.rsplit("/", 1)[1]
+    _exec(url, f"ALTER DATABASE {dbname} OWNER TO CURRENT_USER; REASSIGN OWNED BY {paver} "
+               f"TO CURRENT_USER; DROP OWNED BY {paver}; DROP ROLE {paver}")
+
+
+def test_a_non_superuser_owner_cannot_disable_triggers_on_a_table_with_a_foreign_key(bare_pg_db):
+    """The premise of the superuser refusal, measured rather than read: the
+    reload's `ALTER TABLE ... DISABLE TRIGGER ALL` is refused to the table's own
+    owner once the table has a foreign key, and allowed without one."""
+    url = bare_pg_db
+    paver, paver_url = _non_superuser_owning(url)
     try:
-        pre = pave_tenant_db.privilege_state(engine)
-        assert pre["owners"][("table", "owned_elsewhere")][1] == owner
-        assert pave_tenant_db.roles_pave_cannot_act_as(engine, pre) == ([owner] if blocked else [])
-        if blocked:
-            return
-        with engine.begin() as conn:
-            conn.execute(text("DROP SCHEMA public CASCADE"))
-            conn.execute(text("CREATE SCHEMA public"))
-            conn.execute(text("CREATE TABLE public.owned_elsewhere (id int)"))
-        assert pave_tenant_db.replay_privilege_state(engine, pre) == []
-        post = pave_tenant_db.privilege_state(engine)
-        assert pave_tenant_db.privilege_mismatches(pre, post) == []
-        assert post["owners"][("schema", "public")][1] == "pg_database_owner"
+        _exec(paver_url, "CREATE TABLE parent (id int PRIMARY KEY);"
+                         "CREATE TABLE child (id int, parent_id int REFERENCES parent (id));"
+                         "CREATE TABLE loose (id int)")
+        _exec(paver_url, "ALTER TABLE loose DISABLE TRIGGER ALL")
+        with pytest.raises(psycopg2.errors.InsufficientPrivilege, match="system trigger"):
+            _exec(paver_url, "ALTER TABLE child DISABLE TRIGGER ALL")
     finally:
-        engine.dispose()
-        _exec(url, f"ALTER DATABASE {dbname} OWNER TO CURRENT_USER; DROP OWNED BY {owner};"
-                   f"DROP OWNED BY {paver}; DROP ROLE {paver}; DROP ROLE {owner}")
+        _drop_paver(url, paver)
+
+
+def test_a_non_superuser_paver_is_refused_with_nothing_dropped(bare_pg_db, tmp_path):
+    """At head, it used to pass the whole preflight, dump, back up and DROP
+    SCHEMA, and only then fail the reload under ON_ERROR_STOP with an empty
+    schema. This database is not at head, so before the fix the stamp check
+    refused it instead. What this proves is that the superuser refusal lands,
+    by name, before the drop. Its ordering ahead of the stamp check is pinned
+    in test_pave_strict.py."""
+    url = bare_pg_db
+    paver, paver_url = _non_superuser_owning(url)
+    try:
+        _exec(paver_url, "CREATE TABLE keep_me (id int); INSERT INTO keep_me VALUES (1), (2)")
+        rc, output = _pave(paver_url, tmp_path)
+        assert rc == 1, output[-4000:]
+        assert f"The paving role {paver} is not a superuser" in output
+        assert "NOTHING has been dropped" in output
+        assert "Dropping schema" not in output
+        assert _untouched(url)
+    finally:
+        _drop_paver(url, paver)
