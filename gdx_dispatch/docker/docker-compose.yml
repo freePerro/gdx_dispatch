@@ -113,7 +113,20 @@ services:
   # ── Redis ────────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
-    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    # Also the auth store: used_refresh_jtis and refresh_family:{sub} are the
+    # refresh-token replay and family-revoke state (invariant 7). They carry a
+    # TTL, so volatile-* policies could evict them too; noeviction refuses the
+    # write at the cap instead of silently dropping replay history. AOF on a
+    # named volume keeps that state to the second, and across `down` (GDXA-1117).
+    # Nothing empties used_refresh_jtis now: its TTL is reset on every add, so
+    # it only grows (~80 B a jti, ~14k jtis in 41 days on prod).
+    # Moving to this volume starts empty, and a dump.rdb copied in is ignored
+    # once AOF is on. To carry the state over: `config set appendonly yes` in
+    # the old container, wait for aof_rewrite_in_progress:0 in `info
+    # persistence`, copy its /data/appendonlydir into the new volume, `up`.
+    command: redis-server --maxmemory 256mb --maxmemory-policy noeviction --appendonly yes
+    volumes:
+      - redis_data:/data
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
@@ -325,3 +338,7 @@ volumes:
   # Plugin install cache (pip --target). Rebuildable from plugin_registry on
   # reconcile, so a plain managed volume — not external like db/uploads.
   gdx_plugins:
+  # Redis AOF (refresh-token replay state, Celery queues). Managed, like
+  # gdx_recordings: external:true would abort `up` on a host that never created
+  # it. Losing it logs nobody out but forgets replay history, so keep it.
+  redis_data:

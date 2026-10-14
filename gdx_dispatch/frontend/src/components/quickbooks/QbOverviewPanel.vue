@@ -59,15 +59,15 @@
       <div class="overview-card">
         <p class="card-label">Last Sync</p>
         <p class="card-value" data-testid="qb-overview-last-sync">
-          {{ formatDateTime(status.last_sync_at) }}
+          {{ status.status_unknown ? 'Unknown' : formatDateTime(status.last_sync_at) }}
         </p>
       </div>
 
       <div class="overview-card">
         <p class="card-label">Delete Sync</p>
         <Tag
-          :value="status.delete_sync_enabled ? 'Enabled' : 'Disabled'"
-          :severity="status.delete_sync_enabled ? 'warn' : 'secondary'"
+          :value="status.status_unknown ? 'Unknown' : (status.delete_sync_enabled ? 'Enabled' : 'Disabled')"
+          :severity="status.delete_sync_enabled && !status.status_unknown ? 'warn' : 'secondary'"
           data-testid="qb-overview-delete-sync"
         />
         <p class="card-sub">Off by default — invoice deletions in GDX do not propagate to QuickBooks.</p>
@@ -78,6 +78,10 @@
     <div v-if="loading" class="spinner-wrap">
       <ProgressSpinner />
     </div>
+    <!-- Placeholder zeros would read "No entities synced yet". -->
+    <p v-else-if="status.status_unknown" class="empty" data-testid="qb-overview-counts-unknown">
+      Entity counts unavailable — the QuickBooks status could not be loaded.
+    </p>
     <table v-else class="entity-counts" data-testid="qb-overview-entity-counts">
       <thead>
         <tr>
@@ -134,11 +138,14 @@ defineEmits(['sync-entity', 'reconnect']);
 
 // Tier 10: a token can be present (connected:true) yet dead — auth_state
 // 'needs_reconnect'. Report that honestly instead of a green "Connected".
+// A failed status load is not a disconnect (status_unknown, set by the view).
 const connectionLabel = computed(() => {
+  if (props.status.status_unknown) return 'Status unknown';
   if (props.status.needs_reconnect) return 'Reconnect needed';
   return props.status.connected ? 'Connected' : 'Disconnected';
 });
 const connectionSeverity = computed(() => {
+  if (props.status.status_unknown) return 'secondary';
   if (props.status.needs_reconnect) return 'warn';
   return props.status.connected ? 'success' : 'danger';
 });
