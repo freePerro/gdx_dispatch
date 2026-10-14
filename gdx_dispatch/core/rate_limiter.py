@@ -124,8 +124,19 @@ class TenantRateLimitMiddleware(BaseHTTPMiddleware):
     _BYPASS_PATHS = frozenset({"/health", "/docs", "/openapi.json", "/redoc", "/metrics"})
 
     # Unauthenticated brute-force surface — keyed per IP with the stricter limit.
-    # Matched by prefix so query strings and sub-paths are covered.
-    _AUTH_PREFIXES = ("/auth/login", "/portal/login")
+    # Matched by prefix so query strings and sub-paths are covered. Besides the
+    # password logins this holds every endpoint that trades an emailed token
+    # for a session or a new password (``/portal/verify``,
+    # ``/auth/reset-password``) and the one that mails such a token
+    # (``/auth/forgot-password``); each is called once per user action, so 30/min
+    # per IP does not throttle a real user (GDXA-1073).
+    _AUTH_PREFIXES = (
+        "/auth/login",
+        "/auth/forgot-password",
+        "/auth/reset-password",
+        "/portal/login",
+        "/portal/verify",
+    )
 
     def __init__(self, app: Any, limiter: RateLimiter | None = None) -> None:
         super().__init__(app)

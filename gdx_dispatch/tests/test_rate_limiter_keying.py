@@ -39,6 +39,23 @@ def test_auth_paths_keyed_per_ip_with_strict_limit() -> None:
         assert limit == DEFAULT_LIMITS["auth"], path  # stricter than general
 
 
+def test_token_exchange_paths_use_the_auth_bucket() -> None:
+    """The endpoints that trade an emailed token for a session or a password,
+    and the one that mails such a token, are the same unauthenticated surface
+    as the logins. ``/portal/verify`` resolved to the general ``ip:`` bucket at
+    600/min before GDXA-1073."""
+    mw = _mw()
+    for path in (
+        "/portal/verify",
+        "/portal/login/password",
+        "/auth/forgot-password",
+        "/auth/reset-password",
+    ):
+        key, limit = mw._key_and_limit(_req(path))
+        assert key == "auth-ip:1.2.3.4", path
+        assert limit == 30, path
+
+
 def test_auth_bucket_is_not_the_anonymous_bucket() -> None:
     """The strict login limit must count login attempts only. Sharing the
     anonymous per-IP key meant the SPA's own asset loads filled it, so a
