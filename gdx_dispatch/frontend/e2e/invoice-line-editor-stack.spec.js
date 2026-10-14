@@ -170,7 +170,8 @@ test.describe('GDXA-938 — the line total stays on screen on a phone or tablet'
   // track, was the column off-screen. Such a box now stacks each line as a
   // card. 412 is a phone, 768 a tablet, 915 a phone turned sideways.
   for (const [width, height, theme] of [
-    [412, 915, 'light'], [412, 915, 'dark'], [768, 1024, 'light'], [915, 412, 'dark'],
+    [412, 915, 'light'], [412, 915, 'dark'], [641, 900, 'light'], [700, 900, 'dark'],
+    [768, 1024, 'light'], [915, 412, 'dark'],
   ]) {
     test(`${width}px, ${theme}: no sideways scroll, Total in the viewport`, async ({ page, baseURL }) => {
       await signIn(page, baseURL);
@@ -192,14 +193,21 @@ test.describe('GDXA-938 — the line total stays on screen on a phone or tablet'
       await price.fill('1234.5');
       await price.blur();
 
-      const m = await editor.evaluate((el) => ({
-        editorClientW: el.clientWidth,
-        editorScrollW: el.scrollWidth,
-        bodyScrollW: document.body.scrollWidth,
-        bodyClientW: document.body.clientWidth,
-      }));
-      expect(m.editorScrollW, 'the line row scrolls sideways inside the editor').toBeLessThanOrEqual(m.editorClientW + 1);
-      expect(m.bodyScrollW, 'the PAGE scrolls horizontally').toBeLessThanOrEqual(m.bodyClientW + 1);
+      // The app scrolls inside main.layout-content, not the body, so the body
+      // alone could not see a sideways scroll (final audit, 641px). Check the
+      // editor and every ancestor: none may be wider than its own box.
+      const m = await editor.evaluate((el) => {
+        const overflowing = [];
+        for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+          if (n.scrollWidth > n.clientWidth + 1) {
+            overflowing.push(`${n.tagName.toLowerCase()}.${[...n.classList].join('.')} ${n.scrollWidth}>${n.clientWidth}`);
+          }
+        }
+        const r = el.getBoundingClientRect();
+        return { overflowing, editorRight: r.right };
+      });
+      expect(m.overflowing, 'an element around the line editor scrolls sideways').toEqual([]);
+      expect(m.editorRight, 'the line editor runs past the right edge').toBeLessThanOrEqual(width);
 
       const total = page.locator('[data-testid="line-total-0"]');
       await total.scrollIntoViewIfNeeded();

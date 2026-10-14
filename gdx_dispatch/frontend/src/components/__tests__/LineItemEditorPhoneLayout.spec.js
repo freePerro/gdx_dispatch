@@ -185,3 +185,16 @@ describe('LineItemEditor — the stylesheet the class drives', () => {
     expect(unscopedHeaderHide).toBeNull();
   });
 });
+
+describe('InvoiceCreateView — the form grid cannot be wider than its card', () => {
+  it('sizes both tracks from zero, not from their content, at every width', () => {
+    // 1fr is minmax(auto, 1fr): the widest field set the tracks to 615px
+    // whatever the card's width, so from 412 to ~800px the grid spilled past
+    // its card and the editor below never got a box narrow enough to stack.
+    // jsdom has no layout; the rendered proof is the e2e spec at 641/700px.
+    const view = readFileSync(join(__dirname, '..', '..', 'views', 'InvoiceCreateView.vue'), 'utf8');
+    const css = view.slice(view.indexOf('<style'));
+    expect(css).toMatch(/\n\.form-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(0,\s*1fr\)/);
+    expect(css).not.toMatch(/\.form-grid\s*\{[^}]*grid-template-columns:\s*1fr\s+1fr/);
+  });
+});
