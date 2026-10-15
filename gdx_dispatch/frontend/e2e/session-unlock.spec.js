@@ -12,7 +12,7 @@ const PASSWORD = process.env.E2E_PASSWORD;
 const SHOTS = process.env.E2E_SHOT_DIR || 'test-results';
 
 const CASES = [
-  { who: 'technician', email: process.env.E2E_TECH_EMAIL || 'e2e_tech@gdx.internal', path: '/mobile' },
+  { who: 'technician', email: process.env.E2E_TECH_EMAIL, path: '/mobile' },
   { who: 'office', email: process.env.E2E_EMAIL || 'e2e_pw@gdx.internal', path: '/dashboard' },
 ];
 
@@ -26,6 +26,7 @@ test.use({ viewport: vp.viewport });
 for (const c of CASES) {
   for (const theme of ['light', 'dark']) {
     test(`${c.who} (${theme}): a locked session is held on /unlock until the PIN`, async ({ page, baseURL }) => {
+      test.skip(!c.email, `${c.who} account not configured (E2E_TECH_EMAIL)`);
       const api = await pwRequest.newContext({ baseURL });
       const r = await api.post('/auth/login', {
         headers: { 'content-type': 'application/json', 'x-tenant-id': TENANT, 'x-e2e-test': 'true' },
