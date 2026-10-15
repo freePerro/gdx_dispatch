@@ -382,13 +382,14 @@
                 </div>
                 <div class="job-card-actions" @click.stop>
                   <Select
+                    :key="`assign-${queuePickerKey}`"
                     :options="assignableTechnicians"
                     optionLabel="name"
                     optionValue="id"
                     placeholder="Assign to tech..."
                     class="assign-dropdown"
                     :data-testid="`assign-dropdown-${job.card_key || job.id}`"
-                    @change="job.visit_id ? assignVisitTech(job, $event.value) : assignJob(job.id, $event.value)"
+                    @change="job.visit_id ? assignVisitTech(job, $event.value) : assignFromPicker(job.id, $event.value)"
                   />
                   <!-- Assigning a tech dates the job to the selected day
                        (_doAssignJobInner case c). When the dispatcher needs a
@@ -820,34 +821,7 @@
 
       <!-- A crew job dropped on a tech outside its crew: swap one member or
            add the tech. Nothing changes the crew without this answer. -->
-      <Dialog
-        v-model:visible="crewPromptOpen"
-        :header="crewPromptHeader"
-        :modal="true"
-        :closable="true"
-        :style="{ width: '440px' }"
-        data-testid="crew-change-prompt"
-        @hide="resolveCrewPrompt(null)"
-      >
-        <p style="margin-top:0;">
-          <strong>{{ crewPromptJobLabel }}</strong> has a crew: {{ crewPromptCrewLabel }}.
-        </p>
-        <div class="crew-change-options">
-          <Button
-            v-for="opt in crewPromptOptions"
-            :key="opt.key"
-            :label="opt.label"
-            :icon="opt.key === 'add' ? 'pi pi-user-plus' : 'pi pi-arrow-right-arrow-left'"
-            severity="secondary"
-            outlined
-            :data-testid="`crew-change-${opt.key}`"
-            @click="resolveCrewPrompt(opt)"
-          />
-        </div>
-        <template #footer>
-          <Button label="Cancel" severity="secondary" text data-testid="crew-change-cancel" @click="resolveCrewPrompt(null)" />
-        </template>
-      </Dialog>
+      <CrewChangeDialog :prompt="crewPrompt" @answer="answerCrewPrompt" />
 
       <!-- Sprint dispatch-capacity (2026-05-20) — duration prompt on drop -->
       <Dialog
@@ -857,6 +831,7 @@
         :closable="true"
         :style="{ width: '420px' }"
         data-testid="dispatch-duration-prompt"
+        @hide="onDurationPromptHide"
       >
         <p style="margin-top:0;">
           <strong>{{ durationPromptJobLabel }}</strong> has no estimated time yet.
@@ -1029,6 +1004,8 @@ import Button from 'primevue/button';
 import DatePicker from 'primevue/datepicker';
 import Card from 'primevue/card';
 import Dialog from 'primevue/dialog';
+import CrewChangeDialog from '../components/CrewChangeDialog.vue';
+import { crewOf, crewPatch, useCrewChangePrompt } from '../composables/useCrewChange';
 import InputText from 'primevue/inputtext';
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue';
 import Drawer from 'primevue/drawer';
@@ -2314,59 +2291,13 @@ function findBoardJob(jobId) {
     || null;
 }
 
-// The crew, lead first.
-function crewOf(job) {
-  const crew = (job?.assigned_tech_ids || []).map(String).filter(Boolean);
-  if (job?.technician_id && !crew.includes(String(job.technician_id))) crew.push(String(job.technician_id));
-  const lead = String(job?.lead_tech_id || job?.technician_id || '');
-  return crew.includes(lead) ? [lead, ...crew.filter((t) => t !== lead)] : crew;
-}
-
 function takeDragOrigin() {
   const from = draggingFromTechId;
   draggingFromTechId = null;
   return from;
 }
 
-const crewPromptOpen = ref(false);
-const crewPromptHeader = ref('');
-const crewPromptJobLabel = ref('');
-const crewPromptCrewLabel = ref('');
-const crewPromptOptions = ref([]);
-let crewPromptResolve = null;
-
-// Resolves { tech_ids, lead } for the chosen crew, or null on Cancel.
-function askCrewChange(job, techId, fromTechId) {
-  const crew = crewOf(job);
-  const lead = crew[0];
-  const newId = String(techId);
-  const newName = techName(newId);
-  const members = fromTechId && crew.includes(String(fromTechId))
-    ? [String(fromTechId), ...crew.filter((t) => t !== String(fromTechId))]
-    : crew;
-  const options = members.map((m) => ({
-    key: `swap-${m}`,
-    label: `Swap ${techName(m)} for ${newName}`,
-    tech_ids: crew.map((t) => (t === m ? newId : t)),
-    lead: m === lead ? newId : lead,
-  }));
-  options.push({ key: 'add', label: `Add ${newName} to the crew`, tech_ids: [...crew, newId], lead });
-  crewPromptHeader.value = `${newName} isn't on this crew`;
-  crewPromptJobLabel.value = displayCustomer(job) || 'This job';
-  crewPromptCrewLabel.value = crew.map((t) => techName(t)).join(', ');
-  crewPromptOptions.value = options;
-  crewPromptOpen.value = true;
-  // A question still open is answered Cancel, so its drop never hangs.
-  if (crewPromptResolve) crewPromptResolve(null);
-  return new Promise((resolve) => { crewPromptResolve = resolve; });
-}
-
-function resolveCrewPrompt(choice) {
-  const resolve = crewPromptResolve;
-  crewPromptResolve = null;
-  crewPromptOpen.value = false;
-  if (resolve) resolve(choice);
-}
+const { prompt: crewPrompt, ask: askCrew, answer: answerCrewPrompt } = useCrewChangePrompt((id) => techName(id));
 
 // True when the drop was a crew job and is handled here (moved, re-crewed
 // or cancelled); false sends the caller on to assignJob.
@@ -2379,18 +2310,35 @@ async function placeCrewJob(jobId, techId, scheduledAt, fromTechId, knownJob = n
     && new Date(scheduledAt).getTime() !== new Date(job.scheduled_at || 0).getTime();
   if (crew.includes(String(techId))) {
     if (!moved) return true;
+    const datePatch = { scheduled_at: scheduledAt };
+    // An undated job landing in its crew's day for the first time gets the
+    // hours question a one-tech pick gets; a time move of a dated job doesn't.
+    if (!job.scheduled_at && !jobHasDuration(job)) {
+      const hours = await askDurationFor(job);
+      if (hours === null) return true;
+      if (hours > 0) datePatch.scheduled_duration_hours = hours;
+    }
     await withBoardWrite(async () => {
       try {
-        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: scheduledAt });
+        await api.patch(`/api/jobs/${jobId}`, datePatch);
       } catch { /* api composable already toasts */ }
       await fetchJobs();
     });
     return true;
   }
-  const choice = await askCrewChange(job, techId, fromTechId);
+  const choice = await askCrew({
+    crew, techId, jobLabel: displayCustomer(job), firstId: fromTechId,
+  });
   if (!choice) return true; // cancelled: nothing moves
-  const patch = { assigned_tech_ids: choice.tech_ids, lead_tech_id: choice.lead };
+  const patch = crewPatch(choice);
   if (moved) patch.scheduled_at = scheduledAt;
+  // A swap or add puts the job in a new tech's day, so it gets the same
+  // duration question a one-tech drop does (assignJob); closing it cancels.
+  if (!jobHasDuration(job)) {
+    const hours = await askDurationFor(job);
+    if (hours === null) return true;
+    if (hours > 0) patch.scheduled_duration_hours = hours;
+  }
   await withBoardWrite(async () => {
     try {
       await api.patch(`/api/jobs/${jobId}`, patch);
@@ -2430,12 +2378,44 @@ function _needsDurationPrompt(jobId, techId) {
     || scheduledUnassigned.value.find((j) => String(j.id) === String(jobId))
     || unassignedJobs.value.find((j) => String(j.id) === String(jobId));
   if (!job) return null;
-  const hasDuration = Number(job.scheduled_duration_hours) > 0
-    || Number(job.effective_duration_hours) > 0;
-  return hasDuration ? null : job;
+  return jobHasDuration(job) ? null : job;
+}
+
+function jobHasDuration(job) {
+  return Number(job?.scheduled_duration_hours) > 0 || Number(job?.effective_duration_hours) > 0;
+}
+
+// The crew path (placeCrewJob) asks the same question but sends the hours in
+// its own crew PATCH: it waits on this instead of the prompt assigning.
+// Resolves the hours, 0 for Skip, or null when the dialog is closed.
+let durationPromptAfter = null;
+function askDurationFor(job) {
+  if (durationPromptAfter) durationPromptAfter(null);
+  durationPromptJobId.value = job.id;
+  durationPromptTechId.value = null;
+  durationPromptScheduledAt.value = null;
+  durationPromptHours.value = '';
+  durationPromptJobLabel.value = job.customer_name || job.title || 'Job';
+  durationPromptOpen.value = true;
+  return new Promise((resolve) => { durationPromptAfter = resolve; });
+}
+
+function onDurationPromptHide() {
+  if (!durationPromptAfter) return;
+  const after = durationPromptAfter;
+  durationPromptAfter = null;
+  after(null);
 }
 
 async function confirmDurationPrompt(skip = false) {
+  if (durationPromptAfter) {
+    const after = durationPromptAfter;
+    durationPromptAfter = null;
+    const picked = Number(durationPromptHours.value);
+    durationPromptOpen.value = false;
+    after(!skip && Number.isFinite(picked) && picked > 0 ? picked : 0);
+    return;
+  }
   const jobId = durationPromptJobId.value;
   const techId = durationPromptTechId.value;
   const scheduledAt = durationPromptScheduledAt.value;
@@ -2625,13 +2605,32 @@ async function onTimelinePlaceTray({ jobId, techId }) {
   await assignJob(jobId, techId, d.toISOString());
 }
 
+const queuePickerKey = ref(0);
+
+// A tech picked from a dropdown (queue card or Assign dialog). A crew job goes
+// through placeCrewJob; an undated one lands on the selected day, as
+// _doAssignJobInner case (c) does for a one-tech job.
+async function assignFromPicker(jobId, techId) {
+  const job = findBoardJob(jobId);
+  let day = null;
+  if (job && !job.scheduled_at) {
+    const d = new Date(selectedDate.value || new Date());
+    d.setHours(0, 0, 0, 0);
+    day = d.toISOString();
+  }
+  try {
+    if (await placeCrewJob(jobId, techId, day, null)) return;
+    await assignJob(jobId, techId);
+  } finally {
+    // The queue card's Select keeps its pick internally; remount it so a
+    // cancelled pick doesn't leave a tech's name on a card nobody has.
+    queuePickerKey.value += 1;
+  }
+}
+
 function confirmAssign() {
   if (assignDialogJob.value && assignDialogTechId.value) {
-    const jobId = assignDialogJob.value.id;
-    const techId = assignDialogTechId.value;
-    placeCrewJob(jobId, techId, null, null).then((handled) => {
-      if (!handled) assignJob(jobId, techId);
-    });
+    assignFromPicker(assignDialogJob.value.id, assignDialogTechId.value);
   }
   assignDialogVisible.value = false;
   assignDialogJob.value = null;
@@ -3130,14 +3129,6 @@ defineExpose({
 </script>
 
 <style scoped>
-.crew-change-options {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-.crew-change-options :deep(.p-button) {
-  justify-content: flex-start;
-}
 .week-slot-list {
   list-style: none;
   margin: 0;

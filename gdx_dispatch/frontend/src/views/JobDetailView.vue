@@ -1363,6 +1363,7 @@
       @applied="onStateOverrideApplied"
     />
 
+    <CrewChangeDialog :prompt="crewPrompt" @answer="answerCrewPrompt" />
     <UndoArrivalDialog
       v-model="crewUndo.visible"
       mode="job"
@@ -1497,6 +1498,8 @@ import { useRoute, useRouter } from "vue-router";
 import JobStateOverrideDialog from "../components/JobStateOverrideDialog.vue";
 import UndoArrivalDialog from "../components/UndoArrivalDialog.vue";
 import JobVisitsCard from "../components/JobVisitsCard.vue";
+import CrewChangeDialog from "../components/CrewChangeDialog.vue";
+import { crewOf, crewPatch, useCrewChangePrompt } from "../composables/useCrewChange";
 import { isDispatchManagerRole, pointsAtAppointments, refusalOf as visitRefusalOf } from "../utils/visitRefusals";
 import MobileJobCloseoutDialog from "../components/MobileJobCloseoutDialog.vue";
 import JobDailyLogCard from "../components/JobDailyLogCard.vue";
@@ -1673,6 +1676,9 @@ const crewTechIds = computed(() => (assignments.value.length
   ? assignments.value.map((a) => a.tech_id).filter(Boolean)
   : (job.value?.assigned_to ? [job.value.assigned_to] : [])));
 const assignmentsLoading = ref(false);
+// False until the assignment rows have been read: an unread crew is not a
+// crew of one, and the Technician picker must not act as if it were.
+const crewKnown = ref(false);
 const addAssignmentTechId = ref(null);
 const addingAssignment = ref(false);
 
@@ -2443,12 +2449,64 @@ async function applyStage(stage) {
   }
 }
 
-async function assignTech(techId) {
+const { prompt: crewPrompt, ask: askCrew, answer: answerCrewPrompt } = useCrewChangePrompt((id) => techLabel(id));
+
+// The crew from the assignment rows, lead first.
+function currentCrew() {
+  const lead = assignments.value.find((a) => a.is_lead)?.tech_id;
+  return crewOf({
+    assigned_tech_ids: assignments.value.map((a) => a.tech_id),
+    lead_tech_id: lead,
+    assigned_to: job.value.assigned_to,
+  });
+}
+
+// The Select's @change hands over { originalEvent, value }, not the id.
+async function assignTech(change) {
+  const techId = change && typeof change === "object" ? change.value : change;
   if (!job.value.id) return;
+  // A single assigned_tech_id replaces the whole crew, so on a crew job a
+  // pick keeps everyone: a member becomes lead, anyone else is a swap or an
+  // add. Clearing the picker stays an explicit unassign. With the crew
+  // unread (still loading, or the read failed) nothing is sent: a wrong
+  // guess here is the crew wipe this guards against.
+  if (assignmentsLoading.value || !crewKnown.value) {
+    selectedTech.value = job.value.assigned_to || null;
+    toast.add({
+      severity: "warn",
+      summary: "Crew not loaded",
+      detail: "The crew on this job could not be read yet, so the technician was not changed. Reload the page and try again.",
+      life: 5000,
+    });
+    return;
+  }
+  const crew = currentCrew();
+  if (techId && crew.length >= 2) {
+    const id = String(techId);
+    if (id === crew[0]) return;
+    if (crew.includes(id)) {
+      await setLead(id);
+      return;
+    }
+    const choice = await askCrew({ crew, techId: id, jobLabel: job.value.customer_name || job.value.title });
+    if (!choice) {
+      selectedTech.value = job.value.assigned_to || null;
+      return;
+    }
+    try {
+      await api.patch(`/api/jobs/${job.value.id}`, crewPatch(choice), { successMessage: "Crew updated" });
+      await fetchAssignments();
+      await fetchJob();
+    } catch {
+      selectedTech.value = job.value.assigned_to || null;
+    }
+    return;
+  }
   try {
     await api.patch(`/api/jobs/${job.value.id}`, { assigned_tech_id: techId }, { successMessage: techId ? "Technician assigned" : "Technician cleared" });
     await fetchJob();
   } catch {
+    selectedTech.value = job.value.assigned_to || null;
   }
 }
 
@@ -2459,8 +2517,10 @@ async function fetchAssignments() {
   try {
     const data = await api.get(`/api/jobs/${route.params.id}/assignments`);
     assignments.value = Array.isArray(data) ? data : (data?.data || []);
+    crewKnown.value = true;
   } catch {
     assignments.value = [];
+    crewKnown.value = false;
   } finally {
     assignmentsLoading.value = false;
   }
@@ -2520,7 +2580,10 @@ async function setLead(techId) {
     );
     await fetchAssignments();
     await fetchJob();
-  } catch { /* api toasts errors */ }
+  } catch {
+    // api toasts errors; the picker goes back to the lead that still stands.
+    selectedTech.value = job.value.assigned_to || null;
+  }
 }
 
 async function updatePriority() {

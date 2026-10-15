@@ -20,6 +20,8 @@ import { useApi } from '../composables/useApi'
 import { useTenantTimezone } from '../composables/useTenantTimezone'
 import { useToast } from 'primevue/usetoast'
 import MobileChatDialog from '../components/MobileChatDialog.vue'
+import CrewChangeDialog from '../components/CrewChangeDialog.vue'
+import { crewOf, crewPatch, useCrewChangePrompt } from '../composables/useCrewChange'
 
 const api = useApi()
 const toast = useToast()
@@ -248,16 +250,47 @@ function openAssignDialog(job) {
   assignDialogVisible.value = true
 }
 
+const { prompt: crewPrompt, ask: askCrew, answer: answerCrewPrompt } = useCrewChangePrompt(
+  (id) => (technicians.value.find((t) => String(t.id) === String(id)) || {}).name || 'Tech',
+)
+
+function closeAssignDialog() {
+  assignDialogVisible.value = false
+  assignDialogJob.value = null
+  assignDialogTechId.value = null
+}
+
 async function confirmAssign() {
   const job = assignDialogJob.value
   if (!job || !assignDialogTechId.value) {
     assignDialogVisible.value = false
     return
   }
+  const techId = String(assignDialogTechId.value)
+  // A single assigned_tech_id replaces the whole crew. On a crew job the pick
+  // keeps everyone: the lead is a no-op, another member becomes lead, anyone
+  // else is a swap or an add, asked here; Cancel changes nothing.
+  const crew = crewOf(job)
+  let patch = { assigned_tech_id: techId, assigned_to: techId, technician_id: techId }
+  if (crew.length >= 2) {
+    if (techId === crew[0]) {
+      closeAssignDialog()
+      return
+    }
+    if (crew.includes(techId)) {
+      patch = { assigned_tech_ids: crew, lead_tech_id: techId }
+    } else {
+      assignDialogVisible.value = false
+      const choice = await askCrew({ crew, techId, jobLabel: displayCustomer(job) })
+      if (!choice) {
+        closeAssignDialog()
+        return
+      }
+      patch = crewPatch(choice)
+    }
+  }
   assignDialogSaving.value = true
   try {
-    const techId = assignDialogTechId.value
-    const patch = { assigned_tech_id: techId, assigned_to: techId, technician_id: techId }
     if (!job.scheduled_at) {
       const d = new Date(selectedDate.value)
       d.setHours(9, 0, 0, 0)
@@ -271,9 +304,7 @@ async function confirmAssign() {
       detail: `${displayCustomer(job)} → ${techName}`,
       life: 3000,
     })
-    assignDialogVisible.value = false
-    assignDialogJob.value = null
-    assignDialogTechId.value = null
+    closeAssignDialog()
     await refreshBoard()
   } catch (e) {
     toast.add({ severity: 'error', summary: 'Assignment failed', detail: e.message, life: 4000 })
@@ -808,6 +839,7 @@ onUnmounted(() => {
           />
         </template>
       </Dialog>
+      <CrewChangeDialog :prompt="crewPrompt" @answer="answerCrewPrompt" />
     </section>
     <MobileChatDialog v-model:visible="chatOpen" :job="chatJob" mark-read @read="loadThreads" />
 </template>
