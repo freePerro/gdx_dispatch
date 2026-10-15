@@ -147,9 +147,36 @@
             </p>
             <p v-if="closeoutSuggestion.closeout.man_hours_billed_above_attested > 0" class="closeout-context-notes" data-testid="closeout-context-billed-above">
               <strong>{{ closeoutSuggestion.closeout.man_hours_billed_above_attested }} man-hours already invoiced are
-              more than the restated closeout.</strong> Nothing more is billed for them; credit the customer on the
-              earlier invoice if the lower hours are right.
+              more than the restated closeout.</strong> Nothing more is billed for them.
+              <!-- GDXA-1184: the way to that credit. It opens the credit-memo
+                   dialog pre-filled; the office still checks and issues it. -->
+              <template v-if="(closeoutSuggestion.closeout.credit_targets || []).length">
+                If the lower hours are right, credit the customer on the earlier invoice.
+              </template>
+              <template v-else>
+                Nothing is left to credit: the first hour stays billed, the invoice no longer bills those hours,
+                or it has been credited already.
+              </template>
             </p>
+            <div
+              v-for="t in closeoutSuggestion.closeout.credit_targets || []"
+              :key="t.invoice_id"
+              class="closeout-context-row"
+              data-testid="closeout-credit-target"
+            >
+              <span>
+                {{ t.invoice_number }}: {{ t.man_hours }} man-hours × {{ currency(t.hourly_rate) }}/hr
+                = {{ currency(t.credit_value) }}<template v-if="t.creditable && t.amount < t.credit_value">
+                (only {{ currency(t.balance_due) }} is still due)</template><template v-if="!t.creditable">
+                — no open balance to credit; refund the customer instead</template>
+              </span>
+              <Button
+                size="small" text
+                :label="t.creditable ? `Credit on ${t.invoice_number}` : `Open ${t.invoice_number}`"
+                data-testid="closeout-credit-target-open"
+                @click="openCreditTarget(t)"
+              />
+            </div>
             <p v-if="closeoutSuggestion.closeout.man_hours_left_unbilled > 0" class="closeout-context-notes" data-testid="closeout-context-left-unbilled">
               <strong>{{ closeoutSuggestion.closeout.man_hours_left_unbilled }} attested man-hours are on no live
               invoice</strong> — an earlier invoice for this closeout was voided. Restate the closeout to offer them.
@@ -711,6 +738,20 @@ function onJobChange() {
 // prefill and only fills a still-empty editor — an estimate outranks the
 // lanes (§15.1), and hand-typed lines are never clobbered.
 const closeoutSuggestion = ref(null);
+
+// GDXA-1184: a restatement below what is invoiced is credited by hand on the
+// earlier invoice. Land there with the credit-memo dialog pre-filled; the
+// amount and reason stay editable and nothing is issued without the click.
+function openCreditTarget(t) {
+  const query = {};
+  if (t.creditable) {
+    query.credit_memo = String(t.amount);
+    query.credit_reason = `Closeout restated: ${t.man_hours} man-hours billed above the attested hours`;
+    // Recorded on the credit's audit row: the trail says why it was issued.
+    query.credit_closeout = t.closeout_id;
+  }
+  router.push({ path: `/invoices/${t.invoice_id}`, query });
+}
 // The accepted estimate whose lines prefilled this editor, if any. Recorded on
 // the invoice as provenance — the operator may edit the lines afterwards, so
 // this says "the numbers started here", not "these are the estimate's lines".

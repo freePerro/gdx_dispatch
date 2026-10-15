@@ -524,7 +524,7 @@
             severity="warn"
             outlined
             data-testid="credit-memo-btn"
-            @click="showCreditMemoDialog = true"
+            @click="openCreditMemo"
           />
           <Button
             v-if="glPostingEnabled && ['sent','overdue'].includes(String(invoice.status || '').toLowerCase()) && balanceDue > 0"
@@ -632,6 +632,32 @@
           Collected {{ currency(invoice.amount_overpaid) }} <strong>above the invoice total</strong> —
           usually a duplicate payment. Review Payment History below; refund or
           credit the excess.
+        </div>
+
+        <!-- GDXA-1184: a later closeout of this job restated fewer hours than
+             this invoice billed. This is the invoice the office opens, so the
+             credit is offered here; the button only pre-fills the dialog. -->
+        <div
+          v-if="restatementCredit"
+          class="superseded-banner"
+          data-testid="restatement-credit-banner"
+        >
+          <i class="pi pi-info-circle" />
+          The job's closeout was restated: {{ restatementCredit.man_hours }} man-hours this invoice billed are
+          above the attested hours ({{ currency(restatementCredit.credit_value) }} at
+          {{ currency(restatementCredit.hourly_rate) }}/hr).
+          <template v-if="restatementCredit.creditable">
+            If the lower hours are right, credit the customer.
+            <Button
+              :label="`Credit ${currency(restatementCredit.amount)}`"
+              size="small"
+              severity="warn"
+              outlined
+              data-testid="restatement-credit-open"
+              @click="openRestatementCredit"
+            />
+          </template>
+          <template v-else>There is no open balance to credit; refund the customer instead.</template>
         </div>
 
         <!-- Payment Plan (M39) — only offered when the Settings toggle is on;
@@ -2212,6 +2238,41 @@ async function toggleDunningPause() {
   }
 }
 
+// GDXA-1184: this invoice's share of a restatement's over-billed hours, from
+// the job's closeout suggestion (asked as no invoice, so it is the same offer
+// the new-invoice screen makes). Null when there is nothing to credit here.
+const restatementCredit = ref(null);
+
+async function loadRestatementCredit() {
+  restatementCredit.value = null;
+  const inv = invoice.value;
+  const st = String(inv?.status || "").toLowerCase();
+  if (!inv?.job_id || !["sent", "overdue", "paid"].includes(st)) return;
+  try {
+    const s = await api.get(`/api/jobs/${inv.job_id}/closeout-billing-suggestion`, { suppressErrorToast: true });
+    restatementCredit.value = (s?.closeout?.credit_targets || []).find((t) => t.invoice_id === String(inv.id)) || null;
+  } catch {
+    // Best-effort: the Credit Memo button still works without the offer.
+  }
+}
+
+function restatementReason(t) {
+  return `Closeout restated: ${t.man_hours} man-hours billed above the attested hours`;
+}
+
+function openRestatementCredit() {
+  const t = restatementCredit.value;
+  creditMemo.value = { amount: t.amount, reason: restatementReason(t), closeoutId: t.closeout_id };
+  showCreditMemoDialog.value = true;
+}
+
+// The plain button starts empty: a restatement pre-fill that was cancelled
+// (Cancel or the dialog's X) must not tag an unrelated credit (GDXA-1184).
+function openCreditMemo() {
+  creditMemo.value = { amount: 0, reason: "" };
+  showCreditMemoDialog.value = true;
+}
+
 async function issueCreditMemo() {
   savingCreditMemo.value = true;
   try {
@@ -2219,11 +2280,18 @@ async function issueCreditMemo() {
     // the button visibility is UX, the server check is the contract.
     const result = await api.post(
       `/api/invoices/${route.params.id}/credit-memo`,
-      { amount: creditMemo.value.amount, reason: creditMemo.value.reason.trim() },
+      {
+        amount: creditMemo.value.amount,
+        reason: creditMemo.value.reason.trim(),
+        // GDXA-1184: the restated closeout this credit settles, when the
+        // dialog was opened from one.
+        ...(creditMemo.value.closeoutId ? { closeout_id: creditMemo.value.closeoutId } : {}),
+      },
       { suppressErrorToast: true },
     );
     showCreditMemoDialog.value = false;
     creditMemo.value = { amount: 0, reason: "" };
+    loadRestatementCredit();
     toast.add({
       severity: "success",
       summary: "Credit issued",
@@ -2919,13 +2987,43 @@ onMounted(() => {
   // can't open the composer on a void invoice (mirrors the button — paid
   // composes as a receipt since 2026-08-17).
   const autoCompose = !!route.query?.compose;
-  if (autoCompose) {
-    const { compose, ...rest } = route.query;
+  // ?credit_memo=<amount>&credit_reason=<text> — a closeout restated below
+  // what this invoice billed (GDXA-1184, from the invoice screen's notice).
+  // It only pre-fills the dialog: opened on the same terms as the Credit Memo
+  // button, the amount capped at the balance due, and nothing is issued
+  // until the office clicks Issue Credit.
+  const creditPrefill = route.query?.credit_memo != null
+    ? {
+        amount: Number(route.query.credit_memo),
+        reason: String(route.query.credit_reason || ""),
+        closeoutId: route.query.credit_closeout ? String(route.query.credit_closeout) : null,
+      }
+    : null;
+  if (autoCompose || creditPrefill) {
+    const { compose, credit_memo, credit_reason, credit_closeout, ...rest } = route.query;
     router.replace({ query: rest })?.catch?.(() => {});
   }
   Promise.resolve(fetchInvoice()).then(() => {
+    loadRestatementCredit();
     const st = String(invoice.value.status || "").toLowerCase();
     if (autoCompose && st !== "void") sendInvoice();
+    if (creditPrefill) {
+      if (["sent", "overdue"].includes(st) && balanceDue.value > 0 && creditPrefill.amount > 0) {
+        creditMemo.value = {
+          amount: Math.min(creditPrefill.amount, Math.round(balanceDue.value * 100) / 100),
+          reason: creditPrefill.reason,
+          closeoutId: creditPrefill.closeoutId,
+        };
+        showCreditMemoDialog.value = true;
+      } else {
+        toast.add({
+          severity: "info",
+          summary: "Nothing to credit here",
+          detail: "This invoice has no open balance to credit; refund the customer instead.",
+          life: 6000,
+        });
+      }
+    }
   });
   loadTaxRate();
   loadQbStatus();

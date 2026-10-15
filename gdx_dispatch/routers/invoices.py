@@ -5035,6 +5035,11 @@ def verify_invoice(
 class CreditMemoIn(BaseModel):
     amount: float = Field(gt=0)
     reason: str = Field(min_length=1)
+    # GDXA-1184: the restated closeout this credit settles, when the dialog was
+    # opened from one. Recorded on the audit row, so the trail says why the
+    # credit was issued; it changes nothing about the credit itself, and the
+    # offer is withdrawn by the credit's amount, not by this tag.
+    closeout_id: UUID | None = None
 
 
 def _net_paid(db: Session, invoice) -> float:
@@ -5074,6 +5079,12 @@ def issue_credit_memo(
         # P1 never debited (negative AR), and draft deletion would strand
         # the entry. Drafts are edited, not credited.
         raise HTTPException(status_code=409, detail="only issued invoices can be credited — edit the draft instead")
+    if payload.closeout_id is not None:
+        from gdx_dispatch.models.tenant_models import JobCloseout
+
+        settles = db.get(JobCloseout, payload.closeout_id)
+        if settles is None or invoice.job_id is None or str(settles.job_id) != str(invoice.job_id):
+            raise HTTPException(status_code=422, detail="closeout_id is not a closeout of this invoice's job")
     credit_amount = _money(payload.amount)
     _recalculate_invoice(invoice, db, actor=_actor_id(_))
     if float(credit_amount) > _to_float(invoice.balance_due) + 0.005:
@@ -5120,6 +5131,7 @@ def issue_credit_memo(
             "amount": float(credit_amount), "reason": payload.reason,
             "adjustment_id": str(adjustment.id),
             "stale_intent_sweep_queued": queued,
+            "closeout_id": str(payload.closeout_id) if payload.closeout_id is not None else None,
         },
     )
     db.commit()
