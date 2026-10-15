@@ -251,6 +251,28 @@ describe('useApi toast contract', () => {
 
     expect(document.body.innerHTML).not.toContain('Something went wrong');
   });
+
+  it('a suppressErrorToast predicate silences only the errors it accepts', async () => {
+    const only403 = (err) => err?.status === 403;
+    // Each failure is followed by the transport's client-error report POST,
+    // which takes the next queued response.
+    fetchMock
+      .mockResolvedValueOnce(mkResponse({ detail: 'Admin access required' }, { ok: false, status: 403 }))
+      .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }))
+      .mockResolvedValueOnce(mkResponse({ detail: 'boom' }, { ok: false, status: 500 }))
+      .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }));
+    const { api } = makeHarness();
+
+    await expect(api.get('/api/probe', { suppressErrorToast: only403 })).rejects.toThrow();
+    await nextTick();
+    await nextTick();
+    expect(document.body.innerHTML).not.toContain('Permission denied');
+
+    await expect(api.get('/api/probe', { suppressErrorToast: only403 })).rejects.toThrow();
+    await nextTick();
+    await nextTick();
+    expect(document.body.innerHTML).toContain('Something went wrong');
+  });
 });
 
 describe('useApi delete alias toast contract (contract-gap Tier 1.1)', () => {
