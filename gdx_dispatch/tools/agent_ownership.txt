@@ -721,6 +721,11 @@ gdx_dispatch/frontend/src/lib/officeAlerts.js                mobile-tech
 gdx_dispatch/frontend/src/components/OfficeAlertsToggle.vue  mobile-tech
 gdx_dispatch/frontend/src/lib/nativeBarcode.js               mobile-tech
 gdx_dispatch/frontend/src/lib/nativeAuth.js                  mobile-tech
+# The Capacitor Android app: native plugins (OfficeAlerts*, GpsForeground*),
+# their JUnit tests, gradle and resources. One owner for the whole tree, so a
+# directory rule; the two capacitor.*.gradle files `npx cap sync` regenerates
+# stay owned too — their diff is still mobile-tech's to review (GDXA-1153).
+gdx_dispatch/frontend/android/*                              mobile-tech
 # Exceptions to the Mobile*.vue rule: these are communication surfaces.
 gdx_dispatch/frontend/src/views/MobileInboxView.vue          comms-email-phone
 gdx_dispatch/frontend/src/views/MobilePhoneView.vue          comms-email-phone
