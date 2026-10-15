@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router';
+import { createRouter, createWebHistory, START_LOCATION } from 'vue-router';
 import { Capacitor } from '@capacitor/core';
 import { getServerUrl } from '../lib/serverConfig';
 import { useAuthStore } from '../stores/auth';
@@ -528,6 +528,24 @@ export function createAppRouter() {
       if (router.currentRoute.value.path !== PASSWORD_CHANGE_PATH) {
         router.push(PASSWORD_CHANGE_PATH).catch(() => {});
       }
+    });
+  }
+
+  // A session that ends without the person choosing it (a refused token
+  // refresh, from any API client) sends them to log in and come back here,
+  // rather than leaving a page whose every call now fails behind a stack of
+  // error toasts; the login page says the session expired. A chosen sign-out
+  // navigates itself.
+  if (typeof window !== 'undefined') {
+    window.addEventListener('gdx:auth-logout', (event) => {
+      if (event?.detail?.chosen) return;
+      const current = router.currentRoute.value;
+      // Before the first navigation lands (the native cold-start restore
+      // refreshes right then) the current route is the START_LOCATION "/",
+      // not where the person is going; the guard sends them to log in with
+      // the real destination, so leave it to the guard.
+      if (current === START_LOCATION || current.meta?.public) return;
+      router.push(getLoginRedirectLocation(current.fullPath, 'expired')).catch(() => {});
     });
   }
 

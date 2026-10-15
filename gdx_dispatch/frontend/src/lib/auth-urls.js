@@ -36,9 +36,14 @@ export function getLoginRedirectUrl(returnTo) {
  * @param {string} returnTo - Absolute path (beginning with '/') to return
  *   to after a successful login. Passed through as-is; vue-router handles
  *   URL encoding of the `query` object on serialization.
- * @returns {{path: string, query: {redirect: string}}}
+ * @param {string} [reason] - Why the person is being sent there; LoginView
+ *   explains `expired` (a session that ended without their choosing).
+ * @returns {{path: string, query: {redirect: string, reason?: string}}}
  */
-export const getLoginRedirectLocation = (returnTo) => ({ path: '/login', query: { redirect: returnTo } });
+export const getLoginRedirectLocation = (returnTo, reason) => ({
+  path: '/login',
+  query: reason ? { redirect: returnTo, reason } : { redirect: returnTo },
+});
 
 /**
  * Resolve the post-login destination from a vue-router route, falling

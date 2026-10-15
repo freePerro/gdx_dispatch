@@ -330,9 +330,22 @@ def require_role(*roles: str) -> Callable:
             _stash_principal(request, claims)
             return
 
+        if not user and not claims:
+            raise _no_principal()
         raise HTTPException(status_code=403, detail="Insufficient role")
 
     return _dependency
+
+
+def _no_principal() -> HTTPException:
+    """The 401 an auth gate raises when the request carries no live principal
+    (no token, or one that is expired, revoked or not an access token) —
+    the same answer ``get_current_user`` gives."""
+    return HTTPException(
+        status_code=401,
+        detail="Invalid or expired access token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 def _decode_bearer_claims(request: Request) -> dict:
@@ -596,6 +609,12 @@ def require_permission(*required_keys: str) -> Callable:
     def _dependency(request: Request, db: Session = Depends(get_db)) -> None:
         if has_permission(request, db, *required):
             return
+        # A route's ``dependencies=[...]`` run before its parameter
+        # dependencies, so this gate runs before ``get_current_user`` could
+        # 401 an expired token. No principal is "who are you?", not "you may
+        # not": answer 401 so the client sends the user to log in again.
+        if not _resolve_request_user(request):
+            raise _no_principal()
         missing = sorted(required - _request_permissions(request, db))
         raise HTTPException(status_code=403, detail=f"Missing permission: {missing}")
 

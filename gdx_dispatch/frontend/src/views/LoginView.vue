@@ -23,6 +23,10 @@ const theme = useThemeStore()
 const email = ref('')
 const password = ref('')
 const error = ref('')
+// Sent here by a session that ended without the person choosing it
+// (router/index.js, useApi): say so, instead of a login page that looks like
+// they were never signed in.
+const sessionExpired = route.query.reason === 'expired'
 const submitting = ref(false)
 
 // Native / self-hosted server configuration modal
@@ -253,6 +257,9 @@ async function handleLogin() {
         </template>
 
         <p v-if="error" class="error-message" data-testid="login-error">{{ error }}</p>
+        <p v-else-if="sessionExpired" class="session-expired-message" data-testid="login-session-expired" role="status">
+          Your session expired. Sign in again to pick up where you left off.
+        </p>
 
         <p v-if="fingerprintSaved" class="forgot-link">
           <button type="button" class="link-btn" data-testid="login-forget-fingerprint" @click="handleForgetFingerprint">
@@ -444,6 +451,13 @@ input::placeholder {
 
 .error-message {
   color: #f87171;
+  font-size: 0.875rem;
+  text-align: center;
+  margin: 0;
+}
+
+.session-expired-message {
+  color: #fbbf24;
   font-size: 0.875rem;
   text-align: center;
   margin: 0;
