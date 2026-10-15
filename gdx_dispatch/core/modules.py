@@ -303,42 +303,66 @@ def require_role(*roles: str) -> Callable:
             return
 
         # JWT from Authorization header as final fallback.
-        try:
-            auth_header = request.headers.get("authorization", "") or ""
-        except AttributeError:
-            logging.getLogger(__name__).exception("_dependency caught exception")
-            auth_header = ""
-        if auth_header.lower().startswith("bearer "):
-            token = auth_header.split(" ", 1)[1].strip()
-            try:
-                import jwt as _jwt
-
-                from gdx_dispatch.routers.auth import ALG as _ALG
-                from gdx_dispatch.routers.auth import VERIFY_KEY as _VERIFY
-                claims = _jwt.decode(token, _VERIFY, algorithms=[_ALG])
-                # SS-7 Slice H parity: this raw-decode fallback must honor the
-                # same revocation denylist get_current_user enforces. Without it a
-                # revoked token (logout / offboarding / admin revoke) still passes
-                # the role gate here. On any denylist error we fall through to 403
-                # (fail closed). NOTE: this closes the revoked-token bypass; it does
-                # NOT by itself address a *demotion* that leaves an unexpired access
-                # token's role claim valid — roles are claim-based, so that needs a
-                # revoke-on-role-change (by user/jti). Tracked separately.
-                jti = claims.get("jti")
-                revoked = False
-                if jti:
-                    from gdx_dispatch.routers.auth.core import _get_app_denylist
-                    revoked = _get_app_denylist(request).contains(str(jti))
-                if not revoked and normalize_role(claims.get("role")) in allowed:
-                    _stash_principal(request, claims)
-                    return
-            except Exception:
-                logging.getLogger(__name__).exception("_dependency caught exception")
-                pass
+        claims = _decode_bearer_claims(request)
+        if claims and normalize_role(claims.get("role")) in allowed:
+            _stash_principal(request, claims)
+            return
 
         raise HTTPException(status_code=403, detail="Insufficient role")
 
     return _dependency
+
+
+def _decode_bearer_claims(request: Request) -> dict:
+    """Claims of the request's bearer token if it is a live access token, else {}.
+
+    The raw-decode fallback behind ``require_role`` and ``_resolve_request_user``
+    (so ``require_permission``). It applies the two token checks
+    ``get_current_user`` applies before trusting a JWT as a user:
+
+    - ``typ`` must be absent or ``"access"``. Refresh tokens (30-day TTL) and
+      MCP access tokens are signed with the same key and carry a ``sub``;
+      without this check a refresh token stood in for an access token on any
+      route gated only here, defeating the 15-minute access TTL (GDXA-1147).
+    - the ``jti`` must not be on the revocation denylist (SS-7 Slice H parity),
+      so a token revoked by logout, offboarding or admin revoke stops here too.
+
+    A decode error, or an error escaping ``Denylist.contains``, returns {}.
+    ``contains`` itself treats a Redis outage as "not revoked" (the same as
+    ``get_current_user``), so a revocation recorded only in Redis is not seen
+    while Redis is down.
+
+    This does NOT run ``finalize_login_jwt``'s users-row checks, so on routes
+    gated only here an unexpired access token (up to 15 minutes) outlives a
+    demotion of its role claim, a deactivation or deletion of its user, and the
+    must-change-password restriction. Portal customer tokens are ``typ=access``
+    with ``role=customer``; no gate admits that role today.
+    """
+    try:
+        auth_header = request.headers.get("authorization", "") or ""
+    except AttributeError:
+        logging.getLogger(__name__).exception("_decode_bearer_claims: no headers")
+        return {}
+    if not auth_header.lower().startswith("bearer "):
+        return {}
+    token = auth_header.split(" ", 1)[1].strip()
+    try:
+        import jwt as _jwt
+
+        from gdx_dispatch.routers.auth import ALG as _ALG
+        from gdx_dispatch.routers.auth import VERIFY_KEY as _VERIFY
+        claims = _jwt.decode(token, _VERIFY, algorithms=[_ALG]) or {}
+        if claims.get("typ") not in (None, "access"):
+            return {}
+        jti = claims.get("jti")
+        if jti:
+            from gdx_dispatch.routers.auth.core import _get_app_denylist
+            if _get_app_denylist(request).contains(str(jti)):
+                return {}
+        return claims
+    except Exception:
+        logging.getLogger(__name__).exception("_decode_bearer_claims failed")
+        return {}
 
 
 def _stash_principal(request: Request, user: dict) -> None:
@@ -374,18 +398,7 @@ def _resolve_request_user(request: Request) -> dict:
                 return result
     except Exception:
         logging.getLogger(__name__).exception("_resolve_request_user override failed")
-    auth_header = request.headers.get("authorization", "") or ""
-    if auth_header.lower().startswith("bearer "):
-        token = auth_header.split(" ", 1)[1].strip()
-        try:
-            import jwt as _jwt
-
-            from gdx_dispatch.routers.auth import ALG as _ALG
-            from gdx_dispatch.routers.auth import VERIFY_KEY as _VERIFY
-            return _jwt.decode(token, _VERIFY, algorithms=[_ALG]) or {}
-        except Exception:
-            logging.getLogger(__name__).exception("_resolve_request_user jwt decode failed")
-    return {}
+    return _decode_bearer_claims(request)
 
 
 def _user_id_from(user: dict) -> str:
@@ -575,8 +588,9 @@ def has_permission(request: Request, db: Session, *keys: str) -> bool:
 
     Precondition: call it only from a route that depends on
     ``get_current_user``. With no user on the request yet,
-    ``_resolve_request_user`` falls back to decoding the bearer token itself,
-    which skips the revocation and user-row checks ``get_current_user`` does.
+    ``_resolve_request_user`` falls back to decoding the bearer token itself
+    (``_decode_bearer_claims``), which checks ``typ`` and the revocation
+    denylist but skips the user-row checks ``get_current_user`` does.
     """
     from gdx_dispatch.core.permissions import WILDCARD
 
