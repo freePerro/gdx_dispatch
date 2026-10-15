@@ -256,7 +256,7 @@ describe('AccountingLedgerView', () => {
     });
     const wrapper = mount(AccountingLedgerView, { global: { stubs } });
     await flushPromises();
-    expect(wrapper.find('[data-testid="ar-control-tag"]').text()).toBe('NOT TIED: $45.00');
+    expect(wrapper.find('[data-testid="ar-control-tag"]').text()).toBe('NOT TIED: 1 invoice(s), $45.00 untraced');
     const table = wrapper.find('[data-testid="ar-control-drift"]');
     expect(table.text()).toContain('INV-9');
     expect(table.text()).toContain('-$250.00');
@@ -285,7 +285,7 @@ describe('AccountingLedgerView', () => {
     const wrapper = mount(AccountingLedgerView, { global: { stubs } });
     await flushPromises();
     // No "$0.00" headline: the totals agree, the book still does not tie.
-    expect(wrapper.find('[data-testid="ar-control-tag"]').text()).toBe('NOT TIED');
+    expect(wrapper.find('[data-testid="ar-control-tag"]').text()).toBe('NOT TIED: $100.00 posted nowhere');
     expect(wrapper.find('[data-testid="ar-control-shortfall-note"]').text()).toContain('$100.00');
     const table = wrapper.find('[data-testid="ar-control-shortfalls"]');
     expect(table.text()).toContain('INV-7');
@@ -297,5 +297,55 @@ describe('AccountingLedgerView', () => {
     const wrapper = mount(AccountingLedgerView, { global: { stubs } });
     await flushPromises();
     expect(wrapper.find('[data-testid="ar-control-shortfall-note"]').exists()).toBe(false);
+  });
+
+  // GDXA-1229: difference_cents is a signed net, so drift of +X and -X cancels.
+  it('does not read NOT TIED: $0.00 when two invoices drift in opposite directions', async () => {
+    apiGet.mockImplementation(async (url) => {
+      if (url.includes('/ar-control')) {
+        return {
+          ...AR,
+          difference_cents: 0,
+          tied: false,
+          drift_invoice_count: 2,
+          drift: [
+            { invoice_id: 'a', invoice_number: 'INV-1', status: 'sent', deleted: false,
+              open_balance_cents: 10000, ledger_ar_cents: 15000, drift_cents: 5000 },
+            { invoice_id: 'b', invoice_number: 'INV-2', status: 'sent', deleted: false,
+              open_balance_cents: 10000, ledger_ar_cents: 5000, drift_cents: -5000 },
+          ],
+        };
+      }
+      return route(url);
+    });
+    const wrapper = mount(AccountingLedgerView, { global: { stubs } });
+    await flushPromises();
+    const tag = wrapper.find('[data-testid="ar-control-tag"]').text();
+    expect(tag).not.toContain('$0.00');
+    expect(tag).toBe('NOT TIED: 2 invoice(s)');
+  });
+
+  it('names untraced AR whose sources cancel to a zero net', async () => {
+    apiGet.mockImplementation(async (url) => {
+      if (url.includes('/ar-control')) {
+        return {
+          ...AR,
+          difference_cents: 0,
+          tied: false,
+          unattributed_cents: 0,
+          unattributed_by_source: [
+            { source_type: 'manual', amount_cents: 4500 },
+            { source_type: 'missing_invoice', amount_cents: -4500 },
+          ],
+        };
+      }
+      return route(url);
+    });
+    const wrapper = mount(AccountingLedgerView, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="ar-control-tag"]').text()).toBe('NOT TIED: $90.00 untraced');
+    const note = wrapper.find('[data-testid="ar-control-unattributed"]');
+    expect(note.exists()).toBe(true);
+    expect(note.text()).toContain('missing_invoice -$45.00');
   });
 });
