@@ -34,12 +34,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.modules.ledger import service as ledger_service
-from gdx_dispatch.modules.ledger.coa import LedgerConfigError, resolve_role_account
+from gdx_dispatch.modules.ledger.coa import LedgerConfigError
 from gdx_dispatch.modules.ledger.engine import PeriodLockedError
 from gdx_dispatch.modules.ledger.models import (
-    ROLE_AR,
     GlJournalEntry,
-    GlJournalLine,
     GlPeriodLock,
 )
 from gdx_dispatch.modules.ledger.money import to_cents
@@ -51,6 +49,7 @@ from gdx_dispatch.modules.ledger.rules import (
     _dec,
     _effective_at,
     _existed_at_cutover,
+    ar_role_lines,
     has_opening_anchor,
     invoice_ar_balance_cents,
     opening_balance_cents,
@@ -308,17 +307,11 @@ def run_replay(session: Session, company_id: str) -> PhaseResult:
 
 
 def gl_ar_balance_cents(session: Session, company_id: str) -> int:
-    """The AR account's total balance across every entry (reversals net out)."""
-    ar_account = resolve_role_account(session, company_id, ROLE_AR)
-    rows = session.execute(
-        select(GlJournalLine.amount_cents)
-        .join(GlJournalEntry, GlJournalLine.entry_id == GlJournalEntry.id)
-        .where(
-            GlJournalEntry.company_id == company_id,
-            GlJournalLine.account_id == ar_account.id,
-        )
-    ).all()
-    return sum(amount for (amount,) in rows)
+    """The AR control balance across every entry (reversals net out), on every
+    AR-role account, so it totals the same lines the per-invoice
+    ``invoice_ar_balance_cents`` rows attribute (GDXA-1231)."""
+    rows = session.execute(ar_role_lines()).all()
+    return sum(amount for (_type, _id, amount) in rows)
 
 
 def era_settlement_shortfalls(session: Session, company_id: str) -> list[dict]:

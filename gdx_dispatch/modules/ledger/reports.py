@@ -502,11 +502,6 @@ def balance_sheet(session: Session, company_id: str, *, as_of: date) -> dict:
 # AR control tie (GDXA-1181, gl-phase3-trust-switch §3.2 criterion 3)
 # ---------------------------------------------------------------------------
 
-# Statuses that carry a receivable. "overdue" is never persisted (it is
-# computed at read time) and is listed only so a stray row is still held to
-# the tie rather than silently dropped from it.
-RECEIVABLE_STATUSES = ("sent", "paid", "overdue")
-
 # The payload names at most this many drifted invoices; the count is exact.
 AR_DRIFT_ROW_LIMIT = 200
 
@@ -535,14 +530,9 @@ def ar_control(session: Session, company_id: str) -> dict:
     from gdx_dispatch.models.tenant_models import Invoice, InvoiceAdjustment, Payment
     from gdx_dispatch.modules.ledger import service as ledger_service
     from gdx_dispatch.modules.ledger.backfill import era_settlement_shortfalls
-    from gdx_dispatch.modules.ledger.models import ROLE_AR
+    from gdx_dispatch.modules.ledger.rules import RECEIVABLE_STATUSES, ar_role_lines
 
-    lines = session.execute(
-        select(GlJournalEntry.source_type, GlJournalEntry.source_id, GlJournalLine.amount_cents)
-        .join(GlJournalLine, GlJournalLine.entry_id == GlJournalEntry.id)
-        .join(GlAccount, GlJournalLine.account_id == GlAccount.id)
-        .where(GlAccount.role == ROLE_AR)
-    ).all()
+    lines = session.execute(ar_role_lines()).all()
 
     payment_invoice = {
         str(pid): str(iid)

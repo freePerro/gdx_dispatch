@@ -62,6 +62,12 @@ from gdx_dispatch.modules.ledger.money import to_cents
 log = logging.getLogger(__name__)
 
 ISSUED_STATUSES = ("sent", "paid")
+# Statuses that carry a receivable for the AR tie (reports.ar_control). The
+# one extra, "overdue", is never persisted (it is computed at read time) and
+# is listed only so a stray row is still held to the tie rather than silently
+# dropped from it (GDXA-1231).
+OVERDUE_STATUS = "overdue"
+RECEIVABLE_STATUSES = ISSUED_STATUSES + (OVERDUE_STATUS,)
 EVENT_ISSUED = "issued"
 
 
@@ -1406,16 +1412,35 @@ def post_opening_balance(session: Session, invoice, *, actor: str | None = None)
     )
 
 
+def ar_role_lines():
+    """``(source_type, source_id, amount_cents)`` for every journal line on
+    any AR-role account, deactivated ones included: a receivable posted to an
+    AR account that has since been deactivated is still owed, so it still
+    counts (GDXA-1231). The app cannot deactivate a system account today, so
+    there is one AR account in practice; this keeps the reads agreeing if a
+    direct DB edit ever makes two. Roles are seed-owned, so these are system
+    accounts.
+    The one AR-line read that ``invoice_ar_balance_cents``,
+    ``reports.ar_control`` and ``backfill.gl_ar_balance_cents`` share; an
+    install whose AR role was never seeded has no lines and reads zero
+    (GDXA-572) without a write."""
+    return (
+        select(GlJournalEntry.source_type, GlJournalEntry.source_id, GlJournalLine.amount_cents)
+        .join(GlJournalLine, GlJournalLine.entry_id == GlJournalEntry.id)
+        .join(GlAccount, GlJournalLine.account_id == GlAccount.id)
+        .where(GlAccount.role == ROLE_AR)
+    )
+
+
 def invoice_ar_balance_cents(session: Session, invoice) -> int:
-    """The invoice's attributable AR balance ON THE LEDGER: Σ AR-account line
-    amounts across every entry sourced from this invoice, its payments, or
-    its adjustments — reversals included, so reversed pairs net to zero.
-    Correct-by-construction input for the void settlement below."""
+    """The invoice's attributable AR balance ON THE LEDGER: Σ AR-role line
+    amounts (``ar_role_lines``) across every entry sourced from this invoice,
+    its payments, or its adjustments — reversals included, so reversed pairs
+    net to zero. Correct-by-construction input for the void settlement below.
+    ``reports.ar_control`` attributes lines the same way; the GDXA-1231 test
+    in test_gl_ar_control pins the two together."""
     from gdx_dispatch.models.tenant_models import InvoiceAdjustment, Payment
 
-    ar_account = resolve_role_account_or_none(session, invoice.company_id, ROLE_AR)
-    if ar_account is None:
-        return 0  # no AR account has ever existed here, so no AR lines (GDXA-572)
     payment_ids = [
         str(pid)
         for pid in session.scalars(
@@ -1444,16 +1469,8 @@ def invoice_ar_balance_cents(session: Session, invoice) -> int:
             GlJournalEntry.source_id.in_(adjustment_ids or ["-"]),
         ),
     )
-    rows = session.execute(
-        select(GlJournalLine.amount_cents)
-        .join(GlJournalEntry, GlJournalLine.entry_id == GlJournalEntry.id)
-        .where(
-            GlJournalEntry.company_id == invoice.company_id,
-            GlJournalLine.account_id == ar_account.id,
-            source_match,
-        )
-    ).all()
-    return sum(amount for (amount,) in rows)
+    rows = session.execute(ar_role_lines().where(source_match)).all()
+    return sum(amount for (_type, _id, amount) in rows)
 
 
 def settle_opening_on_void(session: Session, invoice, actor: str | None = None) -> None:
