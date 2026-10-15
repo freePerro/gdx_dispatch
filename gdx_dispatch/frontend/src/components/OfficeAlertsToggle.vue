@@ -21,9 +21,8 @@
       </button>
     </p>
     <p v-else-if="!compact" class="oa-note">
-      {{ on
-        ? 'New texts, payments and leads show up on this phone even when the app is closed.'
-        : 'Get new texts, payments and leads on this phone even when the app is closed.' }}
+      {{ on ? `${what} show up on this phone even when the app is closed.`
+        : `Get ${what.toLowerCase()} on this phone even when the app is closed.` }}
     </p>
   </div>
 </template>
@@ -44,10 +43,13 @@ import {
   openBatterySettings,
 } from '../lib/officeAlerts';
 
-defineProps({
+const props = defineProps({
   // Hides the explanatory line; for tight headers.
   compact: { type: Boolean, default: false },
+  // In GDX Planner the phone gets planner reminders, not the office's alerts.
+  planner: { type: Boolean, default: false },
 });
+const what = computed(() => (props.planner ? 'Planner reminders' : 'New texts, payments and leads'));
 
 const api = useApi();
 const { hasPermission } = usePermission();

@@ -31,7 +31,7 @@ const stubs = {
     template: '<input type="checkbox" data-testid="office-alerts-switch" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" />',
   },
 };
-const mk = () => mount(OfficeAlertsToggle, { global: { stubs } });
+const mk = (props = {}) => mount(OfficeAlertsToggle, { props, global: { stubs } });
 
 describe('OfficeAlertsToggle', () => {
   beforeEach(() => {
@@ -92,5 +92,15 @@ describe('OfficeAlertsToggle', () => {
     await flushPromises();
     expect(w.find('[data-testid="office-alerts-error"]').text()).toContain('office users');
     expect(w.find('[data-testid="office-alerts-switch"]').element.checked).toBe(false);
+  });
+
+  it('says what the phone will get: office alerts, or planner reminders in GDX Planner', async () => {
+    const office = mk();
+    await flushPromises();
+    expect(office.text()).toContain('Get new texts, payments and leads on this phone');
+    const planner = mk({ planner: true });
+    await flushPromises();
+    expect(planner.text()).toContain('Get planner reminders on this phone');
+    expect(planner.text()).not.toContain('texts, payments');
   });
 });

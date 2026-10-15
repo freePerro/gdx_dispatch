@@ -424,6 +424,7 @@ gdx_dispatch/frontend/src/views/JobsView.vue                 jobs-dispatch
 gdx_dispatch/frontend/src/views/JobDetailView.vue            jobs-dispatch
 gdx_dispatch/frontend/src/views/DispatchView.vue             jobs-dispatch
 gdx_dispatch/frontend/src/views/PlannerView.vue              jobs-dispatch
+gdx_dispatch/frontend/src/lib/plannerReminders.js           jobs-dispatch
 gdx_dispatch/frontend/src/components/PlannerTodayPanel.vue   jobs-dispatch
 gdx_dispatch/frontend/src/views/AppointmentsView.vue         jobs-dispatch
 gdx_dispatch/frontend/src/views/MapsView.vue                 jobs-dispatch
@@ -715,6 +716,8 @@ gdx_dispatch/core/pwa.py                                     mobile-tech
 gdx_dispatch/frontend/src/views/Mobile*.vue                  mobile-tech
 gdx_dispatch/frontend/src/views/admin/TechMobileSettingsView.vue mobile-tech
 gdx_dispatch/frontend/src/components/Mobile*.vue             mobile-tech
+# The GDX Planner Android app's one page (the planner-only flavor).
+gdx_dispatch/frontend/src/views/PlannerAppView.vue           mobile-tech
 gdx_dispatch/frontend/src/components/AppBottomNav.vue        mobile-tech
 gdx_dispatch/frontend/src/components/QuickCaptureSheet.vue   mobile-tech
 gdx_dispatch/frontend/src/components/PhotoQueueFailedStrip.vue mobile-tech

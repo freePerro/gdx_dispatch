@@ -8,6 +8,7 @@ import { getLoginRedirectLocation } from '../lib/auth-urls';
 import { useViewMode } from '../composables/useViewMode';
 import { applyScroll, installScrollRestore, sameViewComponent } from '../lib/scrollRestore';
 import { navigationRemounted } from '../lib/viewRemount';
+import { isPlannerApp, plannerAppRoute, PLANNER_APP_PATH } from '../lib/appMode';
 
 // Critical views — loaded eagerly
 import LoginView from '../views/LoginView.vue';
@@ -394,6 +395,8 @@ export const routes = [
   { path: '/mobile/summary', name: 'mobile-summary', component: MobileSummaryView, meta: { noSidebar: true } },
   { path: '/mobile/dispatch', name: 'mobile-dispatch', component: MobileDispatchView, meta: { noSidebar: true, requiresPermission: 'mobile.dispatch_view' } },
   { path: '/mobile/planner', name: 'mobile-planner', component: MobilePlannerView, meta: { noSidebar: true } },
+  // The GDX Planner Android app's only page; it brings its own header.
+  { path: PLANNER_APP_PATH, name: 'planner-app', component: () => import('../views/PlannerAppView.vue'), meta: { noShell: true } },
   { path: '/mobile/customers', name: 'mobile-customers', component: MobileCustomersView, meta: { noSidebar: true } },
   { path: '/mobile/customers/:id', name: 'mobile-customer-detail', component: MobileCustomerDetailView, meta: { noSidebar: true } },
   { path: '/mobile/timeclock', name: 'mobile-timeclock', component: MobileTimeclockView, meta: { noSidebar: true } },
@@ -554,7 +557,7 @@ export function createAppRouter() {
         window.location.assign(redirect);
         return false;
       }
-      return { path: '/dashboard' };
+      return { path: isPlannerApp() ? PLANNER_APP_PATH : '/dashboard' };
     }
 
     // GDXA-1004: an account flagged must_change_password (the seeded initial
@@ -582,6 +585,11 @@ export function createAppRouter() {
       if (!auth.isAuthenticated) return getLoginRedirectLocation(to.fullPath);
       if (auth.mustChangePassword) return { path: PASSWORD_CHANGE_PATH };
     }
+
+    // GDX Planner shows the planner and nothing else, so none of the
+    // dispatch app's redirects or page gates below apply. After the
+    // password-change hold, which it keeps.
+    if (isPlannerApp()) return plannerAppRoute(to);
 
     if (auth.isAuthenticated && !to.meta.public && to.path !== '/login') {
       const viewMode = useViewMode();

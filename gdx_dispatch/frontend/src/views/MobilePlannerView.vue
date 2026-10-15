@@ -89,6 +89,10 @@
                   <i class="pi pi-calendar" />
                   Due {{ shortDate(task.due_date) }}
                 </span>
+                <span v-if="reminderPending(task)" class="meta-item" data-test="mp-task-reminder">
+                  <i class="pi pi-bell" />
+                  {{ reminderLabel(task.remind_at) }}
+                </span>
                 <span v-if="task.created_at" class="meta-item">
                   <i class="pi pi-clock" />
                   Added {{ shortDate(task.created_at) }}
@@ -205,6 +209,7 @@
           <Textarea v-model="taskForm.description" placeholder="Description (optional)" rows="2" autoResize class="w-full" />
           <Select v-model="taskForm.priority" :options="['low','medium','high','urgent']" placeholder="Priority" class="w-full" />
           <DatePicker v-model="taskForm.due_date" dateFormat="yy-mm-dd" placeholder="Due date" :showIcon="true" :showClear="true" class="w-full" />
+          <DatePicker v-model="taskForm.remind_at" showTime hourFormat="12" dateFormat="M d, yy" placeholder="Remind me" icon="pi pi-bell" :showIcon="true" :showClear="true" class="w-full" data-test="mp-task-remind" />
           <Select v-model="taskForm.assigned_to" :options="userOptions" optionLabel="label" optionValue="value" placeholder="Assign to" :showClear="true" filter class="w-full" />
           <Select v-model="taskForm.job_id" :options="jobOptions" optionLabel="label" optionValue="value" placeholder="Linked job" :showClear="true" filter class="w-full" />
           <Select v-model="taskForm.customer_id" :options="customerOptions" optionLabel="label" optionValue="value" placeholder="Linked customer" :showClear="true" filter class="w-full" />
@@ -229,6 +234,7 @@
           <Select v-model="selectedTask.priority" :options="['low','medium','high','urgent']" placeholder="Priority" class="w-full" />
           <Select v-model="selectedTask.status" :options="['todo','in-progress','done']" placeholder="Status" class="w-full" />
           <DatePicker v-model="selectedTask.due_date" dateFormat="yy-mm-dd" placeholder="Due date" :showIcon="true" :showClear="true" class="w-full" />
+          <DatePicker v-model="selectedTask.remind_at" showTime hourFormat="12" dateFormat="M d, yy" placeholder="Remind me" icon="pi pi-bell" :showIcon="true" :showClear="true" class="w-full" data-test="mp-task-edit-remind" />
           <Select v-model="selectedTask.assigned_to" :options="userOptions" optionLabel="label" optionValue="value" placeholder="Assign to" :showClear="true" filter class="w-full" />
           <Select v-model="selectedTask.job_id" :options="jobOptions" optionLabel="label" optionValue="value" placeholder="Linked job" :showClear="true" filter class="w-full" />
           <Select v-model="selectedTask.customer_id" :options="customerOptions" optionLabel="label" optionValue="value" placeholder="Linked customer" :showClear="true" filter class="w-full" />
@@ -347,10 +353,12 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useApiWithToast } from '../composables/useApiWithToast'
 import { useAuthStore } from '../stores/auth'
 import { formatDate, localDateString, parseLocalDateString } from '../composables/useFormatters'
 import { useFormDraft } from '../composables/useFormDraft'
+import { remindAtIn, remindAtOut, reminderLabel, reminderPending } from '../lib/plannerReminders'
 import CustomerFormDialog from '../components/CustomerFormDialog.vue'
 import PlannerTodayPanel from '../components/PlannerTodayPanel.vue'
 
@@ -385,7 +393,13 @@ const TASK_SORTS = [
   { label: 'Due date', value: 'due_date' },
 ]
 
-const activeTab = ref('today')
+// ?tab= opens a section: a tapped reminder lands on Tasks.
+const route = useRoute()
+const tabFromQuery = () => {
+  const tab = route?.query?.tab
+  return TABS.some((t) => t.value === tab) ? tab : null
+}
+const activeTab = ref(tabFromQuery() || 'today')
 const todayPanel = ref(null)
 // The signed-in user's id, for 'is this task mine' — from the auth store
 // (`gdx_user_id` in sessionStorage, which myId reads, is never written).
@@ -456,6 +470,7 @@ function emptyTaskForm() {
     description: '',
     priority: 'low',
     due_date: null,
+    remind_at: null,
     assigned_to: null,
     job_id: null,
     customer_id: null,
@@ -614,7 +629,7 @@ async function createTask() {
     const onToday = activeTab.value === 'today' && (!assignee || assignee === myUserId.value)
     await api.post(
       '/api/planner/tasks',
-      { ...taskForm.value, due_date: due, today: onToday },
+      { ...taskForm.value, due_date: due, remind_at: remindAtOut(taskForm.value.remind_at), today: onToday },
       { successMessage: onToday ? 'Task added to Today' : 'Task created' },
     )
     // Clear and empty the form BEFORE closing: @hide flushes whatever the form
@@ -665,6 +680,7 @@ function editTask(task) {
     // DatePicker needs a real Date; parse the 'YYYY-MM-DD' as LOCAL so the
     // dialog doesn't walk the date back a day on every open/save cycle.
     due_date: parseLocalDateString(task.due_date) || null,
+    remind_at: remindAtIn(task.remind_at),
     assigned_to: task.assigned_to || null,
     job_id: task.job_id || null,
     customer_id: task.customer_id || null,
@@ -715,6 +731,8 @@ async function saveTaskEdits() {
       priority: t.priority,
       status: t.status,
       due_date: t.due_date instanceof Date ? localDateString(t.due_date) : t.due_date,
+      // The same instant saved again changes nothing on the server.
+      remind_at: remindAtOut(t.remind_at),
       assigned_to: t.assigned_to,
       job_id: t.job_id,
       customer_id: t.customer_id,
@@ -777,6 +795,28 @@ async function sendMessage() {
 }
 
 watch([taskView, taskSort], loadTasks)
+// A reminder tapped while this page is open only changes the query. The list
+// was loaded before the reminded task may have existed, so reload it.
+watch(() => route?.query?.tab, () => {
+  const tab = tabFromQuery()
+  if (tab) activeTab.value = tab
+  if (tab === 'tasks') loadTasks()
+})
+// A tapped notification for this page while it is already showing: the
+// router drops the duplicate navigation, so the query watcher never fires.
+function onAlertTap(e) {
+  const dest = e?.detail?.dest || ''
+  if (!dest.startsWith('/mobile/planner')) return
+  const tab = new URLSearchParams(dest.split('?')[1] || '').get('tab')
+  if (!TABS.some((t) => t.value === tab)) return
+  activeTab.value = tab
+  if (tab === 'tasks') loadTasks()
+}
+// Coming back to the app (a tapped notification, or switching from another
+// app) shows the list as it is now, not as it was when the page mounted.
+function onVisible() {
+  if (document.visibilityState === 'visible' && activeTab.value === 'tasks') loadTasks()
+}
 watch(activeTab, (tab) => {
   if (tab === 'plans' && plans.value.length === 0) loadPlans()
   if (tab === 'messages' && threads.value.length === 0) loadThreads()
@@ -794,10 +834,14 @@ onMounted(() => {
   loadUsers()
   loadJobsAndCustomers()
   window.addEventListener('gdx:planner-refresh', onExternalCapture)
+  document.addEventListener('visibilitychange', onVisible)
+  window.addEventListener('gdx:alert-tap', onAlertTap)
 })
 
 onUnmounted(() => {
   window.removeEventListener('gdx:planner-refresh', onExternalCapture)
+  document.removeEventListener('visibilitychange', onVisible)
+  window.removeEventListener('gdx:alert-tap', onAlertTap)
 })
 </script>
 
