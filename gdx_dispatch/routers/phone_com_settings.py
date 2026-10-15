@@ -118,6 +118,8 @@ class PhoneComSettingsOut(BaseModel):
     account_features: dict[str, Any] | None
     webhook_status: PhoneComWebhookStatus
     token_details: PhoneComTokenDetails | None = None
+    # GDXA-1201: "On my way" texts the customer; set by PUT /on-my-way.
+    on_my_way_sms_enabled: bool = False
 
 
 class PhoneComSettingsPatchIn(BaseModel):
@@ -178,6 +180,7 @@ def _phone_com_settings_state(
     default_cid: str | None = None
     features: dict[str, Any] | None = None
     last_synced_at: str | None = None
+    on_my_way = False
     if tenant_db is not None:
         app = tenant_db.query(AppSettings).first()
         if app is not None:
@@ -193,6 +196,7 @@ def _phone_com_settings_state(
             # columns, so an older database may lack it until migrated).
             ts = getattr(app, "phone_com_last_synced_at", None)
             last_synced_at = ts.isoformat() if ts else None
+            on_my_way = bool(getattr(app, "on_my_way_sms_enabled", False))
 
     webhook_secret_present = bool(
         settings is not None and settings.phone_com_webhook_secret
@@ -213,6 +217,7 @@ def _phone_com_settings_state(
         ),
         "last_synced_at": last_synced_at,
         "account_features": features,
+        "on_my_way_sms_enabled": on_my_way,
         "webhook_status": {
             "registered": webhook_secret_present,
             # Wave E / S9: read persisted IDs from tenant_settings.
@@ -458,6 +463,47 @@ def patch_phone_com_settings(
 
     state = _phone_com_settings_state(tid, control_db, tenant_db)
     return {**state, "test_result": result, "webhook_status": result.get("webhook_status")}
+
+
+class OnMyWaySmsSetting(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+
+
+@router.put("/on-my-way")
+def put_on_my_way_sms_setting(
+    payload: OnMyWaySmsSetting,
+    request: Request,
+    user: dict[str, Any] = Depends(get_current_user),
+    tenant_db: Session = Depends(get_tenant_db),
+) -> OnMyWaySmsSetting:
+    """Whether "On my way" texts the customer (core/on_my_way_sms). Read back
+    through the GET above (``on_my_way_sms_enabled``). Its own route, not part
+    of the PATCH: that one re-validates the token against Phone.com."""
+    from gdx_dispatch.core.audit import audit_or_rollback
+
+    _require_admin(user)
+    tid = _coerce_tenant_uuid(user)
+    app = tenant_db.query(AppSettings).first()
+    if app is None:
+        app = AppSettings()
+        tenant_db.add(app)
+    previous = bool(app.on_my_way_sms_enabled)
+    app.on_my_way_sms_enabled = payload.enabled
+    tenant_db.flush()
+    # A switch that texts customers: the change and its trail commit together.
+    audit_or_rollback(
+        tenant_db,
+        action="phone_com.on_my_way_sms_set",
+        entity_type="app_settings",
+        entity_id=str(app.id),
+        tenant_id=str(tid),
+        request=request,
+        actor={"user_id": _coerce_user_id(user)},
+        details={"from": previous, "to": payload.enabled},
+    )
+    tenant_db.commit()
+    return OnMyWaySmsSetting(enabled=bool(app.on_my_way_sms_enabled))
 
 
 @router.delete("/token")

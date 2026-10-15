@@ -1287,5 +1287,6 @@ PUT /api/pricing-engine/tier-sets/{set_id}
 PUT /api/pricing-engine/volume-tiers
 PUT /api/qb/schedule
 PUT /api/settings/email
+PUT /api/settings/integrations/phone-com/on-my-way
 PUT /api/workflows/{rule_id}
 PUT /portal/reseller/profile
