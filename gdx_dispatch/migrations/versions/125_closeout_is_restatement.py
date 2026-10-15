@@ -21,7 +21,7 @@ two. So an existing re-closeout of a still-completed job that is not invoiced
 yet now offers only its delta — the GDXA-890 double bill, fixed on rows that
 are already in that state; a first closeout, or one after an uncomplete,
 bills as before. ``man_hours_billed`` NULL on a stamped row reads as its full
-man-hours, which is what every claim before 124 billed. No amount, line, stamp
+man-hours, which is what every claim before 125 billed. No amount, line, stamp
 or status moves; there is no backfill. Not a row-refusing migration: it never
 raises on data.
 
@@ -31,11 +31,11 @@ it keeps its ``WHERE``). A no-op when ``job_closeouts`` is absent or already
 has the column; ``create_all`` runs before alembic on boot.
 
 Rollback: ``downgrade()`` drops both columns, and the older code bills every
-closeout's full hours again, as before 124.
+closeout's full hours again, as before 125.
 
-Revision ID: 124_closeout_is_restatement
-Revises: 123_audit_chain_serialized
-Create Date: 2026-10-13
+Revision ID: 125_closeout_is_restatement
+Revises: 124_change_order_tax_rate
+Create Date: 2026-10-13 (renumbered from 124 on 2026-10-14: #1181 took 124)
 """
 from __future__ import annotations
 
@@ -43,8 +43,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import inspect
 
-revision = "124_closeout_is_restatement"
-down_revision = "123_audit_chain_serialized"
+revision = "125_closeout_is_restatement"
+down_revision = "124_change_order_tax_rate"
 branch_labels = None
 depends_on = None
 

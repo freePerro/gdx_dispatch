@@ -1,9 +1,9 @@
-"""Migration 124: a closeout records whether it restates a still-completed job,
+"""Migration 125: a closeout records whether it restates a still-completed job,
 and what its claim billed (``job_closeouts.is_restatement`` and
 ``man_hours_billed``, GDXA-890).
 
 Both engines: both columns arrive nullable; every row keeps its data and reads
-NULL (not a restatement; a pre-124 claim billed its full hours); up, down and up again; a no-op where the table is
+NULL (not a restatement; a pre-125 claim billed its full hours); up, down and up again; a no-op where the table is
 absent or already has the column. On SQLite the batch rebuild must keep
 ``uq_job_closeouts_live`` partial.
 """
@@ -22,7 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.models.tenant_models import Invoice, Job, JobCloseout
 
-MIGRATION = pathlib.Path(__file__).resolve().parents[1] / "migrations/versions/124_closeout_is_restatement.py"
+MIGRATION = pathlib.Path(__file__).resolve().parents[1] / "migrations/versions/125_closeout_is_restatement.py"
 
 JOB = uuid.UUID("33333333-3333-3333-3333-333333333333")
 CO_OLD = uuid.UUID("22222222-2222-2222-2222-222222222221")
@@ -62,7 +62,7 @@ def _load(conn):
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
 
-    spec = importlib.util.spec_from_file_location("m124", MIGRATION)
+    spec = importlib.util.spec_from_file_location("m125", MIGRATION)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     mod.op = Operations(MigrationContext.configure(conn))
@@ -73,7 +73,7 @@ _NEW = {"is_restatement", "man_hours_billed"}
 
 
 def _has_column(conn) -> bool:
-    """Both 124 columns are there (and asserts it is never just one)."""
+    """Both 125 columns are there (and asserts it is never just one)."""
     present = _NEW & {c["name"] for c in inspect(conn).get_columns("job_closeouts")}
     assert present in (set(), _NEW), present
     return present == _NEW
@@ -96,14 +96,14 @@ def _assert_live_index_is_partial(c, ids) -> None:
     sp.rollback()
 
 
-def test_it_chains_onto_123_and_is_the_only_reviser():
+def test_it_chains_onto_124_and_is_the_only_reviser():
     source = MIGRATION.read_text()
-    assert 'revision = "124_closeout_is_restatement"' in source
-    assert 'down_revision = "123_audit_chain_serialized"' in source
-    assert len("124_closeout_is_restatement") <= 32  # alembic_version.version_num is VARCHAR(32)
+    assert 'revision = "125_closeout_is_restatement"' in source
+    assert 'down_revision = "124_change_order_tax_rate"' in source
+    assert len("125_closeout_is_restatement") <= 32  # alembic_version.version_num is VARCHAR(32)
     revising = [p.name for p in MIGRATION.parent.glob("*.py")
-                if re.search(r'^down_revision = "123_audit_chain_serialized"', p.read_text(), re.M)]
-    assert revising == ["124_closeout_is_restatement.py"], revising
+                if re.search(r'^down_revision = "124_change_order_tax_rate"', p.read_text(), re.M)]
+    assert revising == ["125_closeout_is_restatement.py"], revising
     assert "%" not in source.replace("%%", "")
 
 
@@ -113,7 +113,7 @@ def test_the_orm_model_carries_the_column():
 
 
 def test_sqlite_upgrade_keeps_every_row_and_round_trips(tmp_path):
-    eng = create_engine(f"sqlite:///{tmp_path / 'm124.db'}", future=True)
+    eng = create_engine(f"sqlite:///{tmp_path / 'm125.db'}", future=True)
     with eng.begin() as c:
         _seed(c, uuid_type="CHAR(32)", ids=_sqlite_ids)
     select = "SELECT id, job_id, hours_worked, supersedes_id, superseded_at FROM job_closeouts ORDER BY id"
@@ -172,11 +172,11 @@ def test_these_tests_actually_run_in_ci() -> None:
 
 @pytest.mark.skipif(
     "postgresql" not in _URL,
-    reason="the Postgres arm of 124 needs a real Postgres; set DATABASE_URL or TEST_DATABASE_URL to a postgres url",
+    reason="the Postgres arm of 125 needs a real Postgres; set DATABASE_URL or TEST_DATABASE_URL to a postgres url",
 )
 def test_postgres_round_trip():
     eng = create_engine(_URL, future=True)
-    schema = "m124_test"
+    schema = "m125_test"
     with eng.begin() as c:
         c.exec_driver_sql(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         c.exec_driver_sql(f"CREATE SCHEMA {schema}")
@@ -190,7 +190,7 @@ def test_postgres_round_trip():
             c.commit()
             rows = c.exec_driver_sql(
                 "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
-                "WHERE table_schema = 'm124_test' AND table_name = 'job_closeouts' "
+                "WHERE table_schema = 'm125_test' AND table_name = 'job_closeouts' "
                 "AND column_name IN ('is_restatement', 'man_hours_billed') ORDER BY column_name"
             ).all()
             assert [tuple(r) for r in rows] == [("is_restatement", "boolean", "YES"),

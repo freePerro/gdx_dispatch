@@ -361,7 +361,7 @@ def test_two_concurrent_closeout_claims_on_postgres_one_wins(monkeypatch):
         )
         c.exec_driver_sql(
             f"CREATE TABLE {schema}.job_closeouts (id uuid PRIMARY KEY, billed_invoice_id uuid, "
-            "updated_at timestamptz)"
+            "man_hours_billed numeric(8, 2), updated_at timestamptz)"
         )
         c.exec_driver_sql(
             "INSERT INTO closeout_claim_race_test.job_closeouts (id) VALUES (%s)", (str(cid),))
@@ -395,9 +395,9 @@ def test_two_concurrent_closeout_claims_on_postgres_one_wins(monkeypatch):
         t.join(timeout=10)
         assert result == {"b": False}
         with eng.connect() as c:
-            assert c.exec_driver_sql(
-                "SELECT billed_invoice_id FROM closeout_claim_race_test.job_closeouts"
-            ).scalar() == inv_a.id
+            assert tuple(c.exec_driver_sql(
+                "SELECT billed_invoice_id, man_hours_billed FROM closeout_claim_race_test.job_closeouts"
+            ).one()) == (inv_a.id, Decimal("2.00"))
     finally:
         a.close()
         b.close()

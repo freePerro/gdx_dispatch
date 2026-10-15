@@ -342,7 +342,7 @@ def test_day_rows_on_a_stale_restatement_line_do_not_slip_past_the_stale_check(d
 
 
 def _chain(db, job, *, a_billed: bool):
-    """A (2 h) -> B (2.5 h) -> C (3 h, live). A and B predate 124 (NULL)."""
+    """A (2 h) -> B (2.5 h) -> C (3 h, live). A and B predate 125 (NULL)."""
     t0 = _dt.datetime(2026, 10, 1, 17, 0, tzinfo=_dt.UTC)
     inv = Invoice(id=uuid4(), job_id=job.id, customer_id=job.customer_id, invoice_number="INV-900002",
                   public_token=uuid4().hex, status="sent", company_id=TENANT)
@@ -365,8 +365,8 @@ def _chain(db, job, *, a_billed: bool):
     return t0, c
 
 
-def test_a_pre_124_re_closeout_in_the_chain_is_read_from_the_audit_trail(db):
-    """B was written before 124 and never invoiced; C restates it after the
+def test_a_pre_125_re_closeout_in_the_chain_is_read_from_the_audit_trail(db):
+    """B was written before 125 and never invoiced; C restates it after the
     deploy. With no uncomplete between A and B, B restated A, so C nets A's
     billed 2 h — a 3 h job bills 3 h, not 5 h."""
     job = _job(db)
@@ -376,7 +376,7 @@ def test_a_pre_124_re_closeout_in_the_chain_is_read_from_the_audit_trail(db):
     assert line["quantity"] == 1.0
 
 
-def test_a_pre_124_re_closeout_after_an_uncomplete_is_new_work(db):
+def test_a_pre_125_re_closeout_after_an_uncomplete_is_new_work(db):
     job = _job(db)
     t0, c = _chain(db, job, a_billed=True)
     db.add(AuditLog(tenant_id=TENANT, user_id=ACTOR, action="job_uncompleted", entity_type="job",
@@ -385,8 +385,8 @@ def test_a_pre_124_re_closeout_after_an_uncomplete_is_new_work(db):
     assert closeout_hours_billed_before(db, c) == Decimal(0)
 
 
-def test_a_row_written_before_124_restates_unless_the_job_was_uncompleted(db):
-    """``is_restatement`` NULL — every closeout before migration 124 — reads
+def test_a_row_written_before_125_restates_unless_the_job_was_uncompleted(db):
+    """``is_restatement`` NULL — every closeout before migration 125 — reads
     the audit trail: no ``job_uncompleted`` between the two closeouts means
     the job stayed completed, so the billed prior is netted."""
     job = _job(db)
