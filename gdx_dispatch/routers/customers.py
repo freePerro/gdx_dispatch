@@ -4,7 +4,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from decimal import Decimal as _D
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -28,7 +28,14 @@ from gdx_dispatch.core.log_redact import redact_email
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.name_normalize import humanize_name
 from gdx_dispatch.core.tenant import company_id
-from gdx_dispatch.models.tenant_models import Customer, CustomerLocation, Invoice, Job, Payment
+from gdx_dispatch.models.tenant_models import (
+    Customer,
+    CustomerLocation,
+    Invoice,
+    Job,
+    Payment,
+    TagAssignment,
+)
 
 log = logging.getLogger(__name__)
 
@@ -140,6 +147,18 @@ class CustomerOut(BaseModel):
     # Optimistic-concurrency token (migration 114): an edit dialog sends it
     # back as `expected_version` on PATCH.
     version: int | None = None
+    # The customer's live tags, name-ordered (GDXA-1046). Loaded by the list
+    # route only; None elsewhere means "not loaded", never "no tags".
+    tags: list[CustomerTagOut] | None = None
+
+
+class CustomerTagOut(BaseModel):
+    id: str
+    name: str
+    color: str | None = None
+
+
+CustomerOut.model_rebuild()
 
 
 class CustomerListOut(BaseModel):
@@ -533,11 +552,37 @@ async def list_customers(
     q: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=50, ge=1, le=1000),
+    # Annotated so a direct call (the tests) gets None, not a truthy Query.
+    tag_id: Annotated[str | None, Query(max_length=64)] = None,
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> CustomerListOut:
+    from gdx_dispatch.routers.tags import customer_tags_by_id, live_tag_or_none
+
     tenant_id = company_id()
     cache_key = f"customers:q={q or ''}:page={page}:per={per_page}"
+
+    # Only the customers carrying this tag (GDXA-1046). An unknown or deleted
+    # tag is refused rather than answered with an empty list, which would read
+    # as "nobody has it".
+    tagged_ids: list[UUID] | None = None
+    if tag_id:
+        tag = live_tag_or_none(db, tag_id)
+        if tag is None:
+            raise HTTPException(status_code=422, detail="Unknown tag")
+        tagged_ids = []
+        # entity_id is text and customers.id a Uuid (32 hex on SQLite), so the
+        # two are never compared in SQL: parse here, filter on Customer.id.
+        for entity_id in db.execute(
+            select(TagAssignment.entity_id).where(
+                TagAssignment.entity_type == "customer", TagAssignment.tag_id == tag.id,
+            )
+        ).scalars():
+            try:
+                tagged_ids.append(UUID(str(entity_id)))
+            except (ValueError, TypeError):
+                log.debug("list_customers: skipped a tag assignment with a malformed entity_id", exc_info=True)
+                continue
 
     def _fetch() -> dict[str, Any]:
         offset = (page - 1) * per_page
@@ -573,6 +618,8 @@ async def list_customers(
                     stripped_phone = _func.replace(stripped_phone, sep, "")
                 clauses.append(stripped_phone.like(f"%{q_digits}%"))
             base_filters.append(or_(*clauses))
+        if tagged_ids is not None:
+            base_filters.append(Customer.id.in_(tagged_ids))
 
         total = (
             db.query(_func.count(Customer.id))
@@ -624,12 +671,20 @@ async def list_customers(
     # is exactly the "did my new customer save?" confusion (2026-07-22 mobile
     # fix). Only the q='' default list is worth caching — and mutations
     # invalidate that family via invalidate_prefix("customers:q=:").
-    if q:
+    # A tag filter bypasses it too: the cache is not invalidated by a tag
+    # assignment, so a cached tagged list would miss the customer just tagged.
+    if q or tagged_ids is not None:
         data = _fetch()
     else:
         data = await cached(tenant_id, cache_key, ttl_seconds=30, fetcher=_fetch)
+    # Tags are read outside the cache for the same reason: one batched query
+    # for the page, so a tag added a second ago shows on the next load.
+    tag_map = customer_tags_by_id(db, [item["id"] for item in data["items"]])
     return CustomerListOut(
-        items=[CustomerOut(**item) for item in data["items"]],
+        items=[
+            CustomerOut(**{**item, "tags": tag_map.get(str(item["id"]), [])})
+            for item in data["items"]
+        ],
         total=data["total"],
         page=data["page"],
         per_page=data["per_page"],

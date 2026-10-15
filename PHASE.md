@@ -21,9 +21,14 @@ never let it drift.
 
 ## Current phase: HARDENING
 
-We are closing defects in what exists, not adding surface area. The app is
-mature enough that the frontier is quality, not features. That is a deliberate
-choice with an end condition — not a default we drifted into.
+The frontier is quality: closing defects in what exists comes first. That is
+a deliberate choice with an end condition — not a default we drifted into.
+
+**Building is allowed while we harden** (Doug, 2026-10-14). New features may be
+built during this phase as long as hardening keeps moving alongside them — the
+defect backlog is still worked, and a new feature does not stop that. This
+amended the original 2026-09-07 rule, which read "not adding surface area".
+The first build under it is the GDX Planner Android app.
 
 ### Exit condition (both must hold)
 
@@ -62,8 +67,9 @@ owed by Doug before PR A. Nothing starts until the exit condition above is met.
   filed* list and Doug decides. Adopted 2026-09-10; "Why deferral costs
   something" below says how this meets CLAUDE.md step 4.
 - **One issue per session** (CLAUDE.md). Doug can widen it; Claude does not.
-- **No new feature work** without Doug saying so explicitly. A feature request
-  from Doug overrides this file; a feature idea from Claude does not.
+- **Features are built on Doug's say-so, hardening alongside** (amended
+  2026-10-14). A feature request from Doug starts a build; a feature idea from
+  Claude does not — it goes on the *found, not filed* list.
 - **UI and workflow fixes are hardening, not features** (Doug, 2026-10-03).
   When the people using the app cannot finish real work in the existing
   screens, closing that gap is in phase. The first example is multi-day jobs:

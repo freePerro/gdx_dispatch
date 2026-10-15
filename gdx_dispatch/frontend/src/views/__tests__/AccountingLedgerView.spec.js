@@ -5,6 +5,8 @@
  *  2. Switching to the P&L tab lazily fetches with the selected basis.
  *  3. The journal tab renders entries with a source drill (invoice link)
  *     and per-line detail on expansion.
+ *  4. A "provisional" banner sits outside the tabs, so it covers every
+ *     report until the bank-statement tie-out lands (GDXA-1183).
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
@@ -160,6 +162,19 @@ describe('AccountingLedgerView', () => {
     await flushPromises();
     expect(wrapper.find('[data-testid="pnl-report"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="pnl-incomplete-note"]').exists()).toBe(false);
+  });
+
+  it('marks the whole ledger provisional, outside the tabs, until the bank tie-out lands (GDXA-1183)', async () => {
+    const wrapper = mount(AccountingLedgerView, { global: { stubs } });
+    await flushPromises();
+    const note = wrapper.find('[data-testid="ledger-provisional-note"]');
+    expect(note.exists()).toBe(true);
+    expect(note.text()).toContain('Provisional: not yet tied out to bank statements');
+    // PrimeVue mounts inactive tab panels too, so presence alone would pass
+    // with the banner inside one tab. It must sit outside the tabs to cover all four.
+    const tabs = wrapper.find('[data-testid="ledger-tabs"]');
+    expect(tabs.exists()).toBe(true);
+    expect(tabs.element.contains(note.element)).toBe(false);
   });
 
   it('renders journal entries with source drill and line detail', async () => {
