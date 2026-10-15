@@ -1,9 +1,15 @@
 """Vendor statement upload + read API.
 
-Slice 1 endpoints:
+Endpoints (the first three were Slice 1):
     POST /api/vendor-statements/upload   (multipart PDF + vendor=midwest)
     GET  /api/vendor-statements
     GET  /api/vendor-statements/{id}
+    PATCH /api/vendor-statements/{id}/lines/{line_id}   set a line's classification / notes
+    GET  /api/vendor-statements/accounts                current position per vendor
+    GET  /api/vendor-statements/payments                payments sent vs. applied
+    GET  /api/vendor-statements/on-order                committed spend: orders placed
+    GET  /api/vendor-statements/orders/{id}/job-suggestions   rank likely jobs
+    POST /api/vendor-statements/orders/{id}/confirm-job       attach order to a job
 """
 from __future__ import annotations
 

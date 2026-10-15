@@ -274,16 +274,27 @@
                   <p class="muted">Sync customers, invoices, and payments with your QBO company.</p>
                 </div>
                 <Tag
-                  :value="integrations.quickbooks.needsReconnect
-                    ? 'Reconnect required'
-                    : (integrations.quickbooks.connected ? 'Connected' : 'Not Connected')"
-                  :severity="integrations.quickbooks.needsReconnect
-                    ? 'danger'
-                    : (integrations.quickbooks.connected ? 'success' : 'warn')"
+                  :value="integrations.quickbooks.statusError
+                    ? 'Status unknown'
+                    : integrations.quickbooks.needsReconnect
+                      ? 'Reconnect required'
+                      : (integrations.quickbooks.connected ? 'Connected' : 'Not Connected')"
+                  :severity="integrations.quickbooks.statusError
+                    ? 'secondary'
+                    : integrations.quickbooks.needsReconnect
+                      ? 'danger'
+                      : (integrations.quickbooks.connected ? 'success' : 'warn')"
                   data-testid="qbo-status-tag"
                 />
               </div>
               <small v-if="integrations.quickbooks.lastSync" class="muted">Last sync: {{ integrations.quickbooks.lastSync }}</small>
+              <p
+                v-if="integrations.quickbooks.statusError"
+                class="status-row muted"
+                data-testid="qbo-status-unknown"
+              >
+                Could not load the QuickBooks connection status. Retry before reconnecting — the company may still be connected.
+              </p>
               <p
                 v-if="integrations.quickbooks.needsReconnect"
                 class="status-row status-error"
@@ -293,10 +304,20 @@
               </p>
               <div class="integration-actions">
                 <Button
-                  :label="integrations.quickbooks.needsReconnect
-                    ? 'Reconnect QuickBooks'
-                    : (integrations.quickbooks.connected ? 'Reconnect' : 'Connect')"
-                  :severity="integrations.quickbooks.needsReconnect ? 'danger' : (integrations.quickbooks.connected ? 'secondary' : 'primary')"
+                  v-if="integrations.quickbooks.statusError"
+                  label="Retry" icon="pi pi-refresh" severity="primary"
+                  data-testid="qbo-status-retry"
+                  @click="loadIntegrations"
+                />
+                <Button
+                  :label="integrations.quickbooks.statusError
+                    ? 'Connect or reconnect'
+                    : integrations.quickbooks.needsReconnect
+                      ? 'Reconnect QuickBooks'
+                      : (integrations.quickbooks.connected ? 'Reconnect' : 'Connect')"
+                  :severity="integrations.quickbooks.statusError
+                    ? 'secondary'
+                    : integrations.quickbooks.needsReconnect ? 'danger' : (integrations.quickbooks.connected ? 'secondary' : 'primary')"
                   data-testid="qbo-connect-btn"
                   @click="connectIntegration('quickbooks')"
                 />
@@ -310,7 +331,7 @@
               <div class="status-row" style="margin-top:0.5rem; gap:0.5rem; align-items:center;">
                 <ToggleSwitch
                   v-model="integrations.catalogSyncEnabled"
-                  :disabled="integrations.catalogSyncSaving"
+                  :disabled="integrations.catalogSyncSaving || integrations.settingsError"
                   inputId="qbo-catalog-sync"
                   data-testid="qbo-catalog-sync-toggle"
                   @update:modelValue="toggleCatalogSync"
@@ -327,8 +348,12 @@
                   <p class="muted">Accept card and ACH payments from your customers.</p>
                 </div>
                 <Tag
-                  :value="integrations.stripe.configured ? 'Configured' : 'Not Configured'"
-                  :severity="integrations.stripe.configured ? 'success' : 'warn'"
+                  :value="integrations.settingsError
+                    ? 'Status unknown'
+                    : (integrations.stripe.configured ? 'Configured' : 'Not Configured')"
+                  :severity="integrations.settingsError
+                    ? 'secondary'
+                    : (integrations.stripe.configured ? 'success' : 'warn')"
                   data-testid="stripe-status-tag"
                 />
               </div>
@@ -336,7 +361,20 @@
                    on the server, not through this API, so there is nothing here to
                    connect or disconnect. This tile reports whether charging
                    actually works. -->
-              <small class="muted">
+              <small v-if="integrations.settingsForbidden" class="muted" data-testid="stripe-status-forbidden">
+                Admin access required to view integration settings.
+              </small>
+              <template v-else-if="integrations.settingsError">
+                <small class="muted" data-testid="stripe-status-unknown">Could not load the integration settings.</small>
+                <div class="integration-actions">
+                  <Button
+                    label="Retry" icon="pi pi-refresh" severity="secondary" size="small"
+                    data-testid="integrations-settings-retry"
+                    @click="loadIntegrations"
+                  />
+                </div>
+              </template>
+              <small v-else class="muted">
                 {{ integrations.stripe.configured
                   ? 'Card and ACH payments are live. The secret key is set on the server.'
                   : 'Set STRIPE_SECRET_KEY on the server to accept payments.' }}
@@ -2050,41 +2088,65 @@ async function copyInviteLink() {
 
 // ── Integrations ──
 const integrations = reactive({
-  quickbooks: { connected: false, lastSync: null },
+  quickbooks: { connected: false, lastSync: null, statusError: false },
   // Stripe is env-configured on the server; `configured` is reported by
   // GET /api/settings/integrations and is read-only here.
   stripe: { configured: false },
   // #57 — operator toggles (bool map from /api/settings/integrations).
   boolMap: {},
+  // GDXA-1129: the /api/settings/integrations load failed, so Stripe's
+  // `configured` and the toggle map are unknown, not false.
+  settingsError: false,
+  settingsForbidden: false,
   catalogSyncEnabled: false,
   catalogSyncSaving: false,
 });
 
+// The QB router is gated by require_module("quickbooks"), which answers 403
+// "Module 'quickbooks' is not enabled"; a 404 means the router never mounted.
+// Either way QuickBooks is genuinely off here, not in an unknown state.
+function isQbModuleOff(err) {
+  if (err?.status === 404) return true;
+  return err?.status === 403 && /module .*not enabled/i.test(err?.message || "");
+}
+
 async function loadIntegrations() {
   try {
     const result = await api.get("/api/settings/integrations");
-    if (result?.quickbooks) integrations.quickbooks = result.quickbooks;
     if (result?.stripe) integrations.stripe = result.stripe;
     integrations.boolMap = result?.integrations || {};
     integrations.catalogSyncEnabled = Boolean(result?.integrations?.quickbooks_catalog_sync);
-  } catch {
-    // Integrations endpoint may not exist yet; leave defaults
+    integrations.settingsError = false;
+    integrations.settingsForbidden = false;
+  } catch (err) {
+    // Unknown, not off: keep the tiles from reading "Not Configured", and keep
+    // the catalog toggle from PATCHing an empty map over every flag.
+    integrations.stripe = { configured: false };
+    integrations.boolMap = {};
+    integrations.catalogSyncEnabled = false;
+    integrations.settingsError = true;
+    // The endpoint is admin/owner only; a viewer (settings.read) gets a 403
+    // that no Retry can clear, so say why instead of offering one.
+    integrations.settingsForbidden = err?.status === 403;
   }
-  // Also check QB connection status from the QB-specific endpoint
   try {
     const qbStatus = await api.get("/api/qb/status");
-    if (qbStatus?.connected) {
-      integrations.quickbooks = {
-        connected: true,
-        lastSync: qbStatus.last_sync_at ? formatDateTime(qbStatus.last_sync_at) : null,
-        // S122-13: surface refresh-token health so the UI can prompt the
-        // user to reconnect instead of letting sync silently fail.
-        needsReconnect: Boolean(qbStatus.needs_reconnect),
-        authState: qbStatus.auth_state || "healthy",
-      };
-    }
-  } catch {
-    // QB module may not be enabled
+    integrations.quickbooks = qbStatus?.connected
+      ? {
+          connected: true,
+          lastSync: qbStatus.last_sync_at ? formatDateTime(qbStatus.last_sync_at) : null,
+          // S122-13: surface refresh-token health so the UI can prompt the
+          // user to reconnect instead of letting sync silently fail.
+          needsReconnect: Boolean(qbStatus.needs_reconnect),
+          authState: qbStatus.auth_state || "healthy",
+          statusError: false,
+        }
+      : { connected: false, lastSync: null, statusError: false };
+  } catch (err) {
+    // GDXA-1129: a 5xx or network failure is "Status unknown", never
+    // "Not Connected" — that reading invites a pointless re-OAuth of a live
+    // company. Drop the previous snapshot rather than carry it forward.
+    integrations.quickbooks = { connected: false, lastSync: null, statusError: !isQbModuleOff(err) };
   }
 }
 
@@ -2146,6 +2208,9 @@ async function syncNow(provider) {
 // #57 — enable/disable QB catalog pull/push. Defaults off; gates the
 // /api/catalogs/{id}/sync/qb/* endpoints server-side.
 async function toggleCatalogSync(value) {
+  // PATCH replaces the whole integrations map; with the map unknown this
+  // would switch every other flag (quickbooks included) off.
+  if (integrations.settingsError) return;
   integrations.catalogSyncSaving = true;
   try {
     await api.patch("/api/settings", {
@@ -3083,7 +3148,7 @@ onBeforeUnmount(() => {
 }
 
 .native-select:focus {
-  outline: 2px solid var(--p-primary-color, #3b82f6);
+  outline: 2px solid var(--p-primary-color);
   outline-offset: 2px;
 }
 

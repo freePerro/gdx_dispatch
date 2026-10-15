@@ -804,7 +804,7 @@ onMounted(() => {
 .est-total {
   font-weight: 700;
   font-size: 1rem;
-  color: var(--p-primary-color, #2563eb);
+  color: var(--p-primary-color);
 }
 
 .est-number {
@@ -855,7 +855,7 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
-  color: var(--p-primary-color, #3b82f6);
+  color: var(--p-primary-color);
   text-decoration: underline;
 }
 

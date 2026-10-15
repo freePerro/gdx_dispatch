@@ -51,8 +51,14 @@ def test_the_hand_written_backfill_content_survived():
     assert any(s["title"] == "Highlights" for s in by_version["1.2.0"].sections)
 
 
-def test_the_newest_release_has_finished_notes():
-    """The newest notes file is the one the next tag ships; it must pass ``check``."""
+def test_the_newest_release_has_finished_notes(monkeypatch):
+    """The newest notes file is the one the next tag ships; it must pass ``check``.
+
+    Its format, that is. Whether it is current depends on what merged after
+    it, which every PR changes; the Release workflow judges that at the tag,
+    and the git tests below pin how.
+    """
+    monkeypatch.setattr(tool, "merged_after_notes", lambda repo, path, ref: ([], "pinned"))
     newest = load_releases(NOTES_DIR)[0].version
     assert tool.main(["check", newest]) == 0
 
@@ -256,6 +262,96 @@ def test_draft_writes_a_skeleton_that_check_refuses(monkeypatch, tmp_path):
     before = (tmp_path / "v1.1.0.md").read_text()
     assert tool.main(["draft", "1.1.0"]) == 0          # never overwrites
     assert (tmp_path / "v1.1.0.md").read_text() == before
+
+
+def _notes_repo(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    """A repo whose v1.1.0 notes were written, then a fix and a doc-only change merged after."""
+    repo = tmp_path / "repo"
+    notes = repo / "notes"
+    notes.mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main")
+    _write(notes, "1.0.0")
+    _git(repo, "add", ".")
+    _commit(repo, "initial")
+    _git(repo, "tag", "v1.0.0")
+    _write(notes, "1.1.0", "## Highlights\n- Done\n", title="Finished")
+    _git(repo, "add", ".")
+    _commit(repo, "docs(release-notes): v1.1.0 notes (#5)")
+    (repo / "app.py").write_text("x = 1\n")
+    _git(repo, "add", ".")
+    _commit(repo, "fix(app): merged after the notes (#6)")
+    (repo / "my docs.md").write_text("docs\n")    # a space in the path is still a doc
+    _git(repo, "add", ".")
+    _commit(repo, "docs: a doc-only change (#7)")
+    monkeypatch.setattr(tool, "NOTES_DIR", notes)
+    monkeypatch.setattr(tool, "_repo_root", lambda: repo)
+    return repo, notes
+
+
+@pytest.mark.skipif(which("git") is None, reason="git not on PATH")
+def test_draft_on_an_existing_file_lists_what_merged_after_its_last_edit(monkeypatch, tmp_path, capsys):
+    repo, notes = _notes_repo(tmp_path, monkeypatch)
+    before = (notes / "v1.1.0.md").read_text()
+    assert tool.main(["draft", "1.1.0", "--ref", "HEAD"]) == 0
+    out = capsys.readouterr().out
+    since_release, _, since_edit = out.partition("was last edited")
+    assert "(#5)" in since_release and "(#6)" in since_release
+    assert "(#6)" in since_edit
+    assert "(#5)" not in since_edit and "(#7)" not in since_edit   # the edit itself, and docs only
+    assert (notes / "v1.1.0.md").read_text() == before
+    # Editing the file re-anchors it: nothing is newer any more.
+    _write(notes, "1.1.0", "## Highlights\n- Done\n- And the fix\n", title="Finished")
+    _git(repo, "commit", "-qam", "docs(release-notes): fold in #6 (#8)")
+    assert tool.main(["draft", "1.1.0", "--ref", "HEAD"]) == 0
+    assert "Nothing but docs merged since v1.1.0.md" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(which("git") is None, reason="git not on PATH")
+def test_check_refuses_notes_older_than_a_later_merge(monkeypatch, tmp_path, capsys):
+    repo, notes = _notes_repo(tmp_path, monkeypatch)
+    assert tool.main(["check", "1.1.0", "--ref", "HEAD"]) == 1
+    err = capsys.readouterr().err
+    assert "fix(app): merged after the notes (#6)" in err
+    assert "(#7)" not in err
+    _write(notes, "1.1.0", "## Highlights\n- Done\n- And the fix\n", title="Finished")
+    _git(repo, "commit", "-qam", "docs(release-notes): fold in #6 (#8)")
+    assert tool.main(["check", "1.1.0", "--ref", "HEAD"]) == 0
+    # Once tagged, the file is judged at its tag: the next release's merges
+    # are not held against it, unless a ref is asked for.
+    _git(repo, "tag", "v1.1.0")
+    (repo / "app.py").write_text("x = 2\n")
+    _git(repo, "commit", "-qam", "fix(app): for the next release (#9)")
+    assert tool.main(["check", "1.1.0"]) == 0
+    assert tool.main(["check", "1.1.0", "--ref", "HEAD"]) == 1
+    assert "(#9)" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(which("git") is None, reason="git not on PATH")
+def test_check_fails_on_a_ref_git_cannot_resolve(monkeypatch, tmp_path, capsys):
+    """A full clone that cannot answer is a fault, not a pass: a typo'd ref, or
+    the default origin/main in a repo with no such remote."""
+    _notes_repo(tmp_path, monkeypatch)
+    assert tool.main(["check", "1.1.0", "--ref", "orign/main"]) == 1
+    assert "orign/main is not a commit here" in capsys.readouterr().err
+    assert tool.main(["check", "1.1.0"]) == 1
+    assert "origin/main is not a commit here" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(which("git") is None, reason="git not on PATH")
+def test_check_only_warns_where_git_cannot_tell(monkeypatch, tmp_path, capsys):
+    repo, _ = _notes_repo(tmp_path, monkeypatch)
+    shallow = tmp_path / "shallow"
+    _git(tmp_path, "clone", "-q", "--depth", "1", f"file://{repo}", str(shallow))
+    monkeypatch.setattr(tool, "NOTES_DIR", shallow / "notes")
+    monkeypatch.setattr(tool, "_repo_root", lambda: shallow)
+    assert tool.main(["check", "1.1.0"]) == 0
+    assert "shallow clone" in capsys.readouterr().err
+    # A notes file not committed yet (drafting it locally) is not judged either.
+    monkeypatch.setattr(tool, "NOTES_DIR", repo / "notes")
+    monkeypatch.setattr(tool, "_repo_root", lambda: repo)
+    _write(repo / "notes", "1.2.0", "## Highlights\n- New\n", title="Next")
+    assert tool.main(["check", "1.2.0", "--ref", "HEAD"]) == 0
+    assert "not committed at HEAD" in capsys.readouterr().err
 
 
 def test_body_is_the_file_after_its_frontmatter_with_the_warning_first(monkeypatch, tmp_path, capsys):

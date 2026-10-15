@@ -1253,6 +1253,161 @@ def test_login_send_failure_still_returns_ok(tenant_db_session, monkeypatch):
     assert body["ok"] is True
 
 
+def _portal_login(db, email):
+    return portal_router.portal_login(
+        payload=portal_router.PortalLoginIn(email=email),
+        request=_mock_request(),
+        db=db,
+    )
+
+
+def _audit_actions(db, user_id) -> list[str]:
+    from gdx_dispatch.core.audit import AuditLog
+
+    return list(
+        db.execute(
+            select(AuditLog.action)
+            .where(AuditLog.entity_id == str(user_id))
+            .order_by(AuditLog.created_at.asc())
+        ).scalars()
+    )
+
+
+def test_login_twice_sends_one_email(tenant_db_session, monkeypatch):
+    # GDXA-1074: the public endpoint mailed a link on every call.
+    seeded = _seed_customer_data(tenant_db_session)
+    sent = _fake_email_capture(monkeypatch)
+
+    first = _portal_login(tenant_db_session, seeded["user_a_email"])
+    token_after_first = _get_user(tenant_db_session, seeded["user_a_id"]).portal_token
+    second = _portal_login(tenant_db_session, seeded["user_a_email"].upper())
+
+    assert len(sent) == 1
+    # Identical to the unknown-address answer: the cooldown enumerates nothing.
+    unknown = _portal_login(tenant_db_session, "nobody@example.com")
+    assert first == second == unknown == {"ok": True}
+    # The throttled call neither rotates the emailed token nor goes unrecorded.
+    tenant_db_session.expire_all()
+    assert _get_user(tenant_db_session, seeded["user_a_id"]).portal_token == token_after_first
+    assert _audit_actions(tenant_db_session, seeded["user_a_id"]) == [
+        "portal_magic_link_requested",
+        "portal_magic_link_sent",
+        "portal_magic_link_throttled",
+    ]
+
+
+def test_login_cooldown_is_per_user(tenant_db_session, monkeypatch):
+    seeded = _seed_customer_data(tenant_db_session)
+    sent = _fake_email_capture(monkeypatch)
+
+    _portal_login(tenant_db_session, seeded["user_a_email"])
+    _portal_login(tenant_db_session, "b@example.com")
+
+    assert [s["to"] for s in sent] == [seeded["user_a_email"], "b@example.com"]
+
+
+def test_login_sends_again_after_cooldown(tenant_db_session, monkeypatch):
+    seeded = _seed_customer_data(tenant_db_session)
+    sent = _fake_email_capture(monkeypatch)
+
+    _portal_login(tenant_db_session, seeded["user_a_email"])
+    later = datetime.now(UTC) + timedelta(seconds=portal_router.MAGIC_LINK_RESEND_COOLDOWN_SECONDS + 1)
+    monkeypatch.setattr(portal_router, "_now_utc", lambda: later)
+    _portal_login(tenant_db_session, seeded["user_a_email"])
+
+    assert len(sent) == 2
+
+
+def test_login_failed_send_does_not_start_cooldown(tenant_db_session, monkeypatch):
+    # A failed send delivered nothing; the customer's retry must go out.
+    seeded = _seed_customer_data(tenant_db_session)
+    monkeypatch.setattr(
+        portal_router, "send_portal_magic_link_email", lambda *a, **k: (False, "smtp_not_configured")
+    )
+    _portal_login(tenant_db_session, seeded["user_a_email"])
+
+    sent = _fake_email_capture(monkeypatch)
+    _portal_login(tenant_db_session, seeded["user_a_email"])
+
+    assert len(sent) == 1
+
+
+@pytest.fixture
+def pg_portal(pg_template_db):
+    """A throwaway Postgres database with just the tables portal_login
+    touches. Depending on `pg_template_db` gives the shared reachability
+    gate: skip on a laptop with no test PG, fail under CI (#440)."""
+    from sqlalchemy.orm import sessionmaker as _sessionmaker
+
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.tests.fixtures.pg import PG_HOST, PG_PASSWORD, PG_PORT, PG_USER, _create_db, _drop_db
+
+    name = f"portal_login_{uuid4().hex[:12]}"
+    _create_db(name)
+    engine = create_engine(f"postgresql+psycopg2://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{name}", future=True)
+    TenantBase.metadata.create_all(
+        engine, tables=[Customer.__table__, CustomerUser.__table__, AuditLog.__table__]
+    )
+    try:
+        yield _sessionmaker(bind=engine, future=True)
+    finally:
+        engine.dispose()
+        _drop_db(name)
+
+
+def test_concurrent_logins_for_one_user_send_one_email(pg_portal, monkeypatch):
+    """The cooldown was check-then-send, with the `sent` row written after
+    the email round-trip: five concurrent requests all saw "nothing recent"
+    and sent five links, each rotating the token so four arrived dead
+    (adversarial audit, 2026-10-14). The row lock plus the `requested` claim
+    committed before the send make it one."""
+    import threading
+    import time
+
+    from gdx_dispatch.core.audit import ensure_audit_table
+
+    Session = pg_portal
+    with Session() as s:
+        ensure_audit_table(s)
+        customer = Customer(name="Racer", email="race@example.com", company_id="tenant-test")
+        s.add(customer)
+        s.commit()
+        s.add(CustomerUser(customer_id=customer.id, email="race@example.com", is_active=True))
+        s.commit()
+
+    sent: list[str] = []
+
+    def _slow_send(db, tenant_id, to_email, magic_link, **kwargs):
+        time.sleep(0.3)  # the delivery round-trip the racers used to slip through
+        sent.append(magic_link)
+        return True, None
+
+    monkeypatch.setattr(portal_router, "send_portal_magic_link_email", _slow_send)
+    racers = 5
+    barrier, errors = threading.Barrier(racers), []
+
+    def login():
+        try:
+            with Session() as s:
+                barrier.wait(timeout=10)
+                assert _portal_login(s, "race@example.com") == {"ok": True}
+        except Exception as exc:  # noqa: BLE001 — surfaced below, threads swallow it
+            errors.append(exc)
+
+    threads = [threading.Thread(target=login) for _ in range(racers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not errors, errors
+    assert len(sent) == 1, sent
+    with Session() as s:
+        user = s.execute(select(CustomerUser)).scalar_one()
+        # The one emailed link is the live one.
+        assert sent[0].endswith(f"token={user.portal_token}")
+
+
 def test_admin_toggle_disable_deactivates_duplicates(tenant_db_session):
     seeded = _seed_customer_data(tenant_db_session)
     dup = CustomerUser(customer_id=seeded["customer_a_id"], email="a2@example.com", is_active=True, portal_token="tok")

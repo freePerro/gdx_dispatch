@@ -5,7 +5,19 @@
           <h1>Inventory</h1>
           <Button v-tooltip="'Refresh'" icon="pi pi-refresh" aria-label="Refresh" text size="small" :loading="loading" @click="fetchParts" data-test="mi-refresh" />
         </div>
-        <InputText v-model="searchQuery" placeholder="Search SKU or name…" class="search-input" @input="onSearch" data-test="mi-search" />
+        <div class="search-row">
+          <InputText v-model="searchQuery" placeholder="Search SKU or name…" class="search-input" @input="onSearch" data-test="mi-search" />
+          <Button
+            v-if="hasBarcodeSupport"
+            icon="pi pi-qrcode"
+            aria-label="Scan Barcode"
+            v-tooltip="'Scan Barcode'"
+            class="scan-btn"
+            data-test="mi-scan-btn"
+            severity="secondary"
+            @click="handleBarcodeScan"
+          />
+        </div>
       </header>
 
       <div v-if="loading && !parts.length" class="state-msg">
@@ -44,6 +56,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useApi } from '../composables/useApi'
 import { useToast } from 'primevue/usetoast'
+import { isNativeBarcodeSupported, scanBarcode } from '../lib/nativeBarcode'
 
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
@@ -54,6 +67,17 @@ const toast = useToast()
 const parts = ref([])
 const loading = ref(false)
 const searchQuery = ref('')
+const hasBarcodeSupport = computed(() => isNativeBarcodeSupported())
+
+async function handleBarcodeScan() {
+  const result = await scanBarcode()
+  if (result.ok && result.value) {
+    searchQuery.value = result.value
+    onSearch()
+  } else if (result.error && result.error !== 'permission_denied') {
+    toast.add({ severity: 'warn', summary: 'Scan failed', detail: result.error, life: 3000 })
+  }
+}
 
 const filtered = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
@@ -119,7 +143,21 @@ onMounted(fetchParts)
   font-weight: 700;
 }
 
-.search-input { width: 100%; }
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.search-input {
+  flex: 1;
+}
+
+.scan-btn {
+  flex-shrink: 0;
+  min-height: 42px;
+  min-width: 42px;
+}
 
 .card-list {
   list-style: none;
@@ -141,77 +179,74 @@ onMounted(fetchParts)
 }
 
 .part-card.low {
-  border-left: 3px solid #f59e0b;
+  border-color: var(--p-orange-500, #f97316);
+  background: color-mix(in srgb, #f97316 12%, var(--p-content-background));
 }
 
 .part-row {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: baseline;
   gap: 0.5rem;
 }
 
 .part-name {
-  font-weight: 700;
-  font-size: 1rem;
-  flex: 1;
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--p-text-color, #111827);
 }
 
 .part-qty {
-  font-family: monospace;
+  font-size: 1.15rem;
   font-weight: 700;
-  font-size: 1.05rem;
-  background: var(--p-content-hover-background, #f3f4f6);
-  padding: 0.1rem 0.55rem;
-  border-radius: 0.4rem;
+  color: var(--p-primary-color);
 }
 
 .part-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
   align-items: center;
+  gap: 0.75rem;
+  font-size: 0.8rem;
+  color: var(--p-text-muted-color, #6b7280);
 }
 
 .meta-item {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  font-size: 0.78rem;
-  color: var(--p-text-muted-color, #6b7280);
 }
 
 .pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.1rem 0.4rem;
-  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+  border-radius: 0.25rem;
   font-size: 0.7rem;
   font-weight: 700;
+  letter-spacing: 0.03em;
 }
 
 .pill-warn {
-  background: #f59e0b;
-  color: #1f2937;
+  background: var(--p-orange-500, #f97316);
+  color: #fff;
 }
 
 .state-msg {
-  text-align: center;
-  padding: 2.5rem 1rem;
-  color: var(--p-text-muted-color, #6b7280);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.4rem;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 3rem 1rem;
+  color: var(--p-text-muted-color, #6b7280);
 }
 
 .empty-icon {
-  font-size: 2rem;
-  opacity: 0.5;
+  font-size: 2.2rem;
+  opacity: 0.6;
 }
 
 .empty-title {
-  font-size: 1.05rem;
-  font-weight: 600;
+  font-size: 1rem;
+  font-weight: 500;
 }
 </style>

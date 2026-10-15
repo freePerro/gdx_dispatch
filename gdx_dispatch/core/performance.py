@@ -209,6 +209,11 @@ class SlowQueryMiddleware(BaseHTTPMiddleware):
             _request_ctx.reset(token)
 
 
+# Long-polls that wait on purpose: a 25 s hold is the endpoint working, not
+# a slow one.
+SLOW_ENDPOINT_EXEMPT_PATHS = frozenset({"/api/notifications/device-alerts/feed"})
+
+
 class SlowEndpointMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: Any, threshold_ms: int = 3000) -> None:
         super().__init__(app)
@@ -218,7 +223,7 @@ class SlowEndpointMiddleware(BaseHTTPMiddleware):
         started = time.perf_counter()
         response = await call_next(request)
         duration_ms = int((time.perf_counter() - started) * 1000)
-        if duration_ms > self.threshold_ms:
+        if duration_ms > self.threshold_ms and request.url.path not in SLOW_ENDPOINT_EXEMPT_PATHS:
             tenant_id = str((getattr(request.state, "tenant", None) or {}).get("id", "-"))
             request_id = str(getattr(request.state, "request_id", request.headers.get("x-request-id", "-")))
             get_performance_logger().log_slow_endpoint(

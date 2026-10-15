@@ -72,6 +72,19 @@ def test_scanner_reports_an_unowned_root_baseline():
     assert r.unowned == [fake]
 
 
+def test_scanner_reports_an_unowned_android_source():
+    """The Android tree is covered: a native plugin with no rule is reported (GDXA-1153).
+
+    Until 2026-10-14 ``gdx_dispatch/frontend/android/`` was outside
+    ``COVERED_ROOTS``, so ``OfficeAlertsPlugin.java`` answered UNOWNED to
+    ``--file`` while this gate stayed green. Empty rules are the input that
+    turns it red; the real map resolves it to mobile-tech.
+    """
+    java = "gdx_dispatch/frontend/android/app/src/main/java/com/gdx/dispatch/alerts/OfficeAlertsPlugin.java"
+    assert scan.scan(files={java}, rules=[]).unowned == [java]
+    assert scan.owner_of(java, scan.load_rules()) == "mobile-tech"
+
+
 def test_root_coverage_reaches_baselines_and_stops_there():
     """Root coverage is glob-limited: ratchets in, the maintainer's files out."""
     assert scan.is_covered(".ruff_baseline")

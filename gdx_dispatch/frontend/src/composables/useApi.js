@@ -25,6 +25,22 @@ import { useToast } from 'primevue/usetoast';
 import { useRouter } from 'vue-router';
 import { queueAction } from './useOfflineSync';
 
+// The server's refusal for a session whose account must change its password
+// first (GDXA-1003). The server sends `{code, message}`; a bare `detail`
+// string is accepted too, so a later reshape cannot silently strand the
+// person on a page whose every call fails. The store calls below are optional
+// because many specs vi.mock the auth store without these members.
+export const PASSWORD_CHANGE_REQUIRED = 'password_change_required';
+// The self-service change that clears the flag server-side; a 2xx here clears
+// it in the store too, so the router guard lets the person go.
+const CHANGE_PASSWORD_URL = '/api/users/me/change-password';
+const ME_URL = '/api/users/me';
+
+export function isPasswordChangeRequired(err) {
+  return err?.status === 403 &&
+    (err.code === PASSWORD_CHANGE_REQUIRED || err.message === PASSWORD_CHANGE_REQUIRED);
+}
+
 export function createApiClient() {
   const auth = useAuthStore();
 
@@ -65,10 +81,16 @@ export function createApiClient() {
         else if (rawDetail && typeof rawDetail === 'object' && typeof rawDetail.message === 'string') {
           detail = rawDetail.message;
         }
+        // require_role's `{error_type, detail, required_roles}` carries its
+        // reason in `detail` (GDXA-1144).
+        else if (rawDetail && typeof rawDetail === 'object' && typeof rawDetail.detail === 'string') {
+          detail = rawDetail.detail;
+        }
         else if (rawDetail !== undefined && rawDetail !== null) detail = JSON.stringify(rawDetail);
       } catch {}
       const err = new Error(detail);
       err.status = response.status;
+      err.url = url;
       err.code = (errBody && typeof errBody.detail === 'object' && errBody.detail)
         ? errBody.detail.code
         : undefined;
@@ -78,6 +100,19 @@ export function createApiClient() {
       // which silently broke the dispatch "Cannot complete: parts missing"
       // toast — the missing array was being read off a non-existent field.
       err.body = errBody;
+      if (isPasswordChangeRequired(err)) {
+        // The server refuses this session until its password changes. Flag
+        // it and let the router (which listens for the event) send the person
+        // to the change-password form rather than leave them on a page
+        // whose every call now fails (GDXA-1004).
+        err.code = PASSWORD_CHANGE_REQUIRED;
+        auth.setMustChangePassword?.(true);
+        window.dispatchEvent(new CustomEvent('gdx:password-change-required'));
+        // An expected refusal, not a defect: no console error and no
+        // client-error report. Every shell poll gets it while the person is
+        // on /profile, and each would otherwise land in the errors table.
+        throw err;
+      }
       console.error(`API ${options.method || 'GET'} ${url} → ${response.status}: ${detail}`);
 
       // Report error to backend for CC R&D tracking
@@ -99,10 +134,27 @@ export function createApiClient() {
       throw err;
     }
 
-    if (response.status === 204 || response.headers?.get?.('content-length') === '0') {
+    if ((options.method || 'GET') === 'POST' && url === CHANGE_PASSWORD_URL) {
+      auth.setMustChangePassword?.(false);
+    }
+
+    if (response.status === 204) {
       return null;
     }
-    return response.json();
+    // Decide "empty" from the body, not the Content-Length header: the
+    // Capacitor native HTTP bridge reports `content-length: 0` on chunked
+    // responses that do carry a body, which made every call on the Android
+    // app resolve to null.
+    const text = await response.text();
+    const data = text ? JSON.parse(text) : null;
+    // /me carries the live flag, and /profile reads it on every load (and
+    // Refresh): a password reset by link or changed in another tab is picked
+    // up there too, not only when the router re-asks on the way out.
+    if ((options.method || 'GET') === 'GET' && url === ME_URL &&
+        typeof data?.must_change_password === 'boolean') {
+      auth.setMustChangePassword?.(data.must_change_password);
+    }
+    return data;
   }
 
   function get(url) {
@@ -211,11 +263,34 @@ export function useApi() {
       toast.add({ severity: 'warn', summary: 'Session expired', detail: 'Please log in again', life: 3000 });
       if (auth) auth.logout();
       if (router) router.push('/login');
+    } else if (isPasswordChangeRequired(err)) {
+      // No toast: the AppLayout banner says it once, and shell polls hitting
+      // this 403 on /profile stacked a toast per call (2026-10-14 walk).
     } else if (status === 403 || /Forbidden|Missing permission/i.test(msg)) {
-      const match = msg.match(/Missing permission:\s*(\[[^\]]+\])/i);
-      const detail = match
-        ? `You don't have ${match[1]}. Ask an admin to grant it on /role-permissions.`
-        : "You don't have permission to do that. Ask an admin to grant it on /role-permissions.";
+      // Only core RBAC's refusal is fixed by a grant on /role-permissions:
+      // `Missing permission: ['billing.edit']` (require_permission),
+      // `Missing permission: plugin.<key>.<action>` (the plugin proxy). A bare
+      // `Forbidden` (FastAPI's detail for HTTPException(403); no core route
+      // sends one as of 2026-10-14) keeps the advice. Under /api/plugins it is
+      // the plugin's own `HTTPException(403)`, which the proxy passes through
+      // unchanged. Any other 403 (a plugin's own refusal, a disabled module, a
+      // role-gated route) says its own reason, without advice that cannot help
+      // (GDXA-1144).
+      const text = msg.trim();
+      const match = text.match(/^Missing permission:\s*(\[[^\]]*\]|plugin\.[a-z0-9][a-z0-9_-]*\.(?:read|write))$/);
+      const fromPlugin = /^\/api\/plugins(?:[/?]|$)/.test(err?.url || '');
+      let detail;
+      if (match) {
+        detail = `You don't have ${match[1]}. Ask an admin to grant it on /role-permissions.`;
+      } else if ((text === '' || text === 'Forbidden') && !fromPlugin) {
+        detail = "You don't have permission to do that. Ask an admin to grant it on /role-permissions.";
+      } else if (text === '' || text === 'Forbidden' || /^[[{]/.test(text) || /^Request failed \(403\)$/.test(text)) {
+        // No reason of its own, a JSON-stringified structured detail, or a
+        // non-JSON body (core always answers JSON, so that one is not core).
+        detail = "You don't have permission to do that.";
+      } else {
+        detail = msg;
+      }
       toast.add({ severity: 'warn', summary: 'Permission denied', detail, life: 5000 });
     } else if (status === 429) {
       toast.add({ severity: 'warn', summary: 'Slow down', detail: 'Too many requests — try again in a moment.', life: 4000 });

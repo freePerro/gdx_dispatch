@@ -16,7 +16,7 @@
  *  4. Uploading refetches PHOTOS — refetching documents was how the office
  *     watched its own upload vanish.
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 
 const getMock = vi.fn();
@@ -221,6 +221,94 @@ describe("office job page — sharing a photo with the customer", () => {
 
     // Back to internal — never leave the office believing a share happened.
     expect(w.vm.jobPhotos[0].customer_visible).toBe(false);
+  });
+});
+
+/**
+ * Opening a photo must never render uploaded markup in the app's origin
+ * (GDXA-974). A blob tab inherits the app origin, so an "image" served as
+ * image/svg+xml or text/html would run its script with the office session.
+ * Only raster types open in a tab; everything else is saved to disk through
+ * the real useAuthedFile download path (not mocked here — only fetch is).
+ */
+describe("office job page — opening a photo", () => {
+  let openSpy;
+  let clickSpy;
+  let clicked;
+  const realCreate = URL.createObjectURL;
+  const realRevoke = URL.revokeObjectURL;
+
+  beforeEach(() => {
+    clicked = [];
+    openSpy = vi.spyOn(window, "open").mockImplementation(() => ({}));
+    clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function () {
+      clicked.push({ href: this.href, download: this.download });
+    });
+    URL.createObjectURL = vi.fn(() => "blob:http://localhost/fake");
+    URL.revokeObjectURL = vi.fn();
+  });
+
+  afterEach(() => {
+    openSpy.mockRestore();
+    clickSpy.mockRestore();
+    URL.createObjectURL = realCreate;
+    URL.revokeObjectURL = realRevoke;
+    vi.unstubAllGlobals();
+  });
+
+  function serveBlob(type) {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      blob: async () => new Blob(["<svg onload=alert(1)>"], { type }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it.each(["image/png", "image/jpeg", "image/gif", "image/webp", "image/JPEG; charset=binary"])(
+    "opens a %s photo in a tab",
+    async (type) => {
+      routeGet();
+      const w = await mountView();
+      serveBlob(type);
+
+      await w.vm.downloadPhoto({ ...PHOTO, filename: "door.jpg" });
+      await flushPromises();
+
+      expect(openSpy).toHaveBeenCalledWith("blob:http://localhost/fake", "_blank", "noopener");
+      expect(clicked).toEqual([]);
+    },
+  );
+
+  it.each(["image/svg+xml", "text/html", "application/xhtml+xml", "application/octet-stream", ""])(
+    "saves a %s blob to disk instead of opening it",
+    async (type) => {
+      routeGet();
+      const w = await mountView();
+      const fetchMock = serveBlob(type);
+
+      await w.vm.downloadPhoto({ ...PHOTO, filename: "evil.svg", mime_type: "image/png" });
+      await flushPromises();
+
+      expect(openSpy).not.toHaveBeenCalled();
+      expect(clicked).toHaveLength(1);
+      expect(clicked[0].download).toBe("evil.svg");
+      expect(fetchMock.mock.calls.every(([u]) => u === PHOTO.url)).toBe(true);
+      expect(toastAdd).not.toHaveBeenCalledWith(expect.objectContaining({ severity: "error" }));
+    },
+  );
+
+  it("clicking the thumbnail takes the same guarded path", async () => {
+    routeGet();
+    const w = await openPhotosTab(await mountView());
+    serveBlob("image/svg+xml");
+
+    await w.find(".photo-thumb-btn").trigger("click");
+    await flushPromises();
+
+    expect(openSpy).not.toHaveBeenCalled();
+    expect(clicked).toHaveLength(1);
   });
 });
 

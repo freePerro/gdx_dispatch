@@ -15,10 +15,10 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import (
+    audit_best_effort,
     audit_or_rollback,
     ensure_audit_table,
     log_audit_event_sync,
-    resolve_audit_actor,
     utcnow,
 )
 from gdx_dispatch.core.database import get_db
@@ -44,6 +44,7 @@ from gdx_dispatch.modules.estimates_features import (
 )
 from gdx_dispatch.modules.numbering import allocate_job_number
 from gdx_dispatch.modules.phone_com.scheduled import ScheduleLinkSmsIn  # the /schedule-sms composer
+from gdx_dispatch.modules.proposals.audit_details import audit_field_changes
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.modules.proposals.totals import new_estimate_tax_rate, null_rate_untaxed
 from gdx_dispatch.routers.auth import get_current_user
@@ -61,6 +62,27 @@ def _to_float(value: object) -> float:
     if isinstance(value, Decimal):
         return float(value)
     return float(value or 0)
+
+
+# The money and provenance fields of an estimate line an audit row carries:
+# what it was priced at and where that price came from.
+_LINE_AUDIT_FIELDS = (
+    "description",
+    "category",
+    "quantity",
+    "unit_price",
+    "line_total",
+    "cost_snapshot",
+    "margin_pct_snapshot",
+    "margin_pct_override",
+    "pricing_source",
+    "labor_price_item_id",
+    "estimated_man_hours",
+)
+
+
+def _line_audit_snapshot(line: object) -> dict[str, object]:
+    return {field: getattr(line, field, None) for field in _LINE_AUDIT_FIELDS}
 
 
 # Moved to core.pricing_provenance so the estimate and invoice sides cannot
@@ -1323,10 +1345,15 @@ def patch_estimate(
     # on any other lane. The editor sends null only for a NULL-rate row, but a
     # page loaded before that fix sends it whenever its form equals the tenant
     # default. A row already at NULL stays NULL: GDXA-756's backfill.
+    tax_rate_defaulted = False
     if "tax_rate" in updates and updates["tax_rate"] is None and estimate.tax_rate is not None:
         lane_job_id = updates.get("job_id", estimate.job_id)
         updates["tax_rate"] = new_estimate_tax_rate(db, lane_job_id)
+        tax_rate_defaulted = True
 
+    # Captured after the rewrite above, so the audit row records the rate the
+    # server chose, not the null the client sent (GDXA-955).
+    before = {key: getattr(estimate, key) for key in updates}
     for key, value in updates.items():
         if isinstance(value, str):
             value = value.strip() or None
@@ -1335,28 +1362,17 @@ def patch_estimate(
     estimate.updated_at = utcnow()
     _commit_versioned(db, estimate)
     db.refresh(estimate)
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="patch_estimate",
-                entity_type="estimate",
-                entity_id=str(estimate_id),
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('patch_estimate_audit_failed')
+    audit_best_effort(
+        db,
+        actor=current_user,
+        action="patch_estimate",
+        entity_type="estimate",
+        entity_id=str(estimate_id),
+        details={
+            "changed": audit_field_changes(before, estimate, set(updates)),
+            "tax_rate_defaulted": tax_rate_defaulted,
+        },
+    )
     return _serialize_estimate(estimate, include_lines=True)
 
 
@@ -1370,28 +1386,18 @@ def delete_estimate(
     estimate.deleted_at = utcnow()
     estimate.updated_at = utcnow()
     db.commit()
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="delete_estimate",
-                entity_type="estimate",
-                entity_id=str(estimate_id),
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('delete_estimate_audit_failed')
+    audit_best_effort(
+        db,
+        actor=current_user,
+        action="delete_estimate",
+        entity_type="estimate",
+        entity_id=str(estimate_id),
+        details={
+            "estimate_number": estimate.estimate_number,
+            "status": estimate.status,
+            "total": estimate.total,
+        },
+    )
     return {"deleted": True}
 
 
@@ -1488,28 +1494,15 @@ def add_line(
     _recalculate_total(estimate, db)
     _commit_versioned(db, estimate)
     db.refresh(line)
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="add_line",
-                entity_type="estimate_line",
-                entity_id=str(estimate_id),
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('add_line_audit_failed')
+    audit_best_effort(
+        db,
+        actor=current_user,
+        request=request,
+        action="add_line",
+        entity_type="estimate_line",
+        entity_id=str(estimate_id),
+        details={"line_id": line.id, **_line_audit_snapshot(line)},
+    )
     out = _serialize_line(line)
     out.update(_version_transition(estimate, "estimate_"))
     return out
@@ -1555,6 +1548,13 @@ def patch_line(
     explicit_price = updates.get("unit_price") is not None
     old_unit_price = _to_float(line.unit_price)
     old_cost_snapshot = _to_float(line.cost_snapshot)
+    before = {**_line_audit_snapshot(line), **{key: getattr(line, key, None) for key in updates}}
+    sent = set(updates) | {
+        key for key, flag in (
+            ("cost_snapshot", new_cost is not None),
+            ("margin_pct_override", new_override is not None or clear_override),
+        ) if flag
+    }
 
     for key, value in updates.items():
         if isinstance(value, str):
@@ -1636,28 +1636,19 @@ def patch_line(
     _recalculate_total(estimate, db)
     _commit_versioned(db, estimate)
     db.refresh(line)
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="patch_line",
-                entity_type="estimate_line",
-                entity_id=str(line_id),
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('patch_line_audit_failed')
+    changed = audit_field_changes(before, line, sent)
+    audit_best_effort(
+        db,
+        actor=current_user,
+        request=request,
+        action="patch_line",
+        entity_type="estimate_line",
+        entity_id=str(line_id),
+        details={
+            "estimate_id": estimate.id,
+            "changed": changed,
+        },
+    )
     out = _serialize_line(line)
     out.update(_version_transition(estimate, "estimate_"))
     return out
@@ -1678,32 +1669,21 @@ def delete_line(
     if not line:
         raise HTTPException(status_code=404, detail="line not found")
 
+    # Hard delete (estimate_lines carries no deleted_at), so this row is the
+    # only record of what the line was.
+    deleted = {"estimate_id": estimate.id, **_line_audit_snapshot(line)}
     db.delete(line)
     db.flush()
     _recalculate_total(estimate, db)
     _commit_versioned(db, estimate)
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="delete_line",
-                entity_type="estimate_line",
-                entity_id=str(line_id),
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('delete_line_audit_failed')
+    audit_best_effort(
+        db,
+        actor=current_user,
+        action="delete_line",
+        entity_type="estimate_line",
+        entity_id=str(line_id),
+        details=deleted,
+    )
     return {"deleted": True, **_version_transition(estimate, "estimate_")}
 
 
@@ -3702,28 +3682,14 @@ def expire_stale_estimates(
     if expired_ids:
         db.commit()
 
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="expire_stale_estimates",
-                entity_type="estimate",
-                entity_id="",
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('expire_stale_estimates_audit_failed')
+    audit_best_effort(
+        db,
+        actor=current_user,
+        action="expire_stale_estimates",
+        entity_type="estimate",
+        entity_id="",
+        details={"expired_count": len(expired_ids), "estimate_ids": expired_ids},
+    )
     return {"expired_count": len(expired_ids), "estimate_ids": expired_ids}
 
 

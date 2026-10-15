@@ -1071,7 +1071,7 @@ watch(open, async (v) => {
 .qty-pill {
   margin-left: auto;
   background: var(--p-highlight-background, #eef2ff);
-  color: var(--p-primary-color, #4338ca);
+  color: var(--p-primary-color);
   border-radius: 999px;
   padding: 0.05rem 0.45rem;
   font-size: 0.7rem;

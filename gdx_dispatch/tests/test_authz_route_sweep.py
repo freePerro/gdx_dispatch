@@ -34,7 +34,7 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_ungated_baseline"
 # prune that forgets to lower this number is red, once, with a one-line fix —
 # and gating a route never reddens it, because gating changes the SWEEP, not
 # the file.
-BASELINE_SIZE = 62
+BASELINE_SIZE = 64
 
 
 def _baseline() -> set[str]:
@@ -156,6 +156,9 @@ def test_baseline_does_not_silently_grow(
     # the pay page's "Pay a different way instead" during a micro-deposit
     # check. Group 2, the same token lookup as create-intent; it can only
     # cancel an unconfirmed bank verification on the token's own invoice.
+    # 62 → 64 (2026-10-04, merged onto main 2026-10-13): office phone alerts'
+    # device-token feed and revoke. Group 2: the device token is the
+    # credential; the feed re-checks active + nav.office on every call.
     assert len(_baseline()) == BASELINE_SIZE, (
         f"{BASELINE_PATH.name} holds {len(_baseline())} entries, pinned at "
         f"{BASELINE_SIZE}.\n"

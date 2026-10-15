@@ -598,7 +598,7 @@ import FolderTreeNode from '../components/FolderTreeNode.vue';
 import { useApi } from '../composables/useApi';
 import { formatDate as fmtDate } from '../composables/useFormatters';
 import { ensureFolderPath, folderSegmentsFromFile } from '../composables/useFolderPath';
-import { createAuthedBlobUrl, openAuthedFile } from '../composables/useAuthedFile';
+import { createAuthedBlobUrl, downloadAuthedFile } from '../composables/useAuthedFile';
 import { useAuthStore } from '../stores/auth';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
@@ -660,6 +660,9 @@ const showPreviewDialog = ref(false);
 const deleteTarget = ref(null);
 const previewDoc = ref(null);
 const previewUrl = ref('');
+// The type of the bytes the server actually sent, not the stored metadata or
+// the filename (GDXA-972): what goes into the frame and the image tag follows it.
+const previewBlobType = ref('');
 const previewText = ref('');
 const previewError = ref('');
 const isDragOver = ref(false);
@@ -842,16 +845,21 @@ function canPreview(doc) {
   );
 }
 
+// The frame and the image tag follow the BLOB's type (GDXA-972). An iframe
+// chosen by a ".pdf" extension rendered an uploaded text/html as a page of the
+// app's own origin, with the session in reach. The server sends anything that
+// is not inert as application/octet-stream, so an svg or html document falls
+// through to the text view below.
+const _blobBaseType = computed(() => previewBlobType.value.split(';')[0].trim().toLowerCase());
+
 const isImagePreview = computed(() => {
   if (!previewDoc.value) return false;
-  const { mime, ext } = _previewMeta(previewDoc.value);
-  return mime.startsWith('image/') || IMAGE_EXTS.includes(ext);
+  return _blobBaseType.value.startsWith('image/') && _blobBaseType.value !== 'image/svg+xml';
 });
 
 const isPdfPreview = computed(() => {
   if (!previewDoc.value) return false;
-  const { mime, ext } = _previewMeta(previewDoc.value);
-  return mime.includes('pdf') || ext === 'pdf';
+  return _blobBaseType.value === 'application/pdf';
 });
 
 const isVideoPreview = computed(() => {
@@ -942,10 +950,10 @@ async function openPreview(doc) {
   const url = doc.url || doc.download_url || `/api/documents/${doc.id}/download`;
   try {
     previewUrl.value = await createAuthedBlobUrl(url);
+    const blob = await (await fetch(previewUrl.value)).blob();
+    previewBlobType.value = blob.type || '';
     if (isTextPreview.value) {
       // Read the same blob as text so we can render a <pre> view.
-      const resp = await fetch(previewUrl.value);
-      const blob = await resp.blob();
       const MAX_TEXT_BYTES = 1024 * 1024; // 1 MB cap — anything larger would lock the browser
       if (blob.size > MAX_TEXT_BYTES) {
         previewText.value = `(File is ${formatSize(blob.size)} — too large to preview as text. Use Download to view.)`;
@@ -975,6 +983,7 @@ function revokePreviewUrl() {
     URL.revokeObjectURL(previewUrl.value);
   }
   previewUrl.value = '';
+  previewBlobType.value = '';
 }
 
 function onPreviewClose() {
@@ -989,7 +998,10 @@ function onPreviewClose() {
 async function downloadDocument(doc) {
   const url = doc.url || doc.download_url || `/api/documents/${doc.id}/download`;
   try {
-    await openAuthedFile(url);
+    // Saved to disk, never opened as a blob tab: a tab of uploaded bytes is a
+    // page of the app's own origin, and an uploaded html file runs in it
+    // (GDXA-972). The preview pane is where a file is looked at.
+    await downloadAuthedFile(url, doc.original_name || doc.name || doc.filename || '');
   } catch (e) {
     console.error('document_download_failed', url, e);
     toast.add({
@@ -1571,7 +1583,7 @@ onMounted(() => {
 
 /* Links */
 .doc-link {
-  color: var(--p-primary-color, #4fc3f7);
+  color: var(--p-primary-color);
   text-decoration: none;
   font-weight: 600;
 }
@@ -1736,17 +1748,17 @@ onMounted(() => {
 
 .folder-item--all.active {
   background: rgba(16, 185, 129, 0.08);
-  border-left-color: var(--p-primary-color, #10b981);
+  border-left-color: var(--p-primary-color);
 }
 
 .folder-item--all.active .folder-name {
-  color: var(--p-primary-color, #10b981);
+  color: var(--p-primary-color);
   font-weight: 500;
 }
 
 .folder-item--all.drop-target {
   background: rgba(16, 185, 129, 0.18);
-  outline: 1px dashed var(--p-primary-color, #10b981);
+  outline: 1px dashed var(--p-primary-color);
   outline-offset: -2px;
 }
 
@@ -1756,7 +1768,7 @@ onMounted(() => {
 }
 
 .folder-item--all .folder-icon {
-  color: var(--p-primary-color, #10b981);
+  color: var(--p-primary-color);
   opacity: 0.85;
   font-size: 0.95rem;
 }

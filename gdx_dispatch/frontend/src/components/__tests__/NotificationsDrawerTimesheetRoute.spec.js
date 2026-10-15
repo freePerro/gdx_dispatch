@@ -31,6 +31,9 @@ const store = {
   clearAll: vi.fn(),
   fetchList: vi.fn(),
 };
+vi.mock('../../composables/usePermission', () => ({
+  usePermission: () => ({ hasPermission: () => true }),
+}));
 vi.mock('../../stores/notifications', () => ({
   useNotificationsStore: () => store,
 }));

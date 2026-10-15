@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import sys
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -222,6 +223,7 @@ admin_settings_router = _load_router("gdx_dispatch.routers", "admin_settings")
 maps_router = _load_router("gdx_dispatch.routers", "maps")
 
 notifications_router = _load_router("gdx_dispatch.routers", "notifications")
+device_alerts_router = _load_router("gdx_dispatch.routers", "device_alerts")
 
 timeclock_router = _load_router("gdx_dispatch.routers", "timeclock")
 
@@ -659,6 +661,74 @@ def _check_encryption_at_rest() -> None:
     )
 
 
+#: GDX_ENV values that may run with a rate-limit layer switched off. Everything
+#: else is production-like — including an UNSET GDX_ENV (as in
+#: _check_encryption_at_rest) and any unrecognised value ("staging", "prod-eu",
+#: a typo), so a mistake fails closed. Prod and demo run `production`; the
+#: tracked compose defaults to `dev`, which is what the lab and a container
+#: cloned from the dev app's env inherit. A bare `docker run` for e2e must say
+#: `-e GDX_ENV=dev` next to `-e GDX_E2E_BYPASS=1`.
+_NON_PRODUCTION_ENVS = frozenset({"dev", "development", "test", "testing", "local", "ci"})
+
+
+def _security_bypass_refusal(environ, limiter_configured_enabled: bool) -> str | None:
+    """The REFUSING TO BOOT message when a rate-limit off switch is set in a
+    production-like environment, else ``None`` (GDXA-988).
+
+    Two switches, the whole class found in app.py and core/:
+
+    * ``GDX_E2E_BYPASS=1`` turns slowapi off (create_app, #579/#738) and lets
+      any request carrying the client-supplied ``x-e2e-test: true`` header skip
+      the Redis limiter (core/rate_limiter.py). The env var is the whole
+      protection, so it must never be set where real traffic arrives.
+    * ``RATELIMIT_ENABLED=false`` is slowapi's own off switch, read when the
+      Limiter is built (``limiter_configured_enabled``).
+
+    Not here, by decision: ``AUTH_DB_VERIFY_ENABLED=0`` (routers/auth/core.py)
+    is a documented production rollback valve — refusing to boot on it would
+    remove the valve it exists to be.
+    """
+    env = (environ.get("GDX_ENV") or "").strip().lower()
+    if env in _NON_PRODUCTION_ENVS:
+        return None
+    flags = []
+    if environ.get("GDX_E2E_BYPASS") == "1":
+        flags.append(
+            "GDX_E2E_BYPASS=1 (slowapi off; any request with x-e2e-test: true skips the Redis limiter)"
+        )
+    if not limiter_configured_enabled:
+        flags.append("RATELIMIT_ENABLED is false (slowapi off)")
+    if not flags:
+        return None
+    return (
+        "REFUSING TO BOOT: rate limiting is switched off in a production-like "
+        f"environment (GDX_ENV={env or '<unset>'}): {'; '.join(flags)}. Unset the "
+        "flag, or, for a throwaway e2e or lab container, set GDX_ENV=dev."
+    )
+
+
+def _check_security_bypass_flags() -> None:
+    """Refuse to boot on _security_bypass_refusal. Runs in create_app, before
+    the app exists, so a refused process never serves a request.
+
+    The pytest exemption mirrors _check_encryption_at_rest's: the suite leaves
+    GDX_ENV unset and is sometimes launched with ``-e GDX_E2E_BYPASS=1``.
+    PYTEST_VERSION (pytest >= 8.2) is in the environment for the whole session
+    and inherited by the subprocesses some tests boot the app in; nothing sets
+    it in a deployment. tests/test_security_bypass_boot_refusal.py boots a real
+    interpreter without it and expects the refusal.
+    """
+    if os.environ.get("PYTEST_VERSION") or "pytest" in sys.modules:
+        return
+    message = _security_bypass_refusal(os.environ, _LIMITER_CONFIGURED_ENABLED)
+    if message is None:
+        return
+    logging.getLogger("gdx_dispatch.app.startup_security_bypass").error(
+        "STARTUP_SECURITY_BYPASS_REFUSED env=%s", os.environ.get("GDX_ENV") or "<unset>"
+    )
+    raise SystemExit(message)
+
+
 def _check_audit_guard() -> None:
     """Say at boot whether audit_logs carries its immutability guard (GDXA-352).
 
@@ -733,6 +803,9 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     configure_json_logging()
+    # Before anything else: a production-like process with a rate-limit off
+    # switch set must not come up at all (GDXA-988).
+    _check_security_bypass_flags()
     # GL chokepoint tripwire (S4): catches Invoice.status writes that bypass
     # transition_invoice_status once ledger posting is enabled. No-op while
     # the flag is off. Idempotent, process-global.
@@ -767,6 +840,8 @@ def create_app() -> FastAPI:
     # guarded anything; the env var is the whole protection. GDX_E2E_BYPASS=1
     # belongs to throwaway e2e containers and the lab stack. Prod runs 0, and
     # the celery workers and demo leave it unset (checked live 2026-09-14).
+    # _check_security_bypass_flags() refuses to boot with it in a
+    # production-like environment (GDXA-988).
     #
     # `limiter` is module-global, so this assigns BOTH ways: the most recent
     # create_app() in a process decides for every app in it. Setting only False
@@ -1078,6 +1153,11 @@ def create_app() -> FastAPI:
     app.include_router(settings_router.router if hasattr(settings_router, "router") else settings_router)
     app.include_router(admin_settings_router.router if hasattr(admin_settings_router, "router") else admin_settings_router)
     app.include_router(maps_router.router if hasattr(maps_router, "router") else maps_router)
+    # Office alerts on the Android app: the device
+    # token, its revoke and the bell long-poll the phone's service reads.
+    app.include_router(
+        device_alerts_router.router if hasattr(device_alerts_router, "router") else device_alerts_router
+    )
     app.include_router(
         notifications_router.router if hasattr(notifications_router, "router") else notifications_router
     )

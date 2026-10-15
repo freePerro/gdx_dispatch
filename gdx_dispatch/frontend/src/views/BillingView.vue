@@ -1802,7 +1802,7 @@ onMounted(async () => {
 }
 
 .link-text {
-  color: var(--p-primary-color, #3b82f6);
+  color: var(--p-primary-color);
   font-weight: 600;
 }
 

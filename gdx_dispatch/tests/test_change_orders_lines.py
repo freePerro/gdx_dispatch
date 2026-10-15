@@ -173,3 +173,71 @@ def test_patch_change_order_without_line_items_preserves_existing(db):
     assert detail["amount"] == 99.0  # unchanged
 
 
+
+
+def test_change_order_audit_rows_name_what_moved(db):
+    """GDXA-955: create/update/approve audited with details={} (and create
+    with an empty entity_id), so a repriced CO left no record of the price,
+    and a line swap at the same total left no record of the old lines."""
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.routers.change_orders import approve_change_order
+
+    out = create_change_order(
+        payload=ChangeOrderIn(title="Scope add", amount=100.0), user=_user(), db=db,
+    )
+    co_id = UUID(out["id"])
+    update_change_order(
+        co_id=co_id,
+        payload=ChangeOrderIn(title="Scope add, bigger", amount=150.0),
+        current_user=_user(),
+        db=db,
+    )
+    update_change_order(
+        co_id=co_id,
+        payload=ChangeOrderIn(
+            title="Scope add, bigger",
+            line_items=[{"description": "Torsion spring", "quantity": 1, "unit_price": 150.0}],
+        ),
+        current_user=_user(),
+        db=db,
+    )
+    # Same total, different line: the hard-deleted spring must survive here.
+    update_change_order(
+        co_id=co_id,
+        payload=ChangeOrderIn(
+            title="Scope add, bigger",
+            line_items=[{"description": "Labor only", "quantity": 1, "unit_price": 150.0, "taxable": False}],
+        ),
+        current_user=_user(),
+        db=db,
+    )
+    approve_change_order(co_id=co_id, user=_user(), db=db)
+
+    swap = [
+        r.details
+        for r in db.execute(select(AuditLog).where(AuditLog.action == "update_change_order")).scalars()
+    ][-1]
+    assert swap["changed"] == {}
+    (old_line,) = swap["replaced_lines"]
+    assert old_line["description"] == "Torsion spring"
+    assert float(old_line["unit_price"]) == 150.0
+
+    rows = {
+        r.action: r
+        for r in db.execute(select(AuditLog).where(AuditLog.entity_type == "change_order")).scalars()
+    }
+    created = rows["create_change_order"]
+    assert created.entity_id == str(co_id)
+    assert float(created.details["amount"]) == 100.0
+
+    changed = [
+        r.details
+        for r in db.execute(select(AuditLog).where(AuditLog.action == "update_change_order")).scalars()
+    ][0]["changed"]
+    assert changed["title"] == {"old": "Scope add", "new": "Scope add, bigger"}
+    assert float(changed["amount"]["old"]) == 100.0
+    assert float(changed["amount"]["new"]) == 150.0
+
+    approved = rows["approve_change_order"]
+    assert approved.details["status"] == {"old": "draft", "new": "approved"}
+    assert approved.user_id == "user-1"

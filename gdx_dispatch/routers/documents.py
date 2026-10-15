@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.file_serving import is_raster_photo_type, stored_file_response
 from gdx_dispatch.core.job_access import assert_can_attach_to_job
 from gdx_dispatch.core.job_photos import link_job_photo as _link_job_photo
 from gdx_dispatch.core.modules import require_module
@@ -330,8 +331,10 @@ async def upload_document(
     # caller got a 201 — the phone's queue marked it uploaded and toasted
     # "Photo added" for a photo no strip would ever show. 415 is permanent to
     # the queue: it stops retrying and tells the tech what's wrong.
-    if as_photo and not (file.content_type or "").lower().startswith("image/"):
-        raise HTTPException(status_code=415, detail="as_photo requires an image file")
+    # Raster only (GDXA-972): `startswith("image/")` let image/svg+xml in, and
+    # an svg is markup that can carry script, served back on the app's origin.
+    if as_photo and not is_raster_photo_type(file.content_type):
+        raise HTTPException(status_code=415, detail="as_photo requires a raster image file")
 
     # Object-level authz on the CALLER-SUPPLIED job id (#518). This route was
     # gated only by require_module("documents") + auth, and require_module asks
@@ -403,7 +406,7 @@ async def upload_document(
     # 422'd since it shipped (a multipart handler in uploads.py claims that path
     # and is included first), so job_photos sat empty while uploads "succeeded".
     file_content_type = file.content_type or "application/octet-stream"
-    if as_photo and job_id and file_content_type.lower().startswith("image/"):
+    if as_photo and job_id and is_raster_photo_type(file_content_type):
         _link_job_photo(
             db,
             tenant_id=tenant_id,
@@ -494,11 +497,10 @@ async def download_document(
     path = _upload_dir() / doc.filename
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(
-        path=path,
-        media_type=doc.content_type or "application/octet-stream",
-        filename=doc.original_name,
-    )
+    # Every job photo is served here too (job_photos.url points at this route).
+    # The stored type is the client's word: an uploaded text/html or svg served
+    # under it runs as the app the moment anything opens it (GDXA-972).
+    return stored_file_response(path, doc.content_type, doc.original_name)
 
 
 @router.get("/api/document-folders", response_model=list[DocumentFolderOut])

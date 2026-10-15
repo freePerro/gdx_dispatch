@@ -253,7 +253,7 @@ onMounted(load)
 .job-chevron { color: var(--p-text-muted-color, #9ca3af); font-size: 0.8rem; margin-left: auto; }
 .job-customer { font-size: 1.05rem; font-weight: 700; }
 .job-when { color: var(--p-text-muted-color, #6b7280); font-size: 0.9rem; display: flex; align-items: center; gap: 0.35rem; }
-.job-address { display: flex; align-items: center; gap: 0.35rem; font-size: 0.95rem; color: var(--p-primary-color, #2563eb); }
+.job-address { display: flex; align-items: center; gap: 0.35rem; font-size: 0.95rem; color: var(--p-primary-color); }
 .job-address.job-address-missing { color: var(--p-text-muted-color, #9ca3af); font-style: italic; }
 .job-address span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .job-title { color: var(--p-text-muted-color, #6b7280); font-size: 0.85rem; }

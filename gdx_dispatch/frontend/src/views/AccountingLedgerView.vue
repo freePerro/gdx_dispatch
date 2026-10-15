@@ -407,7 +407,7 @@ onMounted(loadTrialBalance);
 .entry-lines { margin: 0.25rem 0 0.5rem 3rem; max-width: 60rem; }
 .receipt-links { margin: 0 0 0.75rem 3rem; }
 .receipt-links a { margin-right: 0.75rem; }
-.source-link { color: var(--p-primary-color, #2563eb); text-decoration: none; }
+.source-link { color: var(--p-primary-color); text-decoration: none; }
 .source-link:hover { text-decoration: underline; }
 
 @media (max-width: 720px) {

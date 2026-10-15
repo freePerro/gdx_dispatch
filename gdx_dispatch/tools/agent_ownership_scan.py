@@ -82,6 +82,9 @@ COVERED_ROOTS = (
     "gdx_dispatch/plugin_host/",
     "gdx_dispatch/templates/",
     "gdx_dispatch/frontend/src/",
+    # The Capacitor Android app. Its Java plugins answered UNOWNED until
+    # GDXA-1153 because no prefix reached them, so the gate stayed green.
+    "gdx_dispatch/frontend/android/",
     # The agent files carry the copy-paste commands every agent runs, so they
     # need an owner who keeps them right (GDXA-484: 13 of 14 lacked --tmpfs).
     ".claude/agents/",

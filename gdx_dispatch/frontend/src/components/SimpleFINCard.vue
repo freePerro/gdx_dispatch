@@ -8,7 +8,8 @@ import InputText from 'primevue/inputtext'
 import InputNumber from 'primevue/inputnumber'
 import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
-import { useApi } from '../composables/useApi'
+import { isPasswordChangeRequired, useApi } from '../composables/useApi'
+import { usePermission } from '../composables/usePermission'
 
 // SimpleFIN bank feed — Settings → Integrations card (Doug 2026-08-13).
 // Connect = paste a setup token generated at the SimpleFIN Bridge; GDX
@@ -19,10 +20,15 @@ import { useApi } from '../composables/useApi'
 
 const api = useApi()
 const toast = useToast()
+const { hasPermission } = usePermission()
+// /connect, /relink, /settings, /sync and /disconnect all require
+// bank_feeds.manage (simplefin_router.py); /status and /tieout only read.
+const canManage = computed(() => hasPermission('bank_feeds.manage'))
 
 const loading = ref(true)
 const status = ref(null)
 const loadError = ref(null)
+const loadDenied = ref(false)
 
 const setupToken = ref('')
 const connecting = ref(false)
@@ -82,7 +88,9 @@ const connected = computed(() => Boolean(status.value?.connected))
 // It is deliberately open-world: an allowlist of the bad states would leave a
 // 5th auth_state, added later, rendering that button while this card reported
 // a green "Connected" with nothing to do — the dead end this screen exists to
-// end. Anything not explicitly healthy needs the token form.
+// end. Anything not explicitly healthy needs the token form. With the four
+// auth_states that exist today the generic banner arm below cannot render (a
+// disconnected row reports connected=false); it is insurance for a future fifth.
 const unhealthy = computed(() =>
   !connected.value || status.value?.auth_state !== 'healthy')
 // The known bad states, used only to pick the wording of the banner. A state
@@ -94,7 +102,11 @@ const capReached = computed(() => quota.value.remaining <= 0)
 const capMax = computed(() => status.value?.schedule?.daily_fetch_cap_max ?? 20)
 const backfillPending = computed(() =>
   (status.value?.accounts || []).filter((a) => a.sync_enabled && !a.is_inactive && !a.initial_backfill_done))
+// A failed status load says nothing about the connection. `connected` is false
+// for a null status, so without this a transient 500 read "Not Connected" on
+// the screen Bank Feeds' re-link button sends people to.
 const tagValue = computed(() => {
+  if (loadError.value) return 'Status unknown'
   if (!connected.value) return 'Not Connected'
   // Same open-world rule as `unhealthy`: never label an unrecognised
   // auth_state "Connected", or the card contradicts the Bank Feeds row.
@@ -103,6 +115,7 @@ const tagValue = computed(() => {
   return 'Connected'
 })
 const tagSeverity = computed(() => {
+  if (loadError.value) return 'secondary'
   if (!connected.value) return 'warn'
   if (unhealthy.value) return 'danger'
   if (status.value?.stale) return 'warn'
@@ -122,11 +135,19 @@ function applyStatusToForm() {
 async function load() {
   loading.value = true
   loadError.value = null
+  loadDenied.value = false
   try {
     status.value = await api.get('/api/bank-feeds/simplefin/status')
     applyStatusToForm()
   } catch (err) {
+    // A refresh that failed leaves the previous status stale; showing its
+    // account and schedule detail beside "Status unknown" would contradict it.
+    status.value = null
     loadError.value = err?.message || 'Unable to load status'
+    // A 403 is a refusal, not an unknown: no bank_feeds.read, or the Bank
+    // Feeds module is off. Retry and /connect would be refused the same way.
+    // A password-change 403 is useApi's to handle: it redirects.
+    loadDenied.value = err?.status === 403 && !isPasswordChangeRequired(err)
     console.warn('simplefin card load failed:', err)
   } finally {
     loading.value = false
@@ -393,16 +414,30 @@ onMounted(() => { load() })
     </div>
 
     <div v-if="loading" class="muted">Loading…</div>
-    <small v-else-if="loadError" class="muted">Status unavailable — {{ loadError }}</small>
 
     <template v-else>
+      <!-- Load failure is not a disconnect. The status is unknown, so offer
+           both ways forward: try again, or paste a token (the form below
+           renders because `unhealthy` is true for a null status). -->
+      <small v-if="loadDenied" class="status-warnrow" data-testid="sfin-load-denied">
+        Bank feed status is not available to this account — either it lacks bank-feed
+        access or the Bank Feeds module is turned off. An admin can change either. ({{ loadError }})
+      </small>
+      <div v-else-if="loadError" class="integration-actions" data-testid="sfin-load-error">
+        <small class="status-warnrow">Status unavailable — {{ loadError }}</small>
+        <Button
+          label="Retry" icon="pi pi-refresh" size="small" severity="secondary"
+          data-testid="sfin-retry" @click="load"
+        />
+      </div>
+
       <!-- Banner only when there is still a connection to describe; a
            disconnected card just shows the setup instructions below. -->
       <p v-if="connected && needsReconnect" class="status-error" data-testid="sfin-reconnect-banner">
         The bridge connection needs attention — sign in at bridge.simplefin.org, fix the
         bank connection there, then paste a fresh setup token below.
       </p>
-      <p v-else-if="connected && unhealthy" class="status-error" data-testid="sfin-reconnect-banner">
+      <p v-else-if="connected && unhealthy" class="status-error" data-testid="sfin-reconnect-banner-unknown">
         The bridge connection is not healthy ({{ status.auth_state }}) — check the
         connection at bridge.simplefin.org, then paste a fresh setup token below.
       </p>
@@ -419,10 +454,25 @@ onMounted(() => { load() })
            broken connection look like tearing it down. This is where Bank
            Feeds' "Re-link in Settings" button lands, and `unhealthy` is the
            exact complement of the condition that renders it. -->
-      <template v-if="unhealthy">
+      <!-- Read-only (bank_feeds.read without manage): /connect would refuse
+           the token, so say who can act instead of offering the form. -->
+      <small
+        v-if="unhealthy && !loadDenied && !canManage"
+        class="muted" data-testid="sfin-readonly-note"
+      >
+        Connecting or re-linking the bank feed needs bank-feed management access. Ask an
+        admin to do it, or to grant it on /role-permissions.
+      </small>
+      <template v-if="unhealthy && !loadDenied && canManage">
         <!-- Someone repairing a connection already has a bridge account;
              telling them to create one reads as the wrong screen. -->
-        <small v-if="connected" class="muted" data-testid="sfin-relink-steps">
+        <!-- Status unknown: they may or may not have a bridge account yet. -->
+        <small v-if="loadError" class="muted" data-testid="sfin-unknown-steps">
+          If the bank feed needs connecting or repairing, generate a setup token at
+          <a href="https://bridge.simplefin.org/" target="_blank" rel="noopener">bridge.simplefin.org</a>
+          and paste it here (GDX never sees your bank login).
+        </small>
+        <small v-else-if="connected" class="muted" data-testid="sfin-relink-steps">
           1. Sign in at
           <a href="https://bridge.simplefin.org/" target="_blank" rel="noopener">bridge.simplefin.org</a>
           and fix the bank connection there (GDX never sees your bank login).
@@ -441,7 +491,7 @@ onMounted(() => { load() })
         />
         <div class="integration-actions">
           <Button
-            :label="connected ? 'Re-link with new token' : 'Connect'"
+            :label="loadError ? 'Connect or re-link' : connected ? 'Re-link with new token' : 'Connect'"
             :loading="connecting" :disabled="!setupToken.trim()"
             data-testid="sfin-connect-btn" @click="connect"
           />
@@ -475,26 +525,26 @@ onMounted(() => { load() })
           <span>Fetch frequency</span>
           <Select
             v-model="settings.frequency" :options="FREQUENCIES"
-            optionLabel="label" optionValue="value" data-testid="sfin-frequency"
+            optionLabel="label" optionValue="value" :disabled="!canManage" data-testid="sfin-frequency"
           />
         </label>
         <label class="field">
           <span>Fetch hours ({{ status.timezone }})</span>
           <span class="window-inputs">
-            <InputText v-model="settings.windowStart" placeholder="08:00" size="small" data-testid="sfin-window-start" />
+            <InputText v-model="settings.windowStart" placeholder="08:00" size="small" :disabled="!canManage" data-testid="sfin-window-start" />
             –
-            <InputText v-model="settings.windowEnd" placeholder="18:00" size="small" data-testid="sfin-window-end" />
+            <InputText v-model="settings.windowEnd" placeholder="18:00" size="small" :disabled="!canManage" data-testid="sfin-window-end" />
           </span>
           <small class="muted">Local time. Leave both empty for any hour.</small>
         </label>
         <label class="field">
           <span>Daily fetch cap (max {{ capMax }})</span>
           <InputNumber
-            v-model="settings.cap" :min="1" :max="capMax" showButtons
+            v-model="settings.cap" :min="1" :max="capMax" showButtons :disabled="!canManage"
             data-testid="sfin-cap"
           />
         </label>
-        <div class="integration-actions">
+        <div v-if="canManage" class="integration-actions">
           <Button label="Save schedule" size="small" :loading="settingsSaving"
                   data-testid="sfin-save-settings" @click="saveSettings" />
           <Button

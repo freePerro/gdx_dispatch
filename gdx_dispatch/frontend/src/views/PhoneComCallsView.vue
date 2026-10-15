@@ -687,7 +687,7 @@ onMounted(() => {
    app-wide (this repo records 2.53:1 for it in main.js) — a separately-owned
    theming issue this change matches rather than re-themes. */
 .detail-row .customer-link {
-  color: var(--p-primary-color, #3b82f6);
+  color: var(--p-primary-color);
   text-decoration: underline;
 }
 .audio-block {

@@ -29,7 +29,8 @@ BASELINE_CEILING = {
     "drift_scanner": 323,
     "silent_failure_scanner": 94,
     "comment_drift_scan": 71,
-    "frontend_contract_scan": 4,
+    # 4 -> 2: GDXA-1129 drops SettingsView's phantom `result.quickbooks` read.
+    "frontend_contract_scan": 2,
 }
 
 

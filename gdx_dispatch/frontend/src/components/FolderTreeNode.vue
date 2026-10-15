@@ -153,17 +153,17 @@ function onDrop(e) {
 
 .folder-item.active {
   background: rgba(16, 185, 129, 0.08);
-  border-left-color: var(--p-primary-color, #10b981);
+  border-left-color: var(--p-primary-color);
 }
 
 .folder-item.active .folder-name {
-  color: var(--p-primary-color, #10b981);
+  color: var(--p-primary-color);
   font-weight: 500;
 }
 
 .folder-item.drop-target {
   background: rgba(16, 185, 129, 0.18);
-  outline: 1px dashed var(--p-primary-color, #10b981);
+  outline: 1px dashed var(--p-primary-color);
   outline-offset: -2px;
 }
 
@@ -194,7 +194,7 @@ function onDrop(e) {
 
 .folder-icon {
   flex: 0 0 auto;
-  color: var(--p-primary-color, #10b981);
+  color: var(--p-primary-color);
   opacity: 0.85;
   font-size: 0.95rem;
 }
@@ -220,7 +220,7 @@ function onDrop(e) {
 }
 
 .folder-item.active .folder-count {
-  color: var(--p-primary-color, #10b981);
+  color: var(--p-primary-color);
   background: rgba(16, 185, 129, 0.18);
 }
 

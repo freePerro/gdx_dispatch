@@ -19,6 +19,9 @@ const adminError = ref(false)
 const loadError = ref(null)
 
 const isConfigured = computed(() => Boolean(credentials.value?.secret_set))
+// GDXA-1138: a failed load is "Status unknown", never "Not Configured" —
+// credentials stay null on failure, which would otherwise read as unset.
+const statusUnknown = computed(() => !loading.value && !adminError.value && Boolean(loadError.value))
 
 async function load() {
   loading.value = true
@@ -27,13 +30,13 @@ async function load() {
   try {
     credentials.value = await api.get('/api/admin/outlook/credentials')
   } catch (err) {
+    credentials.value = null
     if (err?.status === 403) {
       // Non-admin viewing the card — render a quiet hint, don't toast.
       adminError.value = true
     } else {
-      // Status-only card — don't toast a global error. Surface inline so
-      // the rest of the Settings page is unaffected. Click "Configure" to
-      // get to the full OutlookSettingsView, which has its own error handling.
+      // Status-only card — don't toast a global error. Surface inline with
+      // a Retry so the rest of the Settings page is unaffected.
       const detail = err?.message || err?.response?.data?.detail || 'Unable to load status'
       loadError.value = detail
       console.warn('outlook card load failed:', err)
@@ -60,7 +63,13 @@ onMounted(() => {
         <p class="muted">Per-employee mailbox sync, tagging, and send-from-GDX.</p>
       </div>
       <Tag
-        v-if="!loading && !adminError"
+        v-if="statusUnknown"
+        value="Status unknown"
+        severity="secondary"
+        data-testid="outlook-status-unknown-tag"
+      />
+      <Tag
+        v-else-if="!loading && !adminError"
         :value="isConfigured ? 'Connected' : 'Not Configured'"
         :severity="isConfigured ? 'success' : 'warn'"
       />
@@ -70,8 +79,9 @@ onMounted(() => {
     <div v-else-if="adminError" class="status-warn">
       Admin access required to view Outlook integration status.
     </div>
-    <small v-else-if="loadError" class="muted">
-      Status unavailable — click Configure to manage.
+    <small v-else-if="loadError" class="muted" data-testid="outlook-status-unknown">
+      Could not load the Outlook integration status ({{ loadError }}). Retry before
+      re-entering credentials — they may already be configured.
     </small>
     <small v-else-if="isConfigured" class="muted">
       Microsoft tenant + Entra app credentials configured. Employees can connect their mailboxes from their profile.
@@ -82,8 +92,17 @@ onMounted(() => {
 
     <div class="integration-actions">
       <Button
-        :label="isConfigured ? 'Manage' : 'Configure'"
-        :severity="isConfigured ? 'secondary' : 'primary'"
+        v-if="statusUnknown"
+        label="Retry"
+        icon="pi pi-refresh"
+        severity="primary"
+        data-testid="outlook-status-retry"
+        @click="load"
+      />
+      <Button
+        :label="statusUnknown || isConfigured ? 'Manage' : 'Configure'"
+        :severity="statusUnknown || isConfigured ? 'secondary' : 'primary'"
+        data-testid="outlook-open-settings"
         @click="openSettings"
       />
     </div>

@@ -870,7 +870,7 @@ onUnmounted(() => {
   gap: 0.3rem;
   padding: 0.45rem 0.8rem;
   border-radius: 0.5rem;
-  background: var(--p-primary-color, #2563eb);
+  background: var(--p-primary-color);
   color: #fff;
   border: 0;
   font-weight: 600;
@@ -1071,7 +1071,7 @@ onUnmounted(() => {
 
 .progress-fill {
   height: 100%;
-  background: var(--p-primary-color, #2563eb);
+  background: var(--p-primary-color);
   border-radius: 3px;
   transition: width 0.3s;
 }
@@ -1194,7 +1194,7 @@ onUnmounted(() => {
 
 .msg.mine {
   align-self: flex-end;
-  background: var(--p-primary-color, #2563eb);
+  background: var(--p-primary-color);
   color: #fff;
   border-color: transparent;
 }

@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import field_changes, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pay_periods import shop_today_from_settings
@@ -133,7 +133,9 @@ def update_warranty(warranty_id: str, request: Request, payload: dict[str, Any] 
     if not payload:
         raise HTTPException(status_code=400, detail="No updatable fields provided")
 
-    if "status" in payload and payload["status"] not in _ALLOWED_STATUSES:
+    # isinstance first: a list or dict is unhashable, and the set membership
+    # test raised TypeError — a 500 instead of a 422 (GDXA-997).
+    if "status" in payload and (not isinstance(payload["status"], str) or payload["status"] not in _ALLOWED_STATUSES):
         raise HTTPException(status_code=422, detail="Invalid status")
 
     start_d = w.start_date if isinstance(w.start_date, date) else date.fromisoformat(str(w.start_date))
@@ -146,28 +148,34 @@ def update_warranty(warranty_id: str, request: Request, payload: dict[str, Any] 
     if end_d < start_d:
         raise HTTPException(status_code=422, detail="end_date must be on or after start_date")
 
-    changed = False
+    proposed: dict[str, Any] = {}
     if "description" in payload:
         desc = str(payload["description"] or "").strip()
         if not desc:
             raise HTTPException(status_code=422, detail="description cannot be blank")
-        w.description = desc
-        changed = True
+        proposed["description"] = desc
     if "terms" in payload:
-        w.terms = payload["terms"]
-        changed = True
+        proposed["terms"] = payload["terms"]
     if "status" in payload:
-        w.status = payload["status"]
-        changed = True
+        proposed["status"] = payload["status"]
     if "start_date" in payload:
-        w.start_date = start_d
-        changed = True
+        proposed["start_date"] = start_d
     if "end_date" in payload:
-        w.end_date = end_d
-        changed = True
+        proposed["end_date"] = end_d
 
-    if not changed:
+    if not proposed:
         raise HTTPException(status_code=400, detail="No updatable fields provided")
+
+    # The audit row records what CHANGED, old -> new (GDXA-997). It used to
+    # list every key sent, ignored ones included, and a same-value save
+    # bumped updated_at and wrote a row naming fields nobody touched.
+    current = _serialize(w)
+    after = {**current, **{k: str(v) if isinstance(v, date) else v for k, v in proposed.items()}}
+    changes = field_changes(current, after, tuple(proposed), text_fields=("description", "terms"))
+    if not changes:
+        return current
+    for field in changes:
+        setattr(w, field, proposed[field])
 
     w.updated_at = _now()
     try:
@@ -180,7 +188,7 @@ def update_warranty(warranty_id: str, request: Request, payload: dict[str, Any] 
     tid = str(getattr(request.state, "tenant", {}).get("id", ""))
     log_audit_event_sync(db=db, tenant_id=tid, user_id=str(user.get("sub") or user.get("user_id") or "system"),
                          action="warranty_updated", entity_type="warranty", entity_id=warranty_id,
-                         details={"fields_updated": list(payload.keys())})
+                         details={"fields_updated": list(changes), "changes": changes})
     db.commit()
     db.refresh(w)
     return _serialize(w)

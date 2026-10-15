@@ -24,10 +24,12 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
     from redis import Redis
+    from sqlalchemy.orm import Session
 
 log = logging.getLogger(__name__)
 
@@ -90,3 +92,38 @@ def revoke_user_sessions(sub: str, *, reason: str = "user_lifecycle_event") -> i
     except Exception:  # noqa: BLE001 — defensive
         log.exception("auth_revoke_failed sub=%s reason=%s", sub, reason)
         return 0
+
+
+def revoke_device_alerts(db: Session, user_id: str, *, reason: str) -> int:
+    """Turn off office phone alerts on every phone of this user.
+
+    A phone's alerts token is not a session: it survives the refresh-family
+    revoke above, so a password change or an admin "revoke all sessions"
+    must end it here too, or a lost phone keeps showing customer texts for
+    up to 90 days. Lock-out and delete need no call — the feed refuses an
+    inactive or deleted user on every request. The caller commits; the
+    count belongs in its audit details.
+    """
+    from datetime import UTC, datetime
+    from uuid import UUID
+
+    from sqlalchemy import update
+
+    from gdx_dispatch.models.tenant_models import DeviceAlertRegistration
+
+    # Rows hold the dashed JWT sub, so a dashless or upper-case id is
+    # normalised. An id that is not a UUID is queried as given and matches no
+    # row, so it revokes nothing and counts 0. UUID() drops every dash before
+    # parsing, so 32 hex digits cannot make it raise.
+    uid = str(user_id)
+    if re.fullmatch(r"[0-9a-fA-F]{32}", uid.replace("-", "")):
+        uid = str(UUID(uid))
+    result = db.execute(
+        update(DeviceAlertRegistration)
+        .where(
+            DeviceAlertRegistration.user_id == uid,
+            DeviceAlertRegistration.revoked_at.is_(None),
+        )
+        .values(revoked_at=datetime.now(UTC), revoked_reason=reason[:40])
+    )
+    return int(result.rowcount or 0)

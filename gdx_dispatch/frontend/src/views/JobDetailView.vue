@@ -2563,6 +2563,11 @@ async function handlePhotoUpload(event) {
   }
 }
 
+// The only types a photo tab may render. A blob tab is a document in the
+// app's own origin: an "image" stored as image/svg+xml or text/html would run
+// its script with the logged-in session, so anything else is saved to disk.
+const RASTER_PHOTO_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
 async function downloadPhoto(photo) {
   // photo.url is already the authed download route for the underlying
   // document; opening it in a tab lets the browser's own auth-less GET 401.
@@ -2573,7 +2578,15 @@ async function downloadPhoto(photo) {
     try { token = sessionStorage.getItem("gdx_access_token") || null; } catch { /* private mode */ }
     const resp = await fetch(photo.url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const blobUrl = URL.createObjectURL(await resp.blob());
+    const blob = await resp.blob();
+    // Judge the blob's type — what the tab would render — not photo.mime_type,
+    // which is whatever the uploader claimed.
+    const type = (blob.type || "").split(";")[0].trim().toLowerCase();
+    if (!RASTER_PHOTO_TYPES.has(type)) {
+      await downloadAuthedFile(photo.url, photo.filename || `photo-${photo.id}`);
+      return;
+    }
+    const blobUrl = URL.createObjectURL(blob);
     window.open(blobUrl, "_blank", "noopener");
     // Revoke on the next tick — the new tab has already claimed the blob.
     setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);

@@ -22,7 +22,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
+from gdx_dispatch.core.audit import field_changes, log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
 from gdx_dispatch.routers.auth import get_current_user
@@ -276,6 +276,7 @@ def update_plan(
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
     p = _get_plan_scoped(db, plan_id, tenant_id)
+    before = _serialize_plan(p)
     data = payload.model_dump(exclude_unset=True)
     for field in ("name", "description", "billing_type", "visits_per_year", "active"):
         if field in data and data[field] is not None:
@@ -284,17 +285,23 @@ def update_plan(
         p.price = Decimal(str(data["price"]))
     db.commit()
     db.refresh(p)
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="maintenance_plan_updated",
-        entity_type="maintenance_plan",
-        entity_id=str(p.id),
-        details={"fields": list(data.keys())},
-        request=request,
-    )
-    return _serialize_plan(p)
+    after = _serialize_plan(p)
+    # What changed, old -> new (GDXA-997): the row used to list every key sent, unchanged ones included.
+    if changes := field_changes(
+        before, after, ("name", "description", "billing_type", "visits_per_year", "active", "price"),
+        text_fields=("description",),
+    ):
+        _audit(
+            db,
+            tenant_id=tenant_id,
+            user=user,
+            action="maintenance_plan_updated",
+            entity_type="maintenance_plan",
+            entity_id=str(p.id),
+            details={"fields": list(changes), "changes": changes},
+            request=request,
+        )
+    return after
 
 
 @router.delete("/api/maintenance/plans/{plan_id}", response_model=None, status_code=204)
@@ -416,6 +423,7 @@ def update_enrollment(
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
     e = _get_enrollment_scoped(db, enrollment_id, tenant_id)
+    before = _serialize_enrollment(e)
     data = payload.model_dump(exclude_unset=True)
     if "status" in data and data["status"] is not None:
         e.status = data["status"]
@@ -423,17 +431,20 @@ def update_enrollment(
         e.notes = data["notes"]
     db.commit()
     db.refresh(e)
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="enrollment_updated",
-        entity_type="plan_enrollment",
-        entity_id=str(e.id),
-        details={"fields": list(data.keys())},
-        request=request,
-    )
-    return _serialize_enrollment(e)
+    after = _serialize_enrollment(e)
+    # What changed, old -> new (GDXA-997): the row used to list every key sent, unchanged ones included.
+    if changes := field_changes(before, after, ("status", "notes"), text_fields=("notes",)):
+        _audit(
+            db,
+            tenant_id=tenant_id,
+            user=user,
+            action="enrollment_updated",
+            entity_type="plan_enrollment",
+            entity_id=str(e.id),
+            details={"fields": list(changes), "changes": changes},
+            request=request,
+        )
+    return after
 
 
 @router.post(

@@ -15,6 +15,15 @@ import SimpleFINCard from '../SimpleFINCard.vue';
 const toastSpy = vi.fn();
 vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: toastSpy }) }));
 
+// The card gates every mutating control on bank_feeds.manage. Mocked rather
+// than loaded so usePermission's own /permissions fetch does not consume the
+// queued fetchMock responses.
+let grantedPerms = new Set(['bank_feeds.read', 'bank_feeds.manage']);
+vi.mock('../../composables/usePermission', () => ({
+  usePermission: () => ({ hasPermission: (key) => grantedPerms.has(key) }),
+}));
+const READ_ONLY = () => { grantedPerms = new Set(['bank_feeds.read']); };
+
 function mkResponse(body, { ok = true, status = 200 } = {}) {
   return {
     ok, status,
@@ -79,6 +88,7 @@ describe('SimpleFINCard', () => {
     fetchMock = vi.fn();
     global.fetch = fetchMock;
     localStorage.setItem('token', 'test-jwt');
+    grantedPerms = new Set(['bank_feeds.read', 'bank_feeds.manage']);
   });
 
   afterEach(() => {
@@ -221,6 +231,10 @@ describe('SimpleFINCard', () => {
     expect(wrapper.find('[data-testid="sfin-connect-btn"]').exists()).toBe(true);
     // And it must not claim to be fine.
     expect(wrapper.find('[data-testid="sfin-status-tag"]').text()).not.toBe('Connected');
+    // The generic arm rendered, not the known-state one: each arm has its own
+    // testid so this assertion can tell them apart.
+    expect(wrapper.find('[data-testid="sfin-reconnect-banner-unknown"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="sfin-reconnect-banner"]').exists()).toBe(false);
   });
 
   it('re-links from the unhealthy state without disconnecting first', async () => {
@@ -697,6 +711,94 @@ describe('SimpleFINCard', () => {
     });
   });
 
+  // A failed status load is not a disconnect. This card is where Bank Feeds'
+  // "Re-link in Settings" button lands, so a transient 500 used to read
+  // "Not Connected" over a bare error line: a lie with no way forward.
+  describe('when the status load fails', () => {
+    const FAIL = () => mkResponse({ detail: 'boom' }, { ok: false, status: 500 });
+
+    it('reads Status unknown, not Not Connected', async () => {
+      fetchMock.mockResolvedValueOnce(FAIL());
+      const wrapper = mountCard();
+      await flushPromises();
+      const tag = wrapper.find('[data-testid="sfin-status-tag"]');
+      expect(tag.text()).toBe('Status unknown');
+      expect(wrapper.findComponent({ name: 'Tag' }).props('severity')).toBe('secondary');
+      expect(wrapper.text()).not.toContain('Not Connected');
+      expect(wrapper.find('[data-testid="sfin-load-error"]').text()).toContain('Status unavailable');
+    });
+
+    // A 403 is a refusal (no bank_feeds.read, or the module is off): Retry
+    // and /connect would be refused the same way, so offering them is
+    // another dead end. Say why instead.
+    it('on a 403 explains the refusal and offers no form or retry', async () => {
+      fetchMock.mockImplementation(async (url) => (String(url).includes('/simplefin/status')
+        ? mkResponse({ detail: 'Missing permission: bank_feeds.read' }, { ok: false, status: 403 })
+        : mkResponse({})));
+      const wrapper = mountCard();
+      await flushPromises();
+      expect(wrapper.find('[data-testid="sfin-status-tag"]').text()).toBe('Status unknown');
+      expect(wrapper.find('[data-testid="sfin-load-denied"]').text()).toMatch(/not available to this account/);
+      expect(wrapper.find('[data-testid="sfin-retry"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-token-input"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-connect-btn"]').exists()).toBe(false);
+    });
+
+    it('keeps the setup-token form, with neutral wording', async () => {
+      fetchMock.mockResolvedValueOnce(FAIL());
+      const wrapper = mountCard();
+      await flushPromises();
+      expect(wrapper.find('[data-testid="sfin-token-input"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="sfin-connect-btn"]').text()).toBe('Connect or re-link');
+      // Neither "create an account" nor "fix the connection": we don't know which.
+      expect(wrapper.find('[data-testid="sfin-unknown-steps"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="sfin-connect-steps"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-relink-steps"]').exists()).toBe(false);
+    });
+
+    it('Retry re-requests the status and recovers', async () => {
+      // Routed by URL: useApi fire-and-forgets a /client-error report after
+      // the 500, which would otherwise consume the next queued response.
+      let statusHits = 0;
+      fetchMock.mockImplementation(async (url) => {
+        if (!String(url).includes('/simplefin/status')) return mkResponse({});
+        statusHits += 1;
+        return statusHits === 1 ? FAIL() : mkResponse(CONNECTED);
+      });
+      const wrapper = mountCard();
+      await flushPromises();
+      const retry = wrapper.find('[data-testid="sfin-retry"]');
+      expect(retry.exists()).toBe(true);
+      await retry.trigger('click');
+      await flushPromises();
+
+      const statusCalls = fetchMock.mock.calls
+        .filter((c) => String(c[0]).includes('/api/bank-feeds/simplefin/status'));
+      expect(statusCalls).toHaveLength(2);
+      expect(wrapper.find('[data-testid="sfin-status-tag"]').text()).toBe('Connected');
+      expect(wrapper.find('[data-testid="sfin-retry"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-quota"]').exists()).toBe(true);
+    });
+
+    // A reload after a mutation can fail too. The old status must not linger
+    // as account and schedule detail beside "Status unknown".
+    it('drops stale connected detail when a later reload fails', async () => {
+      fetchMock
+        .mockResolvedValueOnce(mkResponse(CONNECTED))
+        .mockResolvedValueOnce(mkResponse({ queued: true })) // POST sync
+        .mockResolvedValueOnce(FAIL());                      // reload
+      const wrapper = mountCard();
+      await flushPromises();
+      expect(wrapper.find('[data-testid="sfin-quota"]').exists()).toBe(true);
+      await wrapper.find('[data-testid="sfin-sync-now"]').trigger('click');
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="sfin-status-tag"]').text()).toBe('Status unknown');
+      expect(wrapper.find('[data-testid="sfin-quota"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-retry"]').exists()).toBe(true);
+    });
+  });
+
   it('requires a second click to disconnect', async () => {
     fetchMock.mockResolvedValueOnce(mkResponse(CONNECTED));
     const wrapper = mountCard();
@@ -711,5 +813,67 @@ describe('SimpleFINCard', () => {
     await btn.trigger('click');
     await flushPromises();
     expect(fetchMock.mock.calls[1][0]).toContain('/api/bank-feeds/simplefin/disconnect');
+  });
+
+  describe('read-only (bank_feeds.read without manage)', () => {
+    it('gets a note instead of the token form when disconnected', async () => {
+      READ_ONLY();
+      fetchMock.mockResolvedValueOnce(mkResponse(DISCONNECTED));
+      const wrapper = mountCard();
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="sfin-status-tag"]').text()).toBe('Not Connected');
+      expect(wrapper.find('[data-testid="sfin-token-input"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-connect-btn"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-readonly-note"]').text()).toContain('needs bank-feed management access');
+    });
+
+    it('gets a note and Retry, but no token form, when the status is unknown', async () => {
+      READ_ONLY();
+      fetchMock.mockResolvedValueOnce(mkResponse({ detail: 'boom' }, { ok: false, status: 500 }));
+      const wrapper = mountCard();
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="sfin-status-tag"]').text()).toBe('Status unknown');
+      expect(wrapper.find('[data-testid="sfin-retry"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="sfin-token-input"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-connect-btn"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-readonly-note"]').exists()).toBe(true);
+    });
+
+    it('sees the schedule but cannot save, sync or disconnect when connected', async () => {
+      READ_ONLY();
+      fetchMock.mockResolvedValueOnce(mkResponse(CONNECTED));
+      const wrapper = mountCard();
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="sfin-quota"]').text()).toContain('7/20');
+      expect(wrapper.find('[data-testid="sfin-readonly-note"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-save-settings"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-sync-now"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-disconnect"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-window-start"]').element.disabled).toBe(true);
+      // Tie-out is a read (bank_feeds.read) and stays.
+      expect(wrapper.find('[data-testid="sfin-tieout-run"]').exists()).toBe(true);
+    });
+
+    it('a manager on the same states still gets the form and the actions', async () => {
+      fetchMock.mockResolvedValueOnce(mkResponse(CONNECTED));
+      const wrapper = mountCard();
+      await flushPromises();
+      expect(wrapper.find('[data-testid="sfin-save-settings"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="sfin-sync-now"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="sfin-disconnect"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="sfin-window-start"]').element.disabled).toBe(false);
+    });
+  });
+
+  it('a password-change 403 is not reported as missing bank-feed access', async () => {
+    fetchMock.mockResolvedValueOnce(mkResponse(
+      { detail: 'password_change_required' }, { ok: false, status: 403 },
+    ));
+    const wrapper = mountCard();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="sfin-load-denied"]').exists()).toBe(false);
   });
 });

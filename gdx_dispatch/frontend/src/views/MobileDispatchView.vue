@@ -887,7 +887,7 @@ onUnmounted(() => {
 }
 
 .date-current.is-today {
-  color: var(--p-primary-color, #2563eb);
+  color: var(--p-primary-color);
 }
 
 .date-iso {
@@ -917,7 +917,7 @@ onUnmounted(() => {
   align-items: center;
   padding: 0.1rem 0.45rem;
   border-radius: 999px;
-  background: var(--p-primary-color, #2563eb);
+  background: var(--p-primary-color);
   color: #fff;
   font-size: 0.7rem;
   font-weight: 700;
@@ -959,7 +959,7 @@ onUnmounted(() => {
   width: 1.85rem;
   height: 1.85rem;
   border-radius: 50%;
-  background: var(--p-primary-color, #2563eb);
+  background: var(--p-primary-color);
   color: #fff;
   display: inline-flex;
   align-items: center;

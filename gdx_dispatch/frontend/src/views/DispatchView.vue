@@ -2789,7 +2789,7 @@ defineExpose({
 }
 .tech-capacity-bar-fill {
   height: 100%;
-  background: var(--p-primary-color, #2563eb);
+  background: var(--p-primary-color);
   transition: width 0.2s ease-out;
 }
 .tech-capacity--over .tech-capacity-bar-fill {

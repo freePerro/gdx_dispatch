@@ -32,6 +32,15 @@ log = logging.getLogger(__name__)
 
 INSTALL_DIR = os.getenv("PLUGIN_INSTALL_DIR", "/plugins")
 
+
+def _target(target: str | None) -> str:
+    """`target`, or the module's INSTALL_DIR read NOW. Every function here takes
+    `target=None` rather than `target=INSTALL_DIR` because a default is bound
+    once at def time: overriding INSTALL_DIR afterwards moved removals but left
+    installs pointed at /plugins (GDXA-1122)."""
+    return INSTALL_DIR if target is None else target
+
+
 # Hard bound on a single pip invocation. plugin-host has NO network egress in
 # production, so a spec whose deps aren't already vendored will never resolve —
 # without this it hangs uvicorn's import of main:app for minutes, taking the
@@ -181,7 +190,7 @@ def looks_like_artifact_filename(name: str | None) -> bool:
     return "/" in s or "\\" in s or s.endswith(_ARTIFACT_EXTS)
 
 
-def installed_versions(distribution: str | None, target: str = INSTALL_DIR) -> set[str]:
+def installed_versions(distribution: str | None, target: str | None = None) -> set[str]:
     """ALL versions of `distribution` with a dist-info in the target volume.
 
     Returns a set, not one value, because `pip install --target` does NOT remove
@@ -190,6 +199,7 @@ def installed_versions(distribution: str | None, target: str = INSTALL_DIR) -> s
     first one" silently picked the OLDEST and made a current install look stale
     (2026-06-29 follow-up). Read via importlib.metadata so names/versions match
     exactly how pip wrote them."""
+    target = _target(target)
     if not distribution:
         return set()
     from importlib.metadata import distributions
@@ -205,7 +215,7 @@ def installed_versions(distribution: str | None, target: str = INSTALL_DIR) -> s
     return out
 
 
-def effective_version(distribution: str | None, target: str = INSTALL_DIR) -> str | None:
+def effective_version(distribution: str | None, target: str | None = None) -> str | None:
     """The version whose CODE is actually importable from the volume, or None.
 
     `pip install --target` overwrites the single package dir in place but leaves
@@ -216,6 +226,7 @@ def effective_version(distribution: str | None, target: str = INSTALL_DIR) -> st
     false-stale). ASSUMES dist-info reflects code: a partial install that wrote
     newer metadata over older code would read high — `prune_other_versions` keeps
     the volume single-version so this stays unambiguous in steady state."""
+    target = _target(target)
     vers = installed_versions(distribution, target)
     if not vers:
         return None
@@ -226,7 +237,7 @@ def effective_version(distribution: str | None, target: str = INSTALL_DIR) -> st
         return max(vers)
 
 
-def running_dists(discovered, target: str = INSTALL_DIR) -> dict:
+def running_dists(discovered, target: str | None = None) -> dict:
     """{plugin key: (distribution, running version)} for the catalog.
 
     Deliberately NOT the entry point's own `dist.version`. `pip install --target`
@@ -239,6 +250,7 @@ def running_dists(discovered, target: str = INSTALL_DIR) -> dict:
     version only when nothing is installed under `target` (a plugin on the
     image's own path rather than the volume).
     """
+    target = _target(target)
     out: dict = {}
     for manifest, dist_name, ep_version in discovered:
         out[manifest.key] = (dist_name, effective_version(dist_name, target) or ep_version)
@@ -246,7 +258,7 @@ def running_dists(discovered, target: str = INSTALL_DIR) -> dict:
 
 
 def is_installed(distribution: str | None, version: str | None,
-                 target: str = INSTALL_DIR) -> bool:
+                 target: str | None = None) -> bool:
     """True if the running (effective) version of `distribution` equals `version`.
     This is what makes reconcile idempotent: the /plugins volume persists across
     restarts, so a plugin already installed at the desired version must NOT be
@@ -254,6 +266,7 @@ def is_installed(distribution: str | None, version: str | None,
     network-isolated host can't reach (the 2026-06-29 outage). Comparing the
     EFFECTIVE (highest) version, not mere dist-info membership, so accumulated old
     metadata can't make a present version look absent NOR a stale one look fresh."""
+    target = _target(target)
     if not distribution or not version:
         return False
     eff = effective_version(distribution, target)
@@ -261,12 +274,13 @@ def is_installed(distribution: str | None, version: str | None,
 
 
 def prune_other_versions(distribution: str | None, keep_version: str | None,
-                         target: str = INSTALL_DIR) -> list[str]:
+                         target: str | None = None) -> list[str]:
     """Delete dist-info dirs for `distribution` whose version != keep_version, and
     return the names removed. This is the root-cause fix for the cruft pip --target
     leaves behind: without it the volume keeps every past version's metadata, which
     makes version detection ambiguous. Call ONLY once keep_version is confirmed
     present, so a working install's metadata is never deleted out from under it."""
+    target = _target(target)
     removed: list[str] = []
     if not distribution or not keep_version:
         return removed
@@ -293,13 +307,14 @@ _STAGING = "_staging"
 _PLUGIN_ENTRY_POINT_GROUP = "[gdx.modules]"
 
 
-def plugin_dists_on_volume(target: str = INSTALL_DIR) -> dict[str, str]:
+def plugin_dists_on_volume(target: str | None = None) -> dict[str, str]:
     """{canonical distribution: distribution name} for every distribution
     installed under `target` that declares a `gdx.modules` entry point — a
     plugin, in other words. Read from each dist-info's entry_points.txt, never
     by importing anything. Libraries that also live in the volume (playwright,
     greenlet, pyee, ...) declare no such group and never appear here, so a
     cleanup keyed on this map cannot touch them."""
+    target = _target(target)
     out: dict[str, str] = {}
     try:
         entries = os.listdir(target)
@@ -500,7 +515,7 @@ def _audit_removals(db: Session, removed: list[str], applied: dict[str, RemovalI
 
 
 def remove_undesired_plugins(desired: set[str], intents: dict[str, dict[str | None, RemovalIntent]],
-                             target: str = INSTALL_DIR,
+                             target: str | None = None,
                              applied: dict[str, RemovalIntent] | None = None) -> list[str]:
     """Delete every plugin distribution on the volume that (a) no desired-state
     row names any more AND (b) an operator recorded removing (`intents`, from
@@ -518,6 +533,7 @@ def remove_undesired_plugins(desired: set[str], intents: dict[str, dict[str | No
     left in place with a warning. Ownership rules are remove_installed_dist's:
     a top-level another installed dist-info also claims is left alone.
     """
+    target = _target(target)
     removed: list[str] = []
     for canon, name in sorted(plugin_dists_on_volume(target).items()):
         if canon in desired:
@@ -568,8 +584,9 @@ def _within(target_real: str, path: str) -> bool:
     return real == target_real or real.startswith(target_real + os.sep)
 
 
-def _shared_top_levels(exclude: list[str], target: str = INSTALL_DIR) -> set[str]:
+def _shared_top_levels(exclude: list[str], target: str | None = None) -> set[str]:
     """Top-level names claimed by installed dist-infos OTHER than `exclude`."""
+    target = _target(target)
     shared: set[str] = set()
     try:
         entries = os.listdir(target)
@@ -581,8 +598,9 @@ def _shared_top_levels(exclude: list[str], target: str = INSTALL_DIR) -> set[str
     return shared
 
 
-def _dist_info_dirs(distribution: str | None, target: str = INSTALL_DIR) -> list[str]:
+def _dist_info_dirs(distribution: str | None, target: str | None = None) -> list[str]:
     """dist-info directory names in `target` belonging to `distribution`."""
+    target = _target(target)
     if not distribution:
         return []
     want = _canon(distribution)
@@ -600,7 +618,7 @@ def _dist_info_dirs(distribution: str | None, target: str = INSTALL_DIR) -> list
     return out
 
 
-def _record_top_levels(dist_info: str, target: str = INSTALL_DIR) -> set[str]:
+def _record_top_levels(dist_info: str, target: str | None = None) -> set[str]:
     """The top-level names a dist-info's RECORD claims it installed.
 
     RECORD lists every installed file relative to the target dir, so the first
@@ -608,6 +626,7 @@ def _record_top_levels(dist_info: str, target: str = INSTALL_DIR) -> set[str]:
     Entries that are absolute or try to escape the target are ignored — a
     malicious wheel must not be able to point our own cleanup at /etc.
     """
+    target = _target(target)
     names: set[str] = set()
     record = os.path.join(target, dist_info, "RECORD")
     try:
@@ -626,7 +645,7 @@ def _record_top_levels(dist_info: str, target: str = INSTALL_DIR) -> set[str]:
     return names
 
 
-def remove_installed_dist(distribution: str | None, target: str = INSTALL_DIR) -> list[str]:
+def remove_installed_dist(distribution: str | None, target: str | None = None) -> list[str]:
     """Delete a distribution's installed CODE (and metadata) from the volume.
 
     This exists because `pip install --target` does NOT replace an existing
@@ -644,6 +663,7 @@ def remove_installed_dist(distribution: str | None, target: str = INSTALL_DIR) -
     another installed dist-info also claims (a shared dependency) is left
     alone, so cleaning up plugin A cannot break plugin B.
     """
+    target = _target(target)
     removed: list[str] = []
     mine = _dist_info_dirs(distribution, target)
     if not mine:
@@ -764,7 +784,7 @@ def desired_versions(db: Session) -> dict[str, str]:
 def detect_stale(
     desired: dict[str, str],
     discovered: list[tuple[Any, str | None, str | None]],
-    target: str = INSTALL_DIR,
+    target: str | None = None,
 ) -> dict[str, dict[str, str]]:
     """Which loaded plugins are at the WRONG version. `discovered` is
     [(manifest, dist_name, dist_version)]. Returns {plugin_key: {installed,
@@ -777,6 +797,7 @@ def detect_stale(
     membership (which would let a stale version masquerade as fresh). Best-effort:
     a plugin whose entry point has no resolvable distribution or no desired version
     recorded is NOT flagged — detection needs both."""
+    target = _target(target)
     stale: dict[str, dict[str, str]] = {}
     seen: set[str] = set()
     for manifest, dist_name, _dist_ver in discovered:
@@ -796,12 +817,13 @@ def detect_stale(
 
 def install_artifact(
     filename: str, content: bytes, expected_sha256: str | None = None,
-    target: str = INSTALL_DIR,
+    target: str | None = None,
 ) -> bool:
     """Write an uploaded wheel/sdist to a staging path under the volume and
     pip-install it. Filename is re-validated here (defense in depth) so a bad row
     can't path-traverse on write; and if a digest is supplied the bytes are
     verified against it (catches a tampered/corrupted DB row) before install."""
+    target = _target(target)
     safe = safe_artifact_name(filename)
     if safe is None:
         log.error("refusing unsafe artifact filename: %r", filename)
@@ -909,7 +931,7 @@ def _install_replacing(spec: str, dist: str, ver: str, target: str,
         shutil.rmtree(staging, ignore_errors=True)
 
 
-def pip_install(spec: str, target: str = INSTALL_DIR) -> bool:
+def pip_install(spec: str, target: str | None = None) -> bool:
     """Install one spec into the target dir. Returns True on success, logs on
     failure (never raises — one bad package must not abort the whole boot).
 
@@ -921,6 +943,7 @@ def pip_install(spec: str, target: str = INSTALL_DIR) -> bool:
     than hanging boot for minutes (the 2026-06-29 outage). `--upgrade` is
     deliberately omitted: it forces an index check, and an offline host can't
     satisfy it anyway — a version change needs network at install time."""
+    target = _target(target)
     cmd = [sys.executable, "-m", "pip", "install", "--target", target,
            "--retries", "0", "--timeout", "10", spec]
     log.info("plugin reconcile: %s", " ".join(cmd))
@@ -979,7 +1002,7 @@ def reconcile(db: Session | None = None) -> ReconcileResult:
                 fdist, fver = artifact_name_version(package)
                 if fdist:
                     desired.add(_canon(fdist))
-                if fdist and fver and is_installed(fdist, fver):
+                if fdist and fver and is_installed(fdist, fver, INSTALL_DIR):
                     log.info("registry row %r resolves to installed %s %s — skipping",
                              package, fdist, fver)
                     prune_other_versions(fdist, fver, target=INSTALL_DIR)
@@ -991,7 +1014,7 @@ def reconcile(db: Session | None = None) -> ReconcileResult:
                 continue
             desired.add(_canon(spec_distribution(package) or package))
             spec = f"{package}=={version}" if version else package
-            if version and is_installed(package, version):
+            if version and is_installed(package, version, INSTALL_DIR):
                 log.info("registry package %s already installed — skipping", spec)
                 prune_other_versions(package, version, target=INSTALL_DIR)
                 continue
@@ -1003,7 +1026,7 @@ def reconcile(db: Session | None = None) -> ReconcileResult:
             if version and present and not _versions_equal(present, version):
                 ok = _install_replacing(spec, package, version, INSTALL_DIR, present)
             else:
-                ok = pip_install(spec)
+                ok = pip_install(spec, target=INSTALL_DIR)
                 if ok and version:
                     prune_other_versions(package, version, target=INSTALL_DIR)
             if ok:
@@ -1030,7 +1053,7 @@ def reconcile(db: Session | None = None) -> ReconcileResult:
             log.info("skipping %d superseded artifact row(s) — installing the "
                      "newest version of each plugin only", superseded)
         for filename, sha256, content in newest.values():
-            if install_artifact(filename, content, expected_sha256=sha256):
+            if install_artifact(filename, content, expected_sha256=sha256, target=INSTALL_DIR):
                 installed.append(filename)
             else:
                 failed.append(filename)

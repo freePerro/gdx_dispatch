@@ -14,6 +14,7 @@
             data-test="ms-refresh"
           />
         </div>
+        <OfficeAlertsToggle compact />
       </header>
 
       <div v-if="error" class="error-banner">{{ error }}</div>
@@ -25,7 +26,7 @@
       <div v-else-if="!threads.length" class="state-msg">
         <i class="pi pi-comment empty-icon" />
         <div class="empty-title">No conversations yet</div>
-        <div class="empty-help">Texts to the business line appear here within about 10 minutes.</div>
+        <div class="empty-help">Texts to the business line appear here within about a minute.</div>
       </div>
 
       <ol v-else class="card-list">
@@ -197,6 +198,7 @@ import { formatDateTime } from '../composables/useFormatters'
 import { useSmsUnreadStore } from '../stores/smsUnread'
 import SendLaterPanel from '../components/SendLaterPanel.vue'
 import ScheduledTextsList from '../components/ScheduledTextsList.vue'
+import OfficeAlertsToggle from '../components/OfficeAlertsToggle.vue'
 import { isQuietHours, whenLabel } from '../utils/sendLater'
 
 const api = useApi()
@@ -502,7 +504,7 @@ onUnmounted(() => {
 .thread-title.customer-link {
   display: inline-block;
   line-height: 44px;
-  color: var(--p-primary-color, #3b82f6);
+  color: var(--p-primary-color);
   text-decoration: underline;
 }
 .thread-card.unread .thread-who {

@@ -55,7 +55,7 @@ async function seedContact(api, customerId, name) {
 
 async function openContacts(page, customerId, { theme = 'light', width = 1440, height = 900 } = {}) {
   await page.setViewportSize({ width, height });
-  await page.addInitScript((t) => localStorage.setItem('gdx_theme', t), theme);
+  await page.addInitScript((t) => { if (window === window.top) localStorage.setItem('gdx_theme', t); }, theme);
   await page.goto(`/customers/${customerId}`);
   const tab = page.getByRole('button', { name: 'Contacts', exact: true });
   await expect(tab).toBeVisible({ timeout: 20000 });

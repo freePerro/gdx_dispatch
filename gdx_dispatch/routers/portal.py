@@ -42,6 +42,9 @@ log = logging.getLogger(__name__)
 ACCESS_TTL_SECONDS = 60 * 60
 REMEMBER_ME_TTL_SECONDS = 60 * 60 * 24 * 30  # "Remember me" — 30-day session
 MAGIC_LINK_TTL_MINUTES = 15
+# Per-user floor between public sign-in emails (GDXA-1074). The per-IP auth
+# bucket alone let anyone who knew an address mail it 30 links a minute.
+MAGIC_LINK_RESEND_COOLDOWN_SECONDS = 60
 INVITE_LINK_TTL_DAYS = 7
 # Statuses a customer may see. Drafts stay internal until staff hits Send.
 # "rejected" (2026-08-13) = the estimate EMAIL bounced — internal delivery
@@ -191,6 +194,39 @@ def _normalize_dt(value: datetime | None) -> datetime | None:
     return value
 
 
+def _magic_link_sent_recently(db: Session, customer_user_id: UUID) -> bool:
+    """True when a sign-in send to this user began inside the cooldown.
+
+    Reads the newest send-lifecycle row: ``requested`` is committed before
+    the email goes out (so a concurrent request sees it), then ``sent`` or
+    ``send_failed`` follows. A failed send delivered nothing and does not
+    hold the window; a throttled call is not in the set, so it never pushes
+    the window forward. Compared in Python because SQLite drops the timezone
+    off ``created_at``.
+    """
+    from gdx_dispatch.core.audit import AuditLog, ensure_audit_table
+
+    ensure_audit_table(db)
+    last = db.execute(
+        select(AuditLog.action, AuditLog.created_at)
+        .where(
+            AuditLog.action.in_((
+                "portal_magic_link_requested",
+                "portal_magic_link_sent",
+                "portal_magic_link_send_failed",
+            )),
+            AuditLog.entity_type == "customer_user",
+            AuditLog.entity_id == str(customer_user_id),
+        )
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(1)
+    ).first()
+    if last is None or last.action == "portal_magic_link_send_failed":
+        return False
+    started = _normalize_dt(last.created_at)
+    return _now_utc() - started < timedelta(seconds=MAGIC_LINK_RESEND_COOLDOWN_SECONDS)
+
+
 def issue_customer_access_token(customer_user: CustomerUser, *, remember: bool = False) -> str:
     ttl = REMEMBER_ME_TTL_SECONDS if remember else ACCESS_TTL_SECONDS
     claims = {
@@ -299,20 +335,54 @@ def portal_login(payload: PortalLoginIn, request: Request, db: Session = Depends
     if not user:
         return {"ok": True}
 
+    tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    # Cooldown keyed on the last send to this user, read from the audit
+    # trail: the token's expiry can't say when it was last sent, because a
+    # pending invite's token is re-sent, not re-minted. Same {"ok": true}
+    # either way, so the cooldown cannot be used to enumerate.
+    # The row lock makes check-and-claim one step: concurrent requests for
+    # one user queue here, and each sees the `requested` row the winner
+    # commits before it sends (Postgres; SQLite ignores FOR UPDATE).
+    db.refresh(user, with_for_update=True)
+    if _magic_link_sent_recently(db, user.id):
+        log_audit_event_sync(
+            db=db,
+            tenant_id=tenant_id,
+            user_id=str(user.id),
+            action="portal_magic_link_throttled",
+            entity_type="customer_user",
+            entity_id=str(user.id),
+            details={"cooldown_seconds": MAGIC_LINK_RESEND_COOLDOWN_SECONDS},
+        )
+        db.commit()
+        log.info("portal_magic_link_throttled", extra={"customer_user_id": str(user.id)})
+        return {"ok": True}
+
     # Reuse a still-valid longer-lived token (a pending staff invite) instead
     # of clobbering it — this endpoint is public, and anyone who knows the
     # email could otherwise invalidate an invite the customer hasn't opened.
     existing_expiry = _normalize_dt(user.portal_token_expires_at)
     login_expiry = _now_utc() + timedelta(minutes=MAGIC_LINK_TTL_MINUTES)
-    if user.portal_token and existing_expiry and existing_expiry > login_expiry:
+    token_reused = bool(user.portal_token and existing_expiry and existing_expiry > login_expiry)
+    if token_reused:
         token = user.portal_token
     else:
         token = secrets.token_urlsafe(32)
         user.portal_token = token
         user.portal_token_expires_at = login_expiry
+    # The claim: committed with the token and before the send, releasing
+    # the row lock only once the next request can see it.
+    log_audit_event_sync(
+        db=db,
+        tenant_id=tenant_id,
+        user_id=str(user.id),
+        action="portal_magic_link_requested",
+        entity_type="customer_user",
+        entity_id=str(user.id),
+        details={"token_reused": token_reused},
+    )
     db.commit()
 
-    tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
     link = f"{_portal_link_base(request)}/customer-portal?token={token}"
     sent, skip_reason = send_portal_magic_link_email(db, tenant_id, user.email, link)
 

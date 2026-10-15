@@ -69,8 +69,8 @@ function retry() {
 .retry-btn {
   padding: 0.5rem 1.25rem;
   border-radius: 6px;
-  border: 1px solid var(--p-primary-color, #3b82f6);
-  background: var(--p-primary-color, #3b82f6);
+  border: 1px solid var(--p-primary-color);
+  background: var(--p-primary-color);
   color: white;
   cursor: pointer;
 }

@@ -49,6 +49,9 @@ GET /api/integrations/available
 GET /api/integrations/zapier/triggers
 GET /api/meta/deprecations
 GET /api/meta/versions
+# Device-alert token (office phone alerts): the X-Device-Alerts-Token header IS the
+# credential; the feed re-checks the user is active and holds nav.office on every call.
+GET /api/notifications/device-alerts/feed
 GET /api/oauth/outlook/callback
 GET /api/proposals/{token}
 # Same Group-2 model as the page above (2026-10-04): the estimate PDF the page
@@ -89,6 +92,8 @@ GET /{full_path:path}
 POST /api/ai/pricing/suggest
 POST /api/ai/quote
 POST /api/feedback/client-error
+# Device-alert token revoke: the device token authenticates its own revoke (works after logout).
+POST /api/notifications/device-alerts/revoke
 POST /api/payments/confirm
 POST /api/payments/create-intent
 # Group 2 (2026-10-12, GDXA-792): the pay page's "Pay a different way

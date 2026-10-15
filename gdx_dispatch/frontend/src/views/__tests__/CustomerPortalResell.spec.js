@@ -99,4 +99,49 @@ describe('customer portal — resale quotes', () => {
     expect(w.find('[data-testid="qr-file-input"]').exists()).toBe(true);
     expect(w.findAll('[data-testid="confirm-dialog-mount"]')).toHaveLength(1);
   });
+
+  // GDXA-1081: My Quotes waits on the agreed flag, and a refusal is read by
+  // its code, through the real authedFetch.
+  function stubFetch(routes) {
+    const fetchMock = vi.fn(async (url) => {
+      const u = String(url);
+      for (const [suffix, reply] of routes) if (u.endsWith(suffix)) return reply();
+      return { ok: true, status: 200, json: async () => [] };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+  const quotesCalls = (fetchMock) => fetchMock.mock.calls.filter(([u]) => String(u).endsWith('/portal/resale-quotes')).length;
+  const BrandingStub = { name: 'BrandingStub', emits: ['changed', 'not-eligible'], template: '<div data-testid="branding-tab-stub" />' };
+
+  it('My Quotes asks for nothing until the terms are agreed on My Branding', async () => {
+    const fetchMock = stubFetch([
+      ['/portal/context', () => ({ ok: true, status: 200, json: async () => ({ company: { name: 'GDX' }, reseller: { eligible: true, disclaimer_accepted: false, set_up: false } }) })],
+    ]);
+    sessionStorage.setItem('gdx_portal_jwt', 'portal-token');
+    const w = mount(CustomerPortalView, { global: { stubs: { ...stubs, PortalMyQuotesTab: false, PortalBrandingTab: BrandingStub } } });
+    await flushPromises();
+    expect(quotesCalls(fetchMock)).toBe(0);
+    expect(w.find('[data-testid="my-quotes-locked"]').exists()).toBe(true);
+    w.findComponent({ name: 'BrandingStub' }).vm.$emit('changed', { disclaimer: { accepted: true } });
+    await flushPromises();
+    expect(quotesCalls(fetchMock)).toBe(1);
+    expect(w.find('[data-testid="my-quotes-locked"]').exists()).toBe(false);
+  });
+
+  it('a not-eligible refusal re-reads the context and the reseller tabs go', async () => {
+    let reseller = { eligible: true, disclaimer_accepted: true, set_up: true };
+    stubFetch([
+      ['/portal/context', () => ({ ok: true, status: 200, json: async () => ({ company: { name: 'GDX' }, reseller }) })],
+      ['/portal/resale-quotes', () => {
+        reseller = { eligible: false, disclaimer_accepted: false, set_up: false };
+        return { ok: false, status: 403, json: async () => ({ detail: { code: 'reseller_not_eligible', message: 'Resale quotes are for contractor and wholesale accounts' } }) };
+      }],
+    ]);
+    sessionStorage.setItem('gdx_portal_jwt', 'portal-token');
+    const w = mount(CustomerPortalView, { global: { stubs: { ...stubs, PortalMyQuotesTab: false } } });
+    await flushPromises();
+    expect(w.find('[data-testid="my-quotes-tab-btn"]').exists()).toBe(false);
+    expect(w.find('[data-testid="branding-tab-btn"]').exists()).toBe(false);
+  });
 });

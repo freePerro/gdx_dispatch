@@ -3,7 +3,10 @@ Job Costing router — per-job cost breakdown, markup rules, price calculator.
 
 Profitability tooling:
 - GET /api/costing/jobs/{job_id} — labor + parts + overhead + margin breakdown
-- CRUD /api/costing/markup-rules — per-category markup/minimum-margin rules
+- GET /api/costing/markup-rules — per-category markup/minimum-margin rules
+- POST /api/costing/markup-rules — add a rule
+- PATCH /api/costing/markup-rules/{rule_id} — edit a rule
+- DELETE /api/costing/markup-rules/{rule_id} — remove a rule
 - POST /api/costing/calculate-price — suggested price with markup + margin floor
 - GET /api/costing/profitability — aggregate per-job profitability over N days
 - GET /api/costing/catalog-pricing — list all markup rules (for settings UI)
@@ -29,7 +32,7 @@ from sqlalchemy import (
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
+from gdx_dispatch.core.audit import field_changes, log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.invoice_net_billed import invoice_net_billed_sq
 from gdx_dispatch.core.modules import require_module, require_role
@@ -722,6 +725,7 @@ def update_markup_rule(
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
     rule = _get_scoped_rule(db, rule_id, tenant_id)
+    before = _serialize_rule(rule)
     data = payload.model_dump(exclude_unset=True)
 
     if "category" in data and data["category"] is not None:
@@ -755,16 +759,19 @@ def update_markup_rule(
         db.rollback()
         raise HTTPException(status_code=409, detail="Markup rule conflict") from None
     db.refresh(rule)
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="markup_rule_updated",
-        entity_id=str(rule.id),
-        details={"fields": list(data.keys())},
-        request=request,
-    )
-    return _serialize_rule(rule)
+    after = _serialize_rule(rule)
+    # What changed, old -> new (GDXA-997): the row used to list every key sent, unchanged ones included.
+    if changes := field_changes(before, after, ("category", "markup_percent", "minimum_margin_percent", "active")):
+        _audit(
+            db,
+            tenant_id=tenant_id,
+            user=user,
+            action="markup_rule_updated",
+            entity_id=str(rule.id),
+            details={"fields": list(changes), "changes": changes},
+            request=request,
+        )
+    return after
 
 
 @router.delete("/api/costing/markup-rules/{rule_id}", response_model=None, status_code=204)

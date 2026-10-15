@@ -61,6 +61,9 @@ gdx_dispatch/tests/test_redis_isolation_fixture.py           platform-core
 # The four report-only scanners run on the real tree against their baselines,
 # with each baseline's entry count pinned (GDXA-404). Not gated, like pg.py.
 gdx_dispatch/tests/test_scanner_real_repo_ratchet.py         platform-core
+# core/roles.py's normalizer and its parity with the frontend mirror
+# constants/roles.js (GDXA-1010). Not gated, like pg.py.
+gdx_dispatch/tests/test_roles_canonical.py                   platform-core
 .github/*                                                    platform-core
 scripts/*                                                    platform-core
 tools/*                                                      platform-core
@@ -189,6 +192,10 @@ gdx_dispatch/core/well_known_manifest.py                     platform-core
 gdx_dispatch/core/app_version.py                             platform-core
 gdx_dispatch/release_notes/*                                 platform-core
 gdx_dispatch/services/release_notes.py                       platform-core
+# The notes files, parser, router and release tool (draft / check / body /
+# changes) the Release workflow runs. Tests are not a covered root, so this
+# rule is not demanded by the gate, but it must keep matching.
+gdx_dispatch/tests/test_release_notes.py                     platform-core
 
 gdx_dispatch/modules/error_sink/*                            platform-core
 gdx_dispatch/modules/numbering/*                             platform-core
@@ -546,6 +553,7 @@ gdx_dispatch/frontend/src/constants/customerTypes.js         customers-crm
 ## email, cell gateway, notifications, push, transactional email, team chat.
 ## ---------------------------------------------------------------------------
 gdx_dispatch/routers/notifications.py                        comms-email-phone
+gdx_dispatch/routers/device_alerts.py                        comms-email-phone
 gdx_dispatch/routers/push.py                                 comms-email-phone
 gdx_dispatch/routers/messages.py                             comms-email-phone
 gdx_dispatch/routers/inbound_comms.py                        comms-email-phone
@@ -584,6 +592,7 @@ gdx_dispatch/frontend/src/components/OutlookConnectButton.vue comms-email-phone
 gdx_dispatch/frontend/src/components/OutlookIntegrationCard.vue comms-email-phone
 gdx_dispatch/frontend/src/components/PhoneComIntegrationCard.vue comms-email-phone
 gdx_dispatch/frontend/src/components/NotificationsDrawer.vue comms-email-phone
+gdx_dispatch/frontend/src/lib/notificationDestinations.js    comms-email-phone
 gdx_dispatch/frontend/src/stores/emailUnread.js              comms-email-phone
 gdx_dispatch/frontend/src/stores/smsUnread.js                comms-email-phone
 gdx_dispatch/frontend/src/stores/notifications.js            comms-email-phone
@@ -704,8 +713,23 @@ gdx_dispatch/frontend/src/composables/useOfflineSync.js      mobile-tech
 gdx_dispatch/frontend/src/composables/usePhotoQueue.js       mobile-tech
 gdx_dispatch/frontend/src/composables/useGpsBreadcrumb.js    mobile-tech
 gdx_dispatch/frontend/src/composables/useMobileTour.js       mobile-tech
+gdx_dispatch/frontend/src/composables/useOfficeAlertsKeeper.js mobile-tech
 gdx_dispatch/frontend/src/lib/offlineDb.js                   mobile-tech
 gdx_dispatch/frontend/src/lib/keyboardInset.js               mobile-tech
+gdx_dispatch/frontend/src/lib/serverConfig.js                mobile-tech
+gdx_dispatch/frontend/src/lib/nativeBridge.js                mobile-tech
+gdx_dispatch/frontend/src/lib/nativeCamera.js                mobile-tech
+gdx_dispatch/frontend/src/lib/nativeGps.js                   mobile-tech
+gdx_dispatch/frontend/src/lib/nativePush.js                  mobile-tech
+gdx_dispatch/frontend/src/lib/officeAlerts.js                mobile-tech
+gdx_dispatch/frontend/src/components/OfficeAlertsToggle.vue  mobile-tech
+gdx_dispatch/frontend/src/lib/nativeBarcode.js               mobile-tech
+gdx_dispatch/frontend/src/lib/nativeAuth.js                  mobile-tech
+# The Capacitor Android app: native plugins (OfficeAlerts*, GpsForeground*),
+# their JUnit tests, gradle and resources. One owner for the whole tree, so a
+# directory rule; the two capacitor.*.gradle files `npx cap sync` regenerates
+# stay owned too — their diff is still mobile-tech's to review (GDXA-1153).
+gdx_dispatch/frontend/android/*                              mobile-tech
 # Exceptions to the Mobile*.vue rule: these are communication surfaces.
 gdx_dispatch/frontend/src/views/MobileInboxView.vue          comms-email-phone
 gdx_dispatch/frontend/src/views/MobilePhoneView.vue          comms-email-phone
@@ -744,6 +768,7 @@ gdx_dispatch/routers/signatures.py                           documents-media
 gdx_dispatch/routers/branding_public.py                      documents-media
 gdx_dispatch/core/pdf_generator.py                           documents-media
 gdx_dispatch/core/document_text.py                           documents-media
+gdx_dispatch/core/file_serving.py                            documents-media
 gdx_dispatch/core/images.py                                  documents-media
 gdx_dispatch/core/job_photos.py                              documents-media
 gdx_dispatch/core/branding_logo.py                           documents-media

@@ -135,6 +135,23 @@ INSERT INTO plug_fake_catalog (sku, price) VALUES ('D-4', 40);
 # installs them, and `core/audit.py` only ever installs them once — so a pave
 # that does not put them back leaves audit_logs mutable with ARCHITECTURAL
 # INVARIANT #2 silently unenforced.
+MARKER_123_SCRIPT = """
+import importlib.util, os
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from sqlalchemy import create_engine
+path = 'gdx_dispatch/migrations/versions/123_audit_chain_serialized.py'
+spec = importlib.util.spec_from_file_location('m122', path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+with create_engine(os.environ['DATABASE_URL']).begin() as conn:
+    mod.op = Operations(MigrationContext.configure(conn))
+    mod.upgrade()
+"""
+
+MARKER_SQL = ("SELECT id::text, created_at, row_hash FROM audit_logs "
+              "WHERE action = 'audit_chain.serialized_writer'")
+
 AUDIT_GUARD_OBJECTS = (
     ("function", "audit_logs_immutable_guard()"),
     ("trigger", "audit_logs_no_update ON audit_logs"),
@@ -338,6 +355,13 @@ def migrated_pg_db():
             [sys.executable, "-m", "gdx_dispatch.tools.bootstrap_app"],
             REPO_ROOT, env,
         )
+        # A deployed database reached 123 with audit rows already in it, so it
+        # carries the chain marker; the upgrade above ran 123 on an empty table
+        # and wrote none. Run 123 again now that bootstrap has written rows, so
+        # the pave below has a marker to bring back (GDXA-1050: step 4b wrote a
+        # second one, MISMATCH audit_logs 3 -> 4).
+        _run_step("123 on a non-empty audit_logs", [sys.executable, "-c", MARKER_123_SCRIPT],
+                  REPO_ROOT, env)
         _exec(url, PLUGIN_TABLE_DDL)
         _exec(url, EXTRA_OBJECTS_DDL)
         # bootstrap_app writes audit rows, which is what installs the
@@ -369,6 +393,8 @@ def test_pave_rebuilds_every_table_it_dumped(migrated_pg_db, tmp_path):
     # A BEFORE ... FOR EACH ROW trigger only fires on a row, so an empty
     # audit_logs would make the enforcement assertion below vacuous.
     assert before_counts["audit_logs"] >= 1, "no audit rows — the guard assertion would be vacuous"
+    before_marker = _sql(url, MARKER_SQL)
+    assert len(before_marker) == 1, "no chain marker — the marker check below would be vacuous"
     for obj in AUDIT_GUARD_OBJECTS:
         assert obj in before_objects, f"rig lacks {obj} — it cannot prove the guard survives"
     assert ("matview", "mv_plug_skus") in before_objects
@@ -397,6 +423,9 @@ def test_pave_rebuilds_every_table_it_dumped(migrated_pg_db, tmp_path):
     assert not lost, f"pave dumped these tables and did not rebuild them: {lost}"
 
     assert _counts(url) == before_counts, f"rows lost\n{output[-6000:]}"
+    # The verifier's fork boundary is the earliest marker: the reload must
+    # bring back that row, and step 4b must not have written a later one.
+    assert _sql(url, MARKER_SQL) == before_marker
 
     # `alembic upgrade head` re-stamps; paving from the same tree must land on
     # the same revision, and never on no revision at all.

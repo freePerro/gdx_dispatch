@@ -54,6 +54,7 @@ test.afterAll(async () => {
 
 async function signIn(page) {
   await page.addInitScript((a) => {
+    if (window !== window.top) return;
     sessionStorage.setItem('gdx_access_token', a.t);
   }, { t: sharedToken, tid: TENANT });
   return { api: sharedApi, token: sharedToken };
