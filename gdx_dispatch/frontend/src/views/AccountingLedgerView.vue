@@ -91,7 +91,11 @@
               <p class="skip-note" data-testid="ar-control-shortfall-note">
                 {{ fmt(ar.era_settlement_shortfall_cents) }} of payments dated before the
                 ledger start is on no ledger line: each exceeds what its invoice still owed
-                at the start. Check the payment or the opening balance.
+                at the start. Check the payment or the opening balance.<span
+                  v-if="ar.era_settlement_shortfall_count > ar.era_settlement_shortfalls.length"
+                  data-testid="ar-control-shortfall-cap"
+                > Showing the {{ ar.era_settlement_shortfalls.length }} largest of
+                  {{ ar.era_settlement_shortfall_count }} payments.</span>
               </p>
               <DataTable :value="ar.era_settlement_shortfalls" size="small" data-testid="ar-control-shortfalls">
                 <Column header="Invoice">

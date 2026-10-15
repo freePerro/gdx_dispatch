@@ -46,6 +46,7 @@ const AR = {
   unattributed_cents: 0,
   unattributed_by_source: [],
   era_settlement_shortfall_cents: 0,
+  era_settlement_shortfall_count: 0,
   era_settlement_shortfalls: [],
 };
 
@@ -273,6 +274,7 @@ describe('AccountingLedgerView', () => {
           subledger_cents: 0,
           tied: false,
           era_settlement_shortfall_cents: 10000,
+          era_settlement_shortfall_count: 1,
           era_settlement_shortfalls: [{
             invoice_id: 'inv7', invoice_number: 'INV-7', payment_id: 'p1',
             payment_date: '2026-06-20', amount_cents: 20000, allocated_cents: 10000,
@@ -291,6 +293,33 @@ describe('AccountingLedgerView', () => {
     expect(table.text()).toContain('INV-7');
     expect(table.text()).toContain('$200.00');
     expect(table.text()).toContain('2026-06-20');
+    expect(wrapper.find('[data-testid="ar-control-shortfall-cap"]').exists()).toBe(false);
+  });
+
+  it('says how many shortfalls are listed when the payload is capped (GDXA-1244)', async () => {
+    const row = (n, cents) => ({
+      invoice_id: `inv${n}`, invoice_number: `INV-${n}`, payment_id: `p${n}`,
+      payment_date: '2026-06-20', amount_cents: cents + 10000, allocated_cents: 10000,
+      uncovered_cents: cents,
+    });
+    apiGet.mockImplementation(async (url) => {
+      if (url.includes('/ar-control')) {
+        return {
+          ...AR,
+          tied: false,
+          era_settlement_shortfall_cents: 33000,
+          era_settlement_shortfall_count: 3,
+          era_settlement_shortfalls: [row(1, 15000), row(2, 9000)],
+        };
+      }
+      return route(url);
+    });
+    const wrapper = mount(AccountingLedgerView, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="ar-control-shortfall-note"]').text()).toContain('$330.00');
+    expect(wrapper.find('[data-testid="ar-control-shortfall-cap"]').text()).toBe(
+      'Showing the 2 largest of 3 payments.',
+    );
   });
 
   it('shows no shortfall section when nothing is uncovered', async () => {

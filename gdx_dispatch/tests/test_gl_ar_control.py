@@ -182,6 +182,47 @@ def test_a_late_era_payment_beyond_its_anchor_is_not_tied(db):
     assert reconciliation_report(db, COMPANY)["era_settlement_shortfalls"] == out[
         "era_settlement_shortfalls"
     ]
+    assert out["era_settlement_shortfall_count"] == 1
+
+
+def test_shortfall_rows_are_capped_largest_first_and_the_count_and_total_are_not(
+    db, monkeypatch
+):
+    """GDXA-1244. The payload lists at most AR_SHORTFALL_ROW_LIMIT shortfalls,
+    largest uncovered first, like drift; the count and the cents total cover
+    every one, so the cap changes what is listed and never whether it ties."""
+    monkeypatch.setattr(reports, "AR_SHORTFALL_ROW_LIMIT", 2)
+    settings = ensure_gl_seed(db, COMPANY)
+    settings.cutover_month = date(2026, 7, 1)
+    db.flush()
+    excess = {}
+    for paid in ("130.00", "250.00", "190.00"):  # each on a $100 anchor
+        era = _issued(db, "100.00", invoice_date=date(2026, 6, 15))
+        _payment(db, recorded_on=era, posted_against=era, amount=paid, paid_on=date(2026, 6, 20))
+        _recalculate_invoice(era, db, actor="t")
+        excess[str(era.id)] = int(Decimal(paid) * 100) - 100_00
+    db.flush()
+
+    out = reports.ar_control(db, COMPANY)
+    assert out["era_settlement_shortfall_count"] == 3
+    assert out["era_settlement_shortfall_cents"] == 30_00 + 150_00 + 90_00
+    assert [r["uncovered_cents"] for r in out["era_settlement_shortfalls"]] == [150_00, 90_00]
+    assert all(excess[r["invoice_id"]] == r["uncovered_cents"] for r in out["era_settlement_shortfalls"])
+    assert out["tied"] is False
+
+
+def test_drift_rows_are_capped_largest_first_and_the_count_is_not(db, monkeypatch):
+    """GDXA-1181's drift cap, which shipped without a test (GDXA-1244)."""
+    monkeypatch.setattr(reports, "AR_DRIFT_ROW_LIMIT", 2)
+    for edited in ("540.00", "600.00", "580.00"):  # each on a $530 invoice
+        inv = _issued(db, "530.00")
+        inv.balance_due = Decimal(edited)
+    db.flush()
+
+    out = reports.ar_control(db, COMPANY)
+    assert out["drift_invoice_count"] == 3
+    assert [r["drift_cents"] for r in out["drift"]] == [-70_00, -50_00]
+    assert out["difference_cents"] == -(10_00 + 70_00 + 50_00)
 
 
 def test_balance_edited_without_a_repost_is_named(db):
