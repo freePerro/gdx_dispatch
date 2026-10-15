@@ -11,7 +11,7 @@ and never rot forever in the replay's locked list.
 from __future__ import annotations
 
 import secrets
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
 
@@ -316,6 +316,60 @@ def test_shortfall_scan_does_not_query_per_era_invoice(db):
         return len(count)
 
     assert statements(3) == statements(30)
+
+
+def _shortfalls_for_payment_created_at(db, created_at):
+    """A $150 payment dated pre-cutover against a $100 anchor, recorded at
+    ``created_at``: $50 uncovered if it is late-learned, nothing if it
+    existed at cutover. Flushed, never committed, so an aware value stays on
+    the row the exact rule reads, while the SQL prefilter reads what the
+    column stored (on SQLite, the wall clock without its offset)."""
+    from gdx_dispatch.modules.ledger.backfill import era_settlement_shortfalls
+
+    inv = _era_invoice(db, total="100.00")
+    _enable(db)
+    post_opening_balance(db, inv, actor="t")
+    p = Payment(id=uuid4(), invoice_id=inv.id, amount=Decimal("150.00"),
+                method="check", payment_date=date(2026, 6, 20), company_id=COMPANY)
+    db.add(p)
+    db.flush()
+    p.created_at = created_at
+    db.flush()
+    return p, era_settlement_shortfalls(db, COMPANY)
+
+
+def test_shortfall_prefilter_keeps_a_payment_recorded_seconds_into_cutover(db):
+    """GDXA-1243: every other late payment here is recorded a month after
+    cutover, so nothing pinned the prefilter's created_at bound; moved late,
+    ar_control dropped the shortfall and read Tied (the GDXA-1223 failure)."""
+    p, shortfalls = _shortfalls_for_payment_created_at(
+        db, datetime(2026, 7, 1, 0, 0, 30))
+    assert [(s["payment_id"], s["uncovered_cents"]) for s in shortfalls] == [
+        (str(p.id), 5000)]
+
+
+def test_shortfall_lateness_is_the_utc_day_of_an_aware_created_at(db):
+    """+14:00 on the cutover morning is the previous UTC day: the row existed
+    at cutover and is not late, though its stored wall clock is on cutover."""
+    _, shortfalls = _shortfalls_for_payment_created_at(
+        db, datetime(2026, 7, 1, 0, 0, 30, tzinfo=timezone(timedelta(hours=14))))
+    assert shortfalls == []
+
+
+def test_shortfall_prefilter_keeps_a_late_payment_whose_local_day_precedes_cutover(db):
+    """-12:00 on the eve of cutover is 00:00:30 UTC on cutover day: late. Its
+    stored wall clock is the day before cutover, which is what the
+    prefilter's day of slack exists to keep."""
+    p, shortfalls = _shortfalls_for_payment_created_at(
+        db, datetime(2026, 6, 30, 12, 0, 30, tzinfo=timezone(timedelta(hours=-12))))
+    assert [(s["payment_id"], s["uncovered_cents"]) for s in shortfalls] == [
+        (str(p.id), 5000)]
+
+
+def test_shortfall_ignores_a_payment_recorded_one_second_before_cutover(db):
+    _, shortfalls = _shortfalls_for_payment_created_at(
+        db, datetime(2026, 6, 30, 23, 59, 59))
+    assert shortfalls == []
 
 
 def test_mixed_naive_aware_created_at_sorts_cleanly(db):
