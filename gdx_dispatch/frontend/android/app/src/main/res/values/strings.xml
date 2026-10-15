@@ -4,4 +4,5 @@
     <string name="title_activity_main">GDX Dispatch</string>
     <string name="package_name">com.gdx.dispatch</string>
     <string name="custom_url_scheme">com.gdx.dispatch</string>
+    <string name="alerts_channel_description">New customer texts, payments, leads and other office notifications</string>
 </resources>
