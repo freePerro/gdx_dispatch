@@ -185,7 +185,6 @@ DELETE /api/surveys/templates/{template_id}
 DELETE /api/tags/{tag_id}
 DELETE /api/tasks/{task_id}
 DELETE /api/tech-unavailability/{unavail_id}
-DELETE /api/technicians/{technician_id}
 DELETE /api/vehicle-inspections/{inspection_id}
 DELETE /api/vendors/{vendor_id}
 DELETE /api/warranties/{warranty_id}
@@ -236,7 +235,6 @@ PATCH /api/service-triggers/{trigger_id}
 PATCH /api/surveys/templates/{template_id}
 PATCH /api/tags/{tag_id}
 PATCH /api/tasks/{task_id}
-PATCH /api/technicians/{technician_id}
 PATCH /api/timeclock/entries/{entry_id}
 PATCH /api/users/me
 PATCH /api/v1/jobs/{job_id}
@@ -463,9 +461,6 @@ POST /api/tasks
 POST /api/tasks/{task_id}/complete
 POST /api/tasks/{task_id}/reopen
 POST /api/tech-unavailability
-POST /api/technicians
-POST /api/technicians/{technician_id}/skills
-POST /api/technicians/{technician_id}/unavailability
 POST /api/timeclock/break/end
 POST /api/timeclock/break/start
 POST /api/timeclock/clock-in
