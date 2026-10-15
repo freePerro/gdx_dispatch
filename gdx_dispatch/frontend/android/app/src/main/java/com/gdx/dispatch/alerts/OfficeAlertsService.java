@@ -88,8 +88,47 @@ public class OfficeAlertsService extends Service {
         return running;
     }
 
+    // The worker reads the token, holds a long-poll, then writes; stop() or a
+    // new start() can replace the prefs in between. Each of those writes, and
+    // every worker write, checks and writes under this one lock.
+    static final Object PREFS_LOCK = new Object();
+
     static SharedPreferences prefs(Context ctx) {
         return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    static boolean isCurrent(SharedPreferences p, String token) {
+        return !token.isEmpty() && token.equals(p.getString(KEY_TOKEN, ""));
+    }
+
+    /** stop(): forget the session, after any worker write already under way. */
+    static void clearAll(SharedPreferences p) {
+        synchronized (PREFS_LOCK) {
+            p.edit().clear().commit();
+        }
+    }
+
+    /**
+     * Posts a response's alerts and saves its cursor and seen list, unless the
+     * session that fetched it is over: stopped, or its token replaced.
+     */
+    static boolean recordIfCurrent(SharedPreferences p, String token, boolean stopping,
+                                   Runnable postAlerts, String cursor, String seen) {
+        synchronized (PREFS_LOCK) {
+            if (stopping || !isCurrent(p, token)) return false;
+            postAlerts.run();
+            p.edit().putString(KEY_CURSOR, cursor).putString(KEY_SEEN, seen).apply();
+            return true;
+        }
+    }
+
+    /** A refusal of a token start() has already replaced is not a turn-off. */
+    static boolean clearIfCurrent(SharedPreferences p, String token) {
+        synchronized (PREFS_LOCK) {
+            if (!isCurrent(p, token)) return false;
+            p.edit().clear().commit();
+            return true;
+        }
     }
 
     static boolean hasCredentials(Context ctx) {
@@ -229,13 +268,13 @@ public class OfficeAlertsService extends Service {
                 if (refused) {
                     // A rotation saves the new token before revoking the old
                     // one; a refusal of the old token is not a turn-off.
-                    if (!token.equals(prefs(this).getString(KEY_TOKEN, ""))) continue;
+                    if (!clearIfCurrent(prefs(this), token)) continue;
                     Log.i(TAG, "Server refused the device token (" + r.code + "); turning alerts off");
                     turnOffAfterRefusal();
                     return;
                 }
                 if (r.code != 200) throw new IOException("HTTP " + r.code);
-                handle(r.body);
+                handle(r.body, token);
                 backoff = BACKOFF_MIN_MS;
                 // Never spin if something in between answers at once.
                 if (System.currentTimeMillis() - started < 1_000) pause(2_000);
@@ -300,7 +339,7 @@ public class OfficeAlertsService extends Service {
 
     // A short wake lock only while a response is handled: Doze can defer the
     // next request, but never cut a notification off half-posted.
-    private void handle(String body) throws Exception {
+    private void handle(String body, String token) throws Exception {
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         PowerManager.WakeLock lock = pm == null ? null
             : pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "GDX::OfficeAlerts");
@@ -312,6 +351,7 @@ public class OfficeAlertsService extends Service {
             String stored = p.getString(KEY_SEEN, "");
             if (!stored.isEmpty()) seen.addAll(Arrays.asList(stored.split(",")));
 
+            List<JSONObject> fresh = new ArrayList<>();
             JSONArray items = json.optJSONArray("items");
             if (items != null) {
                 for (int i = 0; i < items.length(); i++) {
@@ -319,17 +359,18 @@ public class OfficeAlertsService extends Service {
                     String id = item.optString("id", "");
                     // Every response re-sends two minutes of history.
                     if (id.isEmpty() || seen.contains(id)) continue;
-                    postAlert(id, item.optString("title", "GDX Dispatch"),
-                        item.optString("message", ""), item.optString("category", ""));
+                    fresh.add(item);
                     seen.add(id);
                 }
             }
             List<String> keep = new ArrayList<>(seen);
             if (keep.size() > SEEN_LIMIT) keep = keep.subList(keep.size() - SEEN_LIMIT, keep.size());
-            p.edit()
-                .putString(KEY_CURSOR, json.optString("cursor", p.getString(KEY_CURSOR, "")))
-                .putString(KEY_SEEN, String.join(",", keep))
-                .apply();
+            recordIfCurrent(p, token, stopping, () -> {
+                for (JSONObject item : fresh) {
+                    postAlert(item.optString("id", ""), item.optString("title", "GDX Dispatch"),
+                        item.optString("message", ""), item.optString("category", ""));
+                }
+            }, json.optString("cursor", p.getString(KEY_CURSOR, "")), String.join(",", keep));
         } finally {
             if (lock != null && lock.isHeld()) lock.release();
         }
@@ -367,8 +408,8 @@ public class OfficeAlertsService extends Service {
         }
     }
 
+    // The caller has already cleared the prefs, under PREFS_LOCK.
     private void turnOffAfterRefusal() {
-        prefs(this).edit().clear().apply();
         notify(TURNED_OFF_NOTIFICATION_ID, new NotificationCompat.Builder(this, CHANNEL_ALERTS)
             .setContentTitle("Phone alerts turned off")
             .setContentText("Open GDX Dispatch to turn them back on.")

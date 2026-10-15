@@ -112,16 +112,20 @@ public class OfficeAlertsPlugin extends Plugin {
         serverUrl = serverUrl.replaceAll("/+$", "");
         Context ctx = getContext();
         SharedPreferences p = OfficeAlertsService.prefs(ctx);
-        String oldUrl = p.getString(OfficeAlertsService.KEY_SERVER_URL, "");
-        String oldToken = p.getString(OfficeAlertsService.KEY_TOKEN, "");
-        SharedPreferences.Editor edit = p.edit()
-            .putString(OfficeAlertsService.KEY_SERVER_URL, serverUrl)
-            .putString(OfficeAlertsService.KEY_TOKEN, token)
-            .putLong(OfficeAlertsService.KEY_TOKEN_SAVED_AT, System.currentTimeMillis());
-        if (!serverUrl.equals(oldUrl)) {
-            edit.remove(OfficeAlertsService.KEY_CURSOR).remove(OfficeAlertsService.KEY_SEEN);
+        String oldUrl;
+        String oldToken;
+        synchronized (OfficeAlertsService.PREFS_LOCK) {
+            oldUrl = p.getString(OfficeAlertsService.KEY_SERVER_URL, "");
+            oldToken = p.getString(OfficeAlertsService.KEY_TOKEN, "");
+            SharedPreferences.Editor edit = p.edit()
+                .putString(OfficeAlertsService.KEY_SERVER_URL, serverUrl)
+                .putString(OfficeAlertsService.KEY_TOKEN, token)
+                .putLong(OfficeAlertsService.KEY_TOKEN_SAVED_AT, System.currentTimeMillis());
+            if (!serverUrl.equals(oldUrl)) {
+                edit.remove(OfficeAlertsService.KEY_CURSOR).remove(OfficeAlertsService.KEY_SEEN);
+            }
+            edit.commit();
         }
-        edit.commit();
         // A re-mint replaces the old token: revoke it so one phone holds one.
         if (!oldToken.isEmpty() && !oldToken.equals(token) && !oldUrl.isEmpty()) {
             final String url = oldUrl;
@@ -141,9 +145,15 @@ public class OfficeAlertsPlugin extends Plugin {
     public void stop(PluginCall call) {
         Context ctx = getContext();
         SharedPreferences p = OfficeAlertsService.prefs(ctx);
-        String serverUrl = p.getString(OfficeAlertsService.KEY_SERVER_URL, "");
-        String token = p.getString(OfficeAlertsService.KEY_TOKEN, "");
-        p.edit().clear().commit();
+        String serverUrl;
+        String token;
+        // Read and clear as one step, so a start() in between is not wiped
+        // unrevoked.
+        synchronized (OfficeAlertsService.PREFS_LOCK) {
+            serverUrl = p.getString(OfficeAlertsService.KEY_SERVER_URL, "");
+            token = p.getString(OfficeAlertsService.KEY_TOKEN, "");
+            OfficeAlertsService.clearAll(p);
+        }
         try {
             Intent intent = new Intent(ctx, OfficeAlertsService.class);
             intent.setAction(OfficeAlertsService.ACTION_STOP);
