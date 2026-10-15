@@ -237,6 +237,7 @@ def job_labor_lines(
     ``estimated_man_hours`` (Decimal, the raw attested man-hours).
     """
     from gdx_dispatch.core.closeout_billing import (  # noqa: PLC0415
+        closeout_hours_billed_before,
         closeout_hours_holder,
         unbilled_day_rows,
     )
@@ -256,6 +257,14 @@ def job_labor_lines(
     final_man = (
         Decimal(str(roundup_to_half(final_hours))) * techs if final_hours > 0 else Decimal(0)
     )
+    # A restatement of a still-completed job offers only what its run has not
+    # billed yet (GDXA-890): 2 h billed, re-closed at 3 h, offers 1 h. Lower
+    # than what was billed offers nothing here, never a negative line.
+    carried = closeout_hours_billed_before(db, closeout) if final_man > 0 else Decimal(0)
+    if carried > 0:
+        final_man = max(Decimal(0), final_man - carried)
+        if final_man <= 0:
+            final_hours = Decimal(0)
 
     if day_rows is None:
         day_rows = unbilled_day_rows(db, job.id, invoice_id=invoice_id) if include_day_rows else []
@@ -278,7 +287,9 @@ def job_labor_lines(
         man = max(Decimal(1) - min(Decimal(1), max(Decimal(0), hours_elsewhere)), man)
     man = man.quantize(Decimal("0.01"))
 
-    raw_man = (final_hours * techs + Decimal(minutes) / 60).quantize(Decimal("0.01"))
+    # A restatement's delta is already in billed (rounded) man-hours.
+    raw_final = final_man if carried > 0 else final_hours * techs
+    raw_man = (raw_final + Decimal(minutes) / 60).quantize(Decimal("0.01"))
 
     # The days billed: each priced day row's shop day, plus the closeout's
     # own day when it attests hours. Without day rows it is one day, and the
@@ -317,7 +328,7 @@ def job_labor_lines(
     # never reads hours or a first-hour price the line does not bill (D16).
     lines: list[dict] = []
     if not first_applies or first == hourly:
-        if first_applies and not day_rows and not hours_elsewhere:
+        if first_applies and not day_rows and not hours_elsewhere and not carried:
             desc = _render_service_description(db, {
                 "man_hours": float(man),
                 "hours": float(final_hours),

@@ -2685,6 +2685,17 @@ class JobCloseout(Base):
     # destroyed). supersedes_id links a restatement to what it replaced.
     superseded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     supersedes_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    # Migration 124 (GDXA-890): True when this row was written while the job
+    # was still completed — a restatement of the closeout it supersedes, so an
+    # invoice offers only the hours above what the job's earlier closeouts
+    # already billed (Doug, 2026-10-13). False after an uncomplete/reopen: new
+    # work, new hours. NULL on every row written before 124: billing reads the
+    # audit trail instead (no job_uncompleted between the closeouts = True).
+    is_restatement: Mapped[bool] = mapped_column(Boolean, nullable=True)
+    # Migration 124 (GDXA-890): the man-hours the claim that stamped
+    # billed_invoice_id billed — the full final day, or a restatement's delta.
+    # NULL on a stamped row from before 124 reads as its full man-hours.
+    man_hours_billed: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=True)
     # Migration 118 (GDXA-798): the invoice that billed this closeout's
     # final-day hours, as TimeEntry.billed_invoice_id does for a day row.
     # NULL = not billed yet, and every closeout written before 118, so old
