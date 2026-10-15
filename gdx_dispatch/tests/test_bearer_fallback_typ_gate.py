@@ -92,3 +92,29 @@ def test_revoked_access_token_is_refused(app, path):
     assert _get(app, path, token) == 200
     app.state.denylist.add(jti, datetime.now(UTC) + timedelta(minutes=10))
     assert _get(app, path, token) in (401, 403)
+
+
+@pytest.mark.parametrize("path", ["/role", "/perm"])
+@pytest.mark.parametrize("token", ["not-a-jwt", "a.b.c"])
+def test_undecodable_token_is_refused(app, path, token):
+    assert _get(app, path, token) in (401, 403)
+
+
+@pytest.mark.parametrize("path", ["/role", "/perm"])
+def test_expired_access_token_is_refused(app, path):
+    token, _ = _issue(SUB, "t", "admin", -60, "access")
+    assert _get(app, path, token) in (401, 403)
+
+
+class _BrokenDenylist:
+    def contains(self, jti: str) -> bool:
+        raise RuntimeError("denylist backend broke")
+
+
+@pytest.mark.parametrize("path", ["/role", "/perm"])
+def test_denylist_failure_is_503_not_admitted(app, path):
+    """An error escaping the revocation check neither admits the token nor
+    passes for "Insufficient role": it is a 503 the operator can see."""
+    app.state.denylist = _BrokenDenylist()
+    token, _ = _issue(SUB, "t", "admin", 600, "access")
+    assert _get(app, path, token) == 503

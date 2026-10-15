@@ -327,10 +327,12 @@ def _decode_bearer_claims(request: Request) -> dict:
     - the ``jti`` must not be on the revocation denylist (SS-7 Slice H parity),
       so a token revoked by logout, offboarding or admin revoke stops here too.
 
-    A decode error, or an error escaping ``Denylist.contains``, returns {}.
-    ``contains`` itself treats a Redis outage as "not revoked" (the same as
-    ``get_current_user``), so a revocation recorded only in Redis is not seen
-    while Redis is down.
+    A token PyJWT rejects (bad signature, expired, malformed, unexpected
+    ``aud``) returns {}: that is an answer, not an error. An error escaping
+    ``Denylist.contains`` raises 503, so an internal failure is neither
+    admitted nor reported as "Insufficient role". ``contains`` itself treats a
+    Redis outage as "not revoked" (the same as ``get_current_user``), so a
+    revocation recorded only in Redis is not seen while Redis is down.
 
     This does NOT run ``finalize_login_jwt``'s users-row checks, so on routes
     gated only here an unexpired access token (up to 15 minutes) outlives a
@@ -338,31 +340,33 @@ def _decode_bearer_claims(request: Request) -> dict:
     must-change-password restriction. Portal customer tokens are ``typ=access``
     with ``role=customer``; no gate admits that role today.
     """
-    try:
-        auth_header = request.headers.get("authorization", "") or ""
-    except AttributeError:
-        logging.getLogger(__name__).exception("_decode_bearer_claims: no headers")
-        return {}
+    auth_header = request.headers.get("authorization", "") or ""
     if not auth_header.lower().startswith("bearer "):
         return {}
     token = auth_header.split(" ", 1)[1].strip()
-    try:
-        import jwt as _jwt
 
-        from gdx_dispatch.routers.auth import ALG as _ALG
-        from gdx_dispatch.routers.auth import VERIFY_KEY as _VERIFY
+    import jwt as _jwt
+
+    from gdx_dispatch.routers.auth import ALG as _ALG
+    from gdx_dispatch.routers.auth import VERIFY_KEY as _VERIFY
+    try:
         claims = _jwt.decode(token, _VERIFY, algorithms=[_ALG]) or {}
-        if claims.get("typ") not in (None, "access"):
-            return {}
-        jti = claims.get("jti")
-        if jti:
-            from gdx_dispatch.routers.auth.core import _get_app_denylist
-            if _get_app_denylist(request).contains(str(jti)):
-                return {}
-        return claims
-    except Exception:
-        logging.getLogger(__name__).exception("_decode_bearer_claims failed")
+    except _jwt.InvalidTokenError as exc:  # noqa: E501  # noqa: silent-failure — a rejected token is an answer ({} -> 401/403), not an error
+        logging.getLogger(__name__).debug("bearer fallback rejected token: %s", exc)
         return {}
+    if claims.get("typ") not in (None, "access"):
+        return {}
+    jti = claims.get("jti")
+    if jti:
+        from gdx_dispatch.routers.auth.core import _get_app_denylist
+        try:
+            revoked = _get_app_denylist(request).contains(str(jti))
+        except Exception as exc:
+            logging.getLogger(__name__).exception("_decode_bearer_claims: denylist check failed")
+            raise HTTPException(status_code=503, detail="Token revocation check unavailable") from exc
+        if revoked:
+            return {}
+    return claims
 
 
 def _stash_principal(request: Request, user: dict) -> None:
