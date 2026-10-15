@@ -81,12 +81,16 @@ const dateLabel = computed(() => {
 // client-side filter remains the PRECISE cut and must stay. A dated job
 // matches when its OFFICE-local day equals the selected day; undated jobs
 // (leads with no time yet) surface on today's board only, so they don't
-// duplicate across every day or vanish entirely.
+// duplicate across every day or vanish entirely. A finished job that was
+// never scheduled is not a lead: it sits on the day it was completed, or on
+// no day (2026-10-15 — it used to fill today's tech columns every day).
 const dayJobs = computed(() => {
   const key = selectedDateStr.value
-  return jobs.value.filter((j) =>
-    j.scheduled_at ? zonedDateKey(j.scheduled_at) === key : isToday.value,
-  )
+  return jobs.value.filter((j) => {
+    if (j.scheduled_at) return zonedDateKey(j.scheduled_at) === key
+    if (isTerminal(j)) return Boolean(j.completed_at) && zonedDateKey(j.completed_at) === key
+    return isToday.value
+  })
 })
 
 const unassignedJobs = computed(() =>
@@ -169,6 +173,8 @@ const TERMINAL_STATUSES = new Set(['done', 'complete', 'completed', 'paid', 'can
 
 function isTerminal(job) {
   if (!job) return false
+  const stage = String(job.lifecycle_stage || '').toLowerCase()
+  if (stage === 'completed' || stage === 'cancelled') return true
   return TERMINAL_STATUSES.has(String(job.status || '').toLowerCase().trim())
 }
 

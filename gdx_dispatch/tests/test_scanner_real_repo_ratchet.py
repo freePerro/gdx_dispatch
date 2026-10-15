@@ -28,7 +28,8 @@ BASELINE_CEILING = {
     # 324 -> 323: GDXA-755 logs the rate-read swallow in proposals/totals.py.
     "drift_scanner": 323,
     # 94 -> 93: GDXA-981 drops the auth-import fallback in routers/technicians.py.
-    "silent_failure_scanner": 93,
+    # 93 -> 92: GDXA-1188 drops dispatch_ws.py's own JWT decode (log + None).
+    "silent_failure_scanner": 92,
     "comment_drift_scan": 71,
     # 4 -> 2: GDXA-1129 drops SettingsView's phantom `result.quickbooks` read.
     "frontend_contract_scan": 2,

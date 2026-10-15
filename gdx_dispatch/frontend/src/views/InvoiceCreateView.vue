@@ -140,6 +140,20 @@
               </span>
               <span v-if="closeoutSuggestion.closeout.no_parts_used" class="muted">· no parts used</span>
             </div>
+            <!-- GDXA-890: a restated closeout bills only what is not billed yet. -->
+            <p v-if="closeoutSuggestion.closeout.man_hours_billed_before > 0" class="muted closeout-context-notes" data-testid="closeout-context-billed-before">
+              Restated after billing: {{ closeoutSuggestion.closeout.man_hours_billed_before }} man-hours are already
+              invoiced, so the labor below covers only the rest.
+            </p>
+            <p v-if="closeoutSuggestion.closeout.man_hours_billed_above_attested > 0" class="closeout-context-notes" data-testid="closeout-context-billed-above">
+              <strong>{{ closeoutSuggestion.closeout.man_hours_billed_above_attested }} man-hours already invoiced are
+              more than the restated closeout.</strong> Nothing more is billed for them; credit the customer on the
+              earlier invoice if the lower hours are right.
+            </p>
+            <p v-if="closeoutSuggestion.closeout.man_hours_left_unbilled > 0" class="closeout-context-notes" data-testid="closeout-context-left-unbilled">
+              <strong>{{ closeoutSuggestion.closeout.man_hours_left_unbilled }} attested man-hours are on no live
+              invoice</strong> — an earlier invoice for this closeout was voided. Restate the closeout to offer them.
+            </p>
             <p v-if="closeoutSuggestion.closeout.notes" class="closeout-context-notes" data-testid="closeout-context-notes">
               “{{ closeoutSuggestion.closeout.notes }}”
             </p>

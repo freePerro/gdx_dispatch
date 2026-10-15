@@ -1,36 +1,28 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
-import jwt
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
-from jwt.exceptions import InvalidTokenError as JWTError
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 
-from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.modules import decode_live_access_token, require_module
 from gdx_dispatch.core.websocket import manager
 
 log = logging.getLogger(__name__)
 
-PRIV = os.getenv("RS_PRIVATE_KEY", "").replace("\\n", "\n").strip()
-PUB = os.getenv("RS_PUBLIC_KEY", "").replace("\\n", "\n").strip()
-ALG = "RS256" if PRIV else "HS256"
-SIGN_KEY = PRIV or os.getenv("JWT_SECRET", "dev-secret")
-VERIFY_KEY = (PUB or PRIV) if ALG == "RS256" else SIGN_KEY
-
 router = APIRouter(tags=["dispatch-ws"], dependencies=[Depends(require_module("dispatch"))])
 
 
-def _decode_token(token: str) -> dict[str, Any] | None:
-    try:
-        payload = jwt.decode(token, VERIFY_KEY, algorithms=[ALG])
-        if payload.get("typ") not in (None, "access"):
-            return None
-        return payload
-    except JWTError:  # returns None if token is invalid or type is incorrect
-        log.exception("dispatch_ws_token_decode_failed")
-        return None
+def _decode_token(websocket: WebSocket, token: str) -> dict[str, Any] | None:
+    """Claims of ``token`` if it is a live access token, else None.
+
+    The same check as the bearer fallback in core/modules.py: signature and
+    expiry, ``typ`` absent or ``"access"``, and the ``jti`` not on the
+    revocation denylist (GDXA-1188). Raises HTTPException(503) when the
+    denylist check itself fails. Checked at the handshake only: a socket
+    already open when its token is revoked is not re-checked.
+    """
+    return decode_live_access_token(token, websocket) or None
 
 
 def _normalize_message(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -66,7 +58,12 @@ def _normalize_message(payload: dict[str, Any]) -> dict[str, Any] | None:
 
 @router.websocket("/ws/dispatch")
 async def dispatch_board_ws(websocket: WebSocket, token: str = "") -> None:
-    payload = _decode_token(token)
+    try:
+        payload = _decode_token(websocket, token)
+    except HTTPException:
+        log.warning("dispatch_ws_handshake_closed_1011: token revocation check unavailable")
+        await websocket.close(code=1011)
+        return
     tenant_id = str(payload.get("tenant_id", "")).strip() if payload else ""
     user_id = str(payload.get("sub", "")).strip() if payload else ""
     if not tenant_id:

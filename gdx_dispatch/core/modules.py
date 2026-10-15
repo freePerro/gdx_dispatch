@@ -10,6 +10,7 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from starlette.requests import HTTPConnection
 
 from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.roles import normalize_role
@@ -344,7 +345,18 @@ def _decode_bearer_claims(request: Request) -> dict:
     if not auth_header.lower().startswith("bearer "):
         return {}
     token = auth_header.split(" ", 1)[1].strip()
+    return decode_live_access_token(token, request)
 
+
+def decode_live_access_token(token: str, conn: HTTPConnection) -> dict:
+    """Claims of ``token`` if it is a live access token, else {}.
+
+    The token checks behind ``_decode_bearer_claims`` (see there), for callers
+    that carry the token somewhere other than the Authorization header: the
+    dispatch board WebSocket takes it as a query parameter (GDXA-1188).
+    ``conn`` is the Request or WebSocket; its app holds the denylist. Raises
+    HTTPException(503) when the denylist check itself fails.
+    """
     import jwt as _jwt
 
     from gdx_dispatch.routers.auth import ALG as _ALG
@@ -360,9 +372,9 @@ def _decode_bearer_claims(request: Request) -> dict:
     if jti:
         from gdx_dispatch.routers.auth.core import _get_app_denylist
         try:
-            revoked = _get_app_denylist(request).contains(str(jti))
+            revoked = _get_app_denylist(conn).contains(str(jti))
         except Exception as exc:
-            logging.getLogger(__name__).exception("_decode_bearer_claims: denylist check failed")
+            logging.getLogger(__name__).exception("decode_live_access_token: denylist check failed")
             raise HTTPException(status_code=503, detail="Token revocation check unavailable") from exc
         if revoked:
             return {}
