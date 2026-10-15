@@ -275,6 +275,49 @@ def test_partial_allocation_shortfall_in_report(db):
     assert shortfalls[0]["uncovered_cents"] == 3000
 
 
+def test_backfill_cli_prints_the_shortfall_beside_its_checkmark(db, capsys):
+    """GDXA-1223: the CLI's ✓ compares two figures that both read 0 for an
+    uncovered payment; the shortfall has to be printed next to it."""
+    from gdx_dispatch.modules.ledger.backfill import reconciliation_report
+    from tools.gl_backfill import _print_report
+
+    inv = _era_invoice(db, total="100.00")
+    _enable(db)
+    post_opening_balance(db, inv, actor="t")
+    late = _late_payment(db, inv, amount="150.00")
+    post_payment_received(db, late, inv, actor="t")
+    db.commit()
+
+    _print_report(reconciliation_report(db, COMPANY))
+    out = capsys.readouterr().out
+    assert "$50.00 of late pre-cutover payments is on no ledger line" in out
+    assert inv.invoice_number in out
+
+
+def test_shortfall_scan_does_not_query_per_era_invoice(db):
+    """GDXA-1223 audit: ar_control runs the shortfall scan on every Ledger
+    page load, so era invoices with no late payment must cost no queries."""
+    from sqlalchemy import event
+
+    from gdx_dispatch.modules.ledger.backfill import era_settlement_shortfalls
+
+    def statements(n):
+        for _ in range(n):
+            _era_invoice(db, total="100.00")
+        db.commit()
+        count = []
+        listener = lambda *a, **k: count.append(1)  # noqa: E731
+        engine = db.get_bind()
+        event.listen(engine, "before_cursor_execute", listener)
+        try:
+            era_settlement_shortfalls(db, COMPANY)
+        finally:
+            event.remove(engine, "before_cursor_execute", listener)
+        return len(count)
+
+    assert statements(3) == statements(30)
+
+
 def test_mixed_naive_aware_created_at_sorts_cleanly(db):
     """2026-08-17 audit MEDIUM (executed repro): DB-loaded rows carry naive
     created_at on SQLite while fresh rows carry aware ones — with tied

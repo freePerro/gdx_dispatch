@@ -64,7 +64,7 @@
               Receivables tie-out
               <Tag
                 :severity="ar.tied ? 'success' : 'danger'"
-                :value="ar.tied ? 'Tied' : `NOT TIED: ${fmt(ar.difference_cents)}`"
+                :value="ar.tied ? 'Tied' : ar.difference_cents ? `NOT TIED: ${fmt(ar.difference_cents)}` : 'NOT TIED'"
                 data-testid="ar-control-tag"
               />
             </h3>
@@ -84,6 +84,37 @@
                 {{ row.source_type }} {{ fmt(row.amount_cents) }}<span v-if="i < ar.unattributed_by_source.length - 1">, </span>
               </span>
             </p>
+            <!-- GDXA-1223: a late pre-cutover payment larger than the invoice's
+                 opening balance. The excess posts nowhere, so both totals above
+                 read it as zero. -->
+            <template v-if="ar.era_settlement_shortfall_cents">
+              <p class="skip-note" data-testid="ar-control-shortfall-note">
+                {{ fmt(ar.era_settlement_shortfall_cents) }} of payments dated before the
+                ledger start is on no ledger line: each exceeds what its invoice still owed
+                at the start. Check the payment or the opening balance.
+              </p>
+              <DataTable :value="ar.era_settlement_shortfalls" size="small" data-testid="ar-control-shortfalls">
+                <Column header="Invoice">
+                  <template #body="{ data }">
+                    <router-link :to="`/billing/${data.invoice_id}`" class="source-link">
+                      {{ data.invoice_number || data.invoice_id }}
+                    </router-link>
+                  </template>
+                </Column>
+                <Column header="Paid on" style="width: 7rem">
+                  <template #body="{ data }">{{ data.payment_date || '—' }}</template>
+                </Column>
+                <Column header="Payment" class="amount-col">
+                  <template #body="{ data }">{{ fmt(data.amount_cents) }}</template>
+                </Column>
+                <Column header="On the ledger" class="amount-col">
+                  <template #body="{ data }">{{ fmt(data.allocated_cents) }}</template>
+                </Column>
+                <Column header="Uncovered" class="amount-col">
+                  <template #body="{ data }">{{ fmt(data.uncovered_cents) }}</template>
+                </Column>
+              </DataTable>
+            </template>
             <template v-if="ar.drift_invoice_count">
               <p class="skip-note" data-testid="ar-control-drift-note">
                 {{ ar.drift_invoice_count }} invoice(s) disagree with the ledger<span

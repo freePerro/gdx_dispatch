@@ -141,6 +141,41 @@ def test_a_pre_cutover_invoice_ties_through_its_opening_anchor(db):
     assert (out["control_cents"], out["subledger_cents"], out["tied"]) == (250_00, 250_00, True)
 
 
+def test_a_late_era_payment_beyond_its_anchor_is_not_tied(db):
+    """GDXA-1223. A payment dated before cutover but recorded after it settles
+    the opening anchor; the excess over the anchor posts nowhere, and
+    balance_due floors at zero. Both sides read 0, yet $100 is on no ledger
+    line, so the tie must fail and name it, as reconciliation_report does."""
+    from gdx_dispatch.modules.ledger.backfill import reconciliation_report
+
+    settings = ensure_gl_seed(db, COMPANY)
+    settings.cutover_month = date(2026, 7, 1)
+    db.flush()
+    era = _issued(db, "100.00", invoice_date=date(2026, 6, 15))
+    assert reports.ar_control(db, COMPANY)["control_cents"] == 100_00  # the anchor
+    late = _payment(
+        db, recorded_on=era, posted_against=era, amount="200.00", paid_on=date(2026, 6, 20)
+    )
+    _recalculate_invoice(era, db, actor="t")
+    db.flush()
+
+    out = reports.ar_control(db, COMPANY)
+    assert era.balance_due == Decimal("0.00")
+    assert (out["control_cents"], out["subledger_cents"], out["difference_cents"]) == (0, 0, 0)
+    assert out["drift"] == [] and out["unattributed_cents"] == 0
+    assert out["tied"] is False
+    assert out["era_settlement_shortfall_cents"] == 100_00
+    [row] = out["era_settlement_shortfalls"]
+    assert (row["invoice_id"], row["payment_id"]) == (str(era.id), str(late.id))
+    assert (row["amount_cents"], row["allocated_cents"], row["uncovered_cents"]) == (
+        200_00, 100_00, 100_00,
+    )
+    # One computation, two reports: they cannot disagree.
+    assert reconciliation_report(db, COMPANY)["era_settlement_shortfalls"] == out[
+        "era_settlement_shortfalls"
+    ]
+
+
 def test_balance_edited_without_a_repost_is_named(db):
     inv = _issued(db, "530.00")
     inv.balance_due = Decimal("600.00")  # the row moved, the ledger did not
@@ -193,6 +228,7 @@ def test_offsetting_drift_on_two_invoices_nets_to_zero_and_still_fails(db):
     assert pay.invoice_id == a.id
     assert out["difference_cents"] == 0
     assert out["tied"] is False
+    assert out["era_settlement_shortfall_cents"] == 0
     by_id = {r["invoice_id"]: r["drift_cents"] for r in out["drift"]}
     assert by_id == {str(a.id): -100_00, str(b.id): 100_00}
 

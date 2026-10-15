@@ -8,7 +8,8 @@
  *  4. A "provisional" banner sits outside the tabs, so it covers every
  *     report until the bank-statement tie-out lands (GDXA-1183).
  *  5. The trial-balance tab ties open invoices to the AR account and names
- *     every invoice that disagrees, linked to it (GDXA-1181).
+ *     every invoice that disagrees, linked to it (GDXA-1181), and every
+ *     late pre-cutover payment that posted nowhere (GDXA-1223).
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
@@ -44,6 +45,8 @@ const AR = {
   drift: [],
   unattributed_cents: 0,
   unattributed_by_source: [],
+  era_settlement_shortfall_cents: 0,
+  era_settlement_shortfalls: [],
 };
 
 const PNL = {
@@ -259,5 +262,40 @@ describe('AccountingLedgerView', () => {
     expect(table.text()).toContain('-$250.00');
     expect(wrapper.find('[data-testid="ar-control-unattributed"]').text()).toContain('manual $45.00');
     expect(wrapper.find('[data-testid="ar-control-drift-note"]').text()).toContain('1 invoice(s) disagree');
+  });
+
+  it('is not tied, and names the payment, when money posted nowhere (GDXA-1223)', async () => {
+    apiGet.mockImplementation(async (url) => {
+      if (url.includes('/ar-control')) {
+        return {
+          ...AR,
+          control_cents: 0,
+          subledger_cents: 0,
+          tied: false,
+          era_settlement_shortfall_cents: 10000,
+          era_settlement_shortfalls: [{
+            invoice_id: 'inv7', invoice_number: 'INV-7', payment_id: 'p1',
+            payment_date: '2026-06-20', amount_cents: 20000, allocated_cents: 10000,
+            uncovered_cents: 10000,
+          }],
+        };
+      }
+      return route(url);
+    });
+    const wrapper = mount(AccountingLedgerView, { global: { stubs } });
+    await flushPromises();
+    // No "$0.00" headline: the totals agree, the book still does not tie.
+    expect(wrapper.find('[data-testid="ar-control-tag"]').text()).toBe('NOT TIED');
+    expect(wrapper.find('[data-testid="ar-control-shortfall-note"]').text()).toContain('$100.00');
+    const table = wrapper.find('[data-testid="ar-control-shortfalls"]');
+    expect(table.text()).toContain('INV-7');
+    expect(table.text()).toContain('$200.00');
+    expect(table.text()).toContain('2026-06-20');
+  });
+
+  it('shows no shortfall section when nothing is uncovered', async () => {
+    const wrapper = mount(AccountingLedgerView, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="ar-control-shortfall-note"]').exists()).toBe(false);
   });
 });
