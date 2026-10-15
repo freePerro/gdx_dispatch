@@ -14,6 +14,7 @@ import { initServerConfig } from './lib/serverConfig';
 import { initNativeAppBridge } from './lib/nativeBridge';
 import { installSessionLockLifecycle } from './lib/sessionLockLifecycle';
 import { installOfficeAlertsBridge } from './lib/officeAlerts';
+import { detectAppMode } from './lib/appMode';
 import { installSwNavigation } from './lib/swNavigation';
 import { installDatePickerTyping } from './lib/datePickerTyping';
 import './assets/base.css';
@@ -38,10 +39,11 @@ const router = createAppRouter();
 initNativeAppBridge(router);
 // Quick-PIN lock on background / unlock gate on resume (GDXA-1187).
 installSessionLockLifecycle(router, SESSION_UNLOCK_PATH);
-installOfficeAlertsBridge(router);
+// Taps wait for the same detection the router does (below).
+const appModeReady = detectAppMode();
+installOfficeAlertsBridge(router, appModeReady);
 
 app.use(pinia);
-app.use(router);
 app.use(PrimeVue, {
   theme: {
     preset: Aura,
@@ -66,7 +68,13 @@ startKeyboardInsetTracking();
 // (public/sw.js posts the route here; it falls back to navigate()).
 installSwNavigation(router);
 
-app.mount('#app');
+// The router is installed only once the app knows whether it is GDX Planner:
+// its guard decides the first navigation, and in the planner app that is
+// /planner-app, never the dashboard. Off native this resolves at once.
+appModeReady.then(() => {
+  app.use(router);
+  app.mount('#app');
+});
 
 // Phase 1.5 E1 — register the service worker. Idempotent; harmless if
 // the browser doesn't support push (returns null). The actual Web Push

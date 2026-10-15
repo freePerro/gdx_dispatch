@@ -17,8 +17,10 @@ import { join } from 'node:path';
 const VIEWS = join(__dirname, '..', 'views');
 
 // Inner scroll boxes (their own overflow-y:auto) legitimately pad for the nav
-// because the layout's padding is outside their scroll area.
-const ALLOWED = new Set(['PhoneComMessagesView.vue']);
+// because the layout's padding is outside their scroll area. PlannerAppView
+// renders outside AppLayout (meta.noShell, the GDX Planner app) and clears its
+// own Note button: nothing else pads for it.
+const ALLOWED = new Set(['PhoneComMessagesView.vue', 'PlannerAppView.vue']);
 
 function walk(dir) {
   return readdirSync(dir).flatMap((name) => {

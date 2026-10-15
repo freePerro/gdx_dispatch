@@ -17,6 +17,7 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { getServerUrl } from './serverConfig';
 import { destinationFor } from './notificationDestinations';
+import { isPlannerApp } from './appMode';
 
 const OfficeAlerts = registerPlugin('OfficeAlerts');
 
@@ -101,8 +102,10 @@ async function _mintAndStart(api) {
     .finally(() => clearTimeout(timer));
   // The owner is recorded before the service has the token, never after.
   try { localStorage.setItem(OWNER_KEY, String(owner || '')); } catch { /* ignore */ }
-  // The plugin revokes the token this one replaces.
-  return { ...OFF, ...(await OfficeAlerts.start({ serverUrl, token })) };
+  // The plugin revokes the token this one replaces. GDX Planner's feed carries
+  // the user's own planner reminders; GDX Dispatch's the office's alerts.
+  const scope = isPlannerApp() ? 'planner' : 'office';
+  return { ...OFF, ...(await OfficeAlerts.start({ serverUrl, token, scope })) };
 }
 
 /**
@@ -205,15 +208,22 @@ let _bridgeInstalled = false;
 /**
  * Route notification taps and stop alerts on logout. Call once at startup.
  * A tap that cold-starts the app is retained by the plugin until this
- * listener attaches, so it is not lost.
+ * listener attaches, so it is not lost. `ready` is the app-mode detection
+ * main.js waits on before installing the router: a tap is routed only once
+ * the app knows it is GDX Planner, or a cold-start tap would land on the
+ * dispatch app's planner page and the router would skip its first guard.
  */
-export function installOfficeAlertsBridge(router) {
+export function installOfficeAlertsBridge(router, ready = Promise.resolve()) {
   if (_bridgeInstalled || !isOfficeAlertsAvailable()) return;
   _bridgeInstalled = true;
-  const go = (category) => {
-    const dest = destinationFor(category, { mobile: true });
-    if (dest) router.push(dest).catch(() => {});
-    else router.push('/mobile').catch(() => {});
+  const go = async (category) => {
+    await ready.catch(() => {});
+    const dest = destinationFor(category, { mobile: true }) || '/mobile';
+    // A second tap to the page already showing is a duplicate navigation the
+    // router drops, so the tap is also announced for a page that is open.
+    router.push(dest).catch(() => {}).finally(() => {
+      window.dispatchEvent(new CustomEvent('gdx:alert-tap', { detail: { category, dest } }));
+    });
   };
   try {
     OfficeAlerts.addListener('alertTap', ({ category } = {}) => go(category));
