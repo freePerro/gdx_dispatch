@@ -381,6 +381,30 @@ describe('InvoiceCreateView — labor lines', () => {
     expect(wrapper.vm.form?.notes || '').not.toBe('stale');
   });
 
+  it('a restated closeout says what is already invoiced, and what was billed above it (GDXA-890)', async () => {
+    routeSuggestion({
+      has_closeout: true,
+      closeout: { hours_worked: 2, techs_on_site: 1, man_hours_billed_before: 3, man_hours_billed_above_attested: 1, man_hours_left_unbilled: 2 },
+      labor_lines: [],
+    });
+    const { wrapper } = await mountIt();
+    expect(wrapper.find('[data-testid="closeout-context-billed-before"]').text()).toContain('3 man-hours are already');
+    expect(wrapper.find('[data-testid="closeout-context-billed-above"]').text()).toContain('1 man-hours already invoiced');
+    expect(wrapper.find('[data-testid="closeout-context-left-unbilled"]').text()).toContain('2 attested man-hours are on no live');
+  });
+
+  it('a closeout with nothing billed before shows neither restatement notice', async () => {
+    routeSuggestion({
+      has_closeout: true,
+      closeout: { hours_worked: 2, techs_on_site: 1, man_hours_billed_before: 0, man_hours_billed_above_attested: 0, man_hours_left_unbilled: 0 },
+      labor_lines: [HOURLY],
+    });
+    const { wrapper } = await mountIt();
+    expect(wrapper.find('[data-testid="closeout-context-billed-before"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="closeout-context-billed-above"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="closeout-context-left-unbilled"]').exists()).toBe(false);
+  });
+
   it('an install quote prefills as a matrix line with no ids', async () => {
     routeSuggestion({ has_closeout: true, closeout: {}, labor_lines: [MATRIX] });
     const { lines: got } = await mountIt();
