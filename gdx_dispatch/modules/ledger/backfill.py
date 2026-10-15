@@ -576,6 +576,7 @@ def duplicate_one_shot_entries(session: Session, company_id: str) -> list[dict]:
         try:
             sid = UUID(source_id)
         except ValueError:
+            log.warning("one-shot duplicate scan: %s source_id %r is not a UUID", source_type, source_id)
             return None
         if source_type == "invoice":
             return sid
