@@ -1,0 +1,90 @@
+"""The dispatch board WebSocket handshake refuses a revoked access token.
+
+``/ws/dispatch`` takes its JWT as a query parameter and decodes it itself, so
+it never reaches ``get_current_user``. Before GDXA-1188 that decode checked
+``typ`` but not the revocation denylist: a token revoked by logout,
+offboarding or admin revoke still opened the board socket until it expired
+(up to 15 minutes). It now goes through ``decode_live_access_token``, the
+same check as the bearer fallback in core/modules.py.
+
+The check runs at the handshake only. A socket already open when its token
+is revoked stays open; nothing here re-checks it.
+
+These are real WebSocket handshakes through a throwaway FastAPI app, so the
+handler sees a real ``WebSocket`` whose ``app.state`` holds the denylist.
+"""
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+from gdx_dispatch.core.denylist import Denylist
+from gdx_dispatch.core.websocket import manager
+from gdx_dispatch.routers.auth.core import _issue
+from gdx_dispatch.routers.dispatch_ws import dispatch_board_ws
+
+
+@pytest.fixture
+def app() -> FastAPI:
+    app = FastAPI()
+    app.state.denylist = Denylist()
+    app.add_api_websocket_route("/ws", dispatch_board_ws)
+    manager._connections.clear()
+    return app
+
+
+def _close_code(app: FastAPI, token: str) -> int | None:
+    """None when the socket was accepted, else the code it was closed with."""
+    with TestClient(app) as tc:
+        try:
+            with tc.websocket_connect(f"/ws?token={token}") as ws:
+                ws.send_json({"type": "board_refresh"})
+                assert ws.receive_json() == {"type": "board_refresh"}
+        except WebSocketDisconnect as exc:
+            return exc.code
+    return None
+
+
+def test_live_access_token_opens_the_socket(app):
+    token, _ = _issue("dispatcher-1", "t", "dispatcher", 600, "access")
+    assert _close_code(app, token) is None
+
+
+def test_revoked_access_token_is_refused(app):
+    token, jti = _issue("dispatcher-1", "t", "dispatcher", 600, "access")
+    assert _close_code(app, token) is None
+    app.state.denylist.add(jti, datetime.now(UTC) + timedelta(minutes=10))
+    assert _close_code(app, token) == 1008
+
+
+@pytest.mark.parametrize("typ", ["refresh", "mcp_access", "browser"])
+def test_non_access_typ_is_refused(app, typ):
+    token, _ = _issue("dispatcher-1", "t", "dispatcher", 600, typ)
+    assert _close_code(app, token) == 1008
+
+
+@pytest.mark.parametrize("token", ["", "not-a-jwt", "a.b.c"])
+def test_missing_or_undecodable_token_is_refused(app, token):
+    assert _close_code(app, token) == 1008
+
+
+def test_expired_access_token_is_refused(app):
+    token, _ = _issue("dispatcher-1", "t", "dispatcher", -60, "access")
+    assert _close_code(app, token) == 1008
+
+
+class _BrokenDenylist:
+    def contains(self, jti: str) -> bool:
+        raise RuntimeError("denylist backend broke")
+
+
+def test_denylist_failure_closes_1011_not_admitted(app):
+    """A failing revocation check neither admits the token nor reads as a
+    policy refusal: the socket closes with 1011 (internal error)."""
+    app.state.denylist = _BrokenDenylist()
+    token, _ = _issue("dispatcher-1", "t", "dispatcher", 600, "access")
+    assert _close_code(app, token) == 1011
