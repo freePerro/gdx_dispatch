@@ -81,10 +81,16 @@ export function createApiClient() {
         else if (rawDetail && typeof rawDetail === 'object' && typeof rawDetail.message === 'string') {
           detail = rawDetail.message;
         }
+        // require_role's `{error_type, detail, required_roles}` carries its
+        // reason in `detail` (GDXA-1144).
+        else if (rawDetail && typeof rawDetail === 'object' && typeof rawDetail.detail === 'string') {
+          detail = rawDetail.detail;
+        }
         else if (rawDetail !== undefined && rawDetail !== null) detail = JSON.stringify(rawDetail);
       } catch {}
       const err = new Error(detail);
       err.status = response.status;
+      err.url = url;
       err.code = (errBody && typeof errBody.detail === 'object' && errBody.detail)
         ? errBody.detail.code
         : undefined;
@@ -261,10 +267,30 @@ export function useApi() {
       // No toast: the AppLayout banner says it once, and shell polls hitting
       // this 403 on /profile stacked a toast per call (2026-10-14 walk).
     } else if (status === 403 || /Forbidden|Missing permission/i.test(msg)) {
-      const match = msg.match(/Missing permission:\s*(\[[^\]]+\])/i);
-      const detail = match
-        ? `You don't have ${match[1]}. Ask an admin to grant it on /role-permissions.`
-        : "You don't have permission to do that. Ask an admin to grant it on /role-permissions.";
+      // Only core RBAC's refusal is fixed by a grant on /role-permissions:
+      // `Missing permission: ['billing.edit']` (require_permission),
+      // `Missing permission: plugin.<key>.<action>` (the plugin proxy). A bare
+      // `Forbidden` (FastAPI's detail for HTTPException(403); no core route
+      // sends one as of 2026-10-14) keeps the advice. Under /api/plugins it is
+      // the plugin's own `HTTPException(403)`, which the proxy passes through
+      // unchanged. Any other 403 (a plugin's own refusal, a disabled module, a
+      // role-gated route) says its own reason, without advice that cannot help
+      // (GDXA-1144).
+      const text = msg.trim();
+      const match = text.match(/^Missing permission:\s*(\[[^\]]*\]|plugin\.[a-z0-9][a-z0-9_-]*\.(?:read|write))$/);
+      const fromPlugin = /^\/api\/plugins(?:[/?]|$)/.test(err?.url || '');
+      let detail;
+      if (match) {
+        detail = `You don't have ${match[1]}. Ask an admin to grant it on /role-permissions.`;
+      } else if ((text === '' || text === 'Forbidden') && !fromPlugin) {
+        detail = "You don't have permission to do that. Ask an admin to grant it on /role-permissions.";
+      } else if (text === '' || text === 'Forbidden' || /^[[{]/.test(text) || /^Request failed \(403\)$/.test(text)) {
+        // No reason of its own, a JSON-stringified structured detail, or a
+        // non-JSON body (core always answers JSON, so that one is not core).
+        detail = "You don't have permission to do that.";
+      } else {
+        detail = msg;
+      }
       toast.add({ severity: 'warn', summary: 'Permission denied', detail, life: 5000 });
     } else if (status === 429) {
       toast.add({ severity: 'warn', summary: 'Slow down', detail: 'Too many requests — try again in a moment.', life: 4000 });
