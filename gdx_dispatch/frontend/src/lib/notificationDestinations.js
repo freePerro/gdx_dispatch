@@ -59,6 +59,12 @@ export function destinationFor(category, { mobile = false } = {}) {
       // has since been removed outright (#350) and /communications now
       // redirects here. Mobile already went to the right place.
       return mobile ? '/mobile/inbox' : '/inbox';
+    // A planner task's reminder (tasks/planner_reminders.py). Only ever
+    // addressed to whoever set it, from the planner, so it opens the planner
+    // asking for the Tasks tab. MobilePlannerView does not read ?tab= yet and
+    // opens on Today; the GDX Planner SPA change teaches it to (plan §3 PR B).
+    case 'planner_reminder':
+      return mobile ? '/mobile/planner?tab=tasks' : '/planner';
     default:
       return null;
   }

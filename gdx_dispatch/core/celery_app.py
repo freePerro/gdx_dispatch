@@ -19,6 +19,7 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
         backend=backend,
         include=[
             "gdx_dispatch.tasks.planner_digest",
+            "gdx_dispatch.tasks.planner_reminders",
             # gdx_dispatch.tasks.qb_sync (S122-3 T2) and gdx_dispatch.tasks.late_fees
             # were both no-op stubs whose private helpers returned None / [] — the
             # beat fired on schedule producing zero work. Removed. Real periodic QB

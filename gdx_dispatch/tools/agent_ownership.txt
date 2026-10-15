@@ -418,6 +418,7 @@ gdx_dispatch/modules/service_areas/*                         jobs-dispatch
 gdx_dispatch/modules/fleet/*                                 jobs-dispatch
 gdx_dispatch/modules/equipment/*                             jobs-dispatch
 gdx_dispatch/tasks/planner_digest.py                         jobs-dispatch
+gdx_dispatch/tasks/planner_reminders.py                      jobs-dispatch
 gdx_dispatch/tasks/tech_locations_prune.py                   jobs-dispatch
 gdx_dispatch/frontend/src/views/JobsView.vue                 jobs-dispatch
 gdx_dispatch/frontend/src/views/JobDetailView.vue            jobs-dispatch
