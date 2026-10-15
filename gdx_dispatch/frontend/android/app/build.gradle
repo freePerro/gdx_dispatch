@@ -16,6 +16,20 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // One web build, two apps. GDX Planner reads its application id at
+    // startup and shows only the planner (src/lib/appMode.js). The namespace
+    // stays com.gdx.dispatch, so the Java code and R class are shared.
+    flavorDimensions = ["app"]
+    productFlavors {
+        dispatch {
+            dimension "app"
+            applicationId "com.gdx.dispatch"
+        }
+        planner {
+            dimension "app"
+            applicationId "com.gdx.planner"
+        }
+    }
     signingConfigs {
         release {
             def keystorePath = System.getenv("GDX_KEYSTORE_PATH") ?: (project.hasProperty("GDX_KEYSTORE_PATH") ? project.property("GDX_KEYSTORE_PATH") : null)

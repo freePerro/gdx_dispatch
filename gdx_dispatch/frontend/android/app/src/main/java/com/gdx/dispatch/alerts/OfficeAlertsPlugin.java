@@ -11,6 +11,7 @@ import android.provider.Settings;
 import android.util.Log;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
+import com.gdx.dispatch.R;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
@@ -69,7 +70,7 @@ public class OfficeAlertsPlugin extends Plugin {
                 intent.setAction(OfficeAlertsService.ACTION_START);
                 ContextCompat.startForegroundService(ctx, intent);
             } catch (Exception e) {
-                call.reject("Could not start office alerts: " + e.getMessage(), e);
+                call.reject("Could not start phone alerts: " + e.getMessage(), e);
                 return;
             }
         }
@@ -98,7 +99,8 @@ public class OfficeAlertsPlugin extends Plugin {
             if (!serverUrl.isEmpty() && !token.isEmpty()) {
                 new Thread(() -> revoke(serverUrl, token, "disabled")).start();
             }
-            call.reject("Allow notifications for GDX Dispatch to get office alerts on this phone");
+            call.reject("Allow notifications for " + getContext().getString(R.string.app_name)
+                + " to get alerts on this phone");
         }
     }
 
@@ -137,7 +139,7 @@ public class OfficeAlertsPlugin extends Plugin {
             ContextCompat.startForegroundService(ctx, intent);
             call.resolve(statusObject());
         } catch (Exception e) {
-            call.reject("Could not start office alerts: " + e.getMessage(), e);
+            call.reject("Could not start phone alerts: " + e.getMessage(), e);
         }
     }
 

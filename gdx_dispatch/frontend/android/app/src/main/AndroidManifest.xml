@@ -41,7 +41,7 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Delivers office alerts (new customer texts, payments, leads) from the company's own self-hosted server, which has no push service, while the app is closed." />
+                android:value="Delivers alerts (office notifications in GDX Dispatch, the user's task reminders in GDX Planner) from the company's own self-hosted server, which has no push service, while the app is closed." />
         </service>
 
         <receiver
