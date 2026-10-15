@@ -53,6 +53,66 @@
           <p v-if="tb" class="totals-row" data-testid="tb-totals">
             Totals — debit {{ fmt(tb.totals.debit_cents) }} · credit {{ fmt(tb.totals.credit_cents) }}
           </p>
+
+          <!-- Open invoices tied to the AR control account (GDXA-1181). Current
+               state only: it ignores the As-of date above. -->
+          <p v-if="arFailed" class="skip-note" role="status" data-testid="ar-control-failed">
+            The receivables tie-out could not be loaded. Press Run to try again.
+          </p>
+          <div v-if="ar" class="ar-control" data-testid="ar-control">
+            <h3 class="section-heading">
+              Receivables tie-out
+              <Tag
+                :severity="ar.tied ? 'success' : 'danger'"
+                :value="ar.tied ? 'Tied' : `NOT TIED: ${fmt(ar.difference_cents)}`"
+                data-testid="ar-control-tag"
+              />
+            </h3>
+            <p class="memo-col">
+              Today's open invoice balances against the Accounts Receivable account.
+              This check ignores the As-of date.
+            </p>
+            <p v-if="!ar.ledger_posting_enabled" class="skip-note" data-testid="ar-control-off">
+              Ledger posting is off, so the AR account is not expected to match yet.
+            </p>
+            <p class="totals-row" data-testid="ar-control-totals">
+              Open invoices {{ fmt(ar.subledger_cents) }} · AR account {{ fmt(ar.control_cents) }}
+            </p>
+            <p v-if="ar.unattributed_cents" class="skip-note" data-testid="ar-control-unattributed">
+              {{ fmt(ar.unattributed_cents) }} of AR traces to no invoice:
+              <span v-for="(row, i) in ar.unattributed_by_source" :key="row.source_type">
+                {{ row.source_type }} {{ fmt(row.amount_cents) }}<span v-if="i < ar.unattributed_by_source.length - 1">, </span>
+              </span>
+            </p>
+            <template v-if="ar.drift_invoice_count">
+              <p class="skip-note" data-testid="ar-control-drift-note">
+                {{ ar.drift_invoice_count }} invoice(s) disagree with the ledger<span
+                  v-if="ar.drift_invoice_count > ar.drift.length"
+                >; the {{ ar.drift.length }} largest are listed</span>.
+              </p>
+              <DataTable :value="ar.drift" size="small" data-testid="ar-control-drift">
+                <Column header="Invoice">
+                  <template #body="{ data }">
+                    <router-link :to="`/billing/${data.invoice_id}`" class="source-link">
+                      {{ data.invoice_number || data.invoice_id }}
+                    </router-link>
+                  </template>
+                </Column>
+                <Column header="Status" style="width: 7rem">
+                  <template #body="{ data }">{{ data.deleted ? 'deleted' : data.status }}</template>
+                </Column>
+                <Column header="Open balance" class="amount-col">
+                  <template #body="{ data }">{{ fmt(data.open_balance_cents) }}</template>
+                </Column>
+                <Column header="Ledger AR" class="amount-col">
+                  <template #body="{ data }">{{ fmt(data.ledger_ar_cents) }}</template>
+                </Column>
+                <Column header="Difference" class="amount-col">
+                  <template #body="{ data }">{{ fmt(data.drift_cents) }}</template>
+                </Column>
+              </DataTable>
+            </template>
+          </div>
         </TabPanel>
 
         <!-- ── P&L ───────────────────────────────────────────────────── -->
@@ -292,6 +352,8 @@ const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
 
 const tbAsOf = ref(today);
 const tb = ref(null);
+const ar = ref(null);
+const arFailed = ref(false);
 const pnlStart = ref(monthStart);
 const pnlEnd = ref(today);
 const pnlBasis = ref('accrual');
@@ -349,7 +411,15 @@ const iso = (value) => {
 };
 
 const loadTrialBalance = async () => {
-  tb.value = await get(`/api/accounting/reports/trial-balance?as_of=${iso(tbAsOf.value)}`);
+  // Independent on purpose: a failed tie must not blank the trial balance.
+  const [trial, tie] = await Promise.allSettled([
+    get(`/api/accounting/reports/trial-balance?as_of=${iso(tbAsOf.value)}`),
+    get('/api/accounting/reports/ar-control'),
+  ]);
+  ar.value = tie.status === 'fulfilled' ? tie.value : null;
+  arFailed.value = tie.status === 'rejected';
+  if (trial.status === 'rejected') throw trial.reason;
+  tb.value = trial.value;
 };
 const loadPnl = async () => {
   pnl.value = await get(
