@@ -1,7 +1,7 @@
 # GDX Planner — a second Android app for the planner, with reminder alerts
 
 **Date:** 2026-10-14
-**Status:** PARTIALLY BUILT — PR A (backend) is built on `feat/planner-reminders`; PR B (SPA) and PR C (Android) are not built. Three stacked PRs are described below: A backend, B SPA, C Android. Revised on 2026-10-14 after `/audit` (critique_e3b0c44298fc). The revision covers the keeper mount, the reminder recipient, the status set, the `created_at` format, tap routing, and dropping the manifest split. PR A's own `/audit` (critique_07d5a8e06230) added two rules, both in §3 PR A item 2: re-sending the same instant changes nothing, and a reminder must carry a UTC offset.
+**Status:** PARTIALLY BUILT — PR A (backend) is #1189; PR B (SPA) is built on `feat/planner-app-spa`, stacked on A; PR C (Android) is not built. Three stacked PRs are described below: A backend, B SPA, C Android. Revised on 2026-10-14 after `/audit` (critique_e3b0c44298fc). The revision covers the keeper mount, the reminder recipient, the status set, the `created_at` format, tap routing, and dropping the manifest split. PR A's own `/audit` (critique_07d5a8e06230) added two rules, both in §3 PR A item 2: re-sending the same instant changes nothing, and a reminder must carry a UTC offset.
 **Owner Domain:** `jobs-dispatch` (planner, reminders), `mobile-tech` (Android flavor, alerts service), `frontend-shell` (boot, router)
 
 ## 1. The ask
