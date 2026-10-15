@@ -70,6 +70,12 @@ class ChangeOrder(TenantBase):
         nullable=True,
         index=True,
     )
+    # GDXA-795 (migration 124): the rate this CO quotes, stamped by
+    # `_stamp_tax_rate` on create, re-link and approval through the invoice's
+    # own helper. A signed CO shows it; an unsigned one shows the live rate
+    # approval would stamp. NULL = written before 124 and not approved since;
+    # a signed NULL row keeps the live resolve it always had.
+    tax_rate: Mapped[Decimal | None] = mapped_column(Numeric(9, 6), nullable=True)
 
 
 class ChangeOrderLineIn(BaseModel):
@@ -140,58 +146,33 @@ def _serialize(
             for ln in lines
         ]
         # PR3-billing-capture (Doug 2026-07-07): "handled like an invoice —
-        # tax shown so the customer sees it." Same resolver as invoices, so
-        # the total the customer signs equals the total the invoice bills.
+        # tax shown so the customer sees it." Same resolver as invoices.
         # Tax failure degrades to rate 0 with a LOUD log, never a 500 — the
         # approval screen must render even if tax config is broken.
         subtotal = sum(float(ln.line_total or 0) for ln in lines)
         tax_rate = 0.0
-        if db is not None:
+        if co.tax_rate is not None and co.status in _SIGNED_STATUSES:
+            # GDXA-795: a signed CO shows the rate stamped when it was approved.
+            tax_rate = float(co.tax_rate)
+        elif db is not None:
+            # Unsigned: the rate approval would stamp now, so a draft never
+            # shows a rate its job or customer has since moved off (an
+            # installation is untaxed the moment the job becomes one). A signed
+            # pre-124 row (NULL) keeps the resolve it always had, which never
+            # read the estimate, so no signed number moves.
+            #
+            # GDXA-157: the resolve reads on this session and re-raises, so the
+            # degradation to rate 0 is this frame's; `_current_rate` holds it
+            # in a savepoint. Only `get_change_order` passes `db`, a read-only
+            # GET, but this is the shared serializer for a money surface: the
+            # next caller to hand it a session with staged work would
+            # otherwise inherit an aborted Postgres transaction (25P02).
             try:
-                from gdx_dispatch.models.tenant_models import Job
-                from gdx_dispatch.modules.tax.service import resolve_rate_for_job
-                # The job lane decides first (GDXA-797, Doug 2026-10-12): a
-                # change order on an installation is part of a construction
-                # contract and is never taxed; on a repair or service call it
-                # takes the tenant default, and an exempt customer is 0 on
-                # both. Same helper as invoice create, so the CO total still
-                # equals the invoice total. A CO with no job is unlaned and
-                # falls through to `resolve_rate`, as before.
-                #
-                # GDXA-157: `resolve_rate` reads TaxConfig and the customer's
-                # exempt flag on this session and re-raises, so the degradation
-                # to rate 0 — and the aborted Postgres transaction behind it —
-                # is this frame's.
-                #
-                # Be accurate about the exposure rather than inheriting the
-                # class's blurb: there is NO reachable victim today. Of the six
-                # `_serialize` call sites only `get_change_order` passes `db` at
-                # all, it is a read-only GET, and nothing touches the session
-                # after it returns — so the poison dies with the request. This is
-                # contained because the helper takes a session it does not own
-                # and is the shared serializer for this money surface: the next
-                # caller to hand it a session with staged work (an approve that
-                # wants totals in its response is the obvious one) would inherit
-                # the defect silently, and 25P02 surfaces on an unrelated line
-                # naming an unrelated table.
-                with contained_read(db):
-                    job_row = (
-                        db.execute(
-                            select(Job.job_type, Job.customer_id).where(Job.id == co.job_id)
-                        ).one_or_none()
-                        if co.job_id
-                        else None
-                    )
-                    job_type = job_row.job_type if job_row else None
-                    # A tech's CO can be saved with no customer (the mobile
-                    # dialog sends `customer_id: null` before the customer
-                    # loads); the invoice checks exemption against the job's
-                    # customer, so fall back to it here or an exempt customer
-                    # signs a taxed total the invoice never bills.
-                    customer_id = co.customer_id or (job_row.customer_id if job_row else None)
-                    tax_rate = float(resolve_rate_for_job(db, customer_id, job_type))
+                tax_rate = float(_current_rate(db, co, with_quote=co.status not in _SIGNED_STATUSES))
             except Exception:
                 log.exception("change_order_tax_resolve_failed co=%s", co.id)
+                if co.tax_rate is not None:
+                    tax_rate = float(co.tax_rate)
         taxable_subtotal = sum(
             float(ln.line_total or 0)
             for ln in lines
@@ -206,18 +187,104 @@ def _serialize(
 
 
 # What a change-order PATCH can move, for its audit row's old/new pairs.
-_CO_AUDIT_FIELDS = ("title", "description", "reason", "customer_name", "job_id", "customer_id", "amount", "status")
+_CO_AUDIT_FIELDS = (
+    "title", "description", "reason", "customer_name", "job_id", "customer_id", "amount", "status", "tax_rate",
+)
+
+# A CO in one of these has been signed by the customer: its job and customer
+# are fixed until it is reopened (GDXA-795, maintainer ruling 2026-10-15).
+_SIGNED_STATUSES = ("approved", "completed")
 
 
-def _audit_status_change(db: Session, actor: dict, co: ChangeOrder, old_status: str, action: str) -> None:
+def _audit_status_change(
+    db: Session,
+    actor: dict,
+    co: ChangeOrder,
+    old_status: str,
+    action: str,
+    extra: dict[str, Any] | None = None,
+) -> None:
     audit_best_effort(
         db,
         actor=actor,
         action=action,
         entity_type="change_order",
         entity_id=str(co.id),
-        details={"co_number": co.co_number, "status": {"old": old_status, "new": co.status}, "amount": co.amount},
+        details={
+            "co_number": co.co_number,
+            "status": {"old": old_status, "new": co.status},
+            "amount": co.amount,
+            **(extra or {}),
+        },
     )
+
+
+def _current_rate(db: Session, co: ChangeOrder, *, with_quote: bool = True) -> Decimal:
+    """The rate this CO quotes now (GDXA-795), through `resolve_rate_for_job`,
+    the helper invoice create and `/api/tax/resolve` answer with: install lane
+    0, exempt customer 0, else the quote, else the tenant default. The quote is
+    the job's accepted estimate the office invoice form prefills from — the
+    newest created, as `GET /api/estimates?job_id=` lists them. `with_quote`
+    False is the pre-124 resolve, which never read the estimate.
+
+    Read in a savepoint, so a failed read raises without aborting the
+    caller's transaction."""
+    from gdx_dispatch.models.tenant_models import Job  # noqa: PLC0415
+    from gdx_dispatch.modules.proposals.models import Estimate  # noqa: PLC0415
+    from gdx_dispatch.modules.tax.service import resolve_rate_for_job  # noqa: PLC0415
+
+    with contained_read(db):
+        job_row = quoted = None
+        if co.job_id:
+            job_row = db.execute(
+                select(Job.job_type, Job.customer_id).where(
+                    Job.id == co.job_id, Job.deleted_at.is_(None)
+                )
+            ).one_or_none()
+            if with_quote:
+                quoted = db.execute(
+                    select(Estimate.tax_rate)
+                    .where(
+                        Estimate.job_id == co.job_id,
+                        Estimate.status == "accepted",
+                        Estimate.deleted_at.is_(None),
+                    )
+                    .order_by(Estimate.created_at.desc(), Estimate.id.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+        # A tech's CO can be saved with no customer (the mobile dialog sends
+        # `customer_id: null` before the customer loads); the invoice checks
+        # exemption against the job's customer, so this does too.
+        customer_id = co.customer_id or (job_row.customer_id if job_row else None)
+        return resolve_rate_for_job(
+            db,
+            customer_id,
+            job_row.job_type if job_row else None,
+            quoted_rate=Decimal(str(quoted)) if quoted is not None else None,
+        )
+
+
+def _stamp_tax_rate(db: Session, co: ChangeOrder) -> None:
+    """Stamp `_current_rate` on the CO: on create and a re-link (the record of
+    what it quoted then) and on approval, which is the rate it is signed at.
+    It is the rate the office invoice form seeds when the CO is billed at
+    once; billing reads the form, not this stamp, so a default, lane or
+    exemption change between approval and billing still moves the invoice
+    (parity at creation is enough: the maintainer's ruling on GDXA-795).
+
+    A failed read keeps the prior stamp with a loud log (the maintainer's
+    ruling): NULL on create; the previous rate on a re-link or approval. Never
+    a lost CO."""
+    try:
+        rate = _current_rate(db, co)
+        # Assigned outside the read-only savepoint, which warns on staged writes.
+        co.tax_rate = rate
+    except Exception:
+        log.exception("change_order_tax_stamp_failed co=%s, keeping %s", co.id, co.tax_rate)
+
+
+def _rate_detail(co: ChangeOrder) -> str | None:
+    return str(co.tax_rate) if co.tax_rate is not None else None
 
 
 def _next_co_number(db: Session) -> str:
@@ -281,6 +348,7 @@ def create_change_order(
     )
     db.add(co)
     db.flush()
+    _stamp_tax_rate(db, co)
     # Insert line items in the same transaction. ChangeOrderLine is the
     # canonical store; the flat `amount` on ChangeOrder is the denormalized
     # subtotal for fast list rendering.
@@ -310,6 +378,7 @@ def create_change_order(
             "job_id": co.job_id,
             "customer_id": co.customer_id,
             "line_count": len(payload.line_items),
+            "tax_rate": _rate_detail(co),
         },
     )
     return _serialize(co)
@@ -350,23 +419,39 @@ def update_change_order(
             detail=f"{co.co_number} is billed on an invoice — delete that draft invoice to release it before editing.",
         )
     before = {field: getattr(co, field) for field in _CO_AUDIT_FIELDS}
-    for field in ("title", "description", "reason", "customer_name"):
-        val = getattr(payload, field, None)
-        if val is not None:
-            setattr(co, field, val)
+    old_status = co.status
     # Tier-6 (2026-07): the edit dialog sends job_id/customer_id but only
     # customer_name was applied — display and storage silently split (the CO
     # showed the new customer's NAME while still linked to the old records).
+    relink: dict[str, UUID | None] = {}
     for field in ("job_id", "customer_id"):
         val = getattr(payload, field, None)
         if val is not None:
             if str(val).strip():
                 try:
-                    setattr(co, field, UUID(str(val)))
+                    relink[field] = UUID(str(val))
                 except ValueError:
                     raise HTTPException(status_code=422, detail=f"{field} must be a UUID") from None
             else:
-                setattr(co, field, None)
+                relink[field] = None
+    moved = any(getattr(co, field) != val for field, val in relink.items())
+    # GDXA-795: a signed CO's total was quoted at its job's and customer's
+    # rate; moving it would re-quote a total the customer already signed.
+    # Checked against the stored status, so reopening is a save of its own.
+    if moved and old_status in _SIGNED_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{co.co_number} is {old_status} — the customer signed it at this job's tax rate. "
+                "Set it back to draft or pending approval and save before moving it to another job or customer."
+            ),
+        )
+    for field in ("title", "description", "reason", "customer_name"):
+        val = getattr(payload, field, None)
+        if val is not None:
+            setattr(co, field, val)
+    for field, val in relink.items():
+        setattr(co, field, val)
     # D-S122-change-orders-create-flow auditor catch: PATCH was silently
     # dropping line_items, so the frontend's edit-with-lines flow blanked
     # the line set + set amount=0. Now we replace ChangeOrderLine rows in
@@ -429,6 +514,13 @@ def update_change_order(
         co.amount = Decimal(str(payload.amount))
     if payload.status in CO_STATUSES:
         co.status = payload.status
+    # GDXA-795: a CO moved to another job or customer quotes that one's rate,
+    # and one signed here (the edit dialog's status select reaches approved
+    # or completed straight from a draft) signs at the rate in force now, the
+    # same as POST /approve.
+    if moved or (co.status in _SIGNED_STATUSES and old_status not in _SIGNED_STATUSES):
+        db.flush()
+        _stamp_tax_rate(db, co)
     db.commit()
     db.refresh(co)
     audit_best_effort(
@@ -456,12 +548,22 @@ def approve_change_order(
     if not co or co.deleted_at:
         raise HTTPException(status_code=404, detail="Change order not found")
     old_status = co.status
+    rate_before = _rate_detail(co)
     co.status = "approved"
     co.approved_by = resolve_audit_actor(user)  # the approver's id (#701), not an email the login never carries
     co.approved_at = utcnow()
+    # GDXA-795: the customer signs at the rate in force at approval, not the
+    # one stamped when the draft was written (maintainer ruling 2026-10-15).
+    # A CO already signed keeps its rate; a billed one is always approved.
+    if old_status not in _SIGNED_STATUSES:
+        db.flush()
+        _stamp_tax_rate(db, co)
     db.commit()
     db.refresh(co)
-    _audit_status_change(db, user, co, old_status, "approve_change_order")
+    _audit_status_change(
+        db, user, co, old_status, "approve_change_order",
+        extra={"tax_rate": {"old": rate_before, "new": _rate_detail(co)}},
+    )
     return _serialize(co)
 
 
