@@ -62,7 +62,9 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_unpermissioned_bas
 # dispatch-manager role (GDXA-1059).
 # 374 → 371 (2026-10-14): the three workflow-rule writes now require a
 # dispatch-manager role (GDXA-1097).
-BASELINE_SIZE = 371
+# 371 → 366 (2026-10-15): the five technician writes now require users.write
+# and a signed-in user (GDXA-981, GDXA-982).
+BASELINE_SIZE = 366
 
 
 def _baseline() -> set[str]:
