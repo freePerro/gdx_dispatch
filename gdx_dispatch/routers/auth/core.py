@@ -1344,8 +1344,9 @@ def finalize_login_jwt(
       GDXA-1003 (password change) — a user flagged must_change_password
         gets 403 ``password_change_required`` on every endpoint that reaches
         this gate and is not marked ``@allowed_while_password_change_required``.
-        Surfaces that decode the token themselves (dispatch_ws, and
-        core.modules.require_role's claim fallback) never reach it.
+        core.modules.require_role's claim fallback decodes the token itself
+        and never reaches it. dispatch_ws decodes its query-string token and
+        then calls this (GDXA-1210).
     """
     # Slice H — denylist gate (cheap; runs before Slice 2's DB hit).
     if jti and _get_app_denylist(request).contains(str(jti)):
