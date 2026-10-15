@@ -5,6 +5,7 @@ import { useAuthStore } from '../stores/auth';
 import { createApiClient } from '../composables/useApi';
 import { isTechnician } from '../constants/roles';
 import { getLoginRedirectLocation } from '../lib/auth-urls';
+import { isSessionLocked, lockSession, unlockSession } from '../lib/nativeAuth';
 import { useViewMode } from '../composables/useViewMode';
 import { applyScroll, installScrollRestore, sameViewComponent } from '../lib/scrollRestore';
 import { navigationRemounted } from '../lib/viewRemount';
@@ -157,6 +158,11 @@ export const routes = [
   // wizard. Every other route is wrapped by App.vue's AppLayout so the
   // sidebar/topbar/bottom-nav are stable across navigations.
   { path: '/login', name: 'login', component: LoginView, meta: { public: true, noShell: true } },
+  // The quick-PIN / fingerprint gate of the Android app (GDXA-1187). Not
+  // public: there is a session behind it, held until the PIN or fingerprint
+  // clears the lock. Reached only through the lock gate in the guard below,
+  // so it has no nav entry.
+  { path: '/unlock', name: 'session-unlock', component: () => import('../views/SessionUnlockView.vue'), meta: { noShell: true } },
   { path: '/forgot-password', name: 'forgot-password', component: () => import('../views/ForgotPasswordView.vue'), meta: { public: true, noShell: true } },
   { path: '/reset-password', name: 'reset-password', component: () => import('../views/ResetPasswordView.vue'), meta: { public: true, noShell: true } },
   { path: '/onboarding', name: 'onboarding', component: () => import('../views/OnboardingView.vue'), meta: { noShell: true } },
@@ -455,6 +461,17 @@ export const routes = [
 // self-service change-password form.
 export const PASSWORD_CHANGE_PATH = '/profile';
 
+// Where a locked session is held until the quick PIN or fingerprint unlocks it.
+export const SESSION_UNLOCK_PATH = '/unlock';
+
+// Only an in-app path may be the target after unlocking: never another origin.
+function safeUnlockTarget(raw) {
+  const target = typeof raw === 'string' ? raw : '';
+  return target.startsWith('/') && !target.startsWith('//') && !target.startsWith(SESSION_UNLOCK_PATH)
+    ? target
+    : '/';
+}
+
 export function createAppRouter() {
   const router = createRouter({
     history: createWebHistory(),
@@ -527,6 +544,10 @@ export function createAppRouter() {
       (nativeSessionRestore || (Capacitor.isNativePlatform() && getServerUrl()))
     ) {
       nativeSessionRestore ||= (async () => {
+        // Lock BEFORE restoring: a session the refresh cookie brings back must
+        // pass the quick-PIN gate like one resumed from the background. A
+        // no-op unless the tech has turned the quick PIN on.
+        lockSession();
         try {
           await auth.refreshAccessToken();
           // The stored password-change hold went with sessionStorage: ask the
@@ -539,8 +560,30 @@ export function createAppRouter() {
       await nativeSessionRestore;
     }
 
+    // With no session there is nothing to unlock, and the password sign-in
+    // that follows is stronger proof than the PIN: drop a stale lock so it
+    // does not hold that fresh sign-in on the unlock screen.
+    if (!auth.isAuthenticated) unlockSession();
+
     if (!to.meta.public && !auth.isAuthenticated) {
       return getLoginRedirectLocation(to.fullPath);
+    }
+
+    // GDXA-1187: the quick-PIN lock gate. Every way a session comes to life
+    // in the app (the cold-start restore above, a resume from the background
+    // via lib/sessionLockLifecycle.js) locks it when the PIN is on, and no
+    // non-public route opens until MobilePinUnlockDialog clears the lock.
+    // Public routes stay reachable, and "Forgot PIN" signs out, so the person
+    // is never trapped. Ahead of the /login bounce and the password-change
+    // hold, which would otherwise route past it.
+    if (auth.isAuthenticated && isSessionLocked()) {
+      if (to.path === SESSION_UNLOCK_PATH) return true;
+      if (!to.meta.public || to.path === '/login') {
+        return { path: SESSION_UNLOCK_PATH, query: { redirect: to.fullPath } };
+      }
+    } else if (to.path === SESSION_UNLOCK_PATH && auth.isAuthenticated) {
+      // Unlocked (or never locked): go on to where the person was headed.
+      return safeUnlockTarget(to.query?.redirect);
     }
 
     if (to.path === '/login' && auth.isAuthenticated) {
