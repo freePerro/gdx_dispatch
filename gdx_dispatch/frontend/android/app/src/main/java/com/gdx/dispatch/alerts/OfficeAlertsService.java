@@ -61,6 +61,29 @@ public class OfficeAlertsService extends Service {
     static final String KEY_CURSOR = "cursor";
     static final String KEY_SEEN = "seen";
 
+    // Which feed this app polls. GDX Dispatch gets the office's alerts; GDX
+    // Planner gets only the signed-in user's planner reminders. The installed
+    // package decides, not the web layer. A server released before scopes
+    // ignores the parameter and sends the office feed, so the planner app
+    // also posts only planner reminders itself (belongsInScope).
+    static final String SCOPE_OFFICE = "office";
+    static final String SCOPE_PLANNER = "planner";
+    static final String PLANNER_PACKAGE = "com.gdx.planner";
+
+    static String scopeForPackage(@Nullable String packageName) {
+        return PLANNER_PACKAGE.equals(packageName) ? SCOPE_PLANNER : SCOPE_OFFICE;
+    }
+
+    // The server's planner scope is every category starting "planner_"
+    // (device_alerts.py); this filter matches it, so a new planner category is
+    // not dropped here and marked seen.
+    static final String PLANNER_CATEGORY_PREFIX = "planner_";
+
+    static boolean belongsInScope(String scope, @Nullable String category) {
+        return !SCOPE_PLANNER.equals(scope)
+                || (category != null && category.startsWith(PLANNER_CATEGORY_PREFIX));
+    }
+
     static final String TOKEN_HEADER = "X-Device-Alerts-Token";
     static final String CHANNEL_STATUS = "gdx_office_alerts_status";
     static final String CHANNEL_ALERTS = "gdx_office_alerts";
@@ -176,14 +199,14 @@ public class OfficeAlertsService extends Service {
         NotificationChannel status = new NotificationChannel(
             CHANNEL_STATUS, "Phone alerts status", NotificationManager.IMPORTANCE_LOW
         );
-        status.setDescription("Shows that office alerts are on for this phone");
+        status.setDescription("Shows that phone alerts are on for this phone");
         status.setShowBadge(false);
         nm.createNotificationChannel(status);
 
         NotificationChannel alerts = new NotificationChannel(
-            CHANNEL_ALERTS, "Office alerts", NotificationManager.IMPORTANCE_HIGH
+            CHANNEL_ALERTS, "Alerts", NotificationManager.IMPORTANCE_HIGH
         );
-        alerts.setDescription("New customer texts, payments, leads and other office notifications");
+        alerts.setDescription(ctx.getString(R.string.alerts_channel_description));
         alerts.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
         nm.createNotificationChannel(alerts);
     }
@@ -202,7 +225,7 @@ public class OfficeAlertsService extends Service {
 
     private void startForegroundWithStatus() {
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_STATUS)
-            .setContentTitle("GDX Dispatch")
+            .setContentTitle(getString(R.string.app_name))
             .setContentText("Phone alerts are on")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
@@ -256,8 +279,9 @@ public class OfficeAlertsService extends Service {
             String token = p.getString(KEY_TOKEN, "");
             if (serverUrl.isEmpty() || token.isEmpty()) break;
             long started = System.currentTimeMillis();
+            String scope = scopeForPackage(getPackageName());
             try {
-                Response r = fetchFeed(serverUrl, token, p.getString(KEY_CURSOR, null));
+                Response r = fetchFeed(serverUrl, token, p.getString(KEY_CURSOR, null), scope);
                 if (r.code == 403) {
                     if (forbiddenSince == 0) forbiddenSince = started;
                 } else {
@@ -274,7 +298,7 @@ public class OfficeAlertsService extends Service {
                     return;
                 }
                 if (r.code != 200) throw new IOException("HTTP " + r.code);
-                handle(r.body, token);
+                handle(r.body, token, scope);
                 backoff = BACKOFF_MIN_MS;
                 // Never spin if something in between answers at once.
                 if (System.currentTimeMillis() - started < 1_000) pause(2_000);
@@ -305,13 +329,20 @@ public class OfficeAlertsService extends Service {
         }
     }
 
-    private Response fetchFeed(String serverUrl, String token, @Nullable String cursor) throws IOException {
+    static String feedUrl(String serverUrl, @Nullable String cursor, String scope)
+        throws java.io.UnsupportedEncodingException {
         StringBuilder url = new StringBuilder(serverUrl)
-            .append("/api/notifications/device-alerts/feed?wait=").append(WAIT_SECONDS);
+            .append("/api/notifications/device-alerts/feed?wait=").append(WAIT_SECONDS)
+            .append("&scope=").append(scope);
         if (cursor != null && !cursor.isEmpty()) {
             url.append("&after=").append(URLEncoder.encode(cursor, "UTF-8"));
         }
-        HttpURLConnection conn = (HttpURLConnection) new URL(url.toString()).openConnection();
+        return url.toString();
+    }
+
+    private Response fetchFeed(String serverUrl, String token, @Nullable String cursor, String scope)
+        throws IOException {
+        HttpURLConnection conn = (HttpURLConnection) new URL(feedUrl(serverUrl, cursor, scope)).openConnection();
         inFlight = conn;
         try {
             conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -339,7 +370,7 @@ public class OfficeAlertsService extends Service {
 
     // A short wake lock only while a response is handled: Doze can defer the
     // next request, but never cut a notification off half-posted.
-    private void handle(String body, String token) throws Exception {
+    private void handle(String body, String token, String scope) throws Exception {
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         PowerManager.WakeLock lock = pm == null ? null
             : pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "GDX::OfficeAlerts");
@@ -359,15 +390,15 @@ public class OfficeAlertsService extends Service {
                     String id = item.optString("id", "");
                     // Every response re-sends two minutes of history.
                     if (id.isEmpty() || seen.contains(id)) continue;
-                    fresh.add(item);
                     seen.add(id);
+                    if (belongsInScope(scope, item.optString("category", ""))) fresh.add(item);
                 }
             }
             List<String> keep = new ArrayList<>(seen);
             if (keep.size() > SEEN_LIMIT) keep = keep.subList(keep.size() - SEEN_LIMIT, keep.size());
             recordIfCurrent(p, token, stopping, () -> {
                 for (JSONObject item : fresh) {
-                    postAlert(item.optString("id", ""), item.optString("title", "GDX Dispatch"),
+                    postAlert(item.optString("id", ""), item.optString("title", getString(R.string.app_name)),
                         item.optString("message", ""), item.optString("category", ""));
                 }
             }, json.optString("cursor", p.getString(KEY_CURSOR, "")), String.join(",", keep));
@@ -379,8 +410,8 @@ public class OfficeAlertsService extends Service {
     private void postAlert(String id, String title, String message, String category) {
         int notificationId = id.hashCode();
         Notification publicVersion = new NotificationCompat.Builder(this, CHANNEL_ALERTS)
-            .setContentTitle("GDX Dispatch")
-            .setContentText("New office notification")
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText("New notification")
             .setSmallIcon(R.mipmap.ic_launcher)
             .build();
         Notification n = new NotificationCompat.Builder(this, CHANNEL_ALERTS)
@@ -412,7 +443,7 @@ public class OfficeAlertsService extends Service {
     private void turnOffAfterRefusal() {
         notify(TURNED_OFF_NOTIFICATION_ID, new NotificationCompat.Builder(this, CHANNEL_ALERTS)
             .setContentTitle("Phone alerts turned off")
-            .setContentText("Open GDX Dispatch to turn them back on.")
+            .setContentText("Open " + getString(R.string.app_name) + " to turn them back on.")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setAutoCancel(true)
             .setContentIntent(openAppIntent(TURNED_OFF_NOTIFICATION_ID, null))

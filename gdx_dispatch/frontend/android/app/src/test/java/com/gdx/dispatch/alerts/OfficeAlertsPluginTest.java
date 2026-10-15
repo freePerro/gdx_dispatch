@@ -29,6 +29,39 @@ public class OfficeAlertsPluginTest {
         assertEquals("{\"reason\":\"logxout\"}", OfficeAlertsPlugin.revokeBody("log\",\"x\":\"out"));
     }
 
+    // A server released before scopes ignores ?scope=planner and answers with
+    // the office feed: GDX Planner still posts only planner reminders.
+    @Test
+    public void thePlannerAppPostsOnlyPlannerReminders() {
+        assertTrue(OfficeAlertsService.belongsInScope("planner", "planner_reminder"));
+        // Same rule as the server's scope: any planner_ category, not one name.
+        assertTrue(OfficeAlertsService.belongsInScope("planner", "planner_assigned"));
+        assertFalse(OfficeAlertsService.belongsInScope("planner", null));
+        assertFalse(OfficeAlertsService.belongsInScope("planner", "planner"));
+        assertFalse(OfficeAlertsService.belongsInScope("planner", "sms"));
+        assertFalse(OfficeAlertsService.belongsInScope("planner", "payment"));
+        assertFalse(OfficeAlertsService.belongsInScope("planner", ""));
+        assertTrue(OfficeAlertsService.belongsInScope("office", "sms"));
+        assertTrue(OfficeAlertsService.belongsInScope("office", "lead"));
+    }
+
+    // The installed app decides its feed: only GDX Planner's package gets the
+    // planner feed, whatever the web layer believes it is.
+    @Test
+    public void scopeComesFromThePackage() {
+        assertEquals("planner", OfficeAlertsService.scopeForPackage("com.gdx.planner"));
+        assertEquals("office", OfficeAlertsService.scopeForPackage("com.gdx.dispatch"));
+        assertEquals("office", OfficeAlertsService.scopeForPackage(null));
+    }
+
+    @Test
+    public void feedUrlCarriesTheScope() throws Exception {
+        assertEquals("https://h/api/notifications/device-alerts/feed?wait=25&scope=planner&after=a%3Ab",
+            OfficeAlertsService.feedUrl("https://h", "a:b", "planner"));
+        assertEquals("https://h/api/notifications/device-alerts/feed?wait=25&scope=office",
+            OfficeAlertsService.feedUrl("https://h", null, "office"));
+    }
+
     // A response read just before stop() must not write the session back.
     @Test
     public void stopThenLateHandleLeavesPrefsEmpty() {
