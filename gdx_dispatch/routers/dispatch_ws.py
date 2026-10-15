@@ -4,13 +4,51 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from starlette.concurrency import run_in_threadpool
 
-from gdx_dispatch.core.modules import decode_live_access_token, require_module
+from gdx_dispatch.core.database import SessionLocal
+from gdx_dispatch.core.modules import _load_user_permissions, decode_live_access_token, require_module
+from gdx_dispatch.core.permissions import WILDCARD
+from gdx_dispatch.core.tenant import single_tenant
 from gdx_dispatch.core.websocket import manager
+from gdx_dispatch.routers.auth.core import finalize_login_jwt
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["dispatch-ws"], dependencies=[Depends(require_module("dispatch"))])
+
+# The keys the REST board already gates on (GDXA-1210): every
+# /api/dispatch/* read is jobs.read_all, and assigning a job is jobs.write.
+_READ_KEY = "jobs.read_all"
+_SEND_KEY = "jobs.write"
+
+
+def _board_permissions(websocket: WebSocket, claims: dict[str, Any]) -> set[str]:
+    """The token holder's permission set, admitted and resolved as a REST
+    request is: ``finalize_login_jwt`` (the gate stack behind
+    ``get_current_user``: no users row, deleted, inactive, wrong tenant or
+    must-change-password raise; users.role overrides the claim), then the
+    role snapshot. Raises HTTPException where REST would refuse.
+
+    TenantMiddleware is HTTP-only, so the socket's state carries no tenant;
+    pin it the way the middleware pins every request.
+    """
+    if not getattr(websocket.state, "tenant", None):
+        websocket.state.tenant = single_tenant()
+    user = finalize_login_jwt(
+        websocket,
+        sub=str(claims.get("sub", "")),
+        tenant_claim=str(claims.get("tenant_id", "")),
+        role=str(claims.get("role", "user")),
+        actor_kind="human",
+        jti=claims.get("jti"),
+    )
+    with SessionLocal() as db:
+        return _load_user_permissions(db, websocket, user)
+
+
+def _holds(perms: set[str], key: str) -> bool:
+    return WILDCARD in perms or key in perms
 
 
 def _decode_token(websocket: WebSocket, token: str) -> dict[str, Any] | None:
@@ -69,13 +107,24 @@ async def dispatch_board_ws(websocket: WebSocket, token: str = "") -> None:
     if not tenant_id:
         await websocket.close(code=1008)
         return
+    # A tenant-bearing token is not enough: a customer or technician token
+    # carries tenant_id too. Admit only who may read the board over REST.
+    try:
+        perms = await run_in_threadpool(_board_permissions, websocket, payload)
+    except HTTPException as exc:
+        await websocket.close(code=1011 if exc.status_code >= 500 else 1008)
+        return
+    if not _holds(perms, _READ_KEY):
+        await websocket.close(code=1008)
+        return
+    may_send = _holds(perms, _SEND_KEY)
 
     await manager.connect(websocket, tenant_id, user_id or None)
 
     try:
         while True:
             incoming = await websocket.receive_json()
-            if not isinstance(incoming, dict):
+            if not isinstance(incoming, dict) or not may_send:
                 continue
             outgoing = _normalize_message(incoming)
             if outgoing is None:
