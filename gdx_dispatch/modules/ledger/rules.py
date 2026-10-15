@@ -422,13 +422,22 @@ def build_payment_lines(session: Session, payment, invoice) -> tuple[PostingLine
         raise LedgerConfigError("gl_settings missing — accounting not initialized")
     method_role = ledger_service.resolve_payment_method_role(settings, payment.method)
 
-    total_cents = to_cents(_dec(invoice.total))
-    remaining_ar = max(
-        total_cents
-        - _prior_nonvoided_paid_cents(session, invoice, payment)
-        - invoice_credited_cents(session, invoice),
-        0,
-    )
+    # GDXA-1220: a void invoice has no receivable. The void reversed its P1
+    # (and its adjustments) but left `total` alone, so the arithmetic below
+    # would still credit AR, and GL AR on the invoice went negative. Money
+    # that lands on a void anyway (#422: the Stripe recorder books it in
+    # full, the invoice stays void) is the customer's, so all of it is 2300.
+    is_void = str(getattr(invoice, "status", "") or "").lower() == "void"
+    if is_void:
+        remaining_ar = 0
+    else:
+        total_cents = to_cents(_dec(invoice.total))
+        remaining_ar = max(
+            total_cents
+            - _prior_nonvoided_paid_cents(session, invoice, payment)
+            - invoice_credited_cents(session, invoice),
+            0,
+        )
     ar_portion = min(amount_cents, remaining_ar)
     excess = amount_cents - ar_portion
 
@@ -471,7 +480,11 @@ def build_payment_lines(session: Session, payment, invoice) -> tuple[PostingLine
                 role=ROLE_CUSTOMER_CREDITS,
                 job_id=invoice.job_id,
                 customer_id=invoice.customer_id,
-                memo=f"overpayment on {invoice.invoice_number} → customer credit",
+                memo=(
+                    f"payment on voided invoice {invoice.invoice_number} → customer credit"
+                    if is_void
+                    else f"overpayment on {invoice.invoice_number} → customer credit"
+                ),
             )
         )
     return tuple(lines)
@@ -887,6 +900,10 @@ def _refund_overpayment_cents(session: Session, invoice) -> int:
             Payment.voided_at.is_(None),
         )
     ).scalar_one_or_none() or 0
+    if str(getattr(invoice, "status", "") or "").lower() == "void":
+        # GDXA-1220: the same void rule as `build_payment_lines` — a void asks
+        # for nothing, so every live dollar on it is the customer's.
+        return max(to_cents(_dec(paid)), 0)
     over = (
         to_cents(_dec(paid))
         - to_cents(_dec(invoice.total or 0))
