@@ -24,11 +24,11 @@
         <ToggleSwitch
           v-model="toggleValue"
           data-testid="qb-reconciliation-toggle"
-          :disabled="toggling"
+          :disabled="toggling || !auth.isAdmin"
           @update:modelValue="onToggle"
         />
         <Button
-          v-if="status.delete_sync_source === 'tenant'"
+          v-if="status.delete_sync_source === 'tenant' && auth.isAdmin"
           label="Clear override"
           severity="secondary"
           size="small"
@@ -37,6 +37,10 @@
           data-testid="qb-reconciliation-clear-override"
           @click="onClearOverride"
         />
+        <!-- /settings/delete-sync refuses anyone but admin/owner. -->
+        <small v-if="!auth.isAdmin" class="banner-detail" data-testid="qb-reconciliation-admin-only">
+          Only an admin can change this.
+        </small>
       </div>
     </div>
 
@@ -101,9 +105,11 @@ import ProgressSpinner from 'primevue/progressspinner';
 import Tag from 'primevue/tag';
 import ToggleSwitch from 'primevue/toggleswitch';
 import { useApiWithToast } from '../../composables/useApiWithToast';
+import { useAuthStore } from '../../stores/auth';
 
 const api = useApiWithToast();
 const toast = useToast();
+const auth = useAuthStore();
 const rows = ref([]);
 const loading = ref(false);
 const status = ref({ delete_sync_enabled: false, delete_sync_source: 'env' });

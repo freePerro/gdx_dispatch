@@ -15,6 +15,15 @@ import SimpleFINCard from '../SimpleFINCard.vue';
 const toastSpy = vi.fn();
 vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: toastSpy }) }));
 
+// The card gates every mutating control on bank_feeds.manage. Mocked rather
+// than loaded so usePermission's own /permissions fetch does not consume the
+// queued fetchMock responses.
+let grantedPerms = new Set(['bank_feeds.read', 'bank_feeds.manage']);
+vi.mock('../../composables/usePermission', () => ({
+  usePermission: () => ({ hasPermission: (key) => grantedPerms.has(key) }),
+}));
+const READ_ONLY = () => { grantedPerms = new Set(['bank_feeds.read']); };
+
 function mkResponse(body, { ok = true, status = 200 } = {}) {
   return {
     ok, status,
@@ -79,6 +88,7 @@ describe('SimpleFINCard', () => {
     fetchMock = vi.fn();
     global.fetch = fetchMock;
     localStorage.setItem('token', 'test-jwt');
+    grantedPerms = new Set(['bank_feeds.read', 'bank_feeds.manage']);
   });
 
   afterEach(() => {
@@ -803,5 +813,67 @@ describe('SimpleFINCard', () => {
     await btn.trigger('click');
     await flushPromises();
     expect(fetchMock.mock.calls[1][0]).toContain('/api/bank-feeds/simplefin/disconnect');
+  });
+
+  describe('read-only (bank_feeds.read without manage)', () => {
+    it('gets a note instead of the token form when disconnected', async () => {
+      READ_ONLY();
+      fetchMock.mockResolvedValueOnce(mkResponse(DISCONNECTED));
+      const wrapper = mountCard();
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="sfin-status-tag"]').text()).toBe('Not Connected');
+      expect(wrapper.find('[data-testid="sfin-token-input"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-connect-btn"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-readonly-note"]').text()).toContain('needs bank-feed management access');
+    });
+
+    it('gets a note and Retry, but no token form, when the status is unknown', async () => {
+      READ_ONLY();
+      fetchMock.mockResolvedValueOnce(mkResponse({ detail: 'boom' }, { ok: false, status: 500 }));
+      const wrapper = mountCard();
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="sfin-status-tag"]').text()).toBe('Status unknown');
+      expect(wrapper.find('[data-testid="sfin-retry"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="sfin-token-input"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-connect-btn"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-readonly-note"]').exists()).toBe(true);
+    });
+
+    it('sees the schedule but cannot save, sync or disconnect when connected', async () => {
+      READ_ONLY();
+      fetchMock.mockResolvedValueOnce(mkResponse(CONNECTED));
+      const wrapper = mountCard();
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="sfin-quota"]').text()).toContain('7/20');
+      expect(wrapper.find('[data-testid="sfin-readonly-note"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-save-settings"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-sync-now"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-disconnect"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="sfin-window-start"]').element.disabled).toBe(true);
+      // Tie-out is a read (bank_feeds.read) and stays.
+      expect(wrapper.find('[data-testid="sfin-tieout-run"]').exists()).toBe(true);
+    });
+
+    it('a manager on the same states still gets the form and the actions', async () => {
+      fetchMock.mockResolvedValueOnce(mkResponse(CONNECTED));
+      const wrapper = mountCard();
+      await flushPromises();
+      expect(wrapper.find('[data-testid="sfin-save-settings"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="sfin-sync-now"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="sfin-disconnect"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="sfin-window-start"]').element.disabled).toBe(false);
+    });
+  });
+
+  it('a password-change 403 is not reported as missing bank-feed access', async () => {
+    fetchMock.mockResolvedValueOnce(mkResponse(
+      { detail: 'password_change_required' }, { ok: false, status: 403 },
+    ));
+    const wrapper = mountCard();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="sfin-load-denied"]').exists()).toBe(false);
   });
 });

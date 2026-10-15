@@ -125,4 +125,35 @@ describe('OutlookConnectButton', () => {
     await flushPromises();
     expect(consoleErrSpy).toHaveBeenCalled();
   });
+
+  // GDXA-1138: a failed load is "status unknown", never a Connect prompt.
+  it('a load failure shows status unknown with Retry, not Connect Outlook', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchMock.mockRejectedValueOnce(new Error('network down'));
+    const w = mount(OutlookConnectButton, { global: globalConfig });
+    await flushPromises();
+    expect(w.find('[data-testid="outlook-account-status-unknown"]').text()).toContain('network down');
+    expect(w.text()).not.toContain('Connect Outlook');
+
+    fetchMock.mockResolvedValueOnce(mkResponse({
+      connected: true, upn: 'a@example.com', display_name: 'A', last_error: null,
+    }));
+    await w.find('[data-testid="outlook-account-retry"]').trigger('click');
+    await flushPromises();
+    expect(w.find('[data-testid="outlook-account-status-unknown"]').exists()).toBe(false);
+    expect(w.text()).toContain('a@example.com');
+  });
+
+  it('a 403 (email module off) says so, with neither Retry nor Connect', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(mkResponse(
+      { detail: "Module 'email' is not enabled" }, { ok: false, status: 403 },
+    ));
+    const w = mount(OutlookConnectButton, { global: globalConfig });
+    await flushPromises();
+    expect(w.find('[data-testid="outlook-account-forbidden"]').text()).toContain("Module 'email' is not enabled");
+    expect(w.find('[data-testid="outlook-account-retry"]').exists()).toBe(false);
+    expect(w.text()).not.toContain('Connect Outlook');
+    expect(w.text()).not.toContain('status unknown');
+  });
 });

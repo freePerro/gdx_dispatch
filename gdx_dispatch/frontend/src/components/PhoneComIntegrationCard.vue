@@ -28,6 +28,12 @@ const defaultExtInput = ref('')
 const defaultCallerInput = ref('')
 const saveStatus = ref(null)
 const adminError = ref(false)
+// GDXA-1138: a failed status load is "Status unknown", never not-connected.
+// phoneSettings keeps its token_set:false default on failure, so without
+// these the card offered the connect/OAuth form to an already-connected
+// install, and the module toggle read off.
+const settingsError = ref(null)
+const modulesError = ref(false)
 
 // Token-details panel (P3.10)
 const tokenDetails = ref(null)
@@ -79,10 +85,12 @@ const fetchModules = async () => {
   try {
     loading.value = true
     error.value = null
+    modulesError.value = false
     const response = await api.get('/api/settings/modules')
     const mod = response.modules?.find(m => m.key === 'phone_com')
     if (mod) phoneEnabled.value = !!mod.enabled
   } catch (err) {
+    modulesError.value = true
     error.value = err.message || 'Failed to load module state'
   } finally {
     loading.value = false
@@ -98,9 +106,14 @@ const fetchSettings = async () => {
     defaultExtInput.value = response.default_extension_id || ''
     defaultCallerInput.value = response.default_caller_id || ''
     adminError.value = false
+    settingsError.value = null
   } catch (err) {
-    if (err.status === 403) adminError.value = true
-    else if (err.status !== 401) console.error('Failed to fetch phone-com settings:', err)
+    if (err.status === 403) {
+      adminError.value = true
+      settingsError.value = null
+    } else {
+      settingsError.value = err.message || 'Failed to load Phone.com settings'
+    }
   }
 }
 
@@ -123,6 +136,7 @@ const fetchCatalogs = async () => {
 }
 
 const toggleModule = async () => {
+  if (modulesError.value) return
   const previous = phoneEnabled.value
   const next = !previous
   phoneEnabled.value = next
@@ -391,16 +405,18 @@ const disconnect = async () => {
   }
 }
 
-onMounted(async () => {
+const loadCard = async () => {
   // Order matters: tests queue api.get mocks in [modules, settings] sequence.
   // Sequential awaits keep that ordering. Catalogs only fetched once a token
   // is set — empty card has nothing to populate dropdowns from anyway.
   await fetchModules()
   await fetchSettings()
-  if (phoneSettings.value && phoneSettings.value.token_set) {
+  if (!settingsError.value && phoneSettings.value && phoneSettings.value.token_set) {
     await fetchCatalogs()
   }
-})
+}
+
+onMounted(loadCard)
 </script>
 
 <template>
@@ -420,18 +436,42 @@ onMounted(async () => {
           class="toggle-input"
           data-test="phone-com-module-toggle"
           :checked="phoneEnabled"
+          :disabled="modulesError"
           @change="toggleModule"
         />
         <label for="phone-com-module-toggle">Enabled</label>
       </div>
     </div>
 
-    <div v-if="error" class="status-row status-error">{{ error }}</div>
+    <div v-if="error" class="status-row status-error">
+      {{ error }}
+      <button
+        v-if="modulesError"
+        type="button"
+        class="btn-link"
+        data-test="pc-modules-retry"
+        @click="loadCard"
+      >
+        Retry
+      </button>
+    </div>
     <div v-if="loading" class="muted">Loading…</div>
 
     <div v-else>
       <div v-if="adminError" class="status-row status-warn">
         Admin access required to manage the Phone.com token.
+      </div>
+      <div v-else-if="settingsError" class="key-section" data-test="pc-status-unknown">
+        <span class="status-pill" data-test="pc-status-unknown-tag">Status unknown</span>
+        <p class="muted">
+          Could not load the Phone.com connection status ({{ settingsError }}).
+          Retry before pasting a token or reconnecting — Phone.com may already be connected.
+        </p>
+        <div class="action-row">
+          <button type="button" class="btn-primary" data-test="pc-status-retry" @click="loadCard">
+            Retry
+          </button>
+        </div>
       </div>
       <div v-else class="key-section">
         <label for="pc-token-input">Phone.com Access Token</label>
@@ -921,6 +961,16 @@ onMounted(async () => {
   color: var(--color-danger-500);
 }
 
+.status-pill {
+  align-self: flex-start;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  background: var(--surface-panel);
+}
 .status-row {
   border: 1px solid;
   border-radius: 6px;

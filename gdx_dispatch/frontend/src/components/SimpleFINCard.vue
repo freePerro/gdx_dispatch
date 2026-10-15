@@ -8,7 +8,8 @@ import InputText from 'primevue/inputtext'
 import InputNumber from 'primevue/inputnumber'
 import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
-import { useApi } from '../composables/useApi'
+import { isPasswordChangeRequired, useApi } from '../composables/useApi'
+import { usePermission } from '../composables/usePermission'
 
 // SimpleFIN bank feed — Settings → Integrations card (Doug 2026-08-13).
 // Connect = paste a setup token generated at the SimpleFIN Bridge; GDX
@@ -19,6 +20,10 @@ import { useApi } from '../composables/useApi'
 
 const api = useApi()
 const toast = useToast()
+const { hasPermission } = usePermission()
+// /connect, /relink, /settings, /sync and /disconnect all require
+// bank_feeds.manage (simplefin_router.py); /status and /tieout only read.
+const canManage = computed(() => hasPermission('bank_feeds.manage'))
 
 const loading = ref(true)
 const status = ref(null)
@@ -141,7 +146,8 @@ async function load() {
     loadError.value = err?.message || 'Unable to load status'
     // A 403 is a refusal, not an unknown: no bank_feeds.read, or the Bank
     // Feeds module is off. Retry and /connect would be refused the same way.
-    loadDenied.value = err?.status === 403
+    // A password-change 403 is useApi's to handle: it redirects.
+    loadDenied.value = err?.status === 403 && !isPasswordChangeRequired(err)
     console.warn('simplefin card load failed:', err)
   } finally {
     loading.value = false
@@ -448,7 +454,16 @@ onMounted(() => { load() })
            broken connection look like tearing it down. This is where Bank
            Feeds' "Re-link in Settings" button lands, and `unhealthy` is the
            exact complement of the condition that renders it. -->
-      <template v-if="unhealthy && !loadDenied">
+      <!-- Read-only (bank_feeds.read without manage): /connect would refuse
+           the token, so say who can act instead of offering the form. -->
+      <small
+        v-if="unhealthy && !loadDenied && !canManage"
+        class="muted" data-testid="sfin-readonly-note"
+      >
+        Connecting or re-linking the bank feed needs bank-feed management access. Ask an
+        admin to do it, or to grant it on /role-permissions.
+      </small>
+      <template v-if="unhealthy && !loadDenied && canManage">
         <!-- Someone repairing a connection already has a bridge account;
              telling them to create one reads as the wrong screen. -->
         <!-- Status unknown: they may or may not have a bridge account yet. -->
@@ -510,26 +525,26 @@ onMounted(() => { load() })
           <span>Fetch frequency</span>
           <Select
             v-model="settings.frequency" :options="FREQUENCIES"
-            optionLabel="label" optionValue="value" data-testid="sfin-frequency"
+            optionLabel="label" optionValue="value" :disabled="!canManage" data-testid="sfin-frequency"
           />
         </label>
         <label class="field">
           <span>Fetch hours ({{ status.timezone }})</span>
           <span class="window-inputs">
-            <InputText v-model="settings.windowStart" placeholder="08:00" size="small" data-testid="sfin-window-start" />
+            <InputText v-model="settings.windowStart" placeholder="08:00" size="small" :disabled="!canManage" data-testid="sfin-window-start" />
             –
-            <InputText v-model="settings.windowEnd" placeholder="18:00" size="small" data-testid="sfin-window-end" />
+            <InputText v-model="settings.windowEnd" placeholder="18:00" size="small" :disabled="!canManage" data-testid="sfin-window-end" />
           </span>
           <small class="muted">Local time. Leave both empty for any hour.</small>
         </label>
         <label class="field">
           <span>Daily fetch cap (max {{ capMax }})</span>
           <InputNumber
-            v-model="settings.cap" :min="1" :max="capMax" showButtons
+            v-model="settings.cap" :min="1" :max="capMax" showButtons :disabled="!canManage"
             data-testid="sfin-cap"
           />
         </label>
-        <div class="integration-actions">
+        <div v-if="canManage" class="integration-actions">
           <Button label="Save schedule" size="small" :loading="settingsSaving"
                   data-testid="sfin-save-settings" @click="saveSettings" />
           <Button
