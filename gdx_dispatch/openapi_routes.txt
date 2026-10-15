@@ -106,6 +106,7 @@ GET /.well-known/security.txt
 GET /api/.well-known/jwks.json
 GET /api/accounting/journal
 GET /api/accounting/opening/proposal
+GET /api/accounting/reports/ar-control
 GET /api/accounting/reports/balance-sheet
 GET /api/accounting/reports/pnl
 GET /api/accounting/reports/trial-balance

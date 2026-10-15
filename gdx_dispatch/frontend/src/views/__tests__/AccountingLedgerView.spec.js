@@ -7,6 +7,8 @@
  *     and per-line detail on expansion.
  *  4. A "provisional" banner sits outside the tabs, so it covers every
  *     report until the bank-statement tie-out lands (GDXA-1183).
+ *  5. The trial-balance tab ties open invoices to the AR account and names
+ *     every invoice that disagrees, linked to it (GDXA-1181).
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
@@ -29,6 +31,19 @@ const TB = {
     { account_id: 'a2', code: '4000', name: 'Service & Repair Revenue', type: 'revenue', debit_cents: 0, credit_cents: 33000 },
   ],
   totals: { debit_cents: 33000, credit_cents: 33000, zero_proof_cents: 0 },
+};
+
+const AR = {
+  ledger_posting_enabled: true,
+  cutover_month: '2026-07-01',
+  control_cents: 33000,
+  subledger_cents: 33000,
+  difference_cents: 0,
+  tied: true,
+  drift_invoice_count: 0,
+  drift: [],
+  unattributed_cents: 0,
+  unattributed_by_source: [],
 };
 
 const PNL = {
@@ -69,6 +84,7 @@ const stubs = {
 
 function route(url) {
   if (url.includes('trial-balance')) return TB;
+  if (url.includes('/ar-control')) return AR;
   if (url.includes('/pnl')) return PNL;
   if (url.includes('/journal')) return JOURNAL;
   if (url.includes('balance-sheet')) {
@@ -192,5 +208,56 @@ describe('AccountingLedgerView', () => {
     expect(lines.exists()).toBe(true);
     expect(lines.text()).toContain('1200');
     expect(lines.text()).toContain('$530.00');
+  });
+
+  it('ties open invoices to the AR account alongside the trial balance (GDXA-1181)', async () => {
+    const wrapper = mount(AccountingLedgerView, { global: { stubs } });
+    await flushPromises();
+    expect(apiGet).toHaveBeenCalledWith('/api/accounting/reports/ar-control');
+    expect(wrapper.find('[data-testid="ar-control-tag"]').text()).toBe('Tied');
+    expect(wrapper.find('[data-testid="ar-control-totals"]').text()).toContain('$330.00');
+    expect(wrapper.find('[data-testid="ar-control-drift"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="ar-control-off"]').exists()).toBe(false);
+  });
+
+  it('still shows the trial balance when the tie-out request fails', async () => {
+    apiGet.mockImplementation(async (url) => {
+      if (url.includes('/ar-control')) throw new Error('boom');
+      return route(url);
+    });
+    const wrapper = mount(AccountingLedgerView, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="tb-totals"]').text()).toContain('$330.00');
+    expect(wrapper.find('[data-testid="ar-control"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="ar-control-failed"]').exists()).toBe(true);
+  });
+
+  it('names each invoice that disagrees with the ledger, and AR no invoice claims', async () => {
+    apiGet.mockImplementation(async (url) => {
+      if (url.includes('/ar-control')) {
+        return {
+          ...AR,
+          control_cents: 37500,
+          difference_cents: 4500,
+          tied: false,
+          drift_invoice_count: 1,
+          drift: [{
+            invoice_id: 'inv9', invoice_number: 'INV-9', status: 'sent', deleted: false,
+            open_balance_cents: 25000, ledger_ar_cents: 0, drift_cents: -25000,
+          }],
+          unattributed_cents: 4500,
+          unattributed_by_source: [{ source_type: 'manual', amount_cents: 4500 }],
+        };
+      }
+      return route(url);
+    });
+    const wrapper = mount(AccountingLedgerView, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="ar-control-tag"]').text()).toBe('NOT TIED: $45.00');
+    const table = wrapper.find('[data-testid="ar-control-drift"]');
+    expect(table.text()).toContain('INV-9');
+    expect(table.text()).toContain('-$250.00');
+    expect(wrapper.find('[data-testid="ar-control-unattributed"]').text()).toContain('manual $45.00');
+    expect(wrapper.find('[data-testid="ar-control-drift-note"]').text()).toContain('1 invoice(s) disagree');
   });
 });
