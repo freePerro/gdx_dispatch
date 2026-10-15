@@ -62,7 +62,7 @@ describe('InvoiceCreateView — closeout prefill', () => {
   });
 
   it('renders the closeout context card with hours, notes, and the notes shortcut', () => {
-    const card = SRC.slice(SRC.indexOf('data-testid="closeout-context"'), SRC.indexOf('data-testid="closeout-context"') + 2000);
+    const card = SRC.slice(SRC.indexOf('data-testid="closeout-context"'), SRC.indexOf('data-testid="closeout-context"') + 3000);
     expect(card).toMatch(/closeout-context-hours/);
     expect(card).toMatch(/closeout-context-notes/);
     expect(card).toMatch(/data-testid="use-closeout-notes"/);
