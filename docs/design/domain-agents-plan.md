@@ -1,7 +1,7 @@
 # Domain subagents — one per piece of the app — Plan
 
 **Date:** 2026-09-24
-**Status:** PARTIALLY BUILT — the 14 agent files under `.claude/agents/`, the ownership map, its scanner and gating test, the `.gitignore` exception and the CLAUDE.md pointer were written 2026-09-24 and pass locally (§8). The same 14 agents plus a dispatcher were also built into a local Paperclip instance as the company "GDX Dispatch Code" the same day and smoke-run there (§10). Landing on branch `fix/paperclip-run-speed` together with the run-speed fixes of §12 (PR number added when opened). No agent has driven a real *change* yet; §9 names what "built" still owes.
+**Status:** PARTIALLY BUILT — the 14 agent files under `.claude/agents/`, the ownership map, its scanner and gating test, the `.gitignore` exception and the CLAUDE.md pointer were written 2026-09-24 and pass locally (§8). The same 14 agents plus a dispatcher were also built into a local Paperclip instance as the company "GDX Dispatch Code" the same day and smoke-run there (§10). MERGED #776 (2026-09-25, branch `fix/paperclip-run-speed`). No agent has driven a real *change* yet; §9 names what "built" still owes.
 **See also:** `gdx_dispatch/docs/decisions/ADR-012-parallel-worker-coordination.md` (2026-04-18, Proposed; the *role* axis — Architect / Worker / Reviewer — whose runtime was extracted from this repo on 2026-04-20). This plan is the *domain* axis. It does not supersede ADR-012 and ADR-012 does not name these files; the two compose. The user-level verifier `~/.claude/agents/agent-quality.md` is unchanged.
 **Ask (Doug, 2026-09-24):** "let's break down this app into pieces that we can have custom agents that are able to work on it."
 

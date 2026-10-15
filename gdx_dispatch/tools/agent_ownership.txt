@@ -229,6 +229,12 @@ gdx_dispatch/frontend/src/views/GameCatalogView.vue          platform-core
 gdx_dispatch/frontend/src/views/GamePlayerView.vue           platform-core
 gdx_dispatch/frontend/src/views/ResourcesView.vue            platform-core
 gdx_dispatch/frontend/src/components/games/*                 platform-core
+# The plan this map's header cites: platform-core keeps the map, so it keeps
+# the plan's status line honest too (GDXA-1172). docs/ is not a covered root,
+# so `--file` answers for it and deleting it reddens nothing but the dead-rule
+# check. A glob, not the path: design docs are records and nothing outside
+# them names one by path (test_saas_surfaces_retired); it matches the one file.
+docs/design/domain-agents-plan*                              platform-core
 
 ## ---------------------------------------------------------------------------
 ## frontend-shell — the SPA itself: layout, router, stores, shared
