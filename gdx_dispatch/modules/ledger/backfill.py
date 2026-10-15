@@ -193,7 +193,8 @@ def run_replay(session: Session, company_id: str) -> PhaseResult:
     result = PhaseResult()
     entries_at_start = _entry_count(session, company_id)
 
-    invoices = [i for i in _company_invoices(session, company_id) if i.status != "void"]
+    all_invoices = _company_invoices(session, company_id)
+    invoices = [i for i in all_invoices if i.status != "void"]
     by_id = {i.id: i for i in invoices}
 
     # Issuances (post-cutover invoices; era invoices anchor inside repost).
@@ -248,7 +249,37 @@ def run_replay(session: Session, company_id: str) -> PhaseResult:
 
     # Payments — resettle per invoice reposts every payment at current state
     # (and skips opening-era rows on anchored invoices).
-    for invoice in invoices:
+    #
+    # GDXA-1220: a void invoice still holding a LIVE payment (money the Stripe
+    # recorder booked after the void, #422) is resettled too. Before the fix
+    # that payment credited 1200 AR on an invoice with no AR left; the replay
+    # is what moves an entry already posted that way onto 2300. Void invoices
+    # with no live payment stay out, exactly as before.
+    #
+    # Pre-cutover-era voids stay out too, and are named for hand review: a
+    # late-learned era payment on one resettles through `post_era_settlement`,
+    # which credits AR from 3950 and does not know about voids — on an
+    # invoice with no anchor that drives AR negative (audit 2026-10-15,
+    # executed). What such money should post to is an accounting decision,
+    # not something a replay may guess.
+    from gdx_dispatch.models.tenant_models import Payment
+
+    voids_with_live_money = []
+    for i in all_invoices:
+        if i.status != "void" or session.scalar(
+            select(Payment.id).where(
+                Payment.invoice_id == i.id, Payment.voided_at.is_(None)
+            ).limit(1)
+        ) is None:
+            continue
+        if pre_cutover_era(session, i):
+            result.refused.append(
+                f"void pre-cutover invoice {i.invoice_number} holds a live "
+                "payment — not replayed; review by hand"
+            )
+            continue
+        voids_with_live_money.append(i)
+    for invoice in [*invoices, *voids_with_live_money]:
         try:
             resettle_invoice_payments(session, invoice, actor=ACTOR)
         except PeriodLockedError as exc:
