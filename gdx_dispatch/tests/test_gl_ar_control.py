@@ -18,13 +18,21 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 
 from gdx_dispatch.models.tenant_models import Invoice, InvoiceAdjustment, InvoiceLine, Payment
 from gdx_dispatch.modules.ledger import reports
+from gdx_dispatch.modules.ledger.backfill import gl_ar_balance_cents
 from gdx_dispatch.modules.ledger.engine import PostingEvent, PostingLine, post_for_event
-from gdx_dispatch.modules.ledger.models import ROLE_AR, ROLE_OPENING_EQUITY
+from gdx_dispatch.modules.ledger.models import ROLE_AR, ROLE_OPENING_EQUITY, GlAccount
 from gdx_dispatch.modules.ledger.router import report_ar_control
-from gdx_dispatch.modules.ledger.rules import post_credit_memo, post_payment_received
+from gdx_dispatch.modules.ledger.rules import (
+    ISSUED_STATUSES,
+    RECEIVABLE_STATUSES,
+    invoice_ar_balance_cents,
+    post_credit_memo,
+    post_payment_received,
+)
 from gdx_dispatch.modules.ledger.service import ensure_gl_seed, transition_invoice_status
 from gdx_dispatch.routers.invoices import _recalculate_invoice
 
@@ -276,3 +284,94 @@ def test_endpoint_returns_the_report(db):
     assert out["ledger_posting_enabled"] is True
     assert out["control_cents"] == 100_00
     assert out["tied"] is True
+
+
+# ---------------------------------------------------------------------------
+# GDXA-1231: one rule, stated once. The per-invoice AR the tie attributes
+# must be the per-invoice AR the void settlement and the cutover
+# reconciliation read, line for line, including with AR on a deactivated
+# account. The app cannot get there today (patch_account refuses to
+# deactivate a system account, and the seed never re-adds a role an inactive
+# account holds), so the test builds it by hand, as a direct DB edit would.
+# ---------------------------------------------------------------------------
+
+
+def test_receivable_statuses_are_the_issued_statuses_plus_overdue_only():
+    assert set(RECEIVABLE_STATUSES) - set(ISSUED_STATUSES) == {"overdue"}
+    assert set(ISSUED_STATUSES) <= set(RECEIVABLE_STATUSES)
+
+
+def _memo(db, inv: Invoice, amount: str) -> InvoiceAdjustment:
+    memo = InvoiceAdjustment(
+        id=uuid4(), invoice_id=inv.id, kind="credit_memo", amount=Decimal(amount),
+        reason="goodwill", created_by="t", company_id=COMPANY,
+    )
+    db.add(memo)
+    db.flush()
+    post_credit_memo(db, memo, inv, actor="t")
+    db.flush()
+    return memo
+
+
+def _replace_ar_account(db) -> tuple[GlAccount, GlAccount]:
+    (old,) = db.scalars(
+        select(GlAccount).where(GlAccount.role == ROLE_AR, GlAccount.active.is_(True))
+    ).all()
+    old.active = False
+    db.flush()
+    new = GlAccount(
+        code="1201", name="Accounts Receivable (new)", type="asset", role=ROLE_AR,
+        is_system=True, company_id=COMPANY,
+    )
+    db.add(new)
+    db.flush()
+    return old, new
+
+
+def _ledger_ar_by_invoice(db, invoices: list[Invoice]) -> dict[str, int]:
+    """ar_control's per-invoice ledger AR, for every invoice: a sentinel
+    balance drifts each row so the report names its ledger_ar_cents."""
+    for inv in invoices:
+        inv.balance_due = Decimal("999999.99")
+    db.flush()
+    out = reports.ar_control(db, COMPANY)
+    assert out["drift_invoice_count"] == len(invoices)
+    return {r["invoice_id"]: r["ledger_ar_cents"] for r in out["drift"]}
+
+
+def test_ar_control_and_invoice_ar_balance_attribute_every_invoice_alike(db):
+    a = _issued(db, "500.00")
+    b = _issued(db, "300.00")
+    _memo(db, a, "40.00")
+    _payment(db, recorded_on=a, posted_against=a, amount="100.00")
+    _payment(db, recorded_on=b, posted_against=b, amount="300.00")
+
+    by_report = _ledger_ar_by_invoice(db, [a, b])
+    assert by_report == {
+        str(a.id): invoice_ar_balance_cents(db, a),
+        str(b.id): invoice_ar_balance_cents(db, b),
+    }
+    assert by_report == {str(a.id): 360_00, str(b.id): 0}
+
+
+def test_a_replaced_ar_account_still_counts_for_both_the_tie_and_the_invoice(db):
+    # Decided (GDXA-1231): a receivable on a deactivated AR account is still
+    # owed, so it counts. Both reads sum every AR-role account; before this,
+    # invoice_ar_balance_cents read only the active one and lost A's $460 on
+    # the old account.
+    a = _issued(db, "500.00")
+    _memo(db, a, "40.00")
+    old, new = _replace_ar_account(db)
+    _payment(db, recorded_on=a, posted_against=a, amount="100.00")  # lands on `new`
+    b = _issued(db, "300.00")  # wholly on `new`
+    _memo(db, b, "25.00")
+
+    by_report = _ledger_ar_by_invoice(db, [a, b])
+    assert by_report == {
+        str(a.id): invoice_ar_balance_cents(db, a),
+        str(b.id): invoice_ar_balance_cents(db, b),
+    }
+    assert by_report == {str(a.id): 360_00, str(b.id): 275_00}
+    # The cutover reconciliation's control total sums the same lines.
+    assert gl_ar_balance_cents(db, COMPANY) == reports.ar_control(db, COMPANY)["control_cents"]
+    assert gl_ar_balance_cents(db, COMPANY) == 635_00
